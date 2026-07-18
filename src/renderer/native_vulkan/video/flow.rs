@@ -5,8 +5,6 @@ use serde::Serialize;
 pub enum NativeVulkanVideoFlowOwner {
     FfmpegFrontend,
     FfmpegHwDecode,
-    NativePacketBoundary,
-    NativeCodec,
     NativeRender,
     NativePresent,
     SeparateAudioPipeline,

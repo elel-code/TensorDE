@@ -1,4 +1,3 @@
-#[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present(
     mut options: NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
 ) -> Result<NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot, String> {
@@ -184,7 +183,6 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_sce
     })
 }
 
-#[cfg(feature = "native-vulkan-video")]
 pub(super) fn native_vulkan_ffmpeg_scene_unique_codecs(
     sources: &[NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions],
 ) -> Vec<NativeVulkanVideoSessionCodec> {
@@ -197,7 +195,6 @@ pub(super) fn native_vulkan_ffmpeg_scene_unique_codecs(
     codecs
 }
 
-#[cfg(feature = "native-vulkan-video")]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
     instance: &Instance,
@@ -212,7 +209,7 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
     present_id2_enabled: bool,
     present_wait2_enabled: bool,
     audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
-    mut options: NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
+    options: NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
 ) -> Result<NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot, String> {
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
@@ -273,12 +270,6 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
         selection.present_queue_family_index,
     )?;
     let mut frame_resources = Some(frame_resources);
-    let mut scene_video_overlay: Option<VulkanaliaSceneVideoOverlayResources> =
-        if options.scene_video_overlay.take().is_some() {
-            return Err(native_vulkan_scene_video_overlay_removed_error());
-        } else {
-            None
-        };
     let mut decoded_image_present_pipeline = None;
     let sequence_result =
         (|| -> Result<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot, String> {
@@ -398,22 +389,6 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
                     timing.source_frame_pts_ms,
                     timing.source_frame_duration_ms,
                 );
-                let overlay_elapsed_ms = sequence_builder
-                    .started_at
-                    .elapsed()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64;
-                let scene_overlay_draw =
-                    if let Some(scene_video_overlay) = scene_video_overlay.as_mut() {
-                        scene_video_overlay.frame_draw(
-                            &context.device,
-                            present_frame_slot as u32,
-                            overlay_elapsed_ms,
-                            swapchain_extent,
-                        )?
-                    } else {
-                        None
-                    };
                 let draw = native_vulkan_vulkanalia_present_decoded_image_frame_with_sources(
                     &context.device,
                     context.present_queue,
@@ -442,7 +417,7 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
                     None,
                     None,
                     options.clear_color,
-                    scene_overlay_draw,
+                    None,
                 )?;
                 let present_frame_slot = draw.present_frame_slot;
                 sequence_builder.push(draw);
@@ -496,12 +471,6 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
         native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
             &context.device,
             pipeline,
-        );
-    }
-    if let Some(scene_video_overlay) = scene_video_overlay.take() {
-        native_vulkan_vulkanalia_destroy_scene_video_overlay_resources(
-            &context.device,
-            scene_video_overlay,
         );
     }
     if let Some(frame_resources) = frame_resources.take() {
@@ -811,74 +780,4 @@ pub(super) fn native_vulkan_ffmpeg_vulkan_hwdecode_release_frame_after_render_fe
                 "1" | "true" | "yes" | "on"
             )
         })
-}
-
-#[cfg(feature = "native-vulkan-video")]
-pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
-    options: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
-) -> Result<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot, String> {
-    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay(
-        options, None,
-    )
-}
-
-#[cfg(feature = "native-vulkan-video")]
-pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay(
-    options: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
-    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
-) -> Result<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot, String> {
-    if options.session.codec != NativeVulkanVideoSessionCodec::H264High8 {
-        return Err(
-            "Vulkanalia streaming video-present decode currently supports H.264 high-8 only"
-                .to_owned(),
-        );
-    }
-    let playback_frame_count = options.playback_frame_count;
-    let session_options = options.session.clone();
-    let mut runtime =
-        create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_prefix_decode(
-            session_options,
-            NativeVulkanVulkanaliaStreamingDecodeRequests {
-                h264: Some(options),
-                h265: None,
-                av1: None,
-            },
-            playback_frame_count,
-            scene_video_overlay,
-        )?;
-    let decode = runtime
-        .resources
-        .as_ref()
-        .and_then(|resources| resources.h264_ready_prefix_decode.clone())
-        .ok_or_else(|| {
-            "Vulkanalia streaming H.264 video-present decode produced no decode snapshot".to_owned()
-        })?;
-    let present = runtime
-        .resources
-        .as_mut()
-        .ok_or_else(|| "Vulkanalia retained runtime resources are unavailable".to_owned())?
-        .decoded_image_present_result(decode.dst_base_array_layer);
-    Ok(
-        NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot {
-            session: runtime.snapshot().clone(),
-            decode,
-            decoded_into_retained_resource_image: true,
-            decoded_image_present_sequence_requested: true,
-            decoded_image_present_sequence: present.sequence,
-            decoded_image_present_sequence_error: present.sequence_error,
-            decoded_image_present_draw_requested: true,
-            decoded_image_present_draw: present.draw,
-            decoded_image_present_draw_error: present.draw_error,
-            decoded_image_zero_copy_presented: present.zero_copy_presented,
-        },
-    )
-}
-
-#[cfg(feature = "native-vulkan-video")]
-pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
-    options: NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
-) -> Result<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot, String> {
-    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay(
-        options, None,
-    )
 }

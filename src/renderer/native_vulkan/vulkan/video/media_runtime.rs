@@ -10,7 +10,6 @@ use crate::renderer::native_vulkan::{
     },
     audio::event_source::NativeVulkanAudioEventChannel,
     audio::policy::NativeVulkanAudioOutputMode,
-    video::direct::native_vulkan_audio_runtime_packet_budget,
 };
 
 const FFMPEG_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize = 256 * 1024;
@@ -114,4 +113,17 @@ fn native_vulkan_ffmpeg_visible_present_duration(
 
 fn native_vulkan_duration_ns_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn native_vulkan_audio_runtime_packet_budget(
+    playback_duration: Duration,
+    playback_frame_count: u32,
+) -> u32 {
+    let duration_packets = playback_duration.as_nanos().saturating_add(9_999_999) / 10_000_000;
+    let packet_budget = duration_packets
+        .saturating_add(u128::from(playback_frame_count.max(1)))
+        .saturating_add(64);
+    u32::try_from(packet_budget.min(4_096))
+        .unwrap_or(4_096)
+        .max(64)
 }

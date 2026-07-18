@@ -486,7 +486,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             latest_draw,
             draws_head: self.draws_head,
             draws_tail: self.draws_tail,
-            frame_order_model: "FFmpeg-style display queue: decode submissions enqueue FIFO metadata carrying PTS/POC/order-hint keys with decode-index fallback; ready-prefix windows may be looped as metadata-only sampled-layer references before Vulkanalia dynamic rendering",
+            frame_order_model: "FFmpeg avcodec display order: AVFrame PTS is primary and present-frame index is the explicit missing-PTS fallback",
             present_resource_reuse_model: "one swapchain image-view set, one command pool, one semaphore pair, one fence set and one bounded decoded-frame handoff reused across decoded-image present frames",
             ffmpeg_retained_avframe_count: execution.ffmpeg_retained_avframe_count,
             ffmpeg_retained_avframe_peak_count: execution.ffmpeg_retained_avframe_peak_count,

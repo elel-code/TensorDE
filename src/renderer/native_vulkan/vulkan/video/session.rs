@@ -597,11 +597,11 @@ fn video_session_resource_probe_plan(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::renderer::native_vulkan::vulkan::video_format_probe::{
+    use super::super::format_probe::{
         NativeVulkanVulkanaliaVideoFormatPropertySnapshot,
         NativeVulkanVulkanaliaVideoFormatQuerySnapshot,
     };
+    use super::*;
     use vulkanalia::vk::HasBuilder;
 
     #[test]

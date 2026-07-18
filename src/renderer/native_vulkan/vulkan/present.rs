@@ -8,6 +8,5 @@ use self::render_descriptors as render_present_descriptors;
 use self::timing as present_timing;
 use super::core::{descriptor_heap, features, instance};
 use super::video::{
-    decode_submit as video_decode_submit, present_handoff as video_present_handoff,
-    session_images as video_session_images,
+    present_handoff as video_present_handoff, session_images as video_session_images,
 };

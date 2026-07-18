@@ -24,15 +24,13 @@ pub(in crate::renderer::native_vulkan::vulkan) use super::present_timing::Vulkan
 #[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources;
 pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::{
-    NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     VulkanaliaDecodedImagePresentSamplerResources,
-    native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
-    native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
 };
-use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
+
+const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_decode.c";
 
 pub(in crate::renderer::native_vulkan::vulkan) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 0;
 const DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES: u32 = 20;

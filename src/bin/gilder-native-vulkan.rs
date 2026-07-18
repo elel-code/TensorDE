@@ -120,34 +120,25 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::engine::scene::SceneStorage;
     use gilder::renderer::StaticWallpaperPlan;
-    #[cfg(feature = "native-vulkan-video")]
-    use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSceneRunOptions,
-        NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions, backend_contract,
+        NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionCodec, backend_contract,
         capabilities, native_vulkan_scene_backend_plan,
-        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
+        native_vulkan_video_duration_playback_frames, native_vulkan_video_playback_frame_count,
         probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene_with_options,
         run_static_image, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanFfmpegVulkanHwVideoPresentOptions, NativeVulkanVideoSessionCodec,
-        native_vulkan_extract_av1_sequence_header_for_vulkanalia,
-        native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
-        native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-        run_native_vulkan_ffmpeg_vulkan_hw_video_present, run_vulkanalia_ready_prefix_video,
+        NativeVulkanFfmpegVulkanHwVideoPresentOptions,
+        run_native_vulkan_ffmpeg_vulkan_hw_video_present,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
         NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
         NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
-        NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
-        NativeVulkanVulkanaliaVideoSessionBindSmokeOptions, probe_native_vulkan_vulkanalia_devices,
-        probe_native_vulkan_vulkanalia_surface_swapchain,
+        probe_native_vulkan_vulkanalia_devices, probe_native_vulkan_vulkanalia_surface_swapchain,
         probe_native_vulkan_vulkanalia_video_present_device,
-        probe_native_vulkan_vulkanalia_video_present_session,
-        probe_native_vulkan_vulkanalia_video_session_bind,
     };
     use gilder::renderer::native_wayland::{
         NativeWaylandFractionalScaleRounding, NativeWaylandLayer,
@@ -192,12 +183,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
-    let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
-    let mut vulkanalia_create_empty_session_parameters = false;
-    let mut vulkanalia_create_session_parameters = false;
-    let mut ready_prefix_playback_frames = 0u32;
-    let mut _video_width_set = false;
-    let mut _video_height_set = false;
+    let mut video_codec = NativeVulkanVideoSessionCodec::H265Main8;
+    let mut video_playback_frames = 0u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -208,62 +195,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-vulkanalia" => mode = NativeVulkanCliMode::ProbeVulkanalia,
             "--probe-vulkanalia-swapchain" => mode = NativeVulkanCliMode::ProbeVulkanaliaSwapchain,
-            "--probe-vulkanalia-video-session" => {
-                mode = NativeVulkanCliMode::ProbeVulkanaliaVideoSession
-            }
             "--probe-vulkanalia-video-present" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresent
             }
-            "--probe-vulkanalia-video-present-session" => {
-                mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresentSession
-            }
             "--scene-backend-plan" => mode = NativeVulkanCliMode::SceneBackendPlan,
             "--run-scene" => mode = NativeVulkanCliMode::RunScene,
-            "--run-vulkanalia-ready-prefix-video" => {
-                mode = NativeVulkanCliMode::RunVulkanaliaReadyPrefixVideo
-            }
-            "--allocate-video-images" => video_session_options.allocate_video_images = true,
-            "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
-            "--create-empty-session-parameters" => {
-                vulkanalia_create_empty_session_parameters = true
-            }
-            "--create-session-parameters" => vulkanalia_create_session_parameters = true,
-            "--decode-h264-ready-prefix" => {
-                let count = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--decode-h264-ready-prefix requires a count")?;
-                video_session_options.decode_h264_ready_prefix_frames = count;
-                video_session_options.h264_required_ready_prefix_access_units = count;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--decode-h265-ready-prefix" => {
-                let count = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--decode-h265-ready-prefix requires a count")?;
-                video_session_options.decode_h265_ready_prefix_frames = count;
-                video_session_options.h265_required_ready_prefix_access_units = count;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--decode-av1-ready-prefix" => {
-                let count = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--decode-av1-ready-prefix requires a count")?;
-                video_session_options.decode_av1_ready_prefix_frames = count;
-                video_session_options.av1_required_ready_prefix_temporal_units = count;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -444,51 +380,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--video-codec" => {
                 let value = args.next().ok_or("--video-codec requires a value")?;
-                video_session_options.codec = value.parse()?;
-            }
-            "--width" => {
-                video_session_options.width = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--width requires pixels")?;
-                _video_width_set = true;
-            }
-            "--height" => {
-                video_session_options.height = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--height requires pixels")?;
-                _video_height_set = true;
-            }
-            "--bitstream-samples" => {
-                video_session_options.bitstream_extract_max_samples = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--bitstream-samples requires a count")?;
-            }
-            "--require-h265-ready-prefix" => {
-                video_session_options.h265_required_ready_prefix_access_units = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--require-h265-ready-prefix requires a count")?;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-            }
-            "--require-h264-ready-prefix" => {
-                video_session_options.h264_required_ready_prefix_access_units = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--require-h264-ready-prefix requires a count")?;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
+                video_codec = value.parse()?;
             }
             "--playback-frames" => {
-                ready_prefix_playback_frames = args
+                video_playback_frames = args
                     .next()
                     .map(|value| value.parse::<u32>())
                     .transpose()?
@@ -599,22 +494,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
                     host: options.host,
                     wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    codec: video_session_options.codec,
-                }
-            )?)
-        }
-        NativeVulkanCliMode::ProbeVulkanaliaVideoPresentSession => {
-            json!(probe_native_vulkan_vulkanalia_video_present_session(
-                NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    codec: video_session_options.codec,
-                    width: video_session_options.width,
-                    height: video_session_options.height,
-                    target_max_fps: options.target_max_fps,
-                    audio_master_clock:
-                        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
-                    clear_color: options.clear_color,
+                    codec: video_codec,
                 }
             )?)
         }
@@ -626,87 +506,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let file = std::fs::File::open(&source)?;
             let storage = SceneStorage::from_binary_reader(file)?;
             json!(native_vulkan_scene_backend_plan(&storage))
-        }
-        NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
-            if video_session_options.decode_h264_ready_prefix_frames > 0
-                || video_session_options.decode_h265_ready_prefix_frames > 0
-                || video_session_options.decode_av1_ready_prefix_frames > 0
-            {
-                return Err(
-                    "--decode-*-ready-prefix session-bind decode was removed; use the streaming video runtime"
-                        .into(),
-                );
-            }
-            let (h264_parameter_sets, h265_parameter_sets, av1_sequence_header) =
-                if vulkanalia_create_session_parameters {
-                    let source = source
-                        .clone()
-                        .ok_or("--create-session-parameters requires --source")?;
-                    if !source.is_file() {
-                        return Err(format!(
-                            "bitstream source does not exist: {}",
-                            source.display()
-                        )
-                        .into());
-                    }
-                    #[cfg(feature = "native-vulkan-video")]
-                    {
-                        match video_session_options.codec {
-                            NativeVulkanVideoSessionCodec::H264High8 => {
-                                let parameter_sets =
-                                    native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
-                                        source,
-                                        video_session_options.bitstream_extract_max_samples,
-                                    )?;
-                                (Some(parameter_sets), None, None)
-                            }
-                            NativeVulkanVideoSessionCodec::H265Main8
-                            | NativeVulkanVideoSessionCodec::H265Main10 => {
-                                let parameter_sets =
-                                    native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
-                                        source,
-                                        video_session_options.codec,
-                                        video_session_options.bitstream_extract_max_samples,
-                                    )?;
-                                (None, Some(parameter_sets), None)
-                            }
-                            NativeVulkanVideoSessionCodec::Av1Main8
-                            | NativeVulkanVideoSessionCodec::Av1Main10 => {
-                                let sequence_header =
-                                    native_vulkan_extract_av1_sequence_header_for_vulkanalia(
-                                        source,
-                                        video_session_options.codec,
-                                        video_session_options.bitstream_extract_max_samples,
-                                    )?;
-                                (None, None, Some(sequence_header))
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "native-vulkan-video"))]
-                    {
-                        let _ = source;
-                        return Err(
-                            "--create-session-parameters requires native-vulkan-video feature"
-                                .into(),
-                        );
-                    }
-                } else {
-                    (None, None, None)
-                };
-            json!(probe_native_vulkan_vulkanalia_video_session_bind(
-                NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-                    codec: video_session_options.codec,
-                    width: video_session_options.width,
-                    height: video_session_options.height,
-                    allocate_video_images: video_session_options.allocate_video_images,
-                    allocate_bitstream_buffer: video_session_options.allocate_bitstream_buffer,
-                    create_empty_session_parameters: vulkanalia_create_empty_session_parameters,
-                    create_session_parameters: vulkanalia_create_session_parameters,
-                    h264_parameter_sets,
-                    h265_parameter_sets,
-                    av1_sequence_header,
-                }
-            )?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunStatic => {
@@ -769,110 +568,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !source.is_file() {
                 return Err(format!("video source does not exist: {}", source.display()).into());
             }
-            let route = native_vulkan_video_run_route(
-                &video_session_options,
-                ready_prefix_playback_frames,
+            let playback_frame_count = native_vulkan_video_playback_frame_count(
+                video_playback_frames,
                 duration_playback_frames,
             );
             #[cfg(feature = "native-vulkan-video")]
             {
-                if route.is_ffmpeg_vulkan_hw_decode() {
-                    json!(run_native_vulkan_ffmpeg_vulkan_hw_video_present(
-                        NativeVulkanFfmpegVulkanHwVideoPresentOptions {
-                            host: options.host,
-                            wait_configure_roundtrips: options.wait_configure_roundtrips,
-                            source,
-                            codec: video_session_options.codec,
-                            playback_frame_count: route.playback_frames,
-                            target_max_fps: options.target_max_fps,
-                            audio_clock_probe_requested,
-                            audio_output_mode: audio_output_policy.resolve(_muted),
-                            audio_master_clock:
-                                NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
-                            clear_color: options.clear_color,
-                        },
-                    )?)
-                } else {
-                    return Err(format!(
-                        "--run-video cannot use FFmpeg Vulkan HW decode route: {}",
-                        route.status
-                    )
-                    .into());
-                }
+                json!(run_native_vulkan_ffmpeg_vulkan_hw_video_present(
+                    NativeVulkanFfmpegVulkanHwVideoPresentOptions {
+                        host: options.host,
+                        wait_configure_roundtrips: options.wait_configure_roundtrips,
+                        source,
+                        codec: video_codec,
+                        playback_frame_count,
+                        target_max_fps: options.target_max_fps,
+                        audio_clock_probe_requested,
+                        audio_output_mode: audio_output_policy.resolve(_muted),
+                        audio_master_clock:
+                            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
+                        clear_color: options.clear_color,
+                    },
+                )?)
             }
             #[cfg(not(feature = "native-vulkan-video"))]
             {
-                let _ = (options, source, fit, _muted, route);
+                let _ = (options, source, fit, _muted, playback_frame_count);
                 return Err(
                     "--run-video FFmpeg Vulkan HW decode route requires native-vulkan-video feature"
-                        .into(),
-                );
-            }
-        }
-        NativeVulkanCliMode::RunVulkanaliaReadyPrefixVideo => {
-            let source = source.ok_or("--run-vulkanalia-ready-prefix-video requires --source")?;
-            if !source.is_file() {
-                return Err(format!("video source does not exist: {}", source.display()).into());
-            }
-            #[cfg(feature = "native-vulkan-video")]
-            let ready_prefix_frames = match video_session_options.codec {
-                NativeVulkanVideoSessionCodec::H264High8 => {
-                    video_session_options.decode_h264_ready_prefix_frames
-                }
-                NativeVulkanVideoSessionCodec::H265Main8
-                | NativeVulkanVideoSessionCodec::H265Main10 => {
-                    video_session_options.decode_h265_ready_prefix_frames
-                }
-                NativeVulkanVideoSessionCodec::Av1Main8
-                | NativeVulkanVideoSessionCodec::Av1Main10 => {
-                    video_session_options.decode_av1_ready_prefix_frames
-                }
-            };
-            #[cfg(not(feature = "native-vulkan-video"))]
-            let ready_prefix_frames = 0u32;
-            if ready_prefix_frames == 0 {
-                return Err(
-                    "--run-vulkanalia-ready-prefix-video requires --decode-h264-ready-prefix N, --decode-h265-ready-prefix N, or --decode-av1-ready-prefix N matching --video-codec"
-                        .into(),
-                );
-            }
-            #[cfg(feature = "native-vulkan-video")]
-            {
-                let playback_frames = native_vulkan_video_playback_frame_count(
-                    ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    duration_playback_frames,
-                );
-                let report = run_vulkanalia_ready_prefix_video(
-                    options,
-                    video_session_options.codec,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    ready_prefix_frames,
-                    playback_frames,
-                    audio_clock_probe_requested,
-                    audio_output_policy.resolve(_muted),
-                )?;
-                write_json_report(&report)?;
-                return Ok(());
-            }
-            #[cfg(not(feature = "native-vulkan-video"))]
-            {
-                let _ = (
-                    options,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                );
-                return Err(
-                    "--run-vulkanalia-ready-prefix-video requires native-vulkan-video feature"
                         .into(),
                 );
             }

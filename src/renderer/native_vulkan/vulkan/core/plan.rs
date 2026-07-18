@@ -1,11 +1,5 @@
 use serde::Serialize;
 
-use super::super::video::direct_runtime::{
-    NativeVulkanVulkanaliaDirectRuntimeContract, native_vulkan_vulkanalia_direct_runtime_contract,
-};
-use super::super::video::session::{
-    NativeVulkanVulkanaliaVideoSessionTemplate, native_vulkan_vulkanalia_video_session_template,
-};
 use super::device_probe::{
     NativeVulkanVulkanaliaDeviceProbeTemplate, native_vulkan_vulkanalia_device_probe_template,
 };
@@ -25,8 +19,6 @@ pub struct NativeVulkanBackendPlan {
     pub feature_chain_template: NativeVulkanVulkanaliaFeatureChainTemplate,
     pub device_probe_template: NativeVulkanVulkanaliaDeviceProbeTemplate,
     pub video_profile_templates: Vec<NativeVulkanVulkanaliaVideoProfileTemplate>,
-    pub video_session_template: NativeVulkanVulkanaliaVideoSessionTemplate,
-    pub direct_runtime_contract: NativeVulkanVulkanaliaDirectRuntimeContract,
     pub required_instance_extensions: &'static [&'static str],
     pub required_device_extensions: &'static [&'static str],
     pub preferred_optional_device_extensions: &'static [&'static str],
@@ -67,8 +59,6 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
         feature_chain_template: native_vulkan_vulkanalia_feature_chain_template(),
         device_probe_template: native_vulkan_vulkanalia_device_probe_template(),
         video_profile_templates: native_vulkan_vulkanalia_video_profile_templates(),
-        video_session_template: native_vulkan_vulkanalia_video_session_template(),
-        direct_runtime_contract: native_vulkan_vulkanalia_direct_runtime_contract(),
         required_instance_extensions: &["VK_KHR_surface", "VK_KHR_wayland_surface"],
         required_device_extensions: &[
             "VK_KHR_swapchain",
@@ -274,25 +264,9 @@ mod tests {
                 .iter()
                 .any(|name| { name.ends_with("VideoDecodeAV1PictureInfoKHR") })
         );
-        assert_eq!(plan.direct_runtime_contract.binding, "vulkanalia");
-        assert_eq!(
-            plan.direct_runtime_contract.route_name,
-            "ffmpeg-vulkan-hwdecode-mainline"
-        );
-        assert!(
-            plan.direct_runtime_contract
-                .required_submit_order
-                .contains(&"avcodec_receive_frame")
-        );
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
         assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");
         assert_eq!(plan.video_profile_templates.len(), 7);
-        assert!(
-            plan.video_session_template
-                .api_type_evidence
-                .iter()
-                .any(|name| name.ends_with("VideoSessionCreateInfoKHR"))
-        );
         assert!(
             plan.runtime_gates
                 .iter()

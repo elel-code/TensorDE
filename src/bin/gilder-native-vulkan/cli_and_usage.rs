@@ -114,9 +114,7 @@ fn parse_capture_frame_time_step(value: Option<String>) -> Result<f32, &'static 
         .ok_or("--capture-frame-time-step requires positive seconds")
 }
 
-fn parse_capture_frame_region(
-    value: Option<String>,
-) -> Result<(u32, u32, u32, u32), &'static str> {
+fn parse_capture_frame_region(value: Option<String>) -> Result<(u32, u32, u32, u32), &'static str> {
     let value = value.ok_or("--capture-frame-region requires X,Y,WIDTH,HEIGHT")?;
     let values = value
         .split(',')
@@ -125,9 +123,7 @@ fn parse_capture_frame_region(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "--capture-frame-region requires X,Y,WIDTH,HEIGHT")?;
     match values.as_slice() {
-        [x, y, width, height] if *width > 0 && *height > 0 => {
-            Ok((*x, *y, *width, *height))
-        }
+        [x, y, width, height] if *width > 0 && *height > 0 => Ok((*x, *y, *width, *height)),
         _ => Err("--capture-frame-region requires X,Y,WIDTH,HEIGHT"),
     }
 }
@@ -227,20 +223,17 @@ enum NativeVulkanCliMode {
     ProbeVulkanalia,
     ProbeVulkanaliaSwapchain,
     ProbeVulkanaliaVideoPresent,
-    ProbeVulkanaliaVideoPresentSession,
-    ProbeVulkanaliaVideoSession,
     SceneBackendPlan,
     RunClear,
     RunStatic,
     RunScene,
     RunVideo,
-    RunVulkanaliaReadyPrefixVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--scene-backend-plan|--run-clear|--run-static|--run-scene|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--scene-backend-plan|--run-clear|--run-static|--run-scene|--run-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -248,17 +241,8 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-vulkanalia enumerates the vulkanalia Vulkan 1.4 physical-device/video/external-memory gates, then exits.\n\
 --probe-vulkanalia-swapchain creates a Wayland VkSurfaceKHR, Vulkanalia device, swapchain and swapchain image list, then exits.\n\
 --probe-vulkanalia-video-present creates one Vulkanalia device with video-decode and graphics/present queues plus a Wayland swapchain, then exits.\n\
---probe-vulkanalia-video-present-session creates one Vulkanalia video+present device, video session, sampled DPB/output image, and Wayland swapchain, then exits.\n\
---probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
 --scene-backend-plan reads --source file.gscene and prints the native Vulkan scene storage/pipeline/executor plan, then exits.\n\
---allocate-video-images extends --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
---allocate-bitstream-buffer extends --probe-vulkanalia-video-session with an FFmpeg-sized mapped VIDEO_DECODE_SRC slices buffer.\n\
---create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
---create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
---decode-h264-ready-prefix N configures the legacy Vulkanalia compatibility route with N reference-ready H.264 AU decode submits.\n\
---decode-h265-ready-prefix N configures the legacy Vulkanalia compatibility route with N ready H.265 AU decode submits.\n\
---decode-av1-ready-prefix N configures the legacy Vulkanalia compatibility route with N visible AV1 temporal units.\n\
---playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
+--playback-frames N sets the FFmpeg Vulkan HW present frame budget.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-scene reads --source file.gscene and runs the selected Vulkan scene present policy.\n\
@@ -277,7 +261,6 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
---run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-frame-region X,Y,WIDTH,HEIGHT] [--capture-frame-reference PATH] [--capture-frame-time-step SECONDS] [--capture-scene-graph N]\n\
          [--scene-pointer-position X,Y] [--surface-width PX --surface-height PX] [--gpu-timing]\n\
@@ -285,13 +268,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
-         [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
-         [--allocate-video-images] [--allocate-bitstream-buffer]\n\
-         [--create-session-parameters] [--bitstream-samples N]\n\
-         [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
-         [--decode-h265-ready-prefix N]\n\
-         [--decode-av1-ready-prefix N]\n\
-         [--require-h265-ready-prefix N] [--playback-frames N]\n\
+         [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );
 }

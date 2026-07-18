@@ -15,8 +15,9 @@ use super::descriptor_heap::{
     native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
 };
 use super::features::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
-use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
+
+const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_decode.c";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot {

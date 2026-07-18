@@ -8,7 +8,3 @@
 #![allow(dead_code)]
 
 include!("native_vulkan/backend_entry.rs");
-include!("native_vulkan/h264_h265_parameter_sets.rs");
-include!("native_vulkan/h264_h265_slice_parsers.rs");
-include!("native_vulkan/av1_frame_submit.rs");
-include!("native_vulkan/av1_sequence_contract.rs");

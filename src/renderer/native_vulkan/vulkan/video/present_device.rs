@@ -10,7 +10,7 @@ use vulkanalia::vk::{
     KhrWaylandSurfaceExtensionInstanceCommands,
 };
 
-use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanVideoSessionCodec};
+use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 use crate::renderer::native_wayland::{NativeWaylandHostOptions, NativeWaylandSurfaceHandles};
 
 use super::super::device_selection::ranked_physical_devices;
@@ -28,10 +28,6 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
-use super::render_present::{
-    NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
-    NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
-};
 use super::swapchain::{
     NativeVulkanVulkanaliaSwapchainSnapshot, OPTIONAL_INSTANCE_EXTENSIONS,
     REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_swapchain_plan,
@@ -39,7 +35,6 @@ use super::swapchain::{
     query_vulkanalia_present_feature_selection, queue_flag_labels,
     vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
-use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_device::{
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
     native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs,
@@ -47,29 +42,17 @@ use super::video_device::{
     native_vulkan_vulkanalia_video_device_extension_available,
     native_vulkan_vulkanalia_video_device_feature_selection,
 };
-use super::video_session::NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot;
-use super::video_session_images::NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot;
 use super::video_surface_host::{
     NativeVulkanVideoSurfaceHost, NativeVulkanVideoSurfaceHostSnapshot,
 };
+
+const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_decode.c";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
     pub host: NativeWaylandHostOptions,
     pub wait_configure_roundtrips: usize,
     pub codec: NativeVulkanVideoSessionCodec,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
-    pub host: NativeWaylandHostOptions,
-    pub wait_configure_roundtrips: usize,
-    pub codec: NativeVulkanVideoSessionCodec,
-    pub width: u32,
-    pub height: u32,
-    pub target_max_fps: Option<u32>,
-    pub audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
-    pub clear_color: NativeVulkanClearColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,36 +103,6 @@ pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
     pub decoded_image_resource_sharing_model: &'static str,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
     pub present_backend: &'static str,
-    pub decoded_image_present_boundary: &'static str,
-    pub ffmpeg_reference: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
-    pub binding: &'static str,
-    pub route: &'static str,
-    pub codec: NativeVulkanVideoSessionCodec,
-    pub requested_extent: (u32, u32),
-    pub surface_host: Option<NativeVulkanVideoSurfaceHostSnapshot>,
-    pub device: NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
-    pub video_session_created: bool,
-    pub video_session_create_inline_session_parameters: bool,
-    pub video_session_create_flags_bits: u32,
-    pub memory_binding: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
-    pub resource_image: NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
-    pub picture_format: String,
-    pub decode_capability_flags: Vec<&'static str>,
-    pub session_max_dpb_slots: u32,
-    pub session_max_active_reference_pictures: u32,
-    pub resource_queue_family_indices: Vec<u32>,
-    pub resource_queue_sharing_model: &'static str,
-    pub decoded_image_zero_copy_presentable_candidate: bool,
-    pub decoded_image_present_sampler:
-        Option<NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot>,
-    pub decoded_image_present_sampler_error: Option<String>,
-    pub decoded_image_present_pipeline:
-        Option<NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot>,
-    pub decoded_image_present_pipeline_error: Option<String>,
     pub decoded_image_present_boundary: &'static str,
     pub ffmpeg_reference: &'static str,
 }
@@ -239,18 +192,6 @@ pub fn probe_native_vulkan_vulkanalia_video_present_device(
     );
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
-}
-
-pub fn probe_native_vulkan_vulkanalia_video_present_session(
-    options: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
-) -> Result<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot, String> {
-    if options.width == 0 || options.height == 0 {
-        return Err("Vulkanalia video present session probe requires non-zero extent".to_owned());
-    }
-
-    super::video_present_runtime::probe_native_vulkan_vulkanalia_retained_video_present_session(
-        options,
-    )
 }
 
 fn probe_video_present_device_inner(
