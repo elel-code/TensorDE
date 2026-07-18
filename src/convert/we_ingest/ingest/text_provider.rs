@@ -13,12 +13,11 @@ pub(super) fn text_provider(
 ) -> Option<WeIrTextProvider> {
     let script = value.get("text")?.get("script")?.as_str()?;
     let kind = classify_text_provider(script)?;
-    let source_data = matches!(
-        kind,
-        SceneTextProviderKind::ChineseLunarCalendar | SceneTextProviderKind::ChineseSolarTerm
-    )
-    .then(|| script.to_owned())
-    .unwrap_or_default();
+    let source_data = match kind {
+        SceneTextProviderKind::ChineseLunarCalendar => extract_const_object(script, "lunarData")?,
+        SceneTextProviderKind::ChineseSolarTerm => extract_const_object(script, "solarTerms")?,
+        _ => String::new(),
+    };
     Some(WeIrTextProvider {
         object,
         kind,
@@ -26,6 +25,39 @@ pub(super) fn text_provider(
         source_data,
         update_interval_seconds: 60,
     })
+}
+
+fn extract_const_object(script: &str, name: &str) -> Option<String> {
+    let declaration = format!("const {name}");
+    let tail = script.split_once(&declaration)?.1;
+    let object_start = tail.find('{')?;
+    let object = &tail[object_start..];
+    let mut depth = 0u32;
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, character) in object.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(character, '\'' | '"' | '`') {
+            quote = Some(character);
+        } else if character == '{' {
+            depth = depth.saturating_add(1);
+        } else if character == '}' {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(object[..=offset].to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn classify_text_provider(script: &str) -> Option<SceneTextProviderKind> {
@@ -81,10 +113,21 @@ mod tests {
     #[test]
     fn calendar_tables_remain_typed_source_data_only_when_required() {
         let value = serde_json::json!({
-            "text": {"script": "const lunarData={}; getFullLunarDate()"}
+            "text": {"script": "const lunarData={\"2026\": {months: [30]}}; getFullLunarDate(); export function update() {}"}
         });
         let provider = text_provider(4, &value, "fallback").expect("provider");
         assert_eq!(provider.kind, SceneTextProviderKind::ChineseLunarCalendar);
         assert!(!provider.source_data.is_empty());
+        assert!(provider.source_data.contains("months"));
+        assert!(!provider.source_data.contains("export function"));
+    }
+
+    #[test]
+    fn calendar_table_extraction_ignores_braces_inside_strings() {
+        let script = r#"const solarTerms = {"2026": {"term": "{07-18}"}}; function update() {}"#;
+        assert_eq!(
+            extract_const_object(script, "solarTerms").as_deref(),
+            Some(r#"{"2026": {"term": "{07-18}"}}"#)
+        );
     }
 }
