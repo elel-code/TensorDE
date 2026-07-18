@@ -127,6 +127,33 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             reason: "records are not strictly ordered by object",
         });
     }
+    for program in &document.script_programs {
+        validate_range(
+            "script_program.object",
+            program.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        validate_string(document, "script_program.source", program.source)?;
+        validate_string(
+            document,
+            "script_program.properties_json",
+            program.properties_json,
+        )?;
+        validate_string(
+            document,
+            "script_program.initial_text",
+            program.initial_text,
+        )?;
+        if program.subscriptions == SceneScriptSubscriptions::NONE
+            || !program.initial_numeric.into_iter().all(f32::is_finite)
+        {
+            return Err(SceneStorageError::InvalidScriptProgram {
+                object: program.object,
+                reason: "empty subscriptions or non-finite initial value",
+            });
+        }
+    }
     for effect in &document.object_effects {
         validate_range(
             "object_effect.object",

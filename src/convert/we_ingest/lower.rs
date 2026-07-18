@@ -8,14 +8,13 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
 //! - `references/godot/servers/rendering/storage/*`
 
-use std::collections::BTreeMap;
-
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     CullMode, DepthTestMode, PipelineBlendMode, RenderPassRole, RenderTargetRole,
     TextureBindingRole,
 };
 use crate::engine::scene::*;
+use std::collections::BTreeMap;
 
 use super::ir::*;
 mod event_binding;
@@ -582,6 +581,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         shader_constant_names,
         audio_band_material_bindings: event_bindings.audio,
         text_providers: event_bindings.text,
+        script_programs: event_bindings.scripts,
         camera_parallax: event_bindings.camera_parallax,
         object_parallax_depths: event_bindings.object_parallax_depths,
     })

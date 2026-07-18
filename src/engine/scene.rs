@@ -11,6 +11,7 @@ pub mod abi;
 pub mod binary;
 pub mod event;
 pub mod rendering_device_graph;
+pub mod script;
 pub mod semantic_world;
 pub mod server;
 pub mod storage;
@@ -33,6 +34,10 @@ pub use rendering_device_graph::{
     SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
     SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
     SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation,
+};
+pub use script::{
+    SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptProgram,
+    SceneScriptRuntime,
 };
 pub use semantic_world::{
     MaterialBindingComponent, MeshBindingComponent, ObjectEffectBindingComponent, ParentComponent,

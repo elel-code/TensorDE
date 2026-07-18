@@ -28,6 +28,7 @@ mod puppet_clipping;
 mod puppet_material;
 mod puppet_model;
 mod ripple_flow;
+mod script_program;
 mod shader_combo;
 mod shader_contract;
 mod text_font_binding;
@@ -81,6 +82,7 @@ use pipeline_state::{
     cull_mode_from_we, depth_test_from_we, pipeline_blend_from_we, pipeline_blend_string,
     scene_blend_from_color_blend_mode,
 };
+use script_program::object_script_programs;
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
 use text_font_binding::text_font_overrides;
@@ -270,6 +272,7 @@ struct WeIrBuilder {
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
     text_providers: Vec<WeIrTextProvider>,
+    script_programs: Vec<WeIrScriptProgram>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -331,6 +334,7 @@ impl WeIrBuilder {
             object_transform_keyframes: Vec::new(),
             audio_band_material_bindings: Vec::new(),
             text_providers: Vec::new(),
+            script_programs: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -385,6 +389,7 @@ impl WeIrBuilder {
             object_transform_keyframes: self.object_transform_keyframes,
             audio_band_material_bindings: self.audio_band_material_bindings,
             text_providers: self.text_providers,
+            script_programs: self.script_programs,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
@@ -482,6 +487,8 @@ impl WeIrBuilder {
             .unwrap_or_default();
         let particle_path = bound_string(value.get("particle")).unwrap_or_default();
         let text_value = text_layer_value(value);
+        self.script_programs
+            .extend(object_script_programs(handle, value, text_value.as_deref()));
         let utility_layer = utility_layer_kind(&image_path);
         let mut resource = None;
         let mut material = None;

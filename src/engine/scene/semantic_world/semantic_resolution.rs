@@ -10,6 +10,10 @@ use crate::engine::scene::abi::{ScenePuppetAttachmentRecord, ScenePuppetBoneReco
 use crate::engine::scene::event::SceneFrameEvents;
 use crate::engine::scene::semantic_world::resolved_frame::INVALID_RESOLVED_INDEX;
 use crate::engine::scene::semantic_world::timeline::SampledPuppetBoneLocalState;
+use crate::engine::scene::{
+    SceneEventSequence, SceneScriptDelta, SceneScriptFrameInput, SceneScriptRuntime,
+    SceneScriptSubscriptions,
+};
 
 /// Retains the immutable semantic frame and resolves only time-dependent object state.
 #[derive(Debug)]
@@ -23,6 +27,13 @@ pub struct SemanticFrameResolver {
     incremental_enabled: bool,
     retained_puppet_enabled: bool,
     event_system: RetainedSceneEventSystem,
+    script_runtime: Option<SceneScriptRuntime>,
+    script_deltas: Vec<SceneScriptDelta>,
+    last_pointer_sequence: SceneEventSequence,
+    last_audio_sequence: SceneEventSequence,
+    last_media_sequence: SceneEventSequence,
+    last_local_minute: Option<(i32, u8, u8, u8, u8)>,
+    last_scene_time_seconds: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -48,6 +59,8 @@ impl SemanticFrameResolver {
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
         let event_system = RetainedSceneEventSystem::from_world(world);
+        let script_runtime = SceneScriptRuntime::from_storage(world.storage())
+            .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
         event_system.initialize_frame(world, &mut frame);
         let initial_audio_values = std::mem::take(&mut frame.audio_band_material_values);
         let initial_text_values = std::mem::take(&mut frame.text_provider_values);
@@ -70,6 +83,13 @@ impl SemanticFrameResolver {
             )
             .is_none(),
             event_system,
+            script_runtime,
+            script_deltas: Vec::new(),
+            last_pointer_sequence: SceneEventSequence::default(),
+            last_audio_sequence: SceneEventSequence::default(),
+            last_media_sequence: SceneEventSequence::default(),
+            last_local_minute: None,
+            last_scene_time_seconds: None,
         })
     }
 
@@ -79,15 +99,20 @@ impl SemanticFrameResolver {
         scene_time_seconds: f32,
         events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.dispatch_scripts(scene_time_seconds, events)?;
         self.event_system
             .begin_frame(world, &mut self.frame, scene_time_seconds, events);
+        merge_script_text_deltas(&self.script_deltas, &mut self.frame.text_provider_values);
         if !self.incremental_enabled {
             let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
             let text_values = std::mem::take(&mut self.frame.text_provider_values);
             let media_clock = self.frame.media_clock;
             let video_frame = self.frame.video_frame;
-            self.frame =
-                world.resolve_frame_with_audio_values_at(scene_time_seconds, &audio_values)?;
+            self.frame = world.resolve_frame_with_dynamic_values_at(
+                scene_time_seconds,
+                &audio_values,
+                &self.script_deltas,
+            )?;
             self.frame.audio_band_material_values = audio_values;
             self.frame.text_provider_values = text_values;
             self.frame.media_clock = media_clock;
@@ -121,6 +146,7 @@ impl SemanticFrameResolver {
                 &mut self.attachment_scratch,
                 &mut retained_puppets,
                 &self.frame.audio_band_material_values,
+                &self.script_deltas,
                 scene_time_seconds,
             )?;
         }
@@ -157,6 +183,86 @@ impl SemanticFrameResolver {
 
     pub fn retained_puppet_enabled(&self) -> bool {
         self.incremental_enabled && self.retained_puppet_enabled
+    }
+
+    fn dispatch_scripts(
+        &mut self,
+        scene_time_seconds: f32,
+        events: &SceneFrameEvents,
+    ) -> Result<(), SceneSemanticWorldError> {
+        let Some(runtime) = self.script_runtime.as_ref() else {
+            return Ok(());
+        };
+        let mut dirty = SceneScriptSubscriptions::FRAME;
+        if events.pointer.sequence != self.last_pointer_sequence {
+            dirty = dirty.union(SceneScriptSubscriptions::POINTER);
+            self.last_pointer_sequence = events.pointer.sequence;
+        }
+        if events.audio.sequence != self.last_audio_sequence {
+            dirty = dirty.union(SceneScriptSubscriptions::AUDIO);
+            self.last_audio_sequence = events.audio.sequence;
+        }
+        if let Some(media) = events.media
+            && media.sequence != self.last_media_sequence
+        {
+            dirty = dirty.union(SceneScriptSubscriptions::MEDIA);
+            self.last_media_sequence = media.sequence;
+        }
+        if let Some(local_time) = events.local_time {
+            let minute = (
+                local_time.year,
+                local_time.month,
+                local_time.day,
+                local_time.hour,
+                local_time.minute,
+            );
+            if self.last_local_minute != Some(minute) {
+                dirty = dirty.union(SceneScriptSubscriptions::LOCAL_TIME);
+                self.last_local_minute = Some(minute);
+            }
+        }
+        let pointer = events
+            .pointer
+            .normalized_position_top_left()
+            .unwrap_or([0.5; 2]);
+        let zero_spectrum = [0.0; 32];
+        let spectrum = events.coherent_audio_spectrum().unwrap_or(&zero_spectrum);
+        let frame_time_seconds = self
+            .last_scene_time_seconds
+            .map(|previous| (scene_time_seconds - previous).max(0.0))
+            .unwrap_or(0.0);
+        self.last_scene_time_seconds = Some(scene_time_seconds);
+        self.script_deltas = runtime
+            .dispatch(SceneScriptFrameInput {
+                scene_time_seconds: f64::from(scene_time_seconds),
+                frame_time_seconds: f64::from(frame_time_seconds),
+                dirty_events: dirty,
+                pointer,
+                audio_spectrum32: spectrum,
+            })
+            .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
+        Ok(())
+    }
+}
+
+fn merge_script_text_deltas(
+    deltas: &[SceneScriptDelta],
+    values: &mut Vec<crate::engine::scene::semantic_world::ResolvedTextProviderValue>,
+) {
+    for delta in deltas {
+        let Some(text) = delta.text.as_ref() else {
+            continue;
+        };
+        if let Some(value) = values.iter_mut().find(|value| value.object == delta.object) {
+            value.text.clone_from(text);
+        } else {
+            values.push(
+                crate::engine::scene::semantic_world::ResolvedTextProviderValue {
+                    object: delta.object,
+                    text: text.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -332,6 +438,12 @@ fn dynamic_entity_closure(world: &SceneSemanticWorld<'_>) -> Vec<usize> {
             continue;
         }
         if let Some(entity) = world.index.entity_for_object(binding.object) {
+            dynamic[entity.index()] = true;
+        }
+    }
+
+    for program in world.storage.script_programs() {
+        if let Some(entity) = world.index.entity_for_object(program.object) {
             dynamic[entity.index()] = true;
         }
     }

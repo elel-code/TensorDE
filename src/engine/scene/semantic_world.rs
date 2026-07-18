@@ -8,6 +8,7 @@
 //! - `references/godot/servers/rendering/storage/*`
 mod audio_binding;
 pub mod components;
+mod dynamic_property;
 pub mod effect;
 pub mod entity;
 mod errors;
@@ -25,32 +26,37 @@ pub use components::{
     ParentComponent, ParticleEmitterComponent, PuppetBindingComponent, SemanticMeshBinding,
     SemanticRenderPlanInputs, TransformComponent, VisibilityComponent, VisualComponent,
 };
+use components::{
+    material_binding_from_object, parent_from_object, particle_emitter_from_record,
+    puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,
+};
+use dynamic_property::{
+    ResolvedParentState, apply_script_transform, multiply_color, object_uniform_scale,
+    script_scalar, script_vector,
+};
+use effect::object_effect_binding_from_object;
 pub use effect::{
     ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
 };
 pub use entity::{SemanticEntity, SemanticEntityRecord};
 pub use errors::SceneSemanticWorldError;
+use event_system::RetainedSceneEventSystem;
+use indexes::SemanticIndexTable;
+use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
+use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
 pub use resolved_frame::{
     ResolvedAttachmentLink, ResolvedAudioBandMaterialValue, ResolvedObjectState,
     ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame,
     ResolvedTextProviderValue,
 };
 pub use semantic_resolution::SemanticFrameResolver;
-pub use transform_animation::TransformAnimationComponent;
-use components::{
-    material_binding_from_object, parent_from_object, particle_emitter_from_record,
-    puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,
-};
-use effect::object_effect_binding_from_object;
-use event_system::RetainedSceneEventSystem;
-use indexes::SemanticIndexTable;
-use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
-use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
 use semantic_resolution::{RetainedPuppetTopology, resolve_retained_attachment_anchor};
 use timeline::{sampled_object_transform, sampled_puppet_bone_local_state};
+pub use transform_animation::TransformAnimationComponent;
 
 use super::abi::*;
 use super::storage::SceneStorage;
+use super::{SceneScriptDelta, SceneScriptTarget};
 
 #[derive(Debug)]
 pub struct SceneSemanticWorld<'a> {
@@ -70,37 +76,6 @@ pub struct SceneSemanticWorld<'a> {
     particle_components: Vec<Option<ParticleEmitterComponent>>,
     mesh_bindings: Vec<SemanticMeshBinding>,
     object_effect_bindings: Vec<SemanticObjectEffectBinding>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ResolvedParentState {
-    parent: SceneObjectHandle,
-    inherited_visible: bool,
-    inherited_color: SceneVec3,
-    inherited_alpha: f32,
-    world_matrix: [f32; 16],
-}
-
-fn object_uniform_scale(
-    values: &[ResolvedAudioBandMaterialValue],
-    object: SceneObjectHandle,
-) -> Option<f32> {
-    values
-        .iter()
-        .find(|value| {
-            value.object == object
-                && value.target == SceneAudioBandMaterialTarget::ObjectUniformScale
-        })
-        .map(|value| value.value)
-        .filter(|value| value.is_finite())
-}
-
-fn multiply_color(left: SceneVec3, right: SceneVec3) -> SceneVec3 {
-    SceneVec3 {
-        x: left.x * right.x,
-        y: left.y * right.y,
-        z: left.z * right.z,
-    }
 }
 
 impl<'a> SceneSemanticWorld<'a> {
@@ -314,6 +289,15 @@ impl<'a> SceneSemanticWorld<'a> {
         scene_time_seconds: f32,
         audio_values: &[ResolvedAudioBandMaterialValue],
     ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.resolve_frame_with_dynamic_values_at(scene_time_seconds, audio_values, &[])
+    }
+
+    fn resolve_frame_with_dynamic_values_at(
+        &self,
+        scene_time_seconds: f32,
+        audio_values: &[ResolvedAudioBandMaterialValue],
+        script_deltas: &[SceneScriptDelta],
+    ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
         let mut states = vec![None; self.entities.len()];
         let mut visits = vec![ResolveVisitState::Unvisited; self.entities.len()];
         let mut attachment_links = Vec::new();
@@ -327,6 +311,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 &mut attachment_links,
                 &mut retained_puppets,
                 audio_values,
+                script_deltas,
                 scene_time_seconds,
             )?;
         }
@@ -510,6 +495,7 @@ impl<'a> SceneSemanticWorld<'a> {
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         audio_values: &[ResolvedAudioBandMaterialValue],
+        script_deltas: &[SceneScriptDelta],
         scene_time_seconds: f32,
     ) -> Result<ResolvedObjectState, SceneSemanticWorldError> {
         match visits[entity_index] {
@@ -571,6 +557,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 z: scale,
             };
         }
+        apply_script_transform(script_deltas, object.id, &mut sampled_transform);
         let local_matrix = transform_matrix(&sampled_transform);
         let mesh_range = self
             .mesh_components
@@ -593,8 +580,17 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment_links,
             retained_puppets,
             audio_values,
+            script_deltas,
             scene_time_seconds,
         )?;
+        let self_visible = script_scalar(script_deltas, object.id, SceneScriptTarget::Visible)
+            .map(|value| value != 0.0)
+            .unwrap_or(visibility.visible);
+        let self_color = script_vector(script_deltas, object.id, SceneScriptTarget::Color)
+            .unwrap_or(visual.color);
+        let self_alpha = script_scalar(script_deltas, object.id, SceneScriptTarget::Alpha)
+            .unwrap_or(visual.alpha)
+            .clamp(0.0, 1.0);
         let state = ResolvedObjectState {
             entity: entity_record.entity,
             object: entity_record.object,
@@ -605,12 +601,12 @@ impl<'a> SceneSemanticWorld<'a> {
             local_matrix,
             world_matrix: parent_state.world_matrix,
             render_world_matrix: parent_state.world_matrix,
-            self_visible: visibility.visible,
-            resolved_visible: visibility.visible && parent_state.inherited_visible,
-            self_color: visual.color,
-            resolved_color: multiply_color(visual.color, parent_state.inherited_color),
-            self_alpha: visual.alpha,
-            resolved_alpha: (visual.alpha * parent_state.inherited_alpha).clamp(0.0, 1.0),
+            self_visible,
+            resolved_visible: self_visible && parent_state.inherited_visible,
+            self_color,
+            resolved_color: multiply_color(self_color, parent_state.inherited_color),
+            self_alpha,
+            resolved_alpha: (self_alpha * parent_state.inherited_alpha).clamp(0.0, 1.0),
             sort_order: visibility.sort_order,
             mesh_binding_start: mesh_range.binding_start,
             mesh_binding_count: mesh_range.binding_count,
@@ -630,6 +626,7 @@ impl<'a> SceneSemanticWorld<'a> {
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         audio_values: &[ResolvedAudioBandMaterialValue],
+        script_deltas: &[SceneScriptDelta],
         scene_time_seconds: f32,
     ) -> Result<ResolvedParentState, SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
@@ -665,6 +662,7 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment_links,
             retained_puppets,
             audio_values,
+            script_deltas,
             scene_time_seconds,
         )?;
         let mut parent_anchor = parent_state.world_matrix;

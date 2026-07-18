@@ -81,6 +81,7 @@ pub enum SceneSemanticWorldError {
     ParentCycle {
         object: SceneObjectHandle,
     },
+    ScriptRuntime(String),
 }
 
 impl fmt::Display for SceneSemanticWorldError {
@@ -207,6 +208,7 @@ impl fmt::Display for SceneSemanticWorldError {
                 "scene semantic parent transform cycle includes object {}",
                 object.0
             ),
+            Self::ScriptRuntime(message) => write!(f, "scene script runtime failed: {message}"),
         }
     }
 }

@@ -18,7 +18,8 @@ use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
     SceneAudioBandMaterialTarget, SceneCullMode, SceneDepthTest,
     SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend, SceneResourceKind,
-    SceneTextProviderKind, SceneTextureFormat, SceneVec3,
+    SceneScriptSubscriptions, SceneScriptTarget, SceneTextProviderKind, SceneTextureFormat,
+    SceneVec3,
 };
 
 mod particle;
@@ -40,6 +41,7 @@ pub struct WeSceneIr {
     pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     pub audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
     pub text_providers: Vec<WeIrTextProvider>,
+    pub script_programs: Vec<WeIrScriptProgram>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -78,6 +80,17 @@ pub struct WeIrTextProvider {
     pub initial_text: String,
     pub source_data: String,
     pub update_interval_seconds: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrScriptProgram {
+    pub object: u32,
+    pub target: SceneScriptTarget,
+    pub source: String,
+    pub properties_json: String,
+    pub initial_text: String,
+    pub subscriptions: SceneScriptSubscriptions,
+    pub initial_numeric: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

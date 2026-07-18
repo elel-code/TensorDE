@@ -276,6 +276,10 @@ impl SceneStorage {
         &self.document.text_providers
     }
 
+    pub fn script_programs(&self) -> &[SceneScriptProgramRecord] {
+        &self.document.script_programs
+    }
+
     pub fn particle_for_object(
         &self,
         object: SceneObjectHandle,
@@ -497,6 +501,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidScriptProgram {
+        object: SceneObjectHandle,
+        reason: &'static str,
+    },
     InvalidPointerParallaxBinding {
         object: SceneObjectHandle,
         reason: &'static str,
@@ -591,6 +599,11 @@ impl fmt::Display for SceneStorageError {
             Self::InvalidTextProvider { object, reason } => write!(
                 f,
                 "scene text provider for object {} is invalid: {reason}",
+                object.0
+            ),
+            Self::InvalidScriptProgram { object, reason } => write!(
+                f,
+                "scene script program for object {} is invalid: {reason}",
                 object.0
             ),
             Self::InvalidPointerParallaxBinding { object, reason } => write!(

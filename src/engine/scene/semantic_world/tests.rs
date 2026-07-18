@@ -384,6 +384,44 @@ fn retained_audio_binding_applies_uniform_object_scale_before_transform_propagat
 }
 
 #[test]
+fn scene_script_delta_updates_transform_before_parent_resolution() {
+    let mut object = image_object();
+    object.material = SceneMaterialHandle(INVALID_MATERIAL_ID);
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "export function update(value) { value.x = 25 + engine.runtime; return value; }"
+                .to_owned(),
+            "{}".to_owned(),
+        ],
+        objects: vec![object],
+        script_programs: vec![SceneScriptProgramRecord {
+            object: SceneObjectHandle(0),
+            target: SceneScriptTarget::Origin,
+            source: SceneStringId(0),
+            properties_json: SceneStringId(1),
+            initial_text: SceneStringId::NONE,
+            subscriptions: SceneScriptSubscriptions::FRAME,
+            initial_numeric: [10.0, 20.0, 0.0, 0.0],
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("semantic resolver");
+    let frame = resolver
+        .resolve_frame_with_events_at(
+            &world,
+            2.0,
+            &crate::engine::scene::SceneFrameEvents::default(),
+        )
+        .expect("scripted frame");
+    let object = frame.object(SceneObjectHandle(0)).expect("scripted object");
+
+    assert_close(object.local_matrix[12], 27.0);
+    assert_close(object.world_matrix[12], 27.0);
+}
+
+#[test]
 fn pointer_parallax_changes_render_matrix_without_polluting_authored_world_matrix() {
     let mut document = semantic_document();
     document.project.logical_width = 100;

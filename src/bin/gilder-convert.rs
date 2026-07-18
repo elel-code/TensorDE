@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
                     )
                 })?;
             println!(
-                "converted {} -> {} (objects={}, resources={}, materials={}, effects={}, meshes={} vertices={} indices={} source_records={} clipping_subdraws={} clipping_slices={}, puppets={} bones={} clips={} tracks={} transform_samples={} opacity_samples={}, object_transform_tracks={} channels={} keyframes={}, text_providers={}, graphs={}, shaders={}, heap_resources={}, heap_samplers={}, fifo_latest_ready={}, payload={} bytes)",
+                "converted {} -> {} (objects={}, resources={}, materials={}, effects={}, meshes={} vertices={} indices={} source_records={} clipping_subdraws={} clipping_slices={}, puppets={} bones={} clips={} tracks={} transform_samples={} opacity_samples={}, object_transform_tracks={} channels={} keyframes={}, text_providers={}, script_programs={}, graphs={}, shaders={}, heap_resources={}, heap_samplers={}, fifo_latest_ready={}, payload={} bytes)",
                 source.display(),
                 dest.display(),
                 summary.object_count,
@@ -64,6 +64,7 @@ fn run() -> Result<(), String> {
                 summary.object_transform_channel_count,
                 summary.object_transform_keyframe_count,
                 summary.text_provider_count,
+                summary.script_program_count,
                 summary.render_graph_count,
                 summary.shader_contract_count,
                 summary.descriptor_heap_resource_count,

@@ -2,7 +2,7 @@
 
 use crate::engine::scene::{
     SceneAudioBandMaterialBindingRecord, SceneCameraParallaxRecord, SceneObjectHandle,
-    SceneObjectParallaxDepthRecord, SceneTextProviderRecord,
+    SceneObjectParallaxDepthRecord, SceneScriptProgramRecord, SceneTextProviderRecord,
 };
 
 use super::super::ir::WeSceneIr;
@@ -11,6 +11,7 @@ use super::StringInterner;
 pub(super) struct LoweredSceneEventBindings {
     pub(super) audio: Vec<SceneAudioBandMaterialBindingRecord>,
     pub(super) text: Vec<SceneTextProviderRecord>,
+    pub(super) scripts: Vec<SceneScriptProgramRecord>,
     pub(super) camera_parallax: SceneCameraParallaxRecord,
     pub(super) object_parallax_depths: Vec<SceneObjectParallaxDepthRecord>,
 }
@@ -53,9 +54,23 @@ pub(super) fn lower_event_bindings(
             depth: object.parallax_depth,
         })
         .collect();
+    let scripts = ir
+        .script_programs
+        .iter()
+        .map(|program| SceneScriptProgramRecord {
+            object: SceneObjectHandle(program.object),
+            target: program.target,
+            source: strings.id(&program.source),
+            properties_json: strings.id(&program.properties_json),
+            initial_text: strings.optional_id(&program.initial_text),
+            subscriptions: program.subscriptions,
+            initial_numeric: program.initial_numeric,
+        })
+        .collect();
     LoweredSceneEventBindings {
         audio,
         text,
+        scripts,
         camera_parallax: SceneCameraParallaxRecord {
             enabled: ir.scene.camera_parallax_enabled,
             amount: ir.scene.camera_parallax_amount,

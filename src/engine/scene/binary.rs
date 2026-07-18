@@ -238,13 +238,13 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "shader contracts",
         shader_contracts.len(),
     )?;
-    let (audio_band_material_bindings, text_providers) =
+    let (audio_band_material_bindings, text_providers, script_programs) =
         decode_script_bindings(chunk_payload(&chunks, CHUNK_SCRIPT_BINDING)?)?;
     ensure_chunk_count(
         &chunks,
         CHUNK_SCRIPT_BINDING,
         "script binding",
-        audio_band_material_bindings.len() + text_providers.len(),
+        audio_band_material_bindings.len() + text_providers.len() + script_programs.len(),
     )?;
     ensure_chunk_count(&chunks, CHUNK_AUDIO, "audio", 0)?;
     let (camera_parallax, object_parallax_depths) =
@@ -304,6 +304,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_constant_names,
         audio_band_material_bindings,
         text_providers,
+        script_programs,
         camera_parallax,
         object_parallax_depths,
     })
@@ -494,12 +495,14 @@ fn encode_chunks(
                 document
                     .audio_band_material_bindings
                     .len()
-                    .saturating_add(document.text_providers.len()),
+                    .saturating_add(document.text_providers.len())
+                    .saturating_add(document.script_programs.len()),
                 "script binding count",
             )?,
             data: encode_script_bindings(
                 &document.audio_band_material_bindings,
                 &document.text_providers,
+                &document.script_programs,
             )?,
         },
         SceneEncodedChunk {
