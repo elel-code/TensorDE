@@ -83,8 +83,11 @@ pub(super) fn ingest_text_layer(
     object: u32,
     value: &Value,
     text: &str,
+    selected_font: Option<&str>,
 ) -> Result<Option<(u32, u32)>, WeIngestError> {
-    let font_path = text_layer_font_path(value);
+    let font_path = selected_font
+        .map(str::to_owned)
+        .unwrap_or_else(|| text_layer_font_path(value));
     let Some(mut font_resource) =
         builder.add_optional_resource(&font_path, SceneResourceKind::Font)?
     else {

@@ -30,6 +30,7 @@ mod puppet_model;
 mod ripple_flow;
 mod shader_combo;
 mod shader_contract;
+mod text_font_binding;
 mod text_layer;
 mod texture_resolver;
 mod transform_animation;
@@ -81,6 +82,7 @@ use pipeline_state::{
 };
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
+use text_font_binding::text_font_overrides;
 use text_layer::{
     ingest_text_layer, retained_text_effect_is_supported,
     retained_text_effect_requires_dependency_composite, text_layer_value,
@@ -107,7 +109,8 @@ pub fn ingest_wallpaper_engine_project(
     let scene_json = parse_json_bytes(&project.scene_file, &scene_asset.bytes)?;
     let scene = parse_scene_root_ir(&scene_json);
 
-    let mut builder = WeIrBuilder::new(project_root, source, project, scene);
+    let font_overrides = text_font_overrides(&scene_json, &project_json);
+    let mut builder = WeIrBuilder::new(project_root, source, project, scene, font_overrides);
     builder.add_existing_resource(
         "project.json",
         SceneResourceKind::ProjectJson,
@@ -296,6 +299,7 @@ struct WeIrBuilder {
     render_graphs: Vec<crate::engine::render_graph::RenderGraph>,
     image_targets: Vec<WeIrImageTarget>,
     shader_contracts: Vec<WeIrShaderContract>,
+    text_font_overrides: BTreeMap<String, String>,
     unsupported: Vec<WeIrUnsupported>,
 }
 
@@ -305,6 +309,7 @@ impl WeIrBuilder {
         source: WeAssetSource,
         project: WeProjectIr,
         scene: WeSceneRootIr,
+        text_font_overrides: BTreeMap<String, String>,
     ) -> Self {
         Self {
             project_root,
@@ -354,6 +359,7 @@ impl WeIrBuilder {
             render_graphs: Vec::new(),
             image_targets: Vec::new(),
             shader_contracts: Vec::new(),
+            text_font_overrides,
             unsupported: Vec::new(),
         }
     }
@@ -484,7 +490,8 @@ impl WeIrBuilder {
             material = Some(particle_material);
         } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
-            match ingest_text_layer(self, handle, value, text)? {
+            let selected_font = self.text_font_overrides.get(&name).cloned();
+            match ingest_text_layer(self, handle, value, text, selected_font.as_deref())? {
                 Some((font_resource, text_material)) => {
                     resource = Some(font_resource);
                     material = Some(text_material);
