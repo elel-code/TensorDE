@@ -1,20 +1,24 @@
 //! Per-frame publication of platform and media providers into one event snapshot.
 
+mod local_time_source;
+
 use crate::engine::scene::{
-    SceneEvent, SceneEventQueue, SceneFrameEvents, SceneLocalTime, ScenePointerEvent,
-    ScenePointerEventKind, ScenePointerSource, SceneStorage,
+    SceneEvent, SceneEventQueue, SceneFrameEvents, ScenePointerEvent, ScenePointerEventKind,
+    ScenePointerSource, SceneStorage,
 };
 use crate::renderer::native_vulkan::audio::event_source::{
-    NativeVulkanAudioEventSource, audio_state_summary,
+    audio_state_summary, NativeVulkanAudioEventSource,
 };
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_wayland::NativeWaylandHost;
 
 use super::material_uniform::scene_uses_audio_spectrum;
+use local_time_source::SceneLocalTimeEventSource;
 
 pub(super) struct SceneRuntimeEventSources {
     audio_monitor: NativeVulkanSystemAudioMonitor,
     audio: NativeVulkanAudioEventSource,
+    local_time: SceneLocalTimeEventSource,
     queue: SceneEventQueue,
     frame: SceneFrameEvents,
     pointer_replay_normalized: Option<[f64; 2]>,
@@ -37,6 +41,7 @@ impl SceneRuntimeEventSources {
                 scene_uses_audio_spectrum(storage),
             ),
             audio: NativeVulkanAudioEventSource,
+            local_time: SceneLocalTimeEventSource::new(!storage.text_providers().is_empty()),
             queue: SceneEventQueue::default(),
             frame: SceneFrameEvents::default(),
             pointer_replay_normalized,
@@ -68,7 +73,7 @@ impl SceneRuntimeEventSources {
         self.queue
             .publish(SceneEvent::Audio(self.audio.capture(sample_time_ns)));
         self.frame = self.queue.finish_frame();
-        self.frame.local_time = Some(SceneLocalTime::now());
+        self.frame.local_time = self.local_time.capture();
         &self.frame
     }
 
