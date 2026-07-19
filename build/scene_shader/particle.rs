@@ -131,8 +131,7 @@ void main() {
     uint ambient_seed = uint(max(g_Particle.g_SizeFadeSeed.w, 0.0) + 0.5)
         ^ (uint(gl_InstanceIndex) * 0x9e3779b9u)
         ^ (uint(max(cycle, 0.0)) * 0x85ebca6bu);
-    vec3 box_distance_random = random3_u32(ambient_seed ^ 0x307a7ca5u);
-    vec3 box_sign_random = random3_u32(ambient_seed ^ 0x401c64e6u);
+    vec3 box_direction_random = random3_u32(ambient_seed ^ 0x307a7ca5u);
     vec3 ambient_velocity_random = random3_u32(ambient_seed ^ 0x503d4567u);
     vec3 ambient_turbulence_random = random3_u32(ambient_seed ^ 0x601e8968u);
     vec3 ambient_shape_random = random3_u32(ambient_seed ^ 0x701a29f9u);
@@ -152,16 +151,13 @@ void main() {
     }
     vec3 position;
     if (simulation > 1.5) {
-        vec3 box_distance = mix(
-            g_Particle.g_DistanceMin.xyz,
-            g_Particle.g_DistanceMax.xyz,
-            box_distance_random);
-        vec3 box_direction = mix(
-            vec3(-1.0),
-            vec3(1.0),
-            step(vec3(0.5), box_sign_random));
+        vec3 box_direction = (2.0 * box_direction_random - 1.0)
+            * g_Particle.g_EmitterDirections.xyz;
+        vec3 box_distance = g_Particle.g_DistanceMin.xyz
+            + abs(box_direction)
+                * (g_Particle.g_DistanceMax.xyz - g_Particle.g_DistanceMin.xyz);
         position = g_Particle.g_EmitterOrigin.xyz
-            + box_distance * box_direction * g_Particle.g_EmitterDirections.xyz;
+            + sign(box_direction) * box_distance;
     } else {
         float radius = mix(
             g_Particle.g_DistanceMin.x,
@@ -293,4 +289,38 @@ void main() {
 }
 "#
     .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generic_particle_vertex_source;
+
+    fn native_box_offset(random: f32, direction: f32, minimum: f32, maximum: f32) -> f32 {
+        let directed = (2.0 * random - 1.0) * direction;
+        let sign = if directed > 0.0 {
+            1.0
+        } else if directed < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        sign * (minimum + directed.abs() * (maximum - minimum))
+    }
+
+    #[test]
+    fn box_random_uses_one_signed_random_sample_per_axis() {
+        let source = generic_particle_vertex_source();
+        assert!(source.contains("vec3 box_direction = (2.0 * box_direction_random - 1.0)"));
+        assert!(source.contains("+ abs(box_direction)"));
+        assert!(source.contains("+ sign(box_direction) * box_distance"));
+        assert!(!source.contains("box_sign_random"));
+    }
+
+    #[test]
+    fn box_random_applies_direction_before_distance_range() {
+        assert_eq!(native_box_offset(0.75, 0.0, 10.0, 30.0), 0.0);
+        assert_eq!(native_box_offset(0.75, 1.0, 0.0, 20.0), 10.0);
+        assert_eq!(native_box_offset(0.25, 1.0, 10.0, 30.0), -20.0);
+        assert_eq!(native_box_offset(0.75, 2.0, 10.0, 30.0), 30.0);
+    }
 }
