@@ -78,6 +78,7 @@ mod particle_compute_dispatch;
 mod particle_resources;
 mod pipeline;
 mod present_loop;
+mod resource_cleanup;
 mod resource_residency;
 mod resource_setup;
 mod sampled_binding;
@@ -101,8 +102,8 @@ pub use frame_capture::{
     NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
 };
 use frame_context::{
-    create_scene_present_frame_contexts, destroy_scene_present_frame_contexts,
-    scene_frame_slot_count,
+    ScenePresentFrameContext, create_scene_present_frame_contexts,
+    destroy_scene_present_frame_contexts, scene_frame_slot_count,
 };
 use frame_events::SceneRuntimeEventSources;
 use frame_state::{SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers};
@@ -123,6 +124,7 @@ use pipeline::{
     ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
     scene_pipeline_descriptor_layout, scene_pipeline_indices_for_draws,
 };
+use resource_cleanup::destroy_scene_present_runtime_resources;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,

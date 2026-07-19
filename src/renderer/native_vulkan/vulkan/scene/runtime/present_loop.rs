@@ -339,7 +339,7 @@ pub(super) fn with_scene_present(
             )
         })
         .unwrap_or_default();
-    let mut gpu_timing = SceneGpuTiming::create(
+    let mut gpu_timing = match SceneGpuTiming::create(
         device,
         instance,
         selection.physical_device,
@@ -347,7 +347,26 @@ pub(super) fn with_scene_present(
         options.gpu_timing,
         &scene_resources.graph_execution_order,
         &effect_timing_commands,
-    )?;
+    ) {
+        Ok(timing) => timing,
+        Err(err) => {
+            destroy_scene_present_runtime_resources(
+                device,
+                frame_contexts,
+                render_finished,
+                swapchain_views,
+                frame_capture,
+                None,
+                scene_resources,
+                command_pool,
+                swapchain,
+            );
+            unsafe {
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
     if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some() {
         eprintln!("gilder-scene-startup: frame-loop-ready");
     }
@@ -392,7 +411,8 @@ pub(super) fn with_scene_present(
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
-    while Instant::now() < deadline {
+    let frame_loop_result = (|| -> Result<(), String> {
+        while Instant::now() < deadline {
         if !event_sources.pump_platform(host)? {
             break;
         }
@@ -641,13 +661,32 @@ pub(super) fn with_scene_present(
                 next_frame = now;
             }
         }
-    }
-    let _ = unsafe { device.device_wait_idle() };
-    if let Some(capture) = frame_capture.as_mut() {
-        capture.read_completed_frame(device)?;
-    }
-    if let Some(timing) = gpu_timing.as_mut() {
-        timing.collect_completed(device)?;
+        }
+        let _ = unsafe { device.device_wait_idle() };
+        if let Some(capture) = frame_capture.as_mut() {
+            capture.read_completed_frame(device)?;
+        }
+        if let Some(timing) = gpu_timing.as_mut() {
+            timing.collect_completed(device)?;
+        }
+        Ok(())
+    })();
+    if let Err(err) = frame_loop_result {
+        destroy_scene_present_runtime_resources(
+            device,
+            frame_contexts,
+            render_finished,
+            swapchain_views,
+            frame_capture,
+            gpu_timing,
+            scene_resources,
+            command_pool,
+            swapchain,
+        );
+        unsafe {
+            present_device.device.destroy_device(None);
+        }
+        return Err(err);
     }
     let elapsed = started_at.elapsed();
     let gpu_timing_snapshot = gpu_timing.as_ref().map(SceneGpuTiming::snapshot);
@@ -823,25 +862,18 @@ pub(super) fn with_scene_present(
         effect_target_fullscreen_draw_count > 0,
     );
 
-    destroy_scene_present_frame_contexts(device, frame_contexts);
+    destroy_scene_present_runtime_resources(
+        device,
+        frame_contexts,
+        render_finished,
+        swapchain_views,
+        frame_capture.take(),
+        gpu_timing.take(),
+        scene_resources,
+        command_pool,
+        swapchain,
+    );
     unsafe {
-        for semaphore in render_finished {
-            device.destroy_semaphore(semaphore, None);
-        }
-        for view in swapchain_views {
-            device.destroy_image_view(view, None);
-        }
-    }
-    if let Some(capture) = frame_capture.take() {
-        capture.destroy(device);
-    }
-    if let Some(timing) = gpu_timing.take() {
-        timing.destroy(device);
-    }
-    destroy_scene_gpu_resources(device, scene_resources);
-    unsafe {
-        device.destroy_command_pool(command_pool, None);
-        device.destroy_swapchain_khr(swapchain, None);
         present_device.device.destroy_device(None);
     }
     if let Some(err) = frame_capture_write_error {
@@ -855,146 +887,5 @@ pub(super) fn with_scene_present(
     }
 
     let audio_summary = event_sources.audio_summary(frames_presented != 0);
-    Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
-        binding: "vulkanalia",
-        route: "scene-mesh-dynamic-rendering-present",
-        loader: vulkan.loader_name.to_owned(),
-        requested_api_version: Version::V1_4_0.to_string(),
-        runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
-        frames_presented,
-        average_present_fps: if elapsed.is_zero() {
-            0.0
-        } else {
-            frames_presented as f64 / elapsed.as_secs_f64()
-        },
-        present_delta_min_micros,
-        present_delta_max_micros,
-        present_delta_over_6250us_count,
-        present_delta_over_8334us_count,
-        clear_color: options.clear_color,
-        capture_scene_graph,
-        selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
-            physical_device_index: selection.physical_device_index,
-            physical_device_name: selection.physical_device_name,
-            physical_device_type: selection.physical_device_type,
-            queue_family_index: selection.queue_family_index,
-            queue_count: selection.queue_count,
-            queue_flags: queue_flag_labels(selection.queue_flags),
-            supports_graphics: selection.queue_flags.contains(vk::QueueFlags::GRAPHICS),
-            supports_present: true,
-            supports_wayland_presentation: selection.supports_wayland_presentation,
-        },
-        device_extensions: present_device.extension_snapshot,
-        swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
-            created: true,
-            format: format!("{:?}", swapchain_plan.format.format),
-            color_space: format!("{:?}", swapchain_plan.format.color_space),
-            present_mode: present_mode_label(swapchain_plan.present_mode),
-            extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
-            extent_selection: swapchain_plan.extent_selection,
-            image_count: swapchain_images.len(),
-            min_image_count: swapchain_plan.image_count,
-            composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec![
-                "transfer-src",
-                "transfer-dst",
-                "color-attachment",
-                "sampled",
-            ],
-            create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
-            present_id2_enabled: swapchain_plan.present_id2_enabled,
-            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
-        },
-        command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering -> scene mesh draw -> queue_submit2 -> queue_present_khr",
-        uses_synchronization2: true,
-        uses_submit2: true,
-        uses_dynamic_rendering: true,
-        scene_color_rasterization_samples: if scene_color_msaa_enabled { "4x" } else { "1x" },
-        uses_multisampled_render_to_single_sampled: multisampled_render_to_single_sampled_enabled,
-        uses_explicit_scene_color_msaa_resolve: scene_color_msaa_enabled
-            && !multisampled_render_to_single_sampled_enabled,
-        scene_color_msaa_memory_bytes,
-        frame_slot_count,
-        effect_target_physical_image_count,
-        effect_target_memory_bytes,
-        effect_target_dynamic_rendering_recorded,
-        effect_target_dynamic_rendering_pass_count,
-        effect_batch_count,
-        effect_batch_instance_count,
-        effect_batch_field_count,
-        effect_target_copy_command_count,
-        effect_target_swap_reference_count,
-        effect_target_mesh_draw_count,
-        effect_target_discard_load_count,
-        scene_color_mesh_draw_count,
-        scene_color_recorded_mesh_draw_count,
-        scene_color_attachment_clear_draw_count,
-        scene_color_attachment_clear_frame_count,
-        descriptor_model: "VK_EXT_descriptor_heap",
-        descriptor_heap_resource_count,
-        descriptor_heap_sampler_count,
-        vertex_buffer_bytes,
-        index_buffer_bytes,
-        transform_uniform_bytes,
-        material_uniform_bytes,
-        audio_spectrum_model: audio_summary.model,
-        audio_spectrum_ready: audio_summary.ready,
-        audio_spectrum_peak: audio_summary.peak,
-        audio_spectrum_active_band_count: audio_summary.active_band_count,
-        skinning_storage_bytes,
-        resource_residency,
-        scene_texture_image_count,
-        scene_texture_memory_bytes,
-        released_resource_payload_bytes,
-        released_texture_payload_bytes,
-        sampled_fallback_texture_count,
-        sampled_fallback_descriptor_count,
-        sampled_scene_texture_descriptor_count,
-        sampled_scene_color_snapshot_descriptor_count,
-        sampled_effect_target_descriptor_count,
-        effect_target_reference_cycle_length,
-        transform_uniform_update_count,
-        effect_uniform_update_count,
-        skinning_storage_update_count,
-        frame_state_update_total_micros,
-        semantic_incremental_resolve_enabled: semantic_resolver.incremental_enabled(),
-        semantic_retained_puppet_resolve_enabled: semantic_resolver.retained_puppet_enabled(),
-        semantic_dynamic_entity_count: semantic_resolver.dynamic_entity_count(),
-        semantic_resolve_total_micros,
-        graph_update_total_micros,
-        transform_update_total_micros,
-        material_update_total_micros,
-        skinning_update_total_micros,
-        draw_policy_update_total_micros,
-        sampled_descriptor_update_count,
-        sampled_descriptor_update_total_micros,
-        command_recording_total_micros,
-        fence_wait_total_micros,
-        acquire_wait_total_micros,
-        queue_present_total_micros,
-        gpu_timing: gpu_timing_snapshot,
-        composite_scissor_draw_count,
-        composite_scissor_covered_pixels,
-        composite_scissor_avoided_pixels,
-        alpha_coverage_scissor_draw_count,
-        alpha_coverage_scissor_segment_count,
-        alpha_coverage_scissor_pixels,
-        scene_pipeline_count,
-        mesh_draw_count,
-        particle_instance_capacity,
-        particle_instance_submitted,
-        particle_gpu_emitter_count,
-        particle_gpu_total_capacity,
-        particle_gpu_state_bytes,
-        particle_gpu_indirect_bytes,
-        particle_gpu_device_local,
-        particle_compute_pipeline_created,
-        particle_compute_dispatch_enabled: particle_compute_pipeline_created,
-        particle_indirect_readback_valid,
-        particle_indirect_readback_instance_total,
-        mesh_draw_recorded,
-        command_order,
-        present_backend: "vulkanalia-scene-present-runtime",
-        frame_capture: frame_capture_snapshot,
-    })
+    include!("present_loop/snapshot.rs")
 }

@@ -33,7 +33,7 @@ pub(super) fn object_script_programs(
             continue;
         };
         let analysis = analyze_scene_script(source)?;
-        if !has_runtime_entrypoint(&analysis) {
+        if !has_runtime_entrypoint(&analysis) || analysis.uses_scene_api {
             continue;
         }
         let properties_json = resolved_script_properties(binding, project_properties);
@@ -255,6 +255,21 @@ mod tests {
             "visible": {
                 "value": false,
                 "script": "export var scriptProperties = createScriptProperties().addText({name: 'author', value: 'link'}).finish();"
+            }
+        });
+        assert!(
+            object_script_programs(0, &object, None, &Map::new())
+                .expect("programs")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn scene_api_side_effect_module_stays_static_until_typed_scene_mutation_exists() {
+        let object = json!({
+            "visible": {
+                "value": true,
+                "script": "export function update(value) { thisScene.getLayer('body').visible = value; return value; }"
             }
         });
         assert!(

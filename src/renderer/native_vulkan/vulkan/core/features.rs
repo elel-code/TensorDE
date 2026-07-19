@@ -24,6 +24,7 @@ pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
     pub buffer_device_address: bool,
     pub synchronization2: bool,
     pub dynamic_rendering: bool,
+    pub shader_demote_to_helper_invocation: bool,
     pub maintenance4: bool,
     pub dynamic_rendering_local_read: bool,
     pub maintenance5: bool,
@@ -85,6 +86,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
     let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::builder()
         .synchronization2(true)
         .dynamic_rendering(true)
+        .shader_demote_to_helper_invocation(true)
         .maintenance4(true)
         .build();
     let mut vulkan14_features = vk::PhysicalDeviceVulkan14Features::builder()
@@ -123,6 +125,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
             "runtime_descriptor_array",
             "synchronization2",
             "dynamic_rendering",
+            "shader_demote_to_helper_invocation",
             "dynamic_rendering_local_read",
             "maintenance5",
             "maintenance6",
@@ -177,6 +180,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
             buffer_device_address: vulkan12_features.buffer_device_address != 0,
             synchronization2: vulkan13_features.synchronization2 != 0,
             dynamic_rendering: vulkan13_features.dynamic_rendering != 0,
+            shader_demote_to_helper_invocation: vulkan13_features
+                .shader_demote_to_helper_invocation
+                != 0,
             maintenance4: vulkan13_features.maintenance4 != 0,
             dynamic_rendering_local_read: vulkan14_features.dynamic_rendering_local_read != 0,
             maintenance5: vulkan14_features.maintenance5 != 0,
@@ -252,7 +258,10 @@ impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
     }
 
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_3_features(self) -> bool {
-        self.synchronization2 || self.dynamic_rendering || self.maintenance4
+        self.synchronization2
+            || self.dynamic_rendering
+            || self.shader_demote_to_helper_invocation
+            || self.maintenance4
     }
 
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_4_features(self) -> bool {
@@ -298,6 +307,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_vulka
     vk::PhysicalDeviceVulkan13Features::builder()
         .synchronization2(core_features.synchronization2)
         .dynamic_rendering(core_features.dynamic_rendering)
+        .shader_demote_to_helper_invocation(core_features.shader_demote_to_helper_invocation)
         .maintenance4(core_features.maintenance4)
         .build()
 }
@@ -371,6 +381,11 @@ mod tests {
                 .requested_feature_fields
                 .contains(&"dynamic_rendering_local_read")
         );
+        assert!(
+            template
+                .requested_feature_fields
+                .contains(&"shader_demote_to_helper_invocation")
+        );
         assert!(template.requested_feature_fields.contains(&"maintenance6"));
         assert!(
             template
@@ -411,6 +426,7 @@ mod tests {
             buffer_device_address: false,
             synchronization2: true,
             dynamic_rendering: true,
+            shader_demote_to_helper_invocation: true,
             maintenance4: true,
             dynamic_rendering_local_read: true,
             maintenance5: true,
@@ -455,6 +471,7 @@ mod tests {
         assert!(features.timeline_semaphore);
         assert!(features.synchronization2);
         assert!(features.dynamic_rendering);
+        assert!(features.shader_demote_to_helper_invocation);
         assert!(features.dynamic_rendering_local_read);
         assert!(features.push_descriptor);
         assert!(features.descriptor_heap);
@@ -473,6 +490,7 @@ mod tests {
             sample_rate_shading: true,
             timeline_semaphore: true,
             dynamic_rendering: true,
+            shader_demote_to_helper_invocation: true,
             maintenance5: true,
             push_descriptor: true,
             host_image_copy: true,
@@ -496,6 +514,7 @@ mod tests {
         assert_ne!(vulkan10.texture_compression_bc, 0);
         assert_ne!(vulkan12.timeline_semaphore, 0);
         assert_ne!(vulkan13.dynamic_rendering, 0);
+        assert_ne!(vulkan13.shader_demote_to_helper_invocation, 0);
         assert_ne!(vulkan14.maintenance5, 0);
         assert_ne!(vulkan14.push_descriptor, 0);
         assert_ne!(vulkan14.host_image_copy, 0);

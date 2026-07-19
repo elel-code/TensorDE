@@ -3,7 +3,7 @@
 use std::fmt;
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{CallExpression, MemberExpression, NewExpression};
+use oxc_ast::ast::{CallExpression, IdentifierReference, MemberExpression, NewExpression};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -19,6 +19,7 @@ pub(super) struct SceneScriptAnalysis {
     pub(super) uses_audio: bool,
     pub(super) uses_pointer: bool,
     pub(super) uses_local_time: bool,
+    pub(super) uses_scene_api: bool,
     pub(super) imports: Vec<String>,
 }
 
@@ -78,6 +79,7 @@ pub(super) fn analyze_scene_script(
         uses_audio: visitor.uses_audio,
         uses_pointer: visitor.uses_pointer,
         uses_local_time: visitor.uses_local_time,
+        uses_scene_api: visitor.uses_scene_api,
         imports: parsed
             .module_record
             .requested_modules
@@ -94,9 +96,16 @@ struct CapabilityVisitor {
     uses_audio: bool,
     uses_pointer: bool,
     uses_local_time: bool,
+    uses_scene_api: bool,
 }
 
 impl<'a> Visit<'a> for CapabilityVisitor {
+    fn visit_identifier_reference(&mut self, identifier: &IdentifierReference<'a>) {
+        if identifier.name == "thisScene" {
+            self.uses_scene_api = true;
+        }
+    }
+
     fn visit_member_expression(&mut self, expression: &MemberExpression<'a>) {
         if expression.is_specific_member_access("engine", "runtime") {
             self.uses_runtime = true;
@@ -165,8 +174,8 @@ mod tests {
     fn comments_and_string_literals_do_not_create_false_capabilities() {
         let analysis = analyze_scene_script(
             r#"
-                // engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_32)
-                const note = "new Date(); engine.runtime";
+                // engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_32); thisScene.getLayer('x')
+                const note = "new Date(); engine.runtime; thisScene['getLayer']('x')";
                 export function update(value) { return value; }
             "#,
         )
@@ -174,6 +183,7 @@ mod tests {
         assert!(!analysis.uses_audio);
         assert!(!analysis.uses_runtime);
         assert!(!analysis.uses_local_time);
+        assert!(!analysis.uses_scene_api);
     }
 
     #[test]
@@ -189,5 +199,14 @@ mod tests {
         .expect("analysis");
         assert!(analysis.handles_media);
         assert!(analysis.uses_pointer);
+    }
+
+    #[test]
+    fn detects_scene_mutation_api_even_through_computed_members() {
+        let analysis = analyze_scene_script(
+            "export function update(value) { thisScene[key]('body').visible = value; return value; }",
+        )
+        .expect("analysis");
+        assert!(analysis.uses_scene_api);
     }
 }

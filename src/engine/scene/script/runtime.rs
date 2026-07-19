@@ -89,6 +89,8 @@ const HOST_PRELUDE: &str = r#"
         cursorPosition: pointer,
         cursorWorldPosition: pointer,
     };
+    globalThis.shared = Object.create(null);
+    globalThis.thisLayer = { font: null };
 
     function initialValue(metadata) {
         if (metadata.target <= 4) {
@@ -181,9 +183,16 @@ const HOST_PRELUDE: &str = r#"
             numeric[base + 1] = program.target;
             numeric[base + 2] = 1;
             if (program.target <= 4) {
-                numeric[base + 3] = Number(output.x);
-                numeric[base + 4] = Number(output.y);
-                numeric[base + 5] = Number(output.z);
+                if (typeof output === 'number') {
+                    const scalar = Number(output);
+                    numeric[base + 3] = scalar;
+                    numeric[base + 4] = scalar;
+                    numeric[base + 5] = scalar;
+                } else {
+                    numeric[base + 3] = Number(output.x);
+                    numeric[base + 4] = Number(output.y);
+                    numeric[base + 5] = Number(output.z);
+                }
             } else {
                 numeric[base + 3] = program.target === 6 ? (output ? 1 : 0) : Number(output);
             }
@@ -616,6 +625,19 @@ mod tests {
         assert_eq!(deltas[0].object, SceneObjectHandle(3));
         assert_eq!(deltas[0].target, SceneScriptTarget::Origin);
         assert!((deltas[0].numeric[1] - (20.0 + 2.0_f32.sin() * 4.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn scalar_vector_result_expands_to_all_lanes() {
+        let runtime = SceneScriptRuntime::new(&[program(
+            SceneScriptTarget::Scale,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return 2.5; }",
+        )])
+        .expect("runtime");
+        let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+        assert_eq!(deltas[0].target, SceneScriptTarget::Scale);
+        assert_eq!(&deltas[0].numeric[..3], &[2.5, 2.5, 2.5]);
     }
 
     #[test]
