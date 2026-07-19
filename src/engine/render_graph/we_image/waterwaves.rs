@@ -13,6 +13,8 @@ const IMAGE_MULTIPLY_COMPOSITE_SHADER: &str = "we/image-waterwaves-multiply-comp
 const PUPPET_COMPOSITE_SHADER: &str = "we/puppet-waterwaves-composite";
 const UV_TARGET_FORMAT: &str = "rg16f";
 const UV_TARGET_NAME: &str = "_gilder_waterwaves_uv_field";
+const GROUP_COLOR_TARGET_NAME: &str = "_gilder_puppet_group_color";
+const GROUP_COMPOSITE_SHADER: &str = "we/objectcomposite-screen-group";
 const UV_TARGET_DIVISOR_MILLI: u32 = 4_000;
 const MAX_WATERWAVES_STAGES: usize = 9;
 
@@ -133,6 +135,45 @@ fn append_direct_composite(
     contract: &WeImageGraphContract,
     material: &crate::engine::render_graph::WeWaterWavesDirectMaterial,
 ) {
+    if material.group_visual_composite {
+        graph.passes.push(RenderPassNode {
+            id: 0,
+            role: RenderPassRole::BaseMaterial,
+            object_index: Some(contract.object_index),
+            material_index: Some(material.material_index),
+            pass_index: 0,
+            shader: Some(material.shader.clone()),
+            target: RenderTargetRole::Temporary,
+            target_name: Some(GROUP_COLOR_TARGET_NAME.to_owned()),
+            target_extent: None,
+            target_format: None,
+            bindings: Vec::new(),
+            state: PassState {
+                pipeline_blend: super::base_pipeline_blend(contract),
+                scene_blend: SceneBlendMode::Normal,
+                ..PassState::default()
+            },
+        });
+        graph.passes.push(RenderPassNode {
+            id: 1,
+            role: RenderPassRole::SceneComposite,
+            object_index: Some(contract.object_index),
+            material_index: contract.base_material_index,
+            pass_index: 1,
+            shader: Some(GROUP_COMPOSITE_SHADER.to_owned()),
+            target: RenderTargetRole::SceneColor,
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+            state: PassState {
+                pipeline_blend: super::final_pipeline_blend(contract),
+                scene_blend: contract.final_scene_blend,
+                ..PassState::default()
+            },
+        });
+        return;
+    }
     graph.passes.push(RenderPassNode {
         id: graph.passes.len().min(u32::MAX as usize) as u32,
         role: RenderPassRole::SceneComposite,
@@ -269,7 +310,7 @@ mod tests {
 
     #[test]
     fn typed_direct_chain_has_one_mesh_composite_and_no_temporary_target() {
-        let contract = WeImageGraphContract {
+        let mut contract = WeImageGraphContract {
             object_index: 7,
             base_material_index: Some(3),
             base_shader: Some("genericimage4".to_owned()),
@@ -285,6 +326,7 @@ mod tests {
                 crate::engine::render_graph::WeWaterWavesDirectMaterial {
                     material_index: 12,
                     shader: "we/puppet-waterwaves-direct__STAGES_2".to_owned(),
+                    group_visual_composite: false,
                 },
             ),
             foliage_ripple_material: None,
@@ -304,6 +346,30 @@ mod tests {
         );
         assert_eq!(graph.passes[0].target, RenderTargetRole::SceneColor);
         assert!(graph.passes[0].bindings.is_empty());
+
+        contract
+            .waterwaves_direct_material
+            .as_mut()
+            .expect("direct material")
+            .group_visual_composite = true;
+        let grouped = super::super::we_image_graph(&contract);
+        assert_eq!(grouped.passes.len(), 2);
+        assert_eq!(grouped.passes[0].role, RenderPassRole::BaseMaterial);
+        assert_eq!(grouped.passes[0].target, RenderTargetRole::Temporary);
+        assert_eq!(
+            grouped.passes[0].state.pipeline_blend,
+            PipelineBlendMode::Translucent
+        );
+        assert_eq!(grouped.passes[1].role, RenderPassRole::SceneComposite);
+        assert_eq!(grouped.passes[1].target, RenderTargetRole::SceneColor);
+        assert_eq!(
+            grouped.passes[1].shader.as_deref(),
+            Some(GROUP_COMPOSITE_SHADER)
+        );
+        assert_eq!(
+            grouped.passes[1].bindings,
+            [TextureBindingRole::PreviousGraphTarget { slot: 0 }]
+        );
     }
 
     fn effect(material_index: usize, masked: bool) -> WeEffectPassContract {

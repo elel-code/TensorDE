@@ -40,6 +40,7 @@ pub(super) fn create_waterwaves_displacement_materials(
     final_scene_blend: SceneBlendMode,
     object_is_puppet: bool,
     static_black_output: bool,
+    puppet_group_visual_required: bool,
     effects: &[WeEffectPassContract],
 ) -> WaterWavesDisplacementMaterials {
     if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
@@ -68,12 +69,14 @@ pub(super) fn create_waterwaves_displacement_materials(
         direct_shader,
         static_black_output,
         true,
+        puppet_group_visual_required,
     );
     if direct_shader.is_some() {
         WaterWavesDisplacementMaterials {
             direct: material.map(|(material_index, shader)| WeWaterWavesDirectMaterial {
                 material_index,
                 shader,
+                group_visual_composite: puppet_group_visual_required,
             }),
             ..WaterWavesDisplacementMaterials::default()
         }
@@ -114,6 +117,7 @@ pub(super) fn aggregate_waterwaves_effect_runs(
             source_material_index,
             run,
             Some(EFFECT_RUN_DIRECT_SHADER),
+            false,
             false,
             false,
         ) else {
@@ -157,6 +161,7 @@ fn create_aggregated_material(
     direct_shader: Option<&str>,
     static_black_output: bool,
     include_source_material: bool,
+    defer_source_visual: bool,
 ) -> Option<(usize, String)> {
     let mut stages = Vec::with_capacity(effects.len());
     let mut template = None;
@@ -224,7 +229,9 @@ fn create_aggregated_material(
                 .into_iter()
                 .filter(|texture| texture.slot == 0),
         );
-        builder.material_constants.extend(base_constants);
+        if !defer_source_visual {
+            builder.material_constants.extend(base_constants);
+        }
     }
     for (stage_index, stage) in stages.iter().enumerate() {
         if let Some(mask) = &stage.mask {

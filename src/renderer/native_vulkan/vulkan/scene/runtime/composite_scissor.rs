@@ -100,7 +100,10 @@ pub(super) fn update_scene_composite_scissors(
         let has_object_composite = !consumer_cull_enabled
             || graph_passes
                 .iter()
-                .any(|pass| pass_shader_is(storage, pass, "we/objectcomposite"));
+                .any(|pass| {
+                    pass_shader_is(storage, pass, "we/objectcomposite")
+                        || pass_shader_is(storage, pass, "we/objectcomposite-screen-group")
+                });
         let has_flat_rounded_composite = graph_passes
             .iter()
             .any(|pass| pass_shader_is(storage, pass, "we/flat-rounded-mask-composite"));
@@ -172,7 +175,9 @@ pub(super) fn update_scene_composite_scissors(
                 {
                     command.scissor = scissor;
                 }
-            } else if shader.eq_ignore_ascii_case("we/objectcomposite") {
+            } else if shader.eq_ignore_ascii_case("we/objectcomposite")
+                || shader.eq_ignore_ascii_case("we/objectcomposite-screen-group")
+            {
                 let scissor = coverage_is_bounded
                     .then(|| bounds.and_then(|bounds| bounds.scissor(output_extent)))
                     .flatten();

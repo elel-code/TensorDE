@@ -113,6 +113,34 @@ fn object_composite_applies_only_resolved_visual_not_base_material_twice() {
 }
 
 #[test]
+fn screen_group_composite_applies_base_and_resolved_visual_once() {
+    let mut document = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")])
+        .document()
+        .clone();
+    document
+        .strings
+        .push("we/objectcomposite-screen-group".to_owned());
+    let composite_shader = SceneStringId((document.strings.len() - 1) as u32);
+    let storage = SceneStorage::from_document(document).expect("screen group composite storage");
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.shader_key = composite_shader;
+    draw.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+    draw.resolved_color = crate::engine::scene::SceneVec3 {
+        x: 0.25,
+        y: 0.5,
+        z: 0.75,
+    };
+    draw.resolved_alpha = 0.3;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 0), 0.2);
+    assert_eq!(f32_from_payload(&payload, 4), 0.3);
+    assert!((f32_from_payload(&payload, 8) - 0.3).abs() < f32::EPSILON);
+    assert_eq!(f32_from_payload(&payload, 12), 0.15);
+}
+
+#[test]
 fn waterwaves_uniform_uses_named_lanes_and_scene_time() {
     let storage = storage_with_constants(
         "effects/waterwaves__SLOTS_3__DUALWAVES_1",

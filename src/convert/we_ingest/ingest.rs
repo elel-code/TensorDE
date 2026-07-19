@@ -2,12 +2,8 @@
 //!
 //! References:
 //! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/project-format.md`
-//! - `reverse-engineered/docs/scene-pkg-format.md`
 //! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `reverse-engineered/docs/tex-format.md`
+//! - `reverse-engineered/docs/scene-pkg-format.md`
 
 mod animation_layer;
 mod asset_source;
@@ -21,6 +17,7 @@ mod json_value;
 mod material_graph;
 mod material_instance;
 mod media_state;
+mod object_visual;
 mod particle;
 mod pipeline_state;
 mod puppet_clipping;
@@ -685,6 +682,8 @@ impl WeIrBuilder {
                 .filter(|color| color.is_string())
                 .and_then(|color| parse_vec3(Some(color)))
                 .is_some_and(|color| color == SceneVec3::default());
+            let puppet_group_visual_required =
+                kind == SceneAbiObjectKind::Puppet && self.puppet_group_visual_required(value);
             Some(self.add_render_graph_for_object(
                 handle,
                 material_handle,
@@ -693,6 +692,7 @@ impl WeIrBuilder {
                 utility_layer,
                 kind == SceneAbiObjectKind::Puppet,
                 static_black_output,
+                puppet_group_visual_required,
             )?)
         } else {
             None

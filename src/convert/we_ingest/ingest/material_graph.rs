@@ -408,6 +408,7 @@ impl WeIrBuilder {
         utility_layer: Option<WeIrUtilityLayerKind>,
         object_is_puppet: bool,
         static_black_output: bool,
+        puppet_group_visual_required: bool,
     ) -> Result<u32, WeIngestError> {
         let graph_index = self.render_graphs.len() as u32;
         let base_material_handle = material;
@@ -450,28 +451,41 @@ impl WeIrBuilder {
                 final_scene_blend,
                 object_is_puppet,
                 static_black_output,
+                puppet_group_visual_required,
                 &effect_passes,
             );
-        let foliage_ripple = foliage_ripple::create(
-            self,
-            base_material_handle,
-            &effect_passes,
-            final_scene_blend,
-        );
-        let ripple_flow_materials = ripple_flow::create(
-            self,
-            base_material_handle,
-            &effect_passes,
-            final_scene_blend,
-        );
-        let final_effect = final_effect::create(
-            self,
-            base_material_handle,
-            &effect_passes,
-            final_scene_blend,
-            effects_in_authored_texture_space,
-            object_is_puppet,
-        );
+        let foliage_ripple = (!puppet_group_visual_required)
+            .then(|| {
+                foliage_ripple::create(
+                    self,
+                    base_material_handle,
+                    &effect_passes,
+                    final_scene_blend,
+                )
+            })
+            .flatten();
+        let ripple_flow_materials = (!puppet_group_visual_required)
+            .then(|| {
+                ripple_flow::create(
+                    self,
+                    base_material_handle,
+                    &effect_passes,
+                    final_scene_blend,
+                )
+            })
+            .flatten();
+        let final_effect = (!puppet_group_visual_required)
+            .then(|| {
+                final_effect::create(
+                    self,
+                    base_material_handle,
+                    &effect_passes,
+                    final_scene_blend,
+                    effects_in_authored_texture_space,
+                    object_is_puppet,
+                )
+            })
+            .flatten();
         let uses_whole_graph_effect_path = waterwaves_displacement.uv_field.is_some()
             || waterwaves_displacement.direct.is_some()
             || foliage_ripple.is_some()

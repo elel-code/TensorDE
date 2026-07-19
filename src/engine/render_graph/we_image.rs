@@ -70,6 +70,7 @@ pub struct WeRippleFlowMaterialIndices {
 pub struct WeWaterWavesDirectMaterial {
     pub material_index: usize,
     pub shader: String,
+    pub group_visual_composite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

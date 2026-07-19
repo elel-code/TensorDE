@@ -410,6 +410,7 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
             || (pass.role == SceneRenderPassKind::SceneComposite
                 && !storage.string(pass.shader_key).is_some_and(|key| {
                     key.eq_ignore_ascii_case("we/objectcomposite")
+                        || key.eq_ignore_ascii_case("we/objectcomposite-screen-group")
                         || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-hsl-source")
                         || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")

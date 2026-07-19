@@ -116,6 +116,36 @@ pub(super) fn puppet_effect_source_sources() -> (String, String) {
     image_effect_source_sources()
 }
 
+pub(super) fn screen_group_composite_sources() -> (String, String) {
+    let vertex = r#"#version 450
+layout(location = 0) out vec2 v_TexCoord;
+void main() {
+    vec2 position = vec2(
+        gl_VertexIndex == 2 ? 3.0 : -1.0,
+        gl_VertexIndex == 1 ? 3.0 : -1.0);
+    v_TexCoord = position * 0.5 + 0.5;
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#;
+    let fragment = r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
+layout(set = 0, binding = 3) uniform ScreenGroupCompositeMaterial {
+    vec4 g_Color4;
+    vec4 g_RoughnessMetallic;
+    vec4 g_SpecularTint;
+} g_Material;
+void main() {
+    vec4 color = texture(g_Texture0, v_TexCoord);
+    color.rgb *= g_Material.g_Color4.rgb;
+    color.a *= g_Material.g_Color4.a;
+    o_Color = color;
+}
+"#;
+    (vertex.to_owned(), fragment.to_owned())
+}
+
 pub(super) fn image_effect_source_sources() -> (String, String) {
     let vertex = r#"#version 450
 layout(location = 0) in vec2 a_Position;

@@ -49,9 +49,7 @@ fn waterwaves_direct_fragment(
         .map(|stage| {
             let slot = stage + 1;
             let binding = if slot == 3 { 35 } else { slot };
-            format!(
-                "layout(set = 0, binding = {binding}) uniform sampler2D g_Texture{slot};\n"
-            )
+            format!("layout(set = 0, binding = {binding}) uniform sampler2D g_Texture{slot};\n")
         })
         .collect::<String>();
     let stage_mask_body = if mask_stage_count == 0 {

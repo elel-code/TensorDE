@@ -217,6 +217,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "composelayer"
         || key.starts_with("composelayer__")
         || key == "we/objectcomposite"
+        || key == "we/objectcomposite-screen-group"
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"
         || key == "we/image-effect-modulate-composite"
@@ -332,6 +333,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/flat"
         || key.starts_with("we/flat__")
         || key == "we/objectcomposite"
+        || key == "we/objectcomposite-screen-group"
         || key == "we/image-effect-composite"
         || key == "we/image-effect-modulate-composite"
         || key == "we/puppet-effect-composite"

@@ -207,6 +207,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshObjectComposite,
     },
     SceneShaderSpec {
+        key: "we/objectcomposite-screen-group",
+        family: SceneShaderFamily::MeshObjectComposite,
+    },
+    SceneShaderSpec {
         key: "we/image-effect-source",
         family: SceneShaderFamily::MeshImageEffectSource,
     },
@@ -804,7 +808,13 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         SceneShaderFamily::MeshComposelayer => {
             (composelayer_vertex_source(), composelayer_fragment_source())
         }
-        SceneShaderFamily::MeshObjectComposite => super::object_composite_sources(),
+        SceneShaderFamily::MeshObjectComposite => {
+            if spec.key == "we/objectcomposite-screen-group" {
+                super::screen_group_composite_sources()
+            } else {
+                super::object_composite_sources()
+            }
+        }
         SceneShaderFamily::MeshImageEffectSource => super::image_effect_source_sources(),
         SceneShaderFamily::MeshImageEffectComposite => {
             if spec.key == "we/image-effect-modulate-composite" {

@@ -130,6 +130,7 @@ fn material_uniform_values(
             if draw.apply_resolved_visual
                 && draw.primitive
                     == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+                && shader_key != "we/objectcomposite-screen-group"
             {
                 return resolved_visual_material_values(draw.resolved_color, draw.resolved_alpha);
             }
