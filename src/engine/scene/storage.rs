@@ -268,14 +268,6 @@ impl SceneStorage {
         &self.document.particles
     }
 
-    pub fn audio_band_material_bindings(&self) -> &[SceneAudioBandMaterialBindingRecord] {
-        &self.document.audio_band_material_bindings
-    }
-
-    pub fn text_providers(&self) -> &[SceneTextProviderRecord] {
-        &self.document.text_providers
-    }
-
     pub fn script_programs(&self) -> &[SceneScriptProgramRecord] {
         &self.document.script_programs
     }
@@ -493,14 +485,6 @@ pub enum SceneStorageError {
         len: u64,
         payload_len: usize,
     },
-    InvalidAudioBandMaterialBinding {
-        object: SceneObjectHandle,
-        reason: &'static str,
-    },
-    InvalidTextProvider {
-        object: SceneObjectHandle,
-        reason: &'static str,
-    },
     InvalidScriptProgram {
         object: SceneObjectHandle,
         reason: &'static str,
@@ -590,16 +574,6 @@ impl fmt::Display for SceneStorageError {
                 f,
                 "scene texture resource {} payload range [{offset}, {offset}+{len}) exceeds texture payload chunk length {payload_len}",
                 texture.0
-            ),
-            Self::InvalidAudioBandMaterialBinding { object, reason } => write!(
-                f,
-                "scene audio band material binding for object {} is invalid: {reason}",
-                object.0
-            ),
-            Self::InvalidTextProvider { object, reason } => write!(
-                f,
-                "scene text provider for object {} is invalid: {reason}",
-                object.0
             ),
             Self::InvalidScriptProgram { object, reason } => write!(
                 f,

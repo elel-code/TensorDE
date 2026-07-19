@@ -23,6 +23,7 @@ pub mod ir;
 mod lower;
 mod mdl;
 mod pkg;
+mod script_analysis;
 mod tex;
 
 pub use ingest::{WeIngestError, ingest_wallpaper_engine_project};
@@ -80,7 +81,6 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
         object_transform_track_count: storage.object_transform_tracks().len(),
         object_transform_channel_count: storage.document().object_transform_channels.len(),
         object_transform_keyframe_count: storage.document().object_transform_keyframes.len(),
-        text_provider_count: storage.text_providers().len(),
         script_program_count: storage.script_programs().len(),
         render_graph_count: render_plan.render_graph_count,
         shader_contract_count: render_plan.shader_contract_count,
@@ -113,7 +113,6 @@ pub struct WeConvertSummary {
     pub object_transform_track_count: usize,
     pub object_transform_channel_count: usize,
     pub object_transform_keyframe_count: usize,
-    pub text_provider_count: usize,
     pub script_program_count: usize,
     pub render_graph_count: usize,
     pub shader_contract_count: usize,

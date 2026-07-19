@@ -11,7 +11,6 @@
 
 mod animation_layer;
 mod asset_source;
-mod audio_binding;
 mod builtin_effect_texture;
 mod effect_target;
 mod final_effect;
@@ -33,7 +32,6 @@ mod shader_combo;
 mod shader_contract;
 mod text_font_binding;
 mod text_layer;
-mod text_provider;
 mod texture_resolver;
 mod transform_animation;
 mod utility_layer;
@@ -45,7 +43,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::fs;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::engine::render_graph::{
     WeEffectPassContract, WeImageGraphContract, we_image_graph,
@@ -82,7 +80,7 @@ use pipeline_state::{
     cull_mode_from_we, depth_test_from_we, pipeline_blend_from_we, pipeline_blend_string,
     scene_blend_from_color_blend_mode,
 };
-use script_program::object_script_programs;
+use script_program::{effect_script_programs, object_script_programs, project_property_defaults};
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
 use text_font_binding::text_font_overrides;
@@ -90,11 +88,9 @@ use text_layer::{
     ingest_text_layer, retained_text_effect_is_supported,
     retained_text_effect_requires_dependency_composite, text_layer_value,
 };
-use text_provider::text_provider;
 use texture_resolver::texture_candidates;
 use transform_animation::ingest_object_transform_tracks;
 use utility_layer::{FULL_FRAMEBUFFER_TARGET, is_runtime_render_target, utility_layer_kind};
-
 pub fn ingest_wallpaper_engine_project(
     project_root: impl AsRef<Path>,
 ) -> Result<WeSceneIr, WeIngestError> {
@@ -108,13 +104,23 @@ pub fn ingest_wallpaper_engine_project(
             wallpaper_type: project.wallpaper_type,
         });
     }
-
     let scene_asset = source.read_required_asset(&project.scene_file)?;
     let scene_json = parse_json_bytes(&project.scene_file, &scene_asset.bytes)?;
     let scene = parse_scene_root_ir(&scene_json);
-
-    let font_overrides = text_font_overrides(&scene_json, &project_json);
-    let mut builder = WeIrBuilder::new(project_root, source, project, scene, font_overrides);
+    let font_overrides = text_font_overrides(&scene_json, &project_json).map_err(|message| {
+        WeIngestError::Script {
+            object: u32::MAX,
+            message,
+        }
+    })?;
+    let mut builder = WeIrBuilder::new(
+        project_root,
+        source,
+        project,
+        scene,
+        project_property_defaults(&project_json),
+        font_overrides,
+    );
     builder.add_existing_resource(
         "project.json",
         SceneResourceKind::ProjectJson,
@@ -127,7 +133,6 @@ pub fn ingest_wallpaper_engine_project(
         scene_asset.source,
         scene_asset.bytes,
     );
-
     for (index, object) in scene_json
         .get("objects")
         .and_then(Value::as_array)
@@ -137,7 +142,6 @@ pub fn ingest_wallpaper_engine_project(
     {
         builder.ingest_object(index, object)?;
     }
-
     builder.finish()
 }
 
@@ -162,6 +166,10 @@ pub enum WeIngestError {
         wallpaper_type: String,
     },
     InvalidProject(String),
+    Script {
+        object: u32,
+        message: String,
+    },
 }
 
 impl fmt::Display for WeIngestError {
@@ -180,6 +188,9 @@ impl fmt::Display for WeIngestError {
                 )
             }
             Self::InvalidProject(message) => write!(f, "invalid WE project: {message}"),
+            Self::Script { object, message } => {
+                write!(f, "invalid SceneScript on object {object}: {message}")
+            }
         }
     }
 }
@@ -260,6 +271,7 @@ struct WeIrBuilder {
     source: WeAssetSource,
     project: WeProjectIr,
     scene: WeSceneRootIr,
+    project_property_defaults: Map<String, Value>,
     resources: Vec<WeIrResource>,
     resource_by_path: BTreeMap<String, u32>,
     textures: Vec<WeIrTexture>,
@@ -270,8 +282,6 @@ struct WeIrBuilder {
     object_transform_tracks: Vec<WeIrObjectTransformTrack>,
     object_transform_channels: Vec<WeIrObjectTransformChannel>,
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
-    audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
-    text_providers: Vec<WeIrTextProvider>,
     script_programs: Vec<WeIrScriptProgram>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
@@ -315,6 +325,7 @@ impl WeIrBuilder {
         source: WeAssetSource,
         project: WeProjectIr,
         scene: WeSceneRootIr,
+        project_property_defaults: Map<String, Value>,
         text_font_overrides: BTreeMap<String, String>,
     ) -> Self {
         Self {
@@ -322,6 +333,7 @@ impl WeIrBuilder {
             source,
             project,
             scene,
+            project_property_defaults,
             resources: Vec::new(),
             resource_by_path: BTreeMap::new(),
             textures: Vec::new(),
@@ -332,8 +344,6 @@ impl WeIrBuilder {
             object_transform_tracks: Vec::new(),
             object_transform_channels: Vec::new(),
             object_transform_keyframes: Vec::new(),
-            audio_band_material_bindings: Vec::new(),
-            text_providers: Vec::new(),
             script_programs: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
@@ -387,8 +397,6 @@ impl WeIrBuilder {
             object_transform_tracks: self.object_transform_tracks,
             object_transform_channels: self.object_transform_channels,
             object_transform_keyframes: self.object_transform_keyframes,
-            audio_band_material_bindings: self.audio_band_material_bindings,
-            text_providers: self.text_providers,
             script_programs: self.script_programs,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
@@ -487,8 +495,26 @@ impl WeIrBuilder {
             .unwrap_or_default();
         let particle_path = bound_string(value.get("particle")).unwrap_or_default();
         let text_value = text_layer_value(value);
-        self.script_programs
-            .extend(object_script_programs(handle, value, text_value.as_deref()));
+        self.script_programs.extend(
+            object_script_programs(
+                handle,
+                value,
+                text_value.as_deref(),
+                &self.project_property_defaults,
+            )
+            .map_err(|source| WeIngestError::Script {
+                object: handle,
+                message: source.to_string(),
+            })?,
+        );
+        self.script_programs.extend(
+            effect_script_programs(handle, value, &self.project_property_defaults).map_err(
+                |source| WeIngestError::Script {
+                    object: handle,
+                    message: source.to_string(),
+                },
+            )?,
+        );
         let utility_layer = utility_layer_kind(&image_path);
         let mut resource = None;
         let mut material = None;
@@ -502,9 +528,6 @@ impl WeIrBuilder {
             material = Some(particle_material);
         } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
-            if let Some(provider) = text_provider(handle, value, text) {
-                self.text_providers.push(provider);
-            }
             let selected_font = self.text_font_overrides.get(&name).cloned();
             match ingest_text_layer(self, handle, value, text, selected_font.as_deref())? {
                 Some((font_resource, text_material)) => {
@@ -617,11 +640,6 @@ impl WeIrBuilder {
         }
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
-        audio_binding::ingest_audio_material_bindings(
-            handle,
-            value,
-            &mut self.audio_band_material_bindings,
-        );
         let retained_text_effect_instances;
         let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {
@@ -679,7 +697,7 @@ impl WeIrBuilder {
         } else {
             None
         };
-        self.add_object_animation_layers(handle, value);
+        self.add_object_animation_layers(handle, value)?;
         ingest_object_transform_tracks(
             handle,
             value,
@@ -690,7 +708,12 @@ impl WeIrBuilder {
         );
 
         let media_controlled_group_hidden = kind == SceneAbiObjectKind::Unsupported
-            && media_state::group_starts_hidden_without_media_session(value);
+            && media_state::group_starts_hidden_without_media_session(value).map_err(
+                |message| WeIngestError::Script {
+                    object: handle,
+                    message,
+                },
+            )?;
         if media_controlled_group_hidden {
             self.unsupported.push(WeIrUnsupported {
                 object: Some(handle),
@@ -737,7 +760,11 @@ impl WeIrBuilder {
         Ok(())
     }
 
-    fn add_object_animation_layers(&mut self, object: u32, value: &Value) {
+    fn add_object_animation_layers(
+        &mut self,
+        object: u32,
+        value: &Value,
+    ) -> Result<(), WeIngestError> {
         for (local_index, layer) in value
             .get("animationlayers")
             .and_then(Value::as_array)
@@ -764,9 +791,11 @@ impl WeIrBuilder {
                 visible: bound_bool(layer.get("visible")).unwrap_or(true),
                 playback_rate: value_f32(layer.get("rate")).unwrap_or(1.0),
                 blend_weight: value_f32(layer.get("blend")).unwrap_or(1.0),
-                initial_progress: animation_layer_initial_progress(layer),
+                initial_progress: animation_layer_initial_progress(layer)
+                    .map_err(|message| WeIngestError::Script { object, message })?,
             });
         }
+        Ok(())
     }
 
     fn add_mdl_model(

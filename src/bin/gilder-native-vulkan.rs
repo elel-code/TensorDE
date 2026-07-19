@@ -120,6 +120,8 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::engine::scene::SceneStorage;
     use gilder::renderer::StaticWallpaperPlan;
+    #[cfg(feature = "native-vulkan-video")]
+    use gilder::renderer::native_vulkan::NativeVulkanVulkanaliaVideoPresentAudioMasterClock;
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSceneRunOptions,
         NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionCodec, backend_contract,
@@ -135,7 +137,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
-        NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
         NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
         probe_native_vulkan_vulkanalia_devices, probe_native_vulkan_vulkanalia_surface_swapchain,
         probe_native_vulkan_vulkanalia_video_present_device,

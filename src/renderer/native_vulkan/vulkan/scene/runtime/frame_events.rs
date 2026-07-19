@@ -7,7 +7,7 @@ use crate::engine::scene::{
     ScenePointerSource, SceneStorage,
 };
 use crate::renderer::native_vulkan::audio::event_source::{
-    audio_state_summary, NativeVulkanAudioEventSource,
+    NativeVulkanAudioEventSource, audio_state_summary,
 };
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_wayland::NativeWaylandHost;
@@ -41,7 +41,13 @@ impl SceneRuntimeEventSources {
                 scene_uses_audio_spectrum(storage),
             ),
             audio: NativeVulkanAudioEventSource,
-            local_time: SceneLocalTimeEventSource::new(!storage.text_providers().is_empty()),
+            local_time: SceneLocalTimeEventSource::new(storage.script_programs().iter().any(
+                |program| {
+                    program
+                        .subscriptions
+                        .contains(crate::engine::scene::SceneScriptSubscriptions::LOCAL_TIME)
+                },
+            )),
             queue: SceneEventQueue::default(),
             frame: SceneFrameEvents::default(),
             pointer_replay_normalized,

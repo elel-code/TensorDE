@@ -21,12 +21,11 @@ use super::descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 pub(in crate::renderer::native_vulkan::vulkan) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
+pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::VulkanaliaDecodedImagePresentSamplerResources;
 #[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources;
-pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::{
-    VulkanaliaDecodedImagePresentSamplerResources,
-    native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
-};
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 

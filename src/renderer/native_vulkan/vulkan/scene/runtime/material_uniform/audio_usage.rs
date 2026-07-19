@@ -10,12 +10,13 @@ use crate::renderer::native_vulkan::scene::{
 pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn scene_uses_audio_spectrum(
     storage: &SceneStorage,
 ) -> bool {
-    !storage.audio_band_material_bindings().is_empty()
-        || native_vulkan_scene_backend_plan(storage)
-            .rendering_device_graph
-            .mesh_draws
-            .iter()
-            .any(|draw| draw_uses_audio_spectrum(storage, draw))
+    storage.script_programs().iter().any(|program| {
+        program.target == crate::engine::scene::SceneScriptTarget::TechCircleSectorWidth
+    }) || native_vulkan_scene_backend_plan(storage)
+        .rendering_device_graph
+        .mesh_draws
+        .iter()
+        .any(|draw| draw_uses_audio_spectrum(storage, draw))
 }
 
 fn draw_uses_audio_spectrum(storage: &SceneStorage, draw: &SceneRenderingDeviceMeshDraw) -> bool {

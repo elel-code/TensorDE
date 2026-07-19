@@ -8,7 +8,10 @@ use rquickjs::{Array, Context, Function, Module, Object, Runtime, TypedArray};
 use crate::engine::scene::abi::{
     SceneObjectHandle, SceneScriptProgramRecord, SceneScriptSubscriptions, SceneScriptTarget,
 };
+use crate::engine::scene::event::{SceneMediaClockState, SceneMediaPlaybackState};
 use crate::engine::scene::storage::SceneStorage;
+
+use super::standard_library;
 
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const DEFAULT_STACK_LIMIT: usize = 512 * 1024;
@@ -24,6 +27,18 @@ const HOST_PRELUDE: &str = r#"
         average: new Float32Array(32),
         peak: new Float32Array(32),
     };
+    const spectrum = new Float32Array(32);
+    const pointer = { x: 0, y: 0 };
+    const media = { state: 0, position: 0, duration: 0 };
+    const texts = [];
+    let numeric = new Float64Array(0);
+    const batch = { numeric, numericCount: 0, texts };
+    globalThis.__gilderSpectrum = spectrum;
+    globalThis.__gilderSetMedia = (state, position, duration) => {
+        media.state = state;
+        media.position = position;
+        media.duration = duration;
+    };
 
     globalThis.engine = {
         runtime: 0,
@@ -34,6 +49,11 @@ const HOST_PRELUDE: &str = r#"
         registerAudioBuffers() { return audio; },
         registerAsset(path) { return path; },
     };
+    globalThis.MediaPlaybackEvent = Object.freeze({
+        PLAYBACK_STOPPED: 0,
+        PLAYBACK_PLAYING: 1,
+        PLAYBACK_PAUSED: 2,
+    });
     globalThis.WEMath = Object.freeze({
         clamp(value, minimum, maximum) {
             return Math.min(maximum, Math.max(minimum, value));
@@ -65,6 +85,24 @@ const HOST_PRELUDE: &str = r#"
         addEndedCallback() {},
         frameCount: 1,
     });
+    globalThis.input = {
+        cursorPosition: pointer,
+        cursorWorldPosition: pointer,
+    };
+
+    function initialValue(metadata) {
+        if (metadata.target <= 4) {
+            return {
+                x: metadata.initial[0],
+                y: metadata.initial[1],
+                z: metadata.initial[2],
+            };
+        }
+        if (metadata.target === 5) return metadata.initial[0];
+        if (metadata.target === 6) return metadata.initial[0] !== 0;
+        if (metadata.target === 7) return metadata.initialText;
+        return metadata.initial[0];
+    }
 
     globalThis.__gilderRegister = (namespace, metadata, properties) => {
         if (namespace.scriptProperties && properties) {
@@ -73,43 +111,67 @@ const HOST_PRELUDE: &str = r#"
                     bound && typeof bound === 'object' && 'value' in bound ? bound.value : bound;
             }
         }
-        if (typeof namespace.update !== 'function') return;
+        let value = initialValue(metadata);
+        if (typeof namespace.init === 'function') {
+            const initialized = namespace.init(value);
+            if (initialized !== undefined) value = initialized;
+        }
         programs.push({
             update: namespace.update,
+            mediaPlaybackChanged: namespace.mediaPlaybackChanged,
+            mediaTimelineChanged: namespace.mediaTimelineChanged,
+            mediaPropertiesChanged: namespace.mediaPropertiesChanged,
             object: metadata.object,
             target: metadata.target,
             subscriptions: metadata.subscriptions,
-            initial: metadata.initial,
-            initialText: metadata.initialText,
+            value,
+            published: false,
         });
     };
 
-    globalThis.__gilderDispatch = (time, frameTime, eventMask, pointerX, pointerY, spectrum) => {
+    globalThis.__gilderDispatch = (time, frameTime, eventMask, pointerX, pointerY) => {
         engine.runtime = time;
         engine.frametime = frameTime;
-        engine.pointer = { x: pointerX, y: pointerY };
-        for (let i = 0; i < 32; i++) {
-            const value = spectrum[i] || 0;
-            audio.average[i] = value;
-            audio.peak[i] = value;
+        pointer.x = pointerX;
+        pointer.y = pointerY;
+        engine.pointer = pointer;
+        if ((eventMask & 4) !== 0) {
+            for (let i = 0; i < 32; i++) {
+                const value = spectrum[i] || 0;
+                audio.average[i] = value;
+                audio.peak[i] = value;
+            }
         }
-        const numeric = new Float64Array(programs.length * 7);
-        const texts = [];
+        const requiredLanes = programs.length * 7;
+        if (numeric.length < requiredLanes) {
+            numeric = new Float64Array(requiredLanes);
+            batch.numeric = numeric;
+        }
+        texts.length = 0;
         let numericCount = 0;
         for (const program of programs) {
-            if ((program.subscriptions & eventMask) === 0) continue;
-            let value;
-            if (program.target <= 4) {
-                value = { x: program.initial[0], y: program.initial[1], z: program.initial[2] };
-            } else if (program.target === 5) {
-                value = program.initial[0];
-            } else if (program.target === 6) {
-                value = program.initial[0] !== 0;
-            } else {
-                value = program.initialText;
+            const initialize = !program.published;
+            if (!initialize && (program.subscriptions & eventMask) === 0) continue;
+            if ((eventMask & 32) !== 0 &&
+                typeof program.mediaPlaybackChanged === 'function') {
+                program.mediaPlaybackChanged(media);
             }
-            const resolved = program.update(value);
-            const output = resolved === undefined ? value : resolved;
+            if ((eventMask & 32) !== 0 &&
+                typeof program.mediaTimelineChanged === 'function') {
+                program.mediaTimelineChanged(media);
+            }
+            if ((eventMask & 32) !== 0 &&
+                typeof program.mediaPropertiesChanged === 'function') {
+                program.mediaPropertiesChanged(media);
+            }
+            let output = program.value;
+            if (typeof program.update === 'function' &&
+                (program.subscriptions & eventMask) !== 0) {
+                const resolved = program.update(program.value);
+                output = resolved === undefined ? program.value : resolved;
+            }
+            program.value = output;
+            program.published = true;
             if (program.target === 7) {
                 texts.push([program.object, String(output)]);
                 continue;
@@ -127,7 +189,8 @@ const HOST_PRELUDE: &str = r#"
             }
             numericCount++;
         }
-        return { numeric, numericCount, texts };
+        batch.numericCount = numericCount;
+        return batch;
     };
 })();
 "#;
@@ -147,6 +210,7 @@ pub struct SceneScriptFrameInput<'a> {
     pub dirty_events: SceneScriptSubscriptions,
     pub pointer: [f32; 2],
     pub audio_spectrum32: &'a [f32; 32],
+    pub media: Option<SceneMediaClockState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +311,7 @@ impl SceneScriptRuntime {
         runtime.set_memory_limit(DEFAULT_MEMORY_LIMIT);
         runtime.set_max_stack_size(DEFAULT_STACK_LIMIT);
         runtime.set_gc_threshold(DEFAULT_GC_THRESHOLD);
+        standard_library::install(&runtime);
         let deadline = Rc::new(Cell::new(None::<Instant>));
         let interrupt_deadline = Rc::clone(&deadline);
         runtime.set_interrupt_handler(Some(Box::new(move || {
@@ -276,18 +341,48 @@ impl SceneScriptRuntime {
         })
     }
 
-    pub fn dispatch(
+    pub fn dispatch_into(
         &self,
         input: SceneScriptFrameInput<'_>,
-    ) -> Result<Vec<SceneScriptDelta>, SceneScriptError> {
+        deltas: &mut Vec<SceneScriptDelta>,
+    ) -> Result<(), SceneScriptError> {
         self.deadline.set(Some(Instant::now() + FRAME_DEADLINE));
         let result = self.context.with(|ctx| {
             let dispatch: Function = ctx
                 .globals()
                 .get("__gilderDispatch")
                 .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
-            let spectrum = TypedArray::<f32>::new_copy(ctx.clone(), input.audio_spectrum32)
+            let spectrum: Object = ctx
+                .globals()
+                .get("__gilderSpectrum")
                 .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+            if input.dirty_events.contains(SceneScriptSubscriptions::AUDIO) {
+                for (index, value) in input.audio_spectrum32.iter().enumerate() {
+                    spectrum
+                        .set(index as u32, *value)
+                        .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+                }
+            }
+            if input.dirty_events.contains(SceneScriptSubscriptions::MEDIA) {
+                let set_media: Function = ctx
+                    .globals()
+                    .get("__gilderSetMedia")
+                    .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+                set_media
+                    .call::<_, ()>((
+                        media_playback_state(input.media),
+                        input
+                            .media
+                            .map(|media| media.clock_ns as f64 / 1_000_000_000.0)
+                            .unwrap_or(0.0),
+                        input
+                            .media
+                            .and_then(|media| media.duration_ns)
+                            .map(|duration| duration as f64 / 1_000_000_000.0)
+                            .unwrap_or(0.0),
+                    ))
+                    .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+            }
             let batch: Object = dispatch
                 .call((
                     input.scene_time_seconds,
@@ -295,10 +390,9 @@ impl SceneScriptRuntime {
                     input.dirty_events.0,
                     input.pointer[0],
                     input.pointer[1],
-                    spectrum,
                 ))
                 .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
-            decode_batch(batch)
+            decode_batch_into(batch, deltas)
         });
         let deadline_expired = self
             .deadline
@@ -399,7 +493,18 @@ fn register_program<'js>(
         })
 }
 
-fn decode_batch(batch: Object<'_>) -> Result<Vec<SceneScriptDelta>, SceneScriptError> {
+fn media_playback_state(media: Option<SceneMediaClockState>) -> u32 {
+    match media.map(|media| media.playback) {
+        Some(SceneMediaPlaybackState::Playing) => 1,
+        Some(SceneMediaPlaybackState::Paused) => 2,
+        _ => 0,
+    }
+}
+
+fn decode_batch_into(
+    batch: Object<'_>,
+    deltas: &mut Vec<SceneScriptDelta>,
+) -> Result<(), SceneScriptError> {
     let numeric: TypedArray<f64> = batch
         .get("numeric")
         .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
@@ -407,7 +512,8 @@ fn decode_batch(batch: Object<'_>) -> Result<Vec<SceneScriptDelta>, SceneScriptE
         .get("numericCount")
         .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
     let values: &[f64] = numeric.as_ref();
-    let mut deltas = Vec::with_capacity(numeric_count);
+    deltas.clear();
+    deltas.reserve(numeric_count);
     for lanes in values.chunks_exact(NUMERIC_DELTA_LANES).take(numeric_count) {
         let object = lanes[0] as u32;
         let target_raw = lanes[1] as u32;
@@ -447,13 +553,14 @@ fn decode_batch(batch: Object<'_>) -> Result<Vec<SceneScriptDelta>, SceneScriptE
             text: Some(text),
         });
     }
-    Ok(deltas)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene::abi::SceneStringId;
+    use crate::engine::scene::event::SceneEventSequence;
 
     fn program(
         target: SceneScriptTarget,
@@ -483,7 +590,17 @@ mod tests {
             dirty_events: events,
             pointer: [0.25, 0.75],
             audio_spectrum32: &[0.5; 32],
+            media: None,
         }
+    }
+
+    fn dispatch(
+        runtime: &SceneScriptRuntime,
+        input: SceneScriptFrameInput<'_>,
+    ) -> Result<Vec<SceneScriptDelta>, SceneScriptError> {
+        let mut deltas = Vec::new();
+        runtime.dispatch_into(input, &mut deltas)?;
+        Ok(deltas)
     }
 
     #[test]
@@ -494,9 +611,7 @@ mod tests {
             "export function update(value) { value.y += Math.sin(engine.runtime) * 4; return value; }",
         )])
         .expect("runtime");
-        let deltas = runtime
-            .dispatch(input(SceneScriptSubscriptions::FRAME))
-            .expect("dispatch");
+        let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].object, SceneObjectHandle(3));
         assert_eq!(deltas[0].target, SceneScriptTarget::Origin);
@@ -504,16 +619,18 @@ mod tests {
     }
 
     #[test]
-    fn event_mask_skips_unsubscribed_modules() {
+    fn event_mask_publishes_initial_value_once_then_skips_unsubscribed_modules() {
         let runtime = SceneScriptRuntime::new(&[program(
             SceneScriptTarget::Alpha,
             SceneScriptSubscriptions::AUDIO,
             "export function update(value) { return value * 0.5; }",
         )])
         .expect("runtime");
+        let first =
+            dispatch(&runtime, input(SceneScriptSubscriptions::POINTER)).expect("initial dispatch");
+        assert_eq!(first[0].numeric[0], 10.0);
         assert!(
-            runtime
-                .dispatch(input(SceneScriptSubscriptions::POINTER))
+            dispatch(&runtime, input(SceneScriptSubscriptions::POINTER))
                 .expect("dispatch")
                 .is_empty()
         );
@@ -530,9 +647,8 @@ mod tests {
         );
         text.properties_json = r#"{"suffix":{"value":"bound"}}"#.to_owned();
         let runtime = SceneScriptRuntime::new(&[text]).expect("runtime");
-        let deltas = runtime
-            .dispatch(input(SceneScriptSubscriptions::LOCAL_TIME))
-            .expect("dispatch");
+        let deltas =
+            dispatch(&runtime, input(SceneScriptSubscriptions::LOCAL_TIME)).expect("dispatch");
         assert_eq!(deltas[0].text.as_deref(), Some("idle:bound"));
     }
 
@@ -545,8 +661,81 @@ mod tests {
         )])
         .expect("runtime");
         assert_eq!(
-            runtime.dispatch(input(SceneScriptSubscriptions::FRAME)),
+            dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)),
             Err(SceneScriptError::DeadlineExceeded)
         );
+    }
+
+    #[test]
+    fn init_runs_once_and_retained_value_advances_without_rust_allocation_contract() {
+        let runtime = SceneScriptRuntime::new(&[program(
+            SceneScriptTarget::Alpha,
+            SceneScriptSubscriptions::FRAME,
+            "let calls = 0; export function init(value) { return value + 2; } export function update(value) { calls++; return value + calls; }",
+        )])
+        .expect("runtime");
+        let mut deltas = Vec::with_capacity(1);
+        runtime
+            .dispatch_into(input(SceneScriptSubscriptions::FRAME), &mut deltas)
+            .expect("first dispatch");
+        assert_eq!(deltas[0].numeric[0], 13.0);
+        runtime
+            .dispatch_into(input(SceneScriptSubscriptions::FRAME), &mut deltas)
+            .expect("second dispatch");
+        assert_eq!(deltas[0].numeric[0], 15.0);
+        assert_eq!(deltas.capacity(), 1);
+    }
+
+    #[test]
+    fn builtin_we_math_module_is_shared_by_authored_modules() {
+        let programs = [
+            program(
+                SceneScriptTarget::Alpha,
+                SceneScriptSubscriptions::FRAME,
+                "import * as WEMath from 'WEMath'; export function update(value) { return WEMath.clamp(value, 0, 1); }",
+            ),
+            program(
+                SceneScriptTarget::Alpha,
+                SceneScriptSubscriptions::FRAME,
+                "import { mix } from 'WEMath'; export function update() { return mix(0, 1, 0.25); }",
+            ),
+        ];
+        let runtime = SceneScriptRuntime::new(&programs).expect("runtime");
+        let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+        assert_eq!(deltas[0].numeric[0], 1.0);
+        assert_eq!(deltas[1].numeric[0], 0.25);
+    }
+
+    #[test]
+    fn media_callback_runs_before_update_on_media_event() {
+        let runtime = SceneScriptRuntime::new(&[program(
+            SceneScriptTarget::Alpha,
+            SceneScriptSubscriptions::FRAME.union(SceneScriptSubscriptions::MEDIA),
+            "let state = 0; export function mediaPlaybackChanged(event) { state = event.state; } export function update() { return state; }",
+        )])
+        .expect("runtime");
+        let mut frame = input(SceneScriptSubscriptions::MEDIA);
+        frame.media = Some(SceneMediaClockState {
+            sequence: SceneEventSequence(1),
+            playback: SceneMediaPlaybackState::Playing,
+            clock_ns: 5_000_000_000,
+            duration_ns: Some(60_000_000_000),
+            ..SceneMediaClockState::default()
+        });
+        let deltas = dispatch(&runtime, frame).expect("dispatch");
+        assert_eq!(deltas[0].numeric[0], 1.0);
+    }
+
+    #[test]
+    fn audio_spectrum_drives_typed_effect_target_through_quickjs() {
+        let runtime = SceneScriptRuntime::new(&[program(
+            SceneScriptTarget::TechCircleSectorWidth,
+            SceneScriptSubscriptions::FRAME.union(SceneScriptSubscriptions::AUDIO),
+            "const audio = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_32); export function update(value) { return value + audio.average[0]; }",
+        )])
+        .expect("runtime");
+        let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::AUDIO)).expect("dispatch");
+        assert_eq!(deltas[0].target, SceneScriptTarget::TechCircleSectorWidth);
+        assert_eq!(deltas[0].numeric[0], 10.5);
     }
 }

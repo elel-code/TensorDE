@@ -333,20 +333,24 @@ fn resolve_frame_rejects_parent_cycles_before_render_planning() {
 }
 
 #[test]
-fn retained_audio_binding_applies_uniform_object_scale_before_transform_propagation() {
+fn rquickjs_audio_module_applies_uniform_object_scale_before_transform_propagation() {
     let mut object = image_object();
     object.material = SceneMaterialHandle(INVALID_MATERIAL_ID);
     let document = SceneBinaryDocument {
+        strings: vec![
+            "const audio = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_32); export function update(value) { const scale = 1 + audio.average[0]; value.x = scale; value.y = scale; value.z = scale; return value; }".to_owned(),
+            "{}".to_owned(),
+        ],
         objects: vec![object],
-        audio_band_material_bindings: vec![SceneAudioBandMaterialBindingRecord {
+        script_programs: vec![SceneScriptProgramRecord {
             object: SceneObjectHandle(0),
-            target: SceneAudioBandMaterialTarget::ObjectUniformScale,
-            spectrum_resolution: 16,
-            band_index: 0,
-            smoothing: 1.0,
-            minimum_multiplier: 1.0,
-            maximum_multiplier: 1.5,
-            initial_value: 2.0,
+            target: SceneScriptTarget::Scale,
+            source: SceneStringId(0),
+            properties_json: SceneStringId(1),
+            initial_text: SceneStringId::NONE,
+            subscriptions: SceneScriptSubscriptions::FRAME
+                .union(SceneScriptSubscriptions::AUDIO),
+            initial_numeric: [1.0, 1.0, 1.0, 0.0],
         }],
         ..SceneBinaryDocument::default()
     };
@@ -369,18 +373,9 @@ fn retained_audio_binding_applies_uniform_object_scale_before_transform_propagat
         .expect("audio-scaled frame");
     let object = frame.object(SceneObjectHandle(0)).expect("scaled object");
 
-    assert_close(object.local_matrix[0], 3.0);
-    assert_close(object.local_matrix[5], 3.0);
-    assert_close(object.local_matrix[10], 3.0);
-    assert_close(
-        frame
-            .audio_material_value(
-                SceneObjectHandle(0),
-                SceneAudioBandMaterialTarget::ObjectUniformScale,
-            )
-            .expect("resolved scale"),
-        3.0,
-    );
+    assert_close(object.local_matrix[0], 2.0);
+    assert_close(object.local_matrix[5], 2.0);
+    assert_close(object.local_matrix[10], 2.0);
 }
 
 #[test]

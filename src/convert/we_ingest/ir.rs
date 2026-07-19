@@ -16,10 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
-    SceneAudioBandMaterialTarget, SceneCullMode, SceneDepthTest,
-    SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend, SceneResourceKind,
-    SceneScriptSubscriptions, SceneScriptTarget, SceneTextProviderKind, SceneTextureFormat,
-    SceneVec3,
+    SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
+    SceneResourceKind, SceneScriptSubscriptions, SceneScriptTarget, SceneTextureFormat, SceneVec3,
 };
 
 mod particle;
@@ -39,8 +37,6 @@ pub struct WeSceneIr {
     pub object_transform_tracks: Vec<WeIrObjectTransformTrack>,
     pub object_transform_channels: Vec<WeIrObjectTransformChannel>,
     pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
-    pub audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
-    pub text_providers: Vec<WeIrTextProvider>,
     pub script_programs: Vec<WeIrScriptProgram>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
@@ -71,15 +67,6 @@ pub struct WeSceneIr {
     pub image_targets: Vec<WeIrImageTarget>,
     pub shader_contracts: Vec<WeIrShaderContract>,
     pub unsupported: Vec<WeIrUnsupported>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WeIrTextProvider {
-    pub object: u32,
-    pub kind: SceneTextProviderKind,
-    pub initial_text: String,
-    pub source_data: String,
-    pub update_interval_seconds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,18 +206,6 @@ pub struct WeIrObjectEffect {
     pub effect: u32,
     pub instance_id: u32,
     pub visible: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WeIrAudioBandMaterialBinding {
-    pub object: u32,
-    pub target: SceneAudioBandMaterialTarget,
-    pub spectrum_resolution: u32,
-    pub band_index: u32,
-    pub smoothing: f32,
-    pub minimum_multiplier: f32,
-    pub maximum_multiplier: f32,
-    pub initial_value: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

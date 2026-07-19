@@ -1,16 +1,14 @@
 //! Lower authored audio and pointer bindings into typed static records.
 
 use crate::engine::scene::{
-    SceneAudioBandMaterialBindingRecord, SceneCameraParallaxRecord, SceneObjectHandle,
-    SceneObjectParallaxDepthRecord, SceneScriptProgramRecord, SceneTextProviderRecord,
+    SceneCameraParallaxRecord, SceneObjectHandle, SceneObjectParallaxDepthRecord,
+    SceneScriptProgramRecord,
 };
 
 use super::super::ir::WeSceneIr;
 use super::StringInterner;
 
 pub(super) struct LoweredSceneEventBindings {
-    pub(super) audio: Vec<SceneAudioBandMaterialBindingRecord>,
-    pub(super) text: Vec<SceneTextProviderRecord>,
     pub(super) scripts: Vec<SceneScriptProgramRecord>,
     pub(super) camera_parallax: SceneCameraParallaxRecord,
     pub(super) object_parallax_depths: Vec<SceneObjectParallaxDepthRecord>,
@@ -20,31 +18,6 @@ pub(super) fn lower_event_bindings(
     ir: &WeSceneIr,
     strings: &mut StringInterner,
 ) -> LoweredSceneEventBindings {
-    let audio = ir
-        .audio_band_material_bindings
-        .iter()
-        .map(|binding| SceneAudioBandMaterialBindingRecord {
-            object: SceneObjectHandle(binding.object),
-            target: binding.target,
-            spectrum_resolution: binding.spectrum_resolution,
-            band_index: binding.band_index,
-            smoothing: binding.smoothing,
-            minimum_multiplier: binding.minimum_multiplier,
-            maximum_multiplier: binding.maximum_multiplier,
-            initial_value: binding.initial_value,
-        })
-        .collect();
-    let text = ir
-        .text_providers
-        .iter()
-        .map(|provider| SceneTextProviderRecord {
-            object: SceneObjectHandle(provider.object),
-            kind: provider.kind,
-            initial_text: strings.id(&provider.initial_text),
-            source_data: strings.optional_id(&provider.source_data),
-            update_interval_seconds: provider.update_interval_seconds,
-        })
-        .collect();
     let object_parallax_depths = ir
         .objects
         .iter()
@@ -68,8 +41,6 @@ pub(super) fn lower_event_bindings(
         })
         .collect();
     LoweredSceneEventBindings {
-        audio,
-        text,
         scripts,
         camera_parallax: SceneCameraParallaxRecord {
             enabled: ir.scene.camera_parallax_enabled,

@@ -579,8 +579,6 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         image_targets,
         shader_contracts,
         shader_constant_names,
-        audio_band_material_bindings: event_bindings.audio,
-        text_providers: event_bindings.text,
         script_programs: event_bindings.scripts,
         camera_parallax: event_bindings.camera_parallax,
         object_parallax_depths: event_bindings.object_parallax_depths,

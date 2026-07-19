@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn scene_binary_rejects_every_pre_v18_artifact() {
+fn scene_binary_rejects_every_pre_v19_artifact() {
     let mut bytes = Vec::new();
-    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v18");
+    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v19");
     bytes[8..12].copy_from_slice(&16_u32.to_le_bytes());
     assert!(matches!(
         read_scene_binary_bytes(&bytes),

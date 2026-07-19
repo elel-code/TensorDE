@@ -44,8 +44,13 @@ ab_glyph = "0.2.32"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 intel_tex_2 = "0.5.0"
 jiff = "0.2"
+oxc_allocator = "0"
+oxc_ast = "0"
+oxc_ast_visit = "0"
+oxc_parser = "0"
+oxc_span = "0"
 png = "0.18"
-rquickjs = "0.12.1"
+rquickjs = { version = "0", features = ["loader"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 smithay-client-toolkit = { version = "0.20", optional = true }

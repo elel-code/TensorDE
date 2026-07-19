@@ -24,6 +24,7 @@ use self::present::swapchain;
 use self::scene as vulkan_scene;
 use self::video::present_device as video_present_device;
 use self::video::present_handoff as video_present_handoff;
+#[cfg(feature = "native-vulkan-video")]
 use self::video::present_runtime as video_present_runtime;
 use self::video::surface_host as video_surface_host;
 

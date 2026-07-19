@@ -4,6 +4,7 @@
 //! publish compact deltas; renderer backends never access JavaScript values.
 
 mod runtime;
+pub(crate) mod standard_library;
 
 pub use runtime::{
     SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptProgram,

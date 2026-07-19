@@ -33,24 +33,6 @@ pub(super) fn ingest_object_transform_tracks(
                 ));
             }
         }
-        if let Some(script) = binding.get("script").and_then(Value::as_str) {
-            if property == WeIrObjectTransformProperty::Angles {
-                unsupported.push(unsupported_property(
-                    object,
-                    property_name,
-                    "angle-script-evaluation-unit-unverified",
-                    "static-bound-value-kept",
-                ));
-            } else if !append_sine_script_track(object, property, binding, script, tracks, channels)
-            {
-                unsupported.push(unsupported_property(
-                    object,
-                    property_name,
-                    "unlowered-transform-property-script",
-                    "static-bound-value-kept",
-                ));
-            }
-        }
     }
 }
 
@@ -183,107 +165,9 @@ fn parse_handle(value: Option<&Value>) -> ([f32; 2], bool, bool) {
     )
 }
 
-fn append_sine_script_track(
-    object: u32,
-    property: WeIrObjectTransformProperty,
-    binding: &serde_json::Map<String, Value>,
-    script: &str,
-    tracks: &mut Vec<WeIrObjectTransformTrack>,
-    channels: &mut Vec<WeIrObjectTransformChannel>,
-) -> bool {
-    let normalized: String = script
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect();
-    let properties = binding.get("scriptproperties").and_then(Value::as_object);
-    let mut parsed = Vec::new();
-    for (component, component_name, prefix) in [(0, "x", "x"), (1, "y", "y"), (2, "z", "z")] {
-        let offset_name = format!("{prefix}a");
-        let frequency_name = format!("{prefix}b");
-        let amplitude_name = format!("{prefix}c");
-        let expression = format!(
-            "value.{component_name}=scriptProperties.{offset_name}+(Math.sin(engine.runtime*scriptProperties.{frequency_name})*scriptProperties.{amplitude_name});"
-        );
-        if normalized.contains(&expression) {
-            let Some(properties) = properties else {
-                return false;
-            };
-            let Some(offset) = bound_f32(properties.get(&offset_name)) else {
-                return false;
-            };
-            let Some(frequency) = bound_f32(properties.get(&frequency_name)) else {
-                return false;
-            };
-            let Some(amplitude) = bound_f32(properties.get(&amplitude_name)) else {
-                return false;
-            };
-            parsed.push((component, offset, frequency, amplitude));
-        } else if let Some((offset, frequency, amplitude)) =
-            literal_sine_channel(&normalized, component_name)
-        {
-            parsed.push((component, offset, frequency, amplitude));
-        }
-    }
-    if parsed.is_empty() {
-        return false;
-    }
-
-    let track_index = tracks.len() as u32;
-    let channel_start = channels.len() as u32;
-    tracks.push(WeIrObjectTransformTrack {
-        object,
-        property,
-        relative: false,
-        wrap_loop: false,
-        playback: "continuous".to_owned(),
-        fps: 0.0,
-        frame_count: 0,
-        channel_start,
-        channel_count: parsed.len() as u32,
-    });
-    for (component, offset, frequency, amplitude) in parsed {
-        channels.push(WeIrObjectTransformChannel {
-            track: track_index,
-            component,
-            kind: WeIrObjectTransformChannelKind::Sine,
-            offset,
-            amplitude,
-            frequency,
-            phase: 0.0,
-            keyframe_start: 0,
-            keyframe_count: 0,
-        });
-    }
-    true
-}
-
-fn literal_sine_channel(script: &str, component: &str) -> Option<(f32, f32, f32)> {
-    let assignment = format!("value.{component}=");
-    let expression = script.split_once(&assignment)?.1;
-    let (offset, oscillator) = expression.split_once("+(Math.sin(engine.runtime*")?;
-    let (frequency, amplitude) = oscillator.split_once(")*")?;
-    let amplitude = amplitude.split_once(");")?.0;
-    let values = [offset, frequency, amplitude]
-        .map(str::parse::<f32>)
-        .map(|value| value.ok())
-        .into_iter()
-        .collect::<Option<Vec<_>>>()?;
-    values
-        .iter()
-        .all(|value| value.is_finite())
-        .then_some((values[0], values[1], values[2]))
-}
-
 fn finite_f32(value: Option<&Value>) -> Option<f32> {
     let value = value?.as_f64()? as f32;
     value.is_finite().then_some(value)
-}
-
-fn bound_f32(value: Option<&Value>) -> Option<f32> {
-    match value? {
-        Value::Object(value) => finite_f32(value.get("value")),
-        value => finite_f32(Some(value)),
-    }
 }
 
 fn unsupported_property(
@@ -306,7 +190,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lowers_relative_keyframes_and_sine_script_to_typed_tracks() {
+    fn lowers_relative_keyframes_without_parsing_scene_scripts() {
         let object: Value = serde_json::from_str(
             r#"{
                 "origin": {
@@ -342,24 +226,21 @@ mod tests {
             &mut unsupported,
         );
 
-        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks.len(), 1);
         assert!(tracks[0].relative);
         assert!(tracks[0].wrap_loop);
-        assert_eq!(channels[1].kind, WeIrObjectTransformChannelKind::Sine);
-        assert_eq!(channels[1].component, 2);
-        assert_eq!(channels[1].frequency, 0.5);
+        assert_eq!(channels.len(), 1);
         assert_eq!(keyframes.len(), 2);
         assert!(unsupported.is_empty());
     }
 
     #[test]
-    fn defers_angle_sine_script_until_its_evaluation_unit_is_verified() {
+    fn leaves_angle_script_to_scene_script_runtime() {
         let object: Value = serde_json::from_str(
             r#"{
                 "angles": {
-                    "value": "0 0 -0.61087",
-                    "script": "export function update(value) { value.z = scriptProperties.za + (Math.sin(engine.runtime * scriptProperties.zb) * scriptProperties.zc); return value; }",
-                    "scriptproperties":{"za":-35,"zb":0.47,"zc":10}
+                    "value": "0 0 -0.610865238",
+                    "script": "export function update(value) { value.z += 10; return value; }"
                 }
             }"#,
         )
@@ -370,7 +251,7 @@ mod tests {
         let mut unsupported = Vec::new();
 
         ingest_object_transform_tracks(
-            9,
+            7,
             &object,
             &mut tracks,
             &mut channels,
@@ -379,44 +260,6 @@ mod tests {
         );
 
         assert!(tracks.is_empty());
-        assert!(channels.is_empty());
-        assert!(keyframes.is_empty());
-        assert_eq!(unsupported.len(), 1);
-        assert_eq!(
-            unsupported[0].feature,
-            "angle-script-evaluation-unit-unverified:angles"
-        );
-        assert_eq!(unsupported[0].containment, "static-bound-value-kept");
-    }
-
-    #[test]
-    fn lowers_literal_sine_origin_script_to_typed_track() {
-        let object = serde_json::json!({
-            "origin": {
-                "value": "0 -860 0",
-                "script": "export function update(value) { value.y = -860 + (Math.sin(engine.runtime * 0.2) * 20); return value; }"
-            }
-        });
-        let mut tracks = Vec::new();
-        let mut channels = Vec::new();
-        let mut keyframes = Vec::new();
-        let mut unsupported = Vec::new();
-
-        ingest_object_transform_tracks(
-            16,
-            &object,
-            &mut tracks,
-            &mut channels,
-            &mut keyframes,
-            &mut unsupported,
-        );
-
-        assert_eq!(tracks.len(), 1);
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].component, 1);
-        assert_eq!(channels[0].offset, -860.0);
-        assert_eq!(channels[0].frequency, 0.2);
-        assert_eq!(channels[0].amplitude, 20.0);
         assert!(unsupported.is_empty());
     }
 }

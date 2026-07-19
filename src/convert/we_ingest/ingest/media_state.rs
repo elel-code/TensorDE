@@ -2,13 +2,25 @@
 
 use serde_json::Value;
 
-pub(super) fn group_starts_hidden_without_media_session(object: &Value) -> bool {
-    ["origin", "scale", "angles", "visible"]
-        .into_iter()
-        .filter_map(|property| object.get(property))
-        .filter_map(|property| property.get("script"))
-        .filter_map(Value::as_str)
-        .any(|script| script.contains("mediaPlaybackChanged"))
+use super::super::script_analysis::analyze_scene_script;
+
+pub(super) fn group_starts_hidden_without_media_session(object: &Value) -> Result<bool, String> {
+    for property in ["origin", "scale", "angles", "visible"] {
+        let Some(source) = object
+            .get(property)
+            .and_then(|property| property.get("script"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if analyze_scene_script(source)
+            .map_err(|error| error.to_string())?
+            .handles_media
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -26,18 +38,18 @@ mod tests {
             }
         });
 
-        assert!(group_starts_hidden_without_media_session(&object));
+        assert!(group_starts_hidden_without_media_session(&object).expect("media analysis"));
     }
 
     #[test]
-    fn ordinary_transform_script_remains_visible() {
+    fn callback_name_in_a_comment_does_not_hide_the_group() {
         let object = json!({
             "origin": {
                 "value": "0 0 0",
-                "script": "export function update(value) { value.y += engine.frametime; return value; }"
+                "script": "// mediaPlaybackChanged\nexport function update(value) { return value; }"
             }
         });
 
-        assert!(!group_starts_hidden_without_media_session(&object));
+        assert!(!group_starts_hidden_without_media_session(&object).expect("media analysis"));
     }
 }
