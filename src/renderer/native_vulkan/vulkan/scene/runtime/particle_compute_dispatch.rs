@@ -31,8 +31,13 @@ pub(super) fn record_particle_compute_dispatch(
         return Ok(false);
     }
     unsafe {
-        let time_bytes = scene.particle_scene_time_seconds.to_ne_bytes();
         for emitter in 0..resources.emitter_count {
+            let time_scale = resources
+                .time_scales
+                .get(emitter as usize)
+                .copied()
+                .unwrap_or(1.0);
+            let time_bytes = (scene.particle_scene_time_seconds * time_scale).to_ne_bytes();
             device.cmd_update_buffer(
                 command_buffer,
                 resources.state_upload.target.buffer,

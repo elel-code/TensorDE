@@ -600,6 +600,7 @@ mod tests {
             100,
             1.0,
             0.0,
+            1.0,
         );
         particle.rate = 4.0;
         particle.lifetime_max = 100.0;

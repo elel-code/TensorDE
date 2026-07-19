@@ -38,6 +38,7 @@ pub(super) struct SceneParticleGpuResources {
     pub indirect_readback: NativeVulkanVulkanaliaBuffer,
     pub emitter_count: u32,
     pub total_capacity: u64,
+    pub time_scales: Vec<f32>,
 }
 
 pub(super) fn create_scene_particle_gpu_resources(
@@ -72,6 +73,13 @@ pub(super) fn create_scene_particle_gpu_resources(
         .iter()
         .map(|_| SceneParticleIndirectDraw::BILLBOARD)
         .collect::<Vec<_>>();
+    let time_scales = graph
+        .particle_gpu_emitters
+        .iter()
+        .map(|plan| {
+            storage.particles()[plan.particle_index as usize].instance_time_scale
+        })
+        .collect();
     let state_payload = typed_bytes(&states);
     let indirect_payload = typed_bytes(&indirect);
     let state_upload =
@@ -124,6 +132,7 @@ pub(super) fn create_scene_particle_gpu_resources(
         indirect_upload,
         indirect_readback,
         emitter_count: states.len() as u32,
+        time_scales,
         total_capacity: graph
             .particle_gpu_emitters
             .iter()

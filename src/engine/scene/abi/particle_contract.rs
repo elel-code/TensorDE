@@ -44,6 +44,7 @@ pub struct SceneParticleSystemRecord {
     pub max_count: u32,
     pub sequence_multiplier: f32,
     pub start_time: f32,
+    pub instance_time_scale: f32,
     pub rate: f32,
     pub emitter_origin: SceneVec3,
     pub emitter_directions: SceneVec3,
@@ -98,6 +99,7 @@ impl SceneParticleSystemRecord {
         max_count: u32,
         sequence_multiplier: f32,
         start_time: f32,
+        instance_time_scale: f32,
     ) -> Self {
         Self {
             object,
@@ -108,6 +110,7 @@ impl SceneParticleSystemRecord {
             max_count,
             sequence_multiplier,
             start_time,
+            instance_time_scale,
             rate: 0.0,
             emitter_origin: SceneVec3 {
                 x: 0.0,
@@ -236,7 +239,7 @@ impl SceneParticleGpuEmitterState {
     ) -> Self {
         Self {
             time_rate_start_capacity: [
-                scene_time_seconds,
+                scene_time_seconds * particle.instance_time_scale,
                 particle.rate,
                 particle.start_time,
                 capacity as f32,
@@ -353,6 +356,7 @@ mod gpu_contract_tests {
             100,
             1.0,
             2.0,
+            0.25,
         );
         particle.rate = 12.0;
         particle.gravity = SceneVec3 {
@@ -361,7 +365,7 @@ mod gpu_contract_tests {
             z: 3.0,
         };
         let state = SceneParticleGpuEmitterState::from_record(&particle, 4.0, 80);
-        assert_eq!(state.time_rate_start_capacity, [4.0, 12.0, 2.0, 80.0]);
+        assert_eq!(state.time_rate_start_capacity, [1.0, 12.0, 2.0, 80.0]);
         assert_eq!(state.gravity, [1.0, -2.0, 3.0, 0.0]);
     }
 }

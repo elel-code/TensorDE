@@ -18,6 +18,7 @@ pub(super) fn lower_particles(ir: &WeSceneIr) -> Vec<SceneParticleSystemRecord> 
                 particle.max_count,
                 particle.sequence_multiplier,
                 particle.start_time,
+                particle.instance_time_scale,
             );
             if let Some(profile) = particle.falling_leaves_profile() {
                 apply_falling_leaves_profile(&mut record, profile);

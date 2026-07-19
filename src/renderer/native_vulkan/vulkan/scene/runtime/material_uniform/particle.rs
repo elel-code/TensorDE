@@ -15,7 +15,7 @@ pub(super) fn particle_values(
     values[1] = draw.resolved_color.y;
     values[2] = draw.resolved_color.z;
     values[3] = draw.resolved_alpha;
-    values[4] = scene_time_seconds;
+    values[4] = scene_time_seconds * particle.instance_time_scale;
     values[5] = particle.start_time;
     values[6] = particle.rate;
     values[7] = particle.max_count as f32;

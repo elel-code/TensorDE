@@ -35,6 +35,7 @@ impl WeIrBuilder {
             max_count: value_u32(definition.get("maxcount")).unwrap_or(0),
             sequence_multiplier: value_f32(definition.get("sequencemultiplier")).unwrap_or(1.0),
             start_time: value_f32(definition.get("starttime")).unwrap_or(0.0),
+            instance_time_scale: particle_instance_time_scale(instance),
             control_points: parse_control_points(&definition, instance),
             emitters: parse_emitters(&definition),
             initializers: parse_initializers(&definition),
@@ -370,4 +371,13 @@ fn particle_vec3(value: Option<&Value>) -> Option<SceneVec3> {
             z: scalar,
         })
     })
+}
+
+fn particle_instance_time_scale(instance: &Value) -> f32 {
+    instance
+        .pointer("/instanceoverride/colorn")
+        .and_then(|value| particle_vec3(Some(value)))
+        .map(|color| ((color.x / 255.0 * 100_000.0).round() / 100_000.0).max(0.01))
+        .filter(|scale| scale.is_finite())
+        .unwrap_or(1.0)
 }

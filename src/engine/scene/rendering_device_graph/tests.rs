@@ -10,6 +10,7 @@ fn procedural_particle_capacity_omits_permanently_inactive_slots() {
         3000,
         1.0,
         0.0,
+        1.0,
     );
     particle.rate = 200.0;
     particle.lifetime_max = 8.0;
@@ -29,6 +30,7 @@ fn particle_gpu_plan_selects_profiles_and_stable_indices() {
         300,
         1.0,
         0.0,
+        1.0,
     );
     analytic.simulation = SceneParticleSimulationKind::FallingLeaves;
     analytic.rate = 20.0;
@@ -41,6 +43,7 @@ fn particle_gpu_plan_selects_profiles_and_stable_indices() {
         12,
         1.0,
         0.0,
+        1.0,
     );
 
     let plans = particle_gpu_emitter_plans(&[analytic, retained]);

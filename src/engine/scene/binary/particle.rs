@@ -16,6 +16,7 @@ pub(super) fn encode_particles(
         put_u32(&mut out, record.max_count);
         put_f32(&mut out, record.sequence_multiplier);
         put_f32(&mut out, record.start_time);
+        put_f32(&mut out, record.instance_time_scale);
         put_f32(&mut out, record.rate);
         put_vec3(&mut out, record.emitter_origin);
         put_vec3(&mut out, record.emitter_directions);
@@ -86,6 +87,7 @@ pub(super) fn decode_particles(
             max_count: decoder.u32()?,
             sequence_multiplier: decoder.f32()?,
             start_time: decoder.f32()?,
+            instance_time_scale: decoder.f32()?,
             rate: decoder.f32()?,
             emitter_origin: decoder.vec3()?,
             emitter_directions: decoder.vec3()?,

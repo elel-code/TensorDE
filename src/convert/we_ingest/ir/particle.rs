@@ -16,6 +16,7 @@ pub struct WeIrParticleSystem {
     pub max_count: u32,
     pub sequence_multiplier: f32,
     pub start_time: f32,
+    pub instance_time_scale: f32,
     pub control_points: Vec<WeIrParticleControlPoint>,
     pub emitters: Vec<WeIrParticleEmitter>,
     pub initializers: Vec<WeIrParticleInitializer>,

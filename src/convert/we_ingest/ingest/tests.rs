@@ -169,7 +169,7 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
     .expect("project");
     fs::write(
         root.join("scene.json"),
-        r#"{"general":{"orthogonalprojection":{"width":3840,"height":2160}},"objects":[{"id":927,"name":"stars","particle":"particles/stars.json","origin":"1920 1080 0"}]}"#,
+        r#"{"general":{"orthogonalprojection":{"width":3840,"height":2160}},"objects":[{"id":927,"name":"stars","particle":"particles/stars.json","origin":"1920 1080 0","instanceoverride":{"colorn":"0.83922 1.00000 1.00000"}}]}"#,
     )
     .expect("scene");
     fs::write(
@@ -210,6 +210,7 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
     assert_eq!(profile.oscillation_phase_max, std::f32::consts::TAU);
     assert_eq!(profile.oscillation_scale_min, 0.2);
     assert_eq!(profile.oscillation_scale_max, 1.0);
+    assert_eq!(ir.particles[0].instance_time_scale, 0.01);
 
     let document =
         crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower sparkles");
@@ -219,6 +220,7 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
     );
     assert_eq!(document.particles[0].size_min, 2.5);
     assert_eq!(document.particles[0].size_max, 5.0);
+    assert_eq!(document.particles[0].instance_time_scale, 0.01);
     let mut bytes = Vec::new();
     crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
     let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
