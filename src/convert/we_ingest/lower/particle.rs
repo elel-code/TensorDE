@@ -43,8 +43,8 @@ fn apply_floral_oscillation_profile(
     record.distance_max = profile.distance_max;
     record.lifetime_min = profile.lifetime_min;
     record.lifetime_max = profile.lifetime_max;
-    record.size_min = profile.size_min;
-    record.size_max = profile.size_max;
+    record.size_min = initialized_billboard_size(profile.size_min);
+    record.size_max = initialized_billboard_size(profile.size_max);
     record.rotation_min = profile.rotation_min;
     record.rotation_max = profile.rotation_max;
     record.position_oscillation_frequency_min = profile.position_frequency_min;
@@ -74,8 +74,8 @@ fn apply_ambient_sparkles_profile(
     record.distance_max = profile.distance_max;
     record.lifetime_min = profile.lifetime_min;
     record.lifetime_max = profile.lifetime_max;
-    record.size_min = profile.size_min;
-    record.size_max = profile.size_max;
+    record.size_min = initialized_billboard_size(profile.size_min);
+    record.size_max = initialized_billboard_size(profile.size_max);
     record.color_min = normalized_color(profile.color_min);
     record.color_max = normalized_color(profile.color_max);
     record.gravity = profile.gravity;
@@ -101,8 +101,8 @@ fn apply_falling_leaves_profile(
     record.distance_max = profile.distance_max;
     record.lifetime_min = profile.lifetime_min;
     record.lifetime_max = profile.lifetime_max;
-    record.size_min = profile.size_min;
-    record.size_max = profile.size_max;
+    record.size_min = initialized_billboard_size(profile.size_min);
+    record.size_max = initialized_billboard_size(profile.size_max);
     record.velocity_min = profile.velocity_min;
     record.velocity_max = profile.velocity_max;
     record.color_min = normalized_color(profile.color_min);
@@ -131,4 +131,10 @@ fn normalized_color(color: SceneVec3) -> SceneVec3 {
         y: color.y / divisor,
         z: color.z / divisor,
     }
+}
+
+fn initialized_billboard_size(authored_size: f32) -> f32 {
+    // WE initializes the per-particle size multiplier to 0.5 before sizerandom runs.
+    // The genericparticle shader then expands that initialized span around uv 0.5.
+    authored_size * 0.5
 }

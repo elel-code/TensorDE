@@ -145,6 +145,8 @@ fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
         crate::engine::scene::SceneParticleSimulationKind::FallingLeaves
     );
     assert_eq!(document.particles[0].max_count, 11);
+    assert_eq!(document.particles[0].size_min, 35.0);
+    assert_eq!(document.particles[0].size_max, 37.5);
     assert_eq!(document.particles[0].color_min.x, 1.0);
     let mut bytes = Vec::new();
     crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
@@ -215,6 +217,8 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
         document.particles[0].simulation,
         crate::engine::scene::SceneParticleSimulationKind::AmbientSparkles
     );
+    assert_eq!(document.particles[0].size_min, 2.5);
+    assert_eq!(document.particles[0].size_max, 5.0);
     let mut bytes = Vec::new();
     crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
     let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
@@ -294,6 +298,8 @@ fn ingests_floral_oscillation_as_typed_particle_ir_and_part_record() {
         crate::engine::scene::SceneParticleSimulationKind::FloralOscillation
     );
     assert_eq!(document.particles[0].position_oscillation_mask.x, 1.0);
+    assert_eq!(document.particles[0].size_min, 75.0);
+    assert_eq!(document.particles[0].size_max, 200.0);
     let mut bytes = Vec::new();
     crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
     let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
