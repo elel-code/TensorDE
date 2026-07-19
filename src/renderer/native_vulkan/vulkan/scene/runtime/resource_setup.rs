@@ -49,10 +49,17 @@ pub(super) fn create_scene_gpu_resources(
         .target_allocations
         .clone();
     let scene_color_ranges = scene_color_draw_ranges(&backend_plan.rendering_device_graph);
-    let graph_execution_order = graph_execution::scene_graph_execution_order(
+    let mut graph_execution_order = graph_execution::scene_graph_execution_order(
         &backend_plan.rendering_device_graph,
         capture_scene_graph,
     )?;
+    if capture_scene_graph.is_none()
+        && let Some(last) = std::env::var("GILDER_NATIVE_VULKAN_CAPTURE_GRAPH_PREFIX")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+    {
+        graph_execution_order.retain(|graph| *graph <= last);
+    }
     let pipeline_indices = scene_pipeline_indices_for_draws(
         storage,
         &backend_plan.rendering_device_graph,

@@ -1,12 +1,12 @@
 //! Conservative sparse scissors for transparent image-waterwaves composites.
 
 use crate::engine::scene::{
-    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS,
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneStorage,
+    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneRenderingDeviceDrawPrimitive,
+    SceneRenderingDeviceGraphPlan, SceneStorage,
 };
 
 use super::draw_recording::SceneGpuScissor;
-use super::draw_uniform::{object_uv_to_screen_affine, object_uv_to_screen_linear};
+use super::draw_uniform::object_uv_to_screen_affine;
 use super::material_uniform::material_parameter_values;
 
 const WATERWAVES_DISPLACEMENT_SHADERS: &[&str] = &[
@@ -21,7 +21,8 @@ const SPARSE_COMPOSITE_SHADERS: &[&str] = &[
     "we/image-waterwaves-direct",
     "we/image-waterwaves-multiply-direct",
 ];
-const MAX_WATERWAVES_STAGES: usize = 7;
+const MAX_WATERWAVES_STAGES: usize = 9;
+const WATERWAVES_FILTER_GUARD_CELLS: usize = 2;
 
 pub(super) fn scene_alpha_coverage_scissors(
     storage: &SceneStorage,
@@ -49,8 +50,7 @@ pub(super) fn scene_alpha_coverage_scissors(
         if !matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS) {
             continue;
         }
-        let displacement =
-            graph_waterwaves_displacement_cells(storage, graph, pass.graph_index, output_extent);
+        let displacement = graph_waterwaves_displacement_cells(storage, graph, pass.graph_index);
         let start = pass.mesh_draw_start as usize;
         let end = start.saturating_add(pass.mesh_draw_count as usize);
         for (draw_index, draw) in graph
@@ -88,10 +88,17 @@ pub(super) fn scene_alpha_coverage_scissors(
                 .is_some_and(|value| value == pass.graph_index.to_string())
             {
                 eprintln!(
-                    "gilder-alpha-coverage: graph={} draw={} texture={} displacement={:?} affine={:?} coverage={:08x?} scissors={} pixels={} overlaps={}",
+                    "gilder-alpha-coverage: graph={} draw={} texture={} path={:?} size={}x{} storage={}x{} displacement={:?} affine={:?} coverage={:08x?} scissors={} pixels={} overlaps={}",
                     pass.graph_index,
                     start + draw_index,
                     texture.resource.0,
+                    storage
+                        .resource(texture.resource)
+                        .and_then(|resource| storage.string(resource.path)),
+                    texture.width,
+                    texture.height,
+                    texture.storage_width,
+                    texture.storage_height,
                     displacement,
                     affine,
                     coverage,
@@ -126,7 +133,6 @@ fn graph_waterwaves_displacement_cells(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     graph_index: u32,
-    output_extent: [u32; 2],
 ) -> [usize; 2] {
     let Some(field_pass) = graph.pass_nodes.iter().find(|pass| {
         if pass.graph_index != graph_index || pass.mesh_draw_count == 0 {
@@ -153,31 +159,41 @@ fn graph_waterwaves_displacement_cells(
             .unwrap_or(0.0)
             .round()
             .clamp(0.0, MAX_WATERWAVES_STAGES as f32) as usize;
-    let amplitude = (0..stage_count)
-        .map(|stage| {
-            let name = format!("waterwaves.{stage}.strength");
-            let strength =
-                material_parameter_values(storage, field_draw.material, &[name.as_str()])
-                    .first()
-                    .copied()
-                    .unwrap_or(0.1)
-                    .abs();
-            strength * strength
-        })
-        .sum::<f32>();
-    let Some(linear) = object_uv_to_screen_linear(storage, field_draw, output_extent) else {
-        return [SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE; 2];
-    };
-    let x = amplitude * linear[0][0].hypot(linear[0][1]);
-    let y = amplitude * linear[1][0].hypot(linear[1][1]);
+    let amplitude = (0..stage_count).fold([0.0f32; 2], |mut amplitude, stage| {
+        let name = format!("waterwaves.{stage}.strength");
+        let strength = material_parameter_values(storage, field_draw.material, &[name.as_str()])
+            .first()
+            .copied()
+            .unwrap_or(0.1)
+            .abs();
+        let name = format!("waterwaves.{stage}.direction");
+        let direction = material_parameter_values(storage, field_draw.material, &[name.as_str()])
+            .first()
+            .copied()
+            .unwrap_or(0.0);
+        let displacement = waterwaves_stage_displacement(strength, direction);
+        amplitude[0] += displacement[0];
+        amplitude[1] += displacement[1];
+        amplitude
+    });
     let safety_cells = std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_PADDING")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS)
+        .unwrap_or(WATERWAVES_FILTER_GUARD_CELLS)
         .min(SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE);
     [
-        (x * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize + safety_cells,
-        (y * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize + safety_cells,
+        (amplitude[0] * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize
+            + safety_cells,
+        (amplitude[1] * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize
+            + safety_cells,
+    ]
+}
+
+fn waterwaves_stage_displacement(strength: f32, direction: f32) -> [f32; 2] {
+    let displacement = strength.abs() * strength.abs();
+    [
+        direction.cos().abs() * displacement,
+        direction.sin().abs() * displacement,
     ]
 }
 
@@ -336,6 +352,18 @@ mod tests {
         assert_eq!(expanded[9] & 0b1_1111 << 8, 0b1_1111 << 8);
         assert_eq!(expanded[10] & 0b1_1111 << 8, 0b1_1111 << 8);
         assert_eq!(expanded[11] & 0b1_1111 << 8, 0b1_1111 << 8);
+    }
+
+    #[test]
+    fn waterwaves_displacement_stays_in_texture_uv_space() {
+        let horizontal = waterwaves_stage_displacement(0.08, 0.0);
+        let vertical = waterwaves_stage_displacement(0.08, std::f32::consts::FRAC_PI_2);
+
+        assert!((horizontal[0] - 0.0064).abs() < 0.000_001);
+        assert!(horizontal[1] < 0.000_001);
+        assert!(vertical[0] < 0.000_001);
+        assert!((vertical[1] - 0.0064).abs() < 0.000_001);
+        assert_eq!(WATERWAVES_FILTER_GUARD_CELLS, 2);
     }
 
     #[test]
