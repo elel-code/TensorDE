@@ -507,6 +507,7 @@ mod tests {
                 depth_test: DepthTestMode::Disabled,
                 depth_write: false,
                 cull_mode: CullMode::None,
+                ..PassState::default()
             },
         }
     }
@@ -514,6 +515,7 @@ mod tests {
     #[test]
     fn run_plan_keeps_same_target_writes_together_when_lifetime_pressure_is_equal() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(1, RenderTargetRole::ImageLocalSub, Some("b"), vec![]),
@@ -579,6 +581,7 @@ mod tests {
     #[test]
     fn run_plan_prefers_fewer_target_runs_when_lifetime_pressure_is_equal() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(
@@ -613,6 +616,7 @@ mod tests {
     #[test]
     fn run_plan_keeps_ping_pong_targets_as_repeated_runs() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(

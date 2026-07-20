@@ -46,9 +46,9 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
         target_extent: None,
         target_format: None,
         bindings: Vec::new(),
-        effect_visibility: RenderPassEffectVisibility::material_stages(
-            ripple.effect_binding_start,
-            ripple.effect_binding_count,
+        effect_visibility: super::single_effect_visibility(
+            ripple,
+            RenderPassEffectVisibility::material_stages,
         ),
         state: PassState {
             pipeline_blend: super::base_pipeline_blend(contract),
@@ -68,9 +68,9 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
         target_extent: None,
         target_format: None,
         bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
-        effect_visibility: RenderPassEffectVisibility::material_stages(
-            contract.effect_passes[1].effect_binding_start,
-            contract.effect_passes[1].effect_binding_count,
+        effect_visibility: super::single_effect_visibility(
+            &contract.effect_passes[1],
+            RenderPassEffectVisibility::material_stages,
         ),
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
@@ -302,6 +302,7 @@ mod tests {
             object_index: 4,
             effect_binding_start: material_index as u32,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(material_index),
             effect_file: format!("{shader}/effect.json"),
             pass_index: 0,

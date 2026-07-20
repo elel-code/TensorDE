@@ -15,7 +15,7 @@ use crate::engine::scene::{
 };
 
 use super::draw_recording::{
-    SceneGpuDrawRange, record_scene_draw_extent, record_scene_mesh_draw_ranges,
+    SceneGpuDrawCommand, SceneGpuDrawRange, record_scene_draw_extent, record_scene_mesh_draw_ranges,
 };
 use super::gpu_timing::SceneGpuTiming;
 use super::{NativeVulkanClearColor, SceneGpuResources, color_subresource_range, effect_target};
@@ -104,6 +104,15 @@ pub(super) fn record_scene_graphs_to_swapchain(
         if let Some(timing) = gpu_timing {
             timing.record_graph_start(device, command_buffer, graph_position);
             timing.record_graph_effect_target_start(device, command_buffer, graph_position);
+        }
+        if !graph_is_active(&scene.pass_nodes, &scene.draw_commands, *graph_index) {
+            if let Some(timing) = gpu_timing {
+                timing.record_graph_effect_target_finish(device, command_buffer, graph_position);
+                timing.record_graph_scene_color_start(device, command_buffer, graph_position);
+                timing.record_graph_scene_color_finish(device, command_buffer, graph_position);
+                timing.record_graph_finish(device, command_buffer, graph_position);
+            }
+            continue;
         }
         let requires_effect_target_execution =
             effect_target::graph_requires_effect_target_execution(
@@ -305,6 +314,30 @@ pub(super) fn record_scene_graphs_to_swapchain(
         resolve_explicit_scene_color_msaa(device, command_buffer, swapchain_image, extent, scene);
     }
     Ok(())
+}
+
+fn graph_is_active(
+    pass_nodes: &[SceneRenderingDevicePassNode],
+    draw_commands: &[SceneGpuDrawCommand],
+    graph_index: u32,
+) -> bool {
+    let activation_policy = pass_nodes
+        .iter()
+        .find(|pass| pass.graph_index == graph_index)
+        .map(|pass| pass.graph_activation_policy)
+        .unwrap_or(crate::engine::scene::SceneRenderGraphActivationPolicy::Always);
+    if activation_policy == crate::engine::scene::SceneRenderGraphActivationPolicy::Always {
+        return true;
+    }
+    pass_nodes
+        .iter()
+        .filter(|pass| pass.graph_index == graph_index)
+        .flat_map(|pass| {
+            let start = pass.mesh_draw_start as usize;
+            let end = start.saturating_add(pass.mesh_draw_count as usize);
+            draw_commands.get(start..end).into_iter().flatten()
+        })
+        .any(|draw| draw.enabled)
 }
 
 fn graph_requires_interleaved_target_execution(
@@ -814,9 +847,24 @@ mod tests {
         assert!(!graph_requires_interleaved_target_execution(&grouped, 7));
     }
 
+    #[test]
+    fn only_effect_gated_graphs_are_skipped_without_an_enabled_draw() {
+        let mut always = pass(4);
+        always.mesh_draw_count = 0;
+        assert!(graph_is_active(&[always], &[], 4));
+
+        let mut effect_gated = pass(5);
+        effect_gated.graph_activation_policy =
+            crate::engine::scene::SceneRenderGraphActivationPolicy::AnyEffectVisible;
+        effect_gated.mesh_draw_count = 0;
+        assert!(!graph_is_active(&[effect_gated], &[], 5));
+    }
+
     fn pass(graph_index: u32) -> SceneRenderingDevicePassNode {
         SceneRenderingDevicePassNode {
             graph_index,
+            graph_activation_policy:
+                crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
             pass_record_index: 0,
             pass_id: 0,
             role: crate::engine::scene::SceneRenderPassKind::BaseMaterial,

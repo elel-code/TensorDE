@@ -2,15 +2,16 @@
 
 use super::WeIrBuilder;
 use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture};
+use crate::convert::we_ingest::shader_key::canonical_scene_shader_key;
 use crate::engine::render_graph::{
-    DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassNode, RenderPassRole,
-    RenderTargetRole, RenderTargetSpec, TextureBindingRole,
+    ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassNode,
+    RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
+    UnsupportedGraphBoundary,
 };
 use crate::engine::scene::abi::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
 const FULL_ALPHA_MASK: &str = "_rt_FullAlphaMask";
 
-#[allow(dead_code)]
 pub(super) fn apply_token_one_graph(
     builder: &mut WeIrBuilder,
     object: u32,
@@ -30,13 +31,44 @@ pub(super) fn apply_token_one_graph(
         })
         .map(|(mesh, _)| mesh as u32)
         .collect::<Vec<_>>();
+    if clipping_meshes.is_empty() {
+        return;
+    }
     let [mesh] = clipping_meshes.as_slice() else {
+        report_unsupported(
+            graph,
+            object,
+            None,
+            format!(
+                "mdlv0023-token-one-clipping-mesh-count:{}",
+                clipping_meshes.len()
+            ),
+        );
         return;
     };
     let [scene_pass] = graph.passes.as_slice() else {
+        report_unsupported(
+            graph,
+            object,
+            None,
+            format!(
+                "mdlv0023-token-one-clipping-graph-pass-count:{}",
+                graph.passes.len()
+            ),
+        );
         return;
     };
-    let Some(clipped_shader) = scene_pass.shader.as_deref().and_then(clipped_shader_key) else {
+    let original = scene_pass.clone();
+    let Some(clipped_shader) = original.shader.as_deref().and_then(clipped_shader_key) else {
+        report_unsupported(
+            graph,
+            object,
+            Some(original.pass_index),
+            format!(
+                "mdlv0023-token-one-clipping-unsupported-shader:{}",
+                original.shader.as_deref().unwrap_or("<none>")
+            ),
+        );
         return;
     };
     let subdraws = builder
@@ -45,26 +77,43 @@ pub(super) fn apply_token_one_graph(
         .filter(|subdraw| subdraw.mesh == *mesh)
         .cloned()
         .collect::<Vec<_>>();
-    if subdraws.is_empty()
-        || subdraws.iter().any(|subdraw| {
-            subdraw.raw_flags != 0
-                || subdraw.mask_resource.is_none()
-                || subdraw.target_source_count == 0
-                || subdraw.mask_source_count == 0
-        })
-    {
+    if let Some((subdraw, reason)) = subdraws.iter().enumerate().find_map(|(index, subdraw)| {
+        let reason = if subdraw.raw_flags != 0 {
+            Some(format!("flags-0x{:08x}", subdraw.raw_flags))
+        } else if subdraw.mask_resource.is_none() {
+            Some("missing-mask-resource".to_owned())
+        } else if subdraw.target_source_count == 0 {
+            Some("empty-target-source-list".to_owned())
+        } else if subdraw.mask_source_count == 0 {
+            Some("empty-mask-source-list".to_owned())
+        } else {
+            None
+        };
+        reason.map(|reason| (index as u32, reason))
+    }) {
+        report_unsupported(
+            graph,
+            object,
+            Some(subdraw),
+            format!("mdlv0023-token-one-clipping-invalid-subdraw:{reason}"),
+        );
         return;
     }
-    let original = scene_pass.clone();
     let mask_resources = subdraws
         .iter()
-        .map(|subdraw| subdraw.mask_resource.unwrap())
+        .filter_map(|subdraw| subdraw.mask_resource)
         .collect::<Vec<_>>();
     let Some(mask_materials) = mask_resources
         .into_iter()
         .map(|resource| clipping_mask_material(builder, base_material, resource))
         .collect::<Option<Vec<_>>>()
     else {
+        report_unsupported(
+            graph,
+            object,
+            None,
+            "mdlv0023-token-one-clipping-mask-material".to_owned(),
+        );
         return;
     };
 
@@ -85,15 +134,18 @@ pub(super) fn apply_token_one_graph(
             bindings: Vec::new(),
             effect_visibility: crate::engine::render_graph::RenderPassEffectVisibility::NONE,
             state: PassState {
-                pipeline_blend: PipelineBlendMode::Normal,
+                pipeline_blend: PipelineBlendMode::Translucent,
                 depth_test: DepthTestMode::Disabled,
+                clear_target: true,
                 ..PassState::default()
             },
         });
         let mut target = original.clone();
         target.role = RenderPassRole::MeshClippedTarget;
         target.pass_index = subdraw as u32;
-        target.shader = Some(clipped_shader.to_owned());
+        target.shader = Some(clipped_shader.clone());
+        target.state.pipeline_blend = PipelineBlendMode::Translucent;
+        target.state.color_write_mask = ColorWriteMask::Rgb;
         target.bindings.push(TextureBindingRole::GraphTarget {
             slot: 8,
             role: RenderTargetRole::FirstClassEffectTarget,
@@ -115,6 +167,21 @@ pub(super) fn apply_token_one_graph(
     });
 }
 
+fn report_unsupported(
+    graph: &mut RenderGraph,
+    object: u32,
+    pass_index: Option<u32>,
+    feature: String,
+) {
+    graph.unsupported.push(UnsupportedGraphBoundary {
+        object_index: Some(object as usize),
+        pass_index,
+        feature,
+        expected_subsystem: "convert/we_ingest MDLV0023 clipping graph lowering".to_owned(),
+        containment: "authored-clipping-subdraw-not-lowered".to_owned(),
+    });
+}
+
 fn push_visible_pass(
     passes: &mut Vec<RenderPassNode>,
     original: &RenderPassNode,
@@ -126,10 +193,18 @@ fn push_visible_pass(
     passes.push(pass);
 }
 
-fn clipped_shader_key(shader: &str) -> Option<&'static str> {
-    match shader.to_ascii_lowercase().as_str() {
-        "we/puppet-opacity-final" => Some("we/puppet-opacity-clipping-final"),
-        "we/puppet-iris-waterripple-final" => Some("we/puppet-iris-waterripple-clipping-final"),
+fn clipped_shader_key(shader: &str) -> Option<String> {
+    match canonical_scene_shader_key(shader)
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "we/genericimage4__puppetskinning_1" => {
+            Some("we/genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1".to_owned())
+        }
+        "we/puppet-opacity-final" => Some("we/puppet-opacity-clipping-final".to_owned()),
+        "we/puppet-iris-waterripple-final" => {
+            Some("we/puppet-iris-waterripple-clipping-final".to_owned())
+        }
         _ => None,
     }
 }
@@ -172,7 +247,7 @@ fn clipping_mask_material(
         texture_count: 2,
         constant_start: builder.material_constants.len() as u32,
         constant_count: 0,
-        pipeline_blend: ScenePipelineBlend::Normal,
+        pipeline_blend: ScenePipelineBlend::Translucent,
         depth_test: SceneDepthTest::Disabled,
         depth_write: false,
         cull_mode: SceneCullMode::None,

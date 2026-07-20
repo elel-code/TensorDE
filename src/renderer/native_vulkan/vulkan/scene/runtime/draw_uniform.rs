@@ -68,18 +68,6 @@ pub(super) fn pack_scene_draw_uniforms(
                 {
                     rounded_mask_support_quad_draw_values(storage, draw, output_extent)
                 }
-                BuiltinSceneParameterLayout::FinalEffectProgram
-                    if material_shader_key(storage, draw.material).is_some_and(|key| {
-                        key.eq_ignore_ascii_case("we/framebuffer-water-final")
-                            || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
-                            || key.eq_ignore_ascii_case("we/framebuffer-lut16-final")
-                            || key.eq_ignore_ascii_case("we/framebuffer-lut64-final")
-                            || key.eq_ignore_ascii_case("we/framebuffer-lightning-screen-final")
-                            || key.eq_ignore_ascii_case("we/framebuffer-lightning-add-final")
-                    }) =>
-                {
-                    projected_object_uv_draw_values(storage, draw, output_extent)
-                }
                 BuiltinSceneParameterLayout::RoundedMask => {
                     if draw.primitive
                     == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad

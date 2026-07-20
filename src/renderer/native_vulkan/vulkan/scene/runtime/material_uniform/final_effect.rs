@@ -41,48 +41,8 @@ pub(super) fn final_effect_program_values(
             ),
         ),
         "we/audio-bars-final" => final_audio_bars_values(parameters, storage, draw, spectrum),
-        "we/framebuffer-water-final" | "we/framebuffer-water-post-final" => {
-            final_framebuffer_water_values(parameters, storage, draw, scene_time_seconds)
-        }
-        "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => {
-            final_framebuffer_lut_values(parameters, draw)
-        }
-        "we/framebuffer-lightning-screen-final" | "we/framebuffer-lightning-add-final" => {
-            final_framebuffer_lightning_values(parameters, draw, scene_time_seconds)
-        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
-}
-
-fn final_framebuffer_lightning_values(
-    parameters: &MaterialParameters<'_>,
-    draw: &SceneRenderingDeviceMeshDraw,
-    scene_time_seconds: f32,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
-    values[4] = scene_time_seconds;
-    values[5] = parameters.scalar(&["lightning.speed"], 0.3);
-    values[6] = parameters.scalar(&["lightning.erratic"], 1.0);
-    values[7] = parameters.scalar(&["lightning.amount"], 1.0);
-    values[8] = parameters.scalar(&["lightning.power"], 1.0);
-    values[9] = parameters.scalar(&["lightning.brightness"], 1.0);
-    values[12..16].copy_from_slice(&[0.7, 0.8, 1.0, 1.0]);
-    set_vector(&mut values, 12, &parameters.values(&["lightning.color"]), 3);
-    values
-}
-
-fn final_framebuffer_lut_values(
-    parameters: &MaterialParameters<'_>,
-    draw: &SceneRenderingDeviceMeshDraw,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
-    values[4] = parameters.scalar(&["lut.multiply1", "lut.multiply"], 1.0);
-    values[5] = parameters.scalar(&["lut.tc", "lut.translucentcompensation"], 0.0);
-    values[6] = parameters.scalar(&["lut.clamp"], 1.0);
-    values[7] = parameters.scalar(&["lut.flip_y"], 0.0);
-    values
 }
 
 fn final_cloudmotion_values(
@@ -120,55 +80,6 @@ fn final_cloudmotion_values(
     values
 }
 
-fn final_framebuffer_water_values(
-    parameters: &MaterialParameters<'_>,
-    storage: &SceneStorage,
-    draw: &SceneRenderingDeviceMeshDraw,
-    scene_time_seconds: f32,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
-    values[4] = scene_time_seconds;
-    values[5] = parameters.scalar(&["caustics.ui_editor_properties_speed"], 1.0);
-    values[6] = parameters.scalar(&["caustics.ui_editor_properties_granularity"], 2.0);
-    values[7] = parameters.scalar(&["caustics.ui_editor_properties_brightness"], 1.0);
-    values[8] = parameters.scalar(&["caustics.ui_editor_properties_glow"], 0.5);
-    values[9] = parameters.scalar(&["caustics.ui_editor_properties_distortion"], 1.0);
-    values[10] = parameters.scalar(&["caustics.ui_editor_properties_chromatic_aberration"], 0.0);
-    values[11] = parameters.scalar(&["caustics.ui_editor_properties_blur"], 0.0);
-    values[12..15].copy_from_slice(&[1.0; 3]);
-    set_vector(
-        &mut values,
-        12,
-        &parameters.values(&["caustics.ui_editor_properties_color_start"]),
-        3,
-    );
-    values[15] = parameters.scalar(&["caustics.ui_editor_properties_time_offset"], 0.0);
-    values[16..19].copy_from_slice(&[1.0; 3]);
-    set_vector(
-        &mut values,
-        16,
-        &parameters.values(&["caustics.ui_editor_properties_color_end"]),
-        3,
-    );
-    values[19] = scene_logical_aspect_ratio(storage);
-    values[20] = scene_time_seconds;
-    values[21] = parameters.scalar(&["waves.speed"], 5.0);
-    values[22] = parameters.scalar(&["waves.scale"], 200.0);
-    values[23] = parameters.scalar(&["waves.strength"], 0.1);
-    values[24] = parameters.scalar(&["waves.direction"], 0.0);
-    values[25] = parameters.scalar(&["waves.exponent"], 1.0);
-    values[26] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
-    values[28] = scene_time_seconds;
-    values[29] = parameters.scalar(&["shake.speed"], 1.0);
-    values[30] = parameters.scalar(&["shake.strength"], 0.1);
-    values[32..34].copy_from_slice(&[0.0, 1.0]);
-    values[34..36].copy_from_slice(&[1.0, 1.0]);
-    set_vector(&mut values, 32, &parameters.values(&["shake.bounds"]), 2);
-    set_vector(&mut values, 34, &parameters.values(&["shake.friction"]), 2);
-    values
-}
-
 fn final_tech_circle_values(
     parameters: &MaterialParameters<'_>,
     draw: &SceneRenderingDeviceMeshDraw,
@@ -184,7 +95,11 @@ fn final_tech_circle_values(
         &parameters.values(&["tech.ui_editor_properties_1_color"]),
         3,
     );
-    values[7] = parameters.scalar(&["tech.ui_editor_properties_2_alpha"], 1.0);
+    values[7] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["tech.ui_editor_properties_2_alpha"], 1.0)
+    } else {
+        0.0
+    };
     values[8] = scene_time_seconds;
     values[9] = parameters.scalar(&["tech.ui_editor_properties_3_speed"], 0.1);
     values[10] = parameters.scalar(&["tech.ui_editor_properties_6_skew"], 0.0);
@@ -210,7 +125,11 @@ pub(super) fn final_audio_bars_values(
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
     values[4..7].copy_from_slice(&[1.0, 1.0, 1.0]);
     set_vector(&mut values, 4, &parameters.values(&["audio.Bar Color"]), 3);
-    values[7] = parameters.scalar(&["audio.ui_editor_properties_opacity"], 1.0);
+    values[7] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["audio.ui_editor_properties_opacity"], 1.0)
+    } else {
+        0.0
+    };
     values[8] = parameters.scalar(&["audio.Bar Count"], 32.0);
     values[9] = parameters.scalar(&["audio.Bar Spacing"], 0.1);
     values[10..12].copy_from_slice(&[0.0, 1.0]);
@@ -231,12 +150,18 @@ pub(super) fn final_audio_bars_values(
         .first()
         .copied()
         .unwrap_or(0.05);
-    values[16] = parameters.scalar(&["skew.top"], 0.0);
-    values[17] = parameters.scalar(&["skew.bottom"], 0.0);
-    values[18] = parameters.scalar(&["skew.left"], 0.0);
-    values[19] = parameters.scalar(&["skew.right"], 0.0);
-    values[20] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
-    values[21] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    if draw_effect_enabled(draw, 1) {
+        values[16] = parameters.scalar(&["skew.top"], 0.0);
+        values[17] = parameters.scalar(&["skew.bottom"], 0.0);
+        values[18] = parameters.scalar(&["skew.left"], 0.0);
+        values[19] = parameters.scalar(&["skew.right"], 0.0);
+    }
+    if draw_effect_enabled(draw, 2) {
+        values[20] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+        values[21] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    } else {
+        values[20] = 1.0;
+    }
     values[24..28].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 0));
     values[28] = parameters
         .values(&["audio.Anti-alias blurring "])
@@ -271,12 +196,22 @@ fn final_scroll_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    final_scroll_values_for_stage(parameters, draw, scene_time_seconds, 0)
+}
+
+fn final_scroll_values_for_stage(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+    local_index: usize,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
     values[4] = scene_time_seconds;
-    if draw_effect_enabled(draw, 0) {
+    if draw_effect_enabled(draw, local_index) {
         values[5] = parameters.scalar(&["scroll.speedx"], 0.2);
         values[6] = parameters.scalar(&["scroll.speedy"], 0.2);
+        values[7] = 1.0;
     }
     values[8..10].copy_from_slice(&[1.0, 1.0]);
     set_vector(&mut values, 8, &parameters.values(&["scroll.repeat"]), 2);
@@ -288,14 +223,17 @@ fn final_colorkey_scroll_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = final_scroll_values(parameters, draw, scene_time_seconds);
-    values[12] = parameters.scalar(&["colorkey.alpha"], 0.0);
-    values[13] = parameters.scalar(&["colorkey.fuzziness"], 0.0);
-    values[14] = parameters.scalar(&["colorkey.tolerance"], 0.1);
-    values[15] = parameters.scalar(&["colorkey.invert"], 0.0);
+    let mut values = final_scroll_values_for_stage(parameters, draw, scene_time_seconds, 1);
+    values[12] = 1.0;
     values[16..19].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(&mut values, 16, &parameters.values(&["colorkey.color"]), 3);
-    values[19] = parameters.scalar(&["colorkey.flatten"], 0.0);
+    if draw_effect_enabled(draw, 0) {
+        values[12] = parameters.scalar(&["colorkey.alpha"], 0.0);
+        values[13] = parameters.scalar(&["colorkey.fuzziness"], 0.0);
+        values[14] = parameters.scalar(&["colorkey.tolerance"], 0.1);
+        values[15] = parameters.scalar(&["colorkey.invert"], 0.0);
+        set_vector(&mut values, 16, &parameters.values(&["colorkey.color"]), 3);
+        values[19] = parameters.scalar(&["colorkey.flatten"], 0.0);
+    }
     values
 }
 
@@ -354,6 +292,8 @@ fn final_puppet_iris_waterripple_values(
     values[28] = parameters.scalar(&["ripple.mask_enabled"], 0.0);
     values[29] = parameters.scalar(&["ripple.normal_enabled"], 0.0);
     values[32..36].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 2));
+    values[36] = bool_float(draw_effect_enabled(draw, 0));
+    values[37] = bool_float(draw_effect_enabled(draw, 1));
     values
 }
 
@@ -370,7 +310,12 @@ fn final_flat_rounded_opacity_values(
     values[6] = parameters.scalar(&["rounded.Softness"], 0.5);
     values[7] = parameters.scalar(&["rounded.ui_editor_properties_opacity"], 1.0);
     values[8] = parameters.scalar(&["rounded.Border width", "rounded.BorderWidth"], 0.025);
-    values[9] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[9] = if draw_effect_enabled(draw, 1) {
+        parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0)
+    } else {
+        1.0
+    };
+    values[10] = bool_float(draw_effect_enabled(draw, 0));
     values[12..16].copy_from_slice(&[
         draw.resolved_color.x,
         draw.resolved_color.y,

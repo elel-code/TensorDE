@@ -1,6 +1,5 @@
 //! Dynamic semantic-frame planning and host-visible GPU buffer updates.
 
-use std::fmt::Debug;
 use std::time::Instant;
 
 use vulkanalia::prelude::v1_4::*;
@@ -12,8 +11,7 @@ use crate::engine::scene::{
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneSemanticWorld, SceneStorage,
 };
 use crate::renderer::native_vulkan::{
-    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanVulkanaliaBuffer,
-    native_vulkan_vulkanalia_write_host_buffer,
+    NativeVulkanVulkanaliaBuffer, native_vulkan_vulkanalia_write_host_buffer,
 };
 
 use super::composite_scissor::update_scene_composite_scissors;
@@ -22,6 +20,11 @@ use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
 use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
+
+mod topology;
+
+pub(super) use topology::pack_scene_skinning_palette;
+use topology::{resolved_draw_effect_visibility_mask, validate_topology_slice};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SceneFrameBufferUpdate {
@@ -436,12 +439,54 @@ fn update_draw_visibility(
                 .map(|draw| draw.object)
         })
         .collect::<std::collections::BTreeSet<_>>();
-    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands) {
+    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
         command.enabled = draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID
             || hidden_render_texture_objects.contains(&draw.object)
             || frame
                 .object(draw.object)
                 .is_some_and(|object| object.resolved_visible);
+    }
+    disable_inactive_effect_gated_graph_draws(graph, frame, draw_commands);
+}
+
+fn disable_inactive_effect_gated_graph_draws(
+    graph: &SceneRenderingDeviceGraphPlan,
+    frame: &ResolvedSemanticFrame,
+    draw_commands: &mut [SceneGpuDrawCommand],
+) {
+    let mut graph_pass_start = 0;
+    while graph_pass_start < graph.pass_nodes.len() {
+        let graph_index = graph.pass_nodes[graph_pass_start].graph_index;
+        let graph_pass_count = graph.pass_nodes[graph_pass_start..]
+            .iter()
+            .take_while(|pass| pass.graph_index == graph_index)
+            .count();
+        let graph_pass_end = graph_pass_start + graph_pass_count;
+        let graph_passes = &graph.pass_nodes[graph_pass_start..graph_pass_end];
+        let effect_gated = graph_passes[0].graph_activation_policy
+            == crate::engine::scene::SceneRenderGraphActivationPolicy::AnyEffectVisible;
+        debug_assert!(graph_passes.iter().all(|pass| {
+            pass.graph_activation_policy == graph_passes[0].graph_activation_policy
+        }));
+        if effect_gated {
+            let any_effect_visible = graph_passes.iter().any(|pass| {
+                (0..pass.effect_binding_count).any(|local_index| {
+                    frame
+                        .object_effect(pass.effect_binding_start.saturating_add(local_index))
+                        .is_some_and(|effect| effect.resolved_visible)
+                })
+            });
+            if !any_effect_visible {
+                for pass in graph_passes {
+                    let draw_start = pass.mesh_draw_start as usize;
+                    let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
+                    if let Some(commands) = draw_commands.get_mut(draw_start..draw_end) {
+                        commands.iter_mut().for_each(|command| command.enabled = false);
+                    }
+                }
+            }
+        }
+        graph_pass_start = graph_pass_end;
     }
 }
 
@@ -473,30 +518,6 @@ fn elapsed_optional_micros(started: Option<Instant>) -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) fn pack_scene_skinning_palette(graph: &SceneRenderingDeviceGraphPlan) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(
-        graph
-            .puppet_bone_matrices
-            .len()
-            .saturating_add(1)
-            .saturating_mul(NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES),
-    );
-    push_scene_puppet_bone(
-        &mut payload,
-        [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        1.0,
-    );
-    for bone in &graph.puppet_bone_matrices {
-        push_scene_puppet_bone(&mut payload, bone.matrix, bone.alpha);
-    }
-    payload
-}
-
 fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology {
     SceneFrameDrawTopology {
         primitive: draw.primitive,
@@ -516,48 +537,6 @@ fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology 
     }
 }
 
-fn resolved_draw_effect_visibility_mask(
-    frame: &ResolvedSemanticFrame,
-    draw: &SceneRenderingDeviceMeshDraw,
-) -> u32 {
-    (0..draw.effect_binding_count.min(32)).fold(0u32, |mask, local_index| {
-        if frame
-            .object_effect(draw.effect_binding_start.saturating_add(local_index))
-            .is_some_and(|effect| effect.resolved_visible)
-        {
-            mask | (1 << local_index)
-        } else {
-            mask
-        }
-    })
-}
-
-fn validate_topology_slice<T: Debug + PartialEq>(
-    role: &str,
-    expected: &[T],
-    actual: &[T],
-    scene_time_seconds: f32,
-) -> Result<(), String> {
-    if expected.len() != actual.len() {
-        return Err(format!(
-            "scene {role} topology changed at {scene_time_seconds:.6}s: setup count {}, frame count {}; live topology mutation is not supported by the current Vulkan resource allocation",
-            expected.len(),
-            actual.len()
-        ));
-    }
-    if let Some((index, (expected, actual))) = expected
-        .iter()
-        .zip(actual)
-        .enumerate()
-        .find(|(_, (expected, actual))| expected != actual)
-    {
-        return Err(format!(
-            "scene {role} topology changed at {scene_time_seconds:.6}s at index {index}: setup {expected:?}, frame {actual:?}; live topology mutation is not supported by the current Vulkan resource allocation"
-        ));
-    }
-    Ok(())
-}
-
 fn write_exact_frame_payload(
     device: &Device,
     buffer: &NativeVulkanVulkanaliaBuffer,
@@ -574,25 +553,20 @@ fn write_exact_frame_payload(
     native_vulkan_vulkanalia_write_host_buffer(device, buffer, payload)
 }
 
-fn push_scene_puppet_bone(payload: &mut Vec<u8>, matrix: [[f32; 4]; 4], alpha: f32) {
-    for value in matrix.into_iter().flatten() {
-        payload.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in [alpha, 0.0, 0.0, 0.0] {
-        payload.extend_from_slice(&value.to_le_bytes());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene::semantic_world::{
-        ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette,
+        ResolvedObjectEffectState, ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette,
+        SemanticEntity,
     };
     use crate::engine::scene::{
-        SceneMaterialHandle, SceneRenderingDevicePuppetBoneMatrix,
-        SceneRenderingDevicePuppetBonePalette,
+        SceneEffectHandle, SceneMaterialHandle, SceneRenderGraphActivationPolicy,
+        SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDevicePassNode,
+        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
+        SceneStringId,
     };
+    use crate::renderer::native_vulkan::NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES;
 
     #[test]
     fn hidden_passthrough_effect_switches_pipeline_without_affecting_material_stage_draw() {
@@ -625,6 +599,98 @@ mod tests {
         graph.mesh_draws[0].resolved_effect_visibility_mask = 1;
         update_effect_draw_pipelines(&graph, &mut commands).expect("visible authored pipeline");
         assert_eq!(commands[0].pipeline_index, 10);
+    }
+
+    #[test]
+    fn effect_only_framebuffer_graph_disables_every_draw_when_all_effects_are_hidden() {
+        let mut graph = graph_with_bone(SceneRenderingDevicePuppetBoneMatrix {
+            puppet_index: 0,
+            bone_index: 0,
+            parent_index: -1,
+            matrix: [[0.0; 4]; 4],
+            alpha: 1.0,
+        });
+        let pass = |pass_id,
+                    role,
+                    effect_binding_start,
+                    effect_binding_count,
+                    effect_visibility_policy,
+                    mesh_draw_start| SceneRenderingDevicePassNode {
+            graph_index: 4,
+            graph_activation_policy: SceneRenderGraphActivationPolicy::AnyEffectVisible,
+            pass_record_index: pass_id,
+            pass_id,
+            role,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start,
+            effect_binding_count,
+            effect_visibility_policy,
+            mesh_draw_start,
+            mesh_draw_count: 1,
+        };
+        graph.pass_nodes = vec![
+            pass(
+                0,
+                SceneRenderPassKind::BaseMaterial,
+                u32::MAX,
+                0,
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                0,
+            ),
+            pass(
+                1,
+                SceneRenderPassKind::EffectMaterial,
+                0,
+                1,
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough,
+                1,
+            ),
+            pass(
+                2,
+                SceneRenderPassKind::SceneComposite,
+                u32::MAX,
+                0,
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                2,
+            ),
+        ];
+        graph.mesh_draws = vec![
+            effect_draw(
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                0,
+                u32::MAX,
+            ),
+            effect_draw(
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough,
+                0,
+                0,
+            ),
+            effect_draw(
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                0,
+                u32::MAX,
+            ),
+        ];
+        let storage = SceneStorage::from_document(
+            crate::engine::scene::binary::SceneBinaryDocument::default(),
+        )
+        .expect("empty storage");
+        let mut commands = vec![
+            draw_command(10, None),
+            draw_command(11, Some(21)),
+            draw_command(12, None),
+        ];
+        let mut frame = frame_with_effect_visibility(false);
+
+        update_draw_visibility(&storage, &graph, &frame, &mut commands);
+        assert!(commands.iter().all(|command| !command.enabled));
+
+        frame.object_effects[0].resolved_visible = true;
+        update_draw_visibility(&storage, &graph, &frame, &mut commands);
+        assert!(commands.iter().all(|command| command.enabled));
     }
 
     #[test]
@@ -803,6 +869,42 @@ mod tests {
             graph_physical_target_count: 0,
             graph_aliased_target_count: 0,
             fifo_latest_ready_present_required: true,
+        }
+    }
+
+    fn frame_with_effect_visibility(resolved_visible: bool) -> ResolvedSemanticFrame {
+        ResolvedSemanticFrame {
+            objects: Vec::new(),
+            object_effects: vec![ResolvedObjectEffectState {
+                binding_index: 0,
+                entity: SemanticEntity::from_raw(0),
+                object: SceneObjectHandle(0),
+                object_index: 0,
+                effect: SceneEffectHandle(0),
+                effect_index: 0,
+                instance_id: 0,
+                self_visible: resolved_visible,
+                object_resolved_visible: true,
+                resolved_visible,
+                pass_start: 0,
+                pass_count: 1,
+                fbo_start: 0,
+                fbo_count: 0,
+            }],
+            attachment_links: Vec::new(),
+            puppet_bone_palettes: Vec::new(),
+            puppet_bone_matrices: Vec::new(),
+            audio_band_material_values: Vec::new(),
+            script_text_values: Vec::new(),
+            media_clock: None,
+            video_frame: None,
+            visible_object_count: 0,
+            visible_mesh_binding_count: 0,
+            visible_effect_instance_count: usize::from(resolved_visible),
+            visible_effect_pass_count: usize::from(resolved_visible),
+            visible_effect_fbo_count: 0,
+            visible_puppet_binding_count: 0,
+            visible_puppet_bone_matrix_count: 0,
         }
     }
 

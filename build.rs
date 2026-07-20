@@ -276,14 +276,14 @@ fn clippingmaskimage4_fragment_source() -> String {
     r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 1) in float v_VertexAlpha;
-layout(location = 0) out float o_Mask;
+layout(location = 0) out vec4 o_Mask;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
 void main() {
     float albedo_alpha = texture(g_Texture0, v_TexCoord).a;
     float mask = texture(g_Texture1, v_TexCoord).r;
     float alpha = mix(pow(albedo_alpha, 4.0), albedo_alpha, mask) * v_VertexAlpha;
-    o_Mask = mask * alpha;
+    o_Mask = vec4(mask * alpha, 0.0, 0.0, alpha);
 }
 "#
     .to_owned()
@@ -306,11 +306,7 @@ void main() {
     .to_owned()
 }
 
-fn caustics_effect_fragment_source(
-    texture_slot_mask: u32,
-    chromatic_zero: bool,
-    pattern_glow_shared: bool,
-) -> String {
+fn caustics_effect_fragment_source(texture_slot_mask: u32, chromatic_zero: bool) -> String {
     assert_eq!(
         texture_slot_mask & 0x3d,
         0x3d,
@@ -403,18 +399,7 @@ void main() {
     } else {
         source
     };
-    if pattern_glow_shared {
-        assert!(
-            chromatic_zero,
-            "shared caustics pattern/glow currently requires the chromatic-zero variant"
-        );
-        source.replace(
-            "    float glowSample = texture(g_Texture5, causticsCoords).r;",
-            "    float glowSample = causticsPattern;",
-        )
-    } else {
-        source
-    }
+    source
 }
 
 fn colorkey_effect_fragment_source(_texture_slot_mask: u32) -> String {

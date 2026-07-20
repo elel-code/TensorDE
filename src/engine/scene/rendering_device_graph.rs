@@ -179,6 +179,7 @@ impl SceneRenderingDeviceGraphPlan {
                 ));
                 pass_nodes.push(SceneRenderingDevicePassNode {
                     graph_index: graph_index as u32,
+                    graph_activation_policy: graph.activation_policy,
                     pass_record_index: graph.pass_start + local_pass_index as u32,
                     pass_id: pass.id,
                     role: pass.role,
@@ -294,6 +295,7 @@ impl SceneRenderingDeviceGraphPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneRenderingDevicePassNode {
     pub graph_index: u32,
+    pub graph_activation_policy: SceneRenderGraphActivationPolicy,
     pub pass_record_index: u32,
     pub pass_id: u32,
     pub role: SceneRenderPassKind,
@@ -430,12 +432,6 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
                         || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-hsl-source")
                         || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-water-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-lut16-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-lut64-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-lightning-screen-final")
-                        || key.eq_ignore_ascii_case("we/framebuffer-lightning-add-final")
                 })))
 }
 
@@ -520,17 +516,6 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
             | "we/flat-rounded-hsl-source"
     ) {
         return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
-    }
-    if matches!(
-        key.as_str(),
-        "we/framebuffer-water-final"
-            | "we/framebuffer-water-post-final"
-            | "we/framebuffer-lut16-final"
-            | "we/framebuffer-lut64-final"
-            | "we/framebuffer-lightning-screen-final"
-            | "we/framebuffer-lightning-add-final"
-    ) {
-        return Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle);
     }
     (key.starts_with("effects/")
         || key.starts_with("workshop/")

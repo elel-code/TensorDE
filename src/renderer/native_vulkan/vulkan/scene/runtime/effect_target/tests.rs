@@ -1,6 +1,9 @@
 use super::*;
 use crate::engine::scene::{
-    SceneBinaryDocument, SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
+    INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneColorWriteMask,
+    SceneCompositeBlend, SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle,
+    ScenePipelineBlend, SceneRenderEffectVisibilityPolicy, SceneRenderPassRecord,
+    SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceTargetAllocation,
 };
 
@@ -199,6 +202,7 @@ fn effect_target_commands_track_copy_swap_and_dynamic_passes() {
             named_fbo_binding(SceneStringId(0)),
             named_fbo_binding(SceneStringId(0)),
         ],
+        render_passes: vec![render_pass_record(true)],
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
@@ -236,6 +240,7 @@ fn effect_target_commands_track_copy_swap_and_dynamic_passes() {
     assert_eq!(plan.discard_load_count, 0);
     assert_eq!(commands[2].mesh_draw_start, 4);
     assert_eq!(commands[2].mesh_draw_count, 2);
+    assert!(commands[2].clear_before_draw);
     let timing_commands = scene_effect_target_timing_commands(&commands, &[0]);
     assert_eq!(timing_commands.len(), 2);
     assert_eq!(timing_commands[0].source_position, 0);
@@ -305,7 +310,9 @@ fn pass_node(
 ) -> SceneRenderingDevicePassNode {
     SceneRenderingDevicePassNode {
         graph_index: 0,
-        pass_record_index: pass_id,
+        graph_activation_policy:
+            crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
+        pass_record_index: 0,
         pass_id,
         role,
         target: SceneRenderTargetKind::NamedFbo,
@@ -318,6 +325,31 @@ fn pass_node(
             crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         mesh_draw_start: 0,
         mesh_draw_count: 0,
+    }
+}
+
+fn render_pass_record(clear_target: bool) -> SceneRenderPassRecord {
+    SceneRenderPassRecord {
+        id: 0,
+        role: SceneRenderPassKind::EffectMaterial,
+        object: SceneObjectHandle(INVALID_OBJECT_ID),
+        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+        pass_index: 0,
+        shader_key: SceneStringId::NONE,
+        target: SceneRenderTargetKind::NamedFbo,
+        target_name: SceneStringId(1),
+        binding_start: 0,
+        binding_count: 0,
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
+        pipeline_blend: ScenePipelineBlend::Normal,
+        scene_blend: SceneCompositeBlend::Alpha,
+        depth_test: SceneDepthTest::Disabled,
+        depth_write: false,
+        cull_mode: SceneCullMode::None,
+        color_write_mask: SceneColorWriteMask::Rgba,
+        clear_target,
     }
 }
 

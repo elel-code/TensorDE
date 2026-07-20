@@ -372,8 +372,67 @@ fn final_scroll_visibility_neutralizes_motion_without_changing_repeat_data() {
 
     assert_eq!(f32_from_payload(&payload, 5 * 4), 0.0);
     assert_eq!(f32_from_payload(&payload, 6 * 4), 0.0);
+    assert_eq!(f32_from_payload(&payload, 7 * 4), 0.0);
     assert_eq!(f32_from_payload(&payload, 8 * 4), 2.0);
     assert_eq!(f32_from_payload(&payload, 9 * 4), 3.0);
+}
+
+#[test]
+fn fused_eye_visibility_controls_iris_and_ripple_stages_independently() {
+    let storage = storage_with_constants("we/puppet-iris-waterripple-final", &[]);
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
+
+    let iris_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    assert_eq!(f32_from_payload(&iris_only, 36 * 4), 1.0);
+    assert_eq!(f32_from_payload(&iris_only, 37 * 4), 0.0);
+
+    draw.resolved_effect_visibility_mask = 0b10;
+    let ripple_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    assert_eq!(f32_from_payload(&ripple_only, 36 * 4), 0.0);
+    assert_eq!(f32_from_payload(&ripple_only, 37 * 4), 1.0);
+}
+
+#[test]
+fn fused_colorkey_scroll_visibility_preserves_each_stage_identity() {
+    let storage = storage_with_constants(
+        "we/image-colorkey-scroll-final",
+        &[
+            ("colorkey.alpha", "0.25"),
+            ("colorkey.flatten", "1"),
+            ("scroll.speedx", "0.4"),
+            ("scroll.repeat", "[2,3]"),
+        ],
+    );
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
+
+    let colorkey_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    assert_eq!(f32_from_payload(&colorkey_only, 7 * 4), 0.0);
+    assert_eq!(f32_from_payload(&colorkey_only, 12 * 4), 0.25);
+    assert_eq!(f32_from_payload(&colorkey_only, 19 * 4), 1.0);
+
+    draw.resolved_effect_visibility_mask = 0b10;
+    let scroll_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    assert_eq!(f32_from_payload(&scroll_only, 7 * 4), 1.0);
+    assert_eq!(f32_from_payload(&scroll_only, 12 * 4), 1.0);
+    assert_eq!(f32_from_payload(&scroll_only, 19 * 4), 0.0);
+}
+
+#[test]
+fn fused_rounded_opacity_visibility_falls_back_to_the_flat_base() {
+    let storage = storage_with_constants(
+        "we/flat-rounded-opacity-final",
+        &[("opacity.alpha", "0.3")],
+    );
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
+
+    let rounded_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+    assert_eq!(f32_from_payload(&rounded_only, 9 * 4), 1.0);
+    assert_eq!(f32_from_payload(&rounded_only, 10 * 4), 1.0);
+
+    draw.resolved_effect_visibility_mask = 0b10;
+    let opacity_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+    assert_eq!(f32_from_payload(&opacity_only, 9 * 4), 0.3);
+    assert_eq!(f32_from_payload(&opacity_only, 10 * 4), 0.0);
 }
 
 #[test]
@@ -852,6 +911,20 @@ fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMesh
         index_count: 6,
         instance_count: 1,
     }
+}
+
+fn draw_with_material_visibility(
+    material: SceneMaterialHandle,
+    binding_count: u32,
+    visibility_mask: u32,
+) -> SceneRenderingDeviceMeshDraw {
+    let mut draw = draw_with_material(material);
+    draw.effect_binding_start = 0;
+    draw.effect_binding_count = binding_count;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
+    draw.resolved_effect_visibility_mask = visibility_mask;
+    draw
 }
 
 fn f32_from_payload(payload: &[u8], offset: usize) -> f32 {

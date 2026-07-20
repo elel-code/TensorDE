@@ -138,6 +138,13 @@ pub enum CullMode {
     Back,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorWriteMask {
+    Rgb,
+    Rgba,
+}
+
 impl CullMode {
     pub fn from_we_cullmode(value: Option<&str>) -> Self {
         match value.unwrap_or("nocull").to_ascii_lowercase().as_str() {
@@ -156,6 +163,8 @@ pub struct PassState {
     pub depth_test: DepthTestMode,
     pub depth_write: bool,
     pub cull_mode: CullMode,
+    pub color_write_mask: ColorWriteMask,
+    pub clear_target: bool,
 }
 
 impl Default for PassState {
@@ -167,6 +176,8 @@ impl Default for PassState {
             depth_test: DepthTestMode::Disabled,
             depth_write: false,
             cull_mode: CullMode::None,
+            color_write_mask: ColorWriteMask::Rgba,
+            clear_target: false,
         }
     }
 }

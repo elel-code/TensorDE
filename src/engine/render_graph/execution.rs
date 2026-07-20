@@ -193,6 +193,7 @@ mod tests {
                 depth_test: DepthTestMode::Disabled,
                 depth_write: false,
                 cull_mode: CullMode::None,
+                ..PassState::default()
             },
         }
     }
@@ -200,6 +201,7 @@ mod tests {
     #[test]
     fn execution_plan_batches_independent_writes_before_joining_scene_pass() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(1, RenderTargetRole::ImageLocalSub, Some("b"), vec![]),
@@ -248,6 +250,7 @@ mod tests {
     #[test]
     fn execution_plan_keeps_ping_pong_effect_targets_serialized() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(

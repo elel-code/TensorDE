@@ -349,6 +349,8 @@ fn storage_rejects_effect_visibility_ownership_crossing_objects() {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
         }],
         ..SceneBinaryDocument::default()
     };
@@ -362,6 +364,33 @@ fn storage_rejects_effect_visibility_ownership_crossing_objects() {
             start: 0,
             count: 2,
             len: 2,
+        }
+    ));
+}
+
+#[test]
+fn storage_rejects_effect_gated_graph_without_owned_effect_binding() {
+    let document = SceneBinaryDocument {
+        render_graphs: vec![SceneRenderGraphRecord {
+            object: SceneObjectHandle(0),
+            activation_policy: SceneRenderGraphActivationPolicy::AnyEffectVisible,
+            pass_start: 0,
+            pass_count: 0,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+
+    let err = SceneStorage::from_document(document).expect_err("missing activation binding");
+
+    assert!(matches!(
+        err,
+        SceneStorageError::InvalidRange {
+            field: "render_graph.activation_effect_binding_range",
+            start: 0,
+            count: 0,
+            len: 0,
         }
     ));
 }

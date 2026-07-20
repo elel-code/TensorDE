@@ -293,6 +293,7 @@ mod tests {
                 depth_test: DepthTestMode::Disabled,
                 depth_write: false,
                 cull_mode: crate::engine::render_graph::CullMode::None,
+                ..PassState::default()
             },
         }
     }
@@ -300,6 +301,7 @@ mod tests {
     #[test]
     fn target_allocation_reuses_non_overlapping_targets() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(
@@ -340,6 +342,7 @@ mod tests {
     #[test]
     fn target_allocation_can_follow_run_plan_lifetimes() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(
@@ -379,6 +382,7 @@ mod tests {
     #[test]
     fn target_allocation_keeps_overlapping_target_lifetimes_separate() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(1, RenderTargetRole::ImageLocalMain, Some("b"), vec![]),
@@ -414,6 +418,7 @@ mod tests {
     #[test]
     fn target_allocation_keeps_different_extents_separate() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
                 pass(
@@ -455,6 +460,7 @@ mod tests {
     #[test]
     fn target_allocation_keeps_different_formats_separate() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 RenderPassNode {
                     target_format: Some("rgba8".to_owned()),
@@ -499,6 +505,7 @@ mod tests {
     #[test]
     fn target_allocation_keeps_unknown_extents_separate() {
         let graph = RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![
                 RenderPassNode {
                     target_extent: None,

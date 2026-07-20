@@ -602,6 +602,27 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             graph.unsupported_count,
             document.unsupported.len(),
         )?;
+        if graph.activation_policy == SceneRenderGraphActivationPolicy::AnyEffectVisible {
+            let effect_binding_count = document
+                .render_passes
+                .get(
+                    graph.pass_start as usize
+                        ..graph.pass_start.saturating_add(graph.pass_count) as usize,
+                )
+                .into_iter()
+                .flatten()
+                .filter(|pass| pass.object == graph.object)
+                .map(|pass| pass.effect_binding_count)
+                .sum::<u32>();
+            if effect_binding_count == 0 {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "render_graph.activation_effect_binding_range",
+                    start: graph.pass_start,
+                    count: graph.pass_count,
+                    len: document.render_passes.len(),
+                });
+            }
+        }
     }
     for pass in &document.render_passes {
         validate_optional_material(document, "render_pass.material", pass.material)?;

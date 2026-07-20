@@ -403,7 +403,7 @@ impl WeIrBuilder {
         &mut self,
         object: u32,
         material: u32,
-        effect_instances: &[(u32, u32, Value)],
+        effect_instances: &[super::effect_instance::WeObjectEffectInstance],
         color_blend_mode: i32,
         utility_layer: Option<WeIrUtilityLayerKind>,
         object_is_puppet: bool,
@@ -434,28 +434,36 @@ impl WeIrBuilder {
             base_pass.as_ref().map_or("", |pass| &pass.shader_key),
         );
         let mut effect_passes = Vec::new();
-        for (effect_binding_start, effect_handle, instance) in effect_instances {
+        for instance in effect_instances {
             self.push_effect_contracts_for_instance(
                 object,
-                *effect_binding_start,
-                *effect_handle,
-                instance,
+                instance.binding_start,
+                instance.effect,
+                &instance.value,
+                instance.runtime_visibility,
                 &mut effect_passes,
             )?;
         }
+        let preserve_authored_effect_target_boundary = effect_instances
+            .iter()
+            .any(|instance| !instance.runtime_visibility);
         let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
-        let waterwaves_displacement =
-            waterwaves_displacement::create_waterwaves_displacement_materials(
-                self,
-                effects_in_authored_texture_space,
-                base_material_handle as usize,
-                final_scene_blend,
-                object_is_puppet,
-                static_black_output,
-                puppet_group_visual_required,
-                &effect_passes,
-            );
-        let foliage_ripple = (!puppet_group_visual_required)
+        let waterwaves_displacement = (!preserve_authored_effect_target_boundary)
+            .then(|| {
+                waterwaves_displacement::create_waterwaves_displacement_materials(
+                    self,
+                    effects_in_authored_texture_space,
+                    base_material_handle as usize,
+                    final_scene_blend,
+                    object_is_puppet,
+                    static_black_output,
+                    puppet_group_visual_required,
+                    &effect_passes,
+                )
+            })
+            .unwrap_or_default();
+        let foliage_ripple = (!preserve_authored_effect_target_boundary
+            && !puppet_group_visual_required)
             .then(|| {
                 foliage_ripple::create(
                     self,
@@ -465,7 +473,8 @@ impl WeIrBuilder {
                 )
             })
             .flatten();
-        let ripple_flow_materials = (!puppet_group_visual_required)
+        let ripple_flow_materials = (!preserve_authored_effect_target_boundary
+            && !puppet_group_visual_required)
             .then(|| {
                 ripple_flow::create(
                     self,
@@ -475,7 +484,8 @@ impl WeIrBuilder {
                 )
             })
             .flatten();
-        let final_effect = (!puppet_group_visual_required)
+        let final_effect = (!preserve_authored_effect_target_boundary
+            && !puppet_group_visual_required)
             .then(|| {
                 final_effect::create(
                     self,
@@ -522,6 +532,8 @@ impl WeIrBuilder {
                             layer,
                             WeIrUtilityLayerKind::FramebufferComposite
                         ),
+                        usage:
+                            crate::engine::render_graph::WeFramebufferSnapshotUsage::EffectOnlyLayer,
                     },
                 ),
             final_scene_blend,
@@ -542,10 +554,12 @@ impl WeIrBuilder {
                     target_name: FULL_FRAMEBUFFER_TARGET.to_owned(),
                     texture_slot: 0,
                     composite_to_object_mesh: false,
+                    usage: crate::engine::render_graph::WeFramebufferSnapshotUsage::ObjectSource,
                 });
         }
-        let has_framebuffer_snapshot = graph_contract.framebuffer_snapshot.is_some();
         let mut graph = we_image_graph(&graph_contract);
+        let has_framebuffer_snapshot =
+            graph_contract.framebuffer_snapshot.is_some() && !graph.passes.is_empty();
         puppet_clipping::apply_token_one_graph(self, object, base_material_handle, &mut graph);
         if has_framebuffer_snapshot
             && !self.image_targets.iter().any(|target| {
@@ -571,6 +585,7 @@ impl WeIrBuilder {
         effect_binding_start: u32,
         effect_handle: u32,
         instance: &Value,
+        runtime_visibility: bool,
         out: &mut Vec<WeEffectPassContract>,
     ) -> Result<(), WeIngestError> {
         let Some(effect) = self.effects.get(effect_handle as usize).cloned() else {
@@ -650,10 +665,11 @@ impl WeIrBuilder {
             let shader = base_shader
                 .as_deref()
                 .map(|shader| effect_shader_variant_key(shader, &binds, &combos, &combo_defaults));
+            let mut resolved_shader = shader.clone();
             let (material_index, pass_constants) =
                 match (base_material, material_pass.clone(), shader.as_deref()) {
                     (Some(material), Some(pass), Some(shader)) => {
-                        let material = self.add_effect_material_instance(
+                        let (material, material_shader) = self.add_effect_material_instance(
                             material,
                             pass,
                             base_textures,
@@ -661,6 +677,7 @@ impl WeIrBuilder {
                             &binds,
                             shader,
                         )?;
+                        resolved_shader = Some(material_shader);
                         let pass = self.materials.get(material as usize).and_then(|material| {
                             self.material_passes.get(material.pass_start as usize)
                         });
@@ -678,11 +695,12 @@ impl WeIrBuilder {
                 object_index: object as usize,
                 effect_binding_start,
                 effect_binding_count: 1,
+                runtime_visibility,
                 material_index,
                 effect_file: effect_file.clone(),
                 pass_index: local_index,
                 command: non_empty_string(&effect_pass.command),
-                shader,
+                shader: resolved_shader,
                 source: non_empty_string(&effect_pass.source),
                 target: if effect_pass.target.is_empty() {
                     None
@@ -723,7 +741,7 @@ impl WeIrBuilder {
         instance_pass: Option<&Value>,
         resolved_bindings: &BTreeMap<u32, String>,
         shader_key: &str,
-    ) -> Result<u32, WeIngestError> {
+    ) -> Result<(u32, String), WeIngestError> {
         let material_path = self
             .resources
             .get(base_material.resource as usize)
@@ -751,14 +769,17 @@ impl WeIrBuilder {
             .cloned()
             .collect::<Vec<_>>();
         let constants = merged_material_constants(&base_constants, instance_pass);
+        let textures = textures.into_values().collect::<Vec<_>>();
+        let shader_key =
+            caustics_specialization::specialize_caustics_shader(shader_key, &constants);
         let handle = self.materials.len() as u32;
         let texture_start = self.material_textures.len() as u32;
-        self.material_textures.extend(textures.into_values());
+        self.material_textures.extend(textures);
         let constant_start = self.material_constants.len() as u32;
         self.material_constants.extend(constants);
         let mut pass = base_pass;
         pass.material = handle;
-        pass.shader_key = shader_key.to_owned();
+        pass.shader_key = shader_key.clone();
         pass.texture_start = texture_start;
         pass.texture_count = self.material_textures.len() as u32 - texture_start;
         pass.constant_start = constant_start;
@@ -771,7 +792,7 @@ impl WeIrBuilder {
             pass_start,
             pass_count: 1,
         });
-        Ok(handle)
+        Ok((handle, shader_key))
     }
 
     pub(super) fn shader_combo_defaults(

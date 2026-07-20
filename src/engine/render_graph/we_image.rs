@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use crate::core::SceneBlendMode;
 
 use super::binding::TextureBindingRole;
-use super::graph::{RenderGraph, UnsupportedGraphBoundary};
+use super::graph::{RenderGraph, RenderGraphActivationPolicy, UnsupportedGraphBoundary};
 use super::pass::{RenderPassEffectVisibility, RenderPassNode, RenderPassRole};
 use super::state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 use super::target::RenderTargetRole;
@@ -19,6 +19,8 @@ pub struct WeEffectPassContract {
     pub object_index: usize,
     pub effect_binding_start: u32,
     pub effect_binding_count: u32,
+    /// Whether this render stage still needs semantic-ECS effect visibility at runtime.
+    pub runtime_visibility: bool,
     pub material_index: Option<usize>,
     pub effect_file: String,
     pub pass_index: u32,
@@ -77,6 +79,21 @@ pub struct WeWaterWavesDirectMaterial {
 
 fn contiguous_effect_range(effects: &[WeEffectPassContract]) -> Option<(u32, u32)> {
     let first = effects.first()?;
+    if effects.iter().all(|effect| !effect.runtime_visibility) {
+        let mut previous = None;
+        for effect in effects {
+            if effect.effect_binding_count != 1
+                || previous.is_some_and(|previous| effect.effect_binding_start <= previous)
+            {
+                return None;
+            }
+            previous = Some(effect.effect_binding_start);
+        }
+        return Some((u32::MAX, 0));
+    }
+    if effects.iter().any(|effect| !effect.runtime_visibility) {
+        return None;
+    }
     let start = first.effect_binding_start;
     let mut next = start;
     for effect in effects {
@@ -92,7 +109,22 @@ fn contiguous_material_stage_visibility(
     effects: &[WeEffectPassContract],
 ) -> Option<RenderPassEffectVisibility> {
     let (start, count) = contiguous_effect_range(effects)?;
-    Some(RenderPassEffectVisibility::material_stages(start, count))
+    Some(if count == 0 {
+        RenderPassEffectVisibility::NONE
+    } else {
+        RenderPassEffectVisibility::material_stages(start, count)
+    })
+}
+
+fn single_effect_visibility(
+    effect: &WeEffectPassContract,
+    dynamic: impl FnOnce(u32, u32) -> RenderPassEffectVisibility,
+) -> RenderPassEffectVisibility {
+    if effect.runtime_visibility {
+        dynamic(effect.effect_binding_start, effect.effect_binding_count)
+    } else {
+        RenderPassEffectVisibility::NONE
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,8 +137,6 @@ pub struct WeFoliageRippleMaterial {
 pub struct WeFinalEffectMaterial {
     pub material_index: usize,
     pub shader: String,
-    pub samples_framebuffer_snapshot: bool,
-    pub framebuffer_prepass: Option<WeEffectPassContract>,
 }
 
 pub fn we_effect_passes_form_waterwaves_displacement_chain(
@@ -133,11 +163,34 @@ pub struct WeFramebufferSnapshotContract {
     pub target_name: String,
     pub texture_slot: u32,
     pub composite_to_object_mesh: bool,
+    pub usage: WeFramebufferSnapshotUsage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeFramebufferSnapshotUsage {
+    ObjectSource,
+    EffectOnlyLayer,
 }
 
 pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     let mut graph = RenderGraph::default();
     let has_effects = !contract.effect_passes.is_empty();
+    let effect_only_layer = contract
+        .framebuffer_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.usage == WeFramebufferSnapshotUsage::EffectOnlyLayer);
+    if effect_only_layer && !has_effects {
+        return graph;
+    }
+    if effect_only_layer
+        && contract
+            .effect_passes
+            .iter()
+            .all(|effect| effect.runtime_visibility)
+    {
+        graph.activation_policy = RenderGraphActivationPolicy::AnyEffectVisible;
+    }
     let composite_to_object_mesh = contract
         .framebuffer_snapshot
         .as_ref()
@@ -162,63 +215,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     if let Some(final_effect) = &contract.final_effect_material {
         let effect_visibility = contiguous_material_stage_visibility(&contract.effect_passes)
             .expect("typed final effect requires contiguous effect bindings");
-        if final_effect.samples_framebuffer_snapshot {
-            let snapshot = contract
-                .framebuffer_snapshot
-                .as_ref()
-                .expect("framebuffer final effect requires a typed snapshot contract");
-            graph.passes.push(RenderPassNode {
-                id: 0,
-                role: RenderPassRole::CopyTarget,
-                object_index: Some(contract.object_index),
-                material_index: None,
-                pass_index: 0,
-                shader: None,
-                target: RenderTargetRole::FirstClassEffectTarget,
-                target_name: Some(snapshot.target_name.clone()),
-                target_extent: None,
-                target_format: Some("rgba_backbuffer".to_owned()),
-                bindings: vec![TextureBindingRole::GraphTarget {
-                    slot: snapshot.texture_slot,
-                    role: RenderTargetRole::SceneColor,
-                    name: None,
-                }],
-                effect_visibility: RenderPassEffectVisibility::NONE,
-                state: PassState::default(),
-            });
-        }
-        if let Some(prepass) = &final_effect.framebuffer_prepass {
-            let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
-            let mut node = we_effect_pass_node(pass_id, prepass, SceneBlendMode::Normal);
-            let snapshot = contract
-                .framebuffer_snapshot
-                .as_ref()
-                .expect("framebuffer prepass requires a typed snapshot contract");
-            for binding in &mut node.bindings {
-                if matches!(binding, TextureBindingRole::PreviousGraphTarget { slot: 0 }) {
-                    *binding = TextureBindingRole::EffectTarget {
-                        slot: snapshot.texture_slot,
-                        name: snapshot.target_name.clone(),
-                    };
-                }
-            }
-            node.state.scene_blend = SceneBlendMode::Normal;
-            graph.passes.push(node);
-        }
         let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
-        let bindings = if final_effect.framebuffer_prepass.is_some() {
-            vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }]
-        } else {
-            contract
-                .framebuffer_snapshot
-                .iter()
-                .filter(|_| final_effect.samples_framebuffer_snapshot)
-                .map(|snapshot| TextureBindingRole::EffectTarget {
-                    slot: snapshot.texture_slot,
-                    name: snapshot.target_name.clone(),
-                })
-                .collect()
-        };
         graph.passes.push(RenderPassNode {
             id: pass_id,
             role: RenderPassRole::SceneComposite,
@@ -230,7 +227,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_name: None,
             target_extent: None,
             target_format: None,
-            bindings,
+            bindings: Vec::new(),
             effect_visibility,
             state: PassState {
                 pipeline_blend: final_pipeline_blend,
@@ -515,7 +512,9 @@ pub fn we_effect_pass_node(
     } else {
         RenderPassRole::EffectMaterial
     });
-    let effect_visibility = if contract.effect_binding_count > 1
+    let effect_visibility = if !contract.runtime_visibility {
+        RenderPassEffectVisibility::NONE
+    } else if contract.effect_binding_count > 1
         && contract
             .shader
             .as_deref()
@@ -583,6 +582,7 @@ pub fn we_effect_pass_node(
                 .as_deref()
                 .is_some_and(|value| value.eq_ignore_ascii_case("enabled")),
             cull_mode: CullMode::from_we_cullmode(contract.cullmode.as_deref()),
+            ..PassState::default()
         },
     }
 }

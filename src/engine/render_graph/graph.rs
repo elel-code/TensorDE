@@ -10,6 +10,14 @@ use super::resource::{
 use super::target::RenderTargetRole;
 use super::target::RenderTargetSpec;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RenderGraphActivationPolicy {
+    #[default]
+    Always,
+    AnyEffectVisible,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsupportedGraphBoundary {
     pub object_index: Option<usize>,
@@ -21,6 +29,8 @@ pub struct UnsupportedGraphBoundary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderGraph {
+    #[serde(default)]
+    pub activation_policy: RenderGraphActivationPolicy,
     pub passes: Vec<RenderPassNode>,
     #[serde(default)]
     pub target_specs: Vec<RenderTargetSpec>,

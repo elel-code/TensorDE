@@ -47,7 +47,7 @@ pub(super) fn create_waterwaves_displacement_materials(
     }
     if !authored_texture_space
         || !we_effect_passes_form_waterwaves_displacement_chain(effects)
-        || contiguous_effect_binding_count(effects).is_none()
+        || compatible_effect_binding_count(effects).is_none()
     {
         return WaterWavesDisplacementMaterials::default();
     }
@@ -105,7 +105,7 @@ pub(super) fn aggregate_waterwaves_effect_runs(
             continue;
         };
         let run = &effects[cursor..cursor + run_count];
-        let Some(effect_binding_count) = contiguous_effect_binding_count(run) else {
+        let Some(effect_binding_count) = compatible_effect_binding_count(run) else {
             aggregated.push(effects[cursor].clone());
             cursor += 1;
             continue;
@@ -156,12 +156,27 @@ fn compatible_run_count(effects: &[WeEffectPassContract], cursor: usize) -> Opti
     (2..=max_count).rev().find(|count| {
         let run = &effects[cursor..cursor + count];
         we_effect_passes_form_waterwaves_displacement_chain(run)
-            && contiguous_effect_binding_count(run).is_some()
+            && compatible_effect_binding_count(run).is_some()
     })
 }
 
-fn contiguous_effect_binding_count(effects: &[WeEffectPassContract]) -> Option<u32> {
+fn compatible_effect_binding_count(effects: &[WeEffectPassContract]) -> Option<u32> {
     let first = effects.first()?;
+    if effects.iter().all(|effect| !effect.runtime_visibility) {
+        let mut previous = None;
+        for effect in effects {
+            if effect.effect_binding_count != 1
+                || previous.is_some_and(|previous| effect.effect_binding_start <= previous)
+            {
+                return None;
+            }
+            previous = Some(effect.effect_binding_start);
+        }
+        return u32::try_from(effects.len()).ok();
+    }
+    if effects.iter().any(|effect| !effect.runtime_visibility) {
+        return None;
+    }
     let mut next = first.effect_binding_start;
     for effect in effects {
         if effect.effect_binding_start != next || effect.effect_binding_count == 0 {
@@ -400,6 +415,7 @@ mod tests {
             object_index: 0,
             effect_binding_start,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(0),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,

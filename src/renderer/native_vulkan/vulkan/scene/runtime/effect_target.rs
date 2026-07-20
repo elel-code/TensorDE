@@ -57,6 +57,7 @@ pub(in crate::renderer::native_vulkan) struct SceneEffectTargetCommandPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct SceneEffectTargetCommand {
     kind: SceneEffectTargetCommandKind,
+    pass_record_index: u32,
     target: LogicalEffectTargetKey,
     source: Option<SceneEffectTargetCommandSource>,
     mesh_draw_start: u32,
@@ -293,6 +294,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                     let source = command_source_key(storage, pass);
                     Some(SceneEffectTargetCommand {
                         kind: SceneEffectTargetCommandKind::Copy,
+                        pass_record_index: pass.pass_record_index,
                         target,
                         source,
                         mesh_draw_start: pass.mesh_draw_start,
@@ -313,6 +315,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                 }
                 SceneRenderPassKind::SwapTargetReferences => Some(SceneEffectTargetCommand {
                     kind: SceneEffectTargetCommandKind::SwapReferences,
+                    pass_record_index: pass.pass_record_index,
                     target,
                     source: command_source_key(storage, pass),
                     mesh_draw_start: pass.mesh_draw_start,
@@ -325,11 +328,20 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                 }),
                 _ => Some(SceneEffectTargetCommand {
                     kind: SceneEffectTargetCommandKind::DynamicRender,
+                    pass_record_index: pass.pass_record_index,
                     target,
                     source: None,
                     mesh_draw_start: pass.mesh_draw_start,
                     mesh_draw_count: pass.mesh_draw_count,
-                    clear_before_draw: pass.role == SceneRenderPassKind::Clear,
+                    clear_before_draw: pass.role == SceneRenderPassKind::Clear
+                        || storage
+                            .document()
+                            .render_passes
+                            .get(pass.pass_record_index as usize)
+                            .expect(
+                                "RenderingDevice pass nodes reference validated scene pass records",
+                            )
+                            .clear_target,
                     fully_overwrites_target: pass_fully_overwrites_target(storage, graph, pass),
                     direct_scene_color_snapshot: false,
                     batch_physical_slot,
@@ -760,17 +772,16 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
     record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
-    let clear_before_draw = pass.role == SceneRenderPassKind::Clear;
     let (command_position, command) = commands
         .iter()
         .enumerate()
         .find(|command| {
             command.1.target.graph_index == pass.graph_index
+                && command.1.pass_record_index == pass.pass_record_index
                 && command.1.target.target == pass.target
                 && command.1.target.name == pass.target_name
                 && command.1.mesh_draw_start == pass.mesh_draw_start
                 && command.1.mesh_draw_count == pass.mesh_draw_count
-                && command.1.clear_before_draw == clear_before_draw
         })
         .map(|(position, command)| (position, *command))
         .ok_or_else(|| {

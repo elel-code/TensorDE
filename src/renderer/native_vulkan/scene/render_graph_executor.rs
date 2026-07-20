@@ -210,6 +210,8 @@ mod tests {
         let graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![SceneRenderingDevicePassNode {
                 graph_index: 0,
+                graph_activation_policy:
+                    crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                 pass_record_index: 0,
                 pass_id: 1,
                 role: SceneRenderPassKind::BaseMaterial,
@@ -360,6 +362,8 @@ mod tests {
         let graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![SceneRenderingDevicePassNode {
                 graph_index: 0,
+                graph_activation_policy:
+                    crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                 pass_record_index: 0,
                 pass_id: 1,
                 role: SceneRenderPassKind::EffectMaterial,
@@ -451,6 +455,8 @@ mod tests {
             pass_nodes: vec![
                 SceneRenderingDevicePassNode {
                     graph_index: 0,
+                    graph_activation_policy:
+                        crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                     pass_record_index: 0,
                     pass_id: 1,
                     role: SceneRenderPassKind::CopyTarget,
@@ -467,6 +473,8 @@ mod tests {
                 },
                 SceneRenderingDevicePassNode {
                     graph_index: 0,
+                    graph_activation_policy:
+                        crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                     pass_record_index: 1,
                     pass_id: 2,
                     role: SceneRenderPassKind::SwapTargetReferences,
@@ -483,6 +491,8 @@ mod tests {
                 },
                 SceneRenderingDevicePassNode {
                     graph_index: 0,
+                    graph_activation_policy:
+                        crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                     pass_record_index: 2,
                     pass_id: 3,
                     role: SceneRenderPassKind::EffectMaterial,

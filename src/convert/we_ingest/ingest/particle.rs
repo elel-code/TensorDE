@@ -96,8 +96,10 @@ impl WeIrBuilder {
             } else {
                 CullMode::None
             },
+            ..PassState::default()
         };
         self.render_graphs.push(RenderGraph {
+            activation_policy: Default::default(),
             passes: vec![RenderPassNode {
                 id: 0,
                 role: RenderPassRole::Particle,

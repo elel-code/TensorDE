@@ -62,7 +62,6 @@ pub(super) fn is_runtime_render_target(path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::convert::we_ingest::ingest_wallpaper_engine_project;
-    use crate::engine::render_graph::{RenderPassRole, RenderTargetRole};
     use std::fs;
 
     #[test]
@@ -80,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_layer_builds_a_typed_scene_color_snapshot_graph() {
+    fn fullscreen_layer_without_effects_records_no_framebuffer_work() {
         let root = std::env::temp_dir().join(format!(
             "gilder-we-utility-layer-test-{}",
             std::process::id()
@@ -112,19 +111,8 @@ mod tests {
                 .count()
                 >= 2
         );
-        assert_eq!(
-            ir.render_graphs[0].passes[0].role,
-            RenderPassRole::CopyTarget
-        );
-        assert_eq!(
-            ir.render_graphs[0].passes[0].target,
-            RenderTargetRole::FirstClassEffectTarget
-        );
-        assert_eq!(
-            ir.render_graphs[0].passes[1].target,
-            RenderTargetRole::SceneColor
-        );
-        assert_eq!(ir.image_targets[0].name, FULL_FRAMEBUFFER_TARGET);
+        assert!(ir.render_graphs[0].passes.is_empty());
+        assert!(ir.image_targets.is_empty());
         assert!(ir.unsupported.is_empty());
 
         let _ = fs::remove_dir_all(root);

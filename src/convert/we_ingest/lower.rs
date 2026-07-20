@@ -8,11 +8,7 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
 //! - `references/godot/servers/rendering/storage/*`
 
-use crate::core::SceneBlendMode;
-use crate::engine::render_graph::{
-    CullMode, DepthTestMode, PipelineBlendMode, RenderPassRole, RenderTargetRole,
-    TextureBindingRole,
-};
+use crate::engine::render_graph::{RenderTargetRole, TextureBindingRole};
 use crate::engine::scene::*;
 use std::collections::BTreeMap;
 
@@ -21,8 +17,10 @@ use super::shader_key::canonical_scene_shader_key;
 mod error;
 mod event_binding;
 mod particle;
+mod render_state;
 mod string_interner;
 pub use error::WeLowerError;
+use render_state::*;
 use string_interner::StringInterner;
 
 pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, WeLowerError> {
@@ -728,6 +726,8 @@ fn lower_render_graphs(
                 depth_test: lower_depth_test(pass.state.depth_test),
                 depth_write: pass.state.depth_write,
                 cull_mode: lower_cull_mode(pass.state.cull_mode),
+                color_write_mask: lower_color_write_mask(pass.state.color_write_mask),
+                clear_target: pass.state.clear_target,
             });
         }
         for boundary in &graph.unsupported {
@@ -746,6 +746,7 @@ fn lower_render_graphs(
         }
         graphs.push(SceneRenderGraphRecord {
             object: SceneObjectHandle(object_handle),
+            activation_policy: lower_render_graph_activation_policy(graph.activation_policy),
             pass_start,
             pass_count: graph.passes.len() as u32,
             unsupported_start,
@@ -766,6 +767,7 @@ fn lower_render_graphs(
     if unsupported.len() != unsupported_start && graphs.is_empty() {
         graphs.push(SceneRenderGraphRecord {
             object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 0,
             unsupported_start: unsupported_start as u32,
@@ -881,96 +883,6 @@ fn lower_binding(
             name: strings.id(name),
         },
     })
-}
-
-fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
-    match role {
-        RenderPassRole::Clear => SceneRenderPassKind::Clear,
-        RenderPassRole::BaseMaterial => SceneRenderPassKind::BaseMaterial,
-        RenderPassRole::EffectMaterial => SceneRenderPassKind::EffectMaterial,
-        RenderPassRole::ColorBlendPassthrough => SceneRenderPassKind::ColorBlendPassthrough,
-        RenderPassRole::CopyTarget => SceneRenderPassKind::CopyTarget,
-        RenderPassRole::SwapTargetReferences => SceneRenderPassKind::SwapTargetReferences,
-        RenderPassRole::VideoSample => SceneRenderPassKind::VideoSample,
-        RenderPassRole::Particle => SceneRenderPassKind::Particle,
-        RenderPassRole::TextPath => SceneRenderPassKind::TextPath,
-        RenderPassRole::SceneComposite => SceneRenderPassKind::SceneComposite,
-        RenderPassRole::MeshVisiblePrefix => SceneRenderPassKind::MeshVisiblePrefix,
-        RenderPassRole::MeshClippingMask => SceneRenderPassKind::MeshClippingMask,
-        RenderPassRole::MeshClippedTarget => SceneRenderPassKind::MeshClippedTarget,
-        RenderPassRole::MeshVisibleRemainder => SceneRenderPassKind::MeshVisibleRemainder,
-        RenderPassRole::DebugEvidence => SceneRenderPassKind::DebugEvidence,
-        RenderPassRole::Unsupported => SceneRenderPassKind::Unsupported,
-    }
-}
-
-fn lower_effect_visibility_policy(
-    policy: crate::engine::render_graph::RenderPassEffectVisibilityPolicy,
-) -> SceneRenderEffectVisibilityPolicy {
-    use crate::engine::render_graph::RenderPassEffectVisibilityPolicy as Source;
-    match policy {
-        Source::None => SceneRenderEffectVisibilityPolicy::None,
-        Source::Passthrough => SceneRenderEffectVisibilityPolicy::Passthrough,
-        Source::WaterWavesStages => SceneRenderEffectVisibilityPolicy::WaterWavesStages,
-        Source::FlatRoundedMask => SceneRenderEffectVisibilityPolicy::FlatRoundedMask,
-        Source::MaterialStages => SceneRenderEffectVisibilityPolicy::MaterialStages,
-    }
-}
-
-fn lower_render_target(target: RenderTargetRole) -> SceneRenderTargetKind {
-    match target {
-        RenderTargetRole::SceneColor => SceneRenderTargetKind::SceneColor,
-        RenderTargetRole::Swapchain => SceneRenderTargetKind::Swapchain,
-        RenderTargetRole::ImageLocalMain => SceneRenderTargetKind::ImageLocalMain,
-        RenderTargetRole::ImageLocalSub => SceneRenderTargetKind::ImageLocalSub,
-        RenderTargetRole::NamedFbo => SceneRenderTargetKind::NamedFbo,
-        RenderTargetRole::FirstClassEffectTarget => SceneRenderTargetKind::FirstClassEffectTarget,
-        RenderTargetRole::VideoExternalImage => SceneRenderTargetKind::VideoExternalImage,
-        RenderTargetRole::Temporary => SceneRenderTargetKind::Temporary,
-    }
-}
-
-fn lower_pipeline_blend(blend: PipelineBlendMode) -> ScenePipelineBlend {
-    match blend {
-        PipelineBlendMode::Normal => ScenePipelineBlend::Normal,
-        PipelineBlendMode::Translucent => ScenePipelineBlend::Translucent,
-        PipelineBlendMode::Additive => ScenePipelineBlend::Additive,
-        PipelineBlendMode::Disabled => ScenePipelineBlend::Disabled,
-        PipelineBlendMode::AlphaToCoverage => ScenePipelineBlend::AlphaToCoverage,
-    }
-}
-
-fn lower_scene_blend(blend: SceneBlendMode) -> SceneCompositeBlend {
-    match blend {
-        SceneBlendMode::Alpha => SceneCompositeBlend::Alpha,
-        SceneBlendMode::Normal => SceneCompositeBlend::Normal,
-        SceneBlendMode::Additive => SceneCompositeBlend::Additive,
-        SceneBlendMode::Multiply => SceneCompositeBlend::Multiply,
-        SceneBlendMode::Screen => SceneCompositeBlend::Screen,
-        SceneBlendMode::Max => SceneCompositeBlend::Max,
-        SceneBlendMode::Modulate => SceneCompositeBlend::Modulate,
-        SceneBlendMode::HslColor => SceneCompositeBlend::HslColor,
-        SceneBlendMode::AlphaToCoverage => SceneCompositeBlend::AlphaToCoverage,
-    }
-}
-
-fn lower_depth_test(depth: DepthTestMode) -> SceneDepthTest {
-    match depth {
-        DepthTestMode::Disabled => SceneDepthTest::Disabled,
-        DepthTestMode::Less
-        | DepthTestMode::LessEqual
-        | DepthTestMode::Equal
-        | DepthTestMode::NotEqual
-        | DepthTestMode::Greater
-        | DepthTestMode::Never => SceneDepthTest::Enabled,
-    }
-}
-
-fn lower_cull_mode(cull: CullMode) -> SceneCullMode {
-    match cull {
-        CullMode::None => SceneCullMode::None,
-        CullMode::Front | CullMode::Back => SceneCullMode::Normal,
-    }
 }
 
 #[cfg(test)]

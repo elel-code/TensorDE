@@ -123,7 +123,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} objects=[{}] target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}] material_constants=[{}]",
+            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} objects=[{}] target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} cull_mode={:?} color_write_mask={:?} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}] material_constants=[{}]",
             pass.graph_index,
             pass.pass_id,
             pass.pass_record_index,
@@ -138,6 +138,8 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             pass_record.pipeline_blend,
             pass_record.scene_blend,
             blend.label(),
+            pass_record.cull_mode,
+            pass_record.color_write_mask,
             target_format,
             pass_pipeline_samples(pass.target, scene_color_msaa_enabled).rasterization_samples(),
             pipeline_index,

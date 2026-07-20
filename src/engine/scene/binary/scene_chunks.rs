@@ -599,6 +599,7 @@ pub(super) fn encode_render_graphs(
     put_u32(&mut out, checked_u32(graphs.len(), "render graph count")?);
     for record in graphs {
         put_u32(&mut out, record.object.0);
+        put_u32(&mut out, record.activation_policy.to_u32());
         put_u32(&mut out, record.pass_start);
         put_u32(&mut out, record.pass_count);
         put_u32(&mut out, record.unsupported_start);
@@ -624,6 +625,8 @@ pub(super) fn encode_render_graphs(
         put_u32(&mut out, record.depth_test.to_u32());
         put_bool(&mut out, record.depth_write);
         put_u32(&mut out, record.cull_mode.to_u32());
+        put_u32(&mut out, record.color_write_mask.to_u32());
+        put_bool(&mut out, record.clear_target);
     }
     put_u32(
         &mut out,
@@ -663,6 +666,12 @@ pub(super) fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, Sce
     for _ in 0..graph_count {
         graphs.push(SceneRenderGraphRecord {
             object: SceneObjectHandle(decoder.u32()?),
+            activation_policy: {
+                let value = decoder.u32()?;
+                SceneRenderGraphActivationPolicy::from_u32(value).ok_or(
+                    SceneBinaryError::InvalidChunkValue("render graph activation policy", value),
+                )?
+            },
             pass_start: decoder.u32()?,
             pass_count: decoder.u32()?,
             unsupported_start: decoder.u32()?,
@@ -725,6 +734,14 @@ pub(super) fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, Sce
                 SceneCullMode::from_u32(value)
                     .ok_or(SceneBinaryError::InvalidChunkValue("cull mode", value))?
             },
+            color_write_mask: {
+                let value = decoder.u32()?;
+                SceneColorWriteMask::from_u32(value).ok_or(SceneBinaryError::InvalidChunkValue(
+                    "color write mask",
+                    value,
+                ))?
+            },
+            clear_target: decoder.bool()?,
         });
     }
     let binding_count = decoder.u32()? as usize;

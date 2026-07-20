@@ -74,6 +74,12 @@ pub(super) fn value_f32(value: Option<&Value>) -> Option<f32> {
     value.as_f64().map(|value| value as f32)
 }
 
+pub(super) fn finite_f32(value: Option<&Value>, fallback: f32) -> f32 {
+    value_f32(value)
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
+}
+
 pub(super) fn parse_vec3(value: Option<&Value>) -> Option<SceneVec3> {
     let value = bound_value(value)?;
     match value {

@@ -8,6 +8,8 @@
 mod animation_layer;
 mod asset_source;
 mod builtin_effect_texture;
+mod caustics_specialization;
+mod effect_instance;
 mod effect_target;
 mod final_effect;
 mod foliage_ripple;
@@ -64,7 +66,7 @@ use builtin_effect_texture::apply_builtin_effect_texture_defaults;
 use effect_target::{image_target_role, scale_divisor_to_milli};
 use image_plane::image_plane_extent;
 use json_value::{
-    bound_bool, bound_string, compact_json, infer_project_type, non_empty_string,
+    bound_bool, bound_string, compact_json, finite_f32, infer_project_type, non_empty_string,
     normalize_we_path, parse_color4, parse_json_bytes, parse_vec3, value_f32, value_i32, value_i64,
     value_u32,
 };
@@ -77,7 +79,10 @@ use pipeline_state::{
     cull_mode_from_we, depth_test_from_we, pipeline_blend_from_we, pipeline_blend_string,
     scene_blend_from_color_blend_mode,
 };
-use script_program::{effect_script_programs, object_script_programs, project_property_defaults};
+use script_program::{
+    effect_script_programs, object_script_programs, project_property_defaults,
+    scene_scripts_may_mutate_effect_visibility,
+};
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
 use text_font_binding::text_font_overrides;
@@ -117,6 +122,7 @@ pub fn ingest_wallpaper_engine_project(
         scene,
         project_property_defaults(&project_json),
         font_overrides,
+        scene_scripts_may_mutate_effect_visibility(&scene_json),
     );
     builder.add_existing_resource(
         "project.json",
@@ -314,6 +320,7 @@ struct WeIrBuilder {
     shader_contracts: Vec<WeIrShaderContract>,
     text_font_overrides: BTreeMap<String, String>,
     unsupported: Vec<WeIrUnsupported>,
+    scene_scripts_may_mutate_effect_visibility: bool,
 }
 
 impl WeIrBuilder {
@@ -324,6 +331,7 @@ impl WeIrBuilder {
         scene: WeSceneRootIr,
         project_property_defaults: Map<String, Value>,
         text_font_overrides: BTreeMap<String, String>,
+        scene_scripts_may_mutate_effect_visibility: bool,
     ) -> Self {
         Self {
             project_root,
@@ -376,6 +384,7 @@ impl WeIrBuilder {
             shader_contracts: Vec::new(),
             text_font_overrides,
             unsupported: Vec::new(),
+            scene_scripts_may_mutate_effect_visibility,
         }
     }
 
@@ -612,41 +621,18 @@ impl WeIrBuilder {
             }
         }
 
-        let mut effect_instances = Vec::new();
-        for effect in value
-            .get("effects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(effect_file) = bound_string(effect.get("file")) else {
-                continue;
-            };
-            let effect_handle = self.add_effect(&effect_file)?;
-            let instance_id = value_u32(effect.get("id")).unwrap_or(effect_handle);
-            let visible = bound_bool(effect.get("visible")).unwrap_or(true);
-            let effect_binding_start = self.object_effects.len() as u32;
-            self.object_effects.push(WeIrObjectEffect {
-                object: handle,
-                effect: effect_handle,
-                name: bound_string(effect.get("name")).unwrap_or_default(),
-                instance_id,
-                visible,
-            });
-            effect_instances.push((effect_binding_start, effect_handle, effect.clone()));
-        }
+        let effect_instances = self.add_object_effect_instances(handle, value)?;
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
         let retained_text_effect_instances;
         let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {
-            retained_text_requires_dependency_composite =
-                effect_instances.iter().any(|(_, effect, _)| {
-                    retained_text_effect_requires_dependency_composite(self, *effect)
-                });
+            retained_text_requires_dependency_composite = effect_instances.iter().any(|instance| {
+                retained_text_effect_requires_dependency_composite(self, instance.effect)
+            });
             retained_text_effect_instances = effect_instances
                 .iter()
-                .filter(|(_, effect, _)| retained_text_effect_is_supported(self, *effect))
+                .filter(|instance| retained_text_effect_is_supported(self, instance.effect))
                 .cloned()
                 .collect::<Vec<_>>();
             if retained_text_effect_instances.len() != effect_instances.len() {
@@ -988,12 +974,6 @@ impl WeIrBuilder {
             track_count: self.puppet_animation_tracks.len() as u32 - track_start,
         });
     }
-}
-
-fn finite_f32(value: Option<&Value>, fallback: f32) -> f32 {
-    value_f32(value)
-        .filter(|value| value.is_finite())
-        .unwrap_or(fallback)
 }
 
 #[cfg(test)]

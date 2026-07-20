@@ -57,9 +57,9 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
             .cloned()
             .map(|name| TextureBindingRole::PassConstant { name })
             .collect(),
-        effect_visibility: RenderPassEffectVisibility::flat_rounded_mask(
-            effect.effect_binding_start,
-        ),
+        effect_visibility: super::single_effect_visibility(effect, |binding_start, _| {
+            RenderPassEffectVisibility::flat_rounded_mask(binding_start)
+        }),
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -116,9 +116,9 @@ fn append_hsl_snapshot_composite(graph: &mut RenderGraph, contract: &WeImageGrap
                 .map(|name| TextureBindingRole::PassConstant { name }),
         )
         .collect(),
-        effect_visibility: RenderPassEffectVisibility::flat_rounded_mask(
-            effect.effect_binding_start,
-        ),
+        effect_visibility: super::single_effect_visibility(effect, |binding_start, _| {
+            RenderPassEffectVisibility::flat_rounded_mask(binding_start)
+        }),
         state: PassState {
             pipeline_blend: crate::engine::render_graph::PipelineBlendMode::Normal,
             scene_blend: SceneBlendMode::Normal,

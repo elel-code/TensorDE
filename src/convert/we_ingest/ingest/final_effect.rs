@@ -24,16 +24,6 @@ pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-wa
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
 pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
-pub(super) const FRAMEBUFFER_WATER_POST_FINAL_SHADER: &str = "we/framebuffer-water-post-final";
-const FRAMEBUFFER_LUT16_FINAL_SHADER: &str = "we/framebuffer-lut16-final";
-const FRAMEBUFFER_LUT64_FINAL_SHADER: &str = "we/framebuffer-lut64-final";
-const FRAMEBUFFER_LIGHTNING_SCREEN_FINAL_SHADER: &str = "we/framebuffer-lightning-screen-final";
-const FRAMEBUFFER_LIGHTNING_ADD_FINAL_SHADER: &str = "we/framebuffer-lightning-add-final";
-const FRAMEBUFFER_CAUSTICS_PREPASS_SHADER: &str =
-    "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1";
-const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
-const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1";
-const FRAMEBUFFER_CAUSTICS_TARGET: &str = "_tmp_GilderFramebufferCaustics";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
@@ -47,9 +37,6 @@ enum FinalEffectKind {
     FlatRoundedOpacity,
     TechCircle,
     AudioBars,
-    FramebufferWater,
-    FramebufferLut,
-    FramebufferLightning,
 }
 
 #[derive(Debug, Clone)]
@@ -82,15 +69,11 @@ pub(super) fn create(
         effects_in_authored_texture_space,
         object_is_puppet,
     )?;
-    if !final_effect_has_independent_visibility(kind, effects.len()) {
-        return None;
-    }
     if !final_effect_scene_blend_supported(kind, final_scene_blend) {
         return None;
     }
     let (shader, textures, constants) =
         final_effect_program(builder, &source, effects, kind, final_scene_blend)?;
-    let framebuffer_prepass = framebuffer_caustics_prepass(builder, effects, kind)?;
     let material_index = push_material(
         builder,
         source.resource,
@@ -103,101 +86,7 @@ pub(super) fn create(
     Some(WeFinalEffectMaterial {
         material_index,
         shader: shader.to_owned(),
-        samples_framebuffer_snapshot: matches!(
-            kind,
-            FinalEffectKind::FramebufferWater
-                | FinalEffectKind::FramebufferLut
-                | FinalEffectKind::FramebufferLightning
-        ),
-        framebuffer_prepass,
     })
-}
-
-fn final_effect_has_independent_visibility(kind: FinalEffectKind, effect_count: usize) -> bool {
-    effect_count == 1
-        && matches!(
-            kind,
-            FinalEffectKind::ImageWaterWaves
-                | FinalEffectKind::ImageWaterRipple
-                | FinalEffectKind::ImageScroll
-                | FinalEffectKind::ImageCloudMotion
-                | FinalEffectKind::PuppetOpacity
-        )
-}
-
-fn framebuffer_caustics_prepass(
-    builder: &mut WeIrBuilder,
-    effects: &[WeEffectPassContract],
-    kind: FinalEffectKind,
-) -> Option<Option<WeEffectPassContract>> {
-    if kind != FinalEffectKind::FramebufferWater {
-        return Some(None);
-    }
-    let mut contract = effects.first()?.clone();
-    let input = material_input(builder, contract.material_index?)?;
-    let shader = framebuffer_caustics_prepass_shader(&input);
-    let material_index = push_material(
-        builder,
-        input.resource,
-        input.pass,
-        shader,
-        input.textures,
-        input.constants,
-        ScenePipelineBlend::Normal,
-    );
-    contract.material_index = Some(material_index);
-    contract.shader = Some(shader.to_owned());
-    contract.target = Some(FRAMEBUFFER_CAUSTICS_TARGET.to_owned());
-    Some(Some(contract))
-}
-
-fn framebuffer_caustics_prepass_shader(input: &MaterialInput) -> &'static str {
-    let chromatic_zero = material_static_scalar_equals(
-        &input.constants,
-        &["ui_editor_properties_chromatic_aberration", "chromatic"],
-        0.0,
-    );
-    if chromatic_zero && material_slots_bind_same_texture(input, 2, 5) {
-        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER
-    } else if chromatic_zero {
-        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
-    } else {
-        FRAMEBUFFER_CAUSTICS_PREPASS_SHADER
-    }
-}
-
-fn material_slots_bind_same_texture(
-    input: &MaterialInput,
-    left_slot: u32,
-    right_slot: u32,
-) -> bool {
-    let Some(left) = texture_at_slot(input, left_slot) else {
-        return false;
-    };
-    let Some(right) = texture_at_slot(input, right_slot) else {
-        return false;
-    };
-    match (left.resource, right.resource) {
-        (Some(left), Some(right)) => left == right,
-        (None, None) => !left.path.is_empty() && left.path == right.path,
-        _ => false,
-    }
-}
-
-fn material_static_scalar_equals(
-    constants: &[WeIrMaterialConstant],
-    names: &[&str],
-    expected: f32,
-) -> bool {
-    constants
-        .iter()
-        .find(|constant| {
-            names
-                .iter()
-                .any(|name| constant.name.eq_ignore_ascii_case(name))
-        })
-        .and_then(|constant| constant.value_json.trim().parse::<f32>().ok())
-        .is_some_and(|value| value.is_finite() && (value - expected).abs() <= 1.0e-7)
 }
 
 fn final_effect_scene_blend_supported(kind: FinalEffectKind, scene_blend: SceneBlendMode) -> bool {
@@ -330,38 +219,6 @@ fn final_effect_program(
             ));
             AUDIO_BARS_FINAL_SHADER
         }
-        FinalEffectKind::FramebufferWater => {
-            append_effect_constants(&mut constants, "waves", &inputs[1]);
-            append_effect_constants(&mut constants, "opacity", &inputs[2]);
-            append_effect_constants(&mut constants, "shake", &inputs[3]);
-            textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 1));
-            FRAMEBUFFER_WATER_POST_FINAL_SHADER
-        }
-        FinalEffectKind::FramebufferLut => {
-            append_effect_constants(&mut constants, "lut", &inputs[0]);
-            textures.push(remap_texture(texture_at_slot(&inputs[0], 1)?, 1));
-            constants.push(synthetic_constant(
-                "lut.clamp",
-                combo_value(&effects[0], "CLAMP", 1) != 0,
-            ));
-            constants.push(synthetic_constant(
-                "lut.flip_y",
-                combo_value(&effects[0], "LUT_FLIP_Y", 0) != 0,
-            ));
-            match combo_value(&effects[0], "QUAD_SIZE", 16) {
-                16 => FRAMEBUFFER_LUT16_FINAL_SHADER,
-                64 => FRAMEBUFFER_LUT64_FINAL_SHADER,
-                _ => return None,
-            }
-        }
-        FinalEffectKind::FramebufferLightning => {
-            append_effect_constants(&mut constants, "lightning", &inputs[0]);
-            match combo_value(&effects[0], "BLENDMODE", 9) {
-                7 => FRAMEBUFFER_LIGHTNING_SCREEN_FINAL_SHADER,
-                31 => FRAMEBUFFER_LIGHTNING_ADD_FINAL_SHADER,
-                _ => return None,
-            }
-        }
     };
     Some((shader, textures, constants))
 }
@@ -396,25 +253,6 @@ fn final_effect_kind(
         && previous_only(&effects[2], &[0, 1])
     {
         return Some(FinalEffectKind::AudioBars);
-    }
-    if is_composelayer_shader(base_shader)
-        && effect_names.as_slice() == ["caustics", "waterwaves", "opacity", "shake"]
-        && framebuffer_water_chain_is_supported(effects)
-    {
-        return Some(FinalEffectKind::FramebufferWater);
-    }
-    if is_composelayer_shader(base_shader)
-        && effect_names.as_slice() == ["lut_loader"]
-        && lut_loader_is_supported(&effects[0])
-    {
-        return Some(FinalEffectKind::FramebufferLut);
-    }
-    if is_composelayer_shader(base_shader)
-        && effect_names.as_slice() == ["111"]
-        && previous_only(&effects[0], &[0])
-        && matches!(combo_value(&effects[0], "BLENDMODE", 9), 7 | 31)
-    {
-        return Some(FinalEffectKind::FramebufferLightning);
     }
     if !effects_in_authored_texture_space || !is_generic_image_shader(base_shader) {
         return None;
@@ -472,15 +310,6 @@ fn previous_only(effect: &WeEffectPassContract, slots: &[u32]) -> bool {
             .is_none_or(|blend| blend.eq_ignore_ascii_case("normal"))
 }
 
-fn lut_loader_is_supported(effect: &WeEffectPassContract) -> bool {
-    previous_only(effect, &[0, 1])
-        && effect.binds.contains_key(&1)
-        && matches!(combo_value(effect, "QUAD_SIZE", 16), 16 | 64)
-        && matches!(combo_value(effect, "CLAMP", 1), 0 | 1)
-        && matches!(combo_value(effect, "LUT_FLIP_Y", 0), 0 | 1)
-        && combo_value(effect, "BLENDMODE", 0) == 0
-}
-
 fn waterwaves_is_supported(effect: &WeEffectPassContract) -> bool {
     previous_only(effect, &[0, 1])
         && !combo_enabled(effect, "PERSPECTIVE")
@@ -524,24 +353,6 @@ fn audio_bars_is_supported(effect: &WeEffectPassContract) -> bool {
 
 fn skew_is_supported(effect: &WeEffectPassContract) -> bool {
     previous_only(effect, &[0]) && combo_value(effect, "REPEAT", 1) != 0
-}
-
-fn framebuffer_water_chain_is_supported(effects: &[WeEffectPassContract]) -> bool {
-    effects.len() == 4
-        && previous_only(&effects[0], &[0, 1, 2, 3, 4, 5])
-        && combo_value(&effects[0], "BLENDMODE", 32) == 6
-        && combo_value(&effects[0], "MODE", 0) == 0
-        && !combo_enabled(&effects[0], "MASK")
-        && !combo_enabled(&effects[0], "PERSPECTIVE")
-        && waterwaves_is_supported(&effects[1])
-        && previous_only(&effects[2], &[0])
-        && previous_only(&effects[3], &[0, 1, 2, 3])
-        && effects[3].binds.contains_key(&1)
-        && !combo_enabled(&effects[3], "AUDIOPROCESSING")
-        && !combo_enabled(&effects[3], "NOISE")
-        && !combo_enabled(&effects[3], "TIMEOFFSET")
-        && !combo_enabled(&effects[3], "MASK")
-        && combo_value(&effects[3], "DIRECTION", 0) == 0
 }
 
 fn combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {
@@ -798,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn composelayer_programs_are_classified_without_implying_visibility_safety() {
+    fn equivalent_composelayer_programs_are_final_draw_candidates() {
         let mut circle = effect("effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1", &[0]);
         circle.combos.insert("SECTOR_SEGMENTS".to_owned(), 1);
         assert_eq!(
@@ -821,7 +632,10 @@ mod tests {
             ),
             Some(FinalEffectKind::AudioBars)
         );
+    }
 
+    #[test]
+    fn framebuffer_lut_and_lightning_keep_authored_intermediate_target_graphs() {
         let mut lut = effect(
             "effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
             &[0, 1],
@@ -830,19 +644,19 @@ mod tests {
         lut.combos.insert("QUAD_SIZE".to_owned(), 64);
         assert_eq!(
             final_effect_kind("we/composelayer", &[lut], false, false),
-            Some(FinalEffectKind::FramebufferLut)
+            None
         );
 
         let mut lightning = effect("effects/111__SLOTS_1__BLENDMODE_7", &[0]);
         lightning.combos.insert("BLENDMODE".to_owned(), 7);
         assert_eq!(
             final_effect_kind("we/composelayer", &[lightning], false, false),
-            Some(FinalEffectKind::FramebufferLightning)
+            None
         );
     }
 
     #[test]
-    fn framebuffer_water_chain_classifies_only_the_verified_contract() {
+    fn framebuffer_water_chain_keeps_authored_intermediate_target_graph() {
         let mut caustics = effect("effects/caustics__SLOTS_3d__BLENDMODE_6", &[0, 2, 3, 4, 5]);
         caustics.combos.insert("BLENDMODE".to_owned(), 6);
         assert_eq!(
@@ -857,110 +671,25 @@ mod tests {
                 false,
                 false,
             ),
-            Some(FinalEffectKind::FramebufferWater)
+            None
         );
-    }
 
-    #[test]
-    fn only_singleton_programs_with_proven_neutral_parameters_are_fused() {
-        for kind in [
-            FinalEffectKind::ImageWaterWaves,
-            FinalEffectKind::ImageWaterRipple,
-            FinalEffectKind::ImageScroll,
-            FinalEffectKind::ImageCloudMotion,
-            FinalEffectKind::PuppetOpacity,
-        ] {
-            assert!(final_effect_has_independent_visibility(kind, 1));
-            assert!(!final_effect_has_independent_visibility(kind, 2));
-        }
-        assert!(!final_effect_has_independent_visibility(
-            FinalEffectKind::TechCircle,
-            1
-        ));
-        assert!(!final_effect_has_independent_visibility(
-            FinalEffectKind::AudioBars,
-            3
-        ));
-        assert!(!final_effect_has_independent_visibility(
-            FinalEffectKind::FramebufferWater,
-            4
-        ));
-    }
-
-    #[test]
-    fn caustics_chromatic_variant_requires_a_static_numeric_zero() {
-        let numeric_zero = vec![WeIrMaterialConstant {
-            name: "ui_editor_properties_chromatic_aberration".to_owned(),
-            value_json: "0".to_owned(),
-        }];
-        let user_bound_zero = vec![WeIrMaterialConstant {
-            name: "ui_editor_properties_chromatic_aberration".to_owned(),
-            value_json: r#"{"user":"chromatic","value":0}"#.to_owned(),
-        }];
-
-        assert!(material_static_scalar_equals(
-            &numeric_zero,
-            &["ui_editor_properties_chromatic_aberration"],
-            0.0,
-        ));
-        assert!(!material_static_scalar_equals(
-            &user_bound_zero,
-            &["ui_editor_properties_chromatic_aberration"],
-            0.0,
-        ));
-    }
-
-    #[test]
-    fn caustics_shared_pattern_variant_requires_identical_bound_resources() {
-        let input = |left, right| MaterialInput {
-            resource: 0,
-            pass: WeIrMaterialPass {
-                material: 0,
-                shader_key: "effects/caustics".to_owned(),
-                target: String::new(),
-                texture_start: 0,
-                texture_count: 2,
-                constant_start: 0,
-                constant_count: 0,
-                pipeline_blend: ScenePipelineBlend::Normal,
-                depth_test: SceneDepthTest::Disabled,
-                depth_write: false,
-                cull_mode: SceneCullMode::None,
-                alpha_writing: String::new(),
-                clear_target: false,
-            },
-            textures: vec![
-                WeIrMaterialTexture {
-                    slot: 2,
-                    resource: Some(left),
-                    path: "pattern.tex".to_owned(),
-                },
-                WeIrMaterialTexture {
-                    slot: 5,
-                    resource: Some(right),
-                    path: "glow.tex".to_owned(),
-                },
-            ],
-            constants: Vec::new(),
-        };
-
-        let mut shared = input(7, 7);
-        shared.constants.push(WeIrMaterialConstant {
-            name: "ui_editor_properties_chromatic_aberration".to_owned(),
-            value_json: "0".to_owned(),
-        });
-        let mut distinct = input(7, 8);
-        distinct.constants = shared.constants.clone();
-
-        assert!(material_slots_bind_same_texture(&shared, 2, 5));
-        assert!(!material_slots_bind_same_texture(&distinct, 2, 5));
+        let mut caustics = effect("effects/caustics__SLOTS_3d__BLENDMODE_6", &[0, 2, 3, 4, 5]);
+        caustics.combos.insert("BLENDMODE".to_owned(), 6);
         assert_eq!(
-            framebuffer_caustics_prepass_shader(&shared),
-            FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER
-        );
-        assert_eq!(
-            framebuffer_caustics_prepass_shader(&distinct),
-            FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
+            final_effect_kind(
+                "we/composelayer",
+                &[
+                    caustics,
+                    effect("effects/waterwaves__SLOTS_1", &[0]),
+                    effect("effects/opacity__SLOTS_1", &[0]),
+                    effect("effects/cloudmotion__SLOTS_5", &[0, 2]),
+                    effect("effects/shake__SLOTS_3", &[0, 1]),
+                ],
+                false,
+                false,
+            ),
+            None
         );
     }
 
@@ -969,6 +698,7 @@ mod tests {
             object_index: 1,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(2),
             effect_file: "effect.json".to_owned(),
             pass_index: 0,

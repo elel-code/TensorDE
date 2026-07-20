@@ -31,7 +31,7 @@ fn semantic_world_indexes_components_by_scene_object_handle() {
 }
 
 #[test]
-fn resolve_frame_multiplies_parent_and_child_visual_state() {
+fn resolve_frame_keeps_parent_and_child_visual_state_independent() {
     let mut document = semantic_document();
     document.objects[0].color = SceneVec3 {
         x: 0.5,
@@ -55,12 +55,12 @@ fn resolve_frame_multiplies_parent_and_child_visual_state() {
     assert_eq!(
         child.resolved_color,
         SceneVec3 {
-            x: 0.1,
-            y: 0.3,
+            x: 0.2,
+            y: 0.4,
             z: 0.8,
         }
     );
-    assert!((child.resolved_alpha - 0.2).abs() < f32::EPSILON);
+    assert!((child.resolved_alpha - 0.4).abs() < f32::EPSILON);
 }
 
 #[test]

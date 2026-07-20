@@ -83,15 +83,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_CHROMATIC_ZERO_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
         key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {

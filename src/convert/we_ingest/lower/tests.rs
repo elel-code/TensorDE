@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::SceneBlendMode;
 use crate::engine::scene::SceneResourceKind;
 
 #[test]

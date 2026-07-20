@@ -108,6 +108,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
                 object_index: 7,
                 effect_binding_start: 0,
                 effect_binding_count: 1,
+                runtime_visibility: true,
                 material_index: Some(4),
                 effect_file: "effects/waterflow/effect.json".to_owned(),
                 pass_index: 1,
@@ -127,6 +128,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
                 object_index: 7,
                 effect_binding_start: 1,
                 effect_binding_count: 1,
+                runtime_visibility: true,
                 material_index: Some(5),
                 effect_file: "materials/util/effectpassthrough.json".to_owned(),
                 pass_index: 2,
@@ -228,6 +230,7 @@ fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,
@@ -277,6 +280,7 @@ fn authored_modulate_effect_composite_premultiplies_layer_alpha() {
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/waterripple/effect.json".to_owned(),
             pass_index: 0,
@@ -323,6 +327,7 @@ fn puppet_image_effects_run_before_skinning_composite() {
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,
@@ -373,6 +378,7 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/rounded_mask/effect.json".to_owned(),
             pass_index: 0,
@@ -408,8 +414,10 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
         target_name: "_rt_FullFrameBuffer".to_owned(),
         texture_slot: 0,
         composite_to_object_mesh: false,
+        usage: WeFramebufferSnapshotUsage::ObjectSource,
     });
     let graph = we_image_graph(&contract);
+    assert_eq!(graph.activation_policy, RenderGraphActivationPolicy::Always);
     assert_eq!(graph.passes.len(), 2);
     assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
     assert_eq!(
@@ -442,6 +450,7 @@ fn flat_rounded_mask_accepts_typed_shader_variants_with_sparse_effect_metadata()
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/rounded_mask/effect.json".to_owned(),
             pass_index: 0,
@@ -491,6 +500,7 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
                 object_index: 9,
                 effect_binding_start: 0,
                 effect_binding_count: 1,
+                runtime_visibility: true,
                 material_index: None,
                 effect_file: "effects/fluid/effect.json".to_owned(),
                 pass_index: 1,
@@ -510,6 +520,7 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
                 object_index: 9,
                 effect_binding_start: 0,
                 effect_binding_count: 1,
+                runtime_visibility: true,
                 material_index: None,
                 effect_file: "effects/fluid/effect.json".to_owned(),
                 pass_index: 2,
@@ -540,7 +551,7 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
 }
 
 #[test]
-fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
+fn effect_only_framebuffer_layer_without_effects_records_no_passes() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 11,
         base_material_index: Some(4),
@@ -552,6 +563,7 @@ fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
             target_name: "_rt_FullFrameBuffer".to_owned(),
             texture_slot: 0,
             composite_to_object_mesh: false,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
         effects_in_authored_texture_space: false,
@@ -564,22 +576,8 @@ fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
         effect_passes: Vec::new(),
     });
 
-    assert_eq!(graph.passes.len(), 2);
-    assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
-    assert_eq!(
-        graph.passes[0].target,
-        RenderTargetRole::FirstClassEffectTarget
-    );
-    assert_eq!(graph.passes[1].role, RenderPassRole::BaseMaterial);
-    assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
-    assert!(
-        graph.passes[1]
-            .bindings
-            .contains(&TextureBindingRole::EffectTarget {
-                slot: 0,
-                name: "_rt_FullFrameBuffer".to_owned(),
-            })
-    );
+    assert_eq!(graph.activation_policy, RenderGraphActivationPolicy::Always);
+    assert!(graph.passes.is_empty());
 }
 
 #[test]
@@ -595,6 +593,7 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
             target_name: "_rt_FullFrameBuffer".to_owned(),
             texture_slot: 0,
             composite_to_object_mesh: false,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
         effects_in_authored_texture_space: false,
@@ -608,6 +607,7 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
             object_index: 7,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(28),
             effect_file: "effects/cloudmotion/effect.json".to_owned(),
             pass_index: 0,
@@ -627,6 +627,10 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
         }],
     });
 
+    assert_eq!(
+        graph.activation_policy,
+        RenderGraphActivationPolicy::AnyEffectVisible
+    );
     assert_eq!(graph.passes.len(), 3);
     assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
     assert_eq!(graph.passes[1].role, RenderPassRole::EffectMaterial);
@@ -661,6 +665,7 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
             target_name: "_rt_FullFrameBuffer".to_owned(),
             texture_slot: 0,
             composite_to_object_mesh: true,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
         effects_in_authored_texture_space: false,
@@ -674,6 +679,7 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
             object_index: 12,
             effect_binding_start: 0,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(6),
             effect_file: "effects/opacity/effect.json".to_owned(),
             pass_index: 0,
@@ -691,6 +697,10 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
         }],
     });
 
+    assert_eq!(
+        graph.activation_policy,
+        RenderGraphActivationPolicy::AnyEffectVisible
+    );
     assert_eq!(graph.passes.len(), 4);
     assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalSub);
     assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
@@ -721,13 +731,12 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
             shader: "we/image-scroll-final".to_owned(),
-            samples_framebuffer_snapshot: false,
-            framebuffer_prepass: None,
         }),
         effect_passes: vec![WeEffectPassContract {
             object_index: 3,
             effect_binding_start: 17,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(4),
             effect_file: "effects/scroll/effect.json".to_owned(),
             pass_index: 0,
@@ -753,5 +762,72 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
     assert_eq!(
         graph.passes[0].effect_visibility,
         RenderPassEffectVisibility::material_stages(17, 1)
+    );
+}
+
+#[test]
+fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
+    let effect_passes = [
+        (
+            17,
+            "effects/iris/effect.json",
+            "effects/iris__SLOTS_3__MASK_1",
+        ),
+        (
+            18,
+            "effects/waterripple/effect.json",
+            "effects/waterripple__SLOTS_7",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(effect_binding_start, effect_file, shader)| WeEffectPassContract {
+            object_index: 3,
+            effect_binding_start,
+            effect_binding_count: 1,
+            runtime_visibility: true,
+            material_index: Some(4),
+            effect_file: effect_file.to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some(shader.to_owned()),
+            source: None,
+            target: None,
+            binds: [(0, "previous".to_owned())].into_iter().collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        },
+    )
+    .collect();
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 3,
+        base_material_index: Some(1),
+        base_shader: Some("genericimage4".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: None,
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: true,
+        puppet_skinning_after_effects: true,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: Some(WeFinalEffectMaterial {
+            material_index: 9,
+            shader: "we/puppet-iris-waterripple-final".to_owned(),
+        }),
+        effect_passes,
+    });
+
+    assert_eq!(graph.passes.len(), 1);
+    assert_eq!(
+        graph.passes[0].effect_visibility,
+        RenderPassEffectVisibility::material_stages(17, 2)
     );
 }

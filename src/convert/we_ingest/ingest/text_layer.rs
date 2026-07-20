@@ -289,12 +289,12 @@ pub(super) fn rasterize_text_layer(
     let authored_point_size = value_f32(object.get("pointsize"))
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(32.0);
-    let point_size = text_point_size_pixels(authored_point_size);
+    let pixels_per_em = text_point_size_pixels_per_em(authored_point_size);
     // The native layout path adds `[parameters+0x10]` directly to the 26.6 glyph advance after
     // converting that advance to pixels (`0x1401b1166..0x1401b119a`). It is not a point-size or
     // scene-resolution-relative value.
     let spacing = parse_vec3(object.get("spacing")).unwrap_or_default();
-    let scale = PxScale::from(point_size);
+    let scale = ab_glyph_scale_for_font(&font, pixels_per_em)?;
     let glyphs = layout_glyphs(
         &font,
         text,
@@ -530,8 +530,27 @@ fn checked_dimension(value: f32, label: &str) -> Result<u32, String> {
     Ok(value.round().max(1.0) as u32)
 }
 
-fn text_point_size_pixels(point_size: f32) -> f32 {
+fn text_point_size_pixels_per_em(point_size: f32) -> f32 {
     point_size * WALLPAPER_ENGINE_FONT_DPI / TYPOGRAPHIC_POINTS_PER_INCH
+}
+
+fn ab_glyph_scale_for_font(font: &impl Font, pixels_per_em: f32) -> Result<PxScale, String> {
+    let units_per_em = font
+        .units_per_em()
+        .ok_or("font units-per-em is outside the supported range")?;
+    ab_glyph_text_height_scale(pixels_per_em, font.height_unscaled(), units_per_em)
+}
+
+fn ab_glyph_text_height_scale(
+    pixels_per_em: f32,
+    font_height_unscaled: f32,
+    units_per_em: f32,
+) -> Result<PxScale, String> {
+    let scale = pixels_per_em * font_height_unscaled / units_per_em;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("font metrics produce an invalid text-height scale".to_owned());
+    }
+    Ok(PxScale::from(scale))
 }
 
 fn color_byte(value: f32) -> u8 {
@@ -562,8 +581,19 @@ mod tests {
 
     #[test]
     fn wallpaper_engine_point_size_uses_freetype_300_dpi_semantics() {
-        assert_eq!(text_point_size_pixels(96.0), 400.0);
-        assert!((text_point_size_pixels(16.0) - 66.666_664).abs() < 0.000_01);
+        assert_eq!(text_point_size_pixels_per_em(96.0), 400.0);
+        assert!((text_point_size_pixels_per_em(16.0) - 66.666_664).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn freetype_pixels_per_em_are_converted_to_ab_glyph_text_height_scale() {
+        let pixels_per_em = text_point_size_pixels_per_em(35.0);
+        let scale = ab_glyph_text_height_scale(pixels_per_em, 1_200.0, 1_000.0)
+            .expect("valid font metrics");
+
+        assert!((pixels_per_em - 145.833_33).abs() < 0.000_1);
+        assert!((scale.x - 175.0).abs() < 0.000_1);
+        assert!((scale.y - 175.0).abs() < 0.000_1);
     }
 
     #[test]

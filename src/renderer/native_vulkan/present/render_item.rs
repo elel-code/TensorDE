@@ -322,6 +322,8 @@ mod tests {
                 rendering_device_graph: SceneRenderingDeviceGraphPlan {
                     pass_nodes: vec![SceneRenderingDevicePassNode {
                         graph_index: 0,
+                        graph_activation_policy:
+                            crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                         pass_record_index: 0,
                         pass_id: 0,
                         role: SceneRenderPassKind::BaseMaterial,

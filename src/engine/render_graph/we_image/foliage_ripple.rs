@@ -215,6 +215,7 @@ mod tests {
             object_index: 5,
             effect_binding_start: material_index as u32,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(material_index),
             effect_file: format!("effects/{shader}/effect.json"),
             pass_index: 0,

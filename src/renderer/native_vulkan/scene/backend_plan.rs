@@ -167,10 +167,10 @@ mod tests {
         INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SCENE_DEFAULT_FEATURE_FLAGS, SceneBinaryDocument,
         SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,
         SceneMeshVertexRecord, SceneObjectHandle, SceneObjectKind, SceneObjectRecord,
-        ScenePipelineBlend, SceneProjectRecord, SceneRenderGraphRecord, SceneRenderPassKind,
-        SceneRenderPassRecord, SceneRenderTargetKind, SceneResourceId, SceneResourceKind,
-        SceneResourceRecord, SceneShaderContractRecord, SceneStorage, SceneStringId, SceneVec3,
-        write_scene_binary,
+        ScenePipelineBlend, SceneProjectRecord, SceneRenderGraphActivationPolicy,
+        SceneRenderGraphRecord, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
+        SceneResourceId, SceneResourceKind, SceneResourceRecord, SceneShaderContractRecord,
+        SceneStorage, SceneStringId, SceneVec3, write_scene_binary,
     };
 
     #[test]
@@ -484,6 +484,7 @@ mod tests {
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
             render_graphs: vec![SceneRenderGraphRecord {
                 object: SceneObjectHandle(0),
+                activation_policy: SceneRenderGraphActivationPolicy::Always,
                 pass_start: 0,
                 pass_count: 1,
                 unsupported_start: 0,
@@ -509,6 +510,8 @@ mod tests {
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
+                color_write_mask: crate::engine::scene::SceneColorWriteMask::Rgba,
+                clear_target: false,
             }],
             shader_contracts: vec![SceneShaderContractRecord {
                 shader_key: SceneStringId(4),

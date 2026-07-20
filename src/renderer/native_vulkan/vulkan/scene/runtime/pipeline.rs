@@ -10,8 +10,9 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
 use crate::engine::scene::{
-    SceneCompositeBlend, ScenePipelineBlend, SceneRenderPassKind, SceneRenderPassRecord,
-    SceneRenderTargetKind, SceneRenderingDeviceGraphPlan, SceneStorage, SceneStringId,
+    SceneColorWriteMask, SceneCompositeBlend, SceneCullMode, ScenePipelineBlend,
+    SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
+    SceneRenderingDeviceGraphPlan, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -56,6 +57,8 @@ pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {
 struct ScenePipelineKey {
     shader: ScenePipelineShader,
     blend: SceneGpuBlend,
+    cull_mode: SceneCullMode,
+    color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
@@ -169,6 +172,8 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
+            cull_mode: pass_record.cull_mode,
+            color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
@@ -208,9 +213,16 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
             && pass.effect_visibility_policy
                 == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
     }) {
+        let pass_record = storage
+            .document()
+            .render_passes
+            .get(pass.pass_record_index as usize)
+            .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::EffectPassthrough,
             blend: SceneGpuBlend::Replace,
+            cull_mode: pass_record.cull_mode,
+            color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: false,
             advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
             target_format: pass_target_format(
@@ -293,6 +305,8 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             descriptor_heap_plan,
             descriptor_layout,
             key.blend,
+            key.cull_mode,
+            key.color_write_mask,
             key.advanced_source_premultiplied,
             key.advanced_blend_overlap,
             key.samples,
@@ -370,6 +384,8 @@ fn drawn_pass_pipeline_keys(
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
+            cull_mode: pass_record.cull_mode,
+            color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
@@ -384,6 +400,8 @@ fn drawn_pass_pipeline_keys(
             let disabled = ScenePipelineKey {
                 shader: ScenePipelineShader::EffectPassthrough,
                 blend: SceneGpuBlend::Replace,
+                cull_mode: pass_record.cull_mode,
+                color_write_mask: pass_record.color_write_mask,
                 advanced_source_premultiplied: false,
                 advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
                 target_format: key.target_format,
@@ -418,6 +436,8 @@ fn drawn_pass_material_keys(
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
+            cull_mode: pass_record.cull_mode,
+            color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: vk::Format::UNDEFINED,
@@ -584,6 +604,8 @@ fn create_scene_pipeline(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
     blend: SceneGpuBlend,
+    cull_mode: SceneCullMode,
+    color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
@@ -603,6 +625,8 @@ fn create_scene_pipeline(
             descriptor_heap_plan,
             descriptor_layout,
             blend,
+            cull_mode,
+            color_write_mask,
             advanced_source_premultiplied,
             advanced_blend_overlap,
             samples,
@@ -627,6 +651,8 @@ fn create_scene_pipeline_with_modules(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
     blend: SceneGpuBlend,
+    cull_mode: SceneCullMode,
+    color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
@@ -713,6 +739,8 @@ fn create_scene_pipeline_with_modules(
         target_format,
         [vertex_stage, fragment_stage],
         blend,
+        cull_mode,
+        color_write_mask,
         advanced_source_premultiplied,
         advanced_blend_overlap,
         samples,
@@ -732,6 +760,8 @@ fn create_graphics_pipeline(
     target_format: vk::Format,
     stages: [vk::PipelineShaderStageCreateInfo; 2],
     blend: SceneGpuBlend,
+    cull_mode: SceneCullMode,
+    color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
@@ -792,7 +822,7 @@ fn create_graphics_pipeline(
         .build();
     let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
+        .cull_mode(scene_vk_cull_mode(cull_mode))
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0)
         .build();
@@ -800,7 +830,7 @@ fn create_graphics_pipeline(
         .rasterization_samples(samples.rasterization_samples())
         .alpha_to_coverage_enable(blend == SceneGpuBlend::AlphaToCoverage)
         .build();
-    let color_attachment = scene_color_blend_attachment(blend);
+    let color_attachment = scene_color_blend_attachment(blend, color_write_mask);
     let color_attachments = [color_attachment];
     let mut advanced_blend = vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
         .src_premultiplied(advanced_source_premultiplied)
@@ -842,13 +872,25 @@ fn create_graphics_pipeline(
     Ok(pipelines[0])
 }
 
-fn scene_color_blend_attachment(blend: SceneGpuBlend) -> vk::PipelineColorBlendAttachmentState {
-    let builder = vk::PipelineColorBlendAttachmentState::builder().color_write_mask(
-        vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
-    );
+fn scene_vk_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
+    match cull_mode {
+        SceneCullMode::None => vk::CullModeFlags::NONE,
+        SceneCullMode::Normal => vk::CullModeFlags::BACK,
+    }
+}
+
+fn scene_color_blend_attachment(
+    blend: SceneGpuBlend,
+    color_write_mask: SceneColorWriteMask,
+) -> vk::PipelineColorBlendAttachmentState {
+    let mut components = vk::ColorComponentFlags::R
+        | vk::ColorComponentFlags::G
+        | vk::ColorComponentFlags::B;
+    if color_write_mask == SceneColorWriteMask::Rgba {
+        components |= vk::ColorComponentFlags::A;
+    }
+    let builder =
+        vk::PipelineColorBlendAttachmentState::builder().color_write_mask(components);
     match blend {
         SceneGpuBlend::Replace | SceneGpuBlend::AlphaToCoverage => {
             builder.blend_enable(false).build()

@@ -1,4 +1,8 @@
 use super::*;
+use crate::engine::render_graph::{
+    PipelineBlendMode, RenderPassRole, RenderTargetRole, TextureBindingRole,
+};
+use crate::engine::scene::ScenePipelineBlend;
 
 #[test]
 fn effect_image_target_role_and_scale_follow_we_fbo_semantics() {
@@ -75,6 +79,211 @@ fn ingests_minimal_loose_scene_project() {
     assert_eq!(ir.shader_contracts[0].sampler_heap_count, 1);
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn literal_disabled_effects_are_pruned_from_rendering_but_retained_semantically() {
+    let root = write_effect_visibility_fixture(
+        "literal-disabled",
+        serde_json::json!([
+            {"file":"effects/waterwaves/effect.json","id":10,"visible":true},
+            {"file":"effects/waterwaves/effect.json","id":11,"visible":false},
+            {"file":"effects/waterwaves/effect.json","id":12}
+        ]),
+        None,
+        false,
+    );
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("literal effect visibility IR");
+
+    assert_eq!(
+        ir.object_effects
+            .iter()
+            .map(|effect| effect.visible)
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    assert_eq!(ir.render_graphs[0].passes.len(), 3);
+    assert_eq!(
+        ir.render_graphs[0]
+            .passes
+            .iter()
+            .map(|pass| pass.role)
+            .collect::<Vec<_>>(),
+        [
+            RenderPassRole::BaseMaterial,
+            RenderPassRole::EffectMaterial,
+            RenderPassRole::SceneComposite,
+        ]
+    );
+    assert_eq!(
+        ir.render_graphs[0].passes[1].shader.as_deref(),
+        Some("we/effect-waterwaves-direct__STAGES_2")
+    );
+    assert_eq!(
+        ir.render_graphs[0].passes[1].effect_visibility,
+        crate::engine::render_graph::RenderPassEffectVisibility::NONE
+    );
+    let document =
+        crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower static IR");
+    assert_eq!(document.object_effects.len(), 3);
+    assert_eq!(
+        document.render_passes[1].effect_visibility_policy,
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
+    );
+    assert_eq!(document.render_passes[1].effect_binding_start, u32::MAX);
+    assert_eq!(document.render_passes[1].effect_binding_count, 0);
+    crate::engine::scene::SceneStorage::from_document(document)
+        .expect("validate static effect visibility storage");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn bound_effect_visibility_keeps_the_complete_runtime_stage_range() {
+    let root = write_effect_visibility_fixture(
+        "bound-disabled",
+        serde_json::json!([
+            {"file":"effects/waterwaves/effect.json","id":20,"visible":true},
+            {"file":"effects/waterwaves/effect.json","id":21,"visible":{"value":false}},
+            {"file":"effects/waterwaves/effect.json","id":22,"visible":true}
+        ]),
+        None,
+        false,
+    );
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("bound effect visibility IR");
+    let visibility = ir.render_graphs[0].passes[0].effect_visibility;
+
+    assert_eq!(ir.object_effects.len(), 3);
+    assert_eq!(
+        visibility.policy,
+        crate::engine::render_graph::RenderPassEffectVisibilityPolicy::WaterWavesStages
+    );
+    assert_eq!(visibility.binding_start, 0);
+    assert_eq!(visibility.binding_count, 3);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn effect_visibility_script_keeps_literal_effects_runtime_addressable() {
+    let root = write_effect_visibility_fixture(
+        "script-visible",
+        serde_json::json!([
+            {"file":"effects/waterwaves/effect.json","id":30,"visible":true},
+            {"file":"effects/waterwaves/effect.json","id":31,"visible":false},
+            {"file":"effects/waterwaves/effect.json","id":32,"visible":true}
+        ]),
+        Some(
+            "export function update(value) { thisScene.getLayer('body').getEffect('middle').visible = value; return value; }",
+        ),
+        false,
+    );
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("script effect visibility IR");
+    let visibility = ir.render_graphs[0].passes[0].effect_visibility;
+
+    assert_eq!(ir.object_effects.len(), 3);
+    assert_eq!(
+        visibility.policy,
+        crate::engine::render_graph::RenderPassEffectVisibilityPolicy::WaterWavesStages
+    );
+    assert_eq!(visibility.binding_count, 3);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn literal_disabled_effect_only_layer_records_no_render_work() {
+    let root = write_effect_visibility_fixture(
+        "effect-only-disabled",
+        serde_json::json!([
+            {"file":"effects/waterwaves/effect.json","id":40,"visible":false}
+        ]),
+        None,
+        true,
+    );
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("disabled effect-only IR");
+
+    assert_eq!(ir.object_effects.len(), 1);
+    assert!(!ir.object_effects[0].visible);
+    assert!(ir.render_graphs[0].passes.is_empty());
+    assert!(
+        ir.image_targets
+            .iter()
+            .all(|target| target.name != utility_layer::FULL_FRAMEBUFFER_TARGET)
+    );
+    let document = crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir)
+        .expect("lower disabled effect-only IR");
+    crate::engine::scene::SceneStorage::from_document(document)
+        .expect("validate disabled effect-only storage");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn write_effect_visibility_fixture(
+    name: &str,
+    effects: Value,
+    script: Option<&str>,
+    effect_only: bool,
+) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "gilder-we-effect-visibility-{name}-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("effects/waterwaves")).expect("effects");
+    fs::create_dir_all(root.join("materials/effects")).expect("effect materials");
+    fs::create_dir_all(root.join("models")).expect("models");
+    fs::create_dir_all(root.join("materials")).expect("materials");
+    fs::write(
+        root.join("project.json"),
+        r#"{"type":"scene","file":"scene.json","title":"Effect visibility"}"#,
+    )
+    .expect("project");
+    fs::write(
+        root.join("effects/waterwaves/effect.json"),
+        r#"{"passes":[{"material":"materials/effects/waterwaves.json"}]}"#,
+    )
+    .expect("effect");
+    fs::write(
+        root.join("materials/effects/waterwaves.json"),
+        r#"{"passes":[{"shader":"effects/waterwaves","blending":"normal"}]}"#,
+    )
+    .expect("effect material");
+    fs::write(
+        root.join("models/layer.json"),
+        r#"{"width":64,"height":64,"material":"materials/layer.json"}"#,
+    )
+    .expect("model");
+    fs::write(
+        root.join("materials/layer.json"),
+        r#"{"passes":[{"shader":"genericimage4","blending":"translucent","textures":[null]}]}"#,
+    )
+    .expect("material");
+
+    let mut object = serde_json::json!({
+        "id": 7,
+        "name": "body",
+        "image": if effect_only {
+            "models/util/composelayer.json"
+        } else {
+            "models/layer.json"
+        },
+        "effects": effects,
+    });
+    if let Some(script) = script {
+        object["visible"] = serde_json::json!({"value": true, "script": script});
+    }
+    let scene = serde_json::json!({"objects": [object]});
+    fs::write(
+        root.join("scene.json"),
+        serde_json::to_vec(&scene).expect("scene JSON"),
+    )
+    .expect("scene");
+    root
 }
 
 #[test]
@@ -377,6 +586,149 @@ fn ingests_json_puppet_descriptor_into_mdl_ir_records() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
+    let root = std::env::temp_dir().join(format!(
+        "gilder-we-direct-puppet-clipping-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("models")).expect("models");
+    fs::create_dir_all(root.join("materials")).expect("materials");
+    fs::create_dir_all(root.join("masks")).expect("masks");
+    fs::write(
+        root.join("project.json"),
+        r#"{"type":"scene","file":"scene.json","title":"Direct Puppet Clipping"}"#,
+    )
+    .expect("project");
+    fs::write(
+        root.join("scene.json"),
+        r#"{"objects":[{"id":9,"image":"models/clipped.json"}]}"#,
+    )
+    .expect("scene");
+    fs::write(
+        root.join("models/clipped.json"),
+        r#"{"material":"materials/clipped.json","puppet":"models/clipped.mdl"}"#,
+    )
+    .expect("model");
+    fs::write(root.join("models/clipped.mdl"), test_clipped_mdlv0023()).expect("mdl");
+    fs::write(
+        root.join("materials/clipped.json"),
+        r#"{"passes":[{"shader":"genericimage4","textures":[null]}]}"#,
+    )
+    .expect("material");
+    fs::write(root.join("masks/eye-clip.png"), b"raw-mask-fixture").expect("mask");
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("ir");
+
+    assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+    assert_eq!(ir.render_graphs.len(), 1);
+    let graph = &ir.render_graphs[0];
+    assert!(graph.unsupported.is_empty(), "{:?}", graph.unsupported);
+    assert_eq!(
+        graph
+            .passes
+            .iter()
+            .map(|pass| pass.role)
+            .collect::<Vec<_>>(),
+        [
+            RenderPassRole::MeshVisiblePrefix,
+            RenderPassRole::MeshClippingMask,
+            RenderPassRole::MeshClippedTarget,
+            RenderPassRole::MeshClippingMask,
+            RenderPassRole::MeshClippedTarget,
+            RenderPassRole::MeshVisibleRemainder,
+        ]
+    );
+    assert_eq!(
+        graph.passes[1].shader.as_deref(),
+        Some("we/clippingmaskimage4__PUPPETSKINNING_1")
+    );
+    assert_eq!(
+        graph.passes[2].shader.as_deref(),
+        Some("we/genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1")
+    );
+    assert_eq!(
+        graph.passes[1].target_name.as_deref(),
+        Some("_rt_FullAlphaMask")
+    );
+    assert_eq!(
+        graph.passes[1].state.pipeline_blend,
+        PipelineBlendMode::Translucent
+    );
+    let mask_producers = graph
+        .passes
+        .iter()
+        .filter(|pass| pass.role == RenderPassRole::MeshClippingMask)
+        .collect::<Vec<_>>();
+    assert_eq!(mask_producers.len(), 2);
+    assert!(mask_producers.iter().all(|pass| pass.state.clear_target));
+    assert_eq!(
+        graph.passes[2].state.pipeline_blend,
+        PipelineBlendMode::Translucent
+    );
+    assert_eq!(
+        graph.passes[2].state.color_write_mask,
+        crate::engine::render_graph::ColorWriteMask::Rgb
+    );
+    let mask_material = graph.passes[1]
+        .material_index
+        .and_then(|index| ir.materials.get(index))
+        .expect("mask material");
+    assert_eq!(
+        ir.material_passes[mask_material.pass_start as usize].pipeline_blend,
+        ScenePipelineBlend::Translucent
+    );
+    assert!(
+        graph.passes[2]
+            .bindings
+            .contains(&TextureBindingRole::GraphTarget {
+                slot: 8,
+                role: RenderTargetRole::FirstClassEffectTarget,
+                name: Some("_rt_FullAlphaMask".to_owned()),
+            })
+    );
+    assert_eq!(graph.target_specs.len(), 1);
+    assert_eq!(graph.target_specs[0].name, "_rt_FullAlphaMask");
+    assert_eq!(graph.target_specs[0].format, "r8");
+    assert_eq!(graph.target_specs[0].width_divisor_milli, 2_000);
+    assert_eq!(graph.target_specs[0].height_divisor_milli, 2_000);
+    assert_eq!(
+        ir.mesh_clipping_slices
+            .iter()
+            .map(|slice| slice.role)
+            .collect::<Vec<_>>(),
+        [
+            WeIrMeshClippingSliceRole::VisiblePrefix,
+            WeIrMeshClippingSliceRole::MaskProducer,
+            WeIrMeshClippingSliceRole::ClippedTarget,
+            WeIrMeshClippingSliceRole::MaskProducer,
+            WeIrMeshClippingSliceRole::ClippedTarget,
+            WeIrMeshClippingSliceRole::VisibleRemainder,
+        ]
+    );
+    assert!(ir.shader_contracts.iter().any(|contract| {
+        contract.shader_key == "we/genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1"
+    }));
+
+    fs::write(
+        root.join("materials/clipped.json"),
+        r#"{"passes":[{"shader":"genericimage2","textures":[null]}]}"#,
+    )
+    .expect("unsupported material");
+    let unsupported_ir = ingest_wallpaper_engine_project(&root).expect("unsupported ir");
+    assert!(unsupported_ir.unsupported.is_empty());
+    assert_eq!(unsupported_ir.render_graphs[0].passes.len(), 1);
+    assert_eq!(unsupported_ir.render_graphs[0].unsupported.len(), 1);
+    assert!(
+        unsupported_ir.render_graphs[0].unsupported[0]
+            .feature
+            .starts_with("mdlv0023-token-one-clipping-unsupported-shader:")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
 fn test_mdlv0023() -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"MDLV0023\0");
@@ -456,11 +808,96 @@ fn test_mdlv0023() -> Vec<u8> {
     bytes
 }
 
+fn test_clipped_mdlv0023() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MDLV0023\0");
+    push_u32(&mut bytes, 0x0180_0009);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 1);
+    bytes.extend_from_slice(b"materials/clipped.json\0");
+    push_u32(&mut bytes, 0);
+    for value in [0.0_f32, 0.0, 0.0, 1.0, 1.0, 0.0] {
+        push_f32(&mut bytes, value);
+    }
+    push_u32(&mut bytes, 0x0180_000f);
+    let mut vertices = Vec::new();
+    push_mdl_skinned_vertex(&mut vertices, [0.0, 0.0, 0.0], [0.0, 1.0]);
+    push_mdl_skinned_vertex(&mut vertices, [1.0, 0.0, 0.0], [1.0, 1.0]);
+    push_mdl_skinned_vertex(&mut vertices, [1.0, 1.0, 0.0], [1.0, 0.0]);
+    push_u32(&mut bytes, vertices.len() as u32);
+    bytes.extend_from_slice(&vertices);
+    let indices = [0_u16, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2];
+    push_u32(
+        &mut bytes,
+        (indices.len() * std::mem::size_of::<u16>()) as u32,
+    );
+    for index in indices {
+        bytes.extend_from_slice(&index.to_le_bytes());
+    }
+
+    bytes.push(0);
+    bytes.push(1);
+    push_u32(&mut bytes, 6 * 16);
+    for (source_index, index_start) in [(10, 0), (11, 3), (12, 6), (13, 9), (14, 12), (15, 15)] {
+        push_u32(&mut bytes, source_index);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, index_start);
+        push_u32(&mut bytes, 3);
+    }
+    push_u32(&mut bytes, 2);
+    bytes.extend_from_slice(&7_u64.to_le_bytes());
+    bytes.extend_from_slice(b"masks/eye-clip\0");
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 2);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 1);
+    bytes.extend_from_slice(&8_u64.to_le_bytes());
+    bytes.extend_from_slice(b"masks/eye-clip\0");
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 4);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 3);
+
+    bytes.extend_from_slice(b"MDLS0004");
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    bytes.extend_from_slice(b"root\0");
+    bytes.extend_from_slice(&0_i32.to_le_bytes());
+    push_u32(&mut bytes, u32::MAX);
+    push_u32(&mut bytes, 64);
+    for index in 0..16 {
+        push_f32(
+            &mut bytes,
+            f32::from(index == 0 || index == 5 || index == 10 || index == 15),
+        );
+    }
+    bytes.extend_from_slice(b"{}\0");
+    bytes
+}
+
 fn push_mdl_vertex(out: &mut Vec<u8>, position: [f32; 3], uv: [f32; 2]) {
     for value in position {
         push_f32(out, value);
     }
     out.resize(out.len() + 60, 0);
+    push_f32(out, uv[0]);
+    push_f32(out, uv[1]);
+}
+
+fn push_mdl_skinned_vertex(out: &mut Vec<u8>, position: [f32; 3], uv: [f32; 2]) {
+    let start = out.len();
+    for value in position {
+        push_f32(out, value);
+    }
+    out.resize(start + 40, 0);
+    for blend_index in [0_u32; 4] {
+        push_u32(out, blend_index);
+    }
+    for blend_weight in [1.0_f32, 0.0, 0.0, 0.0] {
+        push_f32(out, blend_weight);
+    }
     push_f32(out, uv[0]);
     push_f32(out, uv[1]);
 }

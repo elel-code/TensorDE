@@ -275,6 +275,7 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
         render_graphs: vec![
             SceneRenderGraphRecord {
                 object: SceneObjectHandle(0),
+                activation_policy: SceneRenderGraphActivationPolicy::AnyEffectVisible,
                 pass_start: 0,
                 pass_count: 1,
                 unsupported_start: 0,
@@ -282,6 +283,7 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
             },
             SceneRenderGraphRecord {
                 object: SceneObjectHandle(1),
+                activation_policy: SceneRenderGraphActivationPolicy::Always,
                 pass_start: 1,
                 pass_count: 1,
                 unsupported_start: 0,
@@ -308,6 +310,8 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
+                color_write_mask: SceneColorWriteMask::Rgba,
+                clear_target: false,
             },
             SceneRenderPassRecord {
                 id: 10,
@@ -328,6 +332,8 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
+                color_write_mask: SceneColorWriteMask::Rgba,
+                clear_target: false,
             },
         ],
         shader_contracts: vec![SceneShaderContractRecord {
@@ -346,6 +352,10 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
 
     assert_eq!(graph.pass_nodes.len(), 2);
     assert_eq!(graph.pass_nodes[0].pass_id, 9);
+    assert_eq!(
+        graph.pass_nodes[0].graph_activation_policy,
+        SceneRenderGraphActivationPolicy::AnyEffectVisible
+    );
     assert_eq!(graph.pass_nodes[0].mesh_draw_count, 1);
     assert_eq!(graph.pass_nodes[1].pass_id, 10);
     assert_eq!(graph.pass_nodes[1].mesh_draw_count, 1);
@@ -380,6 +390,7 @@ fn rendering_device_graph_allocates_named_effect_targets_from_pass_bindings() {
         strings: vec!["fbo_a".to_owned(), "fbo_b".to_owned()],
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 3,
             unsupported_start: 0,
@@ -432,6 +443,7 @@ fn rendering_device_graph_does_not_alias_incompatible_effect_target_images() {
         ],
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 4,
             unsupported_start: 0,
@@ -482,6 +494,7 @@ fn same_named_fbo_in_distinct_graphs_keeps_graph_scoped_identity() {
         render_graphs: vec![
             SceneRenderGraphRecord {
                 object: SceneObjectHandle(INVALID_OBJECT_ID),
+                activation_policy: SceneRenderGraphActivationPolicy::Always,
                 pass_start: 0,
                 pass_count: 2,
                 unsupported_start: 0,
@@ -489,6 +502,7 @@ fn same_named_fbo_in_distinct_graphs_keeps_graph_scoped_identity() {
             },
             SceneRenderGraphRecord {
                 object: SceneObjectHandle(INVALID_OBJECT_ID),
+                activation_policy: SceneRenderGraphActivationPolicy::Always,
                 pass_start: 2,
                 pass_count: 2,
                 unsupported_start: 0,
@@ -533,6 +547,7 @@ fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object
         strings: vec!["effects/opacity__SLOTS_1".to_owned(), "fbo_a".to_owned()],
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 1,
             unsupported_start: 0,
@@ -557,6 +572,8 @@ fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
         }],
         ..SceneBinaryDocument::default()
     };
@@ -684,6 +701,7 @@ fn object_effect_utility_retains_semantic_transform_and_authored_source_extent()
         }],
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(0),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 1,
             unsupported_start: 0,
@@ -708,6 +726,8 @@ fn object_effect_utility_retains_semantic_transform_and_authored_source_extent()
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
         }],
         ..SceneBinaryDocument::default()
     };
@@ -807,6 +827,7 @@ fn textureless_composite_layer_allocates_image_local_targets_at_authored_extent(
         }],
         render_graphs: vec![SceneRenderGraphRecord {
             object,
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 0,
             unsupported_start: 0,
@@ -874,6 +895,8 @@ fn named_fbo_pass(
         depth_test: SceneDepthTest::Disabled,
         depth_write: false,
         cull_mode: SceneCullMode::None,
+        color_write_mask: SceneColorWriteMask::Rgba,
+        clear_target: false,
     }
 }
 

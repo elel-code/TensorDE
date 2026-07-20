@@ -28,9 +28,7 @@ use components::{
     material_binding_from_object, parent_from_object, particle_emitter_from_record,
     puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,
 };
-use dynamic_property::{
-    ResolvedParentState, apply_script_transform, multiply_color, script_scalar, script_vector,
-};
+use dynamic_property::{ResolvedParentState, apply_script_transform, script_scalar, script_vector};
 use effect::object_effect_binding_from_object;
 pub use effect::{
     ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
@@ -551,9 +549,9 @@ impl<'a> SceneSemanticWorld<'a> {
             self_visible,
             resolved_visible: self_visible && parent_state.inherited_visible,
             self_color,
-            resolved_color: multiply_color(self_color, parent_state.inherited_color),
+            resolved_color: self_color,
             self_alpha,
-            resolved_alpha: (self_alpha * parent_state.inherited_alpha).clamp(0.0, 1.0),
+            resolved_alpha: self_alpha,
             sort_order: visibility.sort_order,
             mesh_binding_start: mesh_range.binding_start,
             mesh_binding_count: mesh_range.binding_count,
@@ -585,12 +583,6 @@ impl<'a> SceneSemanticWorld<'a> {
             return Ok(ResolvedParentState {
                 parent: SceneObjectHandle(INVALID_OBJECT_ID),
                 inherited_visible: true,
-                inherited_color: SceneVec3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                },
-                inherited_alpha: 1.0,
                 world_matrix: local_matrix,
             });
         }
@@ -629,8 +621,6 @@ impl<'a> SceneSemanticWorld<'a> {
         Ok(ResolvedParentState {
             parent: parent_state.object,
             inherited_visible: parent_state.resolved_visible,
-            inherited_color: parent_state.resolved_color,
-            inherited_alpha: parent_state.resolved_alpha,
             world_matrix: multiply_matrix(&parent_anchor, &local_matrix),
         })
     }

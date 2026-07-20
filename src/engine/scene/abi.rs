@@ -16,10 +16,11 @@ mod binary_contract;
 mod event_contract;
 mod particle_contract;
 mod render_contract;
+mod render_state;
 mod script_contract;
 pub use {
     binary_contract::*, event_contract::*, particle_contract::*, render_contract::*,
-    script_contract::*,
+    render_state::*, script_contract::*,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -169,132 +170,6 @@ impl SceneObjectKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ScenePipelineBlend {
-    Normal,
-    Translucent,
-    Additive,
-    Disabled,
-    AlphaToCoverage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SceneCompositeBlend {
-    Alpha,
-    Normal,
-    Additive,
-    Multiply,
-    Screen,
-    Max,
-    Modulate,
-    HslColor,
-    AlphaToCoverage,
-}
-
-impl SceneCompositeBlend {
-    pub const fn to_u32(self) -> u32 {
-        match self {
-            Self::Alpha => 0,
-            Self::Normal => 1,
-            Self::Additive => 2,
-            Self::Multiply => 3,
-            Self::Screen => 4,
-            Self::Max => 5,
-            Self::Modulate => 6,
-            Self::HslColor => 7,
-            Self::AlphaToCoverage => 8,
-        }
-    }
-
-    pub const fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Alpha),
-            1 => Some(Self::Normal),
-            2 => Some(Self::Additive),
-            3 => Some(Self::Multiply),
-            4 => Some(Self::Screen),
-            5 => Some(Self::Max),
-            6 => Some(Self::Modulate),
-            7 => Some(Self::HslColor),
-            8 => Some(Self::AlphaToCoverage),
-            _ => None,
-        }
-    }
-}
-
-impl ScenePipelineBlend {
-    pub const fn to_u32(self) -> u32 {
-        match self {
-            Self::Normal => 0,
-            Self::Translucent => 1,
-            Self::Additive => 2,
-            Self::Disabled => 3,
-            Self::AlphaToCoverage => 4,
-        }
-    }
-
-    pub const fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Normal),
-            1 => Some(Self::Translucent),
-            2 => Some(Self::Additive),
-            3 => Some(Self::Disabled),
-            4 => Some(Self::AlphaToCoverage),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SceneDepthTest {
-    Disabled,
-    Enabled,
-}
-
-impl SceneDepthTest {
-    pub const fn to_u32(self) -> u32 {
-        match self {
-            Self::Disabled => 0,
-            Self::Enabled => 1,
-        }
-    }
-
-    pub const fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Disabled),
-            1 => Some(Self::Enabled),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SceneCullMode {
-    None,
-    Normal,
-}
-
-impl SceneCullMode {
-    pub const fn to_u32(self) -> u32 {
-        match self {
-            Self::None => 0,
-            Self::Normal => 1,
-        }
-    }
-
-    pub const fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::None),
-            1 => Some(Self::Normal),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum SceneRenderTargetKind {
     SceneColor,
     Swapchain,
@@ -396,6 +271,30 @@ impl SceneRenderPassKind {
             15 => Some(Self::MeshVisibleRemainder),
             11 => Some(Self::DebugEvidence),
             0xffff => Some(Self::Unsupported),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneRenderGraphActivationPolicy {
+    Always,
+    AnyEffectVisible,
+}
+
+impl SceneRenderGraphActivationPolicy {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Always => 0,
+            Self::AnyEffectVisible => 1,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Always),
+            1 => Some(Self::AnyEffectVisible),
             _ => None,
         }
     }
@@ -954,6 +853,7 @@ pub struct SceneEffectFboRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneRenderGraphRecord {
     pub object: SceneObjectHandle,
+    pub activation_policy: SceneRenderGraphActivationPolicy,
     pub pass_start: u32,
     pub pass_count: u32,
     pub unsupported_start: u32,
@@ -980,4 +880,6 @@ pub struct SceneRenderPassRecord {
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub color_write_mask: SceneColorWriteMask,
+    pub clear_target: bool,
 }

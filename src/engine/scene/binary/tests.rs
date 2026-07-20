@@ -394,6 +394,7 @@ fn scene_binary_round_trip_preserves_composite_blend() {
     let document = SceneBinaryDocument {
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(0),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
             pass_start: 0,
             pass_count: 1,
             unsupported_start: 0,
@@ -418,6 +419,8 @@ fn scene_binary_round_trip_preserves_composite_blend() {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
         }],
         ..SceneBinaryDocument::default()
     };
@@ -429,6 +432,30 @@ fn scene_binary_round_trip_preserves_composite_blend() {
     assert_eq!(
         decoded.render_passes[0].scene_blend,
         SceneCompositeBlend::Modulate
+    );
+}
+
+#[test]
+fn scene_binary_round_trip_preserves_graph_activation_policy() {
+    let document = SceneBinaryDocument {
+        render_graphs: vec![SceneRenderGraphRecord {
+            object: SceneObjectHandle(0),
+            activation_policy: SceneRenderGraphActivationPolicy::AnyEffectVisible,
+            pass_start: 0,
+            pass_count: 0,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+
+    write_scene_binary(&document, &mut bytes).expect("write scene binary");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene binary");
+
+    assert_eq!(
+        decoded.render_graphs[0].activation_policy,
+        SceneRenderGraphActivationPolicy::AnyEffectVisible
     );
 }
 
@@ -454,6 +481,8 @@ fn scene_binary_round_trip_preserves_effect_visibility_ownership() {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgb,
+            clear_target: true,
         }],
         ..SceneBinaryDocument::default()
     };
@@ -465,6 +494,8 @@ fn scene_binary_round_trip_preserves_effect_visibility_ownership() {
 
     assert_eq!(pass.effect_binding_start, 11);
     assert_eq!(pass.effect_binding_count, 2);
+    assert_eq!(pass.color_write_mask, SceneColorWriteMask::Rgb);
+    assert!(pass.clear_target);
     assert_eq!(
         pass.effect_visibility_policy,
         SceneRenderEffectVisibilityPolicy::MaterialStages

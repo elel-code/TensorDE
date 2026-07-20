@@ -643,6 +643,8 @@ mod tests {
     ) -> SceneRenderingDevicePassNode {
         SceneRenderingDevicePassNode {
             graph_index: 0,
+            graph_activation_policy:
+                crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
             pass_record_index,
             pass_id: pass_record_index,
             role,

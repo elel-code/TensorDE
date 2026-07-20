@@ -20,7 +20,7 @@ pub use binding::TextureBindingRole;
 pub use execution::{
     RenderGraphExecutionLevel, RenderGraphExecutionPass, RenderGraphExecutionPlan,
 };
-pub use graph::{RenderGraph, UnsupportedGraphBoundary};
+pub use graph::{RenderGraph, RenderGraphActivationPolicy, UnsupportedGraphBoundary};
 pub use pass::{
     RenderPassEffectVisibility, RenderPassEffectVisibilityPolicy, RenderPassNode, RenderPassRole,
 };
@@ -30,12 +30,15 @@ pub use resource::{
 pub use run::{
     RenderGraphRunPlan, RenderGraphRunPlanCandidate, RenderGraphTargetRun, RenderGraphTargetRunPass,
 };
-pub use state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
+pub use state::{
+    ColorWriteMask, CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode,
+};
 pub use target::{RenderTargetRole, RenderTargetSpec};
 pub use we_image::{
     WeEffectPassContract, WeFinalEffectMaterial, WeFoliageRippleMaterial,
-    WeFramebufferSnapshotContract, WeImageGraphContract, WeRippleFlowMaterialIndices,
-    WeWaterWavesDirectMaterial, we_effect_pass_node, we_effect_passes_form_foliage_ripple_chain,
-    we_effect_passes_form_ripple_flow_chain, we_effect_passes_form_waterwaves_displacement_chain,
-    we_image_graph, we_image_graph_requires_generated_scene_snapshot,
+    WeFramebufferSnapshotContract, WeFramebufferSnapshotUsage, WeImageGraphContract,
+    WeRippleFlowMaterialIndices, WeWaterWavesDirectMaterial, we_effect_pass_node,
+    we_effect_passes_form_foliage_ripple_chain, we_effect_passes_form_ripple_flow_chain,
+    we_effect_passes_form_waterwaves_displacement_chain, we_image_graph,
+    we_image_graph_requires_generated_scene_snapshot,
 };

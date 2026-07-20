@@ -8,17 +8,7 @@ use super::TransformComponent;
 pub(super) struct ResolvedParentState {
     pub(super) parent: SceneObjectHandle,
     pub(super) inherited_visible: bool,
-    pub(super) inherited_color: SceneVec3,
-    pub(super) inherited_alpha: f32,
     pub(super) world_matrix: [f32; 16],
-}
-
-pub(super) fn multiply_color(left: SceneVec3, right: SceneVec3) -> SceneVec3 {
-    SceneVec3 {
-        x: left.x * right.x,
-        y: left.y * right.y,
-        z: left.z * right.z,
-    }
 }
 
 fn script_delta(

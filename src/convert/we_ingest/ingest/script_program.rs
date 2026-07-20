@@ -58,6 +58,31 @@ pub(super) fn project_property_defaults(project: &Value) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+pub(super) fn scene_scripts_may_mutate_effect_visibility(scene: &Value) -> bool {
+    fn visit(value: &Value) -> bool {
+        match value {
+            Value::Array(values) => values.iter().any(visit),
+            Value::Object(object) => {
+                let current_script_may_mutate = object
+                    .get("script")
+                    .and_then(Value::as_str)
+                    .is_some_and(|source| match analyze_scene_script(source) {
+                        Ok(analysis) => {
+                            has_runtime_entrypoint(&analysis)
+                                && (analysis.may_mutate_effect_visibility
+                                    || !analysis.imports.is_empty())
+                        }
+                        Err(_) => true,
+                    });
+                current_script_may_mutate || object.values().any(visit)
+            }
+            _ => false,
+        }
+    }
+
+    visit(scene)
+}
+
 fn has_runtime_entrypoint(analysis: &SceneScriptAnalysis) -> bool {
     analysis.exports_update
         || analysis.exports_init
@@ -283,6 +308,39 @@ mod tests {
                 .subscriptions
                 .contains(SceneScriptSubscriptions::POINTER_CLICK)
         );
+    }
+
+    #[test]
+    fn scene_effect_visibility_analysis_is_global_and_import_conservative() {
+        let direct = json!({
+            "objects": [{
+                "visible": {
+                    "value": true,
+                    "script": "export function update(value) { thisScene.getLayer('body').getEffect('shine').visible = value; return value; }"
+                }
+            }]
+        });
+        assert!(scene_scripts_may_mutate_effect_visibility(&direct));
+
+        let imported = json!({
+            "objects": [{
+                "visible": {
+                    "value": true,
+                    "script": "import { updateEffect } from './effect.js'; export function update(value) { updateEffect(value); return value; }"
+                }
+            }]
+        });
+        assert!(scene_scripts_may_mutate_effect_visibility(&imported));
+
+        let layer_only = json!({
+            "objects": [{
+                "visible": {
+                    "value": true,
+                    "script": "export function update(value) { thisScene.getLayer('notice').visible = value; return value; }"
+                }
+            }]
+        });
+        assert!(!scene_scripts_may_mutate_effect_visibility(&layer_only));
     }
 
     #[test]

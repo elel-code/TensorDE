@@ -75,11 +75,18 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
         append_direct_composite(graph, contract, material);
         return;
     }
-    let (effect_binding_start, effect_binding_count) =
-        super::contiguous_effect_range(&contract.effect_passes)
-            .expect("typed waterwaves chain requires contiguous effect bindings");
-    let effect_visibility =
-        RenderPassEffectVisibility::waterwaves_stages(effect_binding_start, effect_binding_count);
+    let effect_visibility = super::contiguous_effect_range(&contract.effect_passes)
+        .map(|(effect_binding_start, effect_binding_count)| {
+            if effect_binding_count == 0 {
+                RenderPassEffectVisibility::NONE
+            } else {
+                RenderPassEffectVisibility::waterwaves_stages(
+                    effect_binding_start,
+                    effect_binding_count,
+                )
+            }
+        })
+        .expect("typed waterwaves chain requires compatible effect visibility");
     let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
     graph.passes.push(RenderPassNode {
         id: pass_id,
@@ -142,11 +149,18 @@ fn append_direct_composite(
     contract: &WeImageGraphContract,
     material: &crate::engine::render_graph::WeWaterWavesDirectMaterial,
 ) {
-    let (effect_binding_start, effect_binding_count) =
-        super::contiguous_effect_range(&contract.effect_passes)
-            .expect("typed waterwaves chain requires contiguous effect bindings");
-    let effect_visibility =
-        RenderPassEffectVisibility::waterwaves_stages(effect_binding_start, effect_binding_count);
+    let effect_visibility = super::contiguous_effect_range(&contract.effect_passes)
+        .map(|(effect_binding_start, effect_binding_count)| {
+            if effect_binding_count == 0 {
+                RenderPassEffectVisibility::NONE
+            } else {
+                RenderPassEffectVisibility::waterwaves_stages(
+                    effect_binding_start,
+                    effect_binding_count,
+                )
+            }
+        })
+        .expect("typed waterwaves chain requires compatible effect visibility");
     if material.group_visual_composite {
         graph.passes.push(RenderPassNode {
             id: 0,
@@ -396,6 +410,7 @@ mod tests {
             object_index: 7,
             effect_binding_start: material_index as u32,
             effect_binding_count: 1,
+            runtime_visibility: true,
             material_index: Some(material_index),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,

@@ -583,6 +583,8 @@ void main() {}
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
             render_graphs: vec![SceneRenderGraphRecord {
                 object: SceneObjectHandle(0),
+                activation_policy:
+                    crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
                 pass_start: 0,
                 pass_count: 1,
                 unsupported_start: 0,
@@ -608,6 +610,8 @@ void main() {}
                 depth_test: crate::engine::scene::SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: crate::engine::scene::SceneCullMode::None,
+                color_write_mask: crate::engine::scene::SceneColorWriteMask::Rgba,
+                clear_target: false,
             }],
             shader_contracts: vec![SceneShaderContractRecord {
                 shader_key: SceneStringId(4),

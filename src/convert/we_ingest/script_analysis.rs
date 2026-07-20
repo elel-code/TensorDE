@@ -21,6 +21,7 @@ pub(super) struct SceneScriptAnalysis {
     pub(super) uses_pointer: bool,
     pub(super) uses_local_time: bool,
     pub(super) uses_scene_api: bool,
+    pub(super) may_mutate_effect_visibility: bool,
     pub(super) imports: Vec<String>,
 }
 
@@ -82,6 +83,7 @@ pub(super) fn analyze_scene_script(
         uses_pointer: visitor.uses_pointer,
         uses_local_time: visitor.uses_local_time,
         uses_scene_api: visitor.uses_scene_api,
+        may_mutate_effect_visibility: visitor.uses_get_effect && visitor.accesses_visible,
         imports: parsed
             .module_record
             .requested_modules
@@ -99,6 +101,8 @@ struct CapabilityVisitor {
     uses_pointer: bool,
     uses_local_time: bool,
     uses_scene_api: bool,
+    uses_get_effect: bool,
+    accesses_visible: bool,
 }
 
 impl<'a> Visit<'a> for CapabilityVisitor {
@@ -126,12 +130,16 @@ impl<'a> Visit<'a> for CapabilityVisitor {
         }) {
             self.uses_pointer = true;
         }
+        if expression.static_property_name() == Some("visible") {
+            self.accesses_visible = true;
+        }
         walk::walk_member_expression(self, expression);
     }
 
     fn visit_call_expression(&mut self, expression: &CallExpression<'a>) {
         match expression.callee_name() {
             Some("registerAudioBuffers") => self.uses_audio = true,
+            Some("getEffect") => self.uses_get_effect = true,
             Some("getDate" | "getDay" | "getFullYear" | "getHours" | "getMinutes" | "getMonth") => {
                 self.uses_local_time = true
             }
@@ -210,6 +218,21 @@ mod tests {
         )
         .expect("analysis");
         assert!(analysis.uses_scene_api);
+    }
+
+    #[test]
+    fn detects_effect_visibility_mutation_without_matching_comments_or_strings() {
+        let mutation = analyze_scene_script(
+            "export function update(value) { thisScene.getLayer('body').getEffect('shine').visible = value; return value; }",
+        )
+        .expect("analysis");
+        assert!(mutation.may_mutate_effect_visibility);
+
+        let inert = analyze_scene_script(
+            r#"const note = "getEffect('shine').visible = false"; export function update(value) { return value; }"#,
+        )
+        .expect("analysis");
+        assert!(!inert.may_mutate_effect_visibility);
     }
 
     #[test]

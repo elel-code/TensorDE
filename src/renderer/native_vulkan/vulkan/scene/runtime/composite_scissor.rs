@@ -831,12 +831,16 @@ mod tests {
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
+                color_write_mask: crate::engine::scene::SceneColorWriteMask::Rgba,
+                clear_target: false,
             }],
             ..SceneBinaryDocument::default()
         })
         .expect("storage");
         let pass = SceneRenderingDevicePassNode {
             graph_index: 4,
+            graph_activation_policy:
+                crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
             pass_record_index: 0,
             pass_id: 0,
             role: SceneRenderPassKind::SceneComposite,

@@ -261,7 +261,10 @@ fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
         scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
         SceneGpuBlend::ScreenPremultiplied
     );
-    let attachment = scene_color_blend_attachment(SceneGpuBlend::ScreenPremultiplied);
+    let attachment = scene_color_blend_attachment(
+        SceneGpuBlend::ScreenPremultiplied,
+        SceneColorWriteMask::Rgba,
+    );
     assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
     assert_eq!(attachment.src_color_blend_factor, vk::BlendFactor::ONE);
     assert_eq!(
@@ -297,7 +300,10 @@ fn typed_multiply_variant_uses_standard_premultiplied_multiply_blend() {
         scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
         SceneGpuBlend::MultiplyPremultiplied
     );
-    let attachment = scene_color_blend_attachment(SceneGpuBlend::MultiplyPremultiplied);
+    let attachment = scene_color_blend_attachment(
+        SceneGpuBlend::MultiplyPremultiplied,
+        SceneColorWriteMask::Rgba,
+    );
     assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
     assert_eq!(
         attachment.src_color_blend_factor,
@@ -345,8 +351,10 @@ fn material_normal_replaces_while_translucent_alpha_blends() {
         SceneGpuBlend::Alpha
     );
 
-    let replace = scene_color_blend_attachment(SceneGpuBlend::Replace);
-    let translucent = scene_color_blend_attachment(SceneGpuBlend::Alpha);
+    let replace =
+        scene_color_blend_attachment(SceneGpuBlend::Replace, SceneColorWriteMask::Rgba);
+    let translucent =
+        scene_color_blend_attachment(SceneGpuBlend::Alpha, SceneColorWriteMask::Rgba);
     assert_eq!(replace.blend_enable, vk::FALSE);
     assert_eq!(translucent.blend_enable, vk::TRUE);
     assert_eq!(
@@ -356,6 +364,85 @@ fn material_normal_replaces_while_translucent_alpha_blends() {
     assert_eq!(
         translucent.dst_color_blend_factor,
         vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+    );
+}
+
+#[test]
+fn rgb_only_alpha_over_preserves_target_alpha_and_has_a_distinct_pipeline_key() {
+    let mut rgba = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+    rgba.color_write_mask = SceneColorWriteMask::Rgba;
+    let mut rgb = render_pass(1, SceneStringId(0), ScenePipelineBlend::Translucent);
+    rgb.color_write_mask = SceneColorWriteMask::Rgb;
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["we/genericimage4".to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 1,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 2,
+            sampler_heap_count: 1,
+        }],
+        render_passes: vec![rgba, rgb],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+
+    let indices =
+        scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
+            .expect("indices");
+    let attachment =
+        scene_color_blend_attachment(SceneGpuBlend::Alpha, SceneColorWriteMask::Rgb);
+
+    assert_eq!(indices, vec![0, 1]);
+    assert_eq!(
+        attachment.color_write_mask,
+        vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B
+    );
+    assert_eq!(attachment.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
+    assert_eq!(
+        attachment.dst_color_blend_factor,
+        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+    );
+}
+
+#[test]
+fn authored_normal_cull_uses_back_faces_and_has_a_distinct_pipeline_key() {
+    let mut no_cull = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+    no_cull.cull_mode = crate::engine::scene::SceneCullMode::None;
+    let mut normal_cull = render_pass(1, SceneStringId(0), ScenePipelineBlend::Translucent);
+    normal_cull.cull_mode = crate::engine::scene::SceneCullMode::Normal;
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["we/genericimage4".to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 1,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 2,
+            sampler_heap_count: 1,
+        }],
+        render_passes: vec![no_cull, normal_cull],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+
+    let indices =
+        scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
+            .expect("indices");
+
+    assert_eq!(indices, vec![0, 1]);
+    assert_eq!(
+        scene_vk_cull_mode(crate::engine::scene::SceneCullMode::None),
+        vk::CullModeFlags::NONE
+    );
+    assert_eq!(
+        scene_vk_cull_mode(crate::engine::scene::SceneCullMode::Normal),
+        vk::CullModeFlags::BACK
     );
 }
 
@@ -375,11 +462,13 @@ fn advanced_blend_marks_only_effect_output_as_premultiplied() {
 
 #[test]
 fn gpu_blend_attachments_match_we_composite_equations() {
-    let multiply = scene_color_blend_attachment(SceneGpuBlend::Multiply);
+    let multiply =
+        scene_color_blend_attachment(SceneGpuBlend::Multiply, SceneColorWriteMask::Rgba);
     assert_eq!(multiply.color_blend_op, vk::BlendOp::MULTIPLY_EXT);
     assert_eq!(multiply.alpha_blend_op, vk::BlendOp::MULTIPLY_EXT);
 
-    let modulate = scene_color_blend_attachment(SceneGpuBlend::Modulate);
+    let modulate =
+        scene_color_blend_attachment(SceneGpuBlend::Modulate, SceneColorWriteMask::Rgba);
     assert_eq!(modulate.src_color_blend_factor, vk::BlendFactor::DST_COLOR);
     assert_eq!(modulate.dst_color_blend_factor, vk::BlendFactor::ONE);
     assert_eq!(modulate.color_blend_op, vk::BlendOp::ADD);
@@ -426,6 +515,8 @@ fn pass_node(
 ) -> SceneRenderingDevicePassNode {
     SceneRenderingDevicePassNode {
         graph_index: 0,
+        graph_activation_policy:
+            crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
         pass_record_index,
         pass_id: pass_record_index,
         role: SceneRenderPassKind::EffectMaterial,
@@ -469,6 +560,8 @@ fn render_pass(
         depth_test: crate::engine::scene::SceneDepthTest::Disabled,
         depth_write: false,
         cull_mode: crate::engine::scene::SceneCullMode::None,
+        color_write_mask: SceneColorWriteMask::Rgba,
+        clear_target: false,
     }
 }
 
