@@ -67,6 +67,12 @@ or the architecture document, not as permanent repository policy.
 
 ## Performance evidence
 
+- Before implementing an optimization, measure the current full-frame GPU
+  timestamps, rank graph/pass costs, and enumerate the exact fresh-plan draws
+  that would use the proposed path. Select the largest unblocked cost boundary;
+  if a larger cost remains, record the concrete semantic or architectural
+  blocker before working on a smaller one. A generic feature name or theoretical
+  fast path without measured hit coverage is not an optimization target.
 - Measure only a release binary at `3840x2160`, uncapped, for at least 10
   seconds, with capture and GPU timing disabled. Verify `frame_capture: null`,
   `gpu_timing: null`, `fifo-latest-ready`, and retained `Pss_Dirty < 40 MiB`.
@@ -80,6 +86,9 @@ or the architecture document, not as permanent repository policy.
 - Establish correctness before performance A/B. If an optimization changes
   pixels, target semantics, visibility, animated-mask behavior, or text metrics,
   revert it before reporting its speedup.
+- Use paired, order-reversed formal A/B runs for a candidate. If it does not
+  produce a repeatable improvement consistent with the measured target cost,
+  remove the candidate before selecting the next target.
 
 ## Worktree and commits
 

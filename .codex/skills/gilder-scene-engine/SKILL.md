@@ -51,17 +51,25 @@ old Gilder output as the specification.
 
 ## Measure performance second
 
-1. Use only the release renderer at 3840×2160, uncapped, for at least 10 seconds, without capture
+1. Before implementing performance code, measure the current complete frame with GPU timestamps,
+   rank graph/pass costs, and enumerate the exact draws in each fresh plan that would hit the
+   proposed path. Work on the largest unblocked cost boundary. If a higher-ranked cost is skipped,
+   record its concrete semantic or architectural blocker; a theoretical fast path without measured
+   hit coverage is not a valid target.
+2. Use only the release renderer at 3840×2160, uncapped, for at least 10 seconds, without capture
    or GPU timing.
-2. Verify the report says `frame_capture: null`, `gpu_timing: null`, `fifo-latest-ready`, and retained
+3. Verify the report says `frame_capture: null`, `gpu_timing: null`, `fifo-latest-ready`, and retained
    `Pss_Dirty < 40 MiB`.
-3. Compare every affected performance fixture with its established same-hardware baseline.
+4. Compare every affected performance fixture with its established same-hardware baseline.
    Investigate results below the current 140 FPS regression floor when no stronger baseline is
    recorded. Do not redefine the baseline downward or cite correctness-capture FPS as performance.
-4. Use GPU timestamps only in a separate diagnostic run to attribute cost. Re-run the formal
+5. Use paired, order-reversed formal A/B runs. Use GPU timestamps only in a separate diagnostic run
+   to attribute cost. Re-run the formal
    no-timing measurement after every candidate.
-5. Revert an optimization immediately when it changes authored pixels or semantics; retain its
-   failure evidence in the architecture notes when it prevents repetition.
+6. Revert an optimization immediately when it changes authored pixels or semantics. Remove a
+   performance candidate when its paired result is not a repeatable improvement consistent with the
+   measured target cost; retain its failure evidence in the architecture notes when it prevents
+   repetition.
 
 ## Close the change
 
