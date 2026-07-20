@@ -83,6 +83,7 @@ pub(super) fn apply_token_one_graph(
             target_extent: None,
             target_format: Some("r8".to_owned()),
             bindings: Vec::new(),
+            effect_visibility: crate::engine::render_graph::RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: PipelineBlendMode::Normal,
                 depth_test: DepthTestMode::Disabled,

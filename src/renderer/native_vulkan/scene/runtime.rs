@@ -12,18 +12,20 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
+use serde_json::{Map, Value};
 
-use crate::engine::scene::SceneStorage;
+use crate::engine::scene::{SceneScriptRuntime, SceneStorage};
 use crate::renderer::native_vulkan::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanVulkanaliaScenePresentOptions,
     NativeVulkanVulkanaliaScenePresentSnapshot, run_native_vulkan_vulkanalia_scene_present,
 };
 
-use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
+use super::NativeVulkanSceneBackendPlan;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanSceneRunOptions {
+    pub user_property_overrides: Map<String, Value>,
     pub pointer_events: bool,
     pub pointer_replay_normalized: Option<[f64; 2]>,
     pub capture_frame: Option<PathBuf>,
@@ -43,6 +45,7 @@ pub struct NativeVulkanSceneRunOptions {
 impl Default for NativeVulkanSceneRunOptions {
     fn default() -> Self {
         Self {
+            user_property_overrides: Map::new(),
             pointer_events: true,
             pointer_replay_normalized: None,
             capture_frame: None,
@@ -68,7 +71,6 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub source: PathBuf,
     pub frame_capture: Option<NativeVulkanSceneFrameCaptureSnapshot>,
     pub capture_scene_graph: Option<u32>,
-    pub backend_plan: NativeVulkanSceneBackendPlan,
     pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
     pub frames_presented: u64,
     pub average_present_fps: f64,
@@ -184,8 +186,11 @@ pub fn run_scene_with_options(
             source.display()
         ))
     })?;
-    let backend_plan = native_vulkan_scene_backend_plan(&storage);
-    validate_scene_runtime_plan(&backend_plan)?;
+    SceneScriptRuntime::validate_user_property_overrides(
+        &storage,
+        &scene_options.user_property_overrides,
+    )
+    .map_err(|error| NativeVulkanError::Scene(error.to_string()))?;
     let clear_color = scene_options
         .clear_color_override
         .unwrap_or_else(|| scene_clear_color(&storage));
@@ -201,6 +206,7 @@ pub fn run_scene_with_options(
             target_max_fps: options.target_max_fps,
             clear_color,
             storage,
+            user_property_overrides: scene_options.user_property_overrides,
             capture_frame: scene_options.capture_frame,
             capture_frame_number: scene_options.capture_frame_number,
             capture_frame_count: scene_options.capture_frame_count,
@@ -216,13 +222,12 @@ pub fn run_scene_with_options(
         })
         .map_err(NativeVulkanError::Scene)?;
     let frame_capture = present.frame_capture.clone();
-    let mesh_draw_recording_ready = backend_plan.render_graph_executor.draw_count > 0
-        && backend_plan.pipeline_cache.shader_catalog_hit_count
-            == backend_plan.pipeline_cache.pipeline_count
-        && backend_plan
-            .resource_storage
-            .mesh_buffer
-            .device_address_required;
+    let render_graph_draw_count = present.mesh_draw_count;
+    let mesh_draw_count = present.mesh_draw_count;
+    let mesh_draw_recording_ready = render_graph_draw_count > 0
+        && present.scene_pipeline_count > 0
+        && present.vertex_buffer_bytes > 0
+        && present.index_buffer_bytes > 0;
 
     Ok(NativeVulkanSceneRuntimeSnapshot {
         binding: "vulkanalia",
@@ -238,8 +243,8 @@ pub fn run_scene_with_options(
         present_delta_over_8334us_count: present.present_delta_over_8334us_count,
         descriptor_model: "VK_EXT_descriptor_heap",
         present_mode: present.swapchain.present_mode,
-        render_graph_draw_count: backend_plan.render_graph_executor.draw_count,
-        mesh_draw_count: backend_plan.rendering_device_graph.mesh_draws.len(),
+        render_graph_draw_count,
+        mesh_draw_count,
         mesh_draw_recording_ready,
         mesh_draw_recorded_this_run: present.mesh_draw_recorded,
         runtime_status: if mesh_draw_recording_ready {
@@ -247,7 +252,6 @@ pub fn run_scene_with_options(
         } else {
             "scene-engine-present-loop-ready-without-mesh-draws"
         },
-        backend_plan,
         present,
     })
 }
@@ -265,7 +269,7 @@ fn validate_pointer_replay_position(position: Option<[f64; 2]>) -> Result<(), Na
     Ok(())
 }
 
-fn validate_scene_runtime_plan(
+pub(crate) fn validate_scene_runtime_plan(
     backend_plan: &NativeVulkanSceneBackendPlan,
 ) -> Result<(), NativeVulkanError> {
     if backend_plan.present_mode != "fifo-latest-ready" {
@@ -477,7 +481,7 @@ mod tests {
             },
             particle_systems: Vec::new(),
             present_mode: "fifo-latest-ready",
-            legacy_binding_forbidden: true,
+            descriptor_heap_only: true,
         }
     }
 }

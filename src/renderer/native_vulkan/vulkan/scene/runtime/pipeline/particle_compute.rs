@@ -21,7 +21,8 @@ pub(super) fn create_optional_particle_compute_pipeline(
     }
     let descriptor_base = descriptor_heap_plan
         .resource_descriptor_count
-        .saturating_sub(2);
+        .checked_sub(3)
+        .ok_or_else(|| "particle compute requires three global storage descriptors".to_owned())?;
     create_particle_compute_pipeline(device, descriptor_heap_plan, descriptor_base).map(Some)
 }
 
@@ -56,8 +57,15 @@ fn create_particle_compute_pipeline(
                 descriptor_heap_plan,
                 1,
                 descriptor_base,
-                descriptor_base.saturating_add(1),
+                descriptor_base + 1,
                 true,
+            )?,
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
+                descriptor_heap_plan,
+                2,
+                descriptor_base,
+                descriptor_base + 2,
+                false,
             )?,
         ];
         let mut mapping_info =

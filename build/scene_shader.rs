@@ -1,5 +1,9 @@
+#[path = "scene_shader/auto_sway.rs"]
+mod auto_sway;
 #[path = "scene_shader/blend.rs"]
 mod blend;
+#[path = "scene_shader/blur.rs"]
+mod blur;
 #[path = "scene_shader/catalog.rs"]
 mod catalog;
 #[path = "scene_shader/core_material.rs"]
@@ -18,6 +22,8 @@ mod oscilloscope;
 mod particle;
 #[path = "scene_shader/particle_compute.rs"]
 mod particle_compute;
+#[path = "scene_shader/procedural_noise.rs"]
+mod procedural_noise;
 #[path = "scene_shader/raindrop.rs"]
 mod raindrop;
 #[path = "scene_shader/shimmer.rs"]
@@ -244,7 +250,12 @@ void main() {
     float edge_softness = u_Effect.g_SizeSoftnessAlpha.z
         / max(v_ObjectPixelExtent.z, 1.0) * 2.0;
     float mask_alpha = smoothstep(edge_softness, 0.0, distance);
-    float effect_alpha = mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;
+    float effect_enabled = step(0.5, u_Effect.g_BorderWidth.y);
+    mask_alpha = mix(1.0, mask_alpha, effect_enabled);
+    float effect_alpha = mix(
+        1.0,
+        mask_alpha * u_Effect.g_SizeSoftnessAlpha.w,
+        effect_enabled);
     vec3 rounded_color = mix(
         u_Effect.g_ColorRadius.rgb,
         vec3(1.0),
@@ -305,7 +316,12 @@ void main() {
     float edge_softness = u_Effect.g_SizeSoftnessAlpha.z
         / max(v_ObjectPixelExtent.z, 1.0) * 2.0;
     float mask_alpha = smoothstep(edge_softness, 0.0, distance);
-    float effect_alpha = mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;
+    float effect_enabled = step(0.5, u_Effect.g_BorderWidth.y);
+    mask_alpha = mix(1.0, mask_alpha, effect_enabled);
+    float effect_alpha = mix(
+        1.0,
+        mask_alpha * u_Effect.g_SizeSoftnessAlpha.w,
+        effect_enabled);
     vec3 source = mix(u_Effect.g_ColorRadius.rgb, vec3(1.0), effect_alpha)
         * u_Effect.g_ResolvedColorAlpha.rgb;
     vec4 destination = texelFetch(g_SceneSnapshot, ivec2(gl_FragCoord.xy), 0);
@@ -436,6 +452,10 @@ vec2 rotateVec2(vec2 value, float angle) {
 }
 vec4 shapedSine(vec4 phase, float power);
 vec2 rippleSourceUv(vec2 uv) {
+    float strength = u_Effect.g_RippleDirectionStrengthAspectNormal.y;
+    if (strength == 0.0) {
+        return uv;
+    }
     vec2 scroll = rotateVec2(
         vec2(0.0, 1.0),
         u_Effect.g_RippleDirectionStrengthAspectNormal.x)
@@ -453,10 +473,13 @@ vec2 rippleSourceUv(vec2 uv) {
     vec3 n1 = texture(g_RippleNormal, ripple.xy).xyz * 2.0 - 1.0;
     vec3 n2 = texture(g_RippleNormal, ripple.zw).xyz * 2.0 - 1.0;
     vec3 normal = normalize(vec3(n1.xy + n2.xy, n1.z));
-    float strength = u_Effect.g_RippleDirectionStrengthAspectNormal.y;
     return uv + normal.xy * strength * strength;
 }
 vec2 foliageSourceUv(vec2 uv) {
+    float strength = u_Effect.g_FoliageTimeSpeedStrengthPhase.z;
+    if (strength == 0.0) {
+        return uv;
+    }
     float width = max(u_Effect.g_SourceResolution.z, 1.0);
     float height = max(u_Effect.g_SourceResolution.w, 1.0);
     float ratio = max(u_Effect.g_FoliagePowerNoiseScaleRatioDirection.z, 0.0001);
@@ -478,7 +501,6 @@ vec2 foliageSourceUv(vec2 uv) {
     vec4 cosines = shapedSine(
         0.4 + phase + time * vec4(-0.5, 0.041666666, -0.0013888889, 0.000024801587),
         u_Effect.g_FoliagePowerNoiseScaleRatioDirection.x);
-    float strength = u_Effect.g_FoliageTimeSpeedStrengthPhase.z;
     float amplitude = strength * strength * 0.005;
     vec2 offset = offset_scale * vec2(
         dot(sines, vec4(amplitude)),
@@ -547,8 +569,17 @@ void main() {
         o_Color = vec4(0.0);
         return;
     }
-    vec2 flow = (texture(g_FlowTexture, v_FlowTexCoord).rg - vec2(0.498)) * 2.0;
     float strength = u_Effect.g_TimeSpeedFeatherStrength.w * 0.1;
+    if (strength == 0.0) {
+        vec4 color = sourceAtUv(v_TexCoord)
+            * u_Effect.g_ResolvedColorAlpha;
+        color.a *= v_VertexAlpha;
+"#,
+        premultiply,
+        r#"        o_Color = color;
+        return;
+    }
+    vec2 flow = (texture(g_FlowTexture, v_FlowTexCoord).rg - vec2(0.498)) * 2.0;
     vec4 offset0 = flow.xyxy * strength * v_Cycles.xxyy;
     vec4 offset1 = flow.xyxy * strength * v_Cycles.zzww;
     vec4 first = mix(sourceAtUv(v_TexCoord + offset0.xy),
@@ -776,6 +807,7 @@ vec2 stageOffset(int stage, vec2 motion_uv) {
     vec4 direction_phase2_scale2 = u_Effect.g_Stage[base + 1];
     vec4 direction2_exponents = u_Effect.g_Stage[base + 2];
     vec4 mask_resolution = u_Effect.g_Stage[base + 3];
+    if (phase_scale_strength2_mask.z <= 0.0) return vec2(0.0);
     float mask = 1.0;
     if (phase_scale_strength2_mask.w > 0.5) {
         vec2 mask_uv = motion_uv * mask_resolution.zw / mask_resolution.xy;

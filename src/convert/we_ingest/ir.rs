@@ -204,6 +204,7 @@ impl WeIrUtilityLayerKind {
 pub struct WeIrObjectEffect {
     pub object: u32,
     pub effect: u32,
+    pub name: String,
     pub instance_id: u32,
     pub visible: bool,
 }

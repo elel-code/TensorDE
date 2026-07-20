@@ -3,8 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, PipelineBlendMode, RenderGraph, RenderPassNode, RenderPassRole, RenderTargetRole,
-    RenderTargetSpec, TextureBindingRole,
+    PassState, PipelineBlendMode, RenderGraph, RenderPassEffectVisibility, RenderPassNode,
+    RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
 };
 
 const UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
@@ -75,6 +75,11 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
         append_direct_composite(graph, contract, material);
         return;
     }
+    let (effect_binding_start, effect_binding_count) =
+        super::contiguous_effect_range(&contract.effect_passes)
+            .expect("typed waterwaves chain requires contiguous effect bindings");
+    let effect_visibility =
+        RenderPassEffectVisibility::waterwaves_stages(effect_binding_start, effect_binding_count);
     let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
     graph.passes.push(RenderPassNode {
         id: pass_id,
@@ -88,6 +93,7 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
         target_extent: None,
         target_format: Some(UV_TARGET_FORMAT.to_owned()),
         bindings: Vec::new(),
+        effect_visibility,
         state: PassState {
             pipeline_blend: PipelineBlendMode::Normal,
             scene_blend: contract.final_scene_blend,
@@ -122,6 +128,7 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
                 name: Some(UV_TARGET_NAME.to_owned()),
             },
         ],
+        effect_visibility: RenderPassEffectVisibility::NONE,
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -135,6 +142,11 @@ fn append_direct_composite(
     contract: &WeImageGraphContract,
     material: &crate::engine::render_graph::WeWaterWavesDirectMaterial,
 ) {
+    let (effect_binding_start, effect_binding_count) =
+        super::contiguous_effect_range(&contract.effect_passes)
+            .expect("typed waterwaves chain requires contiguous effect bindings");
+    let effect_visibility =
+        RenderPassEffectVisibility::waterwaves_stages(effect_binding_start, effect_binding_count);
     if material.group_visual_composite {
         graph.passes.push(RenderPassNode {
             id: 0,
@@ -148,6 +160,7 @@ fn append_direct_composite(
             target_extent: None,
             target_format: None,
             bindings: Vec::new(),
+            effect_visibility,
             state: PassState {
                 pipeline_blend: super::base_pipeline_blend(contract),
                 scene_blend: SceneBlendMode::Normal,
@@ -166,6 +179,7 @@ fn append_direct_composite(
             target_extent: None,
             target_format: None,
             bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+            effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: super::final_pipeline_blend(contract),
                 scene_blend: contract.final_scene_blend,
@@ -186,6 +200,7 @@ fn append_direct_composite(
         target_extent: None,
         target_format: None,
         bindings: Vec::new(),
+        effect_visibility,
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -379,6 +394,8 @@ mod tests {
         }
         WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: material_index as u32,
+            effect_binding_count: 1,
             material_index: Some(material_index),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,

@@ -3,7 +3,6 @@
 use std::ffi::{CStr, CString};
 
 use serde::Serialize;
-use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
     self, HasBuilder, KhrGetSurfaceCapabilities2ExtensionInstanceCommands,
@@ -30,15 +29,12 @@ use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
 };
+use super::super::core::roadmap_2026::{
+    GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS, ROADMAP_2026_API_VERSION,
+};
 
-const GET_SURFACE_CAPABILITIES2_EXTENSION_NAME: &str = "VK_KHR_get_surface_capabilities2";
-const SURFACE_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_surface_maintenance1";
 pub(in crate::renderer::native_vulkan::vulkan) const REQUIRED_INSTANCE_EXTENSIONS: &[&str] =
-    &["VK_KHR_surface", "VK_KHR_wayland_surface"];
-pub(in crate::renderer::native_vulkan::vulkan) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] = &[
-    GET_SURFACE_CAPABILITIES2_EXTENSION_NAME,
-    SURFACE_MAINTENANCE1_EXTENSION_NAME,
-];
+    GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS;
 const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
 const PRESENT_WAIT2_EXTENSION_NAME: &str = "VK_KHR_present_wait2";
@@ -266,10 +262,8 @@ pub fn probe_native_vulkan_vulkanalia_surface_swapchain(
         .map_err(|err| err.to_string())?;
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let result = probe_vulkanalia_surface_swapchain_inner(&vulkan, handles);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
@@ -326,7 +320,6 @@ fn with_vulkanalia_surface_swapchain(
     let present_device = create_vulkanalia_present_device(
         instance,
         &selection,
-        vulkanalia_surface_maintenance1_enabled(vulkan),
     )?;
     let extension_snapshot = present_device.extension_snapshot.clone();
     let device = &present_device.device;
@@ -335,7 +328,6 @@ fn with_vulkanalia_surface_swapchain(
         selection.physical_device,
         surface,
         handles.buffer_size,
-        vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
@@ -383,7 +375,7 @@ fn with_vulkanalia_surface_swapchain(
         route: "wayland-surface-swapchain",
         loader: vulkan.loader_name.to_owned(),
         entry_version: vulkan.entry_version.to_string(),
-        requested_api_version: Version::V1_4_0.to_string(),
+        requested_api_version: ROADMAP_2026_API_VERSION.to_string(),
         enabled_instance_extensions: vulkan
             .extension_selection
             .enabled_instance_extensions
@@ -533,7 +525,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn select_vulkanalia_present_queu
 fn present_device_extension_snapshot(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaPresentQueueSelection,
-    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot, String> {
     let available_device_extensions = selection.device_extensions.as_slice();
     let required_swapchain = extension_available(available_device_extensions, "VK_KHR_swapchain");
@@ -544,7 +535,6 @@ fn present_device_extension_snapshot(
         instance,
         selection.physical_device,
         available_device_extensions,
-        surface_maintenance1_enabled,
     );
 
     Ok(NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
@@ -621,15 +611,12 @@ fn present_device_extension_snapshot(
 pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaPresentQueueSelection,
-    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaPresentDeviceContext, String> {
-    let extension_snapshot =
-        present_device_extension_snapshot(instance, selection, surface_maintenance1_enabled)?;
+    let extension_snapshot = present_device_extension_snapshot(instance, selection)?;
     let feature_selection = query_vulkanalia_present_feature_selection(
         instance,
         selection.physical_device,
         &selection.device_extensions,
-        surface_maintenance1_enabled,
     );
     let enabled_device_extensions = enabled_present_device_extensions(&feature_selection);
     let priorities = [1.0_f32];

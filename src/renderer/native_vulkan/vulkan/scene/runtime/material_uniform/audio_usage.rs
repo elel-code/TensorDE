@@ -2,19 +2,17 @@
 
 use super::first_material_pass;
 use crate::engine::scene::{SceneMaterialHandle, SceneRenderingDeviceMeshDraw, SceneStorage};
-use crate::renderer::native_vulkan::native_vulkan_scene_backend_plan;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
 
 pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn scene_uses_audio_spectrum(
     storage: &SceneStorage,
+    draws: &[SceneRenderingDeviceMeshDraw],
 ) -> bool {
     storage.script_programs().iter().any(|program| {
         program.target == crate::engine::scene::SceneScriptTarget::TechCircleSectorWidth
-    }) || native_vulkan_scene_backend_plan(storage)
-        .rendering_device_graph
-        .mesh_draws
+    }) || draws
         .iter()
         .any(|draw| draw_uses_audio_spectrum(storage, draw))
 }

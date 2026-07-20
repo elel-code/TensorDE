@@ -221,7 +221,7 @@ pub enum SceneParticleGpuProfile {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct SceneParticleGpuEmitterState {
-    pub time_rate_start_capacity: [f32; 4],
+    pub time_scale_rate_start_capacity: [f32; 4],
     pub lifetime_min_max_profile_flags: [f32; 4],
     pub emitter_origin: [f32; 4],
     pub emitter_directions: [f32; 4],
@@ -232,14 +232,10 @@ pub struct SceneParticleGpuEmitterState {
 }
 
 impl SceneParticleGpuEmitterState {
-    pub fn from_record(
-        particle: &SceneParticleSystemRecord,
-        scene_time_seconds: f32,
-        capacity: u32,
-    ) -> Self {
+    pub fn from_record(particle: &SceneParticleSystemRecord, capacity: u32) -> Self {
         Self {
-            time_rate_start_capacity: [
-                scene_time_seconds * particle.instance_time_scale,
+            time_scale_rate_start_capacity: [
+                particle.instance_time_scale,
                 particle.rate,
                 particle.start_time,
                 capacity as f32,
@@ -364,8 +360,11 @@ mod gpu_contract_tests {
             y: -2.0,
             z: 3.0,
         };
-        let state = SceneParticleGpuEmitterState::from_record(&particle, 4.0, 80);
-        assert_eq!(state.time_rate_start_capacity, [1.0, 12.0, 2.0, 80.0]);
+        let state = SceneParticleGpuEmitterState::from_record(&particle, 80);
+        assert_eq!(
+            state.time_scale_rate_start_capacity,
+            [0.25, 12.0, 2.0, 80.0]
+        );
         assert_eq!(state.gravity, [1.0, -2.0, 3.0, 0.0]);
     }
 }

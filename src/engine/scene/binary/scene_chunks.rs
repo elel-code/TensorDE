@@ -70,6 +70,7 @@ pub(super) fn encode_scene_objects(
     for record in object_effects {
         put_u32(&mut out, record.object.0);
         put_u32(&mut out, record.effect.0);
+        put_string_id(&mut out, record.name);
         put_u32(&mut out, record.instance_id);
         put_bool(&mut out, record.visible);
     }
@@ -117,6 +118,7 @@ pub(super) fn decode_scene_objects(
         object_effects.push(SceneObjectEffectRecord {
             object: SceneObjectHandle(decoder.u32()?),
             effect: SceneEffectHandle(decoder.u32()?),
+            name: decoder.string_id()?,
             instance_id: decoder.u32()?,
             visible: decoder.bool()?,
         });
@@ -614,6 +616,9 @@ pub(super) fn encode_render_graphs(
         put_string_id(&mut out, record.target_name);
         put_u32(&mut out, record.binding_start);
         put_u32(&mut out, record.binding_count);
+        put_u32(&mut out, record.effect_binding_start);
+        put_u32(&mut out, record.effect_binding_count);
+        put_u32(&mut out, record.effect_visibility_policy.to_u32());
         put_u32(&mut out, record.pipeline_blend.to_u32());
         put_u32(&mut out, record.scene_blend.to_u32());
         put_u32(&mut out, record.depth_test.to_u32());
@@ -691,6 +696,14 @@ pub(super) fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, Sce
             target_name: decoder.string_id()?,
             binding_start: decoder.u32()?,
             binding_count: decoder.u32()?,
+            effect_binding_start: decoder.u32()?,
+            effect_binding_count: decoder.u32()?,
+            effect_visibility_policy: {
+                let value = decoder.u32()?;
+                SceneRenderEffectVisibilityPolicy::from_u32(value).ok_or(
+                    SceneBinaryError::InvalidChunkValue("render effect visibility policy", value),
+                )?
+            },
             pipeline_blend: {
                 let value = decoder.u32()?;
                 ScenePipelineBlend::from_u32(value)

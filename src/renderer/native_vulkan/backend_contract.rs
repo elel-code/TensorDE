@@ -91,6 +91,9 @@ pub struct NativeVulkanBackendContract {
 }
 
 pub fn backend_contract() -> NativeVulkanBackendContract {
+    let vulkan_backend = native_vulkan_backend_plan();
+    let required_instance_extensions = vulkan_backend.required_instance_extensions.to_vec();
+    let required_device_extensions = required_device_extensions_from_plan(&vulkan_backend);
     NativeVulkanBackendContract {
         backend_name: "native-vulkan",
         default_renderer_candidate: false,
@@ -100,37 +103,43 @@ pub fn backend_contract() -> NativeVulkanBackendContract {
         render_plan_boundary: "consume existing renderer plans; do not introduce Vulkan-only manifest semantics",
         lifecycle_boundary: "pause-dynamic, hidden/fullscreen/session release, resize, and output selection stay backend-neutral",
         resource_telemetry_boundary: "report CPU/RSS/PSS/private_dirty/GPU resource counts through stable renderer telemetry",
-        required_instance_extensions: required_instance_extensions(),
-        required_device_extensions: required_device_extensions(),
+        required_instance_extensions,
+        required_device_extensions,
         video_pipeline: pipeline::native_vulkan_video_pipeline_contract(),
         video_flow: video_flow::native_vulkan_video_flow_contract(),
         #[cfg(feature = "native-vulkan-video")]
         ffmpeg_hw_decode: ffmpeg_hw::native_vulkan_ffmpeg_hw_decode_backend_contract(),
         video_interop: video_interop_contract(),
         web_interop: web_interop_contract(),
-        vulkan_backend: native_vulkan_backend_plan(),
+        vulkan_backend,
     }
 }
 
 pub fn required_instance_extensions() -> Vec<&'static str> {
-    vec!["VK_KHR_surface", "VK_KHR_wayland_surface"]
+    native_vulkan_backend_plan()
+        .required_instance_extensions
+        .to_vec()
 }
 
 pub fn required_device_extensions() -> Vec<&'static str> {
-    vec![
-        "VK_KHR_swapchain",
-        "VK_KHR_external_memory_fd",
-        "VK_KHR_external_semaphore_fd",
-        "VK_KHR_timeline_semaphore",
-        "VK_EXT_external_memory_dma_buf",
-        "VK_EXT_image_drm_format_modifier",
-        "VK_KHR_video_queue",
-        "VK_KHR_video_decode_queue",
-        "VK_KHR_video_decode_h264",
-        "VK_KHR_video_decode_h265",
-        "VK_KHR_video_decode_av1",
-        "VK_EXT_descriptor_heap",
-    ]
+    required_device_extensions_from_plan(&native_vulkan_backend_plan())
+}
+
+fn required_device_extensions_from_plan(
+    plan: &NativeVulkanBackendPlan,
+) -> Vec<&'static str> {
+    let mut required = Vec::new();
+    for extension in plan
+        .required_profile_device_extensions
+        .iter()
+        .chain(plan.required_scene_device_extensions)
+        .chain(plan.required_video_route_device_extensions)
+    {
+        if !required.contains(extension) {
+            required.push(*extension);
+        }
+    }
+    required
 }
 
 #[cfg(test)]
@@ -142,6 +151,18 @@ mod tests {
         let contract = backend_contract();
 
         assert_eq!(contract.backend_name, "native-vulkan");
+        assert_eq!(contract.vulkan_backend.required_api_version, "1.4.328");
+        assert_eq!(contract.vulkan_backend.profile_name, "VP_KHR_roadmap_2026");
+        assert!(
+            contract
+                .required_instance_extensions
+                .contains(&"VK_KHR_surface_maintenance1")
+        );
+        assert!(
+            contract
+                .required_device_extensions
+                .contains(&"VK_KHR_cooperative_matrix")
+        );
         assert!(contract.video_interop.avoids_default_rgba_upload);
         assert_eq!(contract.video_pipeline.reference, "FFmpeg packet/frame/clock model");
         assert!(contract.video_flow.invariants.iter().any(|invariant| {

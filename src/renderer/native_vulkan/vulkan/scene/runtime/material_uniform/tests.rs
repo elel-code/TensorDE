@@ -22,7 +22,7 @@ fn material_uniform_uses_default_when_draw_has_no_material() {
 
 #[test]
 fn material_uniform_packs_color_constant_into_first_vec4() {
-    let storage = storage_with_constants("genericimage4", &[("tint", "[0.25,0.5,0.75,0.9]")]);
+    let storage = storage_with_constants("we/genericimage4", &[("tint", "[0.25,0.5,0.75,0.9]")]);
     let draw = draw_with_material(SceneMaterialHandle(0));
 
     let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
@@ -35,7 +35,7 @@ fn material_uniform_packs_color_constant_into_first_vec4() {
 
 #[test]
 fn standard_material_multiplies_resolved_object_shadow_tint_and_alpha() {
-    let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
+    let storage = storage_with_constants("we/genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
     let mut draw = draw_with_material(SceneMaterialHandle(0));
     draw.resolved_color = crate::engine::scene::SceneVec3 {
         x: 0.25,
@@ -54,7 +54,7 @@ fn standard_material_multiplies_resolved_object_shadow_tint_and_alpha() {
 
 #[test]
 fn synthetic_composite_uses_actual_pass_shader_uniform_layout() {
-    let mut document = storage_with_constants("composelayer", &[])
+    let mut document = storage_with_constants("we/composelayer", &[])
         .document()
         .clone();
     document.strings.push("we/objectcomposite".to_owned());
@@ -74,7 +74,7 @@ fn synthetic_composite_uses_actual_pass_shader_uniform_layout() {
 
 #[test]
 fn offscreen_object_source_defers_resolved_visual_to_object_composite() {
-    let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
+    let storage = storage_with_constants("we/genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
     let mut draw = draw_with_material(SceneMaterialHandle(0));
     draw.resolved_color = crate::engine::scene::SceneVec3 {
         x: 0.0,
@@ -94,7 +94,7 @@ fn offscreen_object_source_defers_resolved_visual_to_object_composite() {
 
 #[test]
 fn object_composite_applies_only_resolved_visual_not_base_material_twice() {
-    let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
+    let storage = storage_with_constants("we/genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
     let mut draw = draw_with_material(SceneMaterialHandle(0));
     draw.primitive = crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
     draw.resolved_color = crate::engine::scene::SceneVec3 {
@@ -114,7 +114,7 @@ fn object_composite_applies_only_resolved_visual_not_base_material_twice() {
 
 #[test]
 fn screen_group_composite_applies_base_and_resolved_visual_once() {
-    let mut document = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")])
+    let mut document = storage_with_constants("we/genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")])
         .document()
         .clone();
     document
@@ -227,8 +227,77 @@ fn waterwaves_uv_field_batch_metadata_does_not_overwrite_stage_parameters() {
 }
 
 #[test]
+fn waterwaves_visibility_mask_neutralizes_only_the_hidden_stage() {
+    let storage = storage_with_constants(
+        "we/waterwaves-uv-field",
+        &[
+            ("waterwaves.stage_count", "2"),
+            ("waterwaves.0.strength", "0.5"),
+            ("waterwaves.1.strength", "0.75"),
+        ],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.effect_binding_start = 4;
+    draw.effect_binding_count = 2;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::WaterWavesStages;
+    draw.resolved_effect_visibility_mask = 0b01;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 6 * 4), 0.25);
+    assert_eq!(f32_from_payload(&payload, 22 * 4), 0.0);
+}
+
+#[test]
+fn foliage_ripple_visibility_mask_neutralizes_each_owned_stage() {
+    let storage = storage_with_constants(
+        "we/image-foliage-ripple-composite",
+        &[
+            ("foliage.strength", "0.5"),
+            ("ripple.strength", "0.75"),
+        ],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.effect_binding_start = 8;
+    draw.effect_binding_count = 2;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
+    draw.resolved_effect_visibility_mask = 0b01;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 6 * 4), 0.5);
+    assert_eq!(f32_from_payload(&payload, 21 * 4), 0.0);
+}
+
+#[test]
+fn ripple_flow_visibility_neutralizes_both_typed_passes_independently() {
+    let ripple_storage = storage_with_constants(
+        "we/image-ripple-source",
+        &[("ripplestrength", "0.6")],
+    );
+    let flow_storage = storage_with_constants(
+        "we/image-ripple-flow-composite",
+        &[("flow.strength", "2.5")],
+    );
+    let mut hidden = draw_with_material(SceneMaterialHandle(0));
+    hidden.effect_binding_start = 5;
+    hidden.effect_binding_count = 1;
+    hidden.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
+    hidden.resolved_effect_visibility_mask = 0;
+
+    let ripple_payload = pack_scene_material_uniforms(&ripple_storage, &[hidden], 0.0);
+    let flow_payload = pack_scene_material_uniforms(&flow_storage, &[hidden], 0.0);
+
+    assert_eq!(f32_from_payload(&ripple_payload, 5 * 4), 0.0);
+    assert_eq!(f32_from_payload(&flow_payload, 7 * 4), 0.0);
+}
+
+#[test]
 fn waterwaves_composite_receives_its_atlas_tile_rectangle() {
-    let storage = storage_with_constants("genericimage4", &[]);
+    let storage = storage_with_constants("we/genericimage4", &[]);
     let mut draw = draw_with_material(SceneMaterialHandle(0));
     draw.effect_batch_atlas_tile = 6;
     draw.effect_batch_atlas_grid = [4, 3];
@@ -244,7 +313,7 @@ fn waterwaves_composite_receives_its_atlas_tile_rectangle() {
 #[test]
 fn rounded_mask_uniform_packs_sdf_shape_parameters() {
     let storage = storage_with_constants(
-        "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+        "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
         &[
             ("Color", "\"0.2 0.4 0.6\""),
             ("Radius", "0.35"),
@@ -262,6 +331,49 @@ fn rounded_mask_uniform_packs_sdf_shape_parameters() {
     {
         assert_eq!(f32_from_payload(&payload, lane * 4), expected);
     }
+}
+
+#[test]
+fn rounded_mask_visibility_lane_disables_the_authored_sdf_stage() {
+    let storage = storage_with_constants(
+        "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+        &[],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.effect_binding_start = 2;
+    draw.effect_binding_count = 1;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::FlatRoundedMask;
+    draw.resolved_effect_visibility_mask = 0;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 9 * 4), 0.0);
+}
+
+#[test]
+fn final_scroll_visibility_neutralizes_motion_without_changing_repeat_data() {
+    let storage = storage_with_constants(
+        "we/image-scroll-final",
+        &[
+            ("scroll.speedx", "0.4"),
+            ("scroll.speedy", "-0.25"),
+            ("scroll.repeat", "\"2 3\""),
+        ],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.effect_binding_start = 9;
+    draw.effect_binding_count = 1;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
+    draw.resolved_effect_visibility_mask = 0;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+
+    assert_eq!(f32_from_payload(&payload, 5 * 4), 0.0);
+    assert_eq!(f32_from_payload(&payload, 6 * 4), 0.0);
+    assert_eq!(f32_from_payload(&payload, 8 * 4), 2.0);
+    assert_eq!(f32_from_payload(&payload, 9 * 4), 3.0);
 }
 
 #[test]
@@ -306,7 +418,7 @@ fn skew_uniform_packs_authored_edge_offsets() {
 #[test]
 fn tech_circle_uniform_packs_bound_sector_value_and_time() {
     let storage = storage_with_constants(
-        "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+        "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
         &[
             (
                 "ui_editor_properties_1_color",
@@ -343,7 +455,7 @@ fn tech_circle_uniform_packs_bound_sector_value_and_time() {
 #[test]
 fn audio_bars_uniform_packs_zero_spectrum_baseline_shape() {
     let storage = storage_with_constants(
-        "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+        "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
         &[
             ("Bar Color", "{\"value\":\"0.2 0.4 0.6\"}"),
             ("ui_editor_properties_opacity", "0.8"),
@@ -374,7 +486,7 @@ fn audio_bars_uniform_packs_zero_spectrum_baseline_shape() {
 #[test]
 fn audio_bars_uniform_duplicates_mono_spectrum_into_stereo_vec4_arrays() {
     let storage = storage_with_constants(
-        "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+        "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
         &[],
     );
     let spectrum = std::array::from_fn(|band| band as f32 / 31.0);
@@ -413,7 +525,7 @@ fn final_audio_bars_uses_object_local_source_resolution_for_deformity() {
 fn fused_final_audio_program_requests_the_system_spectrum_adapter() {
     let final_storage = storage_with_constants("we/audio-bars-final", &[]);
     let legacy_storage = storage_with_constants(
-        "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+        "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
         &[],
     );
     let unrelated_storage = storage_with_constants("we/image-scroll-final", &[]);
@@ -485,7 +597,7 @@ fn waterwaves_uniform_uses_storage_and_logical_mask_extents() {
 #[test]
 fn foliage_sway_uniform_uses_authored_uv_motion_parameters() {
     let storage = storage_with_constants(
-        "workshop/2790231929/effects/foliagesway__SLOTS_1",
+        "effects/foliagesway__SLOTS_1",
         &[
             ("speeduv", "5.0"),
             ("strength", "0.5"),
@@ -516,6 +628,108 @@ fn opacity_uniform_maps_instance_alpha() {
         pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 0.0);
 
     assert_eq!(f32_from_payload(&payload, 0), 0.97);
+}
+
+#[test]
+fn auto_sway_uniform_matches_the_typed_shader_lane_contract() {
+    let storage = storage_with_constants(
+        "effects/auto_sway__SLOTS_1__DEBUG_0__DEBUG_NO_ALPHA_1__NODE_COUNT_4",
+        &[
+            ("timeoffset", "0.125"),
+            ("speed", "1.5"),
+            ("inertia", "0.375"),
+            ("sigment", "2.0"),
+            ("weightCenterOffset", "0.25"),
+            ("smoothDistance", "0.75"),
+            ("directionalCompensation", "0.625"),
+            ("strength", "0.875"),
+            ("末端阻尼", "0.5"),
+            ("xFeather", "0.2"),
+            ("windDirectionOffset", "-0.25"),
+            ("center1", "[0.1,0.2]"),
+            ("center2", "[0.3,0.4]"),
+            ("center3", "[0.5,0.6]"),
+            ("center4", "[0.7,0.8]"),
+            ("size1", "0.11"),
+            ("size2", "0.22"),
+            ("size3", "0.33"),
+            ("size4", "0.44"),
+            ("angle2", "-0.2"),
+            ("angle3", "-0.3"),
+            ("angle4", "-0.4"),
+            ("angle5", "-0.5"),
+        ],
+    );
+    let payload =
+        pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 3.5);
+
+    let expected = [
+        3.5, 0.125, 1.5, 0.375, 2.0, 0.25, 0.75, 0.625, 0.875, 0.5, 0.2, -0.25,
+        0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.11, 0.22, 0.33, 0.44, -0.2,
+        -0.3, -0.4, -0.5,
+    ];
+    for (lane, expected) in expected.into_iter().enumerate() {
+        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
+    }
+}
+
+#[test]
+fn procedural_noise_uniform_matches_offset_scale_magnitude_and_step_time_contract() {
+    let storage = storage_with_constants(
+        "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1",
+        &[
+            ("animationspeed", "2.5"),
+            ("scrollirection", "-0.75"),
+            ("scrollspeed", "1.25"),
+            ("Offset", "[0.1,0.2]"),
+            ("Scale", "[3.0,4.0]"),
+            ("Magnitude", "[5.0,6.0]"),
+            ("Seed", "7.0"),
+            ("FPS", "24.0"),
+            ("Opacity", "0.625"),
+        ],
+    );
+    let payload =
+        pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 8.5);
+
+    let expected = [
+        8.5, 2.5, -0.75, 1.25, 0.1, 0.2, 3.0, 4.0, 5.0, 6.0, 7.0, 24.0, 0.625,
+    ];
+    for (lane, expected) in expected.into_iter().enumerate() {
+        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
+    }
+}
+
+#[test]
+fn blur_gaussian_uniform_maps_authored_scale() {
+    let storage = storage_with_constants(
+        "effects/blur_gaussian__SLOTS_1__VERTICAL_1",
+        &[("scale", "[2.25,3.5]")],
+    );
+    let payload =
+        pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 0), 2.25);
+    assert_eq!(f32_from_payload(&payload, 4), 3.5);
+}
+
+#[test]
+fn blur_combine_uniform_matches_composite_alpha_offset_and_color_contract() {
+    let storage = storage_with_constants(
+        "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
+        &[
+            ("compositealpha", "0.75"),
+            ("compositeoffset", "[-2.0,3.25]"),
+            ("compositecolor", "[0.2,0.4,0.8]"),
+        ],
+    );
+    let payload =
+        pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 0.0);
+
+    let expected = [0.75, -2.0, 3.25, 0.0, 0.2, 0.4, 0.8, 1.0];
+    for (lane, expected) in expected.into_iter().enumerate() {
+        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
+    }
 }
 
 fn storage_with_constants(shader: &str, constants: &[(&str, &str)]) -> SceneStorage {
@@ -625,6 +839,11 @@ fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMesh
         apply_resolved_visual: true,
         effect_batch_atlas_tile: u32::MAX,
         effect_batch_atlas_grid: [0; 2],
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        resolved_effect_visibility_mask: 0,
         object: crate::engine::scene::SceneObjectHandle(0),
         material,
         vertex_start: 0,

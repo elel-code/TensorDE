@@ -10,8 +10,11 @@
 pub enum BuiltinSceneParameterLayout {
     None,
     AudioBars,
+    AutoSway,
     Blend,
     BlendGradient,
+    BlurCombine,
+    BlurGaussian,
     Particle,
     StandardMaterial,
     Iris,
@@ -19,6 +22,7 @@ pub enum BuiltinSceneParameterLayout {
     Lut,
     Oscilloscope,
     Opacity,
+    ProceduralNoise,
     Raindrop,
     RoundedMask,
     Scroll,
@@ -73,12 +77,16 @@ impl BuiltinSceneParameterLayout {
         matches!(
             self,
             Self::AudioBars
+                | Self::AutoSway
                 | Self::Blend
                 | Self::BlendGradient
+                | Self::BlurCombine
+                | Self::BlurGaussian
                 | Self::Iris
                 | Self::Lightning
                 | Self::Oscilloscope
                 | Self::Particle
+                | Self::ProceduralNoise
                 | Self::Caustics
                 | Self::CloudMotion
                 | Self::FoliageSway
@@ -112,34 +120,9 @@ pub fn native_vulkan_particle_compute_shader() -> &'static BuiltinParticleComput
 }
 
 pub fn native_vulkan_scene_shader_for_key(key: &str) -> Option<&'static BuiltinSceneShader> {
-    let key = key.trim();
-    if key.is_empty() {
-        return None;
-    }
-    find_builtin_scene_shader(key)
-        .or_else(|| find_we_builtin_scene_shader(key))
-        .or_else(|| {
-            key.rsplit_once('/')
-                .and_then(|(_, basename)| find_builtin_scene_shader(basename))
-        })
-        .or_else(|| {
-            key.rsplit_once('/')
-                .and_then(|(_, basename)| find_we_builtin_scene_shader(basename))
-        })
-}
-
-fn find_builtin_scene_shader(key: &str) -> Option<&'static BuiltinSceneShader> {
     BUILTIN_SCENE_SHADERS
         .iter()
-        .find(|shader| shader.key.eq_ignore_ascii_case(key))
-}
-
-fn find_we_builtin_scene_shader(key: &str) -> Option<&'static BuiltinSceneShader> {
-    if key.contains('/') {
-        return None;
-    }
-    let we_key = format!("we/{key}");
-    find_builtin_scene_shader(&we_key)
+        .find(|shader| shader.key == key)
 }
 
 #[cfg(test)]
@@ -148,7 +131,7 @@ mod tests {
 
     #[test]
     fn shader_catalog_resolves_we_material_names_without_runtime_files() {
-        let shader = native_vulkan_scene_shader_for_key("genericimage4")
+        let shader = native_vulkan_scene_shader_for_key("we/genericimage4")
             .expect("genericimage4 built-in shader");
         assert_eq!(shader.key, "we/genericimage4");
         assert_eq!(
@@ -158,6 +141,9 @@ mod tests {
         assert!(!shader.vertex_spirv.is_empty());
         assert!(!shader.fragment_spirv.is_empty());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
+        assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
+        assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
+        assert!(native_vulkan_scene_shader_for_key(" we/genericimage4").is_none());
     }
 
     #[test]
@@ -175,13 +161,13 @@ mod tests {
             BuiltinSceneParameterLayout::WaterWaves
         );
         assert_eq!(
-            native_vulkan_scene_shader_for_key("workshop/2790231929/effects/foliagesway__SLOTS_1")
+            native_vulkan_scene_shader_for_key("effects/foliagesway__SLOTS_1")
                 .expect("foliage sway shader")
                 .parameter_layout,
             BuiltinSceneParameterLayout::FoliageSway
         );
         let rounded = native_vulkan_scene_shader_for_key(
-            "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
         )
         .expect("rounded mask shader");
         assert_eq!(
@@ -191,7 +177,23 @@ mod tests {
         assert!(rounded.fragment_spirv.len() > 200);
         for (key, layout) in [
             (
-                "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+                "effects/auto_sway__SLOTS_1__DEBUG_0__DEBUG_NO_ALPHA_1__NODE_COUNT_4",
+                BuiltinSceneParameterLayout::AutoSway,
+            ),
+            (
+                "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
+                BuiltinSceneParameterLayout::BlurCombine,
+            ),
+            (
+                "effects/blur_gaussian__SLOTS_1__VERTICAL_1",
+                BuiltinSceneParameterLayout::BlurGaussian,
+            ),
+            (
+                "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1",
+                BuiltinSceneParameterLayout::ProceduralNoise,
+            ),
+            (
+                "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
                 BuiltinSceneParameterLayout::AudioBars,
             ),
             (
@@ -204,7 +206,7 @@ mod tests {
                 BuiltinSceneParameterLayout::WaterFlow,
             ),
             (
-                "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+                "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
                 BuiltinSceneParameterLayout::TechCircle,
             ),
             (

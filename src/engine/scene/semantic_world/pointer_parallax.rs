@@ -92,7 +92,7 @@ fn pointer_scene_position(
     ))
 }
 
-fn cover_mapped_position(
+pub(super) fn cover_mapped_position(
     normalized: [f32; 2],
     scene_size: [u32; 2],
     surface_size: [u32; 2],

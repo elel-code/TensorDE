@@ -8,6 +8,7 @@ use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 
 use super::composite_scissor::object_mesh_covers_output;
+use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::{SceneGpuDrawRange, SceneGpuGraphDrawRange};
 use super::material_uniform::resolved_standard_material_color;
 
@@ -35,6 +36,7 @@ impl SceneGpuSceneColorClear {
 
 pub(super) fn resolve_scene_color_attachment_clear(
     storage: &SceneStorage,
+    mesh_coverage: &SceneMeshCoveragePlans,
     graph: &SceneRenderingDeviceGraphPlan,
     graph_execution_order: &[u32],
     output_extent: [u32; 2],
@@ -42,6 +44,7 @@ pub(super) fn resolve_scene_color_attachment_clear(
 ) -> Option<SceneGpuSceneColorClear> {
     match resolve_scene_color_attachment_clear_contract(
         storage,
+        mesh_coverage,
         graph,
         graph_execution_order,
         output_extent,
@@ -62,6 +65,7 @@ pub(super) fn resolve_scene_color_attachment_clear(
 
 fn resolve_scene_color_attachment_clear_contract(
     storage: &SceneStorage,
+    mesh_coverage: &SceneMeshCoveragePlans,
     graph: &SceneRenderingDeviceGraphPlan,
     graph_execution_order: &[u32],
     output_extent: [u32; 2],
@@ -125,7 +129,7 @@ fn resolve_scene_color_attachment_clear_contract(
     if draw.material != pass_record.material {
         return Err("flat-draw-material-mismatch");
     }
-    if !object_mesh_covers_output(storage, graph, draw, output_extent) {
+    if !object_mesh_covers_output(storage, mesh_coverage, draw, output_extent) {
         return Err("flat-object-mesh-does-not-prove-full-output-coverage");
     }
     let [r, g, b, a] =

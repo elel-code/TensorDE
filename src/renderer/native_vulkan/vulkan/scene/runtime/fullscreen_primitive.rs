@@ -82,6 +82,11 @@ mod tests {
                 apply_resolved_visual: true,
                 effect_batch_atlas_tile: u32::MAX,
                 effect_batch_atlas_grid: [0; 2],
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                resolved_effect_visibility_mask: 0,
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),

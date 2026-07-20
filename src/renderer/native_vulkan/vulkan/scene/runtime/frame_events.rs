@@ -12,7 +12,6 @@ use crate::renderer::native_vulkan::audio::event_source::{
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_wayland::NativeWaylandHost;
 
-use super::material_uniform::scene_uses_audio_spectrum;
 use local_time_source::SceneLocalTimeEventSource;
 
 pub(super) struct SceneRuntimeEventSources {
@@ -35,10 +34,14 @@ pub(super) struct SceneRuntimeAudioSummary {
 }
 
 impl SceneRuntimeEventSources {
-    pub(super) fn new(storage: &SceneStorage, pointer_replay_normalized: Option<[f64; 2]>) -> Self {
+    pub(super) fn new(
+        storage: &SceneStorage,
+        pointer_replay_normalized: Option<[f64; 2]>,
+        audio_spectrum_required: bool,
+    ) -> Self {
         Self {
             audio_monitor: NativeVulkanSystemAudioMonitor::start_if_needed(
-                scene_uses_audio_spectrum(storage),
+                audio_spectrum_required,
             ),
             audio: NativeVulkanAudioEventSource,
             local_time: SceneLocalTimeEventSource::new(storage.script_programs().iter().any(

@@ -106,6 +106,8 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
         effect_passes: vec![
             WeEffectPassContract {
                 object_index: 7,
+                effect_binding_start: 0,
+                effect_binding_count: 1,
                 material_index: Some(4),
                 effect_file: "effects/waterflow/effect.json".to_owned(),
                 pass_index: 1,
@@ -123,6 +125,8 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
             },
             WeEffectPassContract {
                 object_index: 7,
+                effect_binding_start: 1,
+                effect_binding_count: 1,
                 material_index: Some(5),
                 effect_file: "materials/util/effectpassthrough.json".to_owned(),
                 pass_index: 2,
@@ -222,6 +226,8 @@ fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(4),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,
@@ -269,6 +275,8 @@ fn authored_modulate_effect_composite_premultiplies_layer_alpha() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(4),
             effect_file: "effects/waterripple/effect.json".to_owned(),
             pass_index: 0,
@@ -313,6 +321,8 @@ fn puppet_image_effects_run_before_skinning_composite() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(4),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,
@@ -361,6 +371,8 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(4),
             effect_file: "effects/rounded_mask/effect.json".to_owned(),
             pass_index: 0,
@@ -428,13 +440,14 @@ fn flat_rounded_mask_accepts_typed_shader_variants_with_sparse_effect_metadata()
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(4),
             effect_file: "effects/rounded_mask/effect.json".to_owned(),
             pass_index: 0,
             command: None,
             shader: Some(
-                "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
-                    .to_owned(),
+                "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1".to_owned(),
             ),
             source: None,
             target: None,
@@ -476,6 +489,8 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
         effect_passes: vec![
             WeEffectPassContract {
                 object_index: 9,
+                effect_binding_start: 0,
+                effect_binding_count: 1,
                 material_index: None,
                 effect_file: "effects/fluid/effect.json".to_owned(),
                 pass_index: 1,
@@ -493,6 +508,8 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
             },
             WeEffectPassContract {
                 object_index: 9,
+                effect_binding_start: 0,
+                effect_binding_count: 1,
                 material_index: None,
                 effect_file: "effects/fluid/effect.json".to_owned(),
                 pass_index: 2,
@@ -589,6 +606,8 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 7,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(28),
             effect_file: "effects/cloudmotion/effect.json".to_owned(),
             pass_index: 0,
@@ -653,6 +672,8 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
             object_index: 12,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(6),
             effect_file: "effects/opacity/effect.json".to_owned(),
             pass_index: 0,
@@ -678,4 +699,59 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
         Some("we/objectcomposite")
     );
     assert_eq!(graph.passes[3].target, RenderTargetRole::SceneColor);
+}
+
+#[test]
+fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 3,
+        base_material_index: Some(1),
+        base_shader: Some("genericimage4".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: None,
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: true,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: Some(WeFinalEffectMaterial {
+            material_index: 9,
+            shader: "we/image-scroll-final".to_owned(),
+            samples_framebuffer_snapshot: false,
+            framebuffer_prepass: None,
+        }),
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 3,
+            effect_binding_start: 17,
+            effect_binding_count: 1,
+            material_index: Some(4),
+            effect_file: "effects/scroll/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some("effects/scroll__SLOTS_1".to_owned()),
+            source: None,
+            target: None,
+            binds: [(0, "previous".to_owned())].into_iter().collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
+    assert_eq!(graph.passes.len(), 1);
+    assert_eq!(
+        graph.passes[0].shader.as_deref(),
+        Some("we/image-scroll-final")
+    );
+    assert_eq!(
+        graph.passes[0].effect_visibility,
+        RenderPassEffectVisibility::material_stages(17, 1)
+    );
 }

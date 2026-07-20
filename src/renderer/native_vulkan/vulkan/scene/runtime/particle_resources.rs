@@ -8,12 +8,10 @@ use crate::engine::scene::{
     SceneStorage,
 };
 use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaRecordedBufferUpload, VulkanaliaDescriptorHeapResourceResources,
-    native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
-    native_vulkan_vulkanalia_destroy_buffer, native_vulkan_vulkanalia_read_host_buffer,
+    native_vulkan_vulkanalia_destroy_buffer,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer,
 };
 
@@ -28,6 +26,7 @@ pub(super) fn append_global_descriptor_plan(
     descriptors.extend([
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
     ]);
     Some(base)
 }
@@ -35,10 +34,9 @@ pub(super) fn append_global_descriptor_plan(
 pub(super) struct SceneParticleGpuResources {
     pub state_upload: NativeVulkanVulkanaliaRecordedBufferUpload,
     pub indirect_upload: NativeVulkanVulkanaliaRecordedBufferUpload,
-    pub indirect_readback: NativeVulkanVulkanaliaBuffer,
+    pub frame_time: NativeVulkanVulkanaliaRecordedBufferUpload,
     pub emitter_count: u32,
     pub total_capacity: u64,
-    pub time_scales: Vec<f32>,
 }
 
 pub(super) fn create_scene_particle_gpu_resources(
@@ -63,7 +61,6 @@ pub(super) fn create_scene_particle_gpu_resources(
                 })?;
             Ok(SceneParticleGpuEmitterState::from_record(
                 particle,
-                0.0,
                 plan.capacity,
             ))
         })
@@ -73,13 +70,6 @@ pub(super) fn create_scene_particle_gpu_resources(
         .iter()
         .map(|_| SceneParticleIndirectDraw::BILLBOARD)
         .collect::<Vec<_>>();
-    let time_scales = graph
-        .particle_gpu_emitters
-        .iter()
-        .map(|plan| {
-            storage.particles()[plan.particle_index as usize].instance_time_scale
-        })
-        .collect();
     let state_payload = typed_bytes(&states);
     let indirect_payload = typed_bytes(&indirect);
     let state_upload =
@@ -101,7 +91,6 @@ pub(super) fn create_scene_particle_gpu_resources(
             indirect_payload.len() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::INDIRECT_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             indirect_payload,
         ) {
@@ -111,14 +100,14 @@ pub(super) fn create_scene_particle_gpu_resources(
                 return Err(err);
             }
         };
-    let indirect_readback = match native_vulkan_vulkanalia_create_buffer(
+    let frame_time = match native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(
         device,
         memory_properties,
-        "scene-particle-indirect-readback-buffer",
-        indirect_payload.len() as u64,
-        vk::BufferUsageFlags::TRANSFER_DST,
-        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-        None,
+        command_buffer,
+        "scene-particle-frame-time-storage-buffer",
+        std::mem::size_of::<f32>() as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        &[],
     ) {
         Ok(buffer) => buffer,
         Err(err) => {
@@ -130,9 +119,8 @@ pub(super) fn create_scene_particle_gpu_resources(
     Ok(Some(SceneParticleGpuResources {
         state_upload,
         indirect_upload,
-        indirect_readback,
+        frame_time,
         emitter_count: states.len() as u32,
-        time_scales,
         total_capacity: graph
             .particle_gpu_emitters
             .iter()
@@ -145,53 +133,9 @@ pub(super) fn destroy_scene_particle_gpu_resources(
     device: &Device,
     resources: SceneParticleGpuResources,
 ) {
-    native_vulkan_vulkanalia_destroy_buffer(device, resources.indirect_readback);
+    destroy_recorded_buffer_upload(device, resources.frame_time);
     destroy_recorded_buffer_upload(device, resources.indirect_upload);
     destroy_recorded_buffer_upload(device, resources.state_upload);
-}
-
-pub(super) fn read_scene_particle_indirect_commands(
-    device: &Device,
-    resources: &SceneParticleGpuResources,
-) -> Result<Vec<SceneParticleIndirectDraw>, String> {
-    let bytes = native_vulkan_vulkanalia_read_host_buffer(
-        device,
-        &resources.indirect_readback,
-        resources.indirect_readback.snapshot.requested_bytes,
-    )?;
-    bytes
-        .chunks_exact(16)
-        .map(|command| {
-            let field = |offset| {
-                u32::from_ne_bytes(command[offset..offset + 4].try_into().expect("u32 field"))
-            };
-            Ok(SceneParticleIndirectDraw {
-                vertex_count: field(0),
-                instance_count: field(4),
-                first_vertex: field(8),
-                first_instance: field(12),
-            })
-        })
-        .collect()
-}
-
-pub(super) fn validate_scene_particle_indirect_readback(
-    device: &Device,
-    resources: &SceneParticleGpuResources,
-    expected_instance_total: u64,
-) -> Result<(bool, u64), String> {
-    let commands = read_scene_particle_indirect_commands(device, resources)?;
-    let instance_total = commands
-        .iter()
-        .map(|command| u64::from(command.instance_count))
-        .sum();
-    let shape_valid = commands.iter().all(|command| {
-        command.vertex_count == 4 && command.first_vertex == 0 && command.first_instance == 0
-    });
-    Ok((
-        shape_valid && instance_total == expected_instance_total,
-        instance_total,
-    ))
 }
 
 pub(super) fn write_scene_particle_descriptors(
@@ -210,9 +154,16 @@ pub(super) fn write_scene_particle_descriptors(
     native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
         device,
         descriptor_heap,
-        descriptor_base.saturating_add(1),
+        descriptor_base + 1,
         resources.indirect_upload.target.device_address,
         resources.indirect_upload.target.snapshot.requested_bytes,
+    )?;
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
+        device,
+        descriptor_heap,
+        descriptor_base + 2,
+        resources.frame_time.target.device_address,
+        resources.frame_time.target.snapshot.requested_bytes,
     )
 }
 
@@ -224,6 +175,9 @@ pub(super) fn release_scene_particle_staging(
         native_vulkan_vulkanalia_destroy_buffer(device, staging);
     }
     if let Some(staging) = resources.indirect_upload.staging.take() {
+        native_vulkan_vulkanalia_destroy_buffer(device, staging);
+    }
+    if let Some(staging) = resources.frame_time.staging.take() {
         native_vulkan_vulkanalia_destroy_buffer(device, staging);
     }
 }
@@ -247,6 +201,17 @@ fn typed_bytes<T>(values: &[T]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_descriptor_plan_is_exactly_state_indirect_and_frame_time() {
+        let mut descriptors = Vec::new();
+        assert_eq!(append_global_descriptor_plan(&mut descriptors, true), Some(0));
+        assert_eq!(descriptors.len(), 3);
+        assert!(descriptors.iter().all(|descriptor| {
+            *descriptor
+                == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer
+        }));
+    }
 
     #[test]
     fn typed_payload_keeps_indirect_command_bytes() {

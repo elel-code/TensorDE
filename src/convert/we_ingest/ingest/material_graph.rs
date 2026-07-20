@@ -403,7 +403,7 @@ impl WeIrBuilder {
         &mut self,
         object: u32,
         material: u32,
-        effect_instances: &[(u32, Value)],
+        effect_instances: &[(u32, u32, Value)],
         color_blend_mode: i32,
         utility_layer: Option<WeIrUtilityLayerKind>,
         object_is_puppet: bool,
@@ -434,9 +434,10 @@ impl WeIrBuilder {
             base_pass.as_ref().map_or("", |pass| &pass.shader_key),
         );
         let mut effect_passes = Vec::new();
-        for (effect_handle, instance) in effect_instances {
+        for (effect_binding_start, effect_handle, instance) in effect_instances {
             self.push_effect_contracts_for_instance(
                 object,
+                *effect_binding_start,
                 *effect_handle,
                 instance,
                 &mut effect_passes,
@@ -567,6 +568,7 @@ impl WeIrBuilder {
     pub(super) fn push_effect_contracts_for_instance(
         &mut self,
         object: u32,
+        effect_binding_start: u32,
         effect_handle: u32,
         instance: &Value,
         out: &mut Vec<WeEffectPassContract>,
@@ -674,6 +676,8 @@ impl WeIrBuilder {
                 };
             out.push(WeEffectPassContract {
                 object_index: object as usize,
+                effect_binding_start,
+                effect_binding_count: 1,
                 material_index,
                 effect_file: effect_file.clone(),
                 pass_index: local_index,

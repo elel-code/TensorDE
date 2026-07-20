@@ -14,7 +14,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn device_snapshot_from_selection
         binding: "vulkanalia",
         route: "video-present-device",
         loader: vulkan.loader_name.to_owned(),
-        requested_api_version: Version::V1_4_0.to_string(),
+        requested_api_version: ROADMAP_2026_API_VERSION.to_string(),
         codec,
         physical_device_index: selection.physical_device_index,
         physical_device_name: selection

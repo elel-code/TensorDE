@@ -36,8 +36,8 @@ pub use rendering_device_graph::{
     SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation,
 };
 pub use script::{
-    SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptProgram,
-    SceneScriptRuntime,
+    SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptMemorySnapshot,
+    SceneScriptPointerClick, SceneScriptProgram, SceneScriptRuntime,
 };
 pub use semantic_world::{
     MaterialBindingComponent, MeshBindingComponent, ObjectEffectBindingComponent, ParentComponent,

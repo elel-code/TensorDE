@@ -22,10 +22,14 @@ pub(super) fn is_compatible(contract: &WeImageGraphContract) -> bool {
         && contract.base_texture_slots.as_slice() == [0]
         && contract.foliage_ripple_material.is_some()
         && are_compatible_effect_passes(&contract.effect_passes)
+        && super::contiguous_effect_range(&contract.effect_passes).is_some()
 }
 
 pub(super) fn are_compatible_effect_passes(effects: &[WeEffectPassContract]) -> bool {
     effects.len() == 2
+        && effects
+            .iter()
+            .all(|effect| effect.effect_binding_count == 1)
         && compatible_previous_only_pass(&effects[0])
         && compatible_previous_only_pass(&effects[1])
         && effects[0]
@@ -48,6 +52,8 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
         .foliage_ripple_material
         .as_ref()
         .expect("compatible foliage/ripple graph requires its typed material");
+    let effect_visibility = super::contiguous_material_stage_visibility(&contract.effect_passes)
+        .expect("typed foliage/ripple graph requires contiguous effect bindings");
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::SceneComposite,
@@ -60,6 +66,7 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
         target_extent: None,
         target_format: None,
         bindings: Vec::new(),
+        effect_visibility,
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -122,6 +129,7 @@ mod tests {
     use super::super::WeFoliageRippleMaterial;
     use super::*;
     use crate::core::SceneBlendMode;
+    use crate::engine::render_graph::RenderPassEffectVisibilityPolicy;
 
     #[test]
     fn compatible_chain_lowers_to_one_direct_scene_composite() {
@@ -153,6 +161,12 @@ mod tests {
         assert_eq!(graph.passes[0].role, RenderPassRole::SceneComposite);
         assert_eq!(graph.passes[0].shader.as_deref(), Some(DIRECT_SHADER));
         assert_eq!(graph.passes[0].material_index, Some(12));
+        assert_eq!(
+            graph.passes[0].effect_visibility.policy,
+            RenderPassEffectVisibilityPolicy::MaterialStages
+        );
+        assert_eq!(graph.passes[0].effect_visibility.binding_start, 10);
+        assert_eq!(graph.passes[0].effect_visibility.binding_count, 2);
         assert!(graph.target_specs.is_empty());
     }
 
@@ -199,11 +213,13 @@ mod tests {
     fn effect(shader: &str, material_index: usize) -> WeEffectPassContract {
         WeEffectPassContract {
             object_index: 5,
+            effect_binding_start: material_index as u32,
+            effect_binding_count: 1,
             material_index: Some(material_index),
             effect_file: format!("effects/{shader}/effect.json"),
             pass_index: 0,
             command: None,
-            shader: Some(format!("workshop/2790231929/effects/{shader}__SLOTS_5")),
+            shader: Some(format!("effects/{shader}__SLOTS_5")),
             source: None,
             target: None,
             binds: BTreeMap::from([(0, "previous".to_owned())]),

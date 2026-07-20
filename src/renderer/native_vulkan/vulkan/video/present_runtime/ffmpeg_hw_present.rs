@@ -46,10 +46,8 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
     let handles = surface_host.handles();
     let surface_host_snapshot = surface_host.snapshot().clone();
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let instance = &vulkan.instance;
     let surface = match create_vulkanalia_wayland_surface(instance, handles) {
@@ -76,7 +74,6 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
             instance,
             &selection,
             &codec_set,
-            vulkanalia_surface_maintenance1_enabled(&vulkan),
         )?;
         let context_result =
             (|| -> Result<NativeVulkanFfmpegVulkanHwVideoPresentSnapshot, String> {
@@ -85,7 +82,6 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
                     selection.physical_device,
                     surface,
                     handles.buffer_size,
-                    vulkanalia_surface_capabilities2_enabled(&vulkan),
                     &context.present_feature_selection,
                 )?;
                 let swapchain = unsafe {
@@ -638,7 +634,6 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
             && sequence
                 .as_ref()
                 .is_some_and(|sequence| sequence.all_zero_copy_presented),
-        software_decode_fallback: false,
         descriptor_heap_only: true,
         zero_copy_scope: "FFmpeg avcodec Vulkan hwaccel outputs AVVkFrame VkImage handles; Gilder waits AVVkFrame timeline semaphores and samples the images through VK_EXT_descriptor_heap without av_hwframe_transfer_data or CPU pixel upload",
         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,

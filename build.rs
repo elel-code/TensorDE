@@ -311,9 +311,11 @@ fn caustics_effect_fragment_source(
     chromatic_zero: bool,
     pattern_glow_shared: bool,
 ) -> String {
-    if texture_slot_mask & 0x3d != 0x3d {
-        return caustics_compatibility_fragment_source();
-    }
+    assert_eq!(
+        texture_slot_mask & 0x3d,
+        0x3d,
+        "current caustics shader contract requires slots 0, 2, 3, 4, and 5"
+    );
     let source = r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 0) out vec4 o_Color;
@@ -413,24 +415,6 @@ void main() {
     } else {
         source
     }
-}
-
-fn caustics_compatibility_fragment_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-layout(set = 0, binding = 3) uniform CausticsUniform {
-    vec4 g_TimeSpeedScaleBrightness;
-    vec4 g_GlowDistortionChromaticBlur;
-    vec4 g_ColorStart;
-    vec4 g_ColorEnd;
-} u_Effect;
-void main() {
-    o_Color = texture(g_Texture0, v_TexCoord);
-}
-"#
-    .to_owned()
 }
 
 fn colorkey_effect_fragment_source(_texture_slot_mask: u32) -> String {
@@ -860,6 +844,11 @@ vec2 rotateVec2(vec2 v, float r) {{
 }}
 void main() {{
     vec2 tex_coord = v_TexCoord;
+    float strength = u_Effect.g_DirectionStrengthAspectNormal.y;
+    if (strength == 0.0) {{
+        o_Color = texture(g_Texture0, tex_coord);
+        return;
+    }}
     vec2 scroll = rotateVec2(vec2(0.0, 1.0), u_Effect.g_DirectionStrengthAspectNormal.x)
         * u_Effect.g_TimeAnimationScaleScroll.w
         * u_Effect.g_TimeAnimationScaleScroll.w
@@ -874,7 +863,6 @@ void main() {{
     {normal_sample}
     vec3 normal = normalize(vec3(n1.xy + n2.xy, n1.z));
     {mask_sample}
-    float strength = u_Effect.g_DirectionStrengthAspectNormal.y;
     tex_coord += normal.xy * strength * strength * mask;
     o_Color = texture(g_Texture0, tex_coord);
 }}

@@ -7,8 +7,8 @@
 use super::*;
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassNode,
-    RenderPassRole, RenderTargetRole, TextureBindingRole,
+    CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassEffectVisibility,
+    RenderPassNode, RenderPassRole, RenderTargetRole, TextureBindingRole,
 };
 use crate::engine::scene::ScenePipelineBlend;
 
@@ -110,6 +110,7 @@ impl WeIrBuilder {
                 target_extent: None,
                 target_format: None,
                 bindings: vec![TextureBindingRole::SourceTexture],
+                effect_visibility: RenderPassEffectVisibility::NONE,
                 state,
             }],
             target_specs: Vec::new(),

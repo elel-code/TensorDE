@@ -182,12 +182,6 @@ pub enum NativeVulkanFfmpegHwDecodeDevicePolicy {
     VulkanaliaProvidedDevice,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NativeVulkanFfmpegHwDecodeFallbackPolicy {
-    RejectSoftwareDecode,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanFfmpegVulkanHwFrameContract {
     pub binding: &'static str,
@@ -211,14 +205,13 @@ pub struct NativeVulkanFfmpegHwDecodeBackendContract {
     pub route: &'static str,
     pub mainline: bool,
     pub device_policy: NativeVulkanFfmpegHwDecodeDevicePolicy,
-    pub fallback_policy: NativeVulkanFfmpegHwDecodeFallbackPolicy,
     pub decode_owner: &'static str,
     pub vulkan_device_owner: &'static str,
     pub render_owner: &'static str,
     pub output_frame_contract: NativeVulkanFfmpegVulkanHwFrameContract,
     pub codec_hwaccels: Vec<NativeVulkanFfmpegHwDecodeCodecContract>,
     pub required_telemetry: &'static [&'static str],
-    pub migration_rule: &'static str,
+    pub runtime_rule: &'static str,
     pub ffmpeg_reference_files: &'static [&'static str],
 }
 
@@ -322,7 +315,6 @@ pub struct NativeVulkanFfmpegVulkanHwDecoderSnapshot {
     pub stream_index: i32,
     pub time_base: (i32, i32),
     pub hw_device: NativeVulkanFfmpegVulkanHwDeviceBorrowSnapshot,
-    pub software_decode_fallback: bool,
     pub decoded_frame_format: &'static str,
     pub coded_extent: (i32, i32),
     pub thread_count: i32,
@@ -406,7 +398,6 @@ pub fn native_vulkan_ffmpeg_hw_decode_backend_contract() -> NativeVulkanFfmpegHw
         route: "mainline-video-decode",
         mainline: true,
         device_policy: NativeVulkanFfmpegHwDecodeDevicePolicy::VulkanaliaProvidedDevice,
-        fallback_policy: NativeVulkanFfmpegHwDecodeFallbackPolicy::RejectSoftwareDecode,
         decode_owner: "FFmpeg avcodec Vulkan hwaccel",
         vulkan_device_owner: "Gilder Vulkanalia creates instance/device/queues/features and exports them through AVVulkanDeviceContext",
         render_owner: "Gilder descriptor heap, dynamic rendering and Wayland present",
@@ -416,13 +407,11 @@ pub fn native_vulkan_ffmpeg_hw_decode_backend_contract() -> NativeVulkanFfmpegHw
             "decode_backend=ffmpeg-vulkan-hwdecode",
             "ffmpeg_hwdevice_type=AV_HWDEVICE_TYPE_VULKAN",
             "ffmpeg_hw_format=AV_PIX_FMT_VULKAN",
-            "software_decode_fallback=false",
             "av_hwframe_transfer_data_calls=0",
-            "legacy_bind_groups=0",
             "descriptor_heap_only=true",
             "decoded_image_zero_copy_presented=true",
         ],
-        migration_rule: "the old Vulkan Video submit/runtime path is compatibility-only until removed; --run-video must target FFmpeg Vulkan hwaccel and must fail rather than falling back to software decode",
+        runtime_rule: "--run-video requires FFmpeg Vulkan hwaccel, AV_PIX_FMT_VULKAN output and descriptor-heap presentation; every other decoded-frame route is rejected",
         ffmpeg_reference_files: &[
             FFMPEG_HWCONTEXT_REFERENCE,
             FFMPEG_VULKAN_HWCONTEXT_REFERENCE,
@@ -450,7 +439,7 @@ pub fn native_vulkan_ffmpeg_vulkan_hw_frame_contract() -> NativeVulkanFfmpegVulk
             "av_hwframe_transfer_data",
             "software NV12/P010 AVFrame upload",
             "FFmpeg-created private Vulkan device on the mainline",
-            "legacy binding fallback",
+            "any shader-resource binding model other than VK_EXT_descriptor_heap",
         ],
         zero_copy_scope: "decoded pixels remain in FFmpeg-produced Vulkan images and are sampled through VK_EXT_descriptor_heap; descriptor writes copy metadata only",
         primary_reference: FFMPEG_VULKAN_HWCONTEXT_REFERENCE,
@@ -762,7 +751,6 @@ impl NativeVulkanFfmpegVulkanHwDecoder {
             stream_index: self.stream_index,
             time_base: (self.time_base.num, self.time_base.den),
             hw_device: self.hw_device_snapshot.clone(),
-            software_decode_fallback: false,
             decoded_frame_format: "AV_PIX_FMT_VULKAN",
             coded_extent,
             thread_count: unsafe {

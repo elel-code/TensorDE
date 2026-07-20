@@ -13,13 +13,12 @@ pub(super) fn shimmer_fragment_source(key: &str, texture_slot_mask: u32) -> Stri
     } else {
         "0.0"
     };
-    let gradient = if texture_slot_mask & (1 << 3) != 0 {
-        "texture(g_Texture3, fract(shimmer_coord)).rgb"
-    } else {
-        // Compatibility for artifacts converted before shader-declared defaults
-        // became explicit IR bindings. Fresh conversions always bind slot 3.
-        "vec3(smoothstep(0.0, 0.35, shimmer_coord.x) * (1.0 - smoothstep(0.65, 1.0, shimmer_coord.x)))"
-    };
+    assert_ne!(
+        texture_slot_mask & (1 << 3),
+        0,
+        "current shimmer shader contract requires its declared gradient texture"
+    );
+    let gradient = "texture(g_Texture3, fract(shimmer_coord)).rgb";
     let mode = effect_combo_value_for_key(key, "MODE", 0);
     let movement = if mode == 1 {
         "u_Effect.g_DelayWidthAmountOffset.w + u_Effect.g_DelayWidthAmountOffset.y * sin(u_Effect.g_TimeDirectionScaleSpeed.w * u_Effect.g_TimeDirectionScaleSpeed.x + time_offset)"

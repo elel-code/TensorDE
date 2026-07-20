@@ -1,6 +1,10 @@
 use super::*;
 use crate::engine::scene::binary::SceneBinaryDocument;
 
+mod fixtures;
+
+use fixtures::*;
+
 #[test]
 fn semantic_world_indexes_components_by_scene_object_handle() {
     let storage = SceneStorage::from_document(semantic_document()).expect("storage");
@@ -110,12 +114,14 @@ fn resolve_frame_carries_object_effect_visibility_and_pass_ranges() {
     document.object_effects.push(SceneObjectEffectRecord {
         object: SceneObjectHandle(0),
         effect: SceneEffectHandle(0),
+        name: SceneStringId::NONE,
         instance_id: 77,
         visible: true,
     });
     document.object_effects.push(SceneObjectEffectRecord {
         object: SceneObjectHandle(1),
         effect: SceneEffectHandle(0),
+        name: SceneStringId::NONE,
         instance_id: 78,
         visible: false,
     });
@@ -135,12 +141,36 @@ fn resolve_frame_carries_object_effect_visibility_and_pass_ranges() {
     assert_eq!(frame.visible_effect_instance_count, 1);
     assert_eq!(frame.visible_effect_pass_count, 2);
     assert_eq!(frame.visible_effect_fbo_count, 1);
+    assert_eq!(frame.object_effects[0].binding_index, 0);
     assert!(frame.object_effects[0].resolved_visible);
     assert_eq!(frame.object_effects[0].pass_start, 0);
     assert_eq!(frame.object_effects[0].pass_count, 2);
     assert_eq!(frame.object_effects[0].fbo_start, 0);
     assert_eq!(frame.object_effects[0].fbo_count, 1);
     assert!(!frame.object_effects[1].resolved_visible);
+
+    let deltas = [
+        SceneScriptDelta {
+            object: SceneObjectHandle(0),
+            target: SceneScriptTarget::EffectVisible,
+            selector: 0,
+            numeric: [0.0; 4],
+            text: None,
+        },
+        SceneScriptDelta {
+            object: SceneObjectHandle(1),
+            target: SceneScriptTarget::EffectVisible,
+            selector: 1,
+            numeric: [1.0, 0.0, 0.0, 0.0],
+            text: None,
+        },
+    ];
+    let mutated = world
+        .resolve_frame_with_dynamic_values_at(0.0, &deltas)
+        .expect("mutated effect frame");
+    assert!(!mutated.object_effects[0].resolved_visible);
+    assert!(mutated.object_effects[1].resolved_visible);
+    assert_eq!(mutated.visible_effect_instance_count, 1);
 }
 
 #[test]
@@ -417,6 +447,73 @@ fn scene_script_delta_updates_transform_before_parent_resolution() {
 }
 
 #[test]
+fn cursor_click_requires_a_matching_press_release_hit_target() {
+    let mut document = semantic_document();
+    document.project.logical_width = 100;
+    document.project.logical_height = 100;
+    let source = document.strings.len() as u32;
+    document.strings.push(
+        "let enabled = true; export function cursorClick(event) { enabled = !enabled; } export function update(value) { return enabled; }"
+            .to_owned(),
+    );
+    let properties = document.strings.len() as u32;
+    document.strings.push("{}".to_owned());
+    document.script_programs.push(SceneScriptProgramRecord {
+        object: SceneObjectHandle(0),
+        target: SceneScriptTarget::Visible,
+        source: SceneStringId(source),
+        properties_json: SceneStringId(properties),
+        initial_text: SceneStringId::NONE,
+        subscriptions: SceneScriptSubscriptions::FRAME
+            .union(SceneScriptSubscriptions::POINTER_CLICK),
+        initial_numeric: [1.0, 0.0, 0.0, 0.0],
+    });
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("semantic resolver");
+    let pointer_event = |pressed| crate::engine::scene::ScenePointerEvent {
+        source: crate::engine::scene::ScenePointerSource::Replay,
+        surface_id: 1,
+        time_millis: 1,
+        position: [10.0, 20.0],
+        surface_size: [100, 100],
+        kind: crate::engine::scene::ScenePointerEventKind::Button {
+            button: 0x110,
+            pressed,
+            serial: 1,
+        },
+    };
+    let events = crate::engine::scene::SceneFrameEvents {
+        pointer: crate::engine::scene::ScenePointerState {
+            sequence: crate::engine::scene::SceneEventSequence(2),
+            source: crate::engine::scene::ScenePointerSource::Replay,
+            surface_id: 1,
+            position: [10.0, 20.0],
+            surface_size: [100, 100],
+            inside: true,
+            ..crate::engine::scene::ScenePointerState::default()
+        },
+        ordered: vec![
+            crate::engine::scene::SceneSequencedEvent {
+                sequence: crate::engine::scene::SceneEventSequence(1),
+                event: crate::engine::scene::SceneEvent::Pointer(pointer_event(true)),
+            },
+            crate::engine::scene::SceneSequencedEvent {
+                sequence: crate::engine::scene::SceneEventSequence(2),
+                event: crate::engine::scene::SceneEvent::Pointer(pointer_event(false)),
+            },
+        ],
+        ..crate::engine::scene::SceneFrameEvents::default()
+    };
+
+    let frame = resolver
+        .resolve_frame_with_events_at(&world, 1.0, &events)
+        .expect("clicked frame");
+    assert!(!frame.object(SceneObjectHandle(0)).unwrap().resolved_visible);
+    assert_eq!(frame.visible_object_count, 0);
+}
+
+#[test]
 fn pointer_parallax_changes_render_matrix_without_polluting_authored_world_matrix() {
     let mut document = semantic_document();
     document.project.logical_width = 100;
@@ -461,453 +558,4 @@ fn pointer_parallax_changes_render_matrix_without_polluting_authored_world_matri
         .expect("pointer leave frame");
     let object = frame.object(SceneObjectHandle(0)).expect("image");
     assert_close(object.render_world_matrix[12], object.world_matrix[12]);
-}
-
-fn semantic_document() -> SceneBinaryDocument {
-    let strings = vec!["root-bone".to_owned(), "weapon".to_owned()];
-    SceneBinaryDocument {
-        strings,
-        objects: vec![image_object(), puppet_object()],
-        materials: vec![SceneMaterialRecord {
-            id: SceneMaterialHandle(0),
-            resource: SceneResourceId::NONE,
-            pass_start: 0,
-            pass_count: 0,
-        }],
-        meshes: vec![image_mesh(), puppet_mesh(), image_mesh_extra()],
-        mesh_vertices: vec![
-            SceneMeshVertexRecord {
-                position: SceneVec3::default(),
-                uv: [0.0, 0.0],
-                blend_indices: [0; 4],
-                blend_weights: [0.0; 4],
-            };
-            12
-        ],
-        mesh_indices: vec![0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3],
-        puppets: vec![ScenePuppetRecord {
-            object: SceneObjectHandle(1),
-            resource: SceneResourceId::NONE,
-            mesh_start: 1,
-            mesh_count: 1,
-            bone_start: 0,
-            bone_count: 1,
-            attachment_start: 0,
-            attachment_count: 1,
-        }],
-        puppet_bones: vec![ScenePuppetBoneRecord {
-            puppet: 0,
-            bone_index: 41,
-            name: SceneStringId(0),
-            simulation_type: 0,
-            parent_index: -1,
-            local_bind_matrix: identity_matrix(),
-            simulation_json: SceneStringId::NONE,
-        }],
-        puppet_attachments: vec![ScenePuppetAttachmentRecord {
-            puppet: 0,
-            bone_index: 41,
-            name: SceneStringId(1),
-            local_matrix: identity_matrix(),
-        }],
-        ..SceneBinaryDocument::default()
-    }
-}
-
-fn attachment_document() -> SceneBinaryDocument {
-    SceneBinaryDocument {
-        strings: vec!["root-bone".to_owned(), "eye".to_owned()],
-        objects: vec![parent_puppet_object(), attached_child_object()],
-        materials: vec![SceneMaterialRecord {
-            id: SceneMaterialHandle(0),
-            resource: SceneResourceId::NONE,
-            pass_start: 0,
-            pass_count: 0,
-        }],
-        meshes: vec![parent_puppet_mesh(), attached_child_mesh()],
-        mesh_vertices: vec![
-            SceneMeshVertexRecord {
-                position: SceneVec3::default(),
-                uv: [0.0, 0.0],
-                blend_indices: [0; 4],
-                blend_weights: [0.0; 4],
-            };
-            8
-        ],
-        mesh_indices: vec![0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3],
-        puppets: vec![ScenePuppetRecord {
-            object: SceneObjectHandle(0),
-            resource: SceneResourceId::NONE,
-            mesh_start: 0,
-            mesh_count: 1,
-            bone_start: 0,
-            bone_count: 1,
-            attachment_start: 0,
-            attachment_count: 1,
-        }],
-        puppet_bones: vec![ScenePuppetBoneRecord {
-            puppet: 0,
-            bone_index: 41,
-            name: SceneStringId(0),
-            simulation_type: 0,
-            parent_index: -1,
-            local_bind_matrix: identity_matrix(),
-            simulation_json: SceneStringId::NONE,
-        }],
-        puppet_attachments: vec![ScenePuppetAttachmentRecord {
-            puppet: 0,
-            bone_index: 41,
-            name: SceneStringId(1),
-            local_matrix: translated_attachment_matrix(2.0, 3.0),
-        }],
-        ..SceneBinaryDocument::default()
-    }
-}
-
-fn parent_cycle_document() -> SceneBinaryDocument {
-    SceneBinaryDocument {
-        objects: vec![
-            cycle_object(SceneObjectHandle(0), 100, 200),
-            cycle_object(SceneObjectHandle(1), 200, 100),
-        ],
-        ..SceneBinaryDocument::default()
-    }
-}
-
-fn image_object() -> SceneObjectRecord {
-    SceneObjectRecord {
-        id: SceneObjectHandle(0),
-        we_id: 100,
-        name: SceneStringId::NONE,
-        kind: SceneObjectKind::Image,
-        resource: SceneResourceId::NONE,
-        material: SceneMaterialHandle(0),
-        parent_we_id: INVALID_OBJECT_ID,
-        attachment: SceneStringId::NONE,
-        origin: SceneVec3 {
-            x: 10.0,
-            y: 20.0,
-            z: 0.0,
-        },
-        angles: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 2.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        color: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        alpha: 1.0,
-        visible: true,
-        color_blend_mode: 0,
-        sort_order: 3,
-        effect_start: u32::MAX,
-        effect_count: 0,
-        render_graph: u32::MAX,
-    }
-}
-
-fn puppet_object() -> SceneObjectRecord {
-    SceneObjectRecord {
-        id: SceneObjectHandle(1),
-        we_id: 200,
-        name: SceneStringId::NONE,
-        kind: SceneObjectKind::Puppet,
-        resource: SceneResourceId::NONE,
-        material: SceneMaterialHandle(0),
-        parent_we_id: 100,
-        attachment: SceneStringId(1),
-        origin: SceneVec3::default(),
-        angles: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        color: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        alpha: 1.0,
-        visible: true,
-        color_blend_mode: 0,
-        sort_order: 4,
-        effect_start: u32::MAX,
-        effect_count: 0,
-        render_graph: u32::MAX,
-    }
-}
-
-fn parent_puppet_object() -> SceneObjectRecord {
-    SceneObjectRecord {
-        id: SceneObjectHandle(0),
-        we_id: 937,
-        name: SceneStringId::NONE,
-        kind: SceneObjectKind::Puppet,
-        resource: SceneResourceId::NONE,
-        material: SceneMaterialHandle(0),
-        parent_we_id: INVALID_OBJECT_ID,
-        attachment: SceneStringId::NONE,
-        origin: SceneVec3 {
-            x: 10.0,
-            y: 20.0,
-            z: 0.0,
-        },
-        angles: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        color: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        alpha: 1.0,
-        visible: true,
-        color_blend_mode: 0,
-        sort_order: 1,
-        effect_start: u32::MAX,
-        effect_count: 0,
-        render_graph: u32::MAX,
-    }
-}
-
-fn attached_child_object() -> SceneObjectRecord {
-    SceneObjectRecord {
-        id: SceneObjectHandle(1),
-        we_id: 1336,
-        name: SceneStringId::NONE,
-        kind: SceneObjectKind::Image,
-        resource: SceneResourceId::NONE,
-        material: SceneMaterialHandle(0),
-        parent_we_id: 937,
-        attachment: SceneStringId(1),
-        origin: SceneVec3 {
-            x: 5.0,
-            y: 7.0,
-            z: 0.0,
-        },
-        angles: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        color: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        alpha: 1.0,
-        visible: true,
-        color_blend_mode: 0,
-        sort_order: 2,
-        effect_start: u32::MAX,
-        effect_count: 0,
-        render_graph: u32::MAX,
-    }
-}
-
-fn cycle_object(handle: SceneObjectHandle, we_id: u32, parent_we_id: u32) -> SceneObjectRecord {
-    SceneObjectRecord {
-        id: handle,
-        we_id,
-        name: SceneStringId::NONE,
-        kind: SceneObjectKind::Image,
-        resource: SceneResourceId::NONE,
-        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
-        parent_we_id,
-        attachment: SceneStringId::NONE,
-        origin: SceneVec3::default(),
-        angles: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        color: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-        alpha: 1.0,
-        visible: true,
-        color_blend_mode: 0,
-        sort_order: 0,
-        effect_start: u32::MAX,
-        effect_count: 0,
-        render_graph: u32::MAX,
-    }
-}
-
-fn image_mesh() -> SceneMeshRecord {
-    SceneMeshRecord {
-        object: SceneObjectHandle(0),
-        material: SceneMaterialHandle(0),
-        vertex_start: 0,
-        vertex_count: 4,
-        index_start: 0,
-        index_count: 6,
-        width: 64.0,
-        height: 32.0,
-        bounds_min: SceneVec3 {
-            x: -32.0,
-            y: -16.0,
-            z: 0.0,
-        },
-        bounds_max: SceneVec3 {
-            x: 32.0,
-            y: 16.0,
-            z: 0.0,
-        },
-    }
-}
-
-fn puppet_mesh() -> SceneMeshRecord {
-    SceneMeshRecord {
-        object: SceneObjectHandle(1),
-        material: SceneMaterialHandle(0),
-        vertex_start: 4,
-        vertex_count: 4,
-        index_start: 6,
-        index_count: 6,
-        width: 128.0,
-        height: 96.0,
-        bounds_min: SceneVec3 {
-            x: -64.0,
-            y: -48.0,
-            z: 0.0,
-        },
-        bounds_max: SceneVec3 {
-            x: 64.0,
-            y: 48.0,
-            z: 0.0,
-        },
-    }
-}
-
-fn image_mesh_extra() -> SceneMeshRecord {
-    SceneMeshRecord {
-        object: SceneObjectHandle(0),
-        material: SceneMaterialHandle(0),
-        vertex_start: 8,
-        vertex_count: 4,
-        index_start: 12,
-        index_count: 6,
-        width: 16.0,
-        height: 16.0,
-        bounds_min: SceneVec3 {
-            x: -8.0,
-            y: -8.0,
-            z: 0.0,
-        },
-        bounds_max: SceneVec3 {
-            x: 8.0,
-            y: 8.0,
-            z: 0.0,
-        },
-    }
-}
-
-fn parent_puppet_mesh() -> SceneMeshRecord {
-    SceneMeshRecord {
-        object: SceneObjectHandle(0),
-        material: SceneMaterialHandle(0),
-        vertex_start: 0,
-        vertex_count: 4,
-        index_start: 0,
-        index_count: 6,
-        width: 64.0,
-        height: 64.0,
-        bounds_min: SceneVec3 {
-            x: -32.0,
-            y: -32.0,
-            z: 0.0,
-        },
-        bounds_max: SceneVec3 {
-            x: 32.0,
-            y: 32.0,
-            z: 0.0,
-        },
-    }
-}
-
-fn attached_child_mesh() -> SceneMeshRecord {
-    SceneMeshRecord {
-        object: SceneObjectHandle(1),
-        material: SceneMaterialHandle(0),
-        vertex_start: 4,
-        vertex_count: 4,
-        index_start: 6,
-        index_count: 6,
-        width: 16.0,
-        height: 16.0,
-        bounds_min: SceneVec3 {
-            x: -8.0,
-            y: -8.0,
-            z: 0.0,
-        },
-        bounds_max: SceneVec3 {
-            x: 8.0,
-            y: 8.0,
-            z: 0.0,
-        },
-    }
-}
-
-fn effect_pass(pass_index: u32) -> SceneEffectPassRecord {
-    SceneEffectPassRecord {
-        effect: SceneEffectHandle(0),
-        pass_index,
-        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
-        command: SceneStringId::NONE,
-        source: SceneStringId::NONE,
-        target: SceneStringId::NONE,
-        binding_start: 0,
-        binding_count: 0,
-        combo_start: 0,
-        combo_count: 0,
-    }
-}
-
-fn identity_matrix() -> [f32; 16] {
-    [
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
-}
-
-fn translated_attachment_matrix(x: f32, y: f32) -> [f32; 16] {
-    let mut matrix = identity_matrix();
-    matrix[12] = x;
-    matrix[13] = y;
-    matrix
-}
-
-fn animation_sample(translation: [f32; 3]) -> ScenePuppetAnimationTransformSampleRecord {
-    ScenePuppetAnimationTransformSampleRecord {
-        translation: SceneVec3 {
-            x: translation[0],
-            y: translation[1],
-            z: translation[2],
-        },
-        rotation: SceneVec3::default(),
-        scale: SceneVec3 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-        },
-    }
-}
-
-fn assert_close(actual: f32, expected: f32) {
-    assert!(
-        (actual - expected).abs() < 0.0001,
-        "expected {actual} to be close to {expected}"
-    );
 }

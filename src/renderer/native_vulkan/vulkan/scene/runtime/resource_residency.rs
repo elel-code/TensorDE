@@ -66,12 +66,12 @@ pub(super) fn scene_resource_residency_snapshot(
     add_buffer_class(
         &mut buffer_memory_classes,
         "vertex-buffer",
-        &resources.vertex_buffer.snapshot,
+        &resources.mesh_uploads.vertex.target.snapshot,
     );
     add_buffer_class(
         &mut buffer_memory_classes,
         "index-buffer",
-        &resources.index_buffer.snapshot,
+        &resources.mesh_uploads.index.target.snapshot,
     );
     for frame in &resources.frame_resources {
         add_buffer_class(
@@ -101,6 +101,23 @@ pub(super) fn scene_resource_residency_snapshot(
         if let Some(heap) = &frame.descriptor_heap.snapshot.sampler_heap {
             add_descriptor_heap_class(&mut buffer_memory_classes, "descriptor-sampler-heap", heap);
         }
+    }
+    if let Some(particle) = &resources.particle_resources {
+        add_buffer_class(
+            &mut buffer_memory_classes,
+            "particle-emitter-state-buffer",
+            &particle.state_upload.target.snapshot,
+        );
+        add_buffer_class(
+            &mut buffer_memory_classes,
+            "particle-indirect-buffer",
+            &particle.indirect_upload.target.snapshot,
+        );
+        add_buffer_class(
+            &mut buffer_memory_classes,
+            "particle-frame-time-buffer",
+            &particle.frame_time.target.snapshot,
+        );
     }
 
     NativeVulkanSceneResourceResidencySnapshot {

@@ -28,12 +28,12 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+use super::roadmap_2026::ROADMAP_2026_API_VERSION;
 use super::swapchain::{
-    NativeVulkanVulkanaliaSwapchainSnapshot, OPTIONAL_INSTANCE_EXTENSIONS,
-    REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_swapchain_plan,
-    create_vulkanalia_wayland_surface, enabled_present_device_extensions, present_mode_label,
+    NativeVulkanVulkanaliaSwapchainSnapshot, REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label,
+    create_vulkanalia_swapchain_plan, create_vulkanalia_wayland_surface,
+    enabled_present_device_extensions, present_mode_label,
     query_vulkanalia_present_feature_selection, queue_flag_labels,
-    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 use super::video_device::{
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
@@ -179,10 +179,8 @@ pub fn probe_native_vulkan_vulkanalia_video_present_device(
     let handles = surface_host.handles();
     let surface_host_snapshot = surface_host.snapshot().clone();
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let result = probe_video_present_device_inner(
         &vulkan,
@@ -230,14 +228,12 @@ fn with_video_present_device(
         instance,
         &selection,
         &[codec],
-        vulkanalia_surface_maintenance1_enabled(vulkan),
     )?;
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
         selection.physical_device,
         surface,
         handles.buffer_size,
-        vulkanalia_surface_capabilities2_enabled(vulkan),
         &context.present_feature_selection,
     ) {
         Ok(plan) => plan,
@@ -287,7 +283,7 @@ fn with_video_present_device(
         binding: "vulkanalia",
         route: "video-present-device",
         loader: vulkan.loader_name.to_owned(),
-        requested_api_version: Version::V1_4_0.to_string(),
+        requested_api_version: ROADMAP_2026_API_VERSION.to_string(),
         codec,
         physical_device_index: selection.physical_device_index,
         physical_device_name: selection
@@ -547,7 +543,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
     codecs: &[NativeVulkanVideoSessionCodec],
-    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceContext, String> {
     let video_feature_selection = native_vulkan_vulkanalia_video_device_feature_selection(
         instance,
@@ -564,7 +559,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
         instance,
         selection.physical_device,
         &selection.device_extensions,
-        surface_maintenance1_enabled,
     );
     if !present_feature_selection.synchronization2_enabled {
         return Err(

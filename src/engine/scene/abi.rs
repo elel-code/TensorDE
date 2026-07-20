@@ -403,6 +403,39 @@ impl SceneRenderPassKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum SceneRenderEffectVisibilityPolicy {
+    None,
+    Passthrough,
+    WaterWavesStages,
+    FlatRoundedMask,
+    MaterialStages,
+}
+
+impl SceneRenderEffectVisibilityPolicy {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Passthrough => 1,
+            Self::WaterWavesStages => 2,
+            Self::FlatRoundedMask => 3,
+            Self::MaterialStages => 4,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::Passthrough),
+            2 => Some(Self::WaterWavesStages),
+            3 => Some(Self::FlatRoundedMask),
+            4 => Some(Self::MaterialStages),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SceneRenderBindingKind {
     SourceTexture,
     TextureSlot,
@@ -579,6 +612,7 @@ pub struct SceneObjectRecord {
 pub struct SceneObjectEffectRecord {
     pub object: SceneObjectHandle,
     pub effect: SceneEffectHandle,
+    pub name: SceneStringId,
     pub instance_id: u32,
     pub visible: bool,
 }
@@ -938,6 +972,9 @@ pub struct SceneRenderPassRecord {
     pub target_name: SceneStringId,
     pub binding_start: u32,
     pub binding_count: u32,
+    pub effect_binding_start: u32,
+    pub effect_binding_count: u32,
+    pub effect_visibility_policy: SceneRenderEffectVisibilityPolicy,
     pub pipeline_blend: ScenePipelineBlend,
     pub scene_blend: SceneCompositeBlend,
     pub depth_test: SceneDepthTest,

@@ -195,6 +195,9 @@ layout(set = 0, binding = 3) uniform FinalCloudMotionProgram {
     vec4 g_ScaleScaleXAspectUnused;
 } u_Effect;
 void main() {
+    vec2 source_uv = v_TexCoord;
+    float amount = u_Effect.g_TimeSpeedAmountDirection.z;
+    if (amount != 0.0) {
     float time = u_Effect.g_TimeSpeedAmountDirection.x
         * u_Effect.g_TimeSpeedAmountDirection.y;
     vec2 noise_uv = v_TexCoord;
@@ -205,9 +208,10 @@ void main() {
     float noise = texture(g_NoiseTexture, noise_uv).x * 2.0 - 1.0;
     float angle = u_Effect.g_TimeSpeedAmountDirection.w + 1.5707963;
     vec2 direction = vec2(cos(angle), sin(angle));
-    vec2 offset = direction * noise * u_Effect.g_TimeSpeedAmountDirection.z;
-    vec4 color = texture(g_SourceTexture,
-        clamp(v_TexCoord + offset, vec2(0.001), vec2(0.999)));
+    vec2 offset = direction * noise * amount;
+    source_uv = clamp(v_TexCoord + offset, vec2(0.001), vec2(0.999));
+    }
+    vec4 color = texture(g_SourceTexture, source_uv);
     color *= u_Effect.g_ResolvedColorAlpha;
     color.a *= v_VertexAlpha;
     o_Color = color;
@@ -271,6 +275,9 @@ float shapedSine(float phase, float exponent) {
 }
 void main() {
     vec2 source_uv = v_TexCoord;
+    float strength = u_Effect.g_TimeSpeedScaleStrength.w;
+    vec2 offset = vec2(0.0);
+    if (strength != 0.0) {
     float mask = 1.0;
     if (u_Effect.g_MaskEnabled.x > 0.5) {
         vec2 mask_uv = v_TexCoord * u_Effect.g_MaskResolution.zw
@@ -295,9 +302,9 @@ void main() {
         displacement *= shapedSine(
             distance1, u_Effect.g_Offset2DualExponentExponent2.w);
     }
-    float strength = u_Effect.g_TimeSpeedScaleStrength.w;
-    vec2 offset = vec2(direction.y, -direction.x)
+    offset = vec2(direction.y, -direction.x)
         * displacement * strength * strength * mask;
+    }
     vec4 color = texture(g_SourceTexture, source_uv + offset)
         * u_Effect.g_ResolvedColorAlpha;
     color.a *= v_VertexAlpha;
@@ -329,6 +336,8 @@ vec2 rotateVec2(vec2 value, float angle) {
 }
 void main() {
     vec2 source_uv = v_TexCoord;
+    float strength = u_Effect.g_DirectionStrengthAspectNormal.y;
+    if (strength != 0.0) {
     vec2 scroll = rotateVec2(
         vec2(0.0, 1.0), u_Effect.g_DirectionStrengthAspectNormal.x)
         * u_Effect.g_TimeAnimationScaleScroll.w
@@ -351,8 +360,8 @@ void main() {
             / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
         mask = texture(g_MaskTexture, mask_uv).r;
     }
-    float strength = u_Effect.g_DirectionStrengthAspectNormal.y;
     source_uv += normal.xy * strength * strength * mask;
+    }
     vec4 color = texture(g_SourceTexture, source_uv);
     color *= u_Effect.g_ResolvedColorAlpha;
     color.a *= v_VertexAlpha;
@@ -575,8 +584,11 @@ layout(set = 0, binding = 3) uniform FinalScrollProgram {
 } u_Effect;
 void main() {
     vec2 speed = u_Effect.g_TimeSpeed.yz;
-    vec2 scroll = sign(speed) * speed * speed * u_Effect.g_TimeSpeed.x;
-    vec2 source_uv = fract((v_TexCoord + scroll) * u_Effect.g_Repeat.xy);
+    vec2 source_uv = v_TexCoord;
+    if (any(notEqual(speed, vec2(0.0)))) {
+        vec2 scroll = sign(speed) * speed * speed * u_Effect.g_TimeSpeed.x;
+        source_uv = fract((v_TexCoord + scroll) * u_Effect.g_Repeat.xy);
+    }
     vec4 color = texture(g_SourceTexture, source_uv)
         * u_Effect.g_ResolvedColorAlpha;
     color.a *= v_VertexAlpha;

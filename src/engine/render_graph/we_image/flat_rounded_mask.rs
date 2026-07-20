@@ -3,7 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassNode, RenderPassRole, RenderTargetRole, TextureBindingRole,
+    PassState, RenderGraph, RenderPassEffectVisibility, RenderPassNode, RenderPassRole,
+    RenderTargetRole, TextureBindingRole,
 };
 
 const DIRECT_SHADER: &str = "we/flat-rounded-mask-composite";
@@ -56,6 +57,9 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
             .cloned()
             .map(|name| TextureBindingRole::PassConstant { name })
             .collect(),
+        effect_visibility: RenderPassEffectVisibility::flat_rounded_mask(
+            effect.effect_binding_start,
+        ),
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -86,6 +90,7 @@ fn append_hsl_snapshot_composite(graph: &mut RenderGraph, contract: &WeImageGrap
             role: RenderTargetRole::SceneColor,
             name: None,
         }],
+        effect_visibility: RenderPassEffectVisibility::NONE,
         state: PassState::default(),
     });
     graph.passes.push(RenderPassNode {
@@ -111,6 +116,9 @@ fn append_hsl_snapshot_composite(graph: &mut RenderGraph, contract: &WeImageGrap
                 .map(|name| TextureBindingRole::PassConstant { name }),
         )
         .collect(),
+        effect_visibility: RenderPassEffectVisibility::flat_rounded_mask(
+            effect.effect_binding_start,
+        ),
         state: PassState {
             pipeline_blend: crate::engine::render_graph::PipelineBlendMode::Normal,
             scene_blend: SceneBlendMode::Normal,

@@ -26,33 +26,24 @@ pub(super) fn record_particle_compute_dispatch(
                 .particle_global_descriptor_base
                 .ok_or_else(|| "particle compute descriptor base is missing".to_owned())?,
         )?;
-    let group_count = resources.emitter_count.saturating_add(63) / 64;
+    let group_count = resources.emitter_count.div_ceil(64);
     if group_count == 0 {
         return Ok(false);
     }
     unsafe {
-        for emitter in 0..resources.emitter_count {
-            let time_scale = resources
-                .time_scales
-                .get(emitter as usize)
-                .copied()
-                .unwrap_or(1.0);
-            let time_bytes = (scene.particle_scene_time_seconds * time_scale).to_ne_bytes();
-            device.cmd_update_buffer(
-                command_buffer,
-                resources.state_upload.target.buffer,
-                u64::from(emitter)
-                    * std::mem::size_of::<crate::engine::scene::SceneParticleGpuEmitterState>()
-                        as u64,
-                &time_bytes,
-            );
-        }
+        let time_bytes = scene.particle_scene_time_seconds.to_ne_bytes();
+        device.cmd_update_buffer(
+            command_buffer,
+            resources.frame_time.target.buffer,
+            0,
+            &time_bytes,
+        );
         let state_barrier = vk::BufferMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COPY)
             .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
-            .buffer(resources.state_upload.target.buffer)
+            .buffer(resources.frame_time.target.buffer)
             .offset(0)
             .size(vk::WHOLE_SIZE)
             .build();
@@ -66,10 +57,8 @@ pub(super) fn record_particle_compute_dispatch(
         let barrier = vk::BufferMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::DRAW_INDIRECT)
-            .dst_access_mask(
-                vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::INDIRECT_COMMAND_READ,
-            )
+            .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT)
+            .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ)
             .buffer(resources.indirect_upload.target.buffer)
             .offset(0)
             .size(vk::WHOLE_SIZE)
@@ -78,28 +67,6 @@ pub(super) fn record_particle_compute_dispatch(
             .buffer_memory_barriers(std::slice::from_ref(&barrier))
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &dependency);
-        let copy = vk::BufferCopy::builder()
-            .size(resources.indirect_upload.target.snapshot.requested_bytes)
-            .build();
-        device.cmd_copy_buffer(
-            command_buffer,
-            resources.indirect_upload.target.buffer,
-            resources.indirect_readback.buffer,
-            &[copy],
-        );
-        let host_barrier = vk::BufferMemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::COPY)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::HOST)
-            .dst_access_mask(vk::AccessFlags2::HOST_READ)
-            .buffer(resources.indirect_readback.buffer)
-            .offset(0)
-            .size(vk::WHOLE_SIZE)
-            .build();
-        let host_dependency = vk::DependencyInfo::builder()
-            .buffer_memory_barriers(std::slice::from_ref(&host_barrier))
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &host_dependency);
     }
     Ok(true)
 }

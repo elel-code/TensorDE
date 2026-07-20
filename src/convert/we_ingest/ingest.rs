@@ -625,15 +625,15 @@ impl WeIrBuilder {
             let effect_handle = self.add_effect(&effect_file)?;
             let instance_id = value_u32(effect.get("id")).unwrap_or(effect_handle);
             let visible = bound_bool(effect.get("visible")).unwrap_or(true);
+            let effect_binding_start = self.object_effects.len() as u32;
             self.object_effects.push(WeIrObjectEffect {
                 object: handle,
                 effect: effect_handle,
+                name: bound_string(effect.get("name")).unwrap_or_default(),
                 instance_id,
                 visible,
             });
-            if visible {
-                effect_instances.push((effect_handle, effect.clone()));
-            }
+            effect_instances.push((effect_binding_start, effect_handle, effect.clone()));
         }
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
@@ -641,12 +641,12 @@ impl WeIrBuilder {
         let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {
             retained_text_requires_dependency_composite =
-                effect_instances.iter().any(|(effect, _)| {
+                effect_instances.iter().any(|(_, effect, _)| {
                     retained_text_effect_requires_dependency_composite(self, *effect)
                 });
             retained_text_effect_instances = effect_instances
                 .iter()
-                .filter(|(effect, _)| retained_text_effect_is_supported(self, *effect))
+                .filter(|(_, effect, _)| retained_text_effect_is_supported(self, *effect))
                 .cloned()
                 .collect::<Vec<_>>();
             if retained_text_effect_instances.len() != effect_instances.len() {

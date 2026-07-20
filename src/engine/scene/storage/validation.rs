@@ -84,6 +84,7 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         }
     }
     for effect in &document.object_effects {
+        validate_string(document, "object_effect.name", effect.name)?;
         validate_range(
             "object_effect.object",
             effect.object.0,
@@ -612,6 +613,45 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             pass.binding_count,
             document.render_bindings.len(),
         )?;
+        validate_range(
+            "render_pass.effect_binding_range",
+            pass.effect_binding_start,
+            pass.effect_binding_count,
+            document.object_effects.len(),
+        )?;
+        let valid_effect_policy = match pass.effect_visibility_policy {
+            SceneRenderEffectVisibilityPolicy::None => {
+                pass.effect_binding_start == u32::MAX && pass.effect_binding_count == 0
+            }
+            SceneRenderEffectVisibilityPolicy::Passthrough
+            | SceneRenderEffectVisibilityPolicy::FlatRoundedMask => pass.effect_binding_count == 1,
+            SceneRenderEffectVisibilityPolicy::WaterWavesStages => {
+                (2..=9).contains(&pass.effect_binding_count)
+            }
+            SceneRenderEffectVisibilityPolicy::MaterialStages => {
+                (1..=32).contains(&pass.effect_binding_count)
+            }
+        };
+        let owned_effects_match_object = document
+            .object_effects
+            .get(
+                pass.effect_binding_start as usize
+                    ..pass
+                        .effect_binding_start
+                        .saturating_add(pass.effect_binding_count) as usize,
+            )
+            .is_some_and(|effects| effects.iter().all(|effect| effect.object == pass.object));
+        if !valid_effect_policy
+            || (pass.effect_visibility_policy != SceneRenderEffectVisibilityPolicy::None
+                && !owned_effects_match_object)
+        {
+            return Err(SceneStorageError::InvalidRange {
+                field: "render_pass.effect_visibility_contract",
+                start: pass.effect_binding_start,
+                count: pass.effect_binding_count,
+                len: document.object_effects.len(),
+            });
+        }
     }
     for binding in &document.render_bindings {
         validate_string(document, "render_binding.name", binding.name)?;

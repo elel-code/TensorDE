@@ -180,6 +180,12 @@ def main() -> int:
             "released_texture_payload_bytes": report["present"][
                 "released_texture_payload_bytes"
             ],
+            "released_mesh_vertex_payload_bytes": report["present"][
+                "released_mesh_vertex_payload_bytes"
+            ],
+            "released_mesh_index_payload_bytes": report["present"][
+                "released_mesh_index_payload_bytes"
+            ],
             "mesh_draw_recording_ready": report["mesh_draw_recording_ready"],
             "mesh_draw_recorded_this_run": report["mesh_draw_recorded_this_run"],
             "runtime_status": report["runtime_status"],

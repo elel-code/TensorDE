@@ -160,6 +160,7 @@ vec2 stageOffset(int stage, vec2 uv) {
     vec4 direction_phase2_scale2 = u_Effect.g_Stage[base + 1];
     vec4 direction2_exponents = u_Effect.g_Stage[base + 2];
     vec4 mask_resolution = u_Effect.g_Stage[base + 3];
+    if (phase_scale_strength2_mask.z <= 0.0) return vec2(0.0);
     float mask = 1.0;
     if (phase_scale_strength2_mask.w > 0.5) {
         vec2 mask_uv = uv * mask_resolution.zw

@@ -8,12 +8,18 @@ use super::{
 };
 use crate::engine::scene::abi::{ScenePuppetAttachmentRecord, ScenePuppetBoneRecord};
 use crate::engine::scene::event::SceneFrameEvents;
+use crate::engine::scene::event::{SceneEvent, ScenePointerEventKind};
 use crate::engine::scene::semantic_world::resolved_frame::INVALID_RESOLVED_INDEX;
 use crate::engine::scene::semantic_world::timeline::SampledPuppetBoneLocalState;
 use crate::engine::scene::{
-    SceneEventSequence, SceneScriptDelta, SceneScriptFrameInput, SceneScriptRuntime,
-    SceneScriptSubscriptions,
+    SceneEventSequence, SceneObjectHandle, SceneScriptDelta, SceneScriptFrameInput,
+    SceneScriptPointerClick, SceneScriptRuntime, SceneScriptSubscriptions,
 };
+use serde_json::{Map, Value};
+
+use super::pointer_parallax::cover_mapped_position;
+
+const LINUX_INPUT_BUTTON_LEFT: u32 = 0x110;
 
 /// Retains the immutable semantic frame and resolves only time-dependent object state.
 #[derive(Debug)]
@@ -29,6 +35,9 @@ pub struct SemanticFrameResolver {
     event_system: RetainedSceneEventSystem,
     script_runtime: Option<SceneScriptRuntime>,
     script_deltas: Vec<SceneScriptDelta>,
+    script_delta_updates: Vec<SceneScriptDelta>,
+    pointer_clicks: Vec<SceneScriptPointerClick>,
+    pressed_click_targets: Vec<(u32, Option<SceneObjectHandle>)>,
     last_pointer_sequence: Option<SceneEventSequence>,
     last_audio_sequence: Option<SceneEventSequence>,
     last_media_sequence: Option<SceneEventSequence>,
@@ -54,13 +63,21 @@ struct RetainedPuppetBone {
 
 impl SemanticFrameResolver {
     pub fn from_world(world: &SceneSemanticWorld<'_>) -> Result<Self, SceneSemanticWorldError> {
+        Self::from_world_with_user_properties(world, &Map::new())
+    }
+
+    pub fn from_world_with_user_properties(
+        world: &SceneSemanticWorld<'_>,
+        user_property_overrides: &Map<String, Value>,
+    ) -> Result<Self, SceneSemanticWorldError> {
         let frame = world.resolve_frame_at(0.0)?;
         let dynamic_entities = dynamic_entity_closure(world);
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
         let event_system = RetainedSceneEventSystem::from_world(world);
-        let script_runtime = SceneScriptRuntime::from_storage(world.storage())
-            .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
+        let script_runtime =
+            SceneScriptRuntime::from_storage(world.storage(), user_property_overrides)
+                .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
         Ok(Self {
             frame,
             dynamic_entities,
@@ -79,6 +96,9 @@ impl SemanticFrameResolver {
             event_system,
             script_runtime,
             script_deltas: Vec::new(),
+            script_delta_updates: Vec::new(),
+            pointer_clicks: Vec::new(),
+            pressed_click_targets: Vec::new(),
             last_pointer_sequence: None,
             last_audio_sequence: None,
             last_media_sequence: None,
@@ -93,7 +113,7 @@ impl SemanticFrameResolver {
         scene_time_seconds: f32,
         events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
-        self.dispatch_scripts(scene_time_seconds, events)?;
+        self.dispatch_scripts(world, scene_time_seconds, events)?;
         self.event_system
             .begin_frame(world, &mut self.frame, scene_time_seconds, events);
         merge_script_text_deltas(&self.script_deltas, &mut self.frame.script_text_values);
@@ -148,6 +168,7 @@ impl SemanticFrameResolver {
             self.frame.objects[entity_index] = self.states[entity_index]
                 .expect("dynamic semantic entity is resolved before frame publication");
         }
+        refresh_object_effects(&mut self.frame, &self.script_deltas);
 
         if self.retained_puppet_enabled {
             resolve_retained_puppets(
@@ -164,6 +185,7 @@ impl SemanticFrameResolver {
             self.frame.puppet_bone_matrices = matrices;
         }
         self.event_system.finish_frame(world, &mut self.frame);
+        self.frame.refresh_visibility_counts();
         Ok(&self.frame)
     }
 
@@ -179,11 +201,29 @@ impl SemanticFrameResolver {
         self.incremental_enabled && self.retained_puppet_enabled
     }
 
+    pub fn resolved_frame(&self) -> &ResolvedSemanticFrame {
+        &self.frame
+    }
+
+    pub fn retained_script_deltas(&self) -> &[SceneScriptDelta] {
+        &self.script_deltas
+    }
+
+    pub fn script_memory_snapshot(
+        &self,
+    ) -> Option<crate::engine::scene::SceneScriptMemorySnapshot> {
+        self.script_runtime
+            .as_ref()
+            .map(SceneScriptRuntime::memory_snapshot)
+    }
+
     fn dispatch_scripts(
         &mut self,
+        world: &SceneSemanticWorld<'_>,
         scene_time_seconds: f32,
         events: &SceneFrameEvents,
     ) -> Result<(), SceneSemanticWorldError> {
+        self.collect_pointer_clicks(world, events);
         let Some(runtime) = self.script_runtime.as_ref() else {
             return Ok(());
         };
@@ -191,6 +231,9 @@ impl SemanticFrameResolver {
         if Some(events.pointer.sequence) != self.last_pointer_sequence {
             dirty = dirty.union(SceneScriptSubscriptions::POINTER);
             self.last_pointer_sequence = Some(events.pointer.sequence);
+        }
+        if !self.pointer_clicks.is_empty() {
+            dirty = dirty.union(SceneScriptSubscriptions::POINTER_CLICK);
         }
         if Some(events.audio.sequence) != self.last_audio_sequence {
             dirty = dirty.union(SceneScriptSubscriptions::AUDIO);
@@ -232,13 +275,211 @@ impl SemanticFrameResolver {
                     frame_time_seconds: f64::from(frame_time_seconds),
                     dirty_events: dirty,
                     pointer,
+                    pointer_clicks: &self.pointer_clicks,
                     audio_spectrum32: spectrum,
                     media: events.media,
                 },
-                &mut self.script_deltas,
+                &mut self.script_delta_updates,
             )
             .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
+        merge_retained_script_deltas(&self.script_delta_updates, &mut self.script_deltas);
         Ok(())
+    }
+
+    fn collect_pointer_clicks(
+        &mut self,
+        world: &SceneSemanticWorld<'_>,
+        events: &SceneFrameEvents,
+    ) {
+        self.pointer_clicks.clear();
+        for sequenced in &events.ordered {
+            let SceneEvent::Pointer(event) = &sequenced.event else {
+                continue;
+            };
+            match event.kind {
+                ScenePointerEventKind::Leave { .. } => self.pressed_click_targets.clear(),
+                ScenePointerEventKind::Button {
+                    button, pressed, ..
+                } if button == LINUX_INPUT_BUTTON_LEFT => {
+                    let target = hit_test_pointer_script_object(
+                        world,
+                        &self.frame,
+                        event.position,
+                        event.surface_size,
+                    );
+                    if pressed {
+                        set_pressed_click_target(&mut self.pressed_click_targets, button, target);
+                        continue;
+                    }
+                    let pressed_target =
+                        take_pressed_click_target(&mut self.pressed_click_targets, button);
+                    if let Some(object) = target.filter(|target| Some(*target) == pressed_target) {
+                        let pointer = event_scene_normalized_position(
+                            world,
+                            event.position,
+                            event.surface_size,
+                        )
+                        .unwrap_or([0.5; 2]);
+                        self.pointer_clicks.push(SceneScriptPointerClick {
+                            object,
+                            button,
+                            pointer,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn merge_retained_script_deltas(
+    updates: &[SceneScriptDelta],
+    retained: &mut Vec<SceneScriptDelta>,
+) {
+    for update in updates {
+        if let Some(current) = retained.iter_mut().find(|current| {
+            current.object == update.object
+                && current.target == update.target
+                && current.selector == update.selector
+        }) {
+            current.numeric = update.numeric;
+            current.text.clone_from(&update.text);
+        } else {
+            retained.push(update.clone());
+        }
+    }
+}
+
+fn set_pressed_click_target(
+    targets: &mut Vec<(u32, Option<SceneObjectHandle>)>,
+    button: u32,
+    target: Option<SceneObjectHandle>,
+) {
+    if let Some(entry) = targets.iter_mut().find(|entry| entry.0 == button) {
+        entry.1 = target;
+    } else {
+        targets.push((button, target));
+    }
+}
+
+fn take_pressed_click_target(
+    targets: &mut Vec<(u32, Option<SceneObjectHandle>)>,
+    button: u32,
+) -> Option<SceneObjectHandle> {
+    let index = targets.iter().position(|entry| entry.0 == button)?;
+    targets.swap_remove(index).1
+}
+
+fn hit_test_pointer_script_object(
+    world: &SceneSemanticWorld<'_>,
+    frame: &ResolvedSemanticFrame,
+    position: [f64; 2],
+    surface_size: [u32; 2],
+) -> Option<SceneObjectHandle> {
+    let normalized = event_scene_normalized_position(world, position, surface_size)?;
+    let project = world.storage.project();
+    let scene_point = [
+        normalized[0] * project.logical_width.max(1) as f32,
+        normalized[1] * project.logical_height.max(1) as f32,
+    ];
+    frame
+        .objects
+        .iter()
+        .filter(|object| {
+            object.resolved_visible && object_handles_pointer_click(world, object.object)
+        })
+        .filter(|object| object_mesh_contains_scene_point(world, object, scene_point))
+        .max_by_key(|object| (object.sort_order, object.object_index))
+        .map(|object| object.object)
+}
+
+fn event_scene_normalized_position(
+    world: &SceneSemanticWorld<'_>,
+    position: [f64; 2],
+    surface_size: [u32; 2],
+) -> Option<[f32; 2]> {
+    let [width, height] = surface_size;
+    if width == 0
+        || height == 0
+        || position[0] < 0.0
+        || position[1] < 0.0
+        || position[0] > f64::from(width)
+        || position[1] > f64::from(height)
+    {
+        return None;
+    }
+    let normalized = [
+        (position[0] / f64::from(width)) as f32,
+        (position[1] / f64::from(height)) as f32,
+    ];
+    let project = world.storage.project();
+    Some(cover_mapped_position(
+        normalized,
+        [project.logical_width, project.logical_height],
+        surface_size,
+    ))
+}
+
+fn object_handles_pointer_click(world: &SceneSemanticWorld<'_>, object: SceneObjectHandle) -> bool {
+    world.storage.script_programs().iter().any(|program| {
+        program.object == object
+            && program
+                .subscriptions
+                .contains(SceneScriptSubscriptions::POINTER_CLICK)
+    })
+}
+
+fn object_mesh_contains_scene_point(
+    world: &SceneSemanticWorld<'_>,
+    object: &ResolvedObjectState,
+    scene_point: [f32; 2],
+) -> bool {
+    let Some(inverse) = inverse_affine_matrix(&object.render_world_matrix) else {
+        return false;
+    };
+    let near = transform_point(&inverse, [scene_point[0], scene_point[1], -1.0]);
+    let far = transform_point(&inverse, [scene_point[0], scene_point[1], 1.0]);
+    let direction = [far[0] - near[0], far[1] - near[1], far[2] - near[2]];
+    if direction[2].abs() <= 1.0e-8 {
+        return false;
+    }
+    let distance = -near[2] / direction[2];
+    let local = [
+        near[0] + direction[0] * distance,
+        near[1] + direction[1] * distance,
+    ];
+    world.storage.meshes().iter().any(|mesh| {
+        mesh.object == object.object
+            && local[0] >= mesh.bounds_min.x
+            && local[0] <= mesh.bounds_max.x
+            && local[1] >= mesh.bounds_min.y
+            && local[1] <= mesh.bounds_max.y
+    })
+}
+
+fn transform_point(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
+        matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
+        matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2] + matrix[14],
+    ]
+}
+
+fn refresh_object_effects(frame: &mut ResolvedSemanticFrame, deltas: &[SceneScriptDelta]) {
+    for effect in &mut frame.object_effects {
+        if let Some(delta) = deltas.iter().rev().find(|delta| {
+            delta.target == crate::engine::scene::SceneScriptTarget::EffectVisible
+                && delta.object == effect.object
+                && delta.selector == effect.binding_index
+        }) {
+            effect.self_visible = delta.numeric[0] != 0.0;
+        }
+        effect.object_resolved_visible = frame
+            .objects
+            .get(effect.object_index as usize)
+            .is_some_and(|object| object.object == effect.object && object.resolved_visible);
+        effect.resolved_visible = effect.self_visible && effect.object_resolved_visible;
     }
 }
 

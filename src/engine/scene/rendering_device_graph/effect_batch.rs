@@ -63,6 +63,8 @@ struct Candidate {
     mesh_draw_start: u32,
     mesh_draw_count: u32,
     material: SceneMaterialHandle,
+    effect_binding_start: u32,
+    effect_binding_count: u32,
 }
 
 pub(super) fn build_scene_effect_batches(
@@ -122,11 +124,13 @@ pub(super) fn build_scene_effect_batches(
             let atlas_tile = layer_representatives
                 .iter()
                 .position(|representative| {
-                    materials_generate_identical_fields(
-                        storage,
-                        representative.material,
-                        member.material,
-                    )
+                    representative.effect_binding_start == member.effect_binding_start
+                        && representative.effect_binding_count == member.effect_binding_count
+                        && materials_generate_identical_fields(
+                            storage,
+                            representative.material,
+                            member.material,
+                        )
                 })
                 .unwrap_or_else(|| {
                     layer_representatives.push(member);
@@ -240,6 +244,8 @@ fn effect_batch_candidate(
         mesh_draw_start: pass.mesh_draw_start,
         mesh_draw_count: pass.mesh_draw_count,
         material: draws.get(pass.mesh_draw_start as usize)?.material,
+        effect_binding_start: pass.effect_binding_start,
+        effect_binding_count: pass.effect_binding_count,
     })
 }
 

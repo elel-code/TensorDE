@@ -108,7 +108,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
         .build();
 
     NativeVulkanVulkanaliaFeatureChainTemplate {
-        api: "Vulkan 1.4",
+        api: "Vulkan 1.4.328",
         chain_root: std::any::type_name_of_val(&features2),
         feature_structs: vec![
             std::any::type_name_of_val(&vulkan12_features),
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn feature_chain_template_uses_vulkan_1_4_feature_struct() {
         let template = native_vulkan_vulkanalia_feature_chain_template();
-        assert_eq!(template.api, "Vulkan 1.4");
+        assert_eq!(template.api, "Vulkan 1.4.328");
         assert!(template.chain_root.ends_with("PhysicalDeviceFeatures2"));
         assert!(
             template

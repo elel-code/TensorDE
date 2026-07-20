@@ -431,6 +431,32 @@ impl SceneStorage {
         drop(payload);
         released_bytes
     }
+
+    pub fn mesh_vertex_payload_bytes(&self) -> usize {
+        self.document
+            .mesh_vertices
+            .len()
+            .saturating_mul(std::mem::size_of::<SceneMeshVertexRecord>())
+    }
+
+    pub fn mesh_index_payload_bytes(&self) -> usize {
+        self.document
+            .mesh_indices
+            .len()
+            .saturating_mul(std::mem::size_of::<u32>())
+    }
+
+    pub fn release_uploaded_mesh_payload(&mut self) -> (usize, usize) {
+        let vertices = std::mem::take(&mut self.document.mesh_vertices);
+        let indices = std::mem::take(&mut self.document.mesh_indices);
+        let released_vertex_bytes = vertices
+            .len()
+            .saturating_mul(std::mem::size_of::<SceneMeshVertexRecord>());
+        let released_index_bytes = indices.len().saturating_mul(std::mem::size_of::<u32>());
+        drop(vertices);
+        drop(indices);
+        (released_vertex_bytes, released_index_bytes)
+    }
 }
 
 #[derive(Debug)]

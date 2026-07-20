@@ -21,7 +21,9 @@ pub use execution::{
     RenderGraphExecutionLevel, RenderGraphExecutionPass, RenderGraphExecutionPlan,
 };
 pub use graph::{RenderGraph, UnsupportedGraphBoundary};
-pub use pass::{RenderPassNode, RenderPassRole};
+pub use pass::{
+    RenderPassEffectVisibility, RenderPassEffectVisibilityPolicy, RenderPassNode, RenderPassRole,
+};
 pub use resource::{
     RenderGraphBarrier, RenderGraphResourceAccess, RenderGraphResourceUsage, RenderGraphResourceUse,
 };

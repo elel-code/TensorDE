@@ -2,7 +2,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
-    _surface_maintenance1_enabled: bool,
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
     let (mut core_features, vulkan_1_4_properties, descriptor_heap_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
@@ -77,15 +76,6 @@ fn scene_color_4x_msaa_requested(value: Option<&str>) -> bool {
     value.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "4" | "4x"))
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn vulkanalia_surface_maintenance1_enabled(
-    vulkan: &super::instance::NativeVulkanVulkanaliaInstance,
-) -> bool {
-    vulkan
-        .extension_selection
-        .enabled_instance_extensions
-        .contains(&SURFACE_MAINTENANCE1_EXTENSION_NAME)
-}
-
 pub(in crate::renderer::native_vulkan::vulkan) fn enabled_present_device_extensions(
     feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
 ) -> Vec<&'static str> {
@@ -126,21 +116,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn enabled_present_device_extensi
     extensions
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn vulkanalia_surface_capabilities2_enabled(
-    vulkan: &super::instance::NativeVulkanVulkanaliaInstance,
-) -> bool {
-    vulkan
-        .extension_selection
-        .enabled_instance_extensions
-        .contains(&GET_SURFACE_CAPABILITIES2_EXTENSION_NAME)
-}
-
 pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_plan(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     buffer_size: (u32, u32),
-    surface_capabilities2_enabled: bool,
     feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
 ) -> Result<NativeVulkanVulkanaliaSwapchainPlan, String> {
     let capabilities =
@@ -148,12 +128,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
             .map_err(|err| {
                 format!("vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vulkanalia): {err:?}")
             })?;
-    let present_timing_capabilities = query_surface_present_timing_capabilities(
-        instance,
-        physical_device,
-        surface,
-        surface_capabilities2_enabled,
-    )?;
+    let present_timing_capabilities =
+        query_surface_present_timing_capabilities(instance, physical_device, surface)?;
     if !capabilities
         .supported_usage_flags
         .contains(vk::ImageUsageFlags::TRANSFER_DST)
@@ -361,15 +337,7 @@ fn query_surface_present_timing_capabilities(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
-    surface_capabilities2_enabled: bool,
 ) -> Result<SurfacePresentTimingCapabilities, String> {
-    if !surface_capabilities2_enabled {
-        return Ok(SurfacePresentTimingCapabilities {
-            present_id2_supported: false,
-            present_wait2_supported: false,
-        });
-    }
-
     let surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::builder()
         .surface(surface)
         .build();

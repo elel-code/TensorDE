@@ -18,6 +18,7 @@ pub struct ObjectEffectBindingComponent {
 pub struct SemanticObjectEffectBinding {
     pub object: SceneObjectHandle,
     pub effect: SceneEffectHandle,
+    pub name: SceneStringId,
     pub instance_id: u32,
     pub visible: bool,
 }
@@ -27,6 +28,7 @@ impl SemanticObjectEffectBinding {
         Self {
             object: record.object,
             effect: record.effect,
+            name: record.name,
             instance_id: record.instance_id,
             visible: record.visible,
         }
@@ -35,6 +37,7 @@ impl SemanticObjectEffectBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedObjectEffectState {
+    pub binding_index: u32,
     pub entity: SemanticEntity,
     pub object: SceneObjectHandle,
     pub object_index: u32,

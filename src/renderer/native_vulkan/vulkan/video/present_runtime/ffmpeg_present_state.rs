@@ -59,9 +59,8 @@ use super::render_present::{
     native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot,
 };
 use super::swapchain::{
-    OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,
-    create_vulkanalia_wayland_surface, vulkanalia_surface_capabilities2_enabled,
-    vulkanalia_surface_maintenance1_enabled,
+    REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,
+    create_vulkanalia_wayland_surface,
 };
 use super::video_media_runtime::{
     NativeVulkanFfmpegVideoAudioClockPrepareOptions,
@@ -129,7 +128,6 @@ pub struct NativeVulkanFfmpegVulkanHwVideoPresentSnapshot {
         Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
     pub decoded_image_present_sequence_error: Option<String>,
     pub decoded_image_zero_copy_presented: bool,
-    pub software_decode_fallback: bool,
     pub descriptor_heap_only: bool,
     pub zero_copy_scope: &'static str,
     pub ffmpeg_reference: &'static str,
@@ -186,7 +184,6 @@ pub struct NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot {
         Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
     pub decoded_image_present_sequence_error: Option<String>,
     pub decoded_image_zero_copy_presented: bool,
-    pub software_decode_fallback: bool,
     pub descriptor_heap_only: bool,
     pub zero_copy_scope: &'static str,
     pub ffmpeg_reference: &'static str,

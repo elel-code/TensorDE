@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn main() {
-    #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
-    native_vulkan_video_allocator_env_bootstrap();
+    #[cfg(target_os = "linux")]
+    native_vulkan_allocator_env_bootstrap();
 
     if let Err(err) = run() {
         eprintln!("gilder-native-vulkan: {err}");
@@ -22,16 +22,16 @@ fn main() {
     std::process::exit(1);
 }
 
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
-fn native_vulkan_video_sync_executable_after_rebuild(executable: &std::path::Path) {
+#[cfg(target_os = "linux")]
+fn native_vulkan_sync_executable_after_rebuild(executable: &std::path::Path) {
     let Ok(file) = std::fs::File::open(executable) else {
         return;
     };
     let _ = file.sync_all();
 }
 
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
-fn native_vulkan_video_allocator_env_bootstrap() {
+#[cfg(target_os = "linux")]
+fn native_vulkan_allocator_env_bootstrap() {
     const BOOTSTRAPPED: &str = "GILDER_NATIVE_VULKAN_ALLOCATOR_BOOTSTRAPPED";
     const EXE_SYNCED: &str = "GILDER_NATIVE_VULKAN_EXE_SYNCED";
     const REQUIRED_ENV: &[(&str, &str)] = &[
@@ -44,13 +44,13 @@ fn native_vulkan_video_allocator_env_bootstrap() {
     let mut needs_reexec = REQUIRED_ENV
         .iter()
         .any(|(name, value)| std::env::var(name).as_deref() != Ok(*value));
-    needs_reexec |= !native_vulkan_video_glibc_tcache_disabled();
+    needs_reexec |= !native_vulkan_glibc_tcache_disabled();
 
     if !needs_reexec {
         if std::env::var_os(EXE_SYNCED).as_deref() != Some(std::ffi::OsStr::new("1"))
             && let Ok(executable) = std::env::current_exe()
         {
-            native_vulkan_video_sync_executable_after_rebuild(&executable);
+            native_vulkan_sync_executable_after_rebuild(&executable);
         }
         return;
     }
@@ -68,7 +68,7 @@ fn native_vulkan_video_allocator_env_bootstrap() {
             std::process::exit(127);
         }
     };
-    native_vulkan_video_sync_executable_after_rebuild(&executable);
+    native_vulkan_sync_executable_after_rebuild(&executable);
     let mut command = std::process::Command::new(executable);
     command.args(std::env::args_os().skip(1));
     command.env(BOOTSTRAPPED, "1");
@@ -78,7 +78,7 @@ fn native_vulkan_video_allocator_env_bootstrap() {
     }
     command.env(
         "GLIBC_TUNABLES",
-        native_vulkan_video_glibc_tunables_with_tcache_disabled(),
+        native_vulkan_glibc_tunables_with_tcache_disabled(),
     );
 
     use std::os::unix::process::CommandExt;
@@ -87,8 +87,8 @@ fn native_vulkan_video_allocator_env_bootstrap() {
     std::process::exit(127);
 }
 
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
-fn native_vulkan_video_glibc_tcache_disabled() -> bool {
+#[cfg(target_os = "linux")]
+fn native_vulkan_glibc_tcache_disabled() -> bool {
     std::env::var("GLIBC_TUNABLES").ok().is_some_and(|value| {
         value
             .split(':')
@@ -96,8 +96,8 @@ fn native_vulkan_video_glibc_tcache_disabled() -> bool {
     })
 }
 
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
-fn native_vulkan_video_glibc_tunables_with_tcache_disabled() -> String {
+#[cfg(target_os = "linux")]
+fn native_vulkan_glibc_tunables_with_tcache_disabled() -> String {
     let mut entries = std::env::var("GLIBC_TUNABLES")
         .unwrap_or_default()
         .split(':')
@@ -144,7 +144,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_wayland::{
         NativeWaylandFractionalScaleRounding, NativeWaylandLayer,
     };
-    use serde_json::json;
+    use serde_json::{Map, json};
     use std::time::Duration;
 
     let mut mode = NativeVulkanCliMode::All;
@@ -174,6 +174,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_surface_height = None::<u32>;
     let mut scene_gpu_timing = false;
     let mut scene_pointer_replay_normalized = None::<[f64; 2]>;
+    let mut scene_user_property_overrides = Map::new();
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
@@ -323,10 +324,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--gpu-timing" => scene_gpu_timing = true,
             "--scene-video" => {
-                return Err("--scene-video was removed with the old scene CLI".into());
+                return Err("--scene-video is not supported by the native Vulkan CLI".into());
             }
-            "--poster" => {
-                let _ = args.next().ok_or("--poster requires a path")?;
+            "--poster" | "--loop" | "--no-loop" | "--decoder" | "--start-offset-ms" => {
+                return Err(format!("{arg} is not supported by the native Vulkan CLI").into());
             }
             "--fit" => {
                 let value = args.next().ok_or("--fit requires a value")?;
@@ -339,7 +340,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--text" | "--text-color" | "--font-size" | "--path-data" | "--path-fill-rule"
             | "--stroke-color" | "--stroke-width" | "--scene-time-ms" | "--snapshot-time-ms"
             | "--scene-root" => {
-                return Err(format!("{arg} was removed with the old scene CLI").into());
+                return Err(format!("{arg} is not supported by the native Vulkan CLI").into());
             }
             "--scene-shader-artifact-root" => {
                 return Err(
@@ -348,10 +349,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             "--scene-property" => {
-                return Err("--scene-property was removed with the old scene CLI".into());
+                insert_scene_property_override(&mut scene_user_property_overrides, args.next())?;
             }
-            "--loop" => {}
-            "--no-loop" => {}
             "--muted" => _muted = true,
             "--unmuted" => _muted = false,
             "--audio-clock-probe" => {
@@ -375,10 +374,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
                 }
             }
-            "--decoder" => {
-                let value = args.next().ok_or("--decoder requires a value")?;
-                let _ = parse_decoder_policy(&value)?;
-            }
             "--video-codec" => {
                 let value = args.next().ok_or("--video-codec requires a value")?;
                 video_codec = value.parse()?;
@@ -389,13 +384,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--playback-frames requires a count")?;
-            }
-            "--start-offset-ms" => {
-                let _ = args
-                    .next()
-                    .map(|value| value.parse::<u64>())
-                    .transpose()?
-                    .ok_or("--start-offset-ms requires milliseconds")?;
             }
             "-h" | "--help" => {
                 print_usage();
@@ -454,6 +442,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if scene_gpu_timing && mode != NativeVulkanCliMode::RunScene {
         return Err("--gpu-timing requires --run-scene".into());
+    }
+    if !scene_user_property_overrides.is_empty() && mode != NativeVulkanCliMode::RunScene {
+        return Err("--scene-property requires --run-scene".into());
     }
     let scene_surface_extent =
         parse_scene_surface_extent(scene_surface_width, scene_surface_height)?;
@@ -547,6 +538,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 duration,
                 source,
                 NativeVulkanSceneRunOptions {
+                    user_property_overrides: scene_user_property_overrides,
                     pointer_events: true,
                     pointer_replay_normalized: scene_pointer_replay_normalized,
                     capture_frame,

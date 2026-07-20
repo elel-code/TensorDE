@@ -93,6 +93,7 @@ impl SceneRenderingDeviceGraphPlan {
             for (local_pass_index, pass) in storage.render_graph_passes(graph).iter().enumerate() {
                 let pass_node_index = pass_nodes.len() as u32;
                 let mesh_draw_start = mesh_draws.len() as u32;
+                let effect_visibility_mask = resolved_effect_visibility_mask(semantic_frame, pass);
                 let pass_object_state = visible_pass_object(
                     semantic_frame,
                     pass,
@@ -136,6 +137,10 @@ impl SceneRenderingDeviceGraphPlan {
                                 apply_resolved_visual: pass_applies_resolved_visual(pass),
                                 effect_batch_atlas_tile: INVALID_OBJECT_ID,
                                 effect_batch_atlas_grid: [0; 2],
+                                effect_binding_start: pass.effect_binding_start,
+                                effect_binding_count: pass.effect_binding_count,
+                                effect_visibility_policy: pass.effect_visibility_policy,
+                                resolved_effect_visibility_mask: effect_visibility_mask,
                                 object: mesh.object,
                                 material: pass_draw_material(pass, mesh.material),
                                 vertex_start: mesh.vertex_start,
@@ -156,6 +161,7 @@ impl SceneRenderingDeviceGraphPlan {
                         pass,
                         pass_object_state,
                         primitive,
+                        effect_visibility_mask,
                     ));
                 }
                 let mesh_draw_count = mesh_draws.len() as u32 - mesh_draw_start;
@@ -180,6 +186,9 @@ impl SceneRenderingDeviceGraphPlan {
                     target_name: pass.target_name,
                     binding_start: pass.binding_start,
                     binding_count: pass.binding_count,
+                    effect_binding_start: pass.effect_binding_start,
+                    effect_binding_count: pass.effect_binding_count,
+                    effect_visibility_policy: pass.effect_visibility_policy,
                     mesh_draw_start,
                     mesh_draw_count,
                 });
@@ -292,6 +301,9 @@ pub struct SceneRenderingDevicePassNode {
     pub target_name: SceneStringId,
     pub binding_start: u32,
     pub binding_count: u32,
+    pub effect_binding_start: u32,
+    pub effect_binding_count: u32,
+    pub effect_visibility_policy: SceneRenderEffectVisibilityPolicy,
     pub mesh_draw_start: u32,
     pub mesh_draw_count: u32,
 }
@@ -361,6 +373,10 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub effect_batch_atlas_tile: u32,
     /// Column/row count of the scene-level 2D effect atlas; `[0, 0]` means no batch.
     pub effect_batch_atlas_grid: [u32; 2],
+    pub effect_binding_start: u32,
+    pub effect_binding_count: u32,
+    pub effect_visibility_policy: SceneRenderEffectVisibilityPolicy,
+    pub resolved_effect_visibility_mask: u32,
     pub object: SceneObjectHandle,
     pub material: SceneMaterialHandle,
     pub vertex_start: u32,
@@ -452,11 +468,9 @@ fn pass_mesh_index_range(
 fn visible_pass_object<'frame>(
     semantic_frame: &'frame ResolvedSemanticFrame,
     pass: &SceneRenderPassRecord,
-    allow_hidden_render_texture: bool,
+    _allow_hidden_render_texture: bool,
 ) -> Option<&'frame ResolvedObjectState> {
-    semantic_frame
-        .object(pass.object)
-        .filter(|object| object.resolved_visible || allow_hidden_render_texture)
+    semantic_frame.object(pass.object)
 }
 
 fn pass_utility_primitive(
@@ -539,6 +553,7 @@ fn utility_primitive_draw(
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
     primitive: SceneRenderingDeviceDrawPrimitive,
+    resolved_effect_visibility_mask: u32,
 ) -> SceneRenderingDeviceMeshDraw {
     let vertex_count = match primitive {
         SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => 6,
@@ -571,6 +586,10 @@ fn utility_primitive_draw(
         apply_resolved_visual: pass_applies_resolved_visual(pass),
         effect_batch_atlas_tile: INVALID_OBJECT_ID,
         effect_batch_atlas_grid: [0; 2],
+        effect_binding_start: pass.effect_binding_start,
+        effect_binding_count: pass.effect_binding_count,
+        effect_visibility_policy: pass.effect_visibility_policy,
+        resolved_effect_visibility_mask,
         object: pass.object,
         material: pass.material,
         vertex_start: 0,
@@ -585,6 +604,23 @@ fn utility_primitive_draw(
             1
         },
     }
+}
+
+fn resolved_effect_visibility_mask(
+    frame: &ResolvedSemanticFrame,
+    pass: &SceneRenderPassRecord,
+) -> u32 {
+    (0..pass.effect_binding_count.min(32)).fold(0u32, |mask, local_index| {
+        let binding_index = pass.effect_binding_start.saturating_add(local_index);
+        if frame
+            .object_effect(binding_index)
+            .is_some_and(|effect| effect.resolved_visible)
+        {
+            mask | (1 << local_index)
+        } else {
+            mask
+        }
+    })
 }
 
 fn procedural_particle_instance_capacity(particle: &SceneParticleSystemRecord) -> u32 {

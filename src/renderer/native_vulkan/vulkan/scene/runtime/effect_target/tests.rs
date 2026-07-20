@@ -312,6 +312,10 @@ fn pass_node(
         target_name,
         binding_start,
         binding_count: u32::from(binding_start < 2),
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         mesh_draw_start: 0,
         mesh_draw_count: 0,
     }

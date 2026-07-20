@@ -26,10 +26,12 @@ use crate::renderer::native_vulkan::{
 
 use super::effect_target::SceneEffectTargetImagePlan;
 
+mod diagnostics;
 mod particle_compute;
 mod samples;
 mod shader_module;
 
+pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
 use samples::ScenePipelineSamples;
 use shader_module::create_shader_module;
 
@@ -52,12 +54,18 @@ pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScenePipelineKey {
-    shader_key: SceneStringId,
+    shader: ScenePipelineShader,
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
     samples: ScenePipelineSamples,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScenePipelineShader {
+    Authored(SceneStringId),
+    EffectPassthrough,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,18 +112,27 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_descriptor_layout(
     let mut texture_slot_mask = 0u32;
     let mut material_uniform_enabled = false;
     for key in drawn_pass_material_keys(storage, graph)? {
+        let ScenePipelineShader::Authored(shader_id) = key.shader else {
+            continue;
+        };
         let shader_key = storage
-            .string(key.shader_key)
+            .string(shader_id)
             .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
         let contract = storage
             .shader_contracts()
             .iter()
-            .find(|contract| contract.shader_key == key.shader_key)
+            .find(|contract| contract.shader_key == shader_id)
             .ok_or_else(|| format!("scene shader {shader_key:?} has no shader contract"))?;
         let shader = native_vulkan_scene_shader_for_key(shader_key)
             .ok_or_else(|| format!("scene shader {shader_key:?} is not built into the catalog"))?;
         texture_slot_mask |= contract.texture_slot_mask;
         material_uniform_enabled |= shader.parameter_layout.uses_material_uniform();
+    }
+    if graph.pass_nodes.iter().any(|pass| {
+        pass.effect_visibility_policy
+            == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
+    }) {
+        texture_slot_mask |= 1;
     }
     Ok(ScenePipelineDescriptorLayout {
         sampled_slots: sampled_slots(texture_slot_mask),
@@ -150,7 +167,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
             .get(pass.pass_record_index as usize)
             .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
         let key = ScenePipelineKey {
-            shader_key: pass_record.shader_key,
+            shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
@@ -171,145 +188,53 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
     Ok(indices)
 }
 
-pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_requested(
+pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_draws(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     swapchain_format: vk::Format,
     effect_target_plans: &[SceneEffectTargetImagePlan],
-    pipeline_indices: &[u32],
     scene_color_msaa_enabled: bool,
-) -> Result<(), String> {
-    const ENV: &str = "GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG";
-    let Ok(requested) = std::env::var(ENV) else {
-        return Ok(());
-    };
-    let requested = requested.trim();
-    let graph_filter =
-        if requested.eq_ignore_ascii_case("all") || requested == "1" {
-            None
-        } else {
-            Some(requested.parse::<u32>().map_err(|_| {
-                format!("{ENV} must be a graph index, 1, or all; got {requested:?}")
-            })?)
-        };
+) -> Result<Vec<Option<u32>>, String> {
+    let keys = drawn_pass_pipeline_keys(
+        storage,
+        graph,
+        swapchain_format,
+        effect_target_plans,
+        scene_color_msaa_enabled,
+    )?;
+    let mut indices = vec![None; graph.mesh_draws.len()];
     for pass in graph.pass_nodes.iter().filter(|pass| {
         pass.mesh_draw_count != 0
-            && graph_filter.is_none_or(|graph_index| pass.graph_index == graph_index)
+            && pass.effect_visibility_policy
+                == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
     }) {
-        let pass_record = storage
-            .document()
-            .render_passes
-            .get(pass.pass_record_index as usize)
-            .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
-        let blend = scene_gpu_blend(storage, pass_record, pass.target);
-        let target_format = pass_target_format(graph, pass, swapchain_format, effect_target_plans)?;
-        let draw_start = pass.mesh_draw_start as usize;
-        let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
-        let draw_pipeline_indices =
-            pipeline_indices.get(draw_start..draw_end).ok_or_else(|| {
-                format!(
-                    "scene graph {} pass {} draw range {}..{} exceeds pipeline index plan",
-                    pass.graph_index, pass.pass_id, draw_start, draw_end
-                )
-            })?;
-        let pipeline_index = draw_pipeline_indices.first().copied().unwrap_or_default();
-        if draw_pipeline_indices
+        let key = ScenePipelineKey {
+            shader: ScenePipelineShader::EffectPassthrough,
+            blend: SceneGpuBlend::Replace,
+            advanced_source_premultiplied: false,
+            advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
+            target_format: pass_target_format(
+                graph,
+                pass,
+                swapchain_format,
+                effect_target_plans,
+            )?,
+            samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
+        };
+        let pipeline_index = keys
             .iter()
-            .any(|candidate| *candidate != pipeline_index)
-        {
-            return Err(format!(
-                "scene graph {} pass {} resolves to multiple pipeline indices",
-                pass.graph_index, pass.pass_id
-            ));
+            .position(|candidate| *candidate == key)
+            .ok_or_else(|| "scene disabled effect pass has no passthrough pipeline key".to_owned())?
+            as u32;
+        let start = pass.mesh_draw_start as usize;
+        let end = start.saturating_add(pass.mesh_draw_count as usize);
+        for slot in indices.get_mut(start..end).unwrap_or(&mut []) {
+            *slot = Some(pipeline_index);
         }
-        let material_pass = storage.material(pass_record.material).and_then(|material| {
-            let passes = storage.material_passes(material);
-            passes
-                .iter()
-                .find(|material_pass| material_pass.shader_key == pass_record.shader_key)
-                .or_else(|| passes.first())
-        });
-        let material_textures = material_pass
-            .map(|material_pass| storage.material_pass_textures(material_pass))
-            .unwrap_or_default()
-            .iter()
-            .map(|binding| {
-                storage.texture(binding.resource).map_or_else(
-                    || {
-                        format!(
-                            "slot{}=resource{}:<missing>",
-                            binding.slot, binding.resource.0
-                        )
-                    },
-                    |texture| {
-                        format!(
-                            "slot{}=resource{}:{}x{}/storage{}x{}",
-                            binding.slot,
-                            binding.resource.0,
-                            texture.width,
-                            texture.height,
-                            texture.storage_width,
-                            texture.storage_height,
-                        )
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let material_constants = material_pass
-            .and_then(|material_pass| {
-                let start = material_pass.constant_start as usize;
-                let end = start.saturating_add(material_pass.constant_count as usize);
-                storage.document().material_constants.get(start..end)
-            })
-            .unwrap_or_default()
-            .iter()
-            .map(|constant| {
-                format!(
-                    "{}={}",
-                    storage.string(constant.name).unwrap_or("<missing>"),
-                    storage.string(constant.value_json).unwrap_or("<missing>"),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let draw_objects = graph.mesh_draws[draw_start..draw_end]
-            .iter()
-            .map(|draw| {
-                let name = storage
-                    .objects()
-                    .get(draw.object.0 as usize)
-                    .and_then(|object| storage.string(object.name))
-                    .unwrap_or("<unnamed>");
-                format!("{}:{name}", draw.object.0)
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        eprintln!(
-            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} objects=[{}] target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}] material_constants=[{}]",
-            pass.graph_index,
-            pass.pass_id,
-            pass.pass_record_index,
-            draw_start,
-            draw_end,
-            draw_objects,
-            pass.target,
-            pass.target_name,
-            storage
-                .string(pass_record.shader_key)
-                .unwrap_or("<missing>"),
-            pass_record.pipeline_blend,
-            pass_record.scene_blend,
-            blend.label(),
-            target_format,
-            pass_pipeline_samples(pass.target, scene_color_msaa_enabled).rasterization_samples(),
-            pipeline_index,
-            material_textures,
-            material_constants,
-        );
     }
-    Ok(())
+    Ok(indices)
 }
+
 
 pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     device: &Device,
@@ -346,9 +271,12 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     }
     let mut entries = Vec::with_capacity(keys.len());
     for key in keys {
-        let shader_key = storage
-            .string(key.shader_key)
-            .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
+        let shader_key = match key.shader {
+            ScenePipelineShader::Authored(shader_id) => storage
+                .string(shader_id)
+                .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?,
+            ScenePipelineShader::EffectPassthrough => "we/passthrough",
+        };
         let shader = native_vulkan_scene_shader_for_key(shader_key)
             .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
         let pipeline_debug =
@@ -440,7 +368,7 @@ fn drawn_pass_pipeline_keys(
             return Err("scene drawable pass has no shader key".to_owned());
         }
         let key = ScenePipelineKey {
-            shader_key: pass_record.shader_key,
+            shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
@@ -449,6 +377,21 @@ fn drawn_pass_pipeline_keys(
         };
         if !keys.contains(&key) {
             keys.push(key);
+        }
+        if pass.effect_visibility_policy
+            == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
+        {
+            let disabled = ScenePipelineKey {
+                shader: ScenePipelineShader::EffectPassthrough,
+                blend: SceneGpuBlend::Replace,
+                advanced_source_premultiplied: false,
+                advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
+                target_format: key.target_format,
+                samples: key.samples,
+            };
+            if !keys.contains(&disabled) {
+                keys.push(disabled);
+            }
         }
     }
     Ok(keys)
@@ -473,7 +416,7 @@ fn drawn_pass_material_keys(
             return Err("scene drawable pass has no shader key".to_owned());
         }
         let key = ScenePipelineKey {
-            shader_key: pass_record.shader_key,
+            shader: ScenePipelineShader::Authored(pass_record.shader_key),
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),

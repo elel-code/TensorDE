@@ -9,9 +9,7 @@ use crate::engine::scene::rendering_device_graph::scene_clip_transform;
 use crate::engine::scene::semantic_world::{ResolvedSemanticFrame, SemanticFrameResolver};
 use crate::engine::scene::{
     SceneFrameEvents, SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMaterialSampledBinding,
-    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneRenderingDeviceSampledBinding,
-    SceneRenderingDeviceTargetAllocation, SceneSemanticWorld, SceneStorage,
+    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneSemanticWorld, SceneStorage,
 };
 use crate::renderer::native_vulkan::{
     NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanVulkanaliaBuffer,
@@ -19,6 +17,7 @@ use crate::renderer::native_vulkan::{
 };
 
 use super::composite_scissor::update_scene_composite_scissors;
+use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
 use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
@@ -46,10 +45,6 @@ pub(super) struct SceneFrameCpuTiming {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SceneFrameTopology {
     graph: SceneRenderingDeviceGraphPlan,
-    pass_nodes: Vec<SceneRenderingDevicePassNode>,
-    target_allocations: Vec<SceneRenderingDeviceTargetAllocation>,
-    sampled_bindings: Vec<SceneRenderingDeviceSampledBinding>,
-    material_sampled_bindings: Vec<SceneRenderingDeviceMaterialSampledBinding>,
     draws: Vec<SceneFrameDrawTopology>,
     palettes: Vec<SceneFramePuppetPaletteTopology>,
     bones: Vec<SceneFramePuppetBoneTopology>,
@@ -60,6 +55,9 @@ struct SceneFrameDrawTopology {
     primitive: SceneRenderingDeviceDrawPrimitive,
     mesh_index: u32,
     resolved_object_index: u32,
+    effect_binding_start: u32,
+    effect_binding_count: u32,
+    effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy,
     skinning_palette_start: u32,
     skinning_palette_count: u32,
     object: SceneObjectHandle,
@@ -87,32 +85,35 @@ struct SceneFramePuppetBoneTopology {
 
 impl SceneFrameTopology {
     pub(super) fn from_graph(graph: &SceneRenderingDeviceGraphPlan) -> Self {
+        Self::from_owned_graph(graph.clone())
+    }
+
+    pub(super) fn from_owned_graph(graph: SceneRenderingDeviceGraphPlan) -> Self {
+        let draws = graph.mesh_draws.iter().map(draw_topology).collect();
+        let palettes = graph
+            .puppet_bone_palettes
+            .iter()
+            .map(|palette| SceneFramePuppetPaletteTopology {
+                object: palette.object,
+                puppet_index: palette.puppet_index,
+                bone_matrix_start: palette.bone_matrix_start,
+                bone_matrix_count: palette.bone_matrix_count,
+            })
+            .collect();
+        let bones = graph
+            .puppet_bone_matrices
+            .iter()
+            .map(|bone| SceneFramePuppetBoneTopology {
+                puppet_index: bone.puppet_index,
+                bone_index: bone.bone_index,
+                parent_index: bone.parent_index,
+            })
+            .collect();
         Self {
-            graph: graph.clone(),
-            pass_nodes: graph.pass_nodes.clone(),
-            target_allocations: graph.target_allocations.clone(),
-            sampled_bindings: graph.sampled_bindings.clone(),
-            material_sampled_bindings: graph.material_sampled_bindings.clone(),
-            draws: graph.mesh_draws.iter().map(draw_topology).collect(),
-            palettes: graph
-                .puppet_bone_palettes
-                .iter()
-                .map(|palette| SceneFramePuppetPaletteTopology {
-                    object: palette.object,
-                    puppet_index: palette.puppet_index,
-                    bone_matrix_start: palette.bone_matrix_start,
-                    bone_matrix_count: palette.bone_matrix_count,
-                })
-                .collect(),
-            bones: graph
-                .puppet_bone_matrices
-                .iter()
-                .map(|bone| SceneFramePuppetBoneTopology {
-                    puppet_index: bone.puppet_index,
-                    bone_index: bone.bone_index,
-                    parent_index: bone.parent_index,
-                })
-                .collect(),
+            graph,
+            draws,
+            palettes,
+            bones,
         }
     }
 
@@ -123,25 +124,6 @@ impl SceneFrameTopology {
         scene_time_seconds: f32,
     ) -> Result<&SceneRenderingDeviceGraphPlan, String> {
         validate_dynamic_counts(&self.graph, semantic_frame, scene_time_seconds)?;
-        let hidden_render_texture_objects = self
-            .graph
-            .pass_nodes
-            .iter()
-            .filter(|pass| {
-                pass.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
-                    && storage
-                        .string(pass.target_name)
-                        .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"))
-            })
-            .flat_map(|pass| {
-                self.graph
-                    .mesh_draws
-                    .iter()
-                    .skip(pass.mesh_draw_start as usize)
-                    .take(pass.mesh_draw_count as usize)
-                    .map(|draw| draw.object)
-            })
-            .collect::<std::collections::BTreeSet<_>>();
         for draw in &mut self.graph.mesh_draws {
             if draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID {
                 continue;
@@ -152,17 +134,13 @@ impl SceneFrameTopology {
                     draw.object.0
                 )
             })?;
-            if !object.resolved_visible && !hidden_render_texture_objects.contains(&draw.object) {
-                return Err(format!(
-                    "scene draw object {} became hidden at {scene_time_seconds:.6}s; live draw topology mutation is not supported",
-                    draw.object.0
-                ));
-            }
             draw.resolved_object_index = object.object_index;
             draw.clip_transform =
                 scene_clip_transform(storage.project(), object.render_world_matrix);
             draw.resolved_color = object.resolved_color;
             draw.resolved_alpha = object.resolved_alpha;
+            draw.resolved_effect_visibility_mask =
+                resolved_draw_effect_visibility_mask(semantic_frame, draw);
         }
         update_puppet_palettes(&mut self.graph, semantic_frame, scene_time_seconds)?;
         self.graph.resolved_object_count = semantic_frame.objects.len();
@@ -182,25 +160,25 @@ impl SceneFrameTopology {
     ) -> Result<(), String> {
         validate_topology_slice(
             "render-pass",
-            &self.pass_nodes,
+            &self.graph.pass_nodes,
             &graph.pass_nodes,
             scene_time_seconds,
         )?;
         validate_topology_slice(
             "render-target allocation",
-            &self.target_allocations,
+            &self.graph.target_allocations,
             &graph.target_allocations,
             scene_time_seconds,
         )?;
         validate_topology_slice(
             "sampled binding",
-            &self.sampled_bindings,
+            &self.graph.sampled_bindings,
             &graph.sampled_bindings,
             scene_time_seconds,
         )?;
         validate_topology_slice(
             "material sampled binding",
-            &self.material_sampled_bindings,
+            &self.graph.material_sampled_bindings,
             &graph.material_sampled_bindings,
             scene_time_seconds,
         )?;
@@ -246,19 +224,11 @@ fn validate_dynamic_counts(
 ) -> Result<(), String> {
     let expected = [
         graph.resolved_object_count,
-        graph.resolved_visible_object_count,
         graph.resolved_attachment_link_count,
-        graph.resolved_visible_effect_instance_count,
-        graph.resolved_visible_effect_pass_count,
-        graph.resolved_visible_effect_fbo_count,
     ];
     let actual = [
         frame.objects.len(),
-        frame.visible_object_count,
         frame.attachment_links.len(),
-        frame.visible_effect_instance_count,
-        frame.visible_effect_pass_count,
-        frame.visible_effect_fbo_count,
     ];
     if expected != actual {
         return Err(format!(
@@ -338,6 +308,7 @@ fn rows_from_column_major(matrix: [f32; 16]) -> [[f32; 4]; 4] {
 pub(super) fn write_scene_frame_buffers(
     device: &Device,
     storage: &SceneStorage,
+    mesh_coverage: &SceneMeshCoveragePlans,
     semantic_world: &SceneSemanticWorld<'_>,
     semantic_resolver: &mut SemanticFrameResolver,
     topology: &mut SceneFrameTopology,
@@ -364,7 +335,8 @@ pub(super) fn write_scene_frame_buffers(
     let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
     let graph_started = cpu_timing_enabled.then(Instant::now);
     let graph = topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
-    update_particle_instance_counts(storage, graph, scene_time_seconds, draw_commands);
+    update_draw_visibility(storage, graph, semantic_frame, draw_commands);
+    update_effect_draw_pipelines(graph, draw_commands)?;
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
     let transform_started = cpu_timing_enabled.then(Instant::now);
@@ -407,9 +379,16 @@ pub(super) fn write_scene_frame_buffers(
     let skinning_update_micros = elapsed_optional_micros(skinning_started);
 
     let draw_policy_started = cpu_timing_enabled.then(Instant::now);
-    update_scene_composite_scissors(storage, graph, output_extent, draw_commands)?;
+    update_scene_composite_scissors(
+        storage,
+        mesh_coverage,
+        graph,
+        output_extent,
+        draw_commands,
+    )?;
     let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
         storage,
+        mesh_coverage,
         graph,
         graph_execution_order,
         output_extent,
@@ -433,53 +412,59 @@ pub(super) fn write_scene_frame_buffers(
     })
 }
 
-fn update_particle_instance_counts(
+fn update_draw_visibility(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    scene_time_seconds: f32,
+    frame: &ResolvedSemanticFrame,
     draw_commands: &mut [SceneGpuDrawCommand],
 ) {
-    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
-        if draw.primitive != SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
+    let hidden_render_texture_objects = graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| {
+            pass.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
+                && storage
+                    .string(pass.target_name)
+                    .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"))
+        })
+        .flat_map(|pass| {
+            graph
+                .mesh_draws
+                .iter()
+                .skip(pass.mesh_draw_start as usize)
+                .take(pass.mesh_draw_count as usize)
+                .map(|draw| draw.object)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands) {
+        command.enabled = draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID
+            || hidden_render_texture_objects.contains(&draw.object)
+            || frame
+                .object(draw.object)
+                .is_some_and(|object| object.resolved_visible);
+    }
+}
+
+fn update_effect_draw_pipelines(
+    graph: &SceneRenderingDeviceGraphPlan,
+    draw_commands: &mut [SceneGpuDrawCommand],
+) -> Result<(), String> {
+    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands) {
+        command.pipeline_index = command.authored_pipeline_index;
+        if draw.effect_visibility_policy
+            != crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
+            || draw.resolved_effect_visibility_mask & 1 != 0
+        {
             continue;
         }
-        let Some(particle) = storage.particle_for_object(draw.object) else {
-            command.instance_count = 0;
-            continue;
-        };
-        command.instance_count = active_particle_instance_count(particle, scene_time_seconds);
+        command.pipeline_index = command.disabled_pipeline_index.ok_or_else(|| {
+            format!(
+                "scene effect binding {} has passthrough visibility policy but no disabled pipeline",
+                draw.effect_binding_start
+            )
+        })?;
     }
-}
-
-pub(super) fn active_particle_instance_count(
-    particle: &crate::engine::scene::SceneParticleSystemRecord,
-    scene_time_seconds: f32,
-) -> u32 {
-    if particle.rate <= 0.0
-        || !scene_time_seconds.is_finite()
-        || scene_time_seconds < particle.start_time
-    {
-        return 0;
-    }
-    let capacity = particle.max_count.min(
-        (particle.rate * particle.lifetime_max)
-            .ceil()
-            .clamp(0.0, u32::MAX as f32) as u32,
-    );
-    let elapsed = (scene_time_seconds - particle.start_time).max(0.0);
-    let spawned = elapsed.mul_add(particle.rate, 0.0).floor() as u32;
-    capacity.min(spawned.saturating_add(1))
-}
-
-pub(super) fn active_particle_instance_total(
-    storage: &SceneStorage,
-    scene_time_seconds: f32,
-) -> u64 {
-    storage
-        .particles()
-        .iter()
-        .map(|particle| u64::from(active_particle_instance_count(particle, scene_time_seconds)))
-        .sum()
+    Ok(())
 }
 
 fn elapsed_optional_micros(started: Option<Instant>) -> u64 {
@@ -517,6 +502,9 @@ fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology 
         primitive: draw.primitive,
         mesh_index: draw.mesh_index,
         resolved_object_index: draw.resolved_object_index,
+        effect_binding_start: draw.effect_binding_start,
+        effect_binding_count: draw.effect_binding_count,
+        effect_visibility_policy: draw.effect_visibility_policy,
         skinning_palette_start: draw.skinning_palette_start,
         skinning_palette_count: draw.skinning_palette_count,
         object: draw.object,
@@ -526,6 +514,22 @@ fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology 
         index_start: draw.index_start,
         index_count: draw.index_count,
     }
+}
+
+fn resolved_draw_effect_visibility_mask(
+    frame: &ResolvedSemanticFrame,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> u32 {
+    (0..draw.effect_binding_count.min(32)).fold(0u32, |mask, local_index| {
+        if frame
+            .object_effect(draw.effect_binding_start.saturating_add(local_index))
+            .is_some_and(|effect| effect.resolved_visible)
+        {
+            mask | (1 << local_index)
+        } else {
+            mask
+        }
+    })
 }
 
 fn validate_topology_slice<T: Debug + PartialEq>(
@@ -587,30 +591,40 @@ mod tests {
     };
     use crate::engine::scene::{
         SceneMaterialHandle, SceneRenderingDevicePuppetBoneMatrix,
-        SceneRenderingDevicePuppetBonePalette, SceneResourceId,
+        SceneRenderingDevicePuppetBonePalette,
     };
 
     #[test]
-    fn particle_instance_count_tracks_spawned_prefix_without_renumbering() {
-        let mut particle = crate::engine::scene::SceneParticleSystemRecord::unsupported(
-            SceneObjectHandle(0),
-            SceneResourceId(0),
-            SceneMaterialHandle(0),
-            0,
-            100,
-            1.0,
-            0.0,
-            1.0,
-        );
-        particle.rate = 4.0;
-        particle.lifetime_max = 100.0;
-        particle.start_time = 2.0;
+    fn hidden_passthrough_effect_switches_pipeline_without_affecting_material_stage_draw() {
+        let mut graph = graph_with_bone(SceneRenderingDevicePuppetBoneMatrix {
+            puppet_index: 0,
+            bone_index: 0,
+            parent_index: -1,
+            matrix: [[0.0; 4]; 4],
+            alpha: 1.0,
+        });
+        graph.mesh_draws = vec![
+            effect_draw(
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough,
+                0,
+                3,
+            ),
+            effect_draw(
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages,
+                0,
+                4,
+            ),
+        ];
+        let mut commands = vec![draw_command(10, Some(20)), draw_command(11, None)];
 
-        assert_eq!(active_particle_instance_count(&particle, 1.0), 0);
-        assert_eq!(active_particle_instance_count(&particle, 2.0), 1);
-        assert_eq!(active_particle_instance_count(&particle, 2.24), 1);
-        assert_eq!(active_particle_instance_count(&particle, 2.25), 2);
-        assert_eq!(active_particle_instance_count(&particle, 100.0), 100);
+        update_effect_draw_pipelines(&graph, &mut commands).expect("typed visibility pipelines");
+
+        assert_eq!(commands[0].pipeline_index, 20);
+        assert_eq!(commands[1].pipeline_index, 11);
+
+        graph.mesh_draws[0].resolved_effect_visibility_mask = 1;
+        update_effect_draw_pipelines(&graph, &mut commands).expect("visible authored pipeline");
+        assert_eq!(commands[0].pipeline_index, 10);
     }
 
     #[test]
@@ -789,6 +803,69 @@ mod tests {
             graph_physical_target_count: 0,
             graph_aliased_target_count: 0,
             fifo_latest_ready_present_required: true,
+        }
+    }
+
+    fn effect_draw(
+        policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy,
+        visibility_mask: u32,
+        binding_start: u32,
+    ) -> SceneRenderingDeviceMeshDraw {
+        SceneRenderingDeviceMeshDraw {
+            primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            shader_key: crate::engine::scene::SceneStringId::NONE,
+            mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
+            resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
+            clip_transform: [[0.0; 4]; 4],
+            authored_source_extent: [1.0; 2],
+            skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
+            skinning_palette_count: 0,
+            resolved_color: crate::engine::scene::SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            resolved_alpha: 1.0,
+            apply_resolved_visual: false,
+            effect_batch_atlas_tile: crate::engine::scene::INVALID_OBJECT_ID,
+            effect_batch_atlas_grid: [0; 2],
+            effect_binding_start: binding_start,
+            effect_binding_count: 1,
+            effect_visibility_policy: policy,
+            resolved_effect_visibility_mask: visibility_mask,
+            object: SceneObjectHandle(crate::engine::scene::INVALID_OBJECT_ID),
+            material: SceneMaterialHandle(crate::engine::scene::INVALID_MATERIAL_ID),
+            vertex_start: 0,
+            vertex_count: 3,
+            index_start: 0,
+            index_count: 3,
+            instance_count: 1,
+        }
+    }
+
+    fn draw_command(
+        authored_pipeline_index: u32,
+        disabled_pipeline_index: Option<u32>,
+    ) -> SceneGpuDrawCommand {
+        SceneGpuDrawCommand {
+            enabled: true,
+            primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            pipeline_index: authored_pipeline_index,
+            authored_pipeline_index,
+            disabled_pipeline_index,
+            first_index: 0,
+            index_count: 3,
+            vertex_offset: 0,
+            vertex_count: 3,
+            instance_count: 1,
+            instance_capacity: 1,
+            particle_indirect_index: None,
+            resource_descriptor_base: 0,
+            sampler_descriptor_base: 0,
+            skinning_byte_offset: 0,
+            skinning_byte_count: 0,
+            scissor: None,
+            alpha_coverage_scissors: Vec::new(),
         }
     }
 

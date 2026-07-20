@@ -85,6 +85,7 @@ mod tests {
         let deltas = [SceneScriptDelta {
             object: SceneObjectHandle(4),
             target: SceneScriptTarget::Angles,
+            selector: 0,
             numeric: [0.0, 0.0, -25.0, 0.0],
             text: None,
         }];

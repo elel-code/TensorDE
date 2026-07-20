@@ -95,7 +95,11 @@ fn final_cloudmotion_values(
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
     values[4] = scene_time_seconds;
     values[5] = parameters.scalar(&["cloud.ui_editor_properties_speed", "cloud.speed"], 0.02);
-    values[6] = parameters.scalar(&["cloud.ui_editor_properties_amount", "cloud.amount"], 0.1);
+    values[6] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["cloud.ui_editor_properties_amount", "cloud.amount"], 0.1)
+    } else {
+        0.0
+    };
     values[7] = parameters.scalar(
         &["cloud.ui_editor_properties_direction", "cloud.direction"],
         1.5707963,
@@ -270,8 +274,10 @@ fn final_scroll_values(
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
     values[4] = scene_time_seconds;
-    values[5] = parameters.scalar(&["scroll.speedx"], 0.2);
-    values[6] = parameters.scalar(&["scroll.speedy"], 0.2);
+    if draw_effect_enabled(draw, 0) {
+        values[5] = parameters.scalar(&["scroll.speedx"], 0.2);
+        values[6] = parameters.scalar(&["scroll.speedy"], 0.2);
+    }
     values[8..10].copy_from_slice(&[1.0, 1.0]);
     set_vector(&mut values, 8, &parameters.values(&["scroll.repeat"]), 2);
     values
@@ -300,8 +306,13 @@ fn final_puppet_opacity_values(
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
-    values[4] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
-    values[5] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    if draw_effect_enabled(draw, 0) {
+        values[4] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+        values[5] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    } else {
+        values[4] = 1.0;
+        values[5] = 0.0;
+    }
     values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values
 }
@@ -400,7 +411,11 @@ pub(super) fn final_waterwaves_values(
     values[4] = scene_time_seconds;
     values[5] = speed;
     values[6] = scale;
-    values[7] = parameters.scalar(&["effect.strength"], 0.1);
+    values[7] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["effect.strength"], 0.1)
+    } else {
+        0.0
+    };
     values[8] = parameters.scalar(&["effect.direction"], 0.0);
     values[9] = parameters.scalar(&["effect.speed2"], speed);
     values[10] = parameters.scalar(&["effect.scale2"], scale);
@@ -428,7 +443,11 @@ pub(super) fn final_waterripple_values(
     values[6] = parameters.scalar(&["effect.scale"], 1.0);
     values[7] = parameters.scalar(&["effect.scrollspeed"], 0.0);
     values[8] = parameters.scalar(&["effect.scrolldirection", "effect.direction"], 0.0);
-    values[9] = parameters.scalar(&["effect.ripplestrength", "effect.strength"], 0.1);
+    values[9] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["effect.ripplestrength", "effect.strength"], 0.1)
+    } else {
+        0.0
+    };
     values[10] = ratio;
     values[11] = 1.0;
     values[12] = parameters.scalar(&["effect.mask_enabled"], 0.0);
@@ -458,7 +477,11 @@ pub(super) fn ripple_flow_composite_values(
     values[4] = scene_time_seconds;
     values[5] = parameters.scalar(&["flow.speed"], 1.0);
     values[6] = parameters.scalar(&["flow.feather"], 0.4);
-    values[7] = parameters.scalar(&["flow.strength"], 1.0);
+    values[7] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["flow.strength"], 1.0)
+    } else {
+        0.0
+    };
     values[8] = parameters.scalar(&["flow.phasescale"], 2.0);
     values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values

@@ -732,7 +732,7 @@ mod tests {
     fn audio_bars_storage() -> SceneStorage {
         SceneStorage::from_document(SceneBinaryDocument {
             strings: vec![
-                "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7".to_owned(),
+                "effects/simple_audio_bars__SLOTS_1__SHAPE_7".to_owned(),
             ],
             materials: vec![SceneMaterialRecord {
                 id: SceneMaterialHandle(0),
@@ -763,7 +763,7 @@ mod tests {
     fn rounded_mask_storage() -> SceneStorage {
         SceneStorage::from_document(SceneBinaryDocument {
             strings: vec![
-                "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
+                "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
                     .to_owned(),
                 "Size".to_owned(),
                 "\"0.8 0.6\"".to_owned(),
@@ -825,6 +825,11 @@ mod tests {
             apply_resolved_visual: true,
             effect_batch_atlas_tile: u32::MAX,
             effect_batch_atlas_grid: [0; 2],
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy:
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+            resolved_effect_visibility_mask: 0,
             object: crate::engine::scene::SceneObjectHandle(0),
             material,
             vertex_start: 0,

@@ -9,7 +9,7 @@ use crate::engine::scene::{
 fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
         strings: vec![
-            "genericimage4".to_owned(),
+            "we/genericimage4".to_owned(),
             "effects/opacity__SLOTS_1".to_owned(),
             "generic-pipeline".to_owned(),
             "opacity-pipeline".to_owned(),
@@ -192,7 +192,7 @@ fn final_target_pipeline_keys_include_scene_composite_blend() {
     let mut multiply = render_pass(1, SceneStringId(0), ScenePipelineBlend::Normal);
     multiply.scene_blend = SceneCompositeBlend::Multiply;
     let storage = SceneStorage::from_document(SceneBinaryDocument {
-        strings: vec!["genericimage4".to_owned(), "pipeline".to_owned()],
+        strings: vec!["we/genericimage4".to_owned(), "pipeline".to_owned()],
         shader_contracts: vec![SceneShaderContractRecord {
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
@@ -433,6 +433,10 @@ fn pass_node(
         target_name: SceneStringId::NONE,
         binding_start: 0,
         binding_count: 0,
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         mesh_draw_start,
         mesh_draw_count,
     }
@@ -456,6 +460,10 @@ fn render_pass(
         target_name: SceneStringId::NONE,
         binding_start: 0,
         binding_count: 0,
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         pipeline_blend,
         scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
         depth_test: crate::engine::scene::SceneDepthTest::Disabled,
@@ -483,6 +491,11 @@ fn draw() -> SceneRenderingDeviceMeshDraw {
         apply_resolved_visual: true,
         effect_batch_atlas_tile: u32::MAX,
         effect_batch_atlas_grid: [0; 2],
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        resolved_effect_visibility_mask: 0,
         object: crate::engine::scene::SceneObjectHandle(crate::engine::scene::INVALID_OBJECT_ID),
         material: crate::engine::scene::SceneMaterialHandle(
             crate::engine::scene::INVALID_MATERIAL_ID,

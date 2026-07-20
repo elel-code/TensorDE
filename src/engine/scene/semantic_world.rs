@@ -289,7 +289,7 @@ impl<'a> SceneSemanticWorld<'a> {
             .into_iter()
             .map(|state| state.expect("resolve_entity populates every requested object"))
             .collect::<Vec<_>>();
-        let object_effects = self.resolve_object_effects(&objects)?;
+        let object_effects = self.resolve_object_effects(&objects, script_deltas)?;
         let (puppet_bone_palettes, puppet_bone_matrices) =
             self.resolve_puppet_bone_palettes(&objects, scene_time_seconds)?;
         Ok(ResolvedSemanticFrame::from_resolved_parts(
@@ -802,6 +802,7 @@ impl<'a> SceneSemanticWorld<'a> {
     fn resolve_object_effects(
         &self,
         objects: &[ResolvedObjectState],
+        script_deltas: &[SceneScriptDelta],
     ) -> Result<Vec<ResolvedObjectEffectState>, SceneSemanticWorldError> {
         let mut effects = Vec::new();
         for object in objects {
@@ -822,7 +823,8 @@ impl<'a> SceneSemanticWorld<'a> {
                     len: self.object_effect_bindings.len(),
                 });
             };
-            for binding in bindings {
+            for (local_index, binding) in bindings.iter().enumerate() {
+                let binding_index = component.binding_start + local_index as u32;
                 let effect_index = binding.effect.0;
                 let effect = self.storage.effects().get(effect_index as usize).ok_or(
                     SceneSemanticWorldError::MissingEffectRecord {
@@ -830,16 +832,27 @@ impl<'a> SceneSemanticWorld<'a> {
                         effect: binding.effect,
                     },
                 )?;
+                let self_visible = script_deltas
+                    .iter()
+                    .rev()
+                    .find(|delta| {
+                        delta.target == SceneScriptTarget::EffectVisible
+                            && delta.object == binding.object
+                            && delta.selector == binding_index
+                    })
+                    .map(|delta| delta.numeric[0] != 0.0)
+                    .unwrap_or(binding.visible);
                 effects.push(ResolvedObjectEffectState {
+                    binding_index,
                     entity: object.entity,
                     object: object.object,
                     object_index: object.object_index,
                     effect: binding.effect,
                     effect_index,
                     instance_id: binding.instance_id,
-                    self_visible: binding.visible,
+                    self_visible,
                     object_resolved_visible: object.resolved_visible,
-                    resolved_visible: binding.visible && object.resolved_visible,
+                    resolved_visible: self_visible && object.resolved_visible,
                     pass_start: effect.pass_start,
                     pass_count: effect.pass_count,
                     fbo_start: effect.fbo_start,

@@ -5,7 +5,7 @@ use crate::core::SceneBlendMode;
 
 use super::binding::TextureBindingRole;
 use super::graph::{RenderGraph, UnsupportedGraphBoundary};
-use super::pass::{RenderPassNode, RenderPassRole};
+use super::pass::{RenderPassEffectVisibility, RenderPassNode, RenderPassRole};
 use super::state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 use super::target::RenderTargetRole;
 
@@ -17,6 +17,8 @@ mod waterwaves;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeEffectPassContract {
     pub object_index: usize,
+    pub effect_binding_start: u32,
+    pub effect_binding_count: u32,
     pub material_index: Option<usize>,
     pub effect_file: String,
     pub pass_index: u32,
@@ -71,6 +73,26 @@ pub struct WeWaterWavesDirectMaterial {
     pub material_index: usize,
     pub shader: String,
     pub group_visual_composite: bool,
+}
+
+fn contiguous_effect_range(effects: &[WeEffectPassContract]) -> Option<(u32, u32)> {
+    let first = effects.first()?;
+    let start = first.effect_binding_start;
+    let mut next = start;
+    for effect in effects {
+        if effect.effect_binding_start != next || effect.effect_binding_count == 0 {
+            return None;
+        }
+        next = next.checked_add(effect.effect_binding_count)?;
+    }
+    Some((start, next - start))
+}
+
+fn contiguous_material_stage_visibility(
+    effects: &[WeEffectPassContract],
+) -> Option<RenderPassEffectVisibility> {
+    let (start, count) = contiguous_effect_range(effects)?;
+    Some(RenderPassEffectVisibility::material_stages(start, count))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +160,8 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         return graph;
     }
     if let Some(final_effect) = &contract.final_effect_material {
+        let effect_visibility = contiguous_material_stage_visibility(&contract.effect_passes)
+            .expect("typed final effect requires contiguous effect bindings");
         if final_effect.samples_framebuffer_snapshot {
             let snapshot = contract
                 .framebuffer_snapshot
@@ -159,6 +183,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                     role: RenderTargetRole::SceneColor,
                     name: None,
                 }],
+                effect_visibility: RenderPassEffectVisibility::NONE,
                 state: PassState::default(),
             });
         }
@@ -206,6 +231,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_extent: None,
             target_format: None,
             bindings,
+            effect_visibility,
             state: PassState {
                 pipeline_blend: final_pipeline_blend,
                 scene_blend: contract.final_scene_blend,
@@ -231,6 +257,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 role: RenderTargetRole::SceneColor,
                 name: None,
             }],
+            effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState::default(),
         });
     }
@@ -298,6 +325,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                     }
                 }))
                 .collect(),
+            effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: if has_offscreen_chain {
                     base_pipeline_blend(contract)
@@ -326,7 +354,16 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         if node.target == RenderTargetRole::SceneColor {
             node.state.pipeline_blend = final_pipeline_blend;
         }
-        if node.bindings.is_empty() {
+        if node.effect_visibility.policy
+            == super::pass::RenderPassEffectVisibilityPolicy::Passthrough
+            && !node
+                .bindings
+                .iter()
+                .any(|binding| texture_binding_uses_slot(binding, 0))
+        {
+            node.bindings
+                .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
+        } else if node.bindings.is_empty() {
             node.bindings
                 .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
         }
@@ -382,6 +419,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_extent: None,
             target_format: None,
             bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+            effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: final_pipeline_blend,
                 scene_blend: contract.final_scene_blend,
@@ -472,13 +510,35 @@ pub fn we_effect_pass_node(
         .is_some_and(|shader| shader.contains("effectpassthrough"))
         || contract.effect_file.contains("effectpassthrough");
     let command_role = effect_command_role(contract.command.as_deref());
+    let role = command_role.unwrap_or(if color_blend_passthrough {
+        RenderPassRole::ColorBlendPassthrough
+    } else {
+        RenderPassRole::EffectMaterial
+    });
+    let effect_visibility = if contract.effect_binding_count > 1
+        && contract
+            .shader
+            .as_deref()
+            .is_some_and(|shader| shader.starts_with("we/effect-waterwaves-direct"))
+    {
+        RenderPassEffectVisibility::waterwaves_stages(
+            contract.effect_binding_start,
+            contract.effect_binding_count,
+        )
+    } else if matches!(
+        role,
+        RenderPassRole::EffectMaterial | RenderPassRole::ColorBlendPassthrough
+    ) {
+        RenderPassEffectVisibility::passthrough(
+            contract.effect_binding_start,
+            contract.effect_binding_count,
+        )
+    } else {
+        RenderPassEffectVisibility::NONE
+    };
     RenderPassNode {
         id,
-        role: command_role.unwrap_or(if color_blend_passthrough {
-            RenderPassRole::ColorBlendPassthrough
-        } else {
-            RenderPassRole::EffectMaterial
-        }),
+        role,
         object_index: Some(contract.object_index),
         material_index: contract.material_index,
         pass_index: contract.pass_index,
@@ -508,6 +568,7 @@ pub fn we_effect_pass_node(
                     .map(|name| TextureBindingRole::PassConstant { name }),
             )
             .collect(),
+        effect_visibility,
         state: PassState {
             pipeline_blend: contract
                 .material_blending
@@ -561,6 +622,22 @@ fn we_binding_role(slot: u32, binding: &str) -> TextureBindingRole {
         }
     } else {
         TextureBindingRole::TextureSlot { slot }
+    }
+}
+
+fn texture_binding_uses_slot(binding: &TextureBindingRole, expected: u32) -> bool {
+    match binding {
+        TextureBindingRole::SourceTexture => expected == 0,
+        TextureBindingRole::TextureSlot { slot }
+        | TextureBindingRole::AlphaTextureSlot { slot }
+        | TextureBindingRole::PreviousGraphTarget { slot }
+        | TextureBindingRole::GraphTarget { slot, .. }
+        | TextureBindingRole::NamedFboBind { slot, .. }
+        | TextureBindingRole::EffectTarget { slot, .. } => *slot == expected,
+        TextureBindingRole::VideoFrame { .. }
+        | TextureBindingRole::AudioUniform
+        | TextureBindingRole::SystemUniform
+        | TextureBindingRole::PassConstant { .. } => false,
     }
 }
 

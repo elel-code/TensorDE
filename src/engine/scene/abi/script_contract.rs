@@ -18,6 +18,7 @@ impl SceneScriptSubscriptions {
     pub const LOCAL_TIME: Self = Self(1 << 4);
     pub const MEDIA: Self = Self(1 << 5);
     pub const USER_PROPERTY: Self = Self(1 << 6);
+    pub const POINTER_CLICK: Self = Self(1 << 7);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -44,6 +45,7 @@ pub enum SceneScriptTarget {
     Visible,
     Text,
     TechCircleSectorWidth,
+    EffectVisible,
 }
 
 impl SceneScriptTarget {
@@ -57,6 +59,7 @@ impl SceneScriptTarget {
             Self::Visible => 6,
             Self::Text => 7,
             Self::TechCircleSectorWidth => 8,
+            Self::EffectVisible => 9,
         }
     }
 
@@ -70,6 +73,7 @@ impl SceneScriptTarget {
             6 => Some(Self::Visible),
             7 => Some(Self::Text),
             8 => Some(Self::TechCircleSectorWidth),
+            9 => Some(Self::EffectVisible),
             _ => None,
         }
     }

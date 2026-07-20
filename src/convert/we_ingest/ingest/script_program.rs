@@ -33,7 +33,7 @@ pub(super) fn object_script_programs(
             continue;
         };
         let analysis = analyze_scene_script(source)?;
-        if !has_runtime_entrypoint(&analysis) || analysis.uses_scene_api {
+        if !has_runtime_entrypoint(&analysis) {
             continue;
         }
         let properties_json = resolved_script_properties(binding, project_properties);
@@ -63,6 +63,7 @@ fn has_runtime_entrypoint(analysis: &SceneScriptAnalysis) -> bool {
         || analysis.exports_init
         || analysis.handles_media
         || analysis.handles_user_properties
+        || analysis.handles_pointer_click
 }
 
 pub(super) fn effect_script_programs(
@@ -160,6 +161,9 @@ fn subscriptions(
     }
     if analysis.uses_pointer {
         subscriptions = subscriptions.union(SceneScriptSubscriptions::POINTER);
+    }
+    if analysis.handles_pointer_click {
+        subscriptions = subscriptions.union(SceneScriptSubscriptions::POINTER_CLICK);
     }
     if analysis.uses_local_time {
         subscriptions = subscriptions.union(SceneScriptSubscriptions::LOCAL_TIME);
@@ -265,17 +269,19 @@ mod tests {
     }
 
     #[test]
-    fn scene_api_side_effect_module_stays_static_until_typed_scene_mutation_exists() {
+    fn typed_scene_effect_mutation_and_cursor_click_enter_runtime() {
         let object = json!({
             "visible": {
                 "value": true,
-                "script": "export function update(value) { thisScene.getLayer('body').visible = value; return value; }"
+                "script": "export function update(value) { thisScene.getLayer('body').getEffect('armor').visible = value; return value; } export function cursorClick(event) {}"
             }
         });
+        let programs = object_script_programs(0, &object, None, &Map::new()).expect("programs");
+        assert_eq!(programs.len(), 1);
         assert!(
-            object_script_programs(0, &object, None, &Map::new())
-                .expect("programs")
-                .is_empty()
+            programs[0]
+                .subscriptions
+                .contains(SceneScriptSubscriptions::POINTER_CLICK)
         );
     }
 

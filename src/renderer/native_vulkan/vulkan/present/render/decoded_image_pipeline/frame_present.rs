@@ -428,7 +428,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         } else if scene_overlay_blend_draw_enabled {
             "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping plus native scene overlay draw -> Vulkan 1.4 dynamic rendering pass -> Wayland swapchain"
         } else {
-            "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain"
+            "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.4 dynamic rendering fullscreen triangle -> Wayland swapchain"
         },
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,

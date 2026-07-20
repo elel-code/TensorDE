@@ -35,6 +35,11 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         apply_resolved_visual: true,
         effect_batch_atlas_tile: u32::MAX,
         effect_batch_atlas_grid: [0; 2],
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy:
+            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        resolved_effect_visibility_mask: 0,
         object: SceneObjectHandle(0),
         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
         vertex_start: 0,
@@ -49,8 +54,14 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         skinning_storage_enabled: true,
     };
 
-    let (descriptors, commands) =
-        scene_descriptor_plan_inputs(&[draw], &[], &layout, &[2], &[Vec::new()]);
+    let (descriptors, commands) = scene_descriptor_plan_inputs(
+        &[draw],
+        &[],
+        &layout,
+        &[2],
+        &[None],
+        &[Vec::new()],
+    );
 
     assert_eq!(
         descriptors,

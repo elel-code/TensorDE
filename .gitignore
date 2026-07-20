@@ -10,7 +10,6 @@
 .DS_Store
 /references/*
 artifacts/
-reverse-engineered/extracted/
+/reverse-engineered/
 **/__pycache__/
 *.py[cod]
-reverse-engineered/references/

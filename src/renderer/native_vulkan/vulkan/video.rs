@@ -28,7 +28,7 @@ use self::profile_info as video_profile_info;
 use self::profile_labels as video_profile_labels;
 use self::session as video_session;
 use self::surface_host as video_surface_host;
-use super::core::{features, instance, memory, queue_probe};
+use super::core::{features, instance, memory, queue_probe, roadmap_2026};
 #[cfg(feature = "native-vulkan-video")]
 use super::present::render as render_present;
 use super::present::swapchain;

@@ -8,8 +8,18 @@ pub(super) fn with_scene_present(
     vulkan: &NativeVulkanVulkanaliaInstance,
     mut options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
-    let mut event_sources =
-        SceneRuntimeEventSources::new(&options.storage, options.pointer_replay_normalized);
+    let backend_plan = native_vulkan_scene_backend_plan(&options.storage);
+    crate::renderer::native_vulkan::scene::validate_scene_runtime_plan(&backend_plan)
+        .map_err(|error| error.to_string())?;
+    let audio_spectrum_required = material_uniform::scene_uses_audio_spectrum(
+        &options.storage,
+        &backend_plan.rendering_device_graph.mesh_draws,
+    );
+    let mut event_sources = SceneRuntimeEventSources::new(
+        &options.storage,
+        options.pointer_replay_normalized,
+        audio_spectrum_required,
+    );
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia scene present): {err:?}"))?;
     let mut present_queue_family_count = 0usize;
@@ -20,11 +30,7 @@ pub(super) fn with_scene_present(
         &physical_devices,
         &mut present_queue_family_count,
     )?;
-    let present_device = create_vulkanalia_present_device(
-        instance,
-        &selection,
-        vulkanalia_surface_maintenance1_enabled(vulkan),
-    )?;
+    let present_device = create_vulkanalia_present_device(instance, &selection)?;
     if !present_device.feature_selection.synchronization2_enabled {
         unsafe {
             present_device.device.destroy_device(None);
@@ -66,7 +72,6 @@ pub(super) fn with_scene_present(
         selection.physical_device,
         surface,
         options.surface_extent.unwrap_or(automatic_surface_extent),
-        vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
@@ -182,6 +187,7 @@ pub(super) fn with_scene_present(
         &memory_properties,
         setup_command_buffer,
         &options.storage,
+        backend_plan,
         swapchain_plan.format.format,
         *swapchain_images
             .first()
@@ -245,12 +251,29 @@ pub(super) fn with_scene_present(
     release_scene_upload_staging(device, &mut scene_resources);
     let released_resource_payload_bytes = options.storage.release_parsed_resource_payload();
     let released_texture_payload_bytes = options.storage.release_uploaded_texture_payload();
+    let (released_mesh_vertex_payload_bytes, released_mesh_index_payload_bytes) =
+        options.storage.release_uploaded_mesh_payload();
     let semantic_world = RenderingServer::new(&options.storage)
         .semantic_world()
         .expect("scene semantic world was validated during Vulkan GPU setup");
-    let mut semantic_resolver =
-        crate::engine::scene::semantic_world::SemanticFrameResolver::from_world(&semantic_world)
-            .expect("scene semantic frame was validated during Vulkan GPU setup");
+    let mut semantic_resolver = match crate::engine::scene::semantic_world::SemanticFrameResolver::from_world_with_user_properties(
+        &semantic_world,
+        &options.user_property_overrides,
+    ) {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            destroy_scene_gpu_resources(device, scene_resources);
+            unsafe {
+                for view in swapchain_views {
+                    device.destroy_image_view(view, None);
+                }
+                device.destroy_command_pool(command_pool, None);
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(format!("create retained semantic frame resolver: {error}"));
+        }
+    };
     let frame_contexts = match create_scene_present_frame_contexts(device, present_command_buffers)
     {
         Ok(contexts) => contexts,
@@ -403,9 +426,6 @@ pub(super) fn with_scene_present(
     let mut composite_scissor_covered_pixels = 0u64;
     let mut composite_scissor_avoided_pixels = 0u64;
     let mut scene_color_attachment_clear_frame_count = 0u64;
-    let mut particle_indirect_readback_valid = false;
-    let mut particle_indirect_readback_instance_total = 0u64;
-    let mut particle_indirect_expected_total = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
     let fixed_scene_time_seconds = std::env::var("GILDER_NATIVE_VULKAN_SCENE_FIXED_TIME")
         .ok()
@@ -436,18 +456,6 @@ pub(super) fn with_scene_present(
         if let Some(capture) = frame_capture.as_mut() {
             capture.read_completed_frame(device)?;
         }
-        if frames_presented != 0
-            && let Some(resources) = scene_resources.particle_resources.as_ref()
-        {
-            (
-                particle_indirect_readback_valid,
-                particle_indirect_readback_instance_total,
-            ) = super::particle_resources::validate_scene_particle_indirect_readback(
-                device,
-                resources,
-                particle_indirect_expected_total,
-            )?;
-        }
         fence_wait_total_micros =
             fence_wait_total_micros.saturating_add(elapsed_micros_u64(fence_wait_started));
         if let Some(timing) = gpu_timing.as_mut() {
@@ -466,6 +474,7 @@ pub(super) fn with_scene_present(
         let frame_update = write_scene_frame_buffers(
             device,
             &options.storage,
+            &scene_resources.mesh_coverage,
             &semantic_world,
             &mut semantic_resolver,
             &mut scene_resources.frame_topology,
@@ -481,10 +490,6 @@ pub(super) fn with_scene_present(
             scene_time_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
-        particle_indirect_expected_total = super::frame_state::active_particle_instance_total(
-            &options.storage,
-            scene_time_seconds,
-        );
         if frames_presented == 0
             && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
         {
@@ -688,13 +693,44 @@ pub(super) fn with_scene_present(
         }
         return Err(err);
     }
+    let script_effect_visibility =
+        match scene_script_effect_visibility_snapshot(&options.storage, &semantic_resolver) {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                destroy_scene_present_runtime_resources(
+                    device,
+                    frame_contexts,
+                    render_finished,
+                    swapchain_views,
+                    frame_capture,
+                    gpu_timing,
+                    scene_resources,
+                    command_pool,
+                    swapchain,
+                );
+                unsafe {
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        };
     let elapsed = started_at.elapsed();
     let gpu_timing_snapshot = gpu_timing.as_ref().map(SceneGpuTiming::snapshot);
     let frame_capture_write_error = frame_capture
         .as_mut()
         .and_then(|capture| capture.write_png().err());
-    let vertex_buffer_bytes = scene_resources.vertex_buffer.snapshot.requested_bytes;
-    let index_buffer_bytes = scene_resources.index_buffer.snapshot.requested_bytes;
+    let vertex_buffer_bytes = scene_resources
+        .mesh_uploads
+        .vertex
+        .target
+        .snapshot
+        .requested_bytes;
+    let index_buffer_bytes = scene_resources
+        .mesh_uploads
+        .index
+        .target
+        .snapshot
+        .requested_bytes;
     let transform_uniform_bytes = scene_resources
         .frame_resources
         .iter()
@@ -791,33 +827,33 @@ pub(super) fn with_scene_present(
         .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard)
         .map(|draw| u64::from(draw.instance_capacity))
         .sum();
-    let particle_instance_submitted = scene_resources
-        .draw_commands
-        .iter()
-        .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard)
-        .map(|draw| u64::from(draw.instance_count))
-        .sum();
     let (
         particle_gpu_emitter_count,
         particle_gpu_total_capacity,
         particle_gpu_state_bytes,
         particle_gpu_indirect_bytes,
+        particle_gpu_frame_time_bytes,
         particle_gpu_device_local,
     ) = scene_resources
         .particle_resources
         .as_ref()
-        .map_or((0, 0, 0, 0, false), |resources| {
+        .map_or((0, 0, 0, 0, 0, false), |resources| {
             let state = &resources.state_upload.target.snapshot;
             let indirect = &resources.indirect_upload.target.snapshot;
+            let frame_time = &resources.frame_time.target.snapshot;
             (
                 resources.emitter_count,
                 resources.total_capacity,
                 state.requested_bytes,
                 indirect.requested_bytes,
+                frame_time.requested_bytes,
                 state
                     .selected_memory_property_flags
                     .contains(&"device-local")
                     && indirect
+                        .selected_memory_property_flags
+                        .contains(&"device-local")
+                    && frame_time
                         .selected_memory_property_flags
                         .contains(&"device-local"),
             )

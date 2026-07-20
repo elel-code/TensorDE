@@ -93,6 +93,62 @@ fn storage_releases_uploaded_texture_payload_but_keeps_texture_metadata() {
 }
 
 #[test]
+fn storage_releases_uploaded_mesh_payload_without_rewriting_mesh_metadata() {
+    let document = SceneBinaryDocument {
+        objects: vec![SceneObjectRecord {
+            id: SceneObjectHandle(0),
+            we_id: 1,
+            name: SceneStringId::NONE,
+            kind: SceneObjectKind::Image,
+            resource: SceneResourceId::NONE,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            parent_we_id: INVALID_OBJECT_ID,
+            attachment: SceneStringId::NONE,
+            origin: SceneVec3::default(),
+            angles: SceneVec3::default(),
+            scale: SceneVec3::ONE,
+            color: SceneVec3::ONE,
+            alpha: 1.0,
+            visible: true,
+            color_blend_mode: 0,
+            sort_order: 0,
+            effect_start: u32::MAX,
+            effect_count: 0,
+            render_graph: u32::MAX,
+        }],
+        meshes: vec![SceneMeshRecord {
+            object: SceneObjectHandle(0),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            vertex_start: 0,
+            vertex_count: 1,
+            index_start: 0,
+            index_count: 3,
+            width: 1.0,
+            height: 1.0,
+            bounds_min: SceneVec3::default(),
+            bounds_max: SceneVec3::ONE,
+        }],
+        mesh_vertices: vec![SceneMeshVertexRecord {
+            position: SceneVec3::default(),
+            uv: [0.0; 2],
+            blend_indices: [0; 4],
+            blend_weights: [0.0; 4],
+        }],
+        mesh_indices: vec![0, 0, 0],
+        ..SceneBinaryDocument::default()
+    };
+    let mut storage = SceneStorage::from_document(document).expect("storage");
+
+    assert_eq!(storage.mesh_vertex_payload_bytes(), 52);
+    assert_eq!(storage.mesh_index_payload_bytes(), 12);
+    assert_eq!(storage.release_uploaded_mesh_payload(), (52, 12));
+    assert_eq!(storage.mesh_vertex_payload_bytes(), 0);
+    assert_eq!(storage.mesh_index_payload_bytes(), 0);
+    assert_eq!(storage.meshes()[0].vertex_count, 1);
+    assert_eq!(storage.meshes()[0].index_count, 3);
+}
+
+#[test]
 fn storage_rejects_invalid_material_handles() {
     let mut document = SceneBinaryDocument {
         strings: vec!["scene".to_owned(), "scene.json".to_owned()],
@@ -212,6 +268,100 @@ fn storage_rejects_mesh_indices_outside_local_vertex_range() {
             mesh: 0,
             index: 4,
             vertex_count: 4
+        }
+    ));
+}
+
+#[test]
+fn storage_rejects_effect_visibility_ownership_crossing_objects() {
+    let object = |id: u32, effect_start: u32| SceneObjectRecord {
+        id: SceneObjectHandle(id),
+        we_id: id + 1,
+        name: SceneStringId::NONE,
+        kind: SceneObjectKind::Image,
+        resource: SceneResourceId::NONE,
+        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+        parent_we_id: INVALID_OBJECT_ID,
+        attachment: SceneStringId::NONE,
+        origin: SceneVec3::default(),
+        angles: SceneVec3::default(),
+        scale: SceneVec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        },
+        color: SceneVec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        },
+        alpha: 1.0,
+        visible: true,
+        color_blend_mode: 0,
+        sort_order: 0,
+        effect_start,
+        effect_count: 1,
+        render_graph: u32::MAX,
+    };
+    let document = SceneBinaryDocument {
+        objects: vec![object(0, 0), object(1, 1)],
+        effects: vec![SceneEffectRecord {
+            id: SceneEffectHandle(0),
+            resource: SceneResourceId::NONE,
+            replacement_key: SceneStringId::NONE,
+            pass_start: 0,
+            pass_count: 0,
+            fbo_start: 0,
+            fbo_count: 0,
+        }],
+        object_effects: vec![
+            SceneObjectEffectRecord {
+                object: SceneObjectHandle(0),
+                effect: SceneEffectHandle(0),
+                name: SceneStringId::NONE,
+                instance_id: 0,
+                visible: true,
+            },
+            SceneObjectEffectRecord {
+                object: SceneObjectHandle(1),
+                effect: SceneEffectHandle(0),
+                name: SceneStringId::NONE,
+                instance_id: 0,
+                visible: true,
+            },
+        ],
+        render_passes: vec![SceneRenderPassRecord {
+            id: 0,
+            role: SceneRenderPassKind::SceneComposite,
+            object: SceneObjectHandle(0),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            pass_index: 0,
+            shader_key: SceneStringId::NONE,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: 0,
+            effect_binding_count: 2,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::MaterialStages,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            scene_blend: SceneCompositeBlend::Alpha,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+
+    let err = SceneStorage::from_document(document).expect_err("cross-object effect ownership");
+
+    assert!(matches!(
+        err,
+        SceneStorageError::InvalidRange {
+            field: "render_pass.effect_visibility_contract",
+            start: 0,
+            count: 2,
+            len: 2,
         }
     ));
 }

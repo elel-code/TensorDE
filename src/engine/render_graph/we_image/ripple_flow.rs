@@ -3,7 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassNode, RenderPassRole, RenderTargetRole, TextureBindingRole,
+    PassState, RenderGraph, RenderPassEffectVisibility, RenderPassNode, RenderPassRole,
+    RenderTargetRole, TextureBindingRole,
 };
 
 const RIPPLE_SOURCE_SHADER: &str = "we/image-ripple-source";
@@ -45,6 +46,10 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
         target_extent: None,
         target_format: None,
         bindings: Vec::new(),
+        effect_visibility: RenderPassEffectVisibility::material_stages(
+            ripple.effect_binding_start,
+            ripple.effect_binding_count,
+        ),
         state: PassState {
             pipeline_blend: super::base_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -63,6 +68,10 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
         target_extent: None,
         target_format: None,
         bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+        effect_visibility: RenderPassEffectVisibility::material_stages(
+            contract.effect_passes[1].effect_binding_start,
+            contract.effect_passes[1].effect_binding_count,
+        ),
         state: PassState {
             pipeline_blend: super::final_pipeline_blend(contract),
             scene_blend: contract.final_scene_blend,
@@ -80,7 +89,8 @@ fn flow_composite_shader(scene_blend: SceneBlendMode) -> &'static str {
 }
 
 fn compatible_ripple(pass: &WeEffectPassContract) -> bool {
-    compatible_previous_only_pass(pass, "waterripple", &[0, 2])
+    pass.effect_binding_count == 1
+        && compatible_previous_only_pass(pass, "waterripple", &[0, 2])
         && pass.binds.contains_key(&2)
         && combo_disabled(pass, "MASK")
         && combo_disabled(pass, "PERSPECTIVE")
@@ -88,7 +98,8 @@ fn compatible_ripple(pass: &WeEffectPassContract) -> bool {
 }
 
 fn compatible_flow(pass: &WeEffectPassContract) -> bool {
-    compatible_previous_only_pass(pass, "waterflow", &[0, 1, 2])
+    pass.effect_binding_count == 1
+        && compatible_previous_only_pass(pass, "waterflow", &[0, 1, 2])
         && pass.binds.contains_key(&1)
         && pass.binds.contains_key(&2)
 }
@@ -163,6 +174,7 @@ mod tests {
     use super::super::WeRippleFlowMaterialIndices;
     use super::*;
     use crate::core::SceneBlendMode;
+    use crate::engine::render_graph::RenderPassEffectVisibilityPolicy;
 
     #[test]
     fn compatible_chain_removes_base_and_terminal_copy_passes() {
@@ -202,6 +214,18 @@ mod tests {
         );
         assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
         assert_eq!(graph.passes[1].material_index, Some(8));
+        assert_eq!(
+            graph.passes[0].effect_visibility.policy,
+            RenderPassEffectVisibilityPolicy::MaterialStages
+        );
+        assert_eq!(graph.passes[0].effect_visibility.binding_start, 5);
+        assert_eq!(graph.passes[0].effect_visibility.binding_count, 1);
+        assert_eq!(
+            graph.passes[1].effect_visibility.policy,
+            RenderPassEffectVisibilityPolicy::MaterialStages
+        );
+        assert_eq!(graph.passes[1].effect_visibility.binding_start, 6);
+        assert_eq!(graph.passes[1].effect_visibility.binding_count, 1);
     }
 
     #[test]
@@ -276,6 +300,8 @@ mod tests {
     ) -> WeEffectPassContract {
         WeEffectPassContract {
             object_index: 4,
+            effect_binding_start: material_index as u32,
+            effect_binding_count: 1,
             material_index: Some(material_index),
             effect_file: format!("{shader}/effect.json"),
             pass_index: 0,

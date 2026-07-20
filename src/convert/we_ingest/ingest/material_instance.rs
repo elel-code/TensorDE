@@ -116,7 +116,8 @@ pub(super) fn effect_shader_variant_key(
     combos: &BTreeMap<String, i64>,
     combo_defaults: &BTreeMap<String, i64>,
 ) -> String {
-    let base = shader.split("__").next().unwrap_or(shader);
+    let authored_base = shader.split("__").next().unwrap_or(shader);
+    let base = canonical_effect_shader_program(authored_base);
     let texture_slot_mask = bindings
         .keys()
         .copied()
@@ -139,6 +140,16 @@ pub(super) fn effect_shader_variant_key(
         key.push_str(&value.to_string());
     }
     key
+}
+
+fn canonical_effect_shader_program(shader: &str) -> String {
+    let mut components = shader.rsplit('/');
+    let basename = components.next().unwrap_or(shader);
+    let parent = components.next().unwrap_or_default();
+    if !parent.eq_ignore_ascii_case("effects") {
+        return shader.to_owned();
+    }
+    format!("effects/{}", basename.to_ascii_lowercase())
 }
 
 fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
@@ -211,6 +222,52 @@ mod tests {
         assert_eq!(
             effect_shader_variant_key("effects/rounded_mask", &bindings, &combos, &defaults),
             "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
+        );
+    }
+
+    #[test]
+    fn effect_program_contract_canonicalizes_authored_package_paths() {
+        let bindings = [(0, "previous".to_owned())].into_iter().collect();
+        let combos = [
+            ("AA_CATEGORY".to_owned(), 1),
+            ("BLENDMODE".to_owned(), 20),
+            ("STEPANIM".to_owned(), 1),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            effect_shader_variant_key(
+                "workshop/current/effects/procedural_noise",
+                &bindings,
+                &combos,
+                &BTreeMap::new(),
+            ),
+            "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1"
+        );
+        assert_eq!(
+            effect_shader_variant_key(
+                "workshop/current/effects/opacity",
+                &bindings,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            ),
+            "effects/opacity__SLOTS_1"
+        );
+    }
+
+    #[test]
+    fn unrelated_shader_basename_is_not_guessed_as_an_effect_contract() {
+        let bindings = [(0, "previous".to_owned())].into_iter().collect();
+
+        assert_eq!(
+            effect_shader_variant_key(
+                "workshop/current/custom/procedural_noise",
+                &bindings,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            ),
+            "workshop/current/custom/procedural_noise__SLOTS_1"
         );
     }
 

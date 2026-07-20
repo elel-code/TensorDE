@@ -17,13 +17,10 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/111" {
         return lightning_vertex_source();
     }
-    if shader == "effects/blend"
-        || shader.ends_with("/effects/blend")
-        || shader.ends_with("/effects/blendgradient")
-    {
+    if shader == "effects/blend" || shader == "effects/blendgradient" {
         return waterwaves_effect_vertex_source();
     }
-    if shader.ends_with("/effects/audio_responsive_oscilloscope") {
+    if shader == "effects/audio_responsive_oscilloscope" {
         return waterwaves_effect_vertex_source();
     }
     if shader == "effects/waterflow" {
@@ -35,13 +32,13 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/scroll" || shader == "effects/skew" {
         return waterwaves_effect_vertex_source();
     }
-    if shader == "workshop/2123274886/effects/tech_circle" {
+    if shader == "effects/tech_circle" {
         return waterwaves_effect_vertex_source();
     }
-    if shader == "workshop/3082978660/effects/Simple_Audio_Bars" {
+    if shader == "effects/simple_audio_bars" {
         return waterwaves_effect_vertex_source();
     }
-    if shader == "workshop/3083593512/effects/rounded_mask" {
+    if shader == "effects/rounded_mask" {
         return object_local_effect_vertex_source();
     }
     format!(
@@ -198,6 +195,18 @@ void main() {
 }
 
 pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
+    if shader == "effects/auto_sway" {
+        return super::auto_sway::auto_sway_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/blur_downsample4" {
+        return super::blur::blur_downsample4_fragment_source(texture_slot_mask);
+    }
+    if shader == "effects/blur_gaussian" {
+        return super::blur::blur_gaussian_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/blur_combine" {
+        return super::blur::blur_combine_fragment_source(key, texture_slot_mask);
+    }
     if shader == "effects/caustics" {
         if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
             return caustics_framebuffer_overlay_fragment_source(key, texture_slot_mask);
@@ -210,7 +219,7 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/colorkey" {
         return colorkey_effect_fragment_source(texture_slot_mask);
     }
-    if shader.ends_with("/effects/lut_loader") {
+    if shader == "effects/lut_loader" {
         return lut_fragment_source(key, texture_slot_mask);
     }
     if shader == "effects/111" {
@@ -219,19 +228,19 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/swing" {
         return swing_fragment_source(texture_slot_mask);
     }
-    if shader.ends_with("/effects/raindrop_on_glass") {
+    if shader == "effects/raindrop_on_glass" {
         return raindrop_fragment_source(texture_slot_mask);
     }
-    if shader.ends_with("/effects/audio_responsive_oscilloscope") {
+    if shader == "effects/audio_responsive_oscilloscope" {
         return oscilloscope_fragment_source(key, texture_slot_mask);
     }
-    if shader == "effects/blend" || shader.ends_with("/effects/blend") {
+    if shader == "effects/blend" {
         return blend_fragment_source(key, texture_slot_mask);
     }
-    if shader.ends_with("/effects/blendgradient") {
+    if shader == "effects/blendgradient" {
         return blend_gradient_fragment_source(key, texture_slot_mask);
     }
-    if shader == "effects/foliagesway" || shader == "workshop/2790231929/effects/foliagesway" {
+    if shader == "effects/foliagesway" {
         return foliage_sway_fragment_source(texture_slot_mask);
     }
     if shader == "effects/shimmer" {
@@ -243,11 +252,14 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/waterflow" {
         return waterflow_fragment_source();
     }
-    if shader == "effects/waterripple" || shader == "workshop/2790231929/effects/waterripple" {
+    if shader == "effects/waterripple" {
         return waterripple_fragment_source(texture_slot_mask);
     }
     if shader == "effects/opacity" {
         return opacity_effect_fragment_source(texture_slot_mask);
+    }
+    if shader == "effects/procedural_noise" {
+        return super::procedural_noise::procedural_noise_fragment_source(key, texture_slot_mask);
     }
     if shader == "effects/iris" {
         return iris_effect_fragment_source(texture_slot_mask);
@@ -261,41 +273,16 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/skew" {
         return skew_effect_fragment_source(key);
     }
-    if shader == "workshop/2123274886/effects/tech_circle" {
+    if shader == "effects/tech_circle" {
         return tech_circle_fragment_source(key);
     }
-    if shader == "workshop/3082978660/effects/Simple_Audio_Bars" {
+    if shader == "effects/simple_audio_bars" {
         return audio_bars_fragment_source(key);
     }
-    if shader == "workshop/3083593512/effects/rounded_mask" {
+    if shader == "effects/rounded_mask" {
         return rounded_mask_fragment_source(key);
     }
-    let mut samplers = String::new();
-    let mut first_slot = None;
-    for slot in 0..32 {
-        if texture_slot_mask & (1u32 << slot) != 0 {
-            if first_slot.is_none() {
-                first_slot = Some(slot);
-            }
-            let binding = scene_texture_shader_binding(slot);
-            samplers.push_str(&format!(
-                "layout(set = 0, binding = {binding}) uniform sampler2D g_Texture{slot};\n"
-            ));
-        }
-    }
-    let sample = first_slot
-        .map(|slot| format!("texture(g_Texture{slot}, v_TexCoord)"))
-        .unwrap_or_else(|| "vec4(0.0)".to_owned());
-    format!(
-        r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 0) out vec4 o_Color;
-{samplers}void main() {{
-    vec4 color = {sample};
-    o_Color = color;
-}}
-"#
-    )
+    panic!("scene shader {key:?} has no typed fragment contract")
 }
 
 fn caustics_framebuffer_overlay_fragment_source(key: &str, texture_slot_mask: u32) -> String {

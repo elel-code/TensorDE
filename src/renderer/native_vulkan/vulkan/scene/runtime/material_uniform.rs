@@ -8,8 +8,6 @@
 
 use std::mem::size_of;
 
-use serde_json::Value;
-
 mod audio_usage;
 mod color_effect;
 mod final_effect;
@@ -24,7 +22,7 @@ use audio_usage::material_uses_audio_spectrum;
 pub(super) use audio_usage::scene_uses_audio_spectrum;
 use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
-use value_writer::set_vector;
+use value_writer::{parse_constant_values, set_vector};
 
 #[cfg(test)]
 use final_effect::final_audio_bars_values;
@@ -122,10 +120,15 @@ fn material_uniform_values(
             particle::particle_values(storage, draw, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::AudioBars => audio_bars_values(&parameters, spectrum),
+        BuiltinSceneParameterLayout::AutoSway => {
+            auto_sway_values(&parameters, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::Blend => blend_values(&parameters, storage, shader_key),
         BuiltinSceneParameterLayout::BlendGradient => {
             blend_gradient_values(&parameters, storage, shader_key)
         }
+        BuiltinSceneParameterLayout::BlurCombine => blur_combine_values(&parameters),
+        BuiltinSceneParameterLayout::BlurGaussian => blur_gaussian_values(&parameters),
         BuiltinSceneParameterLayout::StandardMaterial => {
             if draw.apply_resolved_visual
                 && draw.primitive
@@ -164,11 +167,19 @@ fn material_uniform_values(
             oscilloscope::oscilloscope_values(&parameters, spectrum)
         }
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
+        BuiltinSceneParameterLayout::ProceduralNoise => {
+            procedural_noise_values(&parameters, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::Raindrop => {
             weather_effect::raindrop_values(&parameters, storage, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::RoundedMask => {
-            rounded_mask_values(&parameters, draw.resolved_color, draw.resolved_alpha)
+            rounded_mask_values(
+                &parameters,
+                draw.resolved_color,
+                draw.resolved_alpha,
+                draw_effect_enabled(draw, 0),
+            )
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
@@ -217,10 +228,10 @@ fn material_uniform_values(
             waterwaves_direct_values(&parameters, storage, draw, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::WaterWavesUvField => {
-            waterwaves_uv_field_values(&parameters, storage, scene_time_seconds)
+            waterwaves_uv_field_values(&parameters, storage, draw, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::WaterRipple => {
-            waterripple_values(&parameters, storage, shader_key, scene_time_seconds)
+            waterripple_values(&parameters, storage, draw, shader_key, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::WaterFlow => {
             waterflow_values(&parameters, storage, scene_time_seconds)
@@ -254,6 +265,89 @@ fn resolved_visual_material_values(
         resolved_color.z,
         resolved_alpha,
     ]);
+    values
+}
+
+fn auto_sway_values(
+    parameters: &MaterialParameters<'_>,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = scene_time_seconds;
+    values[1] = parameters.scalar(&["timeoffset"], 0.0);
+    values[2] = parameters.scalar(&["speed"], 0.75);
+    values[3] = parameters.scalar(&["inertia"], 0.3);
+    values[4] = parameters.scalar(&["sigment"], 1.0);
+    values[5] = parameters.scalar(&["weightCenterOffset"], 0.0);
+    values[6] = parameters.scalar(&["smoothDistance"], 1.0);
+    values[7] = parameters.scalar(&["directionalCompensation"], 0.0);
+    values[8] = parameters.scalar(&["strength"], 0.25);
+    values[9] = parameters.scalar(&["末端阻尼"], 0.25);
+    values[10] = parameters.scalar(&["xFeather"], 0.2);
+    values[11] = parameters.scalar(&["windDirectionOffset"], 0.0);
+    for (node, base) in [(1, 12), (2, 14), (3, 16), (4, 18)] {
+        let name = format!("center{node}");
+        values[base..base + 2].copy_from_slice(&[0.0, 0.5]);
+        set_vector(&mut values, base, &parameters.values(&[name.as_str()]), 2);
+    }
+    for node in 1..=4 {
+        let name = format!("size{node}");
+        values[19 + node] = parameters.scalar(&[name.as_str()], 0.1);
+    }
+    for node in 2..=5 {
+        let name = format!("angle{node}");
+        values[22 + node] = parameters.scalar(&[name.as_str()], -1.57075);
+    }
+    values
+}
+
+fn procedural_noise_values(
+    parameters: &MaterialParameters<'_>,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = scene_time_seconds;
+    values[1] = parameters.scalar(&["animationspeed"], 1.0);
+    values[2] = parameters.scalar(&["scrollirection"], 0.0);
+    values[3] = parameters.scalar(&["scrollspeed"], 0.0);
+    set_vector(&mut values, 4, &parameters.values(&["Offset"]), 2);
+    values[6..8].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 6, &parameters.values(&["Scale"]), 2);
+    values[8..10].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 8, &parameters.values(&["Magnitude"]), 2);
+    values[10] = parameters.scalar(&["Seed"], 0.0);
+    values[11] = parameters.scalar(&["FPS"], 0.0);
+    values[12] = parameters.scalar(&["Opacity"], 1.0);
+    values
+}
+
+fn blur_gaussian_values(
+    parameters: &MaterialParameters<'_>,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[..2].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 0, &parameters.values(&["scale"]), 2);
+    values
+}
+
+fn blur_combine_values(
+    parameters: &MaterialParameters<'_>,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = parameters.scalar(&["compositealpha"], 1.0);
+    set_vector(
+        &mut values,
+        1,
+        &parameters.values(&["compositeoffset"]),
+        2,
+    );
+    values[4..8].copy_from_slice(&[1.0; 4]);
+    set_vector(
+        &mut values,
+        4,
+        &parameters.values(&["compositecolor"]),
+        3,
+    );
     values
 }
 
@@ -313,6 +407,7 @@ fn rounded_mask_values(
     parameters: &MaterialParameters<'_>,
     resolved_color: crate::engine::scene::SceneVec3,
     resolved_alpha: f32,
+    effect_visible: bool,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
@@ -323,6 +418,7 @@ fn rounded_mask_values(
     values[6] = parameters.scalar(&["Softness"], 0.5);
     values[7] = parameters.scalar(&["ui_editor_properties_opacity"], 1.0);
     values[8] = parameters.scalar(&["Border width", "BorderWidth"], 0.025);
+    values[9] = bool_float(effect_visible);
     values[12..16].copy_from_slice(&[
         resolved_color.x,
         resolved_color.y,
@@ -695,7 +791,11 @@ fn foliage_ripple_composite_values(
     values[3] *= draw.resolved_alpha;
     values[4] = scene_time_seconds;
     values[5] = parameters.scalar(&["foliage.speeduv", "foliage.speed"], 5.0);
-    values[6] = parameters.scalar(&["foliage.strength"], 0.4);
+    values[6] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["foliage.strength"], 0.4)
+    } else {
+        0.0
+    };
     values[7] = parameters.scalar(&["foliage.phase"], 0.5);
     values[8] = parameters.scalar(&["foliage.power"], 1.0);
     values[9] = parameters.scalar(&["foliage.scale", "foliage.noisescale"], 0.05);
@@ -707,7 +807,11 @@ fn foliage_ripple_composite_values(
     values[18] = parameters.scalar(&["ripple.scale"], 1.0);
     values[19] = parameters.scalar(&["ripple.scrollspeed"], 0.0);
     values[20] = parameters.scalar(&["ripple.scrolldirection", "ripple.direction"], 0.0);
-    values[21] = parameters.scalar(&["ripple.ripplestrength", "ripple.strength"], 0.1);
+    values[21] = if draw_effect_enabled(draw, 1) {
+        parameters.scalar(&["ripple.ripplestrength", "ripple.strength"], 0.1)
+    } else {
+        0.0
+    };
     let ripple_ratio = parameters.scalar(&["ripple.ratio"], 1.0);
     values[22] = ripple_ratio;
     values[23] = ripple_ratio;
@@ -742,9 +846,10 @@ fn waterwaves_values(
 fn waterwaves_uv_field_values(
     parameters: &MaterialParameters<'_>,
     storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    waterwaves_displacement_values(parameters, storage, scene_time_seconds, 0, 4)
+    waterwaves_displacement_values(parameters, storage, draw, scene_time_seconds, 0, 4)
 }
 
 fn waterwaves_direct_values(
@@ -753,7 +858,8 @@ fn waterwaves_direct_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = waterwaves_displacement_values(parameters, storage, scene_time_seconds, 4, 8);
+    let mut values =
+        waterwaves_displacement_values(parameters, storage, draw, scene_time_seconds, 4, 8);
     let (resolved_color, resolved_alpha) = if draw.apply_resolved_visual {
         (draw.resolved_color, draw.resolved_alpha)
     } else {
@@ -774,6 +880,7 @@ fn waterwaves_direct_values(
 fn waterwaves_displacement_values(
     parameters: &MaterialParameters<'_>,
     storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
     chain_base: usize,
     stage_start: usize,
@@ -800,7 +907,11 @@ fn waterwaves_displacement_values(
         let base = stage_start + stage * STAGE_FLOATS;
         values[base] = scene_time_seconds * speed;
         values[base + 1] = scale;
-        values[base + 2] = strength * strength;
+        values[base + 2] = if draw_effect_enabled(draw, stage) {
+            strength * strength
+        } else {
+            0.0
+        };
         values[base + 3] = waterwaves_stage_scalar(parameters, stage, "mask", 0.0);
         values[base + 4..base + 6].copy_from_slice(&direction);
         values[base + 6] = (scene_time_seconds + offset2) * speed2;
@@ -817,6 +928,14 @@ fn waterwaves_displacement_values(
     values
 }
 
+fn draw_effect_enabled(draw: &SceneRenderingDeviceMeshDraw, local_index: usize) -> bool {
+    draw.effect_visibility_policy
+        == crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
+        || (local_index < draw.effect_binding_count as usize
+        && local_index < 32
+        && draw.resolved_effect_visibility_mask & (1 << local_index) != 0)
+}
+
 fn waterwaves_stage_scalar(
     parameters: &MaterialParameters<'_>,
     stage: usize,
@@ -830,6 +949,7 @@ fn waterwaves_stage_scalar(
 fn waterripple_values(
     parameters: &MaterialParameters<'_>,
     storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
     shader_key: &str,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
@@ -840,7 +960,11 @@ fn waterripple_values(
     values[2] = parameters.scalar(&["scale"], 1.0);
     values[3] = parameters.scalar(&["scrollspeed"], 0.0);
     values[4] = parameters.scalar(&["scrolldirection", "direction"], 0.0);
-    values[5] = parameters.scalar(&["ripplestrength", "strength"], 0.1);
+    values[5] = if draw_effect_enabled(draw, 0) {
+        parameters.scalar(&["ripplestrength", "strength"], 0.1)
+    } else {
+        0.0
+    };
     values[6] = ratio;
     values[7] = 1.0;
     values[8] = bool_float(shader_texture_slot_enabled(shader_key, 1));
@@ -854,49 +978,6 @@ fn bool_float(value: bool) -> f32 {
     if value { 1.0 } else { 0.0 }
 }
 
-fn parse_constant_values(value_json: &str) -> Vec<f32> {
-    let Ok(value) = serde_json::from_str::<Value>(value_json) else {
-        return Vec::new();
-    };
-    let mut values = Vec::new();
-    collect_constant_values(&value, &mut values);
-    values
-}
-
-fn collect_constant_values(value: &Value, out: &mut Vec<f32>) {
-    match value {
-        Value::Number(number) => {
-            if let Some(value) = number.as_f64().filter(|value| value.is_finite()) {
-                out.push(value as f32);
-            }
-        }
-        Value::Bool(value) => out.push(if *value { 1.0 } else { 0.0 }),
-        Value::String(value) => {
-            for value in value.split_ascii_whitespace() {
-                if let Ok(value) = value.parse::<f32>() {
-                    out.push(value);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                collect_constant_values(value, out);
-            }
-        }
-        Value::Object(object) => {
-            if let Some(value) = object.get("value") {
-                collect_constant_values(value, out);
-                return;
-            }
-            for key in ["x", "y", "z", "w", "r", "g", "b", "a"] {
-                if let Some(value) = object.get(key) {
-                    collect_constant_values(value, out);
-                }
-            }
-        }
-        Value::Null => {}
-    }
-}
 
 #[cfg(test)]
 #[path = "material_uniform/tests.rs"]

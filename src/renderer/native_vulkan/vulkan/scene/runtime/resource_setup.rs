@@ -4,6 +4,7 @@ pub(super) fn create_scene_gpu_resources(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     setup_command_buffer: vk::CommandBuffer,
     storage: &SceneStorage,
+    backend_plan: crate::renderer::native_vulkan::NativeVulkanSceneBackendPlan,
     target_format: vk::Format,
     initial_scene_color_image: vk::Image,
     extent: vk::Extent2D,
@@ -19,10 +20,11 @@ pub(super) fn create_scene_gpu_resources(
     if frame_slot_count == 0 {
         return Err("scene present requires at least one frame slot".to_owned());
     }
-    let backend_plan = native_vulkan_scene_backend_plan(storage);
     if backend_plan.rendering_device_graph.mesh_draws.is_empty() {
         return Err("scene present requires at least one render graph mesh draw".to_owned());
     }
+    let mesh_coverage =
+        composite_scissor::SceneMeshCoveragePlans::from_storage(storage);
     let descriptor_layout =
         scene_pipeline_descriptor_layout(storage, &backend_plan.rendering_device_graph)?;
     let sampled_binding_cycle = scene_sampled_image_binding_cycle(
@@ -61,6 +63,13 @@ pub(super) fn create_scene_gpu_resources(
         graph_execution_order.retain(|graph| *graph <= last);
     }
     let pipeline_indices = scene_pipeline_indices_for_draws(
+        storage,
+        &backend_plan.rendering_device_graph,
+        target_format,
+        &effect_target_plans,
+        scene_color_msaa_enabled,
+    )?;
+    let disabled_pipeline_indices = scene_disabled_pipeline_indices_for_draws(
         storage,
         &backend_plan.rendering_device_graph,
         target_format,
@@ -107,36 +116,25 @@ pub(super) fn create_scene_gpu_resources(
         .rendering_device_graph
         .mesh_draws
         .iter()
-        .any(|draw| draw_parameter_layout(storage, draw).uses_dynamic_material_input());
+        .any(|draw| {
+            draw_parameter_layout(storage, draw).uses_dynamic_material_input()
+                || matches!(
+                    draw.effect_visibility_policy,
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::WaterWavesStages
+                        | crate::engine::scene::SceneRenderEffectVisibilityPolicy::FlatRoundedMask
+                        | crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages
+                )
+        });
     let skinning_payload = descriptor_layout
         .skinning_storage_enabled
         .then(|| pack_scene_skinning_palette(&backend_plan.rendering_device_graph));
-    let frame_topology = SceneFrameTopology::from_graph(&backend_plan.rendering_device_graph);
-
-    let vertex_buffer = native_vulkan_vulkanalia_create_buffer(
+    let mesh_uploads = SceneMeshGpuUploads::create(
         device,
         memory_properties,
-        "scene-mesh-vertex-buffer",
-        vertex_payload.len() as u64,
-        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-        Some(&vertex_payload),
+        setup_command_buffer,
+        &vertex_payload,
+        &index_payload,
     )?;
-    let index_buffer = match native_vulkan_vulkanalia_create_buffer(
-        device,
-        memory_properties,
-        "scene-mesh-index-buffer",
-        index_payload.len() as u64,
-        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-        Some(&index_payload),
-    ) {
-        Ok(buffer) => buffer,
-        Err(err) => {
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
-            return Err(err);
-        }
-    };
     let transform_buffer = match native_vulkan_vulkanalia_create_buffer(
         device,
         memory_properties,
@@ -148,8 +146,7 @@ pub(super) fn create_scene_gpu_resources(
     ) {
         Ok(buffer) => buffer,
         Err(err) => {
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -166,8 +163,7 @@ pub(super) fn create_scene_gpu_resources(
             Ok(buffer) => Some(buffer),
             Err(err) => {
                 native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                mesh_uploads.destroy(device);
                 return Err(err);
             }
         },
@@ -189,8 +185,7 @@ pub(super) fn create_scene_gpu_resources(
                     native_vulkan_vulkanalia_destroy_buffer(device, buffer);
                 }
                 native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                mesh_uploads.destroy(device);
                 return Err(err);
             }
         },
@@ -210,8 +205,7 @@ pub(super) fn create_scene_gpu_resources(
                     native_vulkan_vulkanalia_destroy_buffer(device, buffer);
                 }
                 native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                mesh_uploads.destroy(device);
                 return Err(err);
             }
         }
@@ -222,6 +216,7 @@ pub(super) fn create_scene_gpu_resources(
         &backend_plan.rendering_device_graph.particle_gpu_emitters,
         &descriptor_layout,
         &pipeline_indices,
+        &disabled_pipeline_indices,
         &alpha_coverage_scissors,
     );
     let particle_global_descriptor_base = particle_resources::append_global_descriptor_plan(
@@ -256,8 +251,7 @@ pub(super) fn create_scene_gpu_resources(
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+        mesh_uploads.destroy(device);
         return Err(err);
     }
     let mut descriptor_heap =
@@ -278,8 +272,7 @@ pub(super) fn create_scene_gpu_resources(
                     native_vulkan_vulkanalia_destroy_buffer(device, buffer);
                 }
                 native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                mesh_uploads.destroy(device);
                 return Err(err);
             }
         };
@@ -305,8 +298,7 @@ pub(super) fn create_scene_gpu_resources(
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -340,8 +332,7 @@ pub(super) fn create_scene_gpu_resources(
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -375,8 +366,7 @@ pub(super) fn create_scene_gpu_resources(
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+        mesh_uploads.destroy(device);
         return Err(err);
     }
     let pipeline_resources = match create_scene_pipelines(
@@ -410,8 +400,7 @@ pub(super) fn create_scene_gpu_resources(
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -443,8 +432,7 @@ pub(super) fn create_scene_gpu_resources(
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -476,8 +464,7 @@ pub(super) fn create_scene_gpu_resources(
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            mesh_uploads.destroy(device);
             return Err(err);
         }
     };
@@ -515,8 +502,7 @@ pub(super) fn create_scene_gpu_resources(
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-        native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+        mesh_uploads.destroy(device);
         return Err(err);
     }
 
@@ -561,16 +547,18 @@ pub(super) fn create_scene_gpu_resources(
                 if let Some(upload) = white_upload {
                     destroy_recorded_image_upload(device, upload);
                 }
-                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
-                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                mesh_uploads.destroy(device);
                 return Err(err);
             }
         }
     }
 
+    let pass_nodes = backend_plan.rendering_device_graph.pass_nodes.clone();
+    let frame_topology =
+        SceneFrameTopology::from_owned_graph(backend_plan.rendering_device_graph);
     Ok(SceneGpuResources {
-        vertex_buffer,
-        index_buffer,
+        mesh_uploads,
+        mesh_coverage,
         frame_resources,
         active_frame_slot: 0,
         white_upload,
@@ -579,7 +567,7 @@ pub(super) fn create_scene_gpu_resources(
         effect_target_command_plan,
         effect_target_commands,
         effect_target_allocations,
-        pass_nodes: backend_plan.rendering_device_graph.pass_nodes.clone(),
+        pass_nodes,
         scene_color_draw_ranges: scene_color_ranges,
         scene_color_attachment_clear: None,
         scene_color_attachment_clear_enabled: std::env::var_os(

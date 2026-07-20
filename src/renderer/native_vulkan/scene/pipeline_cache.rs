@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn pipeline_cache_keys_builtin_shader_contracts_and_pass_state() {
         let document = SceneBinaryDocument {
-            strings: vec!["genericimage4".to_owned(), "pipeline".to_owned()],
+            strings: vec!["we/genericimage4".to_owned(), "pipeline".to_owned()],
             shader_contracts: vec![SceneShaderContractRecord {
                 shader_key: SceneStringId(0),
                 pipeline_key: SceneStringId(1),

@@ -95,8 +95,7 @@ pub(super) fn destroy_scene_gpu_resources(device: &Device, resources: SceneGpuRe
     if let Some(upload) = resources.white_upload {
         destroy_recorded_image_upload(device, upload);
     }
-    native_vulkan_vulkanalia_destroy_buffer(device, resources.index_buffer);
-    native_vulkan_vulkanalia_destroy_buffer(device, resources.vertex_buffer);
+    resources.mesh_uploads.destroy(device);
 }
 
 pub(super) fn destroy_scene_gpu_frame_resources(
@@ -129,6 +128,7 @@ pub(super) fn destroy_recorded_image_upload(
 }
 
 pub(super) fn release_scene_upload_staging(device: &Device, resources: &mut SceneGpuResources) {
+    resources.mesh_uploads.release_staging(device);
     if let Some(particle_resources) = resources.particle_resources.as_mut() {
         super::particle_resources::release_scene_particle_staging(device, particle_resources);
     }

@@ -59,6 +59,10 @@ impl NativeVulkanDeviceSelectionPolicy {
             preference,
         })
     }
+
+    pub(super) fn has_explicit_selector(&self) -> bool {
+        self.selector.is_some()
+    }
 }
 
 pub(super) fn ordered_candidate_positions(
@@ -143,7 +147,7 @@ fn parse_selector(value: &str) -> Result<NativeVulkanDeviceSelector, String> {
 
 fn parse_preference(value: &str) -> Result<NativeVulkanDevicePreference, String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "discrete" | "auto" => Ok(NativeVulkanDevicePreference::Discrete),
+        "discrete" => Ok(NativeVulkanDevicePreference::Discrete),
         "integrated" => Ok(NativeVulkanDevicePreference::Integrated),
         "enumeration" => Ok(NativeVulkanDevicePreference::Enumeration),
         _ => Err(format!(

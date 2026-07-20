@@ -599,6 +599,10 @@ void main() {}
                 target_name: SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                 pipeline_blend: crate::engine::scene::ScenePipelineBlend::Normal,
                 scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
                 depth_test: crate::engine::scene::SceneDepthTest::Disabled,

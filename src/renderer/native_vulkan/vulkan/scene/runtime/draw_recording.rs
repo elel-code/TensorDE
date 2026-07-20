@@ -37,8 +37,11 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuScissor {
 
 #[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
+    pub enabled: bool,
     pub primitive: SceneRenderingDeviceDrawPrimitive,
     pub pipeline_index: u32,
+    pub authored_pipeline_index: u32,
+    pub disabled_pipeline_index: Option<u32>,
     pub first_index: u32,
     pub index_count: u32,
     pub vertex_offset: i32,
@@ -117,12 +120,12 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
         return Ok(());
     }
     unsafe {
-        let vertex_buffers = [scene.vertex_buffer.buffer];
+        let vertex_buffers = [scene.mesh_uploads.vertex.target.buffer];
         let vertex_offsets = [0u64];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
         device.cmd_bind_index_buffer(
             command_buffer,
-            scene.index_buffer.buffer,
+            scene.mesh_uploads.index.target.buffer,
             0,
             vk::IndexType::UINT32,
         );
@@ -144,6 +147,9 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
     let count = range.count as usize;
     let end = start.saturating_add(count);
     for draw in scene.draw_commands.get(start..end).unwrap_or(&[]) {
+        if !draw.enabled {
+            continue;
+        }
         let frame = scene.active_frame();
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(

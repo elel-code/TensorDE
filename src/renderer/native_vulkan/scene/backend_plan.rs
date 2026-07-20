@@ -41,7 +41,7 @@ pub struct NativeVulkanSceneBackendPlan {
     pub mesh_upload: NativeVulkanSceneMeshUploadPlan,
     pub particle_systems: Vec<SceneParticleSystemRecord>,
     pub present_mode: &'static str,
-    pub legacy_binding_forbidden: bool,
+    pub descriptor_heap_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -126,7 +126,7 @@ pub fn native_vulkan_scene_backend_plan_at(
         },
         particle_systems: storage.particles().to_vec(),
         present_mode: "fifo-latest-ready",
-        legacy_binding_forbidden: true,
+        descriptor_heap_only: true,
     }
 }
 
@@ -283,7 +283,7 @@ mod tests {
         let storage = SceneStorage::from_document(document).expect("storage");
         let plan = native_vulkan_scene_backend_plan(&storage);
 
-        assert!(plan.legacy_binding_forbidden);
+        assert!(plan.descriptor_heap_only);
         assert_eq!(plan.present_mode, "fifo-latest-ready");
         assert_eq!(plan.descriptor_heap.resource_descriptor_count, 3);
         assert_eq!(plan.descriptor_heap.sampled_image_descriptor_count, 2);
@@ -377,8 +377,8 @@ mod tests {
                 "scene".to_owned(),
                 "scene.json".to_owned(),
                 "materials/layer.json".to_owned(),
-                "genericimage4".to_owned(),
-                "genericimage4|blend=normal".to_owned(),
+                "we/genericimage4".to_owned(),
+                "we/genericimage4|blend=normal".to_owned(),
                 "loose-file".to_owned(),
             ],
             project: SceneProjectRecord {
@@ -500,6 +500,10 @@ mod tests {
                 target_name: SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                 pipeline_blend: ScenePipelineBlend::Normal,
                 scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,

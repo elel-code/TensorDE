@@ -160,6 +160,32 @@ fn parse_scene_pointer_position(value: Option<String>) -> Result<[f64; 2], &'sta
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn insert_scene_property_override(
+    overrides: &mut serde_json::Map<String, serde_json::Value>,
+    argument: Option<String>,
+) -> Result<(), String> {
+    let argument = argument.ok_or_else(|| {
+        "--scene-property requires an exact NAME=JSON argument".to_owned()
+    })?;
+    let (name, raw_value) = argument.split_once('=').ok_or_else(|| {
+        "--scene-property requires an exact NAME=JSON argument".to_owned()
+    })?;
+    if name.is_empty() {
+        return Err("--scene-property NAME cannot be empty".to_owned());
+    }
+    if overrides.contains_key(name) {
+        return Err(format!(
+            "duplicate --scene-property for exact property name {name:?}"
+        ));
+    }
+    let value = serde_json::from_str(raw_value).map_err(|error| {
+        format!("--scene-property {name:?} has invalid JSON value: {error}")
+    })?;
+    overrides.insert(name.to_owned(), value);
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn parse_scene_surface_extent(
     width: Option<u32>,
     height: Option<u32>,
@@ -192,23 +218,6 @@ fn apply_vulkan_device_cli_environment(
         }
     }
     Ok(())
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-fn parse_decoder_policy(
-    value: &str,
-) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
-    match value {
-        "auto" => Ok(gilder::config::VideoDecoderPolicy::Auto),
-        "hardware-preferred" | "hw-preferred" => {
-            Ok(gilder::config::VideoDecoderPolicy::HardwarePreferred)
-        }
-        "hardware-required" | "hw-required" => {
-            Ok(gilder::config::VideoDecoderPolicy::HardwareRequired)
-        }
-        "software" => Ok(gilder::config::VideoDecoderPolicy::Software),
-        other => Err(format!("unsupported decoder policy: {other}").into()),
-    }
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
@@ -256,6 +265,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --capture-frame-time-step SECONDS advances scene time deterministically for every submitted capture run frame.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
 --scene-pointer-position X,Y replays a normalized wallpaper-surface pointer position for deterministic scene diagnostics.\n\
+--scene-property NAME=JSON overrides one exact, case-sensitive authored scene user property; repeat for distinct names.\n\
 --surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
@@ -263,13 +273,11 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-frame-region X,Y,WIDTH,HEIGHT] [--capture-frame-reference PATH] [--capture-frame-time-step SECONDS] [--capture-scene-graph N]\n\
-         [--scene-pointer-position X,Y] [--surface-width PX --surface-height PX] [--gpu-timing]\n\
+         [--scene-pointer-position X,Y] [--scene-property NAME=JSON] [--surface-width PX --surface-height PX] [--gpu-timing]\n\
          [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
-         [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
-         [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
-         [--decoder auto|hardware-preferred|hardware-required|software]\n\
-         [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--playback-frames N]\n\
-         [--start-offset-ms MS]"
+         [--source PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
+         [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
+         [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--playback-frames N]"
     );
 }
 
@@ -375,6 +383,24 @@ mod tests {
         assert!(parse_scene_pointer_position(Some("0.5,1.1".to_owned())).is_err());
         assert!(parse_scene_pointer_position(Some("NaN,0.5".to_owned())).is_err());
         assert!(parse_scene_pointer_position(Some("inf,0.5".to_owned())).is_err());
+    }
+
+    #[test]
+    fn scene_property_requires_exact_name_json_and_rejects_duplicate_keys() {
+        let mut overrides = serde_json::Map::new();
+        insert_scene_property_override(&mut overrides, Some("jia=false".to_owned())).unwrap();
+        assert_eq!(overrides["jia"], serde_json::Value::Bool(false));
+        assert!(
+            insert_scene_property_override(&mut overrides, Some("jia=true".to_owned())).is_err()
+        );
+        assert!(insert_scene_property_override(&mut overrides, Some("jia".to_owned())).is_err());
+        assert!(
+            insert_scene_property_override(&mut serde_json::Map::new(), Some("=false".to_owned()))
+                .is_err()
+        );
+        let mut exact = serde_json::Map::new();
+        insert_scene_property_override(&mut exact, Some(" Jia =false".to_owned())).unwrap();
+        assert!(exact.contains_key(" Jia "));
     }
 
     #[test]

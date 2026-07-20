@@ -12,7 +12,6 @@ use super::WeIrBuilder;
 
 pub(super) const WATERWAVES_UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
 const DISABLE_WATERWAVES_AGGREGATION_ENV: &str = "GILDER_CONVERT_DISABLE_WATERWAVES_AGGREGATION";
-const LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV: &str = "GILDER_CONVERT_DISABLE_WATERWAVES_UV_FIELD";
 const WATERWAVES_UV_FIELD_ENV: &str = "GILDER_CONVERT_WATERWAVES_UV_FIELD";
 const IMAGE_DIRECT_SHADER: &str = "we/image-waterwaves-direct";
 const IMAGE_MULTIPLY_DIRECT_SHADER: &str = "we/image-waterwaves-multiply-direct";
@@ -43,12 +42,13 @@ pub(super) fn create_waterwaves_displacement_materials(
     puppet_group_visual_required: bool,
     effects: &[WeEffectPassContract],
 ) -> WaterWavesDisplacementMaterials {
-    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
-        || std::env::var_os(LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV).is_some()
-    {
+    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some() {
         return WaterWavesDisplacementMaterials::default();
     }
-    if !authored_texture_space || !we_effect_passes_form_waterwaves_displacement_chain(effects) {
+    if !authored_texture_space
+        || !we_effect_passes_form_waterwaves_displacement_chain(effects)
+        || contiguous_effect_binding_count(effects).is_none()
+    {
         return WaterWavesDisplacementMaterials::default();
     }
     let direct_shader = std::env::var_os(WATERWAVES_UV_FIELD_ENV)
@@ -92,9 +92,7 @@ pub(super) fn aggregate_waterwaves_effect_runs(
     builder: &mut WeIrBuilder,
     effects: &[WeEffectPassContract],
 ) -> Vec<WeEffectPassContract> {
-    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
-        || std::env::var_os(LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV).is_some()
-    {
+    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some() {
         return effects.to_vec();
     }
     let mut aggregated = Vec::with_capacity(effects.len());
@@ -107,6 +105,11 @@ pub(super) fn aggregate_waterwaves_effect_runs(
             continue;
         };
         let run = &effects[cursor..cursor + run_count];
+        let Some(effect_binding_count) = contiguous_effect_binding_count(run) else {
+            aggregated.push(effects[cursor].clone());
+            cursor += 1;
+            continue;
+        };
         let Some(source_material_index) = run[0].material_index else {
             aggregated.push(effects[cursor].clone());
             cursor += 1;
@@ -126,6 +129,7 @@ pub(super) fn aggregate_waterwaves_effect_runs(
             continue;
         };
         let mut effect = run[0].clone();
+        effect.effect_binding_count = effect_binding_count;
         effect.material_index = Some(material_index);
         effect.effect_file = "gilder/typed/waterwaves-effect-run".to_owned();
         effect.shader = Some(shader);
@@ -150,8 +154,22 @@ pub(super) fn aggregate_waterwaves_effect_runs(
 fn compatible_run_count(effects: &[WeEffectPassContract], cursor: usize) -> Option<usize> {
     let max_count = effects.len().saturating_sub(cursor).min(9);
     (2..=max_count).rev().find(|count| {
-        we_effect_passes_form_waterwaves_displacement_chain(&effects[cursor..cursor + count])
+        let run = &effects[cursor..cursor + count];
+        we_effect_passes_form_waterwaves_displacement_chain(run)
+            && contiguous_effect_binding_count(run).is_some()
     })
+}
+
+fn contiguous_effect_binding_count(effects: &[WeEffectPassContract]) -> Option<u32> {
+    let first = effects.first()?;
+    let mut next = first.effect_binding_start;
+    for effect in effects {
+        if effect.effect_binding_start != next || effect.effect_binding_count == 0 {
+            return None;
+        }
+        next = next.checked_add(effect.effect_binding_count)?;
+    }
+    Some(next - first.effect_binding_start)
 }
 
 fn create_aggregated_material(
@@ -353,14 +371,14 @@ mod tests {
 
     #[test]
     fn compatible_run_count_finds_waterwaves_inside_a_mixed_effect_chain() {
-        let mut foliage = effect_pass("effects/foliagesway");
+        let mut foliage = effect_pass(0, "effects/foliagesway");
         foliage.binds.insert(0, "previous".to_owned());
         let effects = vec![
             foliage,
-            effect_pass("effects/waterwaves__SLOTS_1"),
-            effect_pass("effects/waterwaves__SLOTS_3"),
-            effect_pass("effects/waterwaves__SLOTS_1"),
-            effect_pass("effects/blend__SLOTS_3__BLENDMODE_0"),
+            effect_pass(1, "effects/waterwaves__SLOTS_1"),
+            effect_pass(2, "effects/waterwaves__SLOTS_3"),
+            effect_pass(3, "effects/waterwaves__SLOTS_1"),
+            effect_pass(4, "effects/blend__SLOTS_3__BLENDMODE_0"),
         ];
 
         assert_eq!(compatible_run_count(&effects, 0), None);
@@ -372,14 +390,16 @@ mod tests {
     #[test]
     fn compatible_run_count_keeps_nine_stage_chain_in_one_program() {
         let effects = (0..9)
-            .map(|_| effect_pass("effects/waterwaves__SLOTS_1"))
+            .map(|binding| effect_pass(binding, "effects/waterwaves__SLOTS_1"))
             .collect::<Vec<_>>();
         assert_eq!(compatible_run_count(&effects, 0), Some(9));
     }
 
-    fn effect_pass(shader: &str) -> WeEffectPassContract {
+    fn effect_pass(effect_binding_start: u32, shader: &str) -> WeEffectPassContract {
         WeEffectPassContract {
             object_index: 0,
+            effect_binding_start,
+            effect_binding_count: 1,
             material_index: Some(0),
             effect_file: "effects/waterwaves/effect.json".to_owned(),
             pass_index: 0,

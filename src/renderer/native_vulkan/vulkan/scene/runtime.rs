@@ -12,16 +12,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use vulkanalia::Version;
+use serde_json::{Map, Value};
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
+use crate::renderer::native_vulkan::vulkan::core::roadmap_2026::ROADMAP_2026_API_VERSION;
+
 use crate::engine::scene::{
     RenderingServer, SceneParticleGpuEmitterPlan, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceMeshDraw, SceneStorage,
+    SceneRenderingDeviceMeshDraw, SceneScriptTarget, SceneStorage,
 };
+use crate::engine::scene::semantic_world::SemanticFrameResolver;
 use crate::renderer::native_vulkan::{
     NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanClearColor,
     NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
@@ -29,9 +32,11 @@ use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot, NativeVulkanVulkanaliaImage,
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
-    NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaRecordedImageUpload,
-    NativeVulkanVulkanaliaSwapchainSnapshot, VulkanaliaDescriptorHeapResourceResources,
+    NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaRecordedBufferUpload,
+    NativeVulkanVulkanaliaRecordedImageUpload, NativeVulkanVulkanaliaSwapchainSnapshot,
+    VulkanaliaDescriptorHeapResourceResources,
     native_vulkan_scene_backend_plan, native_vulkan_vulkanalia_create_buffer,
+    native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_create_descriptor_heap_resource_resources,
     native_vulkan_vulkanalia_descriptor_heap_resource_plan,
     native_vulkan_vulkanalia_destroy_buffer,
@@ -50,11 +55,9 @@ use super::super::core::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::super::present::swapchain::{
-    OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label,
-    create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
-    create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
-    select_vulkanalia_present_queue, swapchain_create_flag_labels,
-    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
+    REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_present_device,
+    create_vulkanalia_swapchain_plan, create_vulkanalia_wayland_surface, present_mode_label,
+    queue_flag_labels, select_vulkanalia_present_queue, swapchain_create_flag_labels,
 };
 
 mod alpha_coverage_scissor;
@@ -122,7 +125,8 @@ use material_uniform::{
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
-    scene_pipeline_descriptor_layout, scene_pipeline_indices_for_draws,
+    scene_disabled_pipeline_indices_for_draws, scene_pipeline_descriptor_layout,
+    scene_pipeline_indices_for_draws,
 };
 use resource_cleanup::destroy_scene_present_runtime_resources;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
@@ -142,6 +146,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub target_max_fps: Option<u32>,
     pub clear_color: NativeVulkanClearColor,
     pub storage: SceneStorage,
+    pub user_property_overrides: Map<String, Value>,
     pub capture_frame: Option<PathBuf>,
     pub capture_frame_number: u64,
     pub capture_frame_count: u64,
@@ -154,6 +159,20 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
     pub pointer_replay_normalized: Option<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneScriptEffectVisibilitySnapshot {
+    pub object_handle: u32,
+    pub object_id: u32,
+    pub object_name: String,
+    pub binding_index: u32,
+    pub effect_index: u32,
+    pub effect_handle: u32,
+    pub effect_name: String,
+    pub authored_visible: bool,
+    pub final_self_visible: bool,
+    pub final_resolved_visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -215,6 +234,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub scene_texture_memory_bytes: u64,
     pub released_resource_payload_bytes: usize,
     pub released_texture_payload_bytes: usize,
+    pub released_mesh_vertex_payload_bytes: usize,
+    pub released_mesh_index_payload_bytes: usize,
     pub sampled_fallback_texture_count: usize,
     pub sampled_fallback_descriptor_count: usize,
     pub sampled_scene_texture_descriptor_count: usize,
@@ -228,6 +249,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub semantic_incremental_resolve_enabled: bool,
     pub semantic_retained_puppet_resolve_enabled: bool,
     pub semantic_dynamic_entity_count: usize,
+    pub scene_script_memory: Option<crate::engine::scene::SceneScriptMemorySnapshot>,
+    pub script_effect_visibility: Vec<NativeVulkanSceneScriptEffectVisibilitySnapshot>,
     pub semantic_resolve_total_micros: u64,
     pub graph_update_total_micros: u64,
     pub transform_update_total_micros: u64,
@@ -250,16 +273,14 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub scene_pipeline_count: usize,
     pub mesh_draw_count: usize,
     pub particle_instance_capacity: u64,
-    pub particle_instance_submitted: u64,
     pub particle_gpu_emitter_count: u32,
     pub particle_gpu_total_capacity: u64,
     pub particle_gpu_state_bytes: u64,
     pub particle_gpu_indirect_bytes: u64,
+    pub particle_gpu_frame_time_bytes: u64,
     pub particle_gpu_device_local: bool,
     pub particle_compute_pipeline_created: bool,
     pub particle_compute_dispatch_enabled: bool,
-    pub particle_indirect_readback_valid: bool,
-    pub particle_indirect_readback_instance_total: u64,
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
@@ -268,9 +289,94 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
         Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
+fn scene_script_effect_visibility_snapshot(
+    storage: &SceneStorage,
+    resolver: &SemanticFrameResolver,
+) -> Result<Vec<NativeVulkanSceneScriptEffectVisibilitySnapshot>, String> {
+    let mut snapshots = Vec::new();
+    for delta in resolver
+        .retained_script_deltas()
+        .iter()
+        .filter(|delta| delta.target == SceneScriptTarget::EffectVisible)
+    {
+        let binding = storage
+            .object_effects()
+            .get(delta.selector as usize)
+            .ok_or_else(|| {
+                format!(
+                    "script effect visibility binding {} is outside scene storage",
+                    delta.selector
+                )
+            })?;
+        if binding.object != delta.object {
+            return Err(format!(
+                "script effect visibility binding {} belongs to object {}, not {}",
+                delta.selector, binding.object.0, delta.object.0
+            ));
+        }
+        let object = storage
+            .objects()
+            .get(delta.object.0 as usize)
+            .filter(|object| object.id == delta.object)
+            .ok_or_else(|| {
+                format!(
+                    "script effect visibility references missing object {}",
+                    delta.object.0
+                )
+            })?;
+        let effect_index = delta
+            .selector
+            .checked_sub(object.effect_start)
+            .filter(|index| *index < object.effect_count)
+            .ok_or_else(|| {
+                format!(
+                    "script effect visibility binding {} is outside object {} effect range",
+                    delta.selector, delta.object.0
+                )
+            })?;
+        let resolved = resolver
+            .resolved_frame()
+            .object_effect(delta.selector)
+            .ok_or_else(|| {
+                format!(
+                    "resolved semantic frame has no effect binding {}",
+                    delta.selector
+                )
+            })?;
+        snapshots.push(NativeVulkanSceneScriptEffectVisibilitySnapshot {
+            object_handle: object.id.0,
+            object_id: object.we_id,
+            object_name: if object.name.is_some() {
+                storage
+                    .string(object.name)
+                    .expect("scene storage validates object name strings")
+            } else {
+                ""
+            }
+            .to_owned(),
+            binding_index: delta.selector,
+            effect_index,
+            effect_handle: binding.effect.0,
+            effect_name: if binding.name.is_some() {
+                storage
+                    .string(binding.name)
+                    .expect("scene storage validates effect name strings")
+            } else {
+                ""
+            }
+            .to_owned(),
+            authored_visible: binding.visible,
+            final_self_visible: resolved.self_visible,
+            final_resolved_visible: resolved.resolved_visible,
+        });
+    }
+    snapshots.sort_unstable_by_key(|snapshot| snapshot.binding_index);
+    Ok(snapshots)
+}
+
 struct SceneGpuResources {
-    vertex_buffer: NativeVulkanVulkanaliaBuffer,
-    index_buffer: NativeVulkanVulkanaliaBuffer,
+    mesh_uploads: SceneMeshGpuUploads,
+    mesh_coverage: composite_scissor::SceneMeshCoveragePlans,
     frame_resources: Vec<SceneGpuFrameResources>,
     active_frame_slot: usize,
     white_upload: Option<NativeVulkanVulkanaliaRecordedImageUpload>,
@@ -302,6 +408,74 @@ struct SceneGpuResources {
     particle_scene_time_seconds: f32,
 }
 
+struct SceneMeshGpuUploads {
+    vertex: NativeVulkanVulkanaliaRecordedBufferUpload,
+    index: NativeVulkanVulkanaliaRecordedBufferUpload,
+}
+
+impl SceneMeshGpuUploads {
+    fn create(
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        command_buffer: vk::CommandBuffer,
+        vertex_payload: &[u8],
+        index_payload: &[u8],
+    ) -> Result<Self, String> {
+        let vertex =
+            native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(
+                device,
+                memory_properties,
+                command_buffer,
+                "scene-mesh-vertex-buffer",
+                vertex_payload.len() as u64,
+                vk::BufferUsageFlags::VERTEX_BUFFER
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vertex_payload,
+            )?;
+        let index =
+            match native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(
+                device,
+                memory_properties,
+                command_buffer,
+                "scene-mesh-index-buffer",
+                index_payload.len() as u64,
+                vk::BufferUsageFlags::INDEX_BUFFER
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                index_payload,
+            ) {
+                Ok(upload) => upload,
+                Err(error) => {
+                    destroy_recorded_buffer_upload(device, vertex);
+                    return Err(error);
+                }
+            };
+        Ok(Self { vertex, index })
+    }
+
+    fn release_staging(&mut self, device: &Device) {
+        for upload in [&mut self.vertex, &mut self.index] {
+            if let Some(staging) = upload.staging.take() {
+                native_vulkan_vulkanalia_destroy_buffer(device, staging);
+            }
+        }
+    }
+
+    fn destroy(self, device: &Device) {
+        destroy_recorded_buffer_upload(device, self.index);
+        destroy_recorded_buffer_upload(device, self.vertex);
+    }
+}
+
+fn destroy_recorded_buffer_upload(
+    device: &Device,
+    upload: NativeVulkanVulkanaliaRecordedBufferUpload,
+) {
+    if let Some(staging) = upload.staging {
+        native_vulkan_vulkanalia_destroy_buffer(device, staging);
+    }
+    native_vulkan_vulkanalia_destroy_buffer(device, upload.target);
+}
+
 struct SceneGpuFrameResources {
     transform_buffer: NativeVulkanVulkanaliaBuffer,
     material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
@@ -325,10 +499,8 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_pre
         .map_err(|err| err.to_string())?;
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let result = run_scene_present_inner(&vulkan, handles, &mut host, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
@@ -514,6 +686,7 @@ fn scene_descriptor_plan_inputs(
     particle_emitters: &[SceneParticleGpuEmitterPlan],
     layout: &pipeline::ScenePipelineDescriptorLayout,
     pipeline_indices: &[u32],
+    disabled_pipeline_indices: &[Option<u32>],
     alpha_coverage_scissors: &[Vec<SceneGpuScissor>],
 ) -> (
     Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
@@ -546,8 +719,11 @@ fn scene_descriptor_plan_inputs(
                 .map(|_| NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage),
         );
         commands.push(SceneGpuDrawCommand {
+            enabled: true,
             primitive: draw.primitive,
             pipeline_index: pipeline_indices.get(index).copied().unwrap_or(0),
+            authored_pipeline_index: pipeline_indices.get(index).copied().unwrap_or(0),
+            disabled_pipeline_index: disabled_pipeline_indices.get(index).copied().flatten(),
             first_index: draw.index_start,
             index_count: draw.index_count,
             vertex_offset: draw.vertex_start as i32,

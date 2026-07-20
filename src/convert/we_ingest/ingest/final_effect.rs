@@ -82,6 +82,9 @@ pub(super) fn create(
         effects_in_authored_texture_space,
         object_is_puppet,
     )?;
+    if !final_effect_has_independent_visibility(kind, effects.len()) {
+        return None;
+    }
     if !final_effect_scene_blend_supported(kind, final_scene_blend) {
         return None;
     }
@@ -108,6 +111,18 @@ pub(super) fn create(
         ),
         framebuffer_prepass,
     })
+}
+
+fn final_effect_has_independent_visibility(kind: FinalEffectKind, effect_count: usize) -> bool {
+    effect_count == 1
+        && matches!(
+            kind,
+            FinalEffectKind::ImageWaterWaves
+                | FinalEffectKind::ImageWaterRipple
+                | FinalEffectKind::ImageScroll
+                | FinalEffectKind::ImageCloudMotion
+                | FinalEffectKind::PuppetOpacity
+        )
 }
 
 fn framebuffer_caustics_prepass(
@@ -783,21 +798,15 @@ mod tests {
     }
 
     #[test]
-    fn composelayer_analytics_collapse_to_single_final_draws() {
-        let mut circle = effect(
-            "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
-            &[0],
-        );
+    fn composelayer_programs_are_classified_without_implying_visibility_safety() {
+        let mut circle = effect("effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1", &[0]);
         circle.combos.insert("SECTOR_SEGMENTS".to_owned(), 1);
         assert_eq!(
             final_effect_kind("we/composelayer", &[circle], false, false),
             Some(FinalEffectKind::TechCircle)
         );
 
-        let mut audio = effect(
-            "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
-            &[0],
-        );
+        let mut audio = effect("effects/simple_audio_bars__SLOTS_1__SHAPE_7", &[0]);
         audio.combos.insert("SHAPE".to_owned(), 7);
         assert_eq!(
             final_effect_kind(
@@ -814,7 +823,7 @@ mod tests {
         );
 
         let mut lut = effect(
-            "workshop/3165346237/effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
+            "effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
             &[0, 1],
         );
         lut.combos.insert("CLAMP".to_owned(), 0);
@@ -833,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn framebuffer_water_chain_collapses_only_the_verified_contract() {
+    fn framebuffer_water_chain_classifies_only_the_verified_contract() {
         let mut caustics = effect("effects/caustics__SLOTS_3d__BLENDMODE_6", &[0, 2, 3, 4, 5]);
         caustics.combos.insert("BLENDMODE".to_owned(), 6);
         assert_eq!(
@@ -850,6 +859,32 @@ mod tests {
             ),
             Some(FinalEffectKind::FramebufferWater)
         );
+    }
+
+    #[test]
+    fn only_singleton_programs_with_proven_neutral_parameters_are_fused() {
+        for kind in [
+            FinalEffectKind::ImageWaterWaves,
+            FinalEffectKind::ImageWaterRipple,
+            FinalEffectKind::ImageScroll,
+            FinalEffectKind::ImageCloudMotion,
+            FinalEffectKind::PuppetOpacity,
+        ] {
+            assert!(final_effect_has_independent_visibility(kind, 1));
+            assert!(!final_effect_has_independent_visibility(kind, 2));
+        }
+        assert!(!final_effect_has_independent_visibility(
+            FinalEffectKind::TechCircle,
+            1
+        ));
+        assert!(!final_effect_has_independent_visibility(
+            FinalEffectKind::AudioBars,
+            3
+        ));
+        assert!(!final_effect_has_independent_visibility(
+            FinalEffectKind::FramebufferWater,
+            4
+        ));
     }
 
     #[test]
@@ -932,6 +967,8 @@ mod tests {
     fn effect(shader: &str, slots: &[u32]) -> WeEffectPassContract {
         WeEffectPassContract {
             object_index: 1,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
             material_index: Some(2),
             effect_file: "effect.json".to_owned(),
             pass_index: 0,

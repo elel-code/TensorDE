@@ -8,6 +8,7 @@ pub(in crate::renderer::native_vulkan::vulkan) mod memory;
 pub(in crate::renderer::native_vulkan::vulkan) mod plan;
 pub(in crate::renderer::native_vulkan::vulkan) mod profiles;
 pub(in crate::renderer::native_vulkan::vulkan) mod queue_probe;
+pub(in crate::renderer::native_vulkan::vulkan) mod roadmap_2026;
 
 use super::video::device as video_device;
 use super::video::format_probe as video_format_probe;

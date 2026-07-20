@@ -329,6 +329,10 @@ mod tests {
                         target_name: crate::engine::scene::SceneStringId::NONE,
                         binding_start: 0,
                         binding_count: 0,
+                        effect_binding_start: u32::MAX,
+                        effect_binding_count: 0,
+                        effect_visibility_policy:
+                            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                         mesh_draw_start: 0,
                         mesh_draw_count: 1,
                     }],
@@ -355,6 +359,11 @@ mod tests {
                         apply_resolved_visual: true,
                         effect_batch_atlas_tile: u32::MAX,
                         effect_batch_atlas_grid: [0; 2],
+                        effect_binding_start: u32::MAX,
+                        effect_binding_count: 0,
+                        effect_visibility_policy:
+                            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                        resolved_effect_visibility_mask: 0,
                         object: SceneObjectHandle(0),
                         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                         vertex_start: 0,

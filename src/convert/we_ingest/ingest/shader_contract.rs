@@ -12,6 +12,8 @@ use crate::convert::we_ingest::ir::{
 };
 use crate::engine::render_graph::{RenderGraph, TextureBindingRole};
 
+use super::super::shader_key::canonical_scene_shader_key;
+
 pub(super) fn build_shader_contract_records(
     render_graphs: &[RenderGraph],
     material_passes: &[WeIrMaterialPass],
@@ -39,14 +41,15 @@ pub(super) fn build_shader_contract_records(
             .take(pass.constant_count as usize)
             .map(|constant| constant.name.clone())
             .collect::<Vec<_>>();
-        let texture_slot_mask = declared_texture_slot_mask(&pass.shader_key, &textures);
+        let shader_key = canonical_scene_shader_key(&pass.shader_key);
+        let texture_slot_mask = declared_texture_slot_mask(&shader_key, &textures);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
-            pass.shader_key, pass.pipeline_blend, pass.depth_test, pass.depth_write, pass.cull_mode
+            shader_key, pass.pipeline_blend, pass.depth_test, pass.depth_write, pass.cull_mode
         );
         if seen_pipeline_keys.insert(pipeline_key.clone()) {
             contracts.push(shader_contract(
-                pass.shader_key.clone(),
+                shader_key,
                 pipeline_key,
                 texture_slot_mask,
                 constants,
@@ -62,6 +65,7 @@ pub(super) fn build_shader_contract_records(
         let Some(shader_key) = pass.shader.as_ref().filter(|shader| !shader.is_empty()) else {
             continue;
         };
+        let shader_key = canonical_scene_shader_key(shader_key);
         if !represented_shaders.insert(shader_key.clone()) {
             continue;
         }
@@ -77,7 +81,7 @@ pub(super) fn build_shader_contract_records(
             binding_texture_slot(binding)
                 .filter(|slot| *slot < 32)
                 .map_or(mask, |slot| mask | (1 << slot))
-        }) | graph_shader_texture_slot_mask(shader_key);
+        }) | graph_shader_texture_slot_mask(&shader_key);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
             shader_key,
@@ -131,9 +135,7 @@ fn binding_texture_slot(binding: &TextureBindingRole) -> Option<u32> {
 }
 
 fn graph_shader_texture_slot_mask(shader_key: &str) -> u32 {
-    u32::from(is_foliage_ripple_shader(
-        shader_key.to_ascii_lowercase().as_str(),
-    )) * 0x0b
+    u32::from(is_foliage_ripple_shader(shader_key)) * 0x0b
 }
 
 pub(super) fn declared_texture_slot_mask(
@@ -145,35 +147,35 @@ pub(super) fn declared_texture_slot_mask(
         .filter(|texture| texture.resource.is_some() || !texture.path.is_empty())
         .filter(|texture| texture.slot < 32)
         .fold(0u32, |mask, texture| mask | (1 << texture.slot));
-    let key = shader_key.to_ascii_lowercase();
-    if mesh_shader_uses_slot_zero(&key) {
+    let key = shader_key;
+    if mesh_shader_uses_slot_zero(key) {
         mask |= 1;
     }
-    if key.contains("clippingmaskimage4") {
+    if shader_program(key) == "we/clippingmaskimage4" {
         mask |= 1 << 1;
     }
-    if key.contains("clippingtarget") {
+    if shader_variant_enabled(key, "CLIPPINGTARGET") {
         mask |= 1 << 8;
     }
-    if let Some(slot_mask) = effect_shader_slot_mask(&key) {
+    if let Some(slot_mask) = effect_shader_slot_mask(key) {
         mask |= slot_mask;
     }
-    if key == "we/waterwaves-uv-field" || is_waterwaves_direct_shader(&key) {
+    if key == "we/waterwaves-uv-field" || is_waterwaves_direct_shader(key) {
         mask |= 0x3fe;
     }
-    if is_foliage_ripple_shader(&key) {
+    if is_foliage_ripple_shader(key) {
         mask |= 0x0b;
     }
     if key == "we/image-ripple-source" {
         mask |= 0x05;
     }
     if matches!(
-        key.as_str(),
+        key,
         "we/image-ripple-flow-composite" | "we/image-ripple-flow-multiply-composite"
     ) {
         mask |= 0x07;
     }
-    match key.as_str() {
+    match key {
         "we/image-waterwaves-final" => mask |= 0x03,
         "we/image-waterripple-final" => mask |= 0x07,
         "we/image-waterripple-modulate-final" => mask |= 0x07,
@@ -196,9 +198,8 @@ pub(super) fn declared_texture_slot_mask(
 }
 
 pub(super) fn shader_uniform_buffer_count(shader_key: &str, has_constants: bool) -> u32 {
-    let key = shader_key.to_ascii_lowercase();
-    if mesh_shader_needs_draw_and_material_uniforms(&key)
-        || effect_shader_needs_draw_and_material_uniforms(&key)
+    if mesh_shader_needs_draw_and_material_uniforms(shader_key)
+        || effect_shader_needs_draw_and_material_uniforms(shader_key)
     {
         2
     } else {
@@ -207,16 +208,16 @@ pub(super) fn shader_uniform_buffer_count(shader_key: &str, has_constants: bool)
 }
 
 fn mesh_shader_uses_slot_zero(key: &str) -> bool {
-    key.contains("genericimage")
-        || key.contains("genericparticle")
-        || key.contains("clippingmaskimage")
-        || key == "minimalalpha"
-        || key.starts_with("minimalalpha__")
-        || key == "passthrough"
-        || key.starts_with("passthrough__")
-        || key == "composelayer"
-        || key.starts_with("composelayer__")
-        || key == "we/objectcomposite"
+    matches!(
+        shader_program(key),
+        "we/genericimage2"
+            | "we/genericimage4"
+            | "we/genericparticle"
+            | "we/clippingmaskimage4"
+            | "we/minimalalpha"
+            | "we/passthrough"
+            | "we/composelayer"
+    ) || key == "we/objectcomposite"
         || key == "we/objectcomposite-screen-group"
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"
@@ -247,12 +248,21 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
         || is_waterwaves_direct_shader(key)
-        || key == "utilitycomposite"
-        || key.starts_with("utilitycomposite__")
+        || key == "we/utilitycomposite"
+}
+
+fn shader_program(key: &str) -> &str {
+    key.split("__").next().unwrap_or(key)
+}
+
+fn shader_variant_enabled(key: &str, name: &str) -> bool {
+    key.split("__")
+        .skip(1)
+        .any(|variant| variant == format!("{name}_1"))
 }
 
 fn effect_shader_slot_mask(key: &str) -> Option<u32> {
-    let (_, slots) = key.split_once("__slots_")?;
+    let (_, slots) = key.split_once("__SLOTS_")?;
     let hex = slots
         .chars()
         .take_while(|ch| ch.is_ascii_hexdigit())
@@ -277,15 +287,13 @@ fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         "effects/waterwaves",
         "effects/waterflow",
         "effects/waterripple",
-        "workshop/2790231929/effects/foliagesway",
-        "workshop/2962751255/effects/blend",
-        "workshop/2962751255/effects/blendgradient",
-        "workshop/2123274886/effects/tech_circle",
-        "workshop/3082978660/effects/simple_audio_bars",
-        "workshop/3083593512/effects/rounded_mask",
-        "workshop/3165346237/effects/lut_loader",
-        "workshop/3706822104/effects/raindrop_on_glass",
-        "workshop/2799421411/effects/audio_responsive_oscilloscope",
+        "effects/blendgradient",
+        "effects/tech_circle",
+        "effects/simple_audio_bars",
+        "effects/rounded_mask",
+        "effects/lut_loader",
+        "effects/raindrop_on_glass",
+        "effects/audio_responsive_oscilloscope",
     ]
     .iter()
     .any(|shader| {
@@ -293,13 +301,12 @@ fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
             || key
                 .strip_prefix(shader)
                 .is_some_and(|rest| rest.starts_with("__"))
-    }) || key.contains("/effects/waterripple__")
-        || key == "we/waterwaves-uv-field"
+    }) || key == "we/waterwaves-uv-field"
         || key == "we/image-ripple-source"
 }
 
 fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
-    key.contains("genericimage")
+    matches!(shader_program(key), "we/genericimage2" | "we/genericimage4")
         || key == "we/image-waterwaves-final"
         || key == "we/image-waterripple-final"
         || key == "we/image-waterripple-modulate-final"
@@ -320,8 +327,6 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/framebuffer-lut64-final"
         || key == "we/framebuffer-lightning-screen-final"
         || key == "we/framebuffer-lightning-add-final"
-        || key == "color"
-        || key.starts_with("color__")
         || key == "we/color"
         || key.starts_with("we/color__")
         || key == "text"
@@ -404,7 +409,7 @@ mod tests {
             2
         );
         assert_eq!(
-            shader_uniform_buffer_count("workshop/2790231929/effects/foliagesway__SLOTS_1", true),
+            shader_uniform_buffer_count("effects/foliagesway__SLOTS_1", true),
             2
         );
     }

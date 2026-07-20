@@ -51,7 +51,7 @@ def main() -> int:
         )
         report = json.loads(plan.stdout)
         assert report["present_mode"] == "fifo-latest-ready"
-        assert report["legacy_binding_forbidden"] is True
+        assert report["descriptor_heap_only"] is True
         assert report["renderer_scene_render"]["mesh_count"] == 1
         assert report["renderer_scene_render"]["mesh_vertex_count"] == 4
         assert report["renderer_scene_render"]["mesh_index_count"] == 6

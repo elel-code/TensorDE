@@ -59,10 +59,8 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_sce
     let handles = surface_host.handles();
     let surface_host_snapshot = surface_host.snapshot().clone();
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let instance = &vulkan.instance;
     let surface = match create_vulkanalia_wayland_surface(instance, handles) {
@@ -89,7 +87,6 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_sce
             instance,
             &selection,
             &codec_set,
-            vulkanalia_surface_maintenance1_enabled(&vulkan),
         )?;
         let context_result =
             (|| -> Result<NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot, String> {
@@ -98,7 +95,6 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_sce
                     selection.physical_device,
                     surface,
                     handles.buffer_size,
-                    vulkanalia_surface_capabilities2_enabled(&vulkan),
                     &context.present_feature_selection,
                 )?;
                 let swapchain = unsafe {
@@ -526,7 +522,6 @@ pub(super) fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
         decoded_image_present_sequence: sequence.clone(),
         decoded_image_present_sequence_error: sequence_error.clone(),
         decoded_image_zero_copy_presented,
-        software_decode_fallback: false,
         descriptor_heap_only: true,
         zero_copy_scope: "FFmpeg avcodec Vulkan hwaccel outputs one AVVkFrame VkImage stream per scene video resource; Gilder samples those images directly through VK_EXT_descriptor_heap in the scene video layer pass without software decode, CPU pixel upload, or intermediate composition copies",
         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,

@@ -5,6 +5,11 @@ use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+use super::roadmap_2026::{
+    GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS, ROADMAP_2026_API_VERSION,
+    ROADMAP_2026_PROFILE_NAME, ROADMAP_2026_PROFILE_REVISION,
+};
+
 pub(in crate::renderer::native_vulkan::vulkan) const NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER:
     &str = "libvulkan.so.1";
 
@@ -39,16 +44,29 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     let entry_version = entry
         .version()
         .map_err(|err| format!("vkEnumerateInstanceVersion: {err:?}"))?;
+    if u32::from(entry_version) < u32::from(ROADMAP_2026_API_VERSION) {
+        return Err(format!(
+            "Vulkan loader {loader_name} exposes {entry_version}, below mandatory {ROADMAP_2026_PROFILE_NAME} revision {ROADMAP_2026_PROFILE_REVISION} API floor {ROADMAP_2026_API_VERSION}"
+        ));
+    }
     let available_instance_extensions =
         unsafe { entry.enumerate_instance_extension_properties(None) }
             .map_err(|err| format!("vkEnumerateInstanceExtensionProperties: {err:?}"))?
             .into_iter()
             .map(|property| property.extension_name.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+    let required_instance_extensions =
+        merged_required_instance_extensions(required_instance_extensions);
     let extension_selection = native_vulkan_vulkanalia_select_instance_extensions(
         available_instance_extensions,
-        required_instance_extensions,
+        &required_instance_extensions,
     );
+    if !extension_selection.missing_instance_extensions.is_empty() {
+        return Err(format!(
+            "mandatory {ROADMAP_2026_PROFILE_NAME} Wayland instance contract missing extensions: {}",
+            extension_selection.missing_instance_extensions.join(", ")
+        ));
+    }
     let extension_names = extension_selection
         .enabled_instance_extensions
         .iter()
@@ -64,7 +82,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         .application_version(1)
         .engine_name(b"gilder\0")
         .engine_version(1)
-        .api_version(u32::from(Version::V1_4_0));
+        .api_version(u32::from(ROADMAP_2026_API_VERSION));
     let create_info = vk::InstanceCreateInfo::builder()
         .application_info(&app_info)
         .enabled_extension_names(&extension_name_ptrs);
@@ -78,6 +96,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         extension_selection,
         _entry: entry,
     })
+}
+
+fn merged_required_instance_extensions(
+    additional_required: &[&'static str],
+) -> Vec<&'static str> {
+    let mut required = GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS.to_vec();
+    for extension in additional_required {
+        if !required.contains(extension) {
+            required.push(extension);
+        }
+    }
+    required
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_instance(
@@ -131,7 +161,11 @@ fn native_vulkan_vulkanalia_select_instance_extensions(
 
 #[cfg(test)]
 mod tests {
-    use super::native_vulkan_vulkanalia_select_instance_extensions;
+    use super::{
+        merged_required_instance_extensions,
+        native_vulkan_vulkanalia_select_instance_extensions,
+    };
+    use crate::renderer::native_vulkan::vulkan::core::roadmap_2026::GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS;
 
     #[test]
     fn extension_selection_enables_only_available_required_extensions() {
@@ -143,5 +177,15 @@ mod tests {
         assert_eq!(selection.available_instance_extensions, available);
         assert_eq!(selection.enabled_instance_extensions, vec!["VK_A"]);
         assert_eq!(selection.missing_instance_extensions, vec!["VK_C"]);
+    }
+
+    #[test]
+    fn every_instance_path_inherits_the_exact_roadmap_2026_wayland_contract() {
+        let required = merged_required_instance_extensions(&["VK_TEST_required"]);
+        assert_eq!(
+            &required[..GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS.len()],
+            GILDER_ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS
+        );
+        assert_eq!(required.last(), Some(&"VK_TEST_required"));
     }
 }

@@ -499,6 +499,7 @@ mod tests {
             target_extent: Some([512, 256]),
             target_format: None,
             bindings,
+            effect_visibility: crate::engine::render_graph::RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: PipelineBlendMode::Normal,
                 scene_blend: SceneBlendMode::Normal,

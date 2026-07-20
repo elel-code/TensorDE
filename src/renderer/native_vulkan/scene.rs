@@ -38,6 +38,7 @@ pub use runtime::{
     NativeVulkanSceneRunOptions, NativeVulkanSceneRuntimeSnapshot, run_scene,
     run_scene_with_options,
 };
+pub(crate) use runtime::validate_scene_runtime_plan;
 pub use shader_catalog::{
     BuiltinSceneParameterLayout, BuiltinSceneShader, native_vulkan_particle_compute_shader,
     native_vulkan_scene_shader_catalog, native_vulkan_scene_shader_for_key,

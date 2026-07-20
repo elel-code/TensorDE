@@ -11,8 +11,8 @@
             NativeVulkanFfmpegHwDecodeDevicePolicy::VulkanaliaProvidedDevice
         );
         assert_eq!(
-            contract.fallback_policy,
-            NativeVulkanFfmpegHwDecodeFallbackPolicy::RejectSoftwareDecode
+            contract.output_frame_contract.required_avframe_format,
+            "AV_PIX_FMT_VULKAN"
         );
         assert!(
             contract

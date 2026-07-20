@@ -6,6 +6,8 @@
 //! vertices beyond it. This module therefore derives coverage from the current semantic frame and
 //! falls back to the complete target whenever an effect cannot prove a finite bound.
 
+use std::collections::BTreeMap;
+
 use crate::engine::scene::{
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
     SceneStorage,
@@ -22,6 +24,153 @@ use super::scene_viewport::scene_cover_clip_transform;
 static SCISSOR_DIAGNOSTIC_EMITTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static COMPOSITE_CONSUMER_CULL_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub(super) struct SceneMeshCoveragePlans {
+    meshes: Vec<SceneMeshCoveragePlan>,
+}
+
+#[derive(Debug, Clone)]
+struct SceneMeshCoveragePlan {
+    local_bounds: Option<LocalBounds>,
+    unweighted_bounds: Option<LocalBounds>,
+    bone_bounds: Vec<(u32, LocalBounds)>,
+    full_quad: Option<SceneMeshFullQuad>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneMeshFullQuad {
+    positions: [[f32; 4]; 4],
+    indices: [u32; 6],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalBounds {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+impl LocalBounds {
+    fn include(&mut self, position: [f32; 3]) {
+        for lane in 0..3 {
+            self.min[lane] = self.min[lane].min(position[lane]);
+            self.max[lane] = self.max[lane].max(position[lane]);
+        }
+    }
+
+    fn include_optional(bounds: &mut Option<Self>, position: [f32; 3]) {
+        if let Some(bounds) = bounds {
+            bounds.include(position);
+        } else {
+            *bounds = Some(Self {
+                min: position,
+                max: position,
+            });
+        }
+    }
+
+    fn corners(self) -> [[f32; 4]; 8] {
+        std::array::from_fn(|corner| {
+            [
+                if corner & 1 == 0 {
+                    self.min[0]
+                } else {
+                    self.max[0]
+                },
+                if corner & 2 == 0 {
+                    self.min[1]
+                } else {
+                    self.max[1]
+                },
+                if corner & 4 == 0 {
+                    self.min[2]
+                } else {
+                    self.max[2]
+                },
+                1.0,
+            ]
+        })
+    }
+}
+
+impl SceneMeshCoveragePlans {
+    pub(super) fn from_storage(storage: &SceneStorage) -> Self {
+        let meshes = storage
+            .meshes()
+            .iter()
+            .map(|mesh| {
+                let vertices = storage.mesh_vertices(mesh);
+                let indices = storage.mesh_indices(mesh);
+                let mut local_bounds = None;
+                let mut unweighted_bounds = None;
+                let mut bone_bounds = BTreeMap::<u32, LocalBounds>::new();
+                let mut bounded = true;
+                for vertex in vertices {
+                    let position = [vertex.position.x, vertex.position.y, vertex.position.z];
+                    if !position.iter().all(|value| value.is_finite()) {
+                        bounded = false;
+                        continue;
+                    }
+                    LocalBounds::include_optional(&mut local_bounds, position);
+                    let mut influenced = false;
+                    for slot in 0..4 {
+                        let weight = vertex.blend_weights[slot];
+                        if !weight.is_finite() || weight < 0.0 {
+                            bounded = false;
+                            continue;
+                        }
+                        if weight <= 1.0e-7 {
+                            continue;
+                        }
+                        influenced = true;
+                        let bone = vertex.blend_indices[slot];
+                        bone_bounds
+                            .entry(bone)
+                            .and_modify(|bounds| bounds.include(position))
+                            .or_insert(LocalBounds {
+                                min: position,
+                                max: position,
+                            });
+                    }
+                    if !influenced {
+                        LocalBounds::include_optional(&mut unweighted_bounds, position);
+                    }
+                }
+                let full_quad = (bounded && vertices.len() == 4 && indices.len() == 6)
+                    .then(|| {
+                        Some(SceneMeshFullQuad {
+                            positions: std::array::from_fn(|index| {
+                                let vertex = &vertices[index];
+                                [
+                                    vertex.position.x,
+                                    vertex.position.y,
+                                    vertex.position.z,
+                                    1.0,
+                                ]
+                            }),
+                            indices: indices.try_into().ok()?,
+                        })
+                    })
+                    .flatten();
+                SceneMeshCoveragePlan {
+                    local_bounds: bounded.then_some(local_bounds).flatten(),
+                    unweighted_bounds: bounded.then_some(unweighted_bounds).flatten(),
+                    bone_bounds: if bounded {
+                        bone_bounds.into_iter().collect()
+                    } else {
+                        Vec::new()
+                    },
+                    full_quad,
+                }
+            })
+            .collect();
+        Self { meshes }
+    }
+
+    fn mesh(&self, index: u32) -> Option<&SceneMeshCoveragePlan> {
+        self.meshes.get(index as usize)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct PixelBounds {
@@ -72,6 +221,7 @@ impl PixelBounds {
 
 pub(super) fn update_scene_composite_scissors(
     storage: &SceneStorage,
+    coverage: &SceneMeshCoveragePlans,
     graph: &SceneRenderingDeviceGraphPlan,
     output_extent: [u32; 2],
     commands: &mut [SceneGpuDrawCommand],
@@ -123,7 +273,13 @@ pub(super) fn update_scene_composite_scissors(
                     .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)
                 {
                     let Some(draw_bounds) =
-                        object_mesh_pixel_bounds(storage, graph, draw, output_extent)
+                        object_mesh_pixel_bounds_from_coverage(
+                            storage,
+                            coverage,
+                            graph,
+                            draw,
+                            output_extent,
+                        )
                     else {
                         coverage_is_bounded = false;
                         continue;
@@ -197,7 +353,7 @@ pub(super) fn update_scene_composite_scissors(
                         command.scissor = Some(scissor);
                     }
                 }
-            } else if shader.eq_ignore_ascii_case("effects/waterwaves") {
+            } else if shader == "effects/waterwaves" {
                 for draw in draws {
                     let Some([x, y]) = waterwaves_pixel_margin(storage, draw, output_extent) else {
                         coverage_is_bounded = false;
@@ -207,9 +363,9 @@ pub(super) fn update_scene_composite_scissors(
                         bounds.expand(x, y);
                     }
                 }
-            } else if !shader.eq_ignore_ascii_case("minimalalpha")
-                && !shader.eq_ignore_ascii_case("passthrough")
-                && !shader.eq_ignore_ascii_case("effects/opacity")
+            } else if shader != "we/minimalalpha"
+                && shader != "we/passthrough"
+                && shader != "effects/opacity"
             {
                 coverage_is_bounded = false;
             }
@@ -235,10 +391,10 @@ fn pass_shader_is(
     pass: &crate::engine::scene::SceneRenderingDevicePassNode,
     expected: &str,
 ) -> bool {
-    pass_shader(storage, pass).is_some_and(|shader| shader.eq_ignore_ascii_case(expected))
+    pass_shader(storage, pass).is_some_and(|shader| shader == expected)
 }
 
-fn object_mesh_pixel_bounds(
+fn object_mesh_pixel_bounds_from_payload(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     draw: &SceneRenderingDeviceMeshDraw,
@@ -273,9 +429,85 @@ fn object_mesh_pixel_bounds(
     bounds
 }
 
+fn object_mesh_pixel_bounds_from_coverage(
+    storage: &SceneStorage,
+    coverage: &SceneMeshCoveragePlans,
+    graph: &SceneRenderingDeviceGraphPlan,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> Option<PixelBounds> {
+    let mesh = coverage.mesh(draw.mesh_index)?;
+    let transform =
+        scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform);
+    if draw.skinning_palette_count == 0 {
+        return projected_local_bounds(mesh.local_bounds?, None, transform, output_extent);
+    }
+
+    let mut projected = match mesh.unweighted_bounds {
+        Some(bounds) => Some(projected_local_bounds(
+            bounds,
+            None,
+            transform,
+            output_extent,
+        )?),
+        None => None,
+    };
+    for (local_bone, bounds) in &mesh.bone_bounds {
+        if *local_bone >= draw.skinning_palette_count {
+            return None;
+        }
+        let matrix_index = draw.skinning_palette_start.checked_add(*local_bone)?;
+        let bone = graph.puppet_bone_matrices.get(matrix_index as usize)?;
+        let bone_bounds = projected_local_bounds(
+            *bounds,
+            Some(bone.matrix),
+            transform,
+            output_extent,
+        )?;
+        if let Some(projected) = &mut projected {
+            projected.include(bone_bounds);
+        } else {
+            projected = Some(bone_bounds);
+        }
+    }
+    projected
+}
+
+fn projected_local_bounds(
+    bounds: LocalBounds,
+    bone_transform: Option<[[f32; 4]; 4]>,
+    object_transform: [[f32; 4]; 4],
+    output_extent: [u32; 2],
+) -> Option<PixelBounds> {
+    let mut projected = None::<PixelBounds>;
+    for local in bounds.corners() {
+        let local = bone_transform.map_or(local, |bone| multiply_rows(bone, local));
+        let clip = multiply_rows(object_transform, local);
+        if !clip.iter().all(|value| value.is_finite()) || clip[3] <= 1.0e-7 {
+            return None;
+        }
+        let pixel = [
+            (clip[0] / clip[3] * 0.5 + 0.5) * output_extent[0] as f32,
+            (clip[1] / clip[3] * 0.5 + 0.5) * output_extent[1] as f32,
+        ];
+        let point = PixelBounds {
+            min_x: pixel[0],
+            min_y: pixel[1],
+            max_x: pixel[0],
+            max_y: pixel[1],
+        };
+        if let Some(projected) = &mut projected {
+            projected.include(point);
+        } else {
+            projected = Some(point);
+        }
+    }
+    projected
+}
+
 pub(super) fn object_mesh_covers_output(
     storage: &SceneStorage,
-    graph: &SceneRenderingDeviceGraphPlan,
+    coverage: &SceneMeshCoveragePlans,
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> bool {
@@ -292,13 +524,15 @@ pub(super) fn object_mesh_covers_output(
     {
         return false;
     }
-    let transform =
-        scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform);
+    let Some(full_quad) = coverage
+        .mesh(draw.mesh_index)
+        .and_then(|coverage| coverage.full_quad)
+    else {
+        return false;
+    };
+    let transform = scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform);
     let mut points = [[0.0; 2]; 4];
-    for (point, vertex) in points.iter_mut().zip(storage.mesh_vertices(mesh)) {
-        let Some(local) = skinned_vertex_position(graph, draw, vertex) else {
-            return false;
-        };
+    for (point, local) in points.iter_mut().zip(full_quad.positions) {
         let clip = multiply_rows(transform, local);
         if !clip.iter().all(|value| value.is_finite()) || clip[3] <= 1.0e-7 {
             return false;
@@ -308,7 +542,7 @@ pub(super) fn object_mesh_covers_output(
             (clip[1] / clip[3] * 0.5 + 0.5) * output_extent[1] as f32,
         ];
     }
-    rectangle_mesh_covers_pixel_centers(points, storage.mesh_indices(mesh), output_extent)
+    rectangle_mesh_covers_pixel_centers(points, &full_quad.indices, output_extent)
 }
 
 fn rectangle_mesh_covers_pixel_centers(
@@ -389,7 +623,7 @@ pub(super) fn object_mesh_pixel_extent(
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> Option<[u32; 2]> {
-    let bounds = object_mesh_pixel_bounds(storage, graph, draw, output_extent)?;
+    let bounds = object_mesh_pixel_bounds_from_payload(storage, graph, draw, output_extent)?;
     let width = (bounds.max_x - bounds.min_x).ceil();
     let height = (bounds.max_y - bounds.min_y).ceil();
     (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0).then_some([
@@ -512,7 +746,8 @@ mod tests {
     use crate::engine::scene::{
         INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneCompositeBlend,
         SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle, ScenePipelineBlend,
-        SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
+        SceneRenderEffectVisibilityPolicy, SceneRenderPassKind, SceneRenderPassRecord,
+        SceneRenderTargetKind,
         SceneRenderingDevicePassNode, SceneStringId,
     };
 
@@ -588,6 +823,9 @@ mod tests {
                 target_name: SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
                 pipeline_blend: ScenePipelineBlend::Normal,
                 scene_blend: SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,
@@ -606,6 +844,9 @@ mod tests {
             target_name: SceneStringId::NONE,
             binding_start: 0,
             binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
             mesh_draw_start: 0,
             mesh_draw_count: 1,
         };

@@ -217,6 +217,10 @@ mod tests {
                 target_name: crate::engine::scene::SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                 mesh_draw_start: 0,
                 mesh_draw_count: 1,
             }],
@@ -243,6 +247,11 @@ mod tests {
                 apply_resolved_visual: true,
                 effect_batch_atlas_tile: u32::MAX,
                 effect_batch_atlas_grid: [0; 2],
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                resolved_effect_visibility_mask: 0,
                 object: crate::engine::scene::SceneObjectHandle(0),
                 material: crate::engine::scene::SceneMaterialHandle(
                     crate::engine::scene::INVALID_MATERIAL_ID,
@@ -358,6 +367,10 @@ mod tests {
                 target_name: crate::engine::scene::SceneStringId(0),
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                 mesh_draw_start: 0,
                 mesh_draw_count: 1,
             }],
@@ -384,6 +397,11 @@ mod tests {
                 apply_resolved_visual: true,
                 effect_batch_atlas_tile: u32::MAX,
                 effect_batch_atlas_grid: [0; 2],
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy:
+                    crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+                resolved_effect_visibility_mask: 0,
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),
@@ -440,6 +458,10 @@ mod tests {
                     target_name: crate::engine::scene::SceneStringId(0),
                     binding_start: 0,
                     binding_count: 1,
+                    effect_binding_start: u32::MAX,
+                    effect_binding_count: 0,
+                    effect_visibility_policy:
+                        crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                     mesh_draw_start: 0,
                     mesh_draw_count: 0,
                 },
@@ -452,6 +474,10 @@ mod tests {
                     target_name: crate::engine::scene::SceneStringId(1),
                     binding_start: 1,
                     binding_count: 1,
+                    effect_binding_start: u32::MAX,
+                    effect_binding_count: 0,
+                    effect_visibility_policy:
+                        crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                     mesh_draw_start: 0,
                     mesh_draw_count: 0,
                 },
@@ -464,6 +490,10 @@ mod tests {
                     target_name: crate::engine::scene::SceneStringId(2),
                     binding_start: 2,
                     binding_count: 1,
+                    effect_binding_start: u32::MAX,
+                    effect_binding_count: 0,
+                    effect_visibility_policy:
+                        crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
                     mesh_draw_start: 0,
                     mesh_draw_count: 0,
                 },

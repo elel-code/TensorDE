@@ -17,9 +17,12 @@ use crate::engine::scene::*;
 use std::collections::BTreeMap;
 
 use super::ir::*;
+use super::shader_key::canonical_scene_shader_key;
+mod error;
 mod event_binding;
 mod particle;
 mod string_interner;
+pub use error::WeLowerError;
 use string_interner::StringInterner;
 
 pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, WeLowerError> {
@@ -185,6 +188,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         .map(|effect| SceneObjectEffectRecord {
             object: SceneObjectHandle(effect.object),
             effect: SceneEffectHandle(effect.effect),
+            name: strings.optional_id(&effect.name),
             instance_id: effect.instance_id,
             visible: effect.visible,
         })
@@ -313,7 +317,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         .iter()
         .map(|pass| SceneMaterialPassRecord {
             material: SceneMaterialHandle(pass.material),
-            shader_key: strings.optional_id(&pass.shader_key),
+            shader_key: strings.optional_id(&canonical_scene_shader_key(&pass.shader_key)),
             target: strings.optional_id(&pass.target),
             texture_start: pass.texture_start,
             texture_count: pass.texture_count,
@@ -585,51 +589,6 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
     })
 }
 
-#[derive(Debug)]
-pub enum WeLowerError {
-    MissingResourcePayload(u32),
-    InvalidTextureMipRange(u32),
-    MissingPreviousGraphTarget {
-        graph_index: usize,
-        pass_id: u32,
-        slot: u32,
-    },
-    IncompatibleImageTargetSpec {
-        role: SceneRenderTargetKind,
-        name: String,
-    },
-}
-
-impl std::fmt::Display for WeLowerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingResourcePayload(handle) => {
-                write!(f, "IR resource {handle} has no payload range")
-            }
-            Self::InvalidTextureMipRange(resource) => {
-                write!(
-                    f,
-                    "IR texture resource {resource} has an invalid mip payload range"
-                )
-            }
-            Self::MissingPreviousGraphTarget {
-                graph_index,
-                pass_id,
-                slot,
-            } => write!(
-                f,
-                "IR render graph {graph_index} pass {pass_id} samples previous target in slot {slot}, but no previous pass exists"
-            ),
-            Self::IncompatibleImageTargetSpec { role, name } => write!(
-                f,
-                "IR image target {role:?}:{name} has conflicting format or scale declarations"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for WeLowerError {}
-
 fn lower_image_targets(
     ir: &WeSceneIr,
     strings: &mut StringInterner,
@@ -752,11 +711,18 @@ fn lower_render_graphs(
                         .unwrap_or(INVALID_MATERIAL_ID),
                 ),
                 pass_index: pass.pass_index,
-                shader_key: strings.optional_id(pass.shader.as_deref().unwrap_or_default()),
+                shader_key: strings.optional_id(&canonical_scene_shader_key(
+                    pass.shader.as_deref().unwrap_or_default(),
+                )),
                 target: lower_render_target(pass.target),
                 target_name: strings.optional_id(pass.target_name.as_deref().unwrap_or_default()),
                 binding_start,
                 binding_count: pass.bindings.len() as u32,
+                effect_binding_start: pass.effect_visibility.binding_start,
+                effect_binding_count: pass.effect_visibility.binding_count,
+                effect_visibility_policy: lower_effect_visibility_policy(
+                    pass.effect_visibility.policy,
+                ),
                 pipeline_blend: lower_pipeline_blend(pass.state.pipeline_blend),
                 scene_blend: lower_scene_blend(pass.state.scene_blend),
                 depth_test: lower_depth_test(pass.state.depth_test),
@@ -935,6 +901,19 @@ fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
         RenderPassRole::MeshVisibleRemainder => SceneRenderPassKind::MeshVisibleRemainder,
         RenderPassRole::DebugEvidence => SceneRenderPassKind::DebugEvidence,
         RenderPassRole::Unsupported => SceneRenderPassKind::Unsupported,
+    }
+}
+
+fn lower_effect_visibility_policy(
+    policy: crate::engine::render_graph::RenderPassEffectVisibilityPolicy,
+) -> SceneRenderEffectVisibilityPolicy {
+    use crate::engine::render_graph::RenderPassEffectVisibilityPolicy as Source;
+    match policy {
+        Source::None => SceneRenderEffectVisibilityPolicy::None,
+        Source::Passthrough => SceneRenderEffectVisibilityPolicy::Passthrough,
+        Source::WaterWavesStages => SceneRenderEffectVisibilityPolicy::WaterWavesStages,
+        Source::FlatRoundedMask => SceneRenderEffectVisibilityPolicy::FlatRoundedMask,
+        Source::MaterialStages => SceneRenderEffectVisibilityPolicy::MaterialStages,
     }
 }
 

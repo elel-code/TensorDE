@@ -824,6 +824,10 @@ mod tests {
             target_name: crate::engine::scene::SceneStringId::NONE,
             binding_start: 0,
             binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy:
+                crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
             mesh_draw_start: 0,
             mesh_draw_count: 1,
         }

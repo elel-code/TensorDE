@@ -86,7 +86,6 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
 };
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
-    NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot,
     NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot,
     NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
     native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,

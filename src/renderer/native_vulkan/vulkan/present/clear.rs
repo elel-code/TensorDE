@@ -4,13 +4,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
+use crate::renderer::native_vulkan::vulkan::core::roadmap_2026::ROADMAP_2026_API_VERSION;
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
@@ -23,11 +23,10 @@ use super::instance::{
 use super::swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaSwapchainSnapshot,
-    OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label,
-    create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
-    create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
+    REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_present_device,
+    create_vulkanalia_swapchain_plan, create_vulkanalia_wayland_surface, present_mode_label,
+    queue_flag_labels,
     select_vulkanalia_present_queue, swapchain_create_flag_labels,
-    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,10 +71,8 @@ pub fn run_native_vulkan_vulkanalia_clear_present(
         .map_err(|err| err.to_string())?;
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
+        REQUIRED_INSTANCE_EXTENSIONS,
     )?;
     let result = run_vulkanalia_clear_present_inner(&vulkan, handles, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
@@ -113,11 +110,7 @@ fn with_vulkanalia_clear_present(
         &physical_devices,
         &mut present_queue_family_count,
     )?;
-    let present_device = create_vulkanalia_present_device(
-        instance,
-        &selection,
-        vulkanalia_surface_maintenance1_enabled(vulkan),
-    )?;
+    let present_device = create_vulkanalia_present_device(instance, &selection)?;
     if !present_device.feature_selection.synchronization2_enabled {
         unsafe {
             present_device.device.destroy_device(None);
@@ -133,7 +126,6 @@ fn with_vulkanalia_clear_present(
         selection.physical_device,
         surface,
         handles.buffer_size,
-        vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
@@ -365,7 +357,7 @@ fn with_vulkanalia_clear_present(
         binding: "vulkanalia",
         route: "clear-present",
         loader: vulkan.loader_name.to_owned(),
-        requested_api_version: Version::V1_4_0.to_string(),
+        requested_api_version: ROADMAP_2026_API_VERSION.to_string(),
         runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
         frames_presented,
         average_present_fps: if elapsed.is_zero() {

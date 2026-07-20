@@ -56,12 +56,12 @@ fn particle_gpu_plan_selects_profiles_and_stable_indices() {
 }
 use crate::engine::scene::{RenderingServer, SceneStorage};
 use crate::engine::scene::{
-    SceneBinaryDocument, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,
-    SceneMeshVertexRecord, SceneObjectHandle, SceneObjectKind, SceneObjectRecord,
-    ScenePuppetBoneRecord, ScenePuppetRecord, SceneRenderBindingKind, SceneRenderBindingRecord,
-    SceneRenderGraphRecord, SceneRenderPassRecord, SceneResourceId, SceneResourceKind,
-    SceneResourceRecord, SceneShaderContractRecord, SceneStringId, SceneTextureFormat,
-    SceneTextureRecord, SceneVec3,
+    SceneBinaryDocument, SceneEffectHandle, SceneEffectRecord, SceneMaterialHandle,
+    SceneMaterialRecord, SceneMeshRecord, SceneMeshVertexRecord, SceneObjectEffectRecord,
+    SceneObjectHandle, SceneObjectKind, SceneObjectRecord, ScenePuppetBoneRecord,
+    ScenePuppetRecord, SceneRenderBindingKind, SceneRenderBindingRecord, SceneRenderGraphRecord,
+    SceneRenderPassRecord, SceneResourceId, SceneResourceKind, SceneResourceRecord,
+    SceneShaderContractRecord, SceneStringId, SceneTextureFormat, SceneTextureRecord, SceneVec3,
 };
 
 #[test]
@@ -131,8 +131,8 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 visible: true,
                 color_blend_mode: 0,
                 sort_order: 0,
-                effect_start: u32::MAX,
-                effect_count: 0,
+                effect_start: 0,
+                effect_count: 1,
                 render_graph: 0,
             },
             SceneObjectRecord {
@@ -256,6 +256,22 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 pass_count: 0,
             },
         ],
+        effects: vec![SceneEffectRecord {
+            id: SceneEffectHandle(0),
+            resource: SceneResourceId::NONE,
+            replacement_key: SceneStringId::NONE,
+            pass_start: 0,
+            pass_count: 0,
+            fbo_start: 0,
+            fbo_count: 0,
+        }],
+        object_effects: vec![SceneObjectEffectRecord {
+            object: SceneObjectHandle(0),
+            effect: SceneEffectHandle(0),
+            name: SceneStringId::NONE,
+            instance_id: 0,
+            visible: false,
+        }],
         render_graphs: vec![
             SceneRenderGraphRecord {
                 object: SceneObjectHandle(0),
@@ -284,6 +300,9 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 target_name: SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: 0,
+                effect_binding_count: 1,
+                effect_visibility_policy: SceneRenderEffectVisibilityPolicy::MaterialStages,
                 pipeline_blend: ScenePipelineBlend::Normal,
                 scene_blend: SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,
@@ -301,6 +320,9 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
                 target_name: SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
+                effect_binding_start: u32::MAX,
+                effect_binding_count: 0,
+                effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
                 pipeline_blend: ScenePipelineBlend::Normal,
                 scene_blend: SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,
@@ -326,8 +348,8 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
     assert_eq!(graph.pass_nodes[0].pass_id, 9);
     assert_eq!(graph.pass_nodes[0].mesh_draw_count, 1);
     assert_eq!(graph.pass_nodes[1].pass_id, 10);
-    assert_eq!(graph.pass_nodes[1].mesh_draw_count, 0);
-    assert_eq!(graph.mesh_draws.len(), 1);
+    assert_eq!(graph.pass_nodes[1].mesh_draw_count, 1);
+    assert_eq!(graph.mesh_draws.len(), 2);
     assert_eq!(graph.mesh_draws[0].resolved_object_index, 0);
     assert_eq!(graph.mesh_draws[0].clip_transform[0][0], 2.0);
     assert_eq!(graph.mesh_draws[0].clip_transform[1][1], -2.0);
@@ -336,6 +358,10 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
     assert_eq!(graph.mesh_draws[0].material, SceneMaterialHandle(1));
     assert_eq!(graph.mesh_draws[0].vertex_count, 4);
     assert_eq!(graph.mesh_draws[0].index_count, 6);
+    assert_eq!(graph.mesh_draws[0].effect_binding_start, 0);
+    assert_eq!(graph.mesh_draws[0].effect_binding_count, 1);
+    assert_eq!(graph.mesh_draws[0].resolved_effect_visibility_mask, 0);
+    assert_eq!(graph.mesh_draws[1].object, SceneObjectHandle(1));
     assert_eq!(graph.puppet_bone_palettes.len(), 1);
     assert_eq!(graph.puppet_bone_matrices.len(), 1);
     assert_eq!(graph.puppet_bone_matrices[0].bone_index, 41);
@@ -523,6 +549,9 @@ fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object
             target_name: SceneStringId(1),
             binding_start: 0,
             binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
             pipeline_blend: ScenePipelineBlend::Normal,
             scene_blend: SceneCompositeBlend::Alpha,
             depth_test: SceneDepthTest::Disabled,
@@ -671,6 +700,9 @@ fn object_effect_utility_retains_semantic_transform_and_authored_source_extent()
             target_name: SceneStringId::NONE,
             binding_start: 0,
             binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
             pipeline_blend: ScenePipelineBlend::Normal,
             scene_blend: SceneCompositeBlend::Alpha,
             depth_test: SceneDepthTest::Disabled,
@@ -834,6 +866,9 @@ fn named_fbo_pass(
         target_name,
         binding_start,
         binding_count,
+        effect_binding_start: u32::MAX,
+        effect_binding_count: 0,
+        effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
         pipeline_blend: ScenePipelineBlend::Normal,
         scene_blend: SceneCompositeBlend::Alpha,
         depth_test: SceneDepthTest::Disabled,

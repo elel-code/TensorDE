@@ -51,6 +51,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/auto_sway__SLOTS_1__DEBUG_0__DEBUG_NO_ALPHA_1__NODE_COUNT_4",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/blend__SLOTS_3__BLENDMODE_0",
         family: SceneShaderFamily::Effect,
     },
@@ -59,7 +63,19 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/caustics__SLOTS_21__BLENDMODE_6",
+        key: "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_downsample4__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_gaussian__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_gaussian__SLOTS_1__VERTICAL_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -99,7 +115,11 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/lightshafts__SLOTS_5__DIRECTDRAW_1__RAYCORNER_1__RAYMODE_2__RENDERING_1",
+        key: "effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/lut_loader__SLOTS_3__QUAD_SIZE_64",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -111,19 +131,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/scroll__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
         key: "effects/shake__SLOTS_3",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "effects/shimmer__SLOTS_1",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "effects/shimmer__SLOTS_3",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -167,15 +183,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "minimalalpha",
+        key: "we/minimalalpha",
         family: SceneShaderFamily::FlatMinimalAlpha,
     },
     SceneShaderSpec {
-        key: "minimalalpha__SLOTS_1",
+        key: "we/minimalalpha__SLOTS_1",
         family: SceneShaderFamily::FlatMinimalAlpha,
     },
     SceneShaderSpec {
-        key: "passthrough",
+        key: "we/passthrough",
         family: SceneShaderFamily::FlatPassthrough,
     },
     SceneShaderSpec {
@@ -563,23 +579,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshTextPuppetSkinning,
     },
     SceneShaderSpec {
-        key: "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+        key: "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2790231929/effects/foliagesway__SLOTS_1",
+        key: "effects/foliagesway__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2790231929/effects/foliagesway__SLOTS_3",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "workshop/2790231929/effects/foliagesway__SLOTS_5",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "workshop/2790231929/effects/foliagesway__SLOTS_7",
+        key: "effects/foliagesway__SLOTS_3",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -591,55 +599,43 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2790231929/effects/waterripple__SLOTS_5",
+        key: "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2800594362/effects/clipping_mask__SLOTS_1__REPEAT_1",
+        key: "effects/simple_audio_bars__SLOTS_1__ANTIALIAS_0__SHAPE_7",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+        key: "effects/rounded_mask__SLOTS_1__SOFT_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__ANTIALIAS_0__SHAPE_7",
+        key: "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3083593512/effects/rounded_mask__SLOTS_1__SOFT_1",
+        key: "effects/raindrop_on_glass__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+        key: "effects/audio_responsive_oscilloscope__SLOTS_1__RESOLUTION_16",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3165346237/effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
+        key: "effects/blend__SLOTS_3__BLENDMODE_0__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/3706822104/effects/raindrop_on_glass__SLOTS_1",
+        key: "effects/blend__SLOTS_3__BLENDMODE_0__TRANSFORMREPEAT_2__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2799421411/effects/audio_responsive_oscilloscope__SLOTS_1__RESOLUTION_16",
+        key: "effects/blendgradient__SLOTS_3__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "workshop/2962751255/effects/blend__SLOTS_3__BLENDMODE_0__WRITEALPHA_1",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "workshop/2962751255/effects/blend__SLOTS_3__BLENDMODE_0__TRANSFORMREPEAT_2__WRITEALPHA_1",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "workshop/2962751255/effects/blendgradient__SLOTS_3__WRITEALPHA_1",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "workshop/2962751255/effects/blendgradient__SLOTS_7__WRITEALPHA_1",
+        key: "effects/blendgradient__SLOTS_7__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
 ];
@@ -730,28 +726,32 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
             "effects/111" => "Lightning",
-            "effects/blend" | "workshop/2962751255/effects/blend" => "Blend",
-            "workshop/2962751255/effects/blendgradient" => "BlendGradient",
-            "workshop/3165346237/effects/lut_loader" => "Lut",
-            "workshop/3706822104/effects/raindrop_on_glass" => "Raindrop",
-            "workshop/2799421411/effects/audio_responsive_oscilloscope" => "Oscilloscope",
+            "effects/auto_sway" => "AutoSway",
+            "effects/blend" => "Blend",
+            "effects/blendgradient" => "BlendGradient",
+            "effects/blur_combine" => "BlurCombine",
+            "effects/blur_downsample4" => "None",
+            "effects/blur_gaussian" => "BlurGaussian",
+            "effects/lut_loader" => "Lut",
+            "effects/raindrop_on_glass" => "Raindrop",
+            "effects/audio_responsive_oscilloscope" => "Oscilloscope",
             "effects/caustics" => "Caustics",
             "effects/cloudmotion" => "CloudMotion",
             "effects/colorkey" => "ColorKey",
             "effects/iris" => "Iris",
             "effects/opacity" => "Opacity",
+            "effects/procedural_noise" => "ProceduralNoise",
             "effects/scroll" => "Scroll",
             "effects/skew" => "Skew",
-            "workshop/3083593512/effects/rounded_mask" => "RoundedMask",
+            "effects/rounded_mask" => "RoundedMask",
             "effects/shake" => "Shake",
             "effects/shimmer" => "Shimmer",
             "effects/swing" => "Swing",
             "effects/foliagesway" => "FoliageSway",
-            "workshop/2790231929/effects/foliagesway" => "FoliageSway",
-            "workshop/2123274886/effects/tech_circle" => "TechCircle",
-            "workshop/3082978660/effects/Simple_Audio_Bars" => "AudioBars",
+            "effects/tech_circle" => "TechCircle",
+            "effects/simple_audio_bars" => "AudioBars",
             "effects/waterwaves" => "WaterWaves",
-            "effects/waterripple" | "workshop/2790231929/effects/waterripple" => "WaterRipple",
+            "effects/waterripple" => "WaterRipple",
             "effects/waterflow" => "WaterFlow",
             _ => "None",
         },
@@ -898,7 +898,7 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
     let spirv_path = shader_dir.join(format!("{safe_name}.{stage}.spv"));
     fs::write(&source_path, source).expect("write build-time scene shader source");
     let output = Command::new("glslangValidator")
-        .args(["-V", "--target-env", "vulkan1.3", "-S", stage, "-o"])
+        .args(["-V", "--target-env", "vulkan1.4", "-S", stage, "-o"])
         .arg(&spirv_path)
         .arg(&source_path)
         .output()

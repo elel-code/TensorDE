@@ -14,6 +14,7 @@ pub(super) struct SceneScriptAnalysis {
     pub(super) exports_init: bool,
     pub(super) handles_media: bool,
     pub(super) handles_user_properties: bool,
+    pub(super) handles_pointer_click: bool,
     pub(super) uses_runtime: bool,
     pub(super) uses_frame_time: bool,
     pub(super) uses_audio: bool,
@@ -74,6 +75,7 @@ pub(super) fn analyze_scene_script(
             || exported("mediaTimelineChanged")
             || exported("mediaPropertiesChanged"),
         handles_user_properties: exported("applyUserProperties"),
+        handles_pointer_click: exported("cursorClick"),
         uses_runtime: visitor.uses_runtime,
         uses_frame_time: visitor.uses_frame_time,
         uses_audio: visitor.uses_audio,
@@ -208,5 +210,14 @@ mod tests {
         )
         .expect("analysis");
         assert!(analysis.uses_scene_api);
+    }
+
+    #[test]
+    fn detects_cursor_click_as_a_typed_export() {
+        let analysis = analyze_scene_script(
+            "export function cursorClick(event) {} export function update(value) { return value; }",
+        )
+        .expect("analysis");
+        assert!(analysis.handles_pointer_click);
     }
 }

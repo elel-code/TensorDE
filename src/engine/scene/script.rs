@@ -7,6 +7,6 @@ mod runtime;
 pub(crate) mod standard_library;
 
 pub use runtime::{
-    SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptProgram,
-    SceneScriptRuntime,
+    SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptMemorySnapshot,
+    SceneScriptPointerClick, SceneScriptProgram, SceneScriptRuntime,
 };

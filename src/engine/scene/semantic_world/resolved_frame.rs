@@ -102,6 +102,56 @@ impl ResolvedSemanticFrame {
             .filter(|state| state.object == object)
     }
 
+    pub fn object_effect(&self, binding_index: u32) -> Option<&ResolvedObjectEffectState> {
+        self.object_effects
+            .get(binding_index as usize)
+            .filter(|effect| effect.binding_index == binding_index)
+    }
+
+    pub fn refresh_visibility_counts(&mut self) {
+        self.visible_object_count = self
+            .objects
+            .iter()
+            .filter(|object| object.resolved_visible)
+            .count();
+        self.visible_mesh_binding_count = self
+            .objects
+            .iter()
+            .filter(|object| object.resolved_visible)
+            .map(|object| object.mesh_binding_count as usize)
+            .sum();
+        self.visible_effect_instance_count = self
+            .object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .count();
+        self.visible_effect_pass_count = self
+            .object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .map(|effect| effect.pass_count as usize)
+            .sum();
+        self.visible_effect_fbo_count = self
+            .object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .map(|effect| effect.fbo_count as usize)
+            .sum();
+        self.visible_puppet_binding_count = self
+            .objects
+            .iter()
+            .filter(|object| {
+                object.resolved_visible && object.puppet_index != INVALID_RESOLVED_INDEX
+            })
+            .count();
+        self.visible_puppet_bone_matrix_count = self
+            .puppet_bone_palettes
+            .iter()
+            .filter(|palette| palette.resolved_visible)
+            .map(|palette| palette.bone_count as usize)
+            .sum();
+    }
+
     pub fn audio_material_value(
         &self,
         object: SceneObjectHandle,

@@ -1,13 +1,14 @@
 use super::*;
 
 #[test]
-fn scene_binary_rejects_every_pre_v19_artifact() {
+fn scene_binary_rejects_the_immediately_previous_layout() {
     let mut bytes = Vec::new();
-    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v19");
-    bytes[8..12].copy_from_slice(&16_u32.to_le_bytes());
+    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write current scene");
+    let previous = SCENE_BINARY_VERSION - 1;
+    bytes[8..12].copy_from_slice(&previous.to_le_bytes());
     assert!(matches!(
         read_scene_binary_bytes(&bytes),
-        Err(SceneBinaryError::UnsupportedVersion(16))
+        Err(SceneBinaryError::UnsupportedVersion(version)) if version == previous
     ));
 }
 
@@ -409,6 +410,9 @@ fn scene_binary_round_trip_preserves_composite_blend() {
             target_name: SceneStringId::NONE,
             binding_start: 0,
             binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
             pipeline_blend: ScenePipelineBlend::Normal,
             scene_blend: SceneCompositeBlend::Modulate,
             depth_test: SceneDepthTest::Disabled,
@@ -425,5 +429,44 @@ fn scene_binary_round_trip_preserves_composite_blend() {
     assert_eq!(
         decoded.render_passes[0].scene_blend,
         SceneCompositeBlend::Modulate
+    );
+}
+
+#[test]
+fn scene_binary_round_trip_preserves_effect_visibility_ownership() {
+    let document = SceneBinaryDocument {
+        render_passes: vec![SceneRenderPassRecord {
+            id: 7,
+            role: SceneRenderPassKind::SceneComposite,
+            object: SceneObjectHandle(3),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            pass_index: 0,
+            shader_key: SceneStringId::NONE,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: 11,
+            effect_binding_count: 2,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::MaterialStages,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            scene_blend: SceneCompositeBlend::Alpha,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+
+    write_scene_binary(&document, &mut bytes).expect("write scene binary");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene binary");
+    let pass = decoded.render_passes[0];
+
+    assert_eq!(pass.effect_binding_start, 11);
+    assert_eq!(pass.effect_binding_count, 2);
+    assert_eq!(
+        pass.effect_visibility_policy,
+        SceneRenderEffectVisibilityPolicy::MaterialStages
     );
 }
