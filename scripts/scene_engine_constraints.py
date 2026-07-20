@@ -8,12 +8,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_RUST_FILE_LINES = 1000
+RUST_SOURCE_ROOTS = ("src", "build")
 
 
 def main() -> int:
     failures: list[str] = []
 
-    rust_files = list(ROOT.rglob("*.rs"))
+    rust_files = owned_rust_files(ROOT)
     oversized_rust_files = [
         (path, line_count(path)) for path in rust_files if line_count(path) > MAX_RUST_FILE_LINES
     ]
@@ -151,6 +152,19 @@ def main() -> int:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def owned_rust_files(root: Path) -> list[Path]:
+    """Return repository-owned Rust sources without scanning ignored references."""
+    rust_files = []
+    root_build = root / "build.rs"
+    if root_build.is_file():
+        rust_files.append(root_build)
+    for relative_root in RUST_SOURCE_ROOTS:
+        source_root = root / relative_root
+        if source_root.is_dir():
+            rust_files.extend(source_root.rglob("*.rs"))
+    return sorted(rust_files)
 
 
 def line_count(path: Path) -> int:
