@@ -30,8 +30,9 @@ These instructions apply to the entire repository.
   state. Do not move font rasterization, asset parsing, graph reconstruction, or
   descriptor discovery into the frame loop.
 - Preserve authored target, pass, blend, load/store, copy/swap, and ordering
-  semantics. Fuse passes only after proving the transformation pixel-equivalent
-  at the affected boundary; fewer draws alone is not evidence.
+  semantics. Fuse passes only after proving the transformed resource and
+  command stream semantically equivalent at the affected boundary; fewer draws
+  alone is not evidence.
 - Follow Godot-style ownership boundaries without copying compatibility
   behavior. Keep renderer handles out of semantic ECS and Vulkan decisions out
   of the binary/IR layers.
@@ -60,10 +61,19 @@ reuse a pre-change `.gscene`.
   variants plus strict default, enabled, intentionally disabled, duplicate,
   spelling, case, and type behavior where applicable.
 
-Use deterministic 4K fixed-step captures for correctness. Graph/prefix captures
-are diagnostic tools for locating the first divergent write; always confirm the
-complete frame. Record concrete fixture paths and checkpoints in task evidence
-or the architecture document, not as permanent repository policy.
+Use complete instruction evidence for correctness. At each deterministic
+authored checkpoint, compare the verified WE D3D11 resource/state/command
+stream with the fresh Gilder typed plan and Vulkan resource/state/command
+stream. The compared evidence must include shader code, resource contents and
+formats, constants, descriptors, targets, load/store/copy operations, barriers,
+blend/depth/raster state, viewport/scissor, ordering, and draw/dispatch/indirect
+arguments. A complete stream determines the rendered result; screenshots,
+renderer readback, PNGs, hashes, RMSE, and visual inspection add no correctness
+information and must not be used as a regression gate. Instruction graph/prefix
+slices may locate the first divergent command, but the final proof must cover
+the complete relevant frame command stream. Record concrete trace paths and
+checkpoints in task evidence or the architecture document, not as permanent
+repository policy.
 
 ## Performance evidence
 
@@ -74,18 +84,19 @@ or the architecture document, not as permanent repository policy.
   blocker before working on a smaller one. A generic feature name or theoretical
   fast path without measured hit coverage is not an optimization target.
 - Measure only a release binary at `3840x2160`, uncapped, for at least 10
-  seconds, with capture and GPU timing disabled. Verify `frame_capture: null`,
+  seconds, with command tracing and GPU timing disabled. Verify
   `gpu_timing: null`, `fifo-latest-ready`, and retained `Pss_Dirty < 40 MiB`.
-- Treat capture FPS, debug FPS, timestamp-query FPS, and first-frame pipeline
-  compilation as diagnostic data, never as the performance result.
+- Treat traced-command FPS, debug FPS, timestamp-query FPS, and first-frame
+  pipeline compilation as diagnostic data, never as the performance result.
 - Investigate and do not accept any scene in the affected performance corpus
   below its established same-hardware baseline. Roughly 140 FPS is the current
   minimum regression floor when no stronger per-scene baseline is recorded; do
   not lower a baseline to make a regression pass. The longer-term project
   target remains 4K 240 Hz.
-- Establish correctness before performance A/B. If an optimization changes
-  pixels, target semantics, visibility, animated-mask behavior, or text metrics,
-  revert it before reporting its speedup.
+- Establish correctness before performance A/B. If an optimization changes the
+  authored resource/state/command semantics, including targets, visibility,
+  animated-mask behavior, or text metrics, revert it before reporting its
+  speedup.
 - Use paired, order-reversed formal A/B runs for a candidate. If it does not
   produce a repeatable improvement consistent with the measured target cost,
   remove the candidate before selecting the next target.
@@ -95,7 +106,7 @@ or the architecture document, not as permanent repository policy.
 - Inspect both staged and unstaged diffs before editing. Preserve unrelated user
   changes, especially files reported as `MM`.
 - Keep `reverse-engineered/` on disk but ignored by Git. Do not force-add it.
-- Store generated `.gscene`, captures, plans, and performance reports under
+- Store generated `.gscene`, command traces, plans, and performance reports under
   `/tmp` or ignored artifact directories; do not commit them.
 - Run focused tests while iterating, then `cargo fmt --all`, relevant full tests,
   `git diff --check`, and the scene constraints audit.

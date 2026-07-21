@@ -7,7 +7,7 @@ old Gilder artifacts, and old screenshots as localization aids only. Never use a
 `.gscene` as a correctness reference.
 
 Choose a task-local corpus that covers every affected capability. Concrete workshop IDs, object
-names, graph indices, frame checkpoints, hashes, and pixel regions belong in the task evidence or
+names, graph indices, frame checkpoints, and trace ranges belong in the task evidence or
 architecture document; they are not permanent skill scope.
 
 Use this coverage matrix to select fixtures:
@@ -15,11 +15,11 @@ Use this coverage matrix to select fixtures:
 | Changed capability | Required evidence |
 | --- | --- |
 | Parser, typed IR, ABI, or storage | Fresh conversion of inputs containing every changed variant, round-trip tests, and strict rejection tests |
-| Transform, animation, puppet, or clipping | Fixed-step checkpoints across meaningful authored states and loop boundaries, including mask producer/consumer order |
+| Transform, animation, puppet, or clipping | Deterministic checkpoints across meaningful authored states and loop boundaries, including mask producer/consumer resources and command order |
 | Text, font, layout, or color | Authored font and raster metrics, multiline/layout extents, and parent/child modulation isolation |
 | Effect, material, target, or graph | Enabled and disabled chains, effect-only and object-source layers, intermediate targets, and complete-frame composition |
 | Particle, audio, script, or property | Every affected variant plus defaults, intentional disablement, duplicates, spelling/case, and type rejection |
-| Runtime or Vulkan execution | Typed plan inspection, retained-state behavior, full-frame pixels, and release performance |
+| Runtime or Vulkan execution | Typed plan inspection, complete Vulkan resource/state/command evidence, retained-state behavior, and release performance |
 
 ## Build and fresh conversion
 
@@ -45,31 +45,40 @@ target/release/gilder-native-vulkan --scene-backend-plan --source /tmp/<case>-cu
 Verify the artifact reports the current `.gscene` version. A version bump replaces the previous
 reader; do not add compatibility decoding, aliases, or silent translation.
 
-## Deterministic correctness capture
+## Deterministic instruction proof
 
-Capture native 4K frames with a fixed step. Choose frame numbers from the authored timeline so the
-sequence covers the relevant states instead of copying fixture-specific checkpoints:
+Choose checkpoints from the authored timeline so the sequence covers meaningful states and loop
+boundaries instead of copying fixture-specific frame numbers. For every checkpoint, retain:
 
-```text
-target/release/gilder-native-vulkan --run-scene --source /tmp/<case>-current.gscene --duration <seconds> --no-fps-limit --surface-width 3840 --surface-height 2160 --capture-frame /tmp/<case>-frame.png --capture-frame-number <frame> --capture-frame-time-step 0.016666667
-```
+- the unmodified WE renderer's canonical D3D11 instruction stream;
+- the fresh Gilder typed backend plan;
+- Gilder's canonical Vulkan resource/state/command stream.
 
-Use `GILDER_NATIVE_VULKAN_CAPTURE_GRAPH_PREFIX=N` only to find the first divergent graph. Use
-`--capture-scene-graph N` to inspect one graph. Remove both selectors for the final full-frame
-proof. Capture FPS is never performance evidence.
+Normalize API-specific spelling, but do not infer missing state. A complete comparison includes
+shader bytecode or equivalent shader semantics; texture/buffer identity, contents, dimensions,
+formats, subresources, and views; constant and push-constant bytes; descriptors and samplers;
+RTV/DSV/UAV or dynamic-rendering attachments; load/store, clear, copy, resolve, and swap behavior;
+viewport/scissor; topology and vertex/index/instance ranges; blend, color mask, depth/stencil, and
+raster state; D3D11 hazard unbinds; Vulkan layouts, stage/access masks, barriers, and queue order;
+and every draw, indirect draw, and dispatch argument. These inputs completely determine the
+rendered result.
 
-Validate semantics, not file existence:
+Use command graph/prefix ranges only to locate the first divergent resource write. Final proof must
+cover every producer and consumer that can affect the completed frame. Trace-mode throughput is
+never performance evidence.
 
-- Inspect the complete composition at native resolution and the smallest useful pixel regions.
-- Compare deterministic frames or regions with hashes, RMSE, extents, and targeted pixel probes.
+Validate semantics, not trace-file existence:
+
 - Check authored pass order, target round-trips, load/store and blend state, activation policy,
-  visibility, copies/swaps, and draw count.
+  visibility, copies/swaps, and draw count against the WE stream.
 - Require disabled effect-only graphs to leave the framebuffer unchanged; do not accept a
   passthrough resample as equivalent.
 - Require object visual modulation to remain self-only and effect visibility to remain independently
   addressable.
 - For runtime properties, prove defaults and intentional alternatives, then prove duplicate names,
   wrong case/spelling, and wrong types fail strictly when the schema requires uniqueness.
+- Do not invoke renderer readback or use screenshots, PNGs, hashes, RMSE, pixel probes, or visual
+  inspection. They are derived from and less complete than the instruction evidence.
 
 ## Formal performance run
 
@@ -79,14 +88,14 @@ Run each selected artifact independently after correctness passes:
 uv run python scripts/scene_engine_runtime_smoke.py --duration 10 --source /tmp/<case>-current.gscene --artifact-dir /tmp/gilder-perf-<case>
 ```
 
-Require release, 3840×2160, uncapped, `frame_capture=null`, `gpu_timing=null`,
+Require release, 3840×2160, uncapped, command tracing disabled, `gpu_timing=null`,
 `present_mode=fifo-latest-ready`, descriptor-heap-only, and retained `Pss_Dirty < 40960 KiB`.
 Compare with the established same-hardware, same-command baseline. Investigate a selected fixture
 below 140 FPS when no stronger baseline is recorded, and never lower a baseline to accept a
 regression. Preserve run order and repeat suspicious results to distinguish thermal or order effects
 from a code regression.
 
-Use GPU timestamps only in a separate diagnostic run. Re-run the formal no-capture, no-timing
+Use GPU timestamps only in a separate diagnostic run. Re-run the formal no-trace, no-timing
 measurement after every candidate optimization.
 
 ## Repository checks
