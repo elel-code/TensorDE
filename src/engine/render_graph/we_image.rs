@@ -6,7 +6,9 @@ use crate::core::SceneBlendMode;
 use super::binding::TextureBindingRole;
 use super::graph::{RenderGraph, RenderGraphActivationPolicy, UnsupportedGraphBoundary};
 use super::pass::{RenderPassEffectVisibility, RenderPassNode, RenderPassRole};
-use super::state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
+use super::state::{
+    ColorWriteMask, CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode,
+};
 use super::target::RenderTargetRole;
 
 mod flat_rounded_mask;
@@ -196,6 +198,11 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         .as_ref()
         .is_some_and(|snapshot| snapshot.composite_to_object_mesh);
     let has_offscreen_chain = has_effects || composite_to_object_mesh;
+    let final_effect_composites_to_scene = effect_only_layer
+        && contract
+            .effect_passes
+            .last()
+            .is_some_and(effect_only_final_material_composites_to_scene);
     let authored_texture_effects = has_effects && contract.effects_in_authored_texture_space;
     let puppet_skinning_after_effects =
         authored_texture_effects && contract.puppet_skinning_after_effects;
@@ -325,7 +332,11 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: if has_offscreen_chain {
-                    base_pipeline_blend(contract)
+                    if effect_only_layer {
+                        PipelineBlendMode::Normal
+                    } else {
+                        base_pipeline_blend(contract)
+                    }
                 } else {
                     final_pipeline_blend
                 },
@@ -348,7 +359,16 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 RenderTargetRole::ImageLocalMain
             };
         }
-        if node.target == RenderTargetRole::SceneColor {
+        let is_final_effect_scene_composite =
+            final_effect_composites_to_scene && index + 1 == contract.effect_passes.len();
+        if is_final_effect_scene_composite {
+            node.role = RenderPassRole::SceneComposite;
+            node.target = RenderTargetRole::SceneColor;
+            node.target_name = None;
+            node.state.pipeline_blend = PipelineBlendMode::Translucent;
+            node.state.color_write_mask = ColorWriteMask::Rgb;
+        }
+        if node.target == RenderTargetRole::SceneColor && !is_final_effect_scene_composite {
             node.state.pipeline_blend = final_pipeline_blend;
         }
         if node.effect_visibility.policy
@@ -389,7 +409,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         }
         graph.passes.push(node);
     }
-    if has_offscreen_chain {
+    if has_offscreen_chain && !final_effect_composites_to_scene {
         let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
         graph.passes.push(RenderPassNode {
             id: pass_id,
@@ -425,6 +445,16 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         });
     }
     graph
+}
+
+/// WE binds the normal scene target for the last material in an effect-only layer unless the
+/// authored pass names another target. The D3D11 instruction stream is the runtime authority for
+/// this boundary; copy/swap and named-target commands remain explicit graph operations.
+fn effect_only_final_material_composites_to_scene(effect: &WeEffectPassContract) -> bool {
+    effect.command.is_none()
+        && effect.target.is_none()
+        && effect.material_index.is_some()
+        && effect.shader.is_some()
 }
 
 fn framebuffer_cloudmotion_samples_snapshot_directly(contract: &WeImageGraphContract) -> bool {

@@ -581,7 +581,7 @@ fn effect_only_framebuffer_layer_without_effects_records_no_passes() {
 }
 
 #[test]
-fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
+fn framebuffer_cloudmotion_final_material_composites_directly_to_scene() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 7,
         base_material_index: Some(27),
@@ -631,10 +631,15 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
         graph.activation_policy,
         RenderGraphActivationPolicy::AnyEffectVisible
     );
-    assert_eq!(graph.passes.len(), 3);
+    assert_eq!(graph.passes.len(), 2);
     assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
-    assert_eq!(graph.passes[1].role, RenderPassRole::EffectMaterial);
-    assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalSub);
+    assert_eq!(graph.passes[1].role, RenderPassRole::SceneComposite);
+    assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
+    assert_eq!(
+        graph.passes[1].state.pipeline_blend,
+        PipelineBlendMode::Translucent
+    );
+    assert_eq!(graph.passes[1].state.color_write_mask, ColorWriteMask::Rgb);
     assert!(
         graph.passes[1]
             .bindings
@@ -643,7 +648,6 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
                 name: "_rt_FullFrameBuffer".to_owned(),
             })
     );
-    assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
     assert!(
         !graph
             .passes
@@ -653,7 +657,7 @@ fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
 }
 
 #[test]
-fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
+fn composelayer_final_effect_material_composites_directly_to_scene() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 12,
         base_material_index: Some(5),
@@ -701,14 +705,83 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
         graph.activation_policy,
         RenderGraphActivationPolicy::AnyEffectVisible
     );
+    assert_eq!(graph.passes.len(), 3);
+    assert_eq!(
+        graph.passes[1].state.pipeline_blend,
+        PipelineBlendMode::Normal
+    );
+    assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[2].shader.as_deref(),
+        Some("effects/opacity__SLOTS_1")
+    );
+    assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+    assert_eq!(
+        graph.passes[2].state.pipeline_blend,
+        PipelineBlendMode::Translucent
+    );
+    assert_eq!(graph.passes[2].state.color_write_mask, ColorWriteMask::Rgb);
+}
+
+#[test]
+fn effect_only_explicit_final_target_keeps_a_separate_scene_composite() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 12,
+        base_material_index: Some(5),
+        base_shader: Some("composelayer".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+            target_name: "_rt_FullFrameBuffer".to_owned(),
+            texture_slot: 0,
+            composite_to_object_mesh: true,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
+        }),
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: false,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: None,
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 12,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
+            runtime_visibility: true,
+            material_index: Some(6),
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some("effects/opacity__SLOTS_1".to_owned()),
+            source: None,
+            target: Some("_rt_authored_output".to_owned()),
+            binds: [(0, "previous".to_owned())].into_iter().collect(),
+            pass_constants: vec!["alpha".to_owned()],
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
     assert_eq!(graph.passes.len(), 4);
-    assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalSub);
+    assert_eq!(
+        graph.passes[2].target,
+        RenderTargetRole::FirstClassEffectTarget
+    );
+    assert_eq!(
+        graph.passes[2].target_name.as_deref(),
+        Some("_rt_authored_output")
+    );
     assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
     assert_eq!(
         graph.passes[3].shader.as_deref(),
         Some("we/objectcomposite")
     );
-    assert_eq!(graph.passes[3].target, RenderTargetRole::SceneColor);
 }
 
 #[test]
