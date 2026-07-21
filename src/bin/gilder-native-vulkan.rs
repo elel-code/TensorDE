@@ -501,7 +501,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let report = report
                 .as_object_mut()
                 .ok_or("native Vulkan scene backend plan report must be a JSON object")?;
-            report.insert("scene_backend_plan_report_version".to_owned(), json!(1));
+            report.insert("scene_backend_plan_report_version".to_owned(), json!(2));
+            report.insert(
+                "scene_render_passes".to_owned(),
+                json!(&storage.document().render_passes),
+            );
             report.insert("scene_strings".to_owned(), json!(storage.strings()));
             serde_json::Value::Object(std::mem::take(report))
         }

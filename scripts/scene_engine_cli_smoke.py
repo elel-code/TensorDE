@@ -50,8 +50,10 @@ def main() -> int:
             ]
         )
         report = json.loads(plan.stdout)
-        assert report["scene_backend_plan_report_version"] == 1
+        assert report["scene_backend_plan_report_version"] == 2
         assert "we/genericimage4" in report["scene_strings"]
+        assert report["scene_render_passes"][0]["pipeline_blend"] == "normal"
+        assert report["scene_render_passes"][0]["color_write_mask"] == "rgba"
         assert report["present_mode"] == "fifo-latest-ready"
         assert report["descriptor_heap_only"] is True
         assert report["renderer_scene_render"]["mesh_count"] == 1
