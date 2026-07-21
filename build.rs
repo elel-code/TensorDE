@@ -306,7 +306,11 @@ void main() {
     .to_owned()
 }
 
-fn caustics_effect_fragment_source(texture_slot_mask: u32, chromatic_zero: bool) -> String {
+fn caustics_effect_fragment_source(
+    texture_slot_mask: u32,
+    chromatic_zero: bool,
+    pattern_glow_shared: bool,
+) -> String {
     assert_eq!(
         texture_slot_mask & 0x3d,
         0x3d,
@@ -399,7 +403,18 @@ void main() {
     } else {
         source
     };
-    source
+    if pattern_glow_shared {
+        assert!(
+            chromatic_zero,
+            "shared caustics pattern/glow requires the chromatic-zero variant"
+        );
+        source.replace(
+            "    float glowSample = texture(g_Texture5, causticsCoords).r;",
+            "    float glowSample = causticsPattern;",
+        )
+    } else {
+        source
+    }
 }
 
 fn colorkey_effect_fragment_source(_texture_slot_mask: u32) -> String {

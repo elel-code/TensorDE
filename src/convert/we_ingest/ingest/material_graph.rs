@@ -771,7 +771,7 @@ impl WeIrBuilder {
         let constants = merged_material_constants(&base_constants, instance_pass);
         let textures = textures.into_values().collect::<Vec<_>>();
         let shader_key =
-            caustics_specialization::specialize_caustics_shader(shader_key, &constants);
+            caustics_specialization::specialize_caustics_shader(shader_key, &constants, &textures);
         let handle = self.materials.len() as u32;
         let texture_start = self.material_textures.len() as u32;
         self.material_textures.extend(textures);
