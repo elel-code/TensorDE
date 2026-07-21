@@ -223,4 +223,33 @@ mod tests {
             assert!(shader.fragment_spirv.len() > 200);
         }
     }
+
+    #[test]
+    fn effect_target_waterwaves_identity_is_not_emitted_for_mesh_composites() {
+        let effect = native_vulkan_scene_shader_for_key(
+            "we/effect-waterwaves-direct__STAGES_6",
+        )
+        .expect("effect-target waterwaves shader");
+        let image = native_vulkan_scene_shader_for_key(
+            "we/image-waterwaves-direct__STAGES_6",
+        )
+        .expect("image waterwaves shader");
+        let puppet = native_vulkan_scene_shader_for_key(
+            "we/puppet-waterwaves-direct__STAGES_6",
+        )
+        .expect("puppet waterwaves shader");
+
+        assert_ne!(effect.fragment_spirv, image.fragment_spirv);
+        assert_eq!(image.fragment_spirv, puppet.fragment_spirv);
+
+        let effect_two = native_vulkan_scene_shader_for_key(
+            "we/effect-waterwaves-direct__STAGES_2",
+        )
+        .expect("two-stage effect-target waterwaves shader");
+        let image_two = native_vulkan_scene_shader_for_key(
+            "we/image-waterwaves-direct__STAGES_2",
+        )
+        .expect("two-stage image waterwaves shader");
+        assert_eq!(effect_two.fragment_spirv, image_two.fragment_spirv);
+    }
 }

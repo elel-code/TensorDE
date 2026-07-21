@@ -250,6 +250,31 @@ fn waterwaves_visibility_mask_neutralizes_only_the_hidden_stage() {
 }
 
 #[test]
+fn direct_waterwaves_disabled_chain_has_zero_displacement() {
+    let storage = storage_with_constants(
+        "we/effect-waterwaves-direct__STAGES_3",
+        &[
+            ("waterwaves.stage_count", "3"),
+            ("waterwaves.0.strength", "0.5"),
+            ("waterwaves.1.strength", "0.75"),
+            ("waterwaves.2.strength", "0.25"),
+        ],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.effect_binding_start = 4;
+    draw.effect_binding_count = 3;
+    draw.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::WaterWavesStages;
+    draw.resolved_effect_visibility_mask = 0;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    for strength_lane in [10, 26, 42] {
+        assert_eq!(f32_from_payload(&payload, strength_lane * 4), 0.0);
+    }
+}
+
+#[test]
 fn foliage_ripple_visibility_mask_neutralizes_each_owned_stage() {
     let storage = storage_with_constants(
         "we/image-foliage-ripple-composite",

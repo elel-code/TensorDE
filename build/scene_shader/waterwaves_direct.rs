@@ -1,4 +1,6 @@
 //! Direct typed evaluation of a complete authored WaterWaves chain.
+//!
+//! Authored sampling reference: `reverse-engineered/shaders/effects/waterwaves.frag`.
 
 pub(crate) fn waterwaves_direct_sources(
     puppet_skinning: bool,
@@ -16,7 +18,12 @@ pub(crate) fn waterwaves_direct_sources(
     };
     (
         vertex,
-        waterwaves_direct_fragment(premultiply_output, stage_count, static_black_output),
+        waterwaves_direct_fragment(
+            premultiply_output,
+            fullscreen_effect,
+            stage_count,
+            static_black_output,
+        ),
     )
 }
 
@@ -41,6 +48,7 @@ void main() {
 
 fn waterwaves_direct_fragment(
     premultiply_output: bool,
+    fullscreen_effect: bool,
     stage_count: Option<usize>,
     static_black_output: bool,
 ) -> String {
@@ -84,20 +92,54 @@ fn waterwaves_direct_fragment(
         || "    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 9);\n".to_owned(),
         |count| format!("    int stage_count = {count};\n"),
     );
+    // Consecutive effect passes ping-pong between equal-sized image-local
+    // targets. At zero authored displacement their fullscreen texel grids
+    // coincide, so one native sample is the authored identity. Mesh and
+    // puppet composites target scene color and do not have that invariant.
+    let track_effect_displacement =
+        fullscreen_effect && !static_black_output && stage_count != Some(2);
     let stage_evaluation = stage_count.map_or_else(
         || {
-            "    for (int stage = 8; stage >= 0; --stage) {\n\
-                 if (stage < stage_count) {\n\
-                     source_uv += stageOffset(stage, source_uv);\n\
-                 }\n\
-             }\n"
-            .to_owned()
+            if track_effect_displacement {
+                "    bool any_displacement = false;\n\
+                 for (int stage = 8; stage >= 0; --stage) {\n\
+                     if (stage < stage_count) {\n\
+                         vec2 stage_offset = stageOffset(stage, source_uv);\n\
+                         source_uv += stage_offset;\n\
+                         any_displacement = any_displacement\n\
+                             || any(notEqual(stage_offset, vec2(0.0)));\n\
+                     }\n\
+                 }\n"
+                .to_owned()
+            } else {
+                "    for (int stage = 8; stage >= 0; --stage) {\n\
+                     if (stage < stage_count) {\n\
+                         source_uv += stageOffset(stage, source_uv);\n\
+                     }\n\
+                 }\n"
+                .to_owned()
+            }
         },
         |count| {
-            (0..count)
+            let declaration = track_effect_displacement
+                .then_some("    bool any_displacement = false;\n")
+                .unwrap_or_default();
+            let stages = (0..count)
                 .rev()
-                .map(|stage| format!("    source_uv += stageOffset({stage}, source_uv);\n"))
-                .collect()
+                .map(|stage| {
+                    if track_effect_displacement {
+                        format!(
+                            "    vec2 stage_offset_{stage} = stageOffset({stage}, source_uv);\n\
+                             source_uv += stage_offset_{stage};\n\
+                             any_displacement = any_displacement\n\
+                                 || any(notEqual(stage_offset_{stage}, vec2(0.0)));\n"
+                        )
+                    } else {
+                        format!("    source_uv += stageOffset({stage}, source_uv);\n")
+                    }
+                })
+                .collect::<String>();
+            format!("{declaration}{stages}")
         },
     );
     let source_filter = if static_black_output {
@@ -108,6 +150,21 @@ fn waterwaves_direct_fragment(
         // The 0.17 texel two-stage reconstruction passes the authored temporal
         // gate with the native sample; retain implicit mip and anisotropy state.
         "    vec4 source_color = texture(g_Texture0, source_uv);\n".to_owned()
+    } else if track_effect_displacement {
+        r#"    vec4 source_color;
+    if (!any_displacement) {
+        source_color = texture(g_Texture0, source_uv);
+    } else {
+        vec2 source_texel = 1.0 / vec2(textureSize(g_Texture0, 0));
+        vec2 filter_offset = source_texel * authored_filter_radius;
+        source_color = (
+            texture(g_Texture0, source_uv + vec2(-filter_offset.x, -filter_offset.y))
+            + texture(g_Texture0, source_uv + vec2(filter_offset.x, -filter_offset.y))
+            + texture(g_Texture0, source_uv + vec2(-filter_offset.x, filter_offset.y))
+            + texture(g_Texture0, source_uv + vec2(filter_offset.x, filter_offset.y))) * 0.25;
+    }
+"#
+        .to_owned()
     } else {
         r#"    vec2 source_texel = 1.0 / vec2(textureSize(g_Texture0, 0));
     vec2 filter_offset = source_texel * authored_filter_radius;
