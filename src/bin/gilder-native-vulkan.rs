@@ -497,7 +497,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let file = std::fs::File::open(&source)?;
             let storage = SceneStorage::from_binary_reader(file)?;
-            json!(native_vulkan_scene_backend_plan(&storage))
+            let mut report = json!(native_vulkan_scene_backend_plan(&storage));
+            let report = report
+                .as_object_mut()
+                .ok_or("native Vulkan scene backend plan report must be a JSON object")?;
+            report.insert("scene_backend_plan_report_version".to_owned(), json!(1));
+            report.insert("scene_strings".to_owned(), json!(storage.strings()));
+            serde_json::Value::Object(std::mem::take(report))
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunStatic => {
