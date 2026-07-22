@@ -109,5 +109,7 @@ device-local snapshot, including connected connectors that do not yet have a mod
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
 `OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
-The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner` without changing the
-protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
+The plan also carries the preferred native fourcc, explicit modifier, and plane count selected by
+the Vulkan/KMS/GBM intersection. A format change is therefore an output change rather than hidden
+backend state. The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner` without
+changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.

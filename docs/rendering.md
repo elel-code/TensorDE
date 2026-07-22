@@ -40,6 +40,13 @@ implicit `DRM_FORMAT_MOD_INVALID` is rejected. XRGB8888 is the first format pref
 the corresponding alpha, channel-order, and 10-bit candidates. An empty initial intersection is a
 startup error, so systemd readiness and session autostart cannot run with an unusable output path.
 
+The preferred intersection result is part of `OutputDescriptor`, so mode, CRTC, fourcc, modifier,
+and plane-count changes share one topology generation and one hotplug diff. The protocol boundary
+turns that descriptor into a `NativeOutputTarget` containing stable output identity, pixel extent,
+fourcc, explicit modifier, and plane count. The renderer checks the target against the selected
+Vulkan device again before registering it. A target change clears scene-damage history but retains
+in-flight timeline ownership until the old submission retires.
+
 GBM remains owned by Smithay and does not become a renderer. Its check validates the allocation and
 KMS-facing boundary; Vulkanalia remains the only component that creates and renders native output
 images.
@@ -74,11 +81,11 @@ reported image descriptor alignment, and adds the implementation's reserved rang
 the configured usable budget at `maxResourceHeapSize`. These are device properties, not a
 substitute for the eventual Vulkan heap binding and descriptor writes.
 
-The current boundary deliberately submits an empty command buffer. Native Vulkan image allocation,
-descriptor writes, dma-buf export, queue-family release, and Smithay atomic KMS commit are the next
-required layer. Until those handles and fences are connected, presentation-time, alpha-modifier,
-and background-effect globals remain unadvertised; a timeline submission alone is not a displayed
-frame.
+The current boundary deliberately submits an empty command buffer. Native output target value
+negotiation and validation are connected, but Vulkan image allocation, descriptor writes, dma-buf
+export, queue-family release, and Smithay atomic KMS commit are the next required layer. Until those
+handles and fences are connected, presentation-time, alpha-modifier, and background-effect globals
+remain unadvertised; a timeline submission alone is not a displayed frame.
 
 ## Synchronization
 

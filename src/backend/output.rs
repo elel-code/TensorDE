@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use smithay::output::{Mode, Subpixel};
 
+use crate::render::OutputFormat;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConnectorSnapshot {
     pub(crate) id: BackendOutputId,
@@ -12,6 +14,7 @@ pub(crate) struct ConnectorSnapshot {
     pub(crate) modes: Vec<Mode>,
     pub(crate) preferred_mode: Option<Mode>,
     pub(crate) mapped_crtc: Option<u32>,
+    pub(crate) native_format: Option<OutputFormat>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +33,7 @@ pub(crate) struct OutputDescriptor {
     pub(crate) modes: Vec<Mode>,
     pub(crate) preferred_mode: Mode,
     pub(crate) crtc: u32,
+    pub(crate) native_format: OutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -94,12 +98,25 @@ fn output_for_connector(connector: &ConnectorSnapshot) -> Option<OutputDescripto
         modes: connector.modes.clone(),
         preferred_mode: connector.preferred_mode?,
         crtc: connector.mapped_crtc?,
+        native_format: connector.native_format?,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+
     use super::*;
+
+    fn native_format(modifier: u64) -> OutputFormat {
+        OutputFormat {
+            format: DrmFormat {
+                code: Fourcc::Xrgb8888,
+                modifier: Modifier::from(modifier),
+            },
+            plane_count: 1,
+        }
+    }
 
     fn connector(
         device_id: u64,
@@ -124,6 +141,7 @@ mod tests {
             modes: mode.into_iter().collect(),
             preferred_mode: mode,
             mapped_crtc,
+            native_format: Some(native_format(9)),
         }
     }
 
@@ -160,6 +178,14 @@ mod tests {
     }
 
     #[test]
+    fn policy_waits_for_native_format_negotiation() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
+        connector.native_format = None;
+
+        assert!(OutputPolicy.plan([&connector]).is_empty());
+    }
+
+    #[test]
     fn plan_diff_disconnects_before_connecting_and_changing() {
         let removed = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
         let old_changed = connector(1, 2, ConnectorState::Connected, Some(2), Some(1920));
@@ -177,6 +203,20 @@ mod tests {
                 BackendOutputEvent::Changed(current[&changed.id].clone()),
                 BackendOutputEvent::Connected(current[&added.id].clone()),
             ]
+        );
+    }
+
+    #[test]
+    fn format_change_is_an_output_change() {
+        let old = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
+        let mut changed = old.clone();
+        changed.native_format = Some(native_format(10));
+        let previous = OutputPolicy.plan([&old]);
+        let current = OutputPolicy.plan([&changed]);
+
+        assert_eq!(
+            diff_output_plans(&previous, &current),
+            vec![BackendOutputEvent::Changed(current[&changed.id].clone())]
         );
     }
 }

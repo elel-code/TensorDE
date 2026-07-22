@@ -17,7 +17,7 @@ pub(crate) use format::{
     GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats,
 };
 #[cfg(feature = "tty")]
-pub(crate) use frame::{FrameError, FrameScheduler, FrameSubmission, RenderOutputId};
+pub(crate) use frame::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
 pub use interop::NativeInteropCapabilities;
 pub use target::RendererTarget;
 pub(crate) use vulkan::{RendererError, VulkanRenderer};

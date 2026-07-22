@@ -375,7 +375,7 @@ impl TtyBackend {
                     message: error.to_string(),
                 })?;
 
-            let current = device
+            let mut current = device
                 .scanner
                 .connectors()
                 .values()
@@ -390,6 +390,12 @@ impl TtyBackend {
                 .collect::<BTreeMap<_, _>>();
             let output_formats =
                 negotiate_device_output_formats(device_id, device, &current, renderer_formats)?;
+            for (output_id, formats) in &output_formats {
+                current
+                    .get_mut(output_id)
+                    .expect("format negotiation returned an unknown output")
+                    .native_format = formats.first().copied();
+            }
             if current == device.connectors && output_formats == device.output_formats {
                 false
             } else {
@@ -424,18 +430,24 @@ fn negotiate_device_output_formats(
     connectors: &BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
     renderer_formats: &[VulkanFormatCapability],
 ) -> Result<BTreeMap<super::BackendOutputId, Vec<OutputFormat>>, BackendError> {
-    let outputs = OutputPolicy.plan(connectors.values());
     let mut negotiated = BTreeMap::new();
-    for output in outputs.values() {
+    for output in connectors.values().filter(|connector| {
+        connector.state == ConnectorState::Connected
+            && connector.preferred_mode.is_some()
+            && connector.mapped_crtc.is_some()
+    }) {
+        let mapped_crtc = output
+            .mapped_crtc
+            .expect("filtered output must have a mapped CRTC");
         let crtc = device
             .drm
             .crtcs()
             .iter()
             .copied()
-            .find(|crtc| u32::from(*crtc) == output.crtc)
+            .find(|crtc| u32::from(*crtc) == mapped_crtc)
             .ok_or_else(|| BackendError::OutputFormats {
                 output: output.name.clone(),
-                message: format!("mapped CRTC {} disappeared", output.crtc),
+                message: format!("mapped CRTC {mapped_crtc} disappeared"),
             })?;
         let planes = device
             .drm
@@ -531,6 +543,7 @@ fn describe_connector(
         modes,
         preferred_mode,
         mapped_crtc: crtc.map(Into::into),
+        native_format: None,
     }
 }
 

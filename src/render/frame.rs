@@ -5,10 +5,19 @@ use thiserror::Error;
 
 use crate::scene::{DamageSet, SceneSnapshot};
 
+use super::format::OutputFormat;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RenderOutputId {
     pub(crate) device_id: u64,
     pub(crate) connector_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeOutputTarget {
+    pub(crate) output: RenderOutputId,
+    pub(crate) viewport: Rect,
+    pub(crate) format: OutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,10 +28,9 @@ pub(crate) struct HeapAllocation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameSubmission {
-    pub(crate) output: RenderOutputId,
+    pub(crate) target: NativeOutputTarget,
     pub(crate) serial: u64,
     pub(crate) timeline_value: u64,
-    pub(crate) viewport: Rect,
     pub(crate) scene: SceneSnapshot,
     pub(crate) damage: DamageSet,
     pub(crate) descriptors: HeapAllocation,
@@ -61,18 +69,25 @@ impl FrameScheduler {
         })
     }
 
-    pub(crate) fn register_output(
-        &mut self,
-        output: RenderOutputId,
-        viewport: Rect,
-    ) -> Result<(), FrameError> {
-        if viewport.width == 0 || viewport.height == 0 {
-            return Err(FrameError::InvalidViewport(viewport));
+    pub(crate) fn register_output(&mut self, target: NativeOutputTarget) -> Result<(), FrameError> {
+        if target.viewport.width == 0 || target.viewport.height == 0 {
+            return Err(FrameError::InvalidViewport(target.viewport));
+        }
+        if target.format.format.modifier == smithay::backend::allocator::Modifier::Invalid {
+            return Err(FrameError::ImplicitOutputModifier(target.output));
+        }
+        if target.format.plane_count == 0 {
+            return Err(FrameError::InvalidOutputPlaneCount(target.output));
         }
         self.outputs
-            .entry(output)
-            .and_modify(|state| state.viewport = viewport)
-            .or_insert_with(|| OutputFrameState::new(viewport));
+            .entry(target.output)
+            .and_modify(|state| {
+                if state.target != target {
+                    state.target = target;
+                    state.previous_scene = None;
+                }
+            })
+            .or_insert_with(|| OutputFrameState::new(target));
         Ok(())
     }
 
@@ -129,10 +144,9 @@ impl FrameScheduler {
         state.in_flight = true;
 
         Ok(FrameSubmission {
-            output,
+            target: state.target,
             serial,
             timeline_value,
-            viewport: state.viewport,
             scene,
             damage,
             descriptors,
@@ -155,7 +169,7 @@ impl FrameScheduler {
 
 #[derive(Debug)]
 struct OutputFrameState {
-    viewport: Rect,
+    target: NativeOutputTarget,
     previous_scene: Option<SceneSnapshot>,
     next_serial: u64,
     last_submitted_timeline: u64,
@@ -163,9 +177,9 @@ struct OutputFrameState {
 }
 
 impl OutputFrameState {
-    fn new(viewport: Rect) -> Self {
+    fn new(target: NativeOutputTarget) -> Self {
         Self {
-            viewport,
+            target,
             previous_scene: None,
             next_serial: 1,
             last_submitted_timeline: 0,
@@ -292,6 +306,10 @@ pub(crate) enum FrameError {
     },
     #[error("output viewport {0:?} has zero width or height")]
     InvalidViewport(Rect),
+    #[error("output {0:?} requires an explicit DRM modifier")]
+    ImplicitOutputModifier(RenderOutputId),
+    #[error("output {0:?} has no dma-buf planes")]
+    InvalidOutputPlaneCount(RenderOutputId),
     #[error("renderer timeline value space is exhausted")]
     TimelineExhausted,
     #[error("renderer frame serial space is exhausted")]
@@ -302,6 +320,8 @@ pub(crate) enum FrameError {
 
 #[cfg(test)]
 mod tests {
+    use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+
     use super::*;
     use crate::{
         ecs::{ViewId, WorkspaceId},
@@ -318,6 +338,20 @@ mod tests {
         connector_id: 3,
     };
     const VIEWPORT: Rect = Rect::new(0, 0, 1920, 1080);
+
+    fn target(output: RenderOutputId) -> NativeOutputTarget {
+        NativeOutputTarget {
+            output,
+            viewport: VIEWPORT,
+            format: OutputFormat {
+                format: DrmFormat {
+                    code: Fourcc::Xrgb8888,
+                    modifier: Modifier::from(9),
+                },
+                plane_count: 1,
+            },
+        }
+    }
 
     fn scene(view_id: u64) -> SceneSnapshot {
         SceneSnapshot::new(
@@ -338,7 +372,7 @@ mod tests {
     #[test]
     fn first_frame_and_scene_change_produce_damage() {
         let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
-        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert_eq!(first.serial, 1);
         assert_eq!(first.damage.regions(), &[VIEWPORT]);
@@ -354,7 +388,7 @@ mod tests {
     #[test]
     fn in_flight_output_cannot_reuse_descriptors() {
         let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
-        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert!(matches!(
             scheduler.submit(OUTPUT, scene(2), 0),
@@ -371,8 +405,8 @@ mod tests {
     #[test]
     fn descriptor_exhaustion_is_reported_until_timeline_retires() {
         let mut scheduler = FrameScheduler::new(96, 32, 0, 32).unwrap();
-        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
-        scheduler.register_output(SECOND_OUTPUT, VIEWPORT).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        scheduler.register_output(target(SECOND_OUTPUT)).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert!(matches!(
             scheduler.submit(SECOND_OUTPUT, scene(2), 0),
@@ -389,7 +423,10 @@ mod tests {
     fn invalid_and_unknown_outputs_fail_at_boundary() {
         let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         assert!(matches!(
-            scheduler.register_output(OUTPUT, Rect::new(0, 0, 0, 100)),
+            scheduler.register_output(NativeOutputTarget {
+                viewport: Rect::new(0, 0, 0, 100),
+                ..target(OUTPUT)
+            }),
             Err(FrameError::InvalidViewport(_))
         ));
         assert!(matches!(
@@ -401,7 +438,7 @@ mod tests {
     #[test]
     fn device_loss_stops_future_frame_submission() {
         let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
-        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
         scheduler.mark_device_lost();
         assert_eq!(
             scheduler.submit(OUTPUT, scene(1), 0),
@@ -412,7 +449,7 @@ mod tests {
     #[test]
     fn descriptor_heap_respects_reserved_range_and_alignment() {
         let mut scheduler = FrameScheduler::new(4096, 64, 96, 48).unwrap();
-        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
         let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert_eq!(frame.descriptors.offset, 128);
         assert_eq!(frame.descriptors.size, 128);
@@ -428,5 +465,60 @@ mod tests {
             FrameScheduler::new(4096, 64, 4096, 32),
             Err(FrameError::DescriptorHeapTooSmall { .. })
         ));
+    }
+
+    #[test]
+    fn native_target_requires_explicit_modifier_and_planes() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        let implicit = NativeOutputTarget {
+            format: OutputFormat {
+                format: DrmFormat {
+                    code: Fourcc::Xrgb8888,
+                    modifier: Modifier::Invalid,
+                },
+                plane_count: 1,
+            },
+            ..target(OUTPUT)
+        };
+        assert!(matches!(
+            scheduler.register_output(implicit),
+            Err(FrameError::ImplicitOutputModifier(_))
+        ));
+        let no_planes = NativeOutputTarget {
+            format: OutputFormat {
+                plane_count: 0,
+                ..target(OUTPUT).format
+            },
+            ..target(OUTPUT)
+        };
+        assert!(matches!(
+            scheduler.register_output(no_planes),
+            Err(FrameError::InvalidOutputPlaneCount(_))
+        ));
+    }
+
+    #[test]
+    fn target_change_preserves_in_flight_lifetime_and_resets_damage_history() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        let resized = NativeOutputTarget {
+            viewport: Rect::new(0, 0, 2560, 1440),
+            ..target(OUTPUT)
+        };
+
+        scheduler.register_output(resized).unwrap();
+        assert!(matches!(
+            scheduler.submit(OUTPUT, scene(1), 0),
+            Err(FrameError::OutputBusy { .. })
+        ));
+        scheduler.retire_completed(first.timeline_value);
+        let second = scheduler
+            .submit(OUTPUT, scene(1), first.timeline_value)
+            .unwrap();
+
+        assert_eq!(second.serial, 2);
+        assert_eq!(second.target, resized);
+        assert_eq!(second.damage.regions(), &[VIEWPORT]);
     }
 }

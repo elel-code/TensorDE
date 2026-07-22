@@ -33,7 +33,7 @@ use crate::{
 use tensor_util::Size;
 
 #[cfg(feature = "tty")]
-use crate::render::RenderOutputId;
+use crate::render::{NativeOutputTarget, RenderOutputId};
 #[cfg(feature = "tty")]
 use tensor_util::Rect;
 
@@ -255,9 +255,12 @@ impl RuntimeState {
                 descriptor_bytes = frame.descriptors.size,
                 scene_nodes = frame.scene.nodes().len(),
                 damage_empty = frame.damage.is_empty(),
-                frame_output_device = frame.output.device_id,
-                frame_output_connector = frame.output.connector_id,
-                viewport = ?frame.viewport,
+                frame_output_device = frame.target.output.device_id,
+                frame_output_connector = frame.target.output.connector_id,
+                viewport = ?frame.target.viewport,
+                format = %frame.target.format.format.code,
+                modifier = %format_args!("{:#x}", u64::from(frame.target.format.format.modifier)),
+                planes = frame.target.format.plane_count,
                 "renderer frame boundary submitted"
             ),
             Err(error) => warn!(
@@ -423,13 +426,14 @@ impl RuntimeState {
                 u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
                 u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
             );
-            if let Err(error) = renderer.register_output(
-                RenderOutputId {
+            if let Err(error) = renderer.register_output(NativeOutputTarget {
+                output: RenderOutputId {
                     device_id: descriptor.id.device_id,
                     connector_id: descriptor.id.connector_id,
                 },
                 viewport,
-            ) {
+                format: descriptor.native_format,
+            }) {
                 warn!(%error, output = descriptor.name, "failed to register renderer output");
             }
         }
@@ -470,13 +474,14 @@ impl RuntimeState {
                 u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
                 u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
             );
-            if let Err(error) = renderer.register_output(
-                RenderOutputId {
+            if let Err(error) = renderer.register_output(NativeOutputTarget {
+                output: RenderOutputId {
                     device_id: descriptor.id.device_id,
                     connector_id: descriptor.id.connector_id,
                 },
                 viewport,
-            ) {
+                format: descriptor.native_format,
+            }) {
                 warn!(%error, output = descriptor.name, "failed to resize renderer output");
             }
         }
@@ -580,6 +585,7 @@ impl ClientData for WaylandClientState {
 #[cfg(all(test, feature = "tty"))]
 mod tests {
     use smithay::{
+        backend::allocator::{Format as DrmFormat, Fourcc, Modifier},
         output::{Mode, Subpixel},
         reexports::wayland_server::Display,
     };
@@ -602,6 +608,13 @@ mod tests {
             modes: vec![mode],
             preferred_mode: mode,
             crtc: connector_id,
+            native_format: crate::render::OutputFormat {
+                format: DrmFormat {
+                    code: Fourcc::Xrgb8888,
+                    modifier: Modifier::from(9),
+                },
+                plane_count: 1,
+            },
         }
     }
 

@@ -14,7 +14,7 @@ use super::{
     NativeInteropCapabilities, RendererTarget, VulkanFormatCapability,
 };
 #[cfg(feature = "tty")]
-use super::{FrameError, FrameScheduler, FrameSubmission, RenderOutputId};
+use super::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
 
 #[cfg(feature = "tty")]
 mod frame;
@@ -205,10 +205,22 @@ impl VulkanRenderer {
     #[cfg(feature = "tty")]
     pub(crate) fn register_output(
         &mut self,
-        output: RenderOutputId,
-        viewport: tensor_util::Rect,
-    ) -> Result<(), FrameError> {
-        self.frames.register_output(output, viewport)
+        target: NativeOutputTarget,
+    ) -> Result<(), RendererError> {
+        if !self.selected.formats.iter().copied().any(|candidate| {
+            candidate.format == target.format.format
+                && candidate.plane_count == target.format.plane_count
+                && candidate.supports_output_export()
+        }) {
+            return Err(RendererError::UnsupportedOutputTarget {
+                format: target.format.format.code,
+                modifier: u64::from(target.format.format.modifier),
+                plane_count: target.format.plane_count,
+            });
+        }
+        self.frames
+            .register_output(target)
+            .map_err(|error| RendererError::Frame(error.to_string()))
     }
 
     #[cfg(feature = "tty")]
@@ -662,6 +674,15 @@ pub enum RendererError {
     #[error("failed to create Vulkan frame resources: {0:?}")]
     #[cfg(feature = "tty")]
     CreateFrameResources(vk::ErrorCode),
+    #[error(
+        "native output target {format} modifier {modifier:#x} with {plane_count} planes is not exportable by the selected Vulkan device"
+    )]
+    #[cfg(feature = "tty")]
+    UnsupportedOutputTarget {
+        format: Fourcc,
+        modifier: u64,
+        plane_count: u32,
+    },
     #[error("failed to query the renderer timeline semaphore: {0:?}")]
     #[cfg(feature = "tty")]
     QueryTimeline(vk::ErrorCode),
