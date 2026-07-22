@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 #[cfg(feature = "tty")]
 mod output;
 #[cfg(feature = "tty")]
@@ -10,7 +8,7 @@ pub(crate) use output::{BackendOutputEvent, BackendOutputId, OutputDescriptor};
 #[cfg(feature = "tty")]
 pub(crate) use tty::TtyBackend;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BackendConfig {
-    pub(crate) render_device: Option<PathBuf>,
+    pub(crate) drm_node: crate::render::DrmNodeId,
 }

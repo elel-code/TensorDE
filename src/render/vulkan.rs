@@ -8,7 +8,7 @@ use vulkanalia::{
     prelude::v1_4::*,
 };
 
-use super::{DeviceCandidate, DeviceSelectionError, RendererTarget};
+use super::{DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, RendererTarget};
 
 pub(crate) struct VulkanRenderer {
     _owner: VulkanOwner,
@@ -22,6 +22,8 @@ pub(crate) struct SelectedDevice {
     pub(crate) api_version: Version,
     pub(crate) device_type: vk::PhysicalDeviceType,
     pub(crate) graphics_queue_family: u32,
+    pub(crate) primary_node: DrmNodeId,
+    pub(crate) render_node: DrmNodeId,
 }
 
 impl VulkanRenderer {
@@ -66,17 +68,26 @@ impl VulkanRenderer {
             .ok_or(DeviceSelectionError::MissingGraphicsQueue)?;
         let device = create_device(&instance.instance, selected.handle, graphics_queue_family)?;
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+        let (primary_node, render_node) = selected
+            .candidate
+            .drm
+            .and_then(DrmDeviceIdentity::node_pair)
+            .ok_or(DeviceSelectionError::MissingDrmNodePair)?;
         let selected_info = SelectedDevice {
             name: selected.candidate.name.clone(),
             api_version: selected.candidate.api_version,
             device_type: selected.candidate.device_type,
             graphics_queue_family,
+            primary_node,
+            render_node,
         };
         info!(
             name = selected_info.name,
             api = %selected_info.api_version,
             device_type = ?selected_info.device_type,
             graphics_queue_family,
+            primary_node = %selected_info.primary_node,
+            render_node = %selected_info.render_node,
             descriptor_heap = true,
             "Vulkanalia renderer device initialized"
         );
@@ -154,6 +165,12 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
             .any(|extension| extension.extension_name == vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name);
         let descriptor_heap_supported =
             has_heap_extension && descriptor_heap_feature(instance, handle);
+        let has_drm_extension = extensions.iter().any(|extension| {
+            extension.extension_name == vk::EXT_PHYSICAL_DEVICE_DRM_EXTENSION.name
+        });
+        let drm = has_drm_extension
+            .then(|| drm_device_identity(instance, handle))
+            .flatten();
         let graphics_queue_family = unsafe {
             instance
                 .get_physical_device_queue_family_properties(handle)
@@ -170,10 +187,34 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 api_version: properties.api_version.into(),
                 descriptor_heap_supported,
                 graphics_queue_family,
+                drm,
             },
         });
     }
     Ok(candidates)
+}
+
+fn drm_device_identity(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+) -> Option<DrmDeviceIdentity> {
+    let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceProperties2::builder().push_next(&mut drm);
+    unsafe { instance.get_physical_device_properties2(device, &mut properties) };
+
+    let primary = drm_node(drm.has_primary, drm.primary_major, drm.primary_minor);
+    let render = drm_node(drm.has_render, drm.render_major, drm.render_minor);
+    (primary.is_some() || render.is_some()).then(|| DrmDeviceIdentity::new(primary, render))
+}
+
+fn drm_node(present: vk::Bool32, major: i64, minor: i64) -> Option<DrmNodeId> {
+    if present == 0 {
+        return None;
+    }
+    Some(DrmNodeId::new(
+        u32::try_from(major).ok()?,
+        u32::try_from(minor).ok()?,
+    ))
 }
 
 fn descriptor_heap_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {

@@ -9,13 +9,13 @@ use smithay::{
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{self, UdevBackend, UdevEvent},
+        udev::{UdevBackend, UdevEvent},
     },
     output::{Mode, Subpixel},
     reexports::{
         calloop::{Dispatcher, LoopHandle, RegistrationToken},
         input::Libinput,
-        rustix::fs::OFlags,
+        rustix::fs::{OFlags, makedev},
     },
     utils::DeviceFd,
 };
@@ -76,13 +76,14 @@ impl TtyBackend {
             .device_list()
             .map(|(device_id, path)| (device_id, path.to_owned()))
             .collect::<Vec<_>>();
-        let selected_path = match &config.render_device {
-            Some(path) => path.clone(),
-            None => udev::primary_gpu(&seat)
-                .map_err(BackendError::PrimaryGpu)?
-                .ok_or(BackendError::NoGpu)?,
-        };
-        let (primary_node, render_node) = resolve_node_pair(&selected_path)?;
+        let selected_node =
+            DrmNode::from_dev_id(makedev(config.drm_node.major(), config.drm_node.minor()))
+                .map_err(|error| BackendError::SelectedNode {
+                    node: config.drm_node,
+                    message: error.to_string(),
+                })?;
+        let selected_path = node_path(selected_node);
+        let (primary_node, render_node) = resolve_node_pair(selected_node, &selected_path)?;
 
         let udev = Dispatcher::new(udev_backend, |event, _, state: &mut RuntimeState| {
             state.dispatch_udev_event(event);
@@ -439,11 +440,7 @@ fn describe_connector(
     }
 }
 
-fn resolve_node_pair(path: &Path) -> Result<(DrmNode, DrmNode), BackendError> {
-    let node = DrmNode::from_path(path).map_err(|error| BackendError::Device {
-        path: path.to_owned(),
-        message: error.to_string(),
-    })?;
+fn resolve_node_pair(node: DrmNode, path: &Path) -> Result<(DrmNode, DrmNode), BackendError> {
     let (primary, render) = match node.ty() {
         NodeType::Primary => {
             let render = paired_node(node, NodeType::Render, path)?;
@@ -486,10 +483,11 @@ pub(crate) enum BackendError {
     Session(String),
     #[error("failed to enumerate DRM devices through udev: {0}")]
     Udev(std::io::Error),
-    #[error("failed to select the primary GPU through udev: {0}")]
-    PrimaryGpu(std::io::Error),
-    #[error("udev did not find a GPU for the active seat")]
-    NoGpu,
+    #[error("selected Vulkan DRM node {node} is unavailable to Smithay: {message}")]
+    SelectedNode {
+        node: crate::render::DrmNodeId,
+        message: String,
+    },
     #[error("failed to assign seat {0} to libinput")]
     LibinputSeat(String),
     #[error("failed to initialize DRM device {path}: {message}")]

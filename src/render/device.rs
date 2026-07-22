@@ -1,4 +1,9 @@
-use std::str::FromStr;
+use std::{
+    fmt, fs,
+    os::unix::fs::{FileTypeExt, MetadataExt},
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use thiserror::Error;
 use vulkanalia::{Version, vk};
@@ -38,6 +43,83 @@ impl FromStr for GpuPreference {
 #[error("unknown GPU preference '{0}'; expected discrete, integrated, or any")]
 pub struct ParseGpuPreferenceError(String);
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DrmNodeId {
+    major: u32,
+    minor: u32,
+}
+
+impl DrmNodeId {
+    pub const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+
+    pub fn from_path(path: &Path) -> Result<Self, DrmNodeError> {
+        let metadata = fs::metadata(path).map_err(|source| DrmNodeError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
+        if !metadata.file_type().is_char_device() {
+            return Err(DrmNodeError::NotCharacterDevice(path.to_owned()));
+        }
+        let device = metadata.rdev();
+        Ok(Self::new(libc::major(device), libc::minor(device)))
+    }
+
+    pub const fn major(self) -> u32 {
+        self.major
+    }
+
+    pub const fn minor(self) -> u32 {
+        self.minor
+    }
+}
+
+impl fmt::Display for DrmNodeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.major, self.minor)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DrmNodeError {
+    #[error("failed to inspect DRM node {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("configured DRM node {0} is not a character device")]
+    NotCharacterDevice(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrmDeviceIdentity {
+    pub primary: Option<DrmNodeId>,
+    pub render: Option<DrmNodeId>,
+}
+
+impl DrmDeviceIdentity {
+    pub const fn new(primary: Option<DrmNodeId>, render: Option<DrmNodeId>) -> Self {
+        Self { primary, render }
+    }
+
+    const fn matches(self, node: DrmNodeId) -> bool {
+        matches!(self.primary, Some(primary) if same_node(primary, node))
+            || matches!(self.render, Some(render) if same_node(render, node))
+    }
+
+    pub(crate) const fn node_pair(self) -> Option<(DrmNodeId, DrmNodeId)> {
+        match (self.primary, self.render) {
+            (Some(primary), Some(render)) => Some((primary, render)),
+            _ => None,
+        }
+    }
+}
+
+const fn same_node(left: DrmNodeId, right: DrmNodeId) -> bool {
+    left.major == right.major && left.minor == right.minor
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceCandidate {
     pub ordinal: usize,
@@ -46,16 +128,26 @@ pub struct DeviceCandidate {
     pub api_version: Version,
     pub descriptor_heap_supported: bool,
     pub graphics_queue_family: Option<u32>,
+    pub drm: Option<DrmDeviceIdentity>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceSelector {
     preference: GpuPreference,
+    requested_drm_node: Option<DrmNodeId>,
 }
 
 impl DeviceSelector {
     pub const fn new(preference: GpuPreference) -> Self {
-        Self { preference }
+        Self {
+            preference,
+            requested_drm_node: None,
+        }
+    }
+
+    pub const fn with_drm_node(mut self, node: Option<DrmNodeId>) -> Self {
+        self.requested_drm_node = node;
+        self
     }
 
     pub const fn preference(self) -> GpuPreference {
@@ -67,6 +159,18 @@ impl DeviceSelector {
         candidates: impl IntoIterator<Item = &'a DeviceCandidate>,
     ) -> Result<&'a DeviceCandidate, DeviceSelectionError> {
         let candidates = candidates.into_iter().collect::<Vec<_>>();
+        let candidates = if let Some(requested) = self.requested_drm_node {
+            let matching = candidates
+                .into_iter()
+                .filter(|candidate| candidate.drm.is_some_and(|drm| drm.matches(requested)))
+                .collect::<Vec<_>>();
+            if matching.is_empty() {
+                return Err(DeviceSelectionError::DrmNodeNotFound(requested));
+            }
+            matching
+        } else {
+            candidates
+        };
         if !candidates
             .iter()
             .any(|candidate| candidate.descriptor_heap_supported)
@@ -78,14 +182,38 @@ impl DeviceSelector {
         }) {
             return Err(DeviceSelectionError::VulkanTooOld);
         }
+        if !candidates.iter().any(|candidate| {
+            candidate.descriptor_heap_supported
+                && candidate.api_version >= Version::V1_4_0
+                && candidate.graphics_queue_family.is_some()
+        }) {
+            return Err(DeviceSelectionError::MissingGraphicsQueue);
+        }
+        if !candidates.iter().any(|candidate| {
+            candidate.descriptor_heap_supported
+                && candidate.api_version >= Version::V1_4_0
+                && candidate.graphics_queue_family.is_some()
+                && candidate
+                    .drm
+                    .and_then(DrmDeviceIdentity::node_pair)
+                    .is_some()
+        }) {
+            return Err(DeviceSelectionError::MissingDrmNodePair);
+        }
 
         candidates
             .into_iter()
             .filter(|candidate| candidate.descriptor_heap_supported)
             .filter(|candidate| candidate.api_version >= Version::V1_4_0)
             .filter(|candidate| candidate.graphics_queue_family.is_some())
+            .filter(|candidate| {
+                candidate
+                    .drm
+                    .and_then(DrmDeviceIdentity::node_pair)
+                    .is_some()
+            })
             .min_by_key(|candidate| (self.rank(candidate.device_type), candidate.ordinal))
-            .ok_or(DeviceSelectionError::MissingGraphicsQueue)
+            .ok_or(DeviceSelectionError::MissingDrmNodePair)
     }
 
     fn rank(self, device_type: vk::PhysicalDeviceType) -> u8 {
@@ -125,6 +253,10 @@ pub enum DeviceSelectionError {
     VulkanTooOld,
     #[error("no Vulkan 1.4 descriptor-heap device exposes a graphics queue")]
     MissingGraphicsQueue,
+    #[error("configured DRM node {0} does not identify a Vulkan physical device")]
+    DrmNodeNotFound(DrmNodeId),
+    #[error("no eligible Vulkan device exposes a complete DRM primary/render node pair")]
+    MissingDrmNodePair,
 }
 
 #[cfg(test)]
@@ -143,6 +275,10 @@ mod tests {
             api_version: Version::V1_4_0,
             descriptor_heap_supported: heap,
             graphics_queue_family: Some(0),
+            drm: Some(DrmDeviceIdentity::new(
+                Some(DrmNodeId::new(226, ordinal as u32)),
+                Some(DrmNodeId::new(226, 128 + ordinal as u32)),
+            )),
         }
     }
 
@@ -211,6 +347,60 @@ mod tests {
         assert!(matches!(
             DeviceSelector::new(GpuPreference::Any).select([&candidate]),
             Err(DeviceSelectionError::MissingGraphicsQueue)
+        ));
+    }
+
+    #[test]
+    fn configured_drm_node_overrides_gpu_type_ranking() {
+        let discrete = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        let integrated = candidate(1, vk::PhysicalDeviceType::INTEGRATED_GPU, true);
+        let requested = integrated.drm.unwrap().render.unwrap();
+
+        let selected = DeviceSelector::new(GpuPreference::Discrete)
+            .with_drm_node(Some(requested))
+            .select([&discrete, &integrated])
+            .unwrap();
+
+        assert_eq!(selected.ordinal, integrated.ordinal);
+    }
+
+    #[test]
+    fn rejects_a_drm_node_without_a_vulkan_device() {
+        let candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        let requested = DrmNodeId::new(226, 191);
+
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Discrete)
+                .with_drm_node(Some(requested))
+                .select([&candidate]),
+            Err(DeviceSelectionError::DrmNodeNotFound(node)) if node == requested
+        ));
+    }
+
+    #[test]
+    fn drm_primary_and_render_nodes_are_both_required() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.drm = Some(DrmDeviceIdentity::new(Some(DrmNodeId::new(226, 0)), None));
+
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Discrete).select([&candidate]),
+            Err(DeviceSelectionError::MissingDrmNodePair)
+        ));
+    }
+
+    #[test]
+    fn configured_node_path_must_be_a_character_device() {
+        assert!(matches!(
+            DrmNodeId::from_path(Path::new("Cargo.toml")),
+            Err(DrmNodeError::NotCharacterDevice(_))
+        ));
+    }
+
+    #[test]
+    fn missing_configured_node_is_reported_at_selection_boundary() {
+        assert!(matches!(
+            DrmNodeId::from_path(Path::new("/definitely/missing/tensor-drm-node")),
+            Err(DrmNodeError::Read { .. })
         ));
     }
 }

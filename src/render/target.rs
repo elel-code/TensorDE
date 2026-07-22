@@ -1,6 +1,6 @@
 use vulkanalia::{Version, vk};
 
-use super::device::{DeviceSelector, GpuPreference};
+use super::device::{DeviceSelector, DrmNodeId, GpuPreference};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendererTarget {
@@ -20,11 +20,11 @@ impl Default for RendererTarget {
 }
 
 impl RendererTarget {
-    pub const fn with_gpu_preference(preference: GpuPreference) -> Self {
+    pub const fn with_device(preference: GpuPreference, drm_node: Option<DrmNodeId>) -> Self {
         Self {
             api_version: Version::V1_4_0,
             descriptor_heap: DescriptorHeapTarget::Required,
-            device: DeviceSelector::new(preference),
+            device: DeviceSelector::new(preference).with_drm_node(drm_node),
         }
     }
 }

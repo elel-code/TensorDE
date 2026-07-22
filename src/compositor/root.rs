@@ -14,7 +14,7 @@ use crate::{
     },
     layout::{LayoutEngine, Rect},
     protocol::{ProtocolError, WaylandRuntime},
-    render::{RendererError, RendererTarget, VulkanRenderer},
+    render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{SystemdMode, session_environment},
     spawn::ProcessLauncher,
     xwayland::XWaylandConfig,
@@ -46,7 +46,14 @@ impl Compositor {
             startup_commands,
         } = config;
         let protocol = WaylandRuntime::new(initial_layout)?;
-        let renderer = VulkanRenderer::new(RendererTarget::with_gpu_preference(gpu_preference))?;
+        let requested_drm_node = render_device
+            .as_deref()
+            .map(DrmNodeId::from_path)
+            .transpose()?;
+        let renderer = VulkanRenderer::new(RendererTarget::with_device(
+            gpu_preference,
+            requested_drm_node,
+        ))?;
         let ipc = IpcServer::bind(ipc_socket)?;
         let environment = session_environment(
             protocol
@@ -58,7 +65,9 @@ impl Compositor {
         Ok(Self {
             protocol,
             ipc,
-            backend_config: BackendConfig { render_device },
+            backend_config: BackendConfig {
+                drm_node: renderer.selected().render_node,
+            },
             renderer,
             launcher: ProcessLauncher::new(systemd).with_environment(environment),
             startup_commands,
@@ -214,6 +223,8 @@ pub enum CompositorError {
     Ipc(#[from] IpcError),
     #[error(transparent)]
     Renderer(#[from] RendererError),
+    #[error(transparent)]
+    DrmNode(#[from] DrmNodeError),
     #[error("Smithay did not provide a Wayland socket name")]
     MissingWaylandSocket,
 }

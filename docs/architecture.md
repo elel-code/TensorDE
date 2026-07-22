@@ -26,8 +26,12 @@ any long-lived renderer state is created.
 Physical-device ranking lives in `render/device.rs`. The policy is configurable but the default
 prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
 in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
-feature bit, requires a graphics queue, and creates the logical device with no descriptor-set or
-descriptor-buffer fallback. Pure ranking remains testable without a GPU.
+feature bit, requires a graphics queue and a complete primary/render node pair reported through
+`VK_EXT_physical_device_drm`, and creates the logical device with no descriptor-set or
+descriptor-buffer fallback. The selected DRM identity is then passed to Smithay as the sole native
+device choice. An explicit `render-device` filters Vulkan candidates by major/minor before ranking;
+Vulkan and the tty backend never choose devices independently. Pure ranking remains testable
+without a GPU.
 
 Session-manager selection uses one `SystemdMode` policy for startup and child supervision. `auto`
 follows the detected user-manager environment, while `enabled` and `disabled` are explicit.
@@ -52,8 +56,8 @@ both Smithay's `Space<Window>` and ECS when either the shell or surface destruct
 The next backend work is compositor-specific glue around Smithay's DRM/KMS, GBM, libinput, udev,
 and libseat adapters; Tensor does not reimplement those low-level protocols. The tty backend now
 owns session activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier
-tokens, and GBM lifetime. It accepts an explicit `render-device` node or uses Smithay's seat-aware
-primary-GPU selection, requiring a paired primary/render node before opening hardware. Future
+tokens, and GBM lifetime. It opens the primary/render pair selected during Vulkan probing and
+requires that pair to be available through the active libseat session. Future
 connector modesetting, page flips, and direct scanout remain in this Smithay backend; Vulkanalia
 only produces renderable buffers and completion synchronization for it. Connector discovery uses
 Smithay master’s companion `smithay-drm-extras::DrmScanner`, from the same upstream revision as

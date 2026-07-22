@@ -14,7 +14,10 @@ APIs for their own sake.
   dma-bufs and fences back to Smithay; it must not bypass Smithay to own KMS state.
 - Physical-device selection is a renderer submodule and a configuration value. Default ranking
   prefers discrete GPUs, then integrated/virtual hardware, with CPU last; all candidates still need
-  the descriptor-heap feature.
+  the descriptor-heap feature. An eligible native device must expose a complete DRM primary/render
+  node pair through `VK_EXT_physical_device_drm`. The Vulkan-selected identity is authoritative for
+  the Smithay tty backend; `render-device` constrains both sides and they must never select GPUs
+  independently.
 - `bevy_ecs` is the long-term ECS kernel. Use only the `bevy_ecs` crate, not Bevy's renderer or
   window stack. Smithay objects and other thread-affine handles stay in `NonSend` resources or the
   protocol layer; ECS components contain stable IDs, state, and renderable geometry.

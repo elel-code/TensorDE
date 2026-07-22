@@ -3,7 +3,7 @@ layout "scrolling-1d"
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"
-// Optional DRM primary/render node; otherwise Smithay selects the active seat GPU.
+// Optional common Vulkan/Smithay DRM node; otherwise Vulkan capability ranking selects the pair.
 // render-device "/dev/dri/renderD128"
 // auto enables integration when launched by the systemd user manager.
 systemd "auto"

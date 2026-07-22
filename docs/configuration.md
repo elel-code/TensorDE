@@ -38,15 +38,16 @@ layout families. `tabbed` is reserved for a later container-tree extension rathe
 as an early compatibility mode.
 
 `gpu` defaults to `discrete`: candidates are ranked discrete GPU, integrated GPU, virtual GPU, then
-CPU, and candidates without `VK_EXT_descriptor_heap` are rejected before ranking. Use `integrated`
-or `any` only when the machine's topology requires it. `TENSOR_GPU` overrides the file for local
-development.
+CPU. Candidates must provide Vulkan 1.4, `VK_EXT_descriptor_heap`, a graphics queue, and a complete
+DRM primary/render pair through `VK_EXT_physical_device_drm`. Use `integrated` or `any` only when the
+machine's topology requires it. `TENSOR_GPU` overrides the file for local development.
 
-`render-device` selects the DRM node pair used by the tty backend. Either a primary node
-(`cardN`) or render node (`renderDN`) is accepted; Tensor resolves and retains both nodes and
-rejects a node without its paired counterpart. When omitted, Smithay's udev seat scan selects the
-boot GPU, then a GPU with a render node. `TENSOR_RENDER_DEVICE` overrides the file. This DRM choice
-is independent from Vulkan physical-device ranking, which still requires `VK_EXT_descriptor_heap`.
+`render-device` constrains the common Vulkan and Smithay device. Either a primary node (`cardN`) or
+render node (`renderDN`) is accepted. Tensor resolves its major/minor identity, selects only the
+matching Vulkan physical device, requires its paired node, and passes the selected render node to
+the tty backend. When omitted, Vulkan capability filtering and `gpu` ranking choose the pair.
+`TENSOR_RENDER_DEVICE` overrides the file. A node that is not reported by Vulkan or unavailable to
+the active libseat session fails startup.
 
 `systemd` accepts `auto`, `enabled`, or `disabled`. The default `auto` mode activates when
 `NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, or `MANAGERPID` identifies a user-manager launch. Explicit
