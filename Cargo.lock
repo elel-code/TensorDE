@@ -325,8 +325,6 @@ dependencies = [
  "smithay-client-toolkit",
  "toml",
  "vulkanalia",
- "wayland-client",
- "wayland-protocols",
  "zip",
 ]
 

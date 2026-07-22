@@ -29,29 +29,32 @@ use smithay_client_toolkit::{
         Shm, ShmHandler,
         slot::{Buffer, SlotPool},
     },
+    reexports::{
+        client::{
+            Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+            backend::WaylandError,
+            globals::registry_queue_init,
+            protocol::{wl_buffer, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+        },
+        protocols::wp::{
+            fractional_scale::v1::client::{
+                wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+                wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+            },
+            linux_dmabuf::zv1::client::{
+                zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1,
+            },
+            viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
+        },
+    },
 };
 use std::{
     collections::BTreeSet, ffi::c_void, fmt, io::ErrorKind, ptr::NonNull, thread, time::Duration,
 };
-use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
-    backend::WaylandError,
-    globals::registry_queue_init,
-    protocol::{wl_buffer, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
-};
-
 use crate::engine::scene::SceneEventQueue;
 
 mod event_source;
 use event_source::NativeWaylandEventSource;
-use wayland_protocols::wp::{
-    fractional_scale::v1::client::{
-        wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
-        wp_fractional_scale_v1::{self, WpFractionalScaleV1},
-    },
-    linux_dmabuf::zv1::client::{zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1},
-    viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
-};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeWaylandHostOptions {
