@@ -97,6 +97,11 @@ The compositor still runs directly without systemd, and `--check` never sends `R
 Display managers should install `contrib/wayland-sessions/tensor.desktop`; no entry is provided under
 `xsessions`, because Tensor is never an X11 session.
 
+Client startup is shell-free. The compositor's `ProcessLauncher` accepts an executable plus an
+argument list and uses a double-fork; active systemd sessions place both forked PIDs in a transient
+scope through D-Bus. `systemd "enabled"` fails closed if that scope cannot be created, while `auto`
+can keep the client direct after reporting the scope failure.
+
 ## XWayland, not an X11 session
 
 The default build enables Smithay's rootless XWayland process and event-source bootstrap.

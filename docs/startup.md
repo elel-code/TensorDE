@@ -15,6 +15,12 @@ The startup sequence is a set of ordered gates:
    gate succeeds.
 10. Enter the event loop.
 
+Client commands use the same resolved systemd policy after startup. `ProcessLauncher` performs a
+double-fork without a shell. In an active systemd scope it waits for the transient-unit job before
+releasing the client, and it terminates the still-blocked child if `systemd "enabled"` cannot create
+that scope. `auto` reports the scope failure and permits a direct child; `disabled` always uses the
+direct path.
+
 `--check` executes the initialization gates that exist, reports their resolved state, and exits. It
 must never emit systemd readiness. Partial initialization must unwind owned sockets and handles.
 

@@ -12,6 +12,7 @@ use crate::{
     protocol::{ProtocolError, WaylandRuntime},
     render::RendererTarget,
     service::SystemdMode,
+    spawn::ProcessLauncher,
     xwayland::XWaylandConfig,
 };
 
@@ -24,6 +25,7 @@ pub struct Compositor {
     world: CompositorWorld,
     layout: LayoutEngine,
     renderer: RendererTarget,
+    launcher: ProcessLauncher,
     systemd: SystemdMode,
     xwayland: XWaylandConfig,
 }
@@ -43,6 +45,7 @@ impl Compositor {
             world: CompositorWorld::new(),
             layout: LayoutEngine::new(initial_layout),
             renderer: RendererTarget::with_gpu_preference(gpu_preference),
+            launcher: ProcessLauncher::new(systemd),
             systemd,
             xwayland,
         })
@@ -59,6 +62,7 @@ impl Compositor {
             gpu = self.renderer.device.preference().name(),
             layout = self.layout.kind().name(),
             systemd = self.systemd.name(),
+            spawn_strategy = self.launcher.strategy().name(),
             xwayland = self.xwayland.enabled(),
             preview_views = preview.len(),
             ecs_views = self.world.view_count(0),
