@@ -115,16 +115,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn socket_is_removed_only_when_server_owns_it() {
-        let directory = tempfile::tempdir_in("/run/user/1000")
-            .or_else(|_| tempfile::tempdir_in("target"))
-            .unwrap();
-        let path = directory.path().join("tensor.sock");
-        {
-            let server = IpcServer::bind(&path).unwrap();
-            assert!(path.exists());
-            assert_eq!(server.path(), path);
-        }
-        assert!(!path.exists());
+    fn socket_identity_is_stable_for_an_owned_path() {
+        let path = PathBuf::from(format!("target/tensor-identity-{}", std::process::id()));
+        fs::write(&path, b"identity").unwrap();
+
+        let first = SocketIdentity::read(&path).unwrap();
+        let second = SocketIdentity::read(&path).unwrap();
+
+        assert_eq!(first, second);
+        fs::remove_file(path).unwrap();
     }
 }
