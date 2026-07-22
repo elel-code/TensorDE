@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -11,6 +11,7 @@ use smithay::{
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{self, UdevBackend, UdevEvent},
     },
+    output::{Mode, Subpixel},
     reexports::{
         calloop::{Dispatcher, LoopHandle, RegistrationToken},
         input::Libinput,
@@ -18,10 +19,14 @@ use smithay::{
     },
     utils::DeviceFd,
 };
+use smithay_drm_extras::drm_scanner::DrmScanner;
 use thiserror::Error;
 use tracing::{debug, info, trace, warn};
 
-use super::BackendConfig;
+use super::{
+    BackendConfig, BackendOutputEvent,
+    output::{ConnectorSnapshot, ConnectorState, OutputPlan, OutputPolicy, diff_output_plans},
+};
 use crate::protocol::RuntimeState;
 
 pub(crate) struct TtyBackend {
@@ -32,6 +37,9 @@ pub(crate) struct TtyBackend {
     primary_node: DrmNode,
     render_node: DrmNode,
     devices: HashMap<libc::dev_t, OpenDevice>,
+    output_policy: OutputPolicy,
+    outputs: OutputPlan,
+    pending_outputs: Vec<BackendOutputEvent>,
     topology_generation: u64,
 }
 
@@ -39,6 +47,8 @@ struct OpenDevice {
     token: RegistrationToken,
     drm: DrmDevice,
     gbm: GbmDevice<DrmDeviceFd>,
+    scanner: DrmScanner,
+    connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +60,7 @@ pub(crate) struct BackendStatus {
     pub(crate) primary_gbm_ready: bool,
     pub(crate) session_active: bool,
     pub(crate) topology_generation: u64,
+    pub(crate) outputs: usize,
 }
 
 impl TtyBackend {
@@ -74,9 +85,7 @@ impl TtyBackend {
         let (primary_node, render_node) = resolve_node_pair(&selected_path)?;
 
         let udev = Dispatcher::new(udev_backend, |event, _, state: &mut RuntimeState| {
-            if let Some(backend) = state.backend.as_mut() {
-                backend.handle_udev_event(event);
-            }
+            state.dispatch_udev_event(event);
         });
 
         let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
@@ -96,6 +105,9 @@ impl TtyBackend {
             primary_node,
             render_node,
             devices: HashMap::new(),
+            output_policy: OutputPolicy,
+            outputs: OutputPlan::new(),
+            pending_outputs: Vec::new(),
             topology_generation: 0,
         };
 
@@ -113,9 +125,7 @@ impl TtyBackend {
             .map_err(|error| BackendError::Source(error.to_string()))?;
         loop_handle
             .insert_source(notifier, |event, _, state| {
-                if let Some(backend) = state.backend.as_mut() {
-                    backend.handle_session_event(event);
-                }
+                state.dispatch_session_event(event);
             })
             .map_err(|error| BackendError::Source(error.to_string()))?;
 
@@ -125,6 +135,7 @@ impl TtyBackend {
             primary_node = %status.primary_node.display(),
             render_node = %status.render_node.display(),
             drm_devices = status.drm_devices,
+            outputs = status.outputs,
             primary_gbm_ready = status.primary_gbm_ready,
             session_active = status.session_active,
             "Smithay tty backend initialized"
@@ -145,13 +156,18 @@ impl TtyBackend {
             primary_node: node_path(self.primary_node),
             render_node: node_path(self.render_node),
             drm_devices: self.devices.len(),
+            outputs: self.outputs.len(),
             primary_gbm_ready,
             session_active: self.session.is_active(),
             topology_generation: self.topology_generation,
         }
     }
 
-    fn handle_udev_event(&mut self, event: UdevEvent) {
+    pub(crate) fn take_output_events(&mut self) -> Vec<BackendOutputEvent> {
+        std::mem::take(&mut self.pending_outputs)
+    }
+
+    pub(crate) fn handle_udev_event(&mut self, event: UdevEvent) {
         match event {
             UdevEvent::Added { device_id, path } => {
                 if !self.session.is_active() {
@@ -163,7 +179,9 @@ impl TtyBackend {
             }
             UdevEvent::Changed { device_id } => {
                 if self.session.is_active() && self.devices.contains_key(&device_id) {
-                    self.topology_generation = self.topology_generation.wrapping_add(1);
+                    if let Err(error) = self.rescan_device(device_id) {
+                        warn!(%error, device_id, "failed to rescan DRM connectors");
+                    }
                     debug!(device_id, "DRM connector topology changed");
                 }
             }
@@ -175,7 +193,7 @@ impl TtyBackend {
         }
     }
 
-    fn handle_session_event(&mut self, event: SessionEvent) {
+    pub(crate) fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
             SessionEvent::PauseSession => {
                 debug!("pausing tty session");
@@ -203,7 +221,12 @@ impl TtyBackend {
                 if let Err(error) = self.reconcile_devices(devices, false) {
                     warn!(%error, "failed to reconcile DRM devices after session activation");
                 }
-                self.topology_generation = self.topology_generation.wrapping_add(1);
+                let device_ids = self.devices.keys().copied().collect::<Vec<_>>();
+                for device_id in device_ids {
+                    if let Err(error) = self.rescan_device(device_id) {
+                        warn!(%error, device_id, "failed to rescan DRM connectors after activation");
+                    }
+                }
             }
         }
     }
@@ -289,9 +312,21 @@ impl TtyBackend {
             })
             .map_err(|error| BackendError::Source(error.to_string()))?;
 
-        self.devices
-            .insert(device_id, OpenDevice { token, drm, gbm });
+        self.devices.insert(
+            device_id,
+            OpenDevice {
+                token,
+                drm,
+                gbm,
+                scanner: DrmScanner::new(),
+                connectors: BTreeMap::new(),
+            },
+        );
         self.topology_generation = self.topology_generation.wrapping_add(1);
+        if let Err(error) = self.rescan_device(device_id) {
+            self.remove_device(device_id);
+            return Err(error);
+        }
         info!(device_id, path = %path.display(), "DRM/GBM device opened through libseat");
         Ok(())
     }
@@ -302,7 +337,105 @@ impl TtyBackend {
         };
         self.loop_handle.remove(device.token);
         self.topology_generation = self.topology_generation.wrapping_add(1);
+        self.reconcile_outputs();
         info!(device_id, "DRM/GBM device removed");
+    }
+
+    fn rescan_device(&mut self, device_id: libc::dev_t) -> Result<(), BackendError> {
+        let changed = {
+            let device = self
+                .devices
+                .get_mut(&device_id)
+                .ok_or(BackendError::UnknownDevice { device_id })?;
+            device
+                .scanner
+                .scan_connectors(&device.drm)
+                .map_err(|error| BackendError::ConnectorScan {
+                    device_id,
+                    message: error.to_string(),
+                })?;
+
+            let current = device
+                .scanner
+                .connectors()
+                .values()
+                .map(|connector| {
+                    describe_connector(
+                        device_id,
+                        connector,
+                        device.scanner.crtc_for_connector(&connector.handle()),
+                    )
+                })
+                .map(|connector| (connector.id, connector))
+                .collect::<BTreeMap<_, _>>();
+            if current == device.connectors {
+                false
+            } else {
+                device.connectors = current;
+                true
+            }
+        };
+
+        if changed {
+            self.topology_generation = self.topology_generation.wrapping_add(1);
+            self.reconcile_outputs();
+        }
+        Ok(())
+    }
+
+    fn reconcile_outputs(&mut self) {
+        let current = self.output_policy.plan(
+            self.devices
+                .values()
+                .flat_map(|device| device.connectors.values()),
+        );
+        self.pending_outputs
+            .extend(diff_output_plans(&self.outputs, &current));
+        self.outputs = current;
+    }
+}
+
+fn describe_connector(
+    device_id: libc::dev_t,
+    connector: &smithay::reexports::drm::control::connector::Info,
+    crtc: Option<smithay::reexports::drm::control::crtc::Handle>,
+) -> ConnectorSnapshot {
+    let modes = connector
+        .modes()
+        .iter()
+        .copied()
+        .map(Mode::from)
+        .collect::<Vec<_>>();
+    let preferred_mode = connector
+        .modes()
+        .iter()
+        .position(|mode| {
+            mode.mode_type()
+                .contains(smithay::reexports::drm::control::ModeTypeFlags::PREFERRED)
+        })
+        .or_else(|| (!modes.is_empty()).then_some(0))
+        .map(|index| modes[index]);
+    let physical_size = connector.size().unwrap_or((0, 0));
+    ConnectorSnapshot {
+        id: super::BackendOutputId {
+            device_id,
+            connector_id: connector.handle().into(),
+        },
+        name: connector.to_string(),
+        state: match connector.state() {
+            smithay::reexports::drm::control::connector::State::Connected => {
+                ConnectorState::Connected
+            }
+            smithay::reexports::drm::control::connector::State::Disconnected => {
+                ConnectorState::Disconnected
+            }
+            smithay::reexports::drm::control::connector::State::Unknown => ConnectorState::Unknown,
+        },
+        physical_size: (physical_size.0 as i32, physical_size.1 as i32),
+        subpixel: Subpixel::from(connector.subpixel()),
+        modes,
+        preferred_mode,
+        mapped_crtc: crtc.map(Into::into),
     }
 }
 
@@ -369,4 +502,11 @@ pub(crate) enum BackendError {
     PrimaryUnavailable { path: PathBuf },
     #[error("failed to register a tty event source: {0}")]
     Source(String),
+    #[error("unknown DRM device {device_id}")]
+    UnknownDevice { device_id: libc::dev_t },
+    #[error("failed to scan DRM connectors for device {device_id}: {message}")]
+    ConnectorScan {
+        device_id: libc::dev_t,
+        message: String,
+    },
 }

@@ -70,12 +70,13 @@ impl Compositor {
     pub fn check_ready(&mut self) {
         let renderer_target = self.renderer.target();
         let selected_device = self.renderer.selected();
-        let (preview_views, layout, ecs_views, seat, xdg_output) = {
+        let (preview_views, layout, ecs_views, outputs, seat, xdg_output) = {
             let state = self.protocol.state_mut();
             (
                 state.layout.arrange(Rect::new(0, 0, 1920, 1080), 3).len(),
                 state.layout.kind(),
                 state.view_count(),
+                state.output_count(),
                 state.seat.name().to_owned(),
                 state
                     .output_manager_state
@@ -100,6 +101,7 @@ impl Compositor {
             xwayland = self.xwayland.enabled(),
             preview_views,
             ecs_views,
+            outputs,
             seat,
             xdg_output,
             "compositor runtime is ready"

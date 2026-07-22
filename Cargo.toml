@@ -15,6 +15,7 @@ resolver = "3"
 default = ["tty", "xwayland"]
 systemd = ["dep:sd-notify", "dep:zbus"]
 tty = [
+    "dep:smithay-drm-extras",
     "smithay/backend_drm",
     "smithay/backend_gbm",
     "smithay/backend_libinput",
@@ -29,6 +30,7 @@ clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 knus = "3"
 smithay = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, features = ["desktop", "wayland_frontend"] }
+smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, optional = true }
 sd-notify = { version = "0.5", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

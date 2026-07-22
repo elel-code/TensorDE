@@ -1694,7 +1694,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/Smithay/smithay.git?branch=master#a8834bd47157c3aa9b805439a86bb98702247aa2"
+source = "git+https://github.com/Smithay/smithay.git?branch=master#c0aa71dfea9ec5fc46b5f23a9b189451b7958080"
 dependencies = [
  "appendlist",
  "bitflags 2.13.1",
@@ -1705,6 +1705,7 @@ dependencies = [
  "drm",
  "drm-ffi",
  "drm-fourcc",
+ "drm-sys",
  "encoding_rs",
  "errno",
  "gbm",
@@ -1732,6 +1733,14 @@ dependencies = [
  "wayland-server",
  "x11rb",
  "xkbcommon",
+]
+
+[[package]]
+name = "smithay-drm-extras"
+version = "0.1.0"
+source = "git+https://github.com/Smithay/smithay.git?branch=master#c0aa71dfea9ec5fc46b5f23a9b189451b7958080"
+dependencies = [
+ "drm",
 ]
 
 [[package]]
@@ -1811,6 +1820,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smithay",
+ "smithay-drm-extras",
  "tensor-util",
  "thiserror",
  "tracing",

@@ -54,5 +54,16 @@ and libseat adapters; Tensor does not reimplement those low-level protocols. The
 owns session activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier
 tokens, and GBM lifetime. It accepts an explicit `render-device` node or uses Smithay's seat-aware
 primary-GPU selection, requiring a paired primary/render node before opening hardware. Future
-connector scanning, modesetting, page flips, and direct scanout remain in this Smithay backend;
-Vulkanalia only produces renderable buffers and completion synchronization for it.
+connector modesetting, page flips, and direct scanout remain in this Smithay backend; Vulkanalia
+only produces renderable buffers and completion synchronization for it. Connector discovery uses
+Smithay master’s companion `smithay-drm-extras::DrmScanner`, from the same upstream revision as
+Smithay core. It preserves connector-to-CRTC mappings across startup, udev hotplug, delayed mode
+discovery, DP-MST removal, and session resume.
+
+The scanner is an adapter, not Tensor's output model. Every connector is copied into a complete
+device-local snapshot, including connected connectors that do not yet have a mode or CRTC. One
+backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
+`OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
+EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
+The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner` without changing the
+protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.

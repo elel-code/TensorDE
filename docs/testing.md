@@ -11,6 +11,10 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
 - Nested Wayland tests are added when globals and dispatch state exist; pure geometry never requires
   a compositor session.
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
+- Output lifecycle tests drive synthetic connector events through Smithay `Output`/`Space` state;
+  they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
+- Output policy tests retain incomplete connector snapshots while excluding them from scanout, and
+  verify deterministic planning and disconnect-before-connect reconciliation across DRM devices.
 - Scene snapshots are appropriate when many coordinates or render decisions form one behavior.
 
 Every change runs:

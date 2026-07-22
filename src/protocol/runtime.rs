@@ -74,8 +74,10 @@ impl WaylandRuntime {
             if self.state.backend.is_some() {
                 return Ok(());
             }
-            let backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
+            let mut backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
                 .map_err(|error| ProtocolError::Backend(error.to_string()))?;
+            self.state
+                .apply_backend_output_events(backend.take_output_events());
             self.state.backend = Some(backend);
             return Ok(());
         }
