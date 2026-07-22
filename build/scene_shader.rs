@@ -47,7 +47,9 @@ pub(crate) use effect_program::{
 pub(super) use final_effect::{
     FINAL_EFFECT_SHADER_SPECS, final_effect_parameter_layout, final_effect_sources,
 };
-pub(crate) use local_read::input_attachment_fragment_source;
+pub(crate) use local_read::{
+    input_attachment_catalog_type_source, input_attachment_fragment_source,
+};
 pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
 pub(crate) use vertex_primitive::scene_shader_vertex_primitive;

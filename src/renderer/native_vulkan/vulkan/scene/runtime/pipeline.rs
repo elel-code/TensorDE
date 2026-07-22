@@ -35,15 +35,19 @@ use super::descriptor_layout::{
     ScenePipelineShaderDescriptorAccess, scene_passthrough_descriptor_access,
     scene_pipeline_shader_descriptor_access,
 };
+use super::local_read::{
+    SceneLocalReadPipelineMetadata, validate_scene_local_read_shader_variant,
+};
 
 mod blend;
 mod diagnostics;
+mod graphics;
 mod particle_compute;
 mod samples;
 mod shader_module;
 
 pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
-use blend::scene_color_blend_attachment;
+use graphics::create_graphics_pipeline;
 use samples::ScenePipelineSamples;
 use shader_module::create_shader_module;
 
@@ -286,6 +290,10 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             ScenePipelineShader::EffectPassthrough(_) => scene_passthrough_descriptor_access(),
         };
         if !descriptor_access.input_attachment_slots.is_empty() {
+            let variant_validation = validate_scene_local_read_shader_variant(
+                &descriptor_access,
+                fragment_shader.local_read_shader.as_ref(),
+            );
             destroy_scene_pipelines(
                 device,
                 ScenePipelineResources {
@@ -293,8 +301,9 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
                     particle_compute: None,
                 },
             );
+            variant_validation?;
             return Err(format!(
-                "scene shader {fragment_shader_key:?} declares input attachments but its subpassInput shader variant is not connected"
+                "scene shader {fragment_shader_key:?} has a verified subpassInput variant but dynamic-rendering local-read scope command recording is not connected"
             ));
         }
         let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(
@@ -324,6 +333,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             descriptor_heap_plan,
             descriptor_layout,
             &descriptor_access,
+            None,
             key.blend,
             key.cull_mode,
             key.color_write_mask,
@@ -688,6 +698,7 @@ fn create_scene_pipeline(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
     descriptor_access: &ScenePipelineShaderDescriptorAccess,
+    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
@@ -701,6 +712,9 @@ fn create_scene_pipeline(
     }
     let vertex_module = create_shader_module(device, vertex_spirv, "scene vertex")?;
     let result = (|| -> Result<vk::Pipeline, String> {
+        let fragment_spirv = local_read_metadata
+            .map(SceneLocalReadPipelineMetadata::fragment_spirv)
+            .unwrap_or(fragment_spirv);
         let fragment_module = create_shader_module(device, fragment_spirv, "scene fragment")?;
         let result = create_scene_pipeline_with_modules(
             device,
@@ -710,6 +724,7 @@ fn create_scene_pipeline(
             descriptor_heap_plan,
             descriptor_layout,
             descriptor_access,
+            local_read_metadata,
             blend,
             cull_mode,
             color_write_mask,
@@ -737,6 +752,7 @@ fn create_scene_pipeline_with_modules(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
     descriptor_access: &ScenePipelineShaderDescriptorAccess,
+    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
@@ -816,6 +832,13 @@ fn create_scene_pipeline_with_modules(
         );
     }
     for slot in &descriptor_access.input_attachment_slots {
+        let shader_binding = local_read_metadata
+            .and_then(|metadata| metadata.input_attachment_binding(*slot))
+            .ok_or_else(|| {
+                format!(
+                    "scene shader input-attachment slot {slot} has no typed local-read shader binding"
+                )
+            })?;
         let input_index = descriptor_layout
             .input_attachment_slots
             .iter()
@@ -826,7 +849,7 @@ fn create_scene_pipeline_with_modules(
         fragment_mappings.push(
             native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping(
                 descriptor_heap_plan,
-                scene_input_attachment_shader_binding(*slot),
+                shader_binding,
                 0,
                 descriptor_layout.input_attachment_resource_offset() + input_index,
             )?,
@@ -853,6 +876,7 @@ fn create_scene_pipeline_with_modules(
         advanced_blend_overlap,
         samples,
         topology,
+        local_read_metadata,
     )
 }
 
@@ -861,137 +885,6 @@ fn scene_sampled_shader_binding(slot: u32) -> u32 {
     // logical texture slot stays 3 in IR and heap planning, while SPIR-V uses
     // a collision-free binding selected here and in build.rs.
     if slot == 3 { 35 } else { slot }
-}
-
-fn scene_input_attachment_shader_binding(slot: u32) -> u32 {
-    // Input attachments use the same logical slot namespace as sampled images,
-    // but a separate SPIR-V binding namespace until the subpassInput catalog
-    // variants are connected.  The mapping remains sampler-free.
-    64 + scene_sampled_shader_binding(slot)
-}
-
-fn create_graphics_pipeline(
-    device: &Device,
-    target_format: vk::Format,
-    stages: [vk::PipelineShaderStageCreateInfo; 2],
-    blend: SceneGpuBlend,
-    cull_mode: SceneCullMode,
-    color_write_mask: SceneColorWriteMask,
-    advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
-) -> Result<vk::Pipeline, String> {
-    let binding = vk::VertexInputBindingDescription::builder()
-        .binding(0)
-        .stride(super::SCENE_MESH_VERTEX_STRIDE_BYTES)
-        .input_rate(vk::VertexInputRate::VERTEX)
-        .build();
-    let attributes = [
-        vk::VertexInputAttributeDescription::builder()
-            .location(0)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(0)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(1)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(8)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(2)
-            .binding(0)
-            .format(vk::Format::R32_SFLOAT)
-            .offset(16)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(3)
-            .binding(0)
-            .format(vk::Format::R32G32B32A32_UINT)
-            .offset(20)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(4)
-            .binding(0)
-            .format(vk::Format::R32G32B32A32_SFLOAT)
-            .offset(36)
-            .build(),
-    ];
-    let bindings = [binding];
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(&bindings)
-        .vertex_attribute_descriptions(&attributes)
-        .build();
-    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(topology)
-        .build();
-    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-        .viewport_count(1)
-        .scissor_count(1)
-        .build();
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-    let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
-        .dynamic_states(&dynamic_states)
-        .build();
-    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-        .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(scene_vk_cull_mode(cull_mode))
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .line_width(1.0)
-        .build();
-    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(samples.rasterization_samples())
-        .alpha_to_coverage_enable(blend == SceneGpuBlend::AlphaToCoverage)
-        .build();
-    let color_attachment = scene_color_blend_attachment(blend, color_write_mask);
-    let color_attachments = [color_attachment];
-    let mut advanced_blend = vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
-        .src_premultiplied(advanced_source_premultiplied)
-        .dst_premultiplied(false)
-        .blend_overlap(advanced_blend_overlap)
-        .build();
-    let mut color_blend_builder =
-        vk::PipelineColorBlendStateCreateInfo::builder().attachments(&color_attachments);
-    if blend.requires_advanced_operation() {
-        color_blend_builder = color_blend_builder.push_next(&mut advanced_blend);
-    }
-    let color_blend = color_blend_builder.build();
-    let color_attachment_formats = [target_format];
-    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-        .color_attachment_formats(&color_attachment_formats)
-        .build();
-    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
-        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-        .build();
-    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-        .stages(&stages)
-        .vertex_input_state(&vertex_input)
-        .input_assembly_state(&input_assembly)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization)
-        .multisample_state(&multisample)
-        .color_blend_state(&color_blend)
-        .dynamic_state(&dynamic_state)
-        .layout(vk::PipelineLayout::null())
-        .render_pass(vk::RenderPass::null())
-        .subpass(0)
-        .push_next(&mut rendering_info);
-    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
-    let pipeline_info = pipeline_info.build();
-    let (pipelines, _success_code) = unsafe {
-        device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-    }
-    .map_err(|err| format!("vkCreateGraphicsPipelines(vulkanalia scene): {err:?}"))?;
-    Ok(pipelines[0])
-}
-
-fn scene_vk_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
-    match cull_mode {
-        SceneCullMode::None => vk::CullModeFlags::NONE,
-        SceneCullMode::Normal => vk::CullModeFlags::BACK,
-    }
 }
 
 #[cfg(test)]

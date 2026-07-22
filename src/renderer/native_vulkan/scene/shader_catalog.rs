@@ -157,7 +157,7 @@ mod tests {
         assert!(!shader.vertex_spirv.is_empty());
         assert!(shader.object_mesh_vertex_spirv.is_none());
         assert!(!shader.fragment_spirv.is_empty());
-        assert!(shader.input_attachment_fragment_spirv.is_none());
+        assert!(shader.local_read_shader.is_none());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
         assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
@@ -202,12 +202,21 @@ mod tests {
         let passthrough = native_vulkan_scene_shader_for_key("we/passthrough")
             .expect("passthrough shader");
         let variant = passthrough
-            .input_attachment_fragment_spirv
+            .local_read_shader
             .expect("exact-pixel input-attachment variant");
-        assert!(!variant.is_empty());
+        assert!(!variant.fragment_spirv.is_empty());
+        assert_eq!(
+            variant.input_attachments,
+            &[BuiltinSceneInputAttachment {
+                slot: 0,
+                input_attachment_index: 0,
+                binding: 64,
+            }]
+        );
+        assert_eq!(variant.color_output_locations, &[0]);
         assert!(native_vulkan_scene_shader_for_key("we/genericimage4")
             .expect("generic image shader")
-            .input_attachment_fragment_spirv
+            .local_read_shader
             .is_none());
     }
 
