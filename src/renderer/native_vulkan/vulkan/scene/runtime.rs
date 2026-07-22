@@ -76,6 +76,7 @@ mod gpu_timing;
 mod graph_execution;
 mod material_uniform;
 mod mesh_payload;
+mod local_read;
 mod particle_compute_dispatch;
 mod particle_resources;
 mod pipeline;
