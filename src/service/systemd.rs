@@ -5,6 +5,7 @@ use std::{
 };
 
 use thiserror::Error;
+use tracing::warn;
 
 use super::policy::EnvironmentValue;
 
@@ -45,10 +46,10 @@ pub fn import_environment(values: &[EnvironmentValue]) -> Result<(), SystemdErro
         .status()
     {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(SystemdError::CommandFailed {
-            command: "dbus-update-activation-environment",
-            status,
-        }),
+        Ok(status) => {
+            warn!(%status, "D-Bus activation environment update failed");
+            Ok(())
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(SystemdError::Command {
             command: "dbus-update-activation-environment",
