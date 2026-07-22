@@ -52,7 +52,7 @@ oxc_span = "0"
 rquickjs = { version = "0", features = ["loader"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-smithay-client-toolkit = { version = "0.20", optional = true }
+smithay-client-toolkit = { version = "0.21", optional = true }
 rustix = { version = "1.1", features = ["event"], optional = true }
 toml = "1"
 vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
