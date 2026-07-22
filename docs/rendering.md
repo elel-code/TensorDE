@@ -1,0 +1,52 @@
+# Rendering Contract
+
+Tensor has one native renderer: Vulkanalia with `VK_EXT_descriptor_heap`. Descriptor sets,
+descriptor buffers, GLES, and software composition are not compatibility backends.
+
+## Native Device Gate
+
+An eligible physical device must provide all of the following before ranking:
+
+- Vulkan 1.4 and a graphics queue.
+- `VK_EXT_descriptor_heap`, including its feature bit.
+- `VK_EXT_physical_device_drm` with a complete primary/render node pair.
+- `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`.
+- `VK_EXT_image_drm_format_modifier`.
+- `VK_EXT_queue_family_foreign` for ownership transfers to and from non-Vulkan consumers.
+- `VK_KHR_external_semaphore_fd`.
+- Importable and exportable binary `SYNC_FD` semaphores, verified through
+  `vkGetPhysicalDeviceExternalSemaphoreProperties`.
+
+Extension availability alone does not prove that a usable image exists. Output initialization must
+also intersect Vulkan's per-format external-image modifier properties with Smithay's DRM plane and
+scanout formats. Readiness must eventually include at least one renderable, exportable, and
+scanout-compatible format/modifier pair for every active output path.
+
+## Buffer Ownership
+
+Vulkanalia owns render images and their memory. A native render target is allocated with an
+explicit DRM modifier and exportable dma-buf memory. Tensor exports the dma-buf planes to Smithay;
+Smithay owns DRM/KMS, its GBM device, framebuffer creation, atomic commits, page flips, and direct
+scanout decisions. Vulkan handles and DRM surface handles never cross into ECS or IPC.
+
+Before an image leaves Vulkan for KMS or another API, Tensor releases it to
+`VK_QUEUE_FAMILY_FOREIGN_EXT`; imported images are acquired back from the same external owner.
+This is mandatory for multi-plane and driver-compressed modifiers and is never replaced with a
+queue-idle compatibility path.
+
+Imported client dma-bufs and compositor-owned output images use separate lifetime caches. A cache
+entry is keyed by stable buffer identity plus format, modifier, dimensions, plane offsets, and
+strides; an fd number is never an identity. Buffer reuse waits for the KMS release path before
+Vulkan writes the image again.
+
+## Synchronization
+
+Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as
+`SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame signals an
+exportable binary semaphore, whose `SYNC_FD` becomes the atomic KMS `IN_FENCE_FD`. Smithay owns the
+commit and page-flip lifecycle and returns the release signal that permits image reuse.
+
+Client acquire fences are imported as temporary binary semaphore payloads. Exporting or importing
+a sync file is an explicit API boundary, not a reason to wait on the CPU. A device without both
+importable and exportable `SYNC_FD` support fails selection; Tensor does not silently fall back to
+blocking queue-idle synchronization.

@@ -8,6 +8,8 @@ use std::{
 use thiserror::Error;
 use vulkanalia::{Version, vk};
 
+use super::NativeInteropCapabilities;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GpuPreference {
     #[default]
@@ -129,6 +131,7 @@ pub struct DeviceCandidate {
     pub descriptor_heap_supported: bool,
     pub graphics_queue_family: Option<u32>,
     pub drm: Option<DrmDeviceIdentity>,
+    pub interop: NativeInteropCapabilities,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,6 +203,52 @@ impl DeviceSelector {
         }) {
             return Err(DeviceSelectionError::MissingDrmNodePair);
         }
+        if !candidates
+            .iter()
+            .any(|candidate| native_base(candidate) && candidate.interop.external_memory_fd)
+        {
+            return Err(DeviceSelectionError::MissingExternalMemoryFd);
+        }
+        if !candidates.iter().any(|candidate| {
+            native_base(candidate)
+                && candidate.interop.external_memory_fd
+                && candidate.interop.dma_buf_memory
+        }) {
+            return Err(DeviceSelectionError::MissingDmaBufMemory);
+        }
+        if !candidates.iter().any(|candidate| {
+            native_base(candidate)
+                && candidate.interop.external_memory_fd
+                && candidate.interop.dma_buf_memory
+                && candidate.interop.drm_format_modifier
+        }) {
+            return Err(DeviceSelectionError::MissingDrmFormatModifier);
+        }
+        if !candidates.iter().any(|candidate| {
+            native_base(candidate)
+                && candidate.interop.external_memory_fd
+                && candidate.interop.dma_buf_memory
+                && candidate.interop.drm_format_modifier
+                && candidate.interop.foreign_queue_family
+        }) {
+            return Err(DeviceSelectionError::MissingForeignQueueFamily);
+        }
+        if !candidates.iter().any(|candidate| {
+            native_base(candidate)
+                && candidate.interop.external_memory_fd
+                && candidate.interop.dma_buf_memory
+                && candidate.interop.drm_format_modifier
+                && candidate.interop.foreign_queue_family
+                && candidate.interop.external_semaphore_fd
+        }) {
+            return Err(DeviceSelectionError::MissingExternalSemaphoreFd);
+        }
+        if !candidates
+            .iter()
+            .any(|candidate| native_base(candidate) && candidate.interop.is_complete())
+        {
+            return Err(DeviceSelectionError::MissingSyncFdSemaphore);
+        }
 
         candidates
             .into_iter()
@@ -212,8 +261,9 @@ impl DeviceSelector {
                     .and_then(DrmDeviceIdentity::node_pair)
                     .is_some()
             })
+            .filter(|candidate| candidate.interop.is_complete())
             .min_by_key(|candidate| (self.rank(candidate.device_type), candidate.ordinal))
-            .ok_or(DeviceSelectionError::MissingDrmNodePair)
+            .ok_or(DeviceSelectionError::MissingSyncFdSemaphore)
     }
 
     fn rank(self, device_type: vk::PhysicalDeviceType) -> u8 {
@@ -245,7 +295,17 @@ impl DeviceSelector {
     }
 }
 
-#[derive(Debug, Error)]
+fn native_base(candidate: &DeviceCandidate) -> bool {
+    candidate.descriptor_heap_supported
+        && candidate.api_version >= Version::V1_4_0
+        && candidate.graphics_queue_family.is_some()
+        && candidate
+            .drm
+            .and_then(DrmDeviceIdentity::node_pair)
+            .is_some()
+}
+
+#[derive(Debug, Eq, Error, PartialEq)]
 pub enum DeviceSelectionError {
     #[error("no Vulkan device supports the required VK_EXT_descriptor_heap feature")]
     MissingDescriptorHeap,
@@ -257,11 +317,34 @@ pub enum DeviceSelectionError {
     DrmNodeNotFound(DrmNodeId),
     #[error("no eligible Vulkan device exposes a complete DRM primary/render node pair")]
     MissingDrmNodePair,
+    #[error("no eligible Vulkan device supports VK_KHR_external_memory_fd")]
+    MissingExternalMemoryFd,
+    #[error("no eligible Vulkan device supports VK_EXT_external_memory_dma_buf")]
+    MissingDmaBufMemory,
+    #[error("no eligible Vulkan device supports VK_EXT_image_drm_format_modifier")]
+    MissingDrmFormatModifier,
+    #[error("no eligible Vulkan device supports VK_EXT_queue_family_foreign")]
+    MissingForeignQueueFamily,
+    #[error("no eligible Vulkan device supports VK_KHR_external_semaphore_fd")]
+    MissingExternalSemaphoreFd,
+    #[error("no eligible Vulkan device can import and export binary SYNC_FD semaphores")]
+    MissingSyncFdSemaphore,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn required_interop() -> NativeInteropCapabilities {
+        NativeInteropCapabilities {
+            external_memory_fd: true,
+            dma_buf_memory: true,
+            drm_format_modifier: true,
+            foreign_queue_family: true,
+            external_semaphore_fd: true,
+            sync_fd_semaphore: true,
+        }
+    }
 
     fn candidate(
         ordinal: usize,
@@ -279,6 +362,7 @@ mod tests {
                 Some(DrmNodeId::new(226, ordinal as u32)),
                 Some(DrmNodeId::new(226, 128 + ordinal as u32)),
             )),
+            interop: required_interop(),
         }
     }
 
@@ -402,5 +486,63 @@ mod tests {
             DrmNodeId::from_path(Path::new("/definitely/missing/tensor-drm-node")),
             Err(DrmNodeError::Read { .. })
         ));
+    }
+
+    #[test]
+    fn reports_the_first_missing_native_interop_capability() {
+        let required = required_interop();
+        let cases = [
+            (
+                NativeInteropCapabilities {
+                    external_memory_fd: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingExternalMemoryFd,
+            ),
+            (
+                NativeInteropCapabilities {
+                    dma_buf_memory: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingDmaBufMemory,
+            ),
+            (
+                NativeInteropCapabilities {
+                    drm_format_modifier: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingDrmFormatModifier,
+            ),
+            (
+                NativeInteropCapabilities {
+                    foreign_queue_family: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingForeignQueueFamily,
+            ),
+            (
+                NativeInteropCapabilities {
+                    external_semaphore_fd: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingExternalSemaphoreFd,
+            ),
+            (
+                NativeInteropCapabilities {
+                    sync_fd_semaphore: false,
+                    ..required
+                },
+                DeviceSelectionError::MissingSyncFdSemaphore,
+            ),
+        ];
+
+        for (interop, expected) in cases {
+            let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+            candidate.interop = interop;
+            let error = DeviceSelector::new(GpuPreference::Discrete)
+                .select([&candidate])
+                .unwrap_err();
+            assert_eq!(error, expected);
+        }
     }
 }

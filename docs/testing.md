@@ -13,6 +13,8 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
 - Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
   and invalid configured node paths without requiring a Vulkan driver.
+- Native interop tests reject each missing external-memory, dma-buf, modifier, foreign
+  queue-family, external-semaphore, and bidirectional `SYNC_FD` capability independently.
 - Output lifecycle tests drive synthetic connector events through Smithay `Output`/`Space` state;
   they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
 - Output policy tests retain incomplete connector snapshots while excluding them from scanout, and

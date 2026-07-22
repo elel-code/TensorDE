@@ -38,8 +38,9 @@ layout families. `tabbed` is reserved for a later container-tree extension rathe
 as an early compatibility mode.
 
 `gpu` defaults to `discrete`: candidates are ranked discrete GPU, integrated GPU, virtual GPU, then
-CPU. Candidates must provide Vulkan 1.4, `VK_EXT_descriptor_heap`, a graphics queue, and a complete
-DRM primary/render pair through `VK_EXT_physical_device_drm`. Use `integrated` or `any` only when the
+CPU. Candidates must provide Vulkan 1.4, `VK_EXT_descriptor_heap`, a graphics queue, a complete DRM
+primary/render pair, external dma-buf memory with DRM modifiers, foreign queue-family ownership
+transfer, and bidirectional binary `SYNC_FD` semaphores. Use `integrated` or `any` only when the
 machine's topology requires it. `TENSOR_GPU` overrides the file for local development.
 
 `render-device` constrains the common Vulkan and Smithay device. Either a primary node (`cardN`) or

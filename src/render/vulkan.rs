@@ -8,7 +8,10 @@ use vulkanalia::{
     prelude::v1_4::*,
 };
 
-use super::{DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, RendererTarget};
+use super::{
+    DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, NativeInteropCapabilities,
+    RendererTarget,
+};
 
 pub(crate) struct VulkanRenderer {
     _owner: VulkanOwner,
@@ -24,6 +27,7 @@ pub(crate) struct SelectedDevice {
     pub(crate) graphics_queue_family: u32,
     pub(crate) primary_node: DrmNodeId,
     pub(crate) render_node: DrmNodeId,
+    pub(crate) interop: NativeInteropCapabilities,
 }
 
 impl VulkanRenderer {
@@ -80,6 +84,7 @@ impl VulkanRenderer {
             graphics_queue_family,
             primary_node,
             render_node,
+            interop: selected.candidate.interop,
         };
         info!(
             name = selected_info.name,
@@ -89,6 +94,10 @@ impl VulkanRenderer {
             primary_node = %selected_info.primary_node,
             render_node = %selected_info.render_node,
             descriptor_heap = true,
+            dma_buf = selected_info.interop.dma_buf_memory,
+            drm_format_modifier = selected_info.interop.drm_format_modifier,
+            foreign_queue_family = selected_info.interop.foreign_queue_family,
+            sync_fd = selected_info.interop.sync_fd_semaphore,
             "Vulkanalia renderer device initialized"
         );
 
@@ -188,10 +197,54 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 descriptor_heap_supported,
                 graphics_queue_family,
                 drm,
+                interop: native_interop_capabilities(instance, handle, &extensions),
             },
         });
     }
     Ok(candidates)
+}
+
+fn native_interop_capabilities(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+    extensions: &[vk::ExtensionProperties],
+) -> NativeInteropCapabilities {
+    let external_memory_fd = extensions
+        .iter()
+        .any(|extension| extension.extension_name == vk::KHR_EXTERNAL_MEMORY_FD_EXTENSION.name);
+    let dma_buf_memory = extensions.iter().any(|extension| {
+        extension.extension_name == vk::EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION.name
+    });
+    let drm_format_modifier = extensions.iter().any(|extension| {
+        extension.extension_name == vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION.name
+    });
+    let foreign_queue_family = extensions
+        .iter()
+        .any(|extension| extension.extension_name == vk::EXT_QUEUE_FAMILY_FOREIGN_EXTENSION.name);
+    let external_semaphore_fd = extensions
+        .iter()
+        .any(|extension| extension.extension_name == vk::KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION.name);
+    NativeInteropCapabilities {
+        external_memory_fd,
+        dma_buf_memory,
+        drm_format_modifier,
+        foreign_queue_family,
+        external_semaphore_fd,
+        sync_fd_semaphore: external_semaphore_fd && sync_fd_semaphore_supported(instance, device),
+    }
+}
+
+fn sync_fd_semaphore_supported(instance: &Instance, device: vk::PhysicalDevice) -> bool {
+    let handle = vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD;
+    let info = vk::PhysicalDeviceExternalSemaphoreInfo::builder().handle_type(handle);
+    let mut properties = vk::ExternalSemaphoreProperties::default();
+    unsafe {
+        instance.get_physical_device_external_semaphore_properties(device, &info, &mut properties)
+    };
+    let required = vk::ExternalSemaphoreFeatureFlags::IMPORTABLE
+        | vk::ExternalSemaphoreFeatureFlags::EXPORTABLE;
+    properties.external_semaphore_features.contains(required)
+        && properties.compatible_handle_types.contains(handle)
 }
 
 fn drm_device_identity(
@@ -234,8 +287,26 @@ fn create_device(
         .queue_family_index(graphics_queue_family)
         .queue_priorities(&priorities);
     let queues = [queue];
-    let descriptor_heap_name = vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name;
-    let extensions = [descriptor_heap_name.as_cstr().as_ptr()];
+    let extensions = [
+        vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name.as_cstr().as_ptr(),
+        vk::KHR_EXTERNAL_MEMORY_FD_EXTENSION.name.as_cstr().as_ptr(),
+        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION
+            .name
+            .as_cstr()
+            .as_ptr(),
+        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION
+            .name
+            .as_cstr()
+            .as_ptr(),
+        vk::EXT_QUEUE_FAMILY_FOREIGN_EXTENSION
+            .name
+            .as_cstr()
+            .as_ptr(),
+        vk::KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION
+            .name
+            .as_cstr()
+            .as_ptr(),
+    ];
     let mut descriptor_heap = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
         .descriptor_heap(true)
         .build();
@@ -265,6 +336,6 @@ pub enum RendererError {
     EnumerateExtensions(vk::ErrorCode),
     #[error(transparent)]
     Selection(#[from] DeviceSelectionError),
-    #[error("failed to create the Vulkan descriptor-heap device: {0:?}")]
+    #[error("failed to create the Vulkan descriptor-heap dma-buf device: {0:?}")]
     CreateDevice(vk::ErrorCode),
 }

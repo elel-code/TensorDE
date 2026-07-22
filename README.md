@@ -8,7 +8,7 @@ Tensor is an early-stage Wayland compositor written in Rust. Its intended stack 
 - Pluggable layouts: scrolling 1D, spatial 2D, and master-stack.
 
 Design records live in `docs/`: [architecture](docs/architecture.md),
-[startup](docs/startup.md), [configuration](docs/configuration.md),
+[rendering](docs/rendering.md), [startup](docs/startup.md), [configuration](docs/configuration.md),
 [IPC/portal gates](docs/ipc-and-portal.md), [testing](docs/testing.md), and
 [contributing](docs/contributing.md).
 
@@ -22,11 +22,14 @@ yet.
 
 - Rust 1.97 or newer.
 - Linux for the DRM/KMS backend. Protocol and layout tests remain platform-light.
-- A Vulkan 1.4 loader and driver advertising `VK_EXT_descriptor_heap` for the renderer target.
+- A Vulkan 1.4 loader and driver providing descriptor heap, dma-buf, DRM modifier, foreign
+  queue-family, and sync-file interop for the renderer target.
 
-The renderer targets Vulkan 1.4 and requires `VK_EXT_descriptor_heap`. Descriptor sets are not a
-supported backend and are intentionally not planned as a future compatibility path. Device
-selection must fail early when the heap feature is unavailable.
+The renderer targets Vulkan 1.4 and requires `VK_EXT_descriptor_heap`, external dma-buf memory,
+explicit DRM modifiers, `VK_EXT_queue_family_foreign`, and importable/exportable `SYNC_FD`
+semaphores. Descriptor sets are not a supported backend and are intentionally not planned as a
+future compatibility path. Device selection fails before logical-device creation when any native
+renderer capability is unavailable.
 
 ## Quick start
 
@@ -39,9 +42,9 @@ cargo run -- --config examples/config.kdl --check
 
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
-`VK_EXT_descriptor_heap`.
-`TENSOR_RENDER_DEVICE` optionally pins the DRM primary/render node pair used by the tty backend;
-without it Smithay's udev seat scan chooses the primary GPU.
+the complete native renderer gate.
+`TENSOR_RENDER_DEVICE` optionally pins the common Vulkan/Smithay DRM primary or render node;
+without it Vulkan capability filtering and GPU ranking select the pair.
 The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
 `$XDG_CONFIG_HOME/tensor/config.kdl` as the default.
 

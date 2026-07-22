@@ -27,11 +27,14 @@ Physical-device ranking lives in `render/device.rs`. The policy is configurable 
 prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
 in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
 feature bit, requires a graphics queue and a complete primary/render node pair reported through
-`VK_EXT_physical_device_drm`, and creates the logical device with no descriptor-set or
-descriptor-buffer fallback. The selected DRM identity is then passed to Smithay as the sole native
-device choice. An explicit `render-device` filters Vulkan candidates by major/minor before ranking;
-Vulkan and the tty backend never choose devices independently. Pure ranking remains testable
-without a GPU.
+`VK_EXT_physical_device_drm`, and requires external dma-buf memory, explicit DRM modifiers, foreign
+queue-family ownership transfer, and bidirectional binary `SYNC_FD` semaphore support. The logical
+device enables only the extensions for this native path and descriptor heap; there is no
+descriptor-set or descriptor-buffer fallback.
+The selected DRM identity is then passed to Smithay as the sole native device choice. An explicit
+`render-device` filters Vulkan candidates by major/minor before ranking; Vulkan and the tty backend
+never choose devices independently. Pure ranking remains testable without a GPU. The complete
+buffer and synchronization contract is recorded in `docs/rendering.md`.
 
 Session-manager selection uses one `SystemdMode` policy for startup and child supervision. `auto`
 follows the detected user-manager environment, while `enabled` and `disabled` are explicit.
