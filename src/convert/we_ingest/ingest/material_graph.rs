@@ -537,6 +537,7 @@ impl WeIrBuilder {
                     },
                 ),
             final_scene_blend,
+            static_black_output,
             effects_in_authored_texture_space,
             puppet_skinning_after_effects: object_is_puppet && effects_in_authored_texture_space,
             waterwaves_uv_field_material_index: waterwaves_displacement.uv_field,

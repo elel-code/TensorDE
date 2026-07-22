@@ -563,6 +563,11 @@ fn scene_gpu_blend(
         SceneCompositeBlend::Multiply => {
             if storage
                 .string(pass.shader_key)
+                .is_some_and(|shader| shader == "we/image-effect-composite__STATIC_BLACK_1")
+            {
+                SceneGpuBlend::Alpha
+            } else if storage
+                .string(pass.shader_key)
                 .is_some_and(multiply_shader_is_premultiplied)
             {
                 SceneGpuBlend::MultiplyPremultiplied

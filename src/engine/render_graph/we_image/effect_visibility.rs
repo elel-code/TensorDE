@@ -47,6 +47,7 @@ fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: true,
         waterwaves_uv_field_material_index: None,

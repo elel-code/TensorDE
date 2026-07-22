@@ -49,6 +49,8 @@ pub struct WeImageGraphContract {
     pub base_pass_constants: Vec<String>,
     pub framebuffer_snapshot: Option<WeFramebufferSnapshotContract>,
     pub final_scene_blend: SceneBlendMode,
+    /// The authored object color is an unbound literal black value.
+    pub static_black_output: bool,
     /// Execute image effects in normalized authored-texture coordinates.
     pub effects_in_authored_texture_space: bool,
     /// Apply image-space effects to the authored texture before the puppet mesh deforms it.
@@ -430,6 +432,10 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 } else if authored_texture_effects {
                     if contract.final_scene_blend == SceneBlendMode::Modulate {
                         "we/image-effect-modulate-composite"
+                    } else if contract.final_scene_blend == SceneBlendMode::Multiply
+                        && contract.static_black_output
+                    {
+                        "we/image-effect-composite__STATIC_BLACK_1"
                     } else {
                         "we/image-effect-composite"
                     }

@@ -437,6 +437,49 @@ fn typed_multiply_variant_uses_standard_premultiplied_multiply_blend() {
 }
 
 #[test]
+fn typed_static_black_multiply_uses_equivalent_standard_alpha_blend() {
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec![
+            "we/image-effect-composite__STATIC_BLACK_1".to_owned(),
+            "we/image-effect-composite".to_owned(),
+            "we/image-effect-composite__static_black_1".to_owned(),
+        ],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+    pass.scene_blend = SceneCompositeBlend::Multiply;
+
+    assert_eq!(
+        scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+        SceneGpuBlend::Alpha
+    );
+    let attachment =
+        scene_color_blend_attachment(SceneGpuBlend::Alpha, SceneColorWriteMask::Rgba);
+    assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
+    assert_eq!(
+        attachment.src_color_blend_factor,
+        vk::BlendFactor::SRC_ALPHA
+    );
+    assert_eq!(
+        attachment.dst_color_blend_factor,
+        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+    );
+
+    pass.shader_key = SceneStringId(1);
+    assert_eq!(
+        scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+        SceneGpuBlend::Multiply
+    );
+
+    pass.shader_key = SceneStringId(2);
+    assert_eq!(
+        scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+        SceneGpuBlend::Multiply
+    );
+}
+
+#[test]
 fn rounded_hsl_quad_declares_disjoint_advanced_blend_coverage() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
         strings: vec!["we/flat-rounded-mask-composite".to_owned()],

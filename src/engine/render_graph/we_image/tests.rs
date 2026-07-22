@@ -1,5 +1,6 @@
 use super::*;
 
+mod blend_lowering;
 mod effect_visibility;
 
 #[test]
@@ -59,35 +60,6 @@ fn reverse_engineered_shader_blendmode_table_keeps_special_modes() {
 }
 
 #[test]
-fn direct_generic_multiply_uses_the_premultiplied_fixed_blend_shader() {
-    let graph = we_image_graph(&WeImageGraphContract {
-        object_index: 7,
-        base_material_index: Some(3),
-        base_shader: Some("genericimage4".to_owned()),
-        base_material_blending: Some("translucent".to_owned()),
-        base_texture_slots: vec![0],
-        base_pass_constants: Vec::new(),
-        framebuffer_snapshot: None,
-        final_scene_blend: SceneBlendMode::Multiply,
-        effects_in_authored_texture_space: true,
-        puppet_skinning_after_effects: false,
-        waterwaves_uv_field_material_index: None,
-        waterwaves_direct_material: None,
-        foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
-        final_effect_material: None,
-        effect_passes: Vec::new(),
-    });
-
-    assert_eq!(graph.passes.len(), 1);
-    assert_eq!(
-        graph.passes[0].shader.as_deref(),
-        Some("we/genericimage4-multiply-composite")
-    );
-    assert_eq!(graph.passes[0].target, RenderTargetRole::SceneColor);
-}
-
-#[test]
 fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 7,
@@ -98,6 +70,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
         base_pass_constants: vec!["tint".to_owned()],
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -221,6 +194,7 @@ fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -271,6 +245,7 @@ fn authored_modulate_effect_composite_premultiplies_layer_alpha() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Modulate,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -318,6 +293,7 @@ fn puppet_image_effects_run_before_skinning_composite() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: true,
         waterwaves_uv_field_material_index: None,
@@ -369,6 +345,7 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -441,6 +418,7 @@ fn flat_rounded_mask_accepts_typed_shader_variants_with_sparse_effect_metadata()
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -490,6 +468,7 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -568,6 +547,7 @@ fn effect_only_framebuffer_layer_without_effects_records_no_passes() {
             usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -598,6 +578,7 @@ fn framebuffer_cloudmotion_final_material_composites_directly_to_scene() {
             usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -674,6 +655,7 @@ fn composelayer_final_effect_material_composites_directly_to_scene() {
             usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -747,6 +729,7 @@ fn effect_only_terminal_keeps_local_source_and_declared_scene_snapshot_slots() {
             usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -816,6 +799,7 @@ fn shader_only_scene_snapshot_is_not_injected_into_the_base_pass() {
             usage: WeFramebufferSnapshotUsage::EffectShaderInput,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -889,6 +873,7 @@ fn effect_only_explicit_final_target_keeps_a_separate_scene_composite() {
             usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
         }),
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
@@ -945,6 +930,7 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
         base_pass_constants: Vec::new(),
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,

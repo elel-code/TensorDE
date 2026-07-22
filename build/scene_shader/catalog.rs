@@ -239,6 +239,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshImageEffectComposite,
     },
     SceneShaderSpec {
+        key: "we/image-effect-composite__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshImageEffectComposite,
+    },
+    SceneShaderSpec {
         key: "we/image-effect-modulate-composite",
         family: SceneShaderFamily::MeshImageEffectComposite,
     },
