@@ -3,15 +3,19 @@ use std::collections::HashMap;
 use bevy_ecs::{entity::Entity, world::World};
 use thiserror::Error;
 
-use super::components::{Focused, View, ViewGeometry, ViewLayout, Workspace};
+use super::components::{
+    Focused, StackingOrder, View, ViewEffects, ViewGeometry, ViewLayout, Workspace,
+};
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
+use crate::scene::{EffectStyle, SceneNode, SceneSnapshot};
 
 pub struct CompositorWorld {
     world: World,
     view_entities: HashMap<ViewId, bevy_ecs::entity::Entity>,
     layout_states: HashMap<WorkspaceId, LayoutState>,
     layout_snapshots: HashMap<WorkspaceId, LayoutSnapshot>,
+    next_stacking_order: u64,
 }
 
 impl CompositorWorld {
@@ -21,6 +25,7 @@ impl CompositorWorld {
             view_entities: HashMap::new(),
             layout_states: HashMap::new(),
             layout_snapshots: HashMap::new(),
+            next_stacking_order: 1,
         }
     }
 
@@ -32,12 +37,15 @@ impl CompositorWorld {
         if self.view_entities.contains_key(&view_id) {
             return Err(ViewLifecycleError::DuplicateViewId(view_id));
         }
+        let stacking_order = self.allocate_stacking_order();
         let entity = self
             .world
             .spawn((
                 View { id: view_id },
                 Workspace { id: workspace_id },
                 ViewLayout::default(),
+                ViewEffects::default(),
+                StackingOrder(stacking_order),
             ))
             .id();
         self.view_entities.insert(view_id, entity);
@@ -151,9 +159,29 @@ impl CompositorWorld {
         for focused_entity in focused_entities {
             self.world.entity_mut(focused_entity).remove::<Focused>();
         }
-        self.world.entity_mut(entity).insert(Focused);
+        let stacking_order = self.allocate_stacking_order();
+        self.world
+            .entity_mut(entity)
+            .insert((Focused, StackingOrder(stacking_order)));
         self.layout_snapshots.remove(&workspace_id);
         Ok(())
+    }
+
+    pub fn set_view_effects(
+        &mut self,
+        view_id: ViewId,
+        effects: EffectStyle,
+    ) -> Result<bool, ViewLifecycleError> {
+        let entity = self.entity_for(view_id)?;
+        let mut current = self
+            .world
+            .get_mut::<ViewEffects>(entity)
+            .expect("every view has effect state");
+        if current.0 == effects {
+            return Ok(false);
+        }
+        current.0 = effects;
+        Ok(true)
     }
 
     pub fn focused_view(&mut self, workspace_id: WorkspaceId) -> Option<ViewId> {
@@ -228,6 +256,39 @@ impl CompositorWorld {
         self.layout_snapshots.get(&workspace_id)
     }
 
+    pub fn extract_scene(&mut self, workspace_id: WorkspaceId) -> Option<SceneSnapshot> {
+        let mut view_ids = {
+            let mut query = self.world.query::<(&View, &Workspace)>();
+            query
+                .iter(&self.world)
+                .filter(|(_, workspace)| workspace.id == workspace_id)
+                .map(|(view, _)| view.id)
+                .collect::<Vec<_>>()
+        };
+        view_ids.sort_unstable();
+
+        let layout = self.layout_snapshots.get(&workspace_id)?;
+        if view_ids.len() != layout.placements.len() {
+            return None;
+        }
+        let mut nodes = Vec::with_capacity(view_ids.len());
+        for (view_id, placement) in view_ids.into_iter().zip(layout.placements.iter().copied()) {
+            let entity = self.view_entities[&view_id];
+            let stacking_order = self
+                .world
+                .get::<StackingOrder>(entity)
+                .expect("every view has stacking state")
+                .0;
+            let effects = self
+                .world
+                .get::<ViewEffects>(entity)
+                .expect("every view has effect state")
+                .0;
+            nodes.push(SceneNode::new(view_id, stacking_order, placement, effects));
+        }
+        Some(SceneSnapshot::new(workspace_id, layout.viewport, nodes))
+    }
+
     pub fn is_focused(&self, view_id: ViewId) -> bool {
         self.view_entities
             .get(&view_id)
@@ -249,6 +310,15 @@ impl CompositorWorld {
             .filter(|(_, workspace, focused)| workspace.id == workspace_id && focused.is_some())
             .map(|(entity, _, _)| entity)
             .collect()
+    }
+
+    fn allocate_stacking_order(&mut self) -> u64 {
+        let order = self.next_stacking_order;
+        self.next_stacking_order = self
+            .next_stacking_order
+            .checked_add(1)
+            .expect("compositor exhausted the stacking-order space");
+        order
     }
 }
 
@@ -386,6 +456,53 @@ mod tests {
 
         world.spawn_view(view(2), workspace(1)).unwrap();
         assert_eq!(world.layout_snapshot(workspace(1)), None);
+    }
+
+    #[test]
+    fn scene_extraction_separates_stable_nodes_from_draw_order() {
+        use crate::scene::{LinearRgba16, ShadowStyle};
+
+        let mut world = CompositorWorld::new();
+        world.spawn_view(view(2), workspace(1)).unwrap();
+        world.spawn_view(view(1), workspace(1)).unwrap();
+        world.focus_view(view(2)).unwrap();
+        let effects = EffectStyle {
+            corner_radius: 12,
+            shadow: Some(ShadowStyle {
+                offset_x: 2,
+                offset_y: 3,
+                blur_radius: 8,
+                spread: 1,
+                color: LinearRgba16::new(0, 0, 0, 32_768),
+            }),
+            ..Default::default()
+        };
+        assert!(world.set_view_effects(view(2), effects).unwrap());
+        assert!(!world.set_view_effects(view(2), effects).unwrap());
+        world.arrange_workspace(
+            workspace(1),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            Rect::new(0, 0, 100, 80),
+        );
+
+        let scene = world.extract_scene(workspace(1)).unwrap();
+
+        assert_eq!(
+            scene
+                .nodes()
+                .iter()
+                .map(|node| node.view_id)
+                .collect::<Vec<_>>(),
+            [view(1), view(2)]
+        );
+        assert_eq!(
+            scene
+                .draw_order()
+                .map(|node| node.view_id)
+                .collect::<Vec<_>>(),
+            [view(1), view(2)]
+        );
+        assert_eq!(scene.nodes()[1].effects, effects);
     }
 
     #[test]

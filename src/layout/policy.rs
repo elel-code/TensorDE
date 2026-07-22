@@ -179,6 +179,7 @@ fn fixed_snapshot(
     placements: Vec<LayoutPlacement>,
 ) -> LayoutSnapshot {
     LayoutSnapshot {
+        viewport: area,
         placements,
         content_bounds: area,
         horizontal_offset: state.horizontal_offset,

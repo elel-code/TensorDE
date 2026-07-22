@@ -3,6 +3,8 @@
 Tensor borrows test strategy from Niri and Hyprland without copying implementation code.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
+- Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
+  frame/full damage, old/new movement damage, region coalescing, and blur dependency propagation.
 - Scrolling tests cover focus visibility, persistent workspace offsets, oversized columns, and
   full-geometry versus visible-clip output. Grid and master-stack tests apply view min/max
   constraints after deterministic track allocation.

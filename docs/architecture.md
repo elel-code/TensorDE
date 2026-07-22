@@ -28,6 +28,13 @@ commit: initial XDG configuration, committed min/max changes, output topology, a
 commands recompute geometry. The resulting snapshot relocates Smithay elements without changing
 their stacking order and supplies both the XDG suggested size and output-relative bounds.
 
+Scene extraction is a separate once-per-frame boundary. Nodes are stored in stable `ViewId` order
+for linear snapshot comparison and carry an independent stacking-order index for drawing. Effect
+styles resolve conservative visual bounds (including shadows and clipped output edges); damage
+merges adjacent regions, caps pathological fragmentation, and expands regions that feed a
+backdrop-blur dependency. Vulkan descriptor allocation consumes this compact scene data after ECS
+queries finish.
+
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
 responsible for lifecycle, workspace membership, focus uniqueness, and geometry updates.

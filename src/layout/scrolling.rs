@@ -49,6 +49,7 @@ pub(super) fn arrange(
         })
         .collect();
     LayoutSnapshot {
+        viewport: area,
         placements,
         content_bounds: Rect::new(
             area.x.saturating_add(state.horizontal_offset),

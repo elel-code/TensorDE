@@ -57,6 +57,52 @@ impl Rect {
             (bottom - top) as u32,
         ))
     }
+
+    pub fn translated(self, x: i32, y: i32) -> Self {
+        Self::new(
+            self.x.saturating_add(x),
+            self.y.saturating_add(y),
+            self.width,
+            self.height,
+        )
+    }
+
+    pub fn inflated(self, amount: u32) -> Self {
+        let amount_i32 = i32::try_from(amount).unwrap_or(i32::MAX);
+        Self::new(
+            self.x.saturating_sub(amount_i32),
+            self.y.saturating_sub(amount_i32),
+            self.width.saturating_add(amount.saturating_mul(2)),
+            self.height.saturating_add(amount.saturating_mul(2)),
+        )
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        let left = self.x.min(other.x);
+        let top = self.y.min(other.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Self::new(
+            left,
+            top,
+            u32::try_from(right.saturating_sub(left)).unwrap_or(u32::MAX),
+            u32::try_from(bottom.saturating_sub(top)).unwrap_or(u32::MAX),
+        )
+    }
+
+    pub fn touches_or_overlaps(self, other: Self) -> bool {
+        self.x <= other.right()
+            && other.x <= self.right()
+            && self.y <= other.bottom()
+            && other.y <= self.bottom()
+    }
+
+    pub fn contains_rect(self, other: Self) -> bool {
+        self.x <= other.x
+            && self.y <= other.y
+            && self.right() >= other.right()
+            && self.bottom() >= other.bottom()
+    }
 }
 
 pub fn split_evenly(length: u32, count: usize) -> Vec<u32> {
@@ -97,5 +143,18 @@ mod tests {
         );
         assert_eq!(viewport.intersection(Rect::new(110, 10, 20, 20)), None);
         assert_eq!(viewport.intersection(Rect::new(200, 200, 20, 20)), None);
+    }
+
+    #[test]
+    fn effect_bounds_translate_inflate_and_merge_safely() {
+        let rect = Rect::new(10, 20, 30, 40).translated(-5, 7).inflated(3);
+        assert_eq!(rect, Rect::new(2, 24, 36, 46));
+
+        let adjacent = Rect::new(38, 24, 10, 10);
+        assert!(rect.touches_or_overlaps(adjacent));
+        let union = rect.union(adjacent);
+        assert_eq!(union, Rect::new(2, 24, 46, 46));
+        assert!(union.contains_rect(rect));
+        assert!(union.contains_rect(adjacent));
     }
 }

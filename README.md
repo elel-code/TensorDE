@@ -74,6 +74,7 @@ The module boundaries are deliberate ownership boundaries:
   and ECS lifecycle transitions.
 - `src/ipc.rs`: versioned compositor control protocol over a bounded Unix-socket framing layer.
 - `src/ecs.rs`: Bevy ECS components and deterministic scene/layout state.
+- `src/scene.rs`: one-shot render scene extraction, effect bounds, and damage snapshots.
 - `src/render.rs`: Vulkan target capabilities and, later, device/swapchain lifetime.
 - `src/layout.rs`: constrained geometry, per-workspace scrolling state, and layout snapshots shared
   by scene extraction, damage, effects, and input policy.

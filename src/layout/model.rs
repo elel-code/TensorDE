@@ -160,6 +160,7 @@ impl LayoutPlacement {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutSnapshot {
+    pub viewport: Rect,
     pub placements: Vec<LayoutPlacement>,
     pub content_bounds: Rect,
     pub horizontal_offset: i32,
@@ -168,6 +169,7 @@ pub struct LayoutSnapshot {
 impl LayoutSnapshot {
     pub(crate) fn empty(area: Rect, state: LayoutState) -> Self {
         Self {
+            viewport: area,
             placements: Vec::new(),
             content_bounds: Rect::new(area.x, area.y, 0, 0),
             horizontal_offset: state.horizontal_offset,

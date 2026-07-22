@@ -2,6 +2,7 @@ use bevy_ecs::prelude::Component;
 
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutItem, LayoutLength, Rect, SizeConstraints};
+use crate::scene::EffectStyle;
 
 #[derive(Clone, Copy, Component, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct View {
@@ -15,6 +16,12 @@ pub struct Workspace {
 
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 pub struct ViewGeometry(pub Rect);
+
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+pub struct StackingOrder(pub u64);
+
+#[derive(Clone, Copy, Component, Debug, Default, Eq, PartialEq)]
+pub struct ViewEffects(pub EffectStyle);
 
 #[derive(Clone, Copy, Component, Debug, Default, Eq, PartialEq)]
 pub struct ViewLayout {
