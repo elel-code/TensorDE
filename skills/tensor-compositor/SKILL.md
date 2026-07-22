@@ -13,6 +13,9 @@ are preferred over compatibility layers that would constrain the renderer or IPC
 - Use Smithay `master` for Wayland protocol, input, session, and calloop integration.
 - Use Vulkanalia with `VK_EXT_descriptor_heap` as a required, first-class `DescriptorHeap`.
   Never add descriptor-set or descriptor-buffer fallback paths.
+- Keep physical-device enumeration/ranking in the renderer `device` module. The default prefers a
+  discrete GPU, then integrated/virtual hardware, with CPU last; every candidate must support the
+  descriptor heap.
 - Use `bevy_ecs` directly, not the Bevy engine. Keep Smithay/non-thread-safe handles outside normal
   components, in protocol-owned state or `NonSend` resources. Components should be IDs, lifecycle
   state, geometry, and render extraction data.

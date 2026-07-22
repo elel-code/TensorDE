@@ -10,6 +10,9 @@ APIs for their own sake.
 - Vulkanalia is the renderer binding. The renderer requires Vulkan `VK_EXT_descriptor_heap` and
   models it as a first-class `DescriptorHeap`. Descriptor sets are not a backend and must not be
   added as a compatibility path.
+- Physical-device selection is a renderer submodule and a configuration value. Default ranking
+  prefers discrete GPUs, then integrated/virtual hardware, with CPU last; all candidates still need
+  the descriptor-heap feature.
 - `bevy_ecs` is the long-term ECS kernel. Use only the `bevy_ecs` crate, not Bevy's renderer or
   window stack. Smithay objects and other thread-affine handles stay in `NonSend` resources or the
   protocol layer; ECS components contain stable IDs, state, and renderable geometry.

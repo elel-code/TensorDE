@@ -15,6 +15,10 @@ The renderer requires Vulkan 1.4 plus `VK_EXT_descriptor_heap`. Descriptor sets 
 buffers are not alternative backends. A device that lacks the heap capability fails startup before
 any long-lived renderer state is created.
 
+Physical-device enumeration and ranking live in `render/device.rs`. The policy is configurable but
+the default prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. This
+policy is separate from Vulkan instance/device creation so probing can be tested without a GPU.
+
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.

@@ -20,12 +20,17 @@ pub struct Compositor {
 
 impl Compositor {
     pub fn new(config: Config) -> Result<Self, CompositorError> {
+        let Config {
+            initial_layout,
+            ipc_socket,
+            gpu_preference,
+        } = config;
         Ok(Self {
             protocol: WaylandRuntime::new()?,
-            ipc: IpcServer::bind(config.ipc_socket)?,
+            ipc: IpcServer::bind(ipc_socket)?,
             world: CompositorWorld::new(),
-            layout: LayoutEngine::new(config.initial_layout),
-            renderer: RendererTarget::default(),
+            layout: LayoutEngine::new(initial_layout),
+            renderer: RendererTarget::with_gpu_preference(gpu_preference),
         })
     }
 
@@ -37,6 +42,7 @@ impl Compositor {
             ipc = %self.ipc.path().display(),
             vulkan = %self.renderer.api_version,
             descriptors = self.renderer.descriptor_heap.name(),
+            gpu = self.renderer.device.preference().name(),
             layout = self.layout.kind().name(),
             preview_views = preview.len(),
             ecs_views = self.world.view_count(0),

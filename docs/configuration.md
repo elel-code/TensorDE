@@ -17,7 +17,13 @@ The current schema is intentionally small:
 ```kdl
 layout "niri-1d"
 ipc-socket "/run/user/1000/tensor.sock"
+gpu "discrete"
 ```
+
+`gpu` defaults to `discrete`: candidates are ranked discrete GPU, integrated GPU, virtual GPU, then
+CPU, and candidates without `VK_EXT_descriptor_heap` are rejected before ranking. Use `integrated`
+or `any` only when the machine's topology requires it. `TENSOR_GPU` overrides the file for local
+development.
 
 Future reloads parse and validate off the event-loop critical path. A failed reload must preserve
 the last valid configuration and report a structured error through logs and IPC.

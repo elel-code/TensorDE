@@ -36,6 +36,8 @@ cargo run -- --config examples/config.kdl --check
 ```
 
 `TENSOR_LAYOUT` accepts `niri-1d`, `nourish-2d`, and `classic`.
+`TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
+`VK_EXT_descriptor_heap`.
 The file format is KDL; `TENSOR_CONFIG` and `--config` select a file, with
 `$XDG_CONFIG_HOME/tensor/config.kdl` as the default.
 
