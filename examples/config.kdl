@@ -1,0 +1,4 @@
+// Tensor's initial configuration is intentionally small and easy to break while the model evolves.
+layout "niri-1d"
+ipc-socket "/run/user/1000/tensor.sock"
+
