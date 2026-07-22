@@ -20,6 +20,7 @@ use smithay::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
             is_sync_subsurface, with_states,
         },
+        fractional_scale::FractionalScaleHandler,
         output::OutputHandler,
         seat::WaylandFocus,
         selection::{
@@ -27,10 +28,13 @@ use smithay::{
             data_device::{
                 DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
             },
+            primary_selection::{
+                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
+            },
         },
         shell::xdg::{
             PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
-            XdgShellState,
+            XdgShellState, decoration::XdgDecorationHandler,
         },
         shm::{ShmHandler, ShmState},
     },
@@ -196,6 +200,7 @@ impl SeatHandler for RuntimeState {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
+        set_primary_focus(&self.display_handle, seat, client.clone());
         set_data_device_focus(&self.display_handle, seat, client);
     }
 
@@ -204,6 +209,47 @@ impl SeatHandler for RuntimeState {
 
 impl SelectionHandler for RuntimeState {
     type SelectionUserData = ();
+}
+
+impl PrimarySelectionHandler for RuntimeState {
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        self.protocol_globals.primary_selection()
+    }
+}
+
+impl FractionalScaleHandler for RuntimeState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        self.update_surface_scale(&surface);
+    }
+}
+
+impl XdgDecorationHandler for RuntimeState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        set_client_side_decoration(&toplevel);
+    }
+
+    fn request_mode(
+        &mut self,
+        toplevel: ToplevelSurface,
+        _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    ) {
+        set_client_side_decoration(&toplevel);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        set_client_side_decoration(&toplevel);
+    }
+}
+
+fn set_client_side_decoration(toplevel: &ToplevelSurface) {
+    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+
+    toplevel.with_pending_state(|state| {
+        state.decoration_mode = Some(Mode::ClientSide);
+    });
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_pending_configure();
+    }
 }
 
 impl DataDeviceHandler for RuntimeState {

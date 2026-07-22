@@ -72,7 +72,16 @@ impl Compositor {
     pub fn check_ready(&mut self) {
         let renderer_target = self.renderer.target();
         let selected_device = self.renderer.selected();
-        let (preview_views, layout, layout_options, ecs_views, outputs, seat, xdg_output) = {
+        let (
+            preview_views,
+            layout,
+            layout_options,
+            ecs_views,
+            outputs,
+            seat,
+            xdg_output,
+            protocol_globals,
+        ) = {
             let state = self.protocol.state_mut();
             let mut preview_state = LayoutState::default();
             let preview_items = [LayoutItem::default(); 3];
@@ -96,6 +105,7 @@ impl Compositor {
                     .output_manager_state
                     .xdg_output_manager_global()
                     .is_some(),
+                state.protocol_globals.capabilities(),
             )
         };
         info!(
@@ -119,6 +129,7 @@ impl Compositor {
             outputs,
             seat,
             xdg_output,
+            protocol_globals = ?protocol_globals,
             "compositor runtime is ready"
         );
     }

@@ -1,3 +1,4 @@
+mod globals;
 mod handlers;
 #[cfg(feature = "tty")]
 mod input;

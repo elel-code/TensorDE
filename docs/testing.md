@@ -14,6 +14,9 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
+- Protocol-global tests bind viewporter, fractional-scale, xdg-decoration, primary selection,
+  relative pointer, and pointer gestures from a real client. They assert preferred-scale and
+  decoration configure events, including protocol-correct child-object destruction order.
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
 - Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
   and invalid configured node paths without requiring a Vulkan driver.

@@ -71,10 +71,17 @@ Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.
 
-The protocol layer already owns the complete initial Wayland global set needed for application
-lifecycles: compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, selection/data-device, and
-popup tracking. A toplevel is assigned a stable `ViewId` at creation and removed idempotently from
-both Smithay's `Space<Window>` and ECS when either the shell or surface destruction callback fires.
+The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
+compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
+advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer, and
+pointer gestures. Preferred integer/fractional scale and transform follow the output selected by
+the authoritative layout placement. Decoration policy currently requires client-side decoration;
+server-side mode will only be exposed when decoration geometry and rendering share the scene
+snapshot. Presentation-time, alpha-modifier, and background-effect are likewise not advertised
+until the Vulkan frame path can honor their feedback and pixels.
+
+A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Smithay's
+`Space<Window>` and ECS when either the shell or surface destruction callback fires.
 Tensor does not reimplement DRM/KMS, GBM, libinput, udev, or libseat. The tty backend owns session
 activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier tokens, GBM
 lifetime, and per-output native-format validation. It opens the primary/render pair selected during

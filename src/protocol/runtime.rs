@@ -263,19 +263,39 @@ mod tests {
         globals::{GlobalListContents, registry_queue_init},
         protocol::{wl_compositor, wl_registry, wl_surface},
     };
-    use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+    use wayland_protocols::{
+        wp::{
+            fractional_scale::v1::client::wp_fractional_scale_manager_v1,
+            fractional_scale::v1::client::wp_fractional_scale_v1,
+            pointer_gestures::zv1::client::zwp_pointer_gestures_v1,
+            primary_selection::zv1::client::zwp_primary_selection_device_manager_v1,
+            relative_pointer::zv1::client::zwp_relative_pointer_manager_v1,
+            viewporter::client::wp_viewporter,
+        },
+        xdg::{
+            decoration::zv1::client::zxdg_decoration_manager_v1,
+            decoration::zv1::client::zxdg_toplevel_decoration_v1,
+            shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+        },
+    };
 
     use super::*;
 
     #[derive(Debug, Eq, PartialEq)]
     enum ClientEvent {
-        Configured((i32, i32)),
+        Configured {
+            size: (i32, i32),
+            preferred_scale: u32,
+            client_side_decoration: bool,
+        },
         Destroyed,
     }
 
     struct TestClient {
         configured: bool,
         configured_size: Option<(i32, i32)>,
+        preferred_scale: Option<u32>,
+        client_side_decoration: bool,
     }
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for TestClient {
@@ -292,6 +312,44 @@ mod tests {
 
     delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
     delegate_noop!(TestClient: ignore wl_surface::WlSurface);
+    delegate_noop!(TestClient: ignore wp_viewporter::WpViewporter);
+    delegate_noop!(TestClient: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+    delegate_noop!(TestClient: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
+    delegate_noop!(TestClient: ignore zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1);
+    delegate_noop!(TestClient: ignore zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1);
+    delegate_noop!(TestClient: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);
+    impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for TestClient {
+        fn event(
+            state: &mut Self,
+            _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+            event: wp_fractional_scale_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+                state.preferred_scale = Some(scale);
+            }
+        }
+    }
+
+    impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for TestClient {
+        fn event(
+            state: &mut Self,
+            _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+            event: zxdg_toplevel_decoration_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+                state.client_side_decoration = matches!(
+                    mode,
+                    wayland_client::WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ClientSide)
+                );
+            }
+        }
+    }
     impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
         fn event(
             state: &mut Self,
@@ -360,9 +418,46 @@ mod tests {
             let wm_base = globals
                 .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
                 .unwrap();
+            let _viewporter = globals
+                .bind::<wp_viewporter::WpViewporter, _, _>(&handle, 1..=1, ())
+                .unwrap();
+            let fractional_scale_manager = globals
+                .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
+                    &handle,
+                    1..=1,
+                    (),
+                )
+                .unwrap();
+            let decoration_manager = globals
+                .bind::<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, _, _>(
+                    &handle,
+                    1..=1,
+                    (),
+                )
+                .unwrap();
+            let _primary_selection = globals
+                .bind::<
+                    zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+                    _,
+                    _,
+                >(&handle, 1..=1, ())
+                .unwrap();
+            let _relative_pointer = globals
+                .bind::<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1, _, _>(
+                    &handle,
+                    1..=1,
+                    (),
+                )
+                .unwrap();
+            let _pointer_gestures = globals
+                .bind::<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, _, _>(&handle, 1..=3, ())
+                .unwrap();
             let surface = compositor.create_surface(&handle, ());
             let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg_surface.get_toplevel(&handle, ());
+            let _fractional_scale =
+                fractional_scale_manager.get_fractional_scale(&surface, &handle, ());
+            let _decoration = decoration_manager.get_toplevel_decoration(&toplevel, &handle, ());
             toplevel.set_min_size(320, 200);
             toplevel.set_max_size(640, 480);
             surface.commit();
@@ -370,15 +465,23 @@ mod tests {
             let mut state = TestClient {
                 configured: false,
                 configured_size: None,
+                preferred_scale: None,
+                client_side_decoration: false,
             };
             while !state.configured {
                 queue.blocking_dispatch(&mut state).unwrap();
             }
             event_tx
-                .send(ClientEvent::Configured(state.configured_size.unwrap()))
+                .send(ClientEvent::Configured {
+                    size: state.configured_size.unwrap(),
+                    preferred_scale: state.preferred_scale.unwrap(),
+                    client_side_decoration: state.client_side_decoration,
+                })
                 .unwrap();
             release_rx.recv().unwrap();
 
+            _decoration.destroy();
+            _fractional_scale.destroy();
             toplevel.destroy();
             xdg_surface.destroy();
             surface.destroy();
@@ -388,7 +491,11 @@ mod tests {
 
         assert_eq!(
             dispatch_until(&mut runtime, &event_rx),
-            ClientEvent::Configured((488, 480))
+            ClientEvent::Configured {
+                size: (488, 480),
+                preferred_scale: 120,
+                client_side_decoration: true,
+            }
         );
         assert_eq!(runtime.state.view_count(), 1);
         let window = runtime.state.space.elements().next().unwrap().clone();

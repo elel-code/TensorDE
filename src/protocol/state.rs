@@ -3,13 +3,17 @@ use std::collections::HashMap;
 use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState},
+    output::Scale,
     reexports::wayland_server::{
         DisplayHandle, Resource,
         backend::{ClientData, ClientId, DisconnectReason, ObjectId},
         protocol::wl_surface::WlSurface,
     },
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{
+            CompositorClientState, CompositorState, get_parent, send_surface_state, with_states,
+        },
+        fractional_scale::with_fractional_scale,
         output::OutputManagerState,
         seat::WaylandFocus,
         selection::data_device::DataDeviceState,
@@ -27,6 +31,8 @@ use crate::{
 };
 use tensor_util::Size;
 
+use super::globals::ProtocolGlobals;
+
 #[cfg(feature = "tty")]
 use crate::backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor, TtyBackend};
 
@@ -40,6 +46,7 @@ pub(crate) struct RuntimeState {
     pub(crate) output_manager_state: OutputManagerState,
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) data_device_state: DataDeviceState,
+    pub(crate) protocol_globals: ProtocolGlobals,
     pub(crate) seat: Seat<Self>,
     pub(crate) space: Space<Window>,
     pub(crate) popups: PopupManager,
@@ -62,6 +69,7 @@ impl RuntimeState {
         let shm_state = ShmState::new::<Self>(&display_handle, []);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let protocol_globals = ProtocolGlobals::new(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "tensor");
 
@@ -73,6 +81,7 @@ impl RuntimeState {
             output_manager_state,
             seat_state,
             data_device_state,
+            protocol_globals,
             seat,
             space: Space::default(),
             popups: PopupManager::default(),
@@ -158,9 +167,14 @@ impl RuntimeState {
             })
             .collect::<Vec<_>>();
 
-        for (window, toplevel, geometry) in windows {
+        for (window, _, geometry) in &windows {
             self.space
-                .relocate_element(&window, (geometry.x, geometry.y));
+                .relocate_element(window, (geometry.x, geometry.y));
+        }
+        self.space.refresh();
+
+        for (window, toplevel, geometry) in windows {
+            self.update_window_surface_state(&window);
             if let Some(toplevel) = toplevel {
                 let size = (
                     i32::try_from(geometry.width).unwrap_or(i32::MAX),
@@ -179,8 +193,54 @@ impl RuntimeState {
                 toplevel.send_pending_configure();
             }
         }
-        self.space.refresh();
         true
+    }
+
+    pub(crate) fn update_surface_scale(&self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        let (scale, transform) = self
+            .space
+            .elements()
+            .find(|window| window.wl_surface().as_deref() == Some(&root))
+            .map(|window| self.window_output_state(window))
+            .unwrap_or((Scale::Integer(1), smithay::utils::Transform::Normal));
+        with_states(surface, |states| {
+            send_surface_state(surface, states, scale.integer_scale(), transform);
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale.fractional_scale());
+            });
+        });
+    }
+
+    fn update_window_surface_state(&self, window: &Window) {
+        let (scale, transform) = self.window_output_state(window);
+        window.with_surfaces(|surface, states| {
+            send_surface_state(surface, states, scale.integer_scale(), transform);
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale.fractional_scale());
+            });
+        });
+    }
+
+    fn window_output_state(&self, window: &Window) -> (Scale, smithay::utils::Transform) {
+        self.space
+            .outputs_for_element(window)
+            .into_iter()
+            .filter_map(|output| {
+                let geometry = self.space.output_geometry(&output)?;
+                Some((geometry.loc.x, geometry.loc.y, output.name(), output))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then(left.1.cmp(&right.1))
+                    .then(left.2.cmp(&right.2))
+            })
+            .map(|(_, _, _, output)| (output.current_scale(), output.current_transform()))
+            .unwrap_or((Scale::Integer(1), smithay::utils::Transform::Normal))
     }
 
     fn default_workspace_area(&self) -> Option<tensor_util::Rect> {
