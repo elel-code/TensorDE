@@ -7,7 +7,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    layout::LayoutKind,
+    layout::{LayoutKind, LayoutLength, LayoutOptions},
     render::{GpuPreference, ParseGpuPreferenceError},
     service::{ParseSystemdModeError, SystemdMode},
     xwayland::XWaylandConfig,
@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub initial_layout: LayoutKind,
+    pub layout_options: LayoutOptions,
     pub ipc_socket: PathBuf,
     pub gpu_preference: GpuPreference,
     pub render_device: Option<PathBuf>,
@@ -31,7 +32,7 @@ pub struct StartupCommand {
 
 impl Config {
     pub fn load_with_environment(path: &Path) -> Result<Self, ConfigError> {
-        let mut config = Self::load_or_default(&path)?;
+        let mut config = Self::load_or_default(path)?;
 
         if let Some(layout) = env::var_os("TENSOR_LAYOUT") {
             let layout = layout.to_str().ok_or(ConfigError::NonUnicodeLayout)?;
@@ -91,12 +92,11 @@ impl Config {
                 path: path.to_owned(),
                 message: error.to_string(),
             })?;
-        let initial_layout = parsed
+        let (initial_layout, layout_options) = parsed
             .layout
-            .as_deref()
-            .map(LayoutKind::from_str)
+            .map(LayoutFileConfig::resolve)
             .transpose()?
-            .unwrap_or_default();
+            .unwrap_or_else(|| (LayoutKind::default(), LayoutOptions::default()));
         let ipc_socket = parsed
             .ipc_socket
             .map(PathBuf::from)
@@ -132,6 +132,7 @@ impl Config {
 
         Ok(Self {
             initial_layout,
+            layout_options,
             ipc_socket,
             gpu_preference,
             render_device,
@@ -146,6 +147,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             initial_layout: LayoutKind::default(),
+            layout_options: LayoutOptions::default(),
             ipc_socket: env::var_os("XDG_RUNTIME_DIR")
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
@@ -160,8 +162,8 @@ impl Default for Config {
 
 #[derive(Debug, knus::Decode)]
 struct FileConfig {
-    #[knus(child, unwrap(argument))]
-    layout: Option<String>,
+    #[knus(child)]
+    layout: Option<LayoutFileConfig>,
     #[knus(child, unwrap(argument))]
     ipc_socket: Option<String>,
     #[knus(child, unwrap(argument))]
@@ -176,6 +178,95 @@ struct FileConfig {
     spawn_at_startup: Vec<Vec<String>>,
 }
 
+#[derive(Debug, knus::Decode)]
+struct LayoutFileConfig {
+    #[knus(argument)]
+    kind: String,
+    #[knus(child, unwrap(argument))]
+    gaps: Option<u32>,
+    #[knus(child)]
+    default_column_width: Option<LayoutLengthConfig>,
+    #[knus(child)]
+    master_width: Option<LayoutLengthConfig>,
+}
+
+impl LayoutFileConfig {
+    fn resolve(self) -> Result<(LayoutKind, LayoutOptions), ConfigError> {
+        let kind = LayoutKind::from_str(&self.kind)?;
+        let defaults = LayoutOptions::default();
+        let gap = self.gaps.unwrap_or(defaults.gap);
+        if gap > 100_000 {
+            return Err(ConfigError::InvalidLayoutOption {
+                option: "gaps",
+                message: "must be at most 100000 logical pixels".to_owned(),
+            });
+        }
+        Ok((
+            kind,
+            LayoutOptions {
+                gap,
+                scrolling_default_width: resolve_layout_length(
+                    "default-column-width",
+                    self.default_column_width,
+                    defaults.scrolling_default_width,
+                )?,
+                master_width: resolve_layout_length(
+                    "master-width",
+                    self.master_width,
+                    defaults.master_width,
+                )?,
+            },
+        ))
+    }
+}
+
+#[derive(Debug, knus::Decode)]
+struct LayoutLengthConfig {
+    #[knus(property)]
+    proportion: Option<f64>,
+    #[knus(property)]
+    fixed: Option<u32>,
+}
+
+fn resolve_layout_length(
+    option: &'static str,
+    configured: Option<LayoutLengthConfig>,
+    default: LayoutLength,
+) -> Result<LayoutLength, ConfigError> {
+    let Some(configured) = configured else {
+        return Ok(default);
+    };
+    match (configured.proportion, configured.fixed) {
+        (Some(proportion), None) if proportion.is_finite() && proportion > 0.0 => {
+            let scaled = (proportion * 10_000.0).round();
+            if !(1.0..=100_000_000.0).contains(&scaled) {
+                return Err(ConfigError::InvalidLayoutOption {
+                    option,
+                    message: "proportion must be between 0.0001 and 10000".to_owned(),
+                });
+            }
+            Ok(LayoutLength::proportion(scaled as u32, 10_000))
+        }
+        (None, Some(fixed)) if fixed > 0 => Ok(LayoutLength::fixed(fixed)),
+        (Some(_), Some(_)) => Err(ConfigError::InvalidLayoutOption {
+            option,
+            message: "set either proportion or fixed, not both".to_owned(),
+        }),
+        (Some(_), None) => Err(ConfigError::InvalidLayoutOption {
+            option,
+            message: "proportion must be finite and positive".to_owned(),
+        }),
+        (None, Some(_)) => Err(ConfigError::InvalidLayoutOption {
+            option,
+            message: "fixed width must be positive".to_owned(),
+        }),
+        (None, None) => Err(ConfigError::InvalidLayoutOption {
+            option,
+            message: "requires a proportion or fixed property".to_owned(),
+        }),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("TENSOR_LAYOUT is not valid Unicode")]
@@ -186,6 +277,11 @@ pub enum ConfigError {
     NonUnicodeSystemd,
     #[error("spawn-at-startup entry {index} must contain a program")]
     EmptyStartupCommand { index: usize },
+    #[error("invalid layout option {option}: {message}")]
+    InvalidLayoutOption {
+        option: &'static str,
+        message: String,
+    },
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -216,6 +312,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.initial_layout, LayoutKind::Spatial2D);
+        assert_eq!(config.layout_options, LayoutOptions::default());
         assert_eq!(
             config.ipc_socket,
             PathBuf::from("/run/user/1000/tensor.sock")
@@ -237,6 +334,57 @@ mod tests {
                     argv: vec!["foot".to_owned(), "--server".to_owned()]
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn parses_nested_layout_policy() {
+        let config = Config::from_kdl(
+            Path::new("test.kdl"),
+            "layout \"scrolling-1d\" {\n  gaps 12\n  default-column-width proportion=0.625\n  master-width fixed=900\n}",
+        )
+        .unwrap();
+
+        assert_eq!(config.layout_options.gap, 12);
+        assert_eq!(
+            config.layout_options.scrolling_default_width,
+            LayoutLength::proportion(6250, 10_000)
+        );
+        assert_eq!(config.layout_options.master_width, LayoutLength::fixed(900));
+    }
+
+    #[test]
+    fn layout_length_requires_one_valid_mode() {
+        let both = Config::from_kdl(
+            Path::new("test.kdl"),
+            "layout \"scrolling-1d\" {\n  default-column-width proportion=0.5 fixed=800\n}",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &both,
+                ConfigError::InvalidLayoutOption {
+                    option: "default-column-width",
+                    ..
+                }
+            ),
+            "unexpected error: {both:?}"
+        );
+
+        let zero = Config::from_kdl(
+            Path::new("test.kdl"),
+            "layout \"scrolling-1d\" {\n  master-width fixed=0\n}",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &zero,
+                ConfigError::InvalidLayoutOption {
+                    option: "master-width",
+                    ..
+                }
+            ),
+            "unexpected error: {zero:?}"
         );
     }
 

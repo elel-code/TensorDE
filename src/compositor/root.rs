@@ -11,7 +11,7 @@ use crate::{
         Command as IpcCommand, IPC_PROTOCOL_VERSION, IpcError, IpcReply, IpcServer, Request,
         Response, ResultBody, StateSnapshot,
     },
-    layout::{LayoutEngine, Rect},
+    layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
     protocol::{ProtocolError, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
@@ -35,6 +35,7 @@ impl Compositor {
     pub fn new(config: Config) -> Result<Self, CompositorError> {
         let Config {
             initial_layout,
+            layout_options,
             ipc_socket,
             gpu_preference,
             render_device,
@@ -42,7 +43,8 @@ impl Compositor {
             xwayland,
             startup_commands,
         } = config;
-        let protocol = WaylandRuntime::new(initial_layout)?;
+        let protocol =
+            WaylandRuntime::new(LayoutEngine::with_options(initial_layout, layout_options))?;
         let requested_drm_node = render_device
             .as_deref()
             .map(DrmNodeId::from_path)
@@ -70,11 +72,23 @@ impl Compositor {
     pub fn check_ready(&mut self) {
         let renderer_target = self.renderer.target();
         let selected_device = self.renderer.selected();
-        let (preview_views, layout, ecs_views, outputs, seat, xdg_output) = {
+        let (preview_views, layout, layout_options, ecs_views, outputs, seat, xdg_output) = {
             let state = self.protocol.state_mut();
+            let mut preview_state = LayoutState::default();
+            let preview_items = [LayoutItem::default(); 3];
             (
-                state.layout.arrange(Rect::new(0, 0, 1920, 1080), 3).len(),
+                state
+                    .layout
+                    .arrange(
+                        &mut preview_state,
+                        Rect::new(0, 0, 1920, 1080),
+                        &preview_items,
+                        Some(0),
+                    )
+                    .placements
+                    .len(),
                 state.layout.kind(),
+                state.layout.options(),
                 state.view_count(),
                 state.output_count(),
                 state.seat.name().to_owned(),
@@ -95,6 +109,7 @@ impl Compositor {
             gpu_type = ?selected_device.device_type,
             graphics_queue_family = selected_device.graphics_queue_family,
             layout = layout.name(),
+            layout_options = ?layout_options,
             systemd = self.systemd.name(),
             spawn_strategy = self.launcher.strategy().name(),
             startup_commands = self.startup_commands.len(),
@@ -193,7 +208,8 @@ fn handle_ipc_request(
             view_count: world.view_count(WorkspaceId::new(0)),
         }),
         IpcCommand::SetLayout { layout: kind } => {
-            *layout = LayoutEngine::new(kind);
+            *layout = LayoutEngine::with_options(kind, layout.options());
+            world.reset_layout_states();
             ResultBody::Accepted
         }
         IpcCommand::Quit => {
@@ -249,7 +265,11 @@ mod tests {
         world
             .spawn_view(ViewId::new(1), WorkspaceId::new(0))
             .unwrap();
-        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let options = crate::layout::LayoutOptions {
+            gap: 17,
+            ..Default::default()
+        };
+        let mut layout = LayoutEngine::with_options(LayoutKind::Scrolling1D, options);
 
         let changed = handle_ipc_request(
             Request::new(
@@ -275,5 +295,6 @@ mod tests {
         };
         assert_eq!(state.layout, LayoutKind::Spatial2D);
         assert_eq!(state.view_count, 1);
+        assert_eq!(layout.options(), options);
     }
 }

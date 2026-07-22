@@ -1,5 +1,9 @@
 // Tensor's initial configuration is intentionally small and easy to break while the model evolves.
-layout "scrolling-1d"
+layout "scrolling-1d" {
+    gaps 8
+    default-column-width proportion=0.5
+    master-width proportion=0.55
+}
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"

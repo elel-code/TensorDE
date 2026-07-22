@@ -18,7 +18,7 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
+            is_sync_subsurface, with_states,
         },
         output::OutputHandler,
         seat::WaylandFocus,
@@ -29,14 +29,15 @@ use smithay::{
             },
         },
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
+            XdgShellState,
         },
         shm::{ShmHandler, ShmState},
     },
 };
 use tracing::warn;
 
-use super::state::{RuntimeState, WaylandClientState};
+use super::state::{RuntimeState, WaylandClientState, xdg_size_constraints};
 
 impl CompositorHandler for RuntimeState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -58,15 +59,22 @@ impl CompositorHandler for RuntimeState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
+            let toplevel = self
                 .space
                 .elements()
                 .find(|window| window.wl_surface().as_deref() == Some(&root))
-            {
-                window.on_commit();
-                if let Some(toplevel) = window.toplevel()
-                    && !toplevel.is_initial_configure_sent()
-                {
+                .and_then(|window| {
+                    window.on_commit();
+                    window.toplevel().cloned()
+                });
+            if let Some(toplevel) = toplevel {
+                let constraints = with_states(toplevel.wl_surface(), |states| {
+                    let mut cached = states.cached_state.get::<SurfaceCachedState>();
+                    let current = cached.current();
+                    xdg_size_constraints(current.min_size, current.max_size)
+                });
+                self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
+                if !toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
                 }
             }

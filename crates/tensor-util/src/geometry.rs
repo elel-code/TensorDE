@@ -1,4 +1,16 @@
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Size {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Size {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -17,17 +29,33 @@ impl Rect {
     }
 
     pub fn right(self) -> i32 {
-        self.x.saturating_add(match i32::try_from(self.width) {
-            Ok(value) => value,
-            Err(_) => i32::MAX,
-        })
+        self.x
+            .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX))
     }
 
     pub fn bottom(self) -> i32 {
-        self.y.saturating_add(match i32::try_from(self.height) {
-            Ok(value) => value,
-            Err(_) => i32::MAX,
-        })
+        self.y
+            .saturating_add(i32::try_from(self.height).unwrap_or(i32::MAX))
+    }
+
+    pub const fn size(self) -> Size {
+        Size::new(self.width, self.height)
+    }
+
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let left = self.x.max(other.x);
+        let top = self.y.max(other.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+        if right <= left || bottom <= top {
+            return None;
+        }
+        Some(Self::new(
+            left,
+            top,
+            (right - left) as u32,
+            (bottom - top) as u32,
+        ))
     }
 }
 
@@ -57,5 +85,17 @@ mod tests {
     #[test]
     fn empty_split_is_safe() {
         assert!(split_evenly(10, 0).is_empty());
+    }
+
+    #[test]
+    fn intersection_excludes_touching_and_disjoint_rectangles() {
+        let viewport = Rect::new(10, 10, 100, 80);
+
+        assert_eq!(
+            viewport.intersection(Rect::new(0, 0, 40, 30)),
+            Some(Rect::new(10, 10, 30, 20))
+        );
+        assert_eq!(viewport.intersection(Rect::new(110, 10, 20, 20)), None);
+        assert_eq!(viewport.intersection(Rect::new(200, 200, 20, 20)), None);
     }
 }

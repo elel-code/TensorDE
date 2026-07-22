@@ -3,6 +3,9 @@
 Tensor borrows test strategy from Niri and Hyprland without copying implementation code.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
+- Scrolling tests cover focus visibility, persistent workspace offsets, oversized columns, and
+  full-geometry versus visible-clip output. Grid and master-stack tests apply view min/max
+  constraints after deterministic track allocation.
 - ECS tests assert stable IDs, lifecycle transitions, workspace moves, focus uniqueness, and
   geometry ordering rather than Bevy internals.
 - KDL tests separate valid documents, malformed syntax, schema errors, includes, and reload races.

@@ -127,7 +127,7 @@ fn exec_compositor(args: &[OsString]) -> ExitCode {
         use std::os::unix::process::CommandExt;
         let error = command.exec();
         eprintln!("failed to exec tensor-compositor: {error}");
-        return ExitCode::FAILURE;
+        ExitCode::FAILURE
     }
 
     #[cfg(not(unix))]

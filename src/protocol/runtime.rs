@@ -10,7 +10,7 @@ use tracing::warn;
 use crate::{
     backend::BackendConfig,
     ipc::{IpcReply, IpcServer, Request},
-    layout::LayoutKind,
+    layout::LayoutEngine,
 };
 
 use super::state::{RuntimeState, WaylandClientState};
@@ -35,7 +35,7 @@ pub struct WaylandRuntime {
 }
 
 impl WaylandRuntime {
-    pub fn new(layout: LayoutKind) -> Result<Self, ProtocolError> {
+    pub fn new(layout: LayoutEngine) -> Result<Self, ProtocolError> {
         let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
         let display_handle = display.handle();
@@ -85,7 +85,7 @@ impl WaylandRuntime {
             self.state
                 .apply_backend_output_events(backend.take_output_events());
             self.state.backend = Some(backend);
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(feature = "tty"))]
         {
@@ -254,6 +254,7 @@ fn dispatch_display(
 mod tests {
     use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
+    use smithay::wayland::seat::WaylandFocus;
     use wayland_client::{
         Connection, Dispatch, QueueHandle, delegate_noop,
         globals::{GlobalListContents, registry_queue_init},
@@ -262,7 +263,6 @@ mod tests {
     use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
     use super::*;
-    use crate::layout::LayoutKind;
 
     #[derive(Debug, Eq, PartialEq)]
     enum ClientEvent {
@@ -323,7 +323,8 @@ mod tests {
 
     #[test]
     fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
-        let mut runtime = WaylandRuntime::new(LayoutKind::Scrolling1D).unwrap();
+        let mut runtime =
+            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
         let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name().unwrap());
         runtime.prepare(false).unwrap();
@@ -344,6 +345,8 @@ mod tests {
             let surface = compositor.create_surface(&handle, ());
             let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg_surface.get_toplevel(&handle, ());
+            toplevel.set_min_size(320, 200);
+            toplevel.set_max_size(640, 480);
             surface.commit();
 
             let mut state = TestClient { configured: false };
@@ -365,6 +368,28 @@ mod tests {
             ClientEvent::Configured
         );
         assert_eq!(runtime.state.view_count(), 1);
+        let view_id = runtime.state.view_for_surface(
+            runtime
+                .state
+                .space
+                .elements()
+                .next()
+                .unwrap()
+                .wl_surface()
+                .as_deref()
+                .unwrap(),
+        );
+        assert_eq!(
+            view_id.and_then(|view_id| runtime.state.world.view_layout(view_id)),
+            Some(crate::ecs::ViewLayout {
+                constraints: crate::layout::SizeConstraints::new(
+                    tensor_util::Size::new(320, 200),
+                    Some(640),
+                    Some(480),
+                ),
+                primary_size: None,
+            })
+        );
 
         release_tx.send(()).unwrap();
         assert_eq!(

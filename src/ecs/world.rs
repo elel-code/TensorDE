@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use bevy_ecs::{entity::Entity, world::World};
 use thiserror::Error;
 
-use super::components::{Focused, View, ViewGeometry, Workspace};
+use super::components::{Focused, View, ViewGeometry, ViewLayout, Workspace};
 use super::{ViewId, WorkspaceId};
-use crate::layout::{LayoutEngine, Rect};
+use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
 
 pub struct CompositorWorld {
     world: World,
     view_entities: HashMap<ViewId, bevy_ecs::entity::Entity>,
+    layout_states: HashMap<WorkspaceId, LayoutState>,
 }
 
 impl CompositorWorld {
@@ -17,6 +18,7 @@ impl CompositorWorld {
         Self {
             world: World::new(),
             view_entities: HashMap::new(),
+            layout_states: HashMap::new(),
         }
     }
 
@@ -30,7 +32,11 @@ impl CompositorWorld {
         }
         let entity = self
             .world
-            .spawn((View { id: view_id }, Workspace { id: workspace_id }))
+            .spawn((
+                View { id: view_id },
+                Workspace { id: workspace_id },
+                ViewLayout::default(),
+            ))
             .id();
         self.view_entities.insert(view_id, entity);
         Ok(())
@@ -75,6 +81,33 @@ impl CompositorWorld {
         Ok(())
     }
 
+    pub fn set_view_layout(
+        &mut self,
+        view_id: ViewId,
+        layout: ViewLayout,
+    ) -> Result<(), ViewLifecycleError> {
+        let entity = self.entity_for(view_id)?;
+        self.world.entity_mut(entity).insert(layout);
+        Ok(())
+    }
+
+    pub fn set_view_constraints(
+        &mut self,
+        view_id: ViewId,
+        constraints: SizeConstraints,
+    ) -> Result<(), ViewLifecycleError> {
+        let entity = self.entity_for(view_id)?;
+        self.world
+            .get_mut::<ViewLayout>(entity)
+            .expect("every view has layout state")
+            .constraints = constraints;
+        Ok(())
+    }
+
+    pub fn reset_layout_states(&mut self) {
+        self.layout_states.clear();
+    }
+
     pub fn focus_view(&mut self, view_id: ViewId) -> Result<(), ViewLifecycleError> {
         let entity = self.entity_for(view_id)?;
         let workspace_id = self
@@ -103,23 +136,38 @@ impl CompositorWorld {
         workspace_id: WorkspaceId,
         engine: LayoutEngine,
         output: Rect,
-    ) {
+    ) -> LayoutSnapshot {
         let mut entities = {
-            let mut query = self.world.query::<(Entity, &View, &Workspace)>();
+            let mut query = self
+                .world
+                .query::<(Entity, &View, &Workspace, &ViewLayout, Option<&Focused>)>();
             query
                 .iter(&self.world)
-                .filter(|(_, _, workspace)| workspace.id == workspace_id)
-                .map(|(entity, view, _)| (view.id, entity))
+                .filter(|(_, _, workspace, _, _)| workspace.id == workspace_id)
+                .map(|(entity, view, _, layout, focused)| {
+                    (view.id, entity, layout.item(), focused.is_some())
+                })
                 .collect::<Vec<_>>()
         };
-        entities.sort_unstable_by_key(|(view_id, _)| *view_id);
+        entities.sort_unstable_by_key(|(view_id, _, _, _)| *view_id);
 
-        for ((_, entity), geometry) in entities
+        let items = entities
+            .iter()
+            .map(|(_, _, item, _)| *item)
+            .collect::<Vec<_>>();
+        let focused = entities.iter().position(|(_, _, _, focused)| *focused);
+        let state = self.layout_states.entry(workspace_id).or_default();
+        let snapshot = engine.arrange(state, output, &items, focused);
+
+        for ((_, entity, _, _), placement) in entities
             .into_iter()
-            .zip(engine.arrange(output, self.view_count(workspace_id)))
+            .zip(snapshot.placements.iter().copied())
         {
-            self.world.entity_mut(entity).insert(ViewGeometry(geometry));
+            self.world
+                .entity_mut(entity)
+                .insert(ViewGeometry(placement.geometry));
         }
+        snapshot
     }
 
     pub fn view_count(&mut self, workspace_id: WorkspaceId) -> usize {
@@ -133,6 +181,11 @@ impl CompositorWorld {
     pub fn geometry(&self, view_id: ViewId) -> Option<Rect> {
         let entity = self.view_entities.get(&view_id).copied()?;
         self.world.get::<ViewGeometry>(entity).map(|value| value.0)
+    }
+
+    pub fn view_layout(&self, view_id: ViewId) -> Option<ViewLayout> {
+        let entity = self.view_entities.get(&view_id).copied()?;
+        self.world.get::<ViewLayout>(entity).copied()
     }
 
     pub fn is_focused(&self, view_id: ViewId) -> bool {
@@ -198,8 +251,81 @@ mod tests {
             Rect::new(0, 0, 100, 80),
         );
 
-        assert_eq!(world.geometry(view(10)), Some(Rect::new(0, 0, 50, 80)));
-        assert_eq!(world.geometry(view(20)), Some(Rect::new(50, 0, 50, 80)));
+        assert_eq!(world.geometry(view(10)), Some(Rect::new(8, 8, 38, 64)));
+        assert_eq!(world.geometry(view(20)), Some(Rect::new(54, 8, 38, 64)));
+    }
+
+    #[test]
+    fn focused_view_drives_workspace_local_scrolling_state() {
+        let mut world = CompositorWorld::new();
+        for id in 1..=3 {
+            world.spawn_view(view(id), workspace(1)).unwrap();
+        }
+        world.focus_view(view(3)).unwrap();
+
+        let snapshot = world.arrange_workspace(
+            workspace(1),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            Rect::new(0, 0, 100, 80),
+        );
+
+        assert_eq!(snapshot.horizontal_offset, -46);
+        assert_eq!(world.geometry(view(3)), Some(Rect::new(54, 8, 38, 64)));
+    }
+
+    #[test]
+    fn per_view_constraints_flow_into_layout_geometry() {
+        use crate::layout::{LayoutLength, SizeConstraints};
+        use tensor_util::Size;
+
+        let mut world = CompositorWorld::new();
+        world.spawn_view(view(1), workspace(1)).unwrap();
+        world
+            .set_view_layout(
+                view(1),
+                ViewLayout {
+                    constraints: SizeConstraints::new(Size::new(1, 1), Some(200), Some(100)),
+                    primary_size: Some(LayoutLength::fixed(400)),
+                },
+            )
+            .unwrap();
+
+        world.arrange_workspace(
+            workspace(1),
+            LayoutEngine::new(LayoutKind::Spatial2D),
+            Rect::new(0, 0, 500, 300),
+        );
+
+        assert_eq!(world.geometry(view(1)), Some(Rect::new(150, 100, 200, 100)));
+    }
+
+    #[test]
+    fn protocol_constraints_preserve_the_configured_primary_size() {
+        use crate::layout::{LayoutLength, SizeConstraints};
+        use tensor_util::Size;
+
+        let mut world = CompositorWorld::new();
+        world.spawn_view(view(1), workspace(1)).unwrap();
+        world
+            .set_view_layout(
+                view(1),
+                ViewLayout {
+                    constraints: SizeConstraints::default(),
+                    primary_size: Some(LayoutLength::fixed(420)),
+                },
+            )
+            .unwrap();
+
+        let constraints = SizeConstraints::new(Size::new(200, 100), Some(800), Some(600));
+        world.set_view_constraints(view(1), constraints).unwrap();
+
+        assert_eq!(
+            world.view_layout(view(1)),
+            Some(ViewLayout {
+                constraints,
+                primary_size: Some(LayoutLength::fixed(420)),
+            })
+        );
     }
 
     #[test]

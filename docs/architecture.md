@@ -15,6 +15,13 @@ serializes Smithay dispatch, popup/seat state, surface-to-view indexing, layout 
 lifecycle changes. The renderer consumes a compact scene extracted from ECS once per frame rather
 than issuing ECS queries in GPU submission loops.
 
+Layout computation is split into immutable policy and workspace-local state. ECS provides stable
+`ViewId` order, focus, min/max constraints, and optional fixed/proportional primary sizes. The
+layout returns one snapshot containing full geometry, viewport intersections, content bounds, and
+the resolved scrolling offset. Rendering, effects, damage, and hit testing consume the same
+snapshot; they must not maintain competing geometry calculations. Switching layout families
+clears stored viewport offsets but retains configured gaps and width policy.
+
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
 responsible for lifecycle, workspace membership, focus uniqueness, and geometry updates.

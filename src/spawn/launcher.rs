@@ -196,13 +196,11 @@ fn launch_scoped(mut command: Command, strict: bool) -> Result<SpawnedProcess, S
             .map_err(SpawnError::SystemdScope)
     });
 
-    if strict {
-        if let Err(error) = &scope_result {
-            if let Ok(pids) = &pids {
-                terminate_blocked_client(pids.client);
-            }
-            tracing::debug!(%error, "terminating client whose required scope failed");
+    if strict && let Err(error) = &scope_result {
+        if let Ok(pids) = &pids {
+            terminate_blocked_client(pids.client);
         }
+        tracing::debug!(%error, "terminating client whose required scope failed");
     }
 
     // Closing the last write end releases both the intermediate process and the client.

@@ -16,7 +16,11 @@ Configuration path precedence is:
 The current schema is intentionally small:
 
 ```kdl
-layout "scrolling-1d"
+layout "scrolling-1d" {
+    gaps 8
+    default-column-width proportion=0.5
+    master-width proportion=0.55
+}
 ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
 # Optional DRM primary or render node. Without this, Smithay selects the seat's primary GPU.
@@ -36,6 +40,19 @@ The initial layout surface has three layout families:
 Floating, fullscreen, and monocle behavior are workspace or view state modifiers, not additional
 layout families. `tabbed` is reserved for a later container-tree extension rather than being added
 as an early compatibility mode.
+
+The `layout` node owns geometry policy. `gaps` is measured in logical pixels.
+`default-column-width` and `master-width` each accept exactly one property: `proportion` is relative
+to the current output working area, while `fixed` is a logical-pixel width. For example,
+`default-column-width fixed=900` keeps a 900-pixel scrolling column across output changes. Invalid,
+zero, non-finite, or ambiguous widths reject the whole configuration instead of being silently
+repaired.
+
+Scrolling layout follows the same core invariants as Niri without copying its renderer: every view
+has min/max size constraints and an optional width override; each workspace owns an independent
+horizontal offset; focusing a view moves only far enough to make its full column visible. Layout
+output contains both unclipped geometry and its visible intersection with the output. Animation,
+damage, shadows, and input hit testing consume that snapshot rather than recomputing positions.
 
 `gpu` defaults to `discrete`: candidates are ranked discrete GPU, integrated GPU, virtual GPU, then
 CPU. Candidates must provide Vulkan 1.4, `VK_EXT_descriptor_heap`, a graphics queue, a complete DRM

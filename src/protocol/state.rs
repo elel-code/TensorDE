@@ -23,8 +23,9 @@ use tracing::warn;
 
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
-    layout::{LayoutEngine, LayoutKind},
+    layout::{LayoutEngine, SizeConstraints},
 };
+use tensor_util::Size;
 
 #[cfg(feature = "tty")]
 use crate::backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor, TtyBackend};
@@ -55,7 +56,7 @@ pub(crate) struct RuntimeState {
 }
 
 impl RuntimeState {
-    pub(crate) fn new(display_handle: DisplayHandle, layout: LayoutKind) -> Self {
+    pub(crate) fn new(display_handle: DisplayHandle, layout: LayoutEngine) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, []);
@@ -76,7 +77,7 @@ impl RuntimeState {
             space: Space::default(),
             popups: PopupManager::default(),
             world: CompositorWorld::new(),
-            layout: LayoutEngine::new(layout),
+            layout,
             #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
@@ -119,6 +120,19 @@ impl RuntimeState {
 
     pub(crate) fn view_for_surface(&self, surface: &WlSurface) -> Option<ViewId> {
         self.surface_views.get(&surface.id()).copied()
+    }
+
+    pub(crate) fn update_toplevel_constraints(
+        &mut self,
+        surface: &WlSurface,
+        constraints: SizeConstraints,
+    ) {
+        let Some(view_id) = self.view_for_surface(surface) else {
+            return;
+        };
+        if let Err(error) = self.world.set_view_constraints(view_id, constraints) {
+            warn!(%error, view_id = view_id.get(), "failed to update XDG size constraints");
+        }
     }
 
     pub(crate) fn view_count(&mut self) -> usize {
@@ -272,6 +286,25 @@ impl RuntimeState {
     }
 }
 
+pub(crate) fn xdg_size_constraints(
+    min_size: smithay::utils::Size<i32, smithay::utils::Logical>,
+    max_size: smithay::utils::Size<i32, smithay::utils::Logical>,
+) -> SizeConstraints {
+    SizeConstraints::new(
+        Size::new(minimum_axis(min_size.w), minimum_axis(min_size.h)),
+        maximum_axis(max_size.w),
+        maximum_axis(max_size.h),
+    )
+}
+
+fn minimum_axis(value: i32) -> u32 {
+    u32::try_from(value).unwrap_or(0).max(1)
+}
+
+fn maximum_axis(value: i32) -> Option<u32> {
+    u32::try_from(value).ok().filter(|value| *value > 0)
+}
+
 #[cfg(feature = "tty")]
 struct ManagedOutput {
     output: smithay::output::Output,
@@ -338,7 +371,10 @@ mod tests {
     #[test]
     fn output_events_keep_smithay_space_stable_across_hotplug() {
         let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::new(display.handle(), LayoutKind::Scrolling1D);
+        let mut state = RuntimeState::new(
+            display.handle(),
+            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        );
 
         state.apply_backend_output_events([
             BackendOutputEvent::Connected(descriptor(2, "DP-2", 2560)),
