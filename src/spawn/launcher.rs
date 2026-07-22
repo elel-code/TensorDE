@@ -14,7 +14,7 @@ use thiserror::Error;
 #[cfg(feature = "systemd")]
 use tracing::warn;
 
-use crate::service::SystemdMode;
+use crate::service::{SESSION_ENVIRONMENT_NAMES, SystemdMode};
 
 #[cfg(feature = "systemd")]
 use super::scope;
@@ -55,6 +55,7 @@ pub struct ProcessLauncher {
     mode: SystemdMode,
     systemd_detected: bool,
     environment: Vec<(OsString, OsString)>,
+    environment_managed: bool,
 }
 
 impl ProcessLauncher {
@@ -67,6 +68,7 @@ impl ProcessLauncher {
             mode,
             systemd_detected: detected,
             environment: Vec::new(),
+            environment_managed: false,
         }
     }
 
@@ -90,6 +92,7 @@ impl ProcessLauncher {
             .into_iter()
             .map(|(name, value)| (name.into(), value.into()))
             .collect();
+        self.environment_managed = true;
     }
 
     pub const fn strategy(&self) -> SpawnStrategy {
@@ -124,6 +127,11 @@ impl ProcessLauncher {
     }
 
     pub fn spawn_command(&self, mut command: Command) -> Result<SpawnedProcess, SpawnError> {
+        if self.environment_managed {
+            for name in SESSION_ENVIRONMENT_NAMES {
+                command.env_remove(name);
+            }
+        }
         command
             .env_remove("NOTIFY_SOCKET")
             .envs(self.environment.iter().map(|(name, value)| (name, value)));
@@ -538,6 +546,36 @@ mod tests {
         }
         assert!(environment.contains("TENSOR_TEST_ENV=available"));
         assert!(!environment.contains("NOTIFY_SOCKET="));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn managed_environment_removes_stale_session_values() {
+        let path = PathBuf::from(format!(
+            "target/tensor-spawn-clean-env-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let mut command = Command::new("env");
+        command
+            .env("DISPLAY", ":99")
+            .stdout(Stdio::from(File::create(&path).unwrap()));
+
+        ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false)
+            .with_environment([("WAYLAND_DISPLAY", "tensor-0")])
+            .spawn_command(command)
+            .unwrap();
+
+        let mut environment = String::new();
+        for _ in 0..100 {
+            environment = fs::read_to_string(&path).unwrap();
+            if environment.contains("WAYLAND_DISPLAY=tensor-0") {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(environment.contains("WAYLAND_DISPLAY=tensor-0"));
+        assert!(!environment.contains("DISPLAY=:99"));
         fs::remove_file(path).unwrap();
     }
 

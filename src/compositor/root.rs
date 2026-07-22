@@ -131,8 +131,11 @@ impl Compositor {
             .protocol
             .socket_name()
             .ok_or(CompositorError::MissingWaylandSocket)?;
-        let environment =
-            session_environment(wayland.to_os_string(), OsString::from(self.ipc.path()));
+        let environment = session_environment(
+            wayland.to_os_string(),
+            OsString::from(self.ipc.path()),
+            self.protocol.xwayland_display(),
+        );
         self.launcher.set_environment(environment.clone());
         Ok(environment)
     }

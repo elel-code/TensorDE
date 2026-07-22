@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[cfg(feature = "systemd")]
 mod systemd;
 
+pub(crate) use policy::SESSION_ENVIRONMENT_NAMES;
 pub use policy::{EnvironmentValue, ParseSystemdModeError, SystemdMode, session_environment};
 
 #[cfg(feature = "systemd")]

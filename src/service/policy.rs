@@ -53,11 +53,20 @@ impl FromStr for SystemdMode {
 
 pub type EnvironmentValue = (OsString, OsString);
 
+pub(crate) const SESSION_ENVIRONMENT_NAMES: &[&str] = &[
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_TYPE",
+    "TENSOR_IPC_SOCKET",
+];
+
 pub fn session_environment(
     wayland_display: impl Into<OsString>,
     ipc_socket: impl Into<OsString>,
+    xwayland_display: Option<OsString>,
 ) -> Vec<EnvironmentValue> {
-    vec![
+    let mut environment = vec![
         (OsString::from("WAYLAND_DISPLAY"), wayland_display.into()),
         (
             OsString::from("XDG_CURRENT_DESKTOP"),
@@ -68,7 +77,11 @@ pub fn session_environment(
             OsString::from("wayland"),
         ),
         (OsString::from("TENSOR_IPC_SOCKET"), ipc_socket.into()),
-    ]
+    ];
+    if let Some(display) = xwayland_display {
+        environment.push((OsString::from("DISPLAY"), display));
+    }
+    environment
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -97,5 +110,19 @@ mod tests {
         assert!(!SystemdMode::Auto.resolve(false));
         assert!(SystemdMode::Enabled.resolve(false));
         assert!(!SystemdMode::Disabled.resolve(true));
+    }
+
+    #[test]
+    fn session_environment_includes_only_an_allocated_xwayland_display() {
+        let without_xwayland = session_environment("wayland-1", "/tmp/tensor.sock", None);
+        assert!(!without_xwayland.iter().any(|(name, _)| name == "DISPLAY"));
+
+        let with_xwayland =
+            session_environment("wayland-1", "/tmp/tensor.sock", Some(OsString::from(":7")));
+        assert!(
+            with_xwayland
+                .iter()
+                .any(|(name, value)| name == "DISPLAY" && value == ":7")
+        );
     }
 }

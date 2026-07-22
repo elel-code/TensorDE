@@ -18,9 +18,11 @@ The startup sequence is a set of ordered gates:
 
 `StartupGates` makes the last four transitions explicit. A session autostart permit is unavailable
 until the runtime is prepared, the child-process environment is installed, an active systemd user
-manager has accepted that environment, and readiness has been published. `Compositor` requires the
-permit to launch configured commands, so moving a function call cannot accidentally bypass the
-ordering. Check mode and non-session mode never issue a permit.
+manager has accepted that environment, and readiness has been published. The environment snapshot
+contains the allocated XWayland `DISPLAY` when XWayland is enabled and explicitly clears inherited
+session values first. `Compositor` requires the permit to launch configured commands, so moving a
+function call cannot accidentally bypass the ordering. Check mode and non-session mode never issue
+a permit.
 
 Client commands use the same resolved systemd policy after startup. `ProcessLauncher` performs a
 double-fork without a shell. In an active systemd scope it waits for the transient-unit job before
@@ -55,3 +57,5 @@ individual client from running outside a scope. Direct sessions use the same pro
 gate but do not require a systemd manager. Without the `systemd` Cargo feature, `auto` remains a
 direct session even if a manager-shaped environment was inherited; explicitly requesting
 `systemd "enabled"` fails closed instead of launching clients with stale manager state.
+The imported systemd and D-Bus activation snapshot is owned for the compositor lifetime and is
+cleared automatically on normal exit or any later startup failure.

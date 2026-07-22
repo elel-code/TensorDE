@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ffi::OsString, sync::Arc};
 
 use smithay::reexports::{
     calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
@@ -29,6 +29,7 @@ pub struct WaylandRuntime {
     state: RuntimeState,
     socket: Option<ListeningSocketSource>,
     prepared: bool,
+    xwayland_display: Option<OsString>,
     #[cfg(feature = "xwayland")]
     xwayland_client: Option<Client>,
 }
@@ -46,6 +47,7 @@ impl WaylandRuntime {
             state,
             socket: Some(socket),
             prepared: false,
+            xwayland_display: None,
             #[cfg(feature = "xwayland")]
             xwayland_client: None,
         })
@@ -62,6 +64,10 @@ impl WaylandRuntime {
 
     pub fn stop_signal(&self) -> LoopSignal {
         self.event_loop.get_signal()
+    }
+
+    pub fn xwayland_display(&self) -> Option<OsString> {
+        self.xwayland_display.clone()
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut RuntimeState {
@@ -158,6 +164,7 @@ impl WaylandRuntime {
             |_| {},
         )
         .map_err(ProtocolError::XWayland)?;
+        let display_number = xwayland.display_number();
         self.event_loop
             .handle()
             .insert_source(xwayland, |event, _, _| match event {
@@ -167,6 +174,7 @@ impl WaylandRuntime {
                 XWaylandEvent::Error => warn!("XWayland exited before becoming ready"),
             })
             .map_err(|error| ProtocolError::XWaylandSource(error.to_string()))?;
+        self.xwayland_display = Some(OsString::from(format!(":{display_number}")));
         self.xwayland_client = Some(client);
         Ok(())
     }

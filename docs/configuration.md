@@ -60,10 +60,12 @@ compositor enters its event loop. This is not an X11 backend: Tensor rejects pri
 
 Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
 only for `--session` startup. Tensor first prepares the runtime, installs `WAYLAND_DISPLAY`,
-`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, and `TENSOR_IPC_SOCKET` in the child environment, waits
-for an active systemd user manager to accept the same values, and publishes readiness. Only then
-does the one-shot autostart gate release commands in configuration order. `--check`, ordinary
-non-session startup, environment-sync failure, and readiness failure launch none of them.
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `TENSOR_IPC_SOCKET`, and the allocated XWayland `DISPLAY`
+when enabled, then waits for an active systemd user manager to accept the same snapshot and
+publishes readiness. Inherited session values are cleared before this publication, so disabling
+XWayland cannot leak a host `DISPLAY` into children. Only then does the one-shot autostart gate
+release commands in configuration order. `--check`, ordinary non-session startup,
+environment-sync failure, and readiness failure launch none of them.
 
 Values are passed directly to the executable: Tensor does not invoke a shell, expand variables, or
 interpret pipes and redirections. Use a dedicated executable when orchestration is more complex
