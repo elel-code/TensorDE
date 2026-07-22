@@ -1,7 +1,4 @@
-use std::{env, str::FromStr};
-
-#[cfg(feature = "systemd")]
-use std::ffi::OsString;
+use std::{env, ffi::OsString, str::FromStr};
 
 use thiserror::Error;
 
@@ -54,10 +51,8 @@ impl FromStr for SystemdMode {
     }
 }
 
-#[cfg(feature = "systemd")]
 pub type EnvironmentValue = (OsString, OsString);
 
-#[cfg(feature = "systemd")]
 pub fn session_environment(
     wayland_display: impl Into<OsString>,
     ipc_socket: impl Into<OsString>,

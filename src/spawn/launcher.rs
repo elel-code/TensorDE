@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::process::CommandExt,
@@ -50,10 +50,11 @@ impl SpawnedProcess {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ProcessLauncher {
     mode: SystemdMode,
     systemd_detected: bool,
+    environment: Vec<(OsString, OsString)>,
 }
 
 impl ProcessLauncher {
@@ -65,10 +66,24 @@ impl ProcessLauncher {
         Self {
             mode,
             systemd_detected: detected,
+            environment: Vec::new(),
         }
     }
 
-    pub const fn strategy(self) -> SpawnStrategy {
+    pub fn with_environment<I, K, V>(mut self, values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        self.environment = values
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
+    pub const fn strategy(&self) -> SpawnStrategy {
         if self.mode.resolve(self.systemd_detected) {
             SpawnStrategy::SystemdScope
         } else {
@@ -77,7 +92,7 @@ impl ProcessLauncher {
     }
 
     pub fn spawn<I, S>(
-        self,
+        &self,
         program: impl AsRef<OsStr>,
         args: I,
     ) -> Result<SpawnedProcess, SpawnError>
@@ -94,7 +109,10 @@ impl ProcessLauncher {
         self.spawn_command(command)
     }
 
-    pub fn spawn_command(self, command: Command) -> Result<SpawnedProcess, SpawnError> {
+    pub fn spawn_command(&self, mut command: Command) -> Result<SpawnedProcess, SpawnError> {
+        command
+            .env_remove("NOTIFY_SOCKET")
+            .envs(self.environment.iter().map(|(name, value)| (name, value)));
         match self.strategy() {
             SpawnStrategy::Direct => launch_direct(command),
             SpawnStrategy::SystemdScope => self.launch_scoped(command),
@@ -102,13 +120,13 @@ impl ProcessLauncher {
     }
 
     #[cfg(feature = "systemd")]
-    fn launch_scoped(self, command: Command) -> Result<SpawnedProcess, SpawnError> {
+    fn launch_scoped(&self, command: Command) -> Result<SpawnedProcess, SpawnError> {
         let strict = self.mode == SystemdMode::Enabled;
         launch_scoped(command, strict)
     }
 
     #[cfg(not(feature = "systemd"))]
-    fn launch_scoped(self, command: Command) -> Result<SpawnedProcess, SpawnError> {
+    fn launch_scoped(&self, command: Command) -> Result<SpawnedProcess, SpawnError> {
         if self.mode == SystemdMode::Enabled {
             Err(SpawnError::SystemdUnavailable)
         } else {
@@ -421,7 +439,7 @@ pub enum SpawnError {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, thread};
+    use std::{fs, fs::File, path::PathBuf, thread};
 
     use super::*;
 
@@ -474,6 +492,33 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, SpawnError::Command { .. }));
+    }
+
+    #[test]
+    fn child_environment_is_injected_and_notify_socket_is_removed() {
+        let path = PathBuf::from(format!("target/tensor-spawn-env-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let mut command = Command::new("env");
+        command
+            .env("NOTIFY_SOCKET", "/tmp/parent-notify.sock")
+            .stdout(Stdio::from(File::create(&path).unwrap()));
+
+        ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false)
+            .with_environment([("TENSOR_TEST_ENV", "available")])
+            .spawn_command(command)
+            .unwrap();
+
+        let mut environment = String::new();
+        for _ in 0..100 {
+            environment = fs::read_to_string(&path).unwrap();
+            if environment.contains("TENSOR_TEST_ENV=available") {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(environment.contains("TENSOR_TEST_ENV=available"));
+        assert!(!environment.contains("NOTIFY_SOCKET="));
+        fs::remove_file(path).unwrap();
     }
 
     #[cfg(not(feature = "systemd"))]

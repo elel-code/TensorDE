@@ -33,3 +33,7 @@ user manager, imports the login environment, starts `tensor.service` with `--wai
 manager it executes `tensor-compositor --session` directly. No shell is used for this policy.
 Display managers launch `tensor-session` through the Wayland-only desktop entry in
 `contrib/wayland-sessions`; an X11 `xsessions` entry is intentionally forbidden.
+
+After readiness, session startup launches every validated `spawn-at-startup` argv entry through the
+compositor-owned `ProcessLauncher`. A failed entry is logged without tearing down an otherwise ready
+session; `systemd "enabled"` still prevents that individual client from running outside a scope.

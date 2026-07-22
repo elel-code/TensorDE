@@ -20,6 +20,12 @@ pub struct Config {
     pub gpu_preference: GpuPreference,
     pub systemd: SystemdMode,
     pub xwayland: XWaylandConfig,
+    pub startup_commands: Vec<StartupCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupCommand {
+    pub argv: Vec<String>,
 }
 
 impl Config {
@@ -106,6 +112,18 @@ impl Config {
         let xwayland = parsed
             .xwayland
             .unwrap_or_else(|| XWaylandConfig::default().enabled());
+        let startup_commands = parsed
+            .spawn_at_startup
+            .into_iter()
+            .enumerate()
+            .map(|(index, argv)| {
+                if argv.is_empty() {
+                    Err(ConfigError::EmptyStartupCommand { index })
+                } else {
+                    Ok(StartupCommand { argv })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
             initial_layout,
@@ -113,6 +131,7 @@ impl Config {
             gpu_preference,
             systemd,
             xwayland: XWaylandConfig::new(xwayland),
+            startup_commands,
         })
     }
 }
@@ -127,6 +146,7 @@ impl Default for Config {
             gpu_preference: GpuPreference::default(),
             systemd: SystemdMode::default(),
             xwayland: XWaylandConfig::default(),
+            startup_commands: Vec::new(),
         }
     }
 }
@@ -143,6 +163,8 @@ struct FileConfig {
     systemd: Option<String>,
     #[knus(child, unwrap(argument))]
     xwayland: Option<bool>,
+    #[knus(children(name = "spawn-at-startup"), unwrap(arguments))]
+    spawn_at_startup: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Error)]
@@ -153,6 +175,8 @@ pub enum ConfigError {
     NonUnicodeGpu,
     #[error("TENSOR_SYSTEMD is not valid Unicode")]
     NonUnicodeSystemd,
+    #[error("spawn-at-startup entry {index} must contain a program")]
+    EmptyStartupCommand { index: usize },
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -178,7 +202,7 @@ mod tests {
     fn parses_kdl_layout_and_ipc_socket() {
         let config = Config::from_kdl(
             Path::new("test.kdl"),
-            "layout \"nourish-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true",
+            "layout \"nourish-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
         )
         .unwrap();
 
@@ -190,6 +214,17 @@ mod tests {
         assert_eq!(config.gpu_preference, GpuPreference::Integrated);
         assert_eq!(config.systemd, SystemdMode::Disabled);
         assert!(config.xwayland.enabled());
+        assert_eq!(
+            config.startup_commands,
+            vec![
+                StartupCommand {
+                    argv: vec!["waybar".to_owned()]
+                },
+                StartupCommand {
+                    argv: vec!["foot".to_owned(), "--server".to_owned()]
+                }
+            ]
+        );
     }
 
     #[test]
@@ -205,6 +240,14 @@ mod tests {
         assert!(matches!(
             Config::from_kdl(Path::new("test.kdl"), "compatibility true"),
             Err(ConfigError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_startup_commands() {
+        assert!(matches!(
+            Config::from_kdl(Path::new("test.kdl"), "spawn-at-startup"),
+            Err(ConfigError::EmptyStartupCommand { index: 0 })
         ));
     }
 }

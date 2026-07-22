@@ -43,6 +43,9 @@ pub fn run() -> Result<(), StartupError> {
         if systemd_active {
             crate::service::notify_ready().map_err(StartupError::SystemdNotify)?;
         }
+        if cli.session {
+            compositor.spawn_startup_commands();
+        }
         info!("entering compositor event loop");
         let run_result = compositor.run();
         #[cfg(feature = "systemd")]

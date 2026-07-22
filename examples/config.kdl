@@ -7,3 +7,5 @@ gpu "discrete"
 systemd "auto"
 // XWayland serves individual X11 applications; Tensor never provides an X11 session.
 xwayland true
+// Arguments are passed directly; shell syntax and expansion are not interpreted.
+// spawn-at-startup "waybar"

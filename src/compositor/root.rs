@@ -1,23 +1,23 @@
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(feature = "systemd")]
 use std::ffi::OsString;
 
 use crate::{
-    config::Config,
+    config::{Config, StartupCommand},
     ecs::CompositorWorld,
     ipc::{IpcError, IpcServer},
     layout::{LayoutEngine, Rect},
     protocol::{ProtocolError, WaylandRuntime},
     render::RendererTarget,
-    service::SystemdMode,
+    service::{SystemdMode, session_environment},
     spawn::ProcessLauncher,
     xwayland::XWaylandConfig,
 };
 
 #[cfg(feature = "systemd")]
-use crate::service::{EnvironmentValue, session_environment};
+use crate::service::EnvironmentValue;
 
 pub struct Compositor {
     protocol: WaylandRuntime,
@@ -26,6 +26,7 @@ pub struct Compositor {
     layout: LayoutEngine,
     renderer: RendererTarget,
     launcher: ProcessLauncher,
+    startup_commands: Vec<StartupCommand>,
     systemd: SystemdMode,
     xwayland: XWaylandConfig,
 }
@@ -38,14 +39,25 @@ impl Compositor {
             gpu_preference,
             systemd,
             xwayland,
+            startup_commands,
         } = config;
+        let protocol = WaylandRuntime::new()?;
+        let ipc = IpcServer::bind(ipc_socket)?;
+        let environment = session_environment(
+            protocol
+                .socket_name()
+                .ok_or(CompositorError::MissingWaylandSocket)?
+                .to_os_string(),
+            ipc.path().as_os_str().to_os_string(),
+        );
         Ok(Self {
-            protocol: WaylandRuntime::new()?,
-            ipc: IpcServer::bind(ipc_socket)?,
+            protocol,
+            ipc,
             world: CompositorWorld::new(),
             layout: LayoutEngine::new(initial_layout),
             renderer: RendererTarget::with_gpu_preference(gpu_preference),
-            launcher: ProcessLauncher::new(systemd),
+            launcher: ProcessLauncher::new(systemd).with_environment(environment),
+            startup_commands,
             systemd,
             xwayland,
         })
@@ -63,6 +75,7 @@ impl Compositor {
             layout = self.layout.kind().name(),
             systemd = self.systemd.name(),
             spawn_strategy = self.launcher.strategy().name(),
+            startup_commands = self.startup_commands.len(),
             xwayland = self.xwayland.enabled(),
             preview_views = preview.len(),
             ecs_views = self.world.view_count(0),
@@ -72,6 +85,23 @@ impl Compositor {
 
     pub fn systemd_mode(&self) -> SystemdMode {
         self.systemd
+    }
+
+    pub fn spawn_startup_commands(&self) {
+        for command in &self.startup_commands {
+            let Some((program, args)) = command.argv.split_first() else {
+                continue;
+            };
+            match self.launcher.spawn(program, args) {
+                Ok(process) => info!(
+                    program,
+                    pid = process.pid(),
+                    strategy = process.strategy().name(),
+                    "startup command launched"
+                ),
+                Err(error) => warn!(program, %error, "startup command failed"),
+            }
+        }
     }
 
     #[cfg(feature = "systemd")]
@@ -103,7 +133,6 @@ pub enum CompositorError {
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
     Ipc(#[from] IpcError),
-    #[cfg(feature = "systemd")]
     #[error("Smithay did not provide a Wayland socket name")]
     MissingWaylandSocket,
 }

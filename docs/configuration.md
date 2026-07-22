@@ -21,6 +21,8 @@ ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
 systemd "auto"
 xwayland true
+spawn-at-startup "waybar"
+spawn-at-startup "foot" "--server"
 ```
 
 `gpu` defaults to `discrete`: candidates are ranked discrete GPU, integrated GPU, virtual GPU, then
@@ -34,6 +36,11 @@ configuration overrides detection without changing the optional Cargo feature bo
 
 `xwayland` defaults to `true`. It starts the rootless XWayland process and calloop source when the
 compositor enters its event loop. This is not an X11 backend: Tensor rejects primary X11 sessions.
+
+Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
+only for `--session` startup, after environment publication and readiness notification. Values are
+passed directly to the executable: Tensor does not invoke a shell, expand variables, or interpret
+pipes and redirections. Use a dedicated executable when orchestration is more complex than argv.
 
 Future reloads parse and validate off the event-loop critical path. A failed reload must preserve
 the last valid configuration and report a structured error through logs and IPC.

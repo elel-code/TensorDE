@@ -5,10 +5,7 @@ use std::path::PathBuf;
 #[cfg(feature = "systemd")]
 mod systemd;
 
-pub use policy::{ParseSystemdModeError, SystemdMode};
-
-#[cfg(feature = "systemd")]
-pub use policy::{EnvironmentValue, session_environment};
+pub use policy::{EnvironmentValue, ParseSystemdModeError, SystemdMode, session_environment};
 
 #[cfg(feature = "systemd")]
 pub use systemd::{SystemdError, import_environment, notify_ready, unset_environment};
