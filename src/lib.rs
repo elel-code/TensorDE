@@ -2,7 +2,7 @@
 
 mod compositor;
 mod config;
-mod ecs;
+pub mod ecs;
 pub mod ipc;
 pub mod layout;
 mod protocol;

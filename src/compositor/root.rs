@@ -6,7 +6,7 @@ use std::ffi::OsString;
 
 use crate::{
     config::{Config, StartupCommand},
-    ecs::CompositorWorld,
+    ecs::{CompositorWorld, WorkspaceId},
     ipc::{
         Command as IpcCommand, IPC_PROTOCOL_VERSION, IpcError, IpcReply, IpcServer, Request,
         Response, ResultBody, StateSnapshot,
@@ -81,7 +81,7 @@ impl Compositor {
             startup_commands = self.startup_commands.len(),
             xwayland = self.xwayland.enabled(),
             preview_views = preview.len(),
-            ecs_views = self.world.view_count(0),
+            ecs_views = self.world.view_count(WorkspaceId::new(0)),
             "compositor skeleton is ready"
         );
     }
@@ -168,7 +168,7 @@ fn handle_ipc_request(
         IpcCommand::Ping => ResultBody::Pong,
         IpcCommand::GetState => ResultBody::State(StateSnapshot {
             layout: layout.kind(),
-            view_count: world.view_count(0),
+            view_count: world.view_count(WorkspaceId::new(0)),
         }),
         IpcCommand::SetLayout { layout: kind } => {
             *layout = LayoutEngine::new(kind);
@@ -197,7 +197,7 @@ pub enum CompositorError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::LayoutKind;
+    use crate::{ecs::ViewId, layout::LayoutKind};
     use smithay::reexports::calloop::EventLoop;
 
     fn stop_signal() -> smithay::reexports::calloop::LoopSignal {
@@ -220,7 +220,9 @@ mod tests {
     #[test]
     fn ipc_layout_change_is_visible_in_state() {
         let mut world = CompositorWorld::new();
-        world.spawn_view(1, 0);
+        world
+            .spawn_view(ViewId::new(1), WorkspaceId::new(0))
+            .unwrap();
         let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
 
         let changed = handle_ipc_request(

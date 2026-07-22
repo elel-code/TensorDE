@@ -11,6 +11,10 @@ Smithay and Vulkan objects do not become ordinary ECS components. Thread-affine 
 in the protocol owner or a Bevy `NonSend` resource. The renderer consumes a compact scene extracted
 from ECS once per frame rather than issuing ECS queries in GPU submission loops.
 
+Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
+values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
+responsible for lifecycle, workspace membership, focus uniqueness, and geometry updates.
+
 The renderer requires Vulkan 1.4 plus `VK_EXT_descriptor_heap`. Descriptor sets and descriptor
 buffers are not alternative backends. A device that lacks the heap capability fails startup before
 any long-lived renderer state is created.

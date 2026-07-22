@@ -1,5 +1,6 @@
-#[allow(dead_code)]
 mod components;
+mod ids;
 mod world;
 
-pub use world::CompositorWorld;
+pub use ids::{ViewId, WorkspaceId};
+pub use world::{CompositorWorld, ViewLifecycleError};
