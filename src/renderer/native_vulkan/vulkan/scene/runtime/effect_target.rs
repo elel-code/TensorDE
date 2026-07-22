@@ -11,11 +11,12 @@ use vulkanalia::vk::{self, HasBuilder};
 
 use crate::engine::scene::{
     SceneImageTargetRecord, ScenePipelineBlend, SceneRenderPassKind, SceneRenderTargetKind,
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDevicePassNode,
-    SceneRenderingDeviceTargetAllocation, SceneStorage, SceneStringId,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceImageAccess,
+    SceneRenderingDevicePassNode, SceneRenderingDeviceTargetAllocation, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaImage, native_vulkan_vulkanalia_create_color_attachment_sampled_image,
+    NativeVulkanVulkanaliaImage,
+    native_vulkan_vulkanalia_create_color_attachment_sampled_image_with_usage,
     native_vulkan_vulkanalia_destroy_image,
 };
 
@@ -37,6 +38,7 @@ pub(in crate::renderer::native_vulkan) struct SceneEffectTargetImagePlan {
     pub batch_atlas_rows: u32,
     pub persistent_across_frames: bool,
     pub aliased_logical_target_count: u32,
+    pub input_attachment_required: bool,
 }
 
 pub(in crate::renderer::native_vulkan) struct SceneEffectTargetImageResource {
@@ -195,6 +197,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_image_plan(
             plan.batch_atlas_columns = plan.batch_atlas_columns.max(spec.batch_atlas_columns);
             plan.batch_atlas_rows = plan.batch_atlas_rows.max(spec.batch_atlas_rows);
             plan.aliased_logical_target_count = plan.aliased_logical_target_count.saturating_add(1);
+            plan.input_attachment_required |= spec.input_attachment_required;
         } else {
             plans.push(spec);
         }
@@ -426,13 +429,14 @@ pub(in crate::renderer::native_vulkan) fn create_scene_effect_target_images(
     let mut resources = Vec::with_capacity(plans.len());
     for plan in plans {
         let role = "scene-effect-target-color-attachment";
-        let image = native_vulkan_vulkanalia_create_color_attachment_sampled_image(
+        let image = native_vulkan_vulkanalia_create_color_attachment_sampled_image_with_usage(
             device,
             memory_properties,
             role,
             plan.format,
             plan.width,
             plan.height,
+            plan.input_attachment_required,
         );
         match image {
             Ok(image) => resources.push(SceneEffectTargetImageResource {

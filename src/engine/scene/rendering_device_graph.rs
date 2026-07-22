@@ -17,8 +17,8 @@ mod draw_support;
 mod effect_batch;
 
 use draw_support::{
-    material_sampled_bindings, pass_draw_material, rows_from_column_major, sampled_binding,
-    skinning_palette_count, skinning_palette_start,
+    image_binding_access, material_sampled_bindings, pass_draw_material, rows_from_column_major,
+    sampled_binding, skinning_palette_count, skinning_palette_start,
 };
 
 pub use effect_batch::{
@@ -168,6 +168,10 @@ impl SceneRenderingDeviceGraphPlan {
                             mesh_draw_count,
                             binding,
                         )
+                        .map(|mut lowered| {
+                            lowered.access = image_binding_access(storage, pass, binding.slot);
+                            lowered
+                        })
                     },
                 ));
                 pass_nodes.push(SceneRenderingDevicePassNode {
@@ -317,6 +321,15 @@ pub struct SceneRenderingDeviceTargetAllocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneRenderingDeviceImageAccess {
+    /// A sampled image plus a sampler; UV/filter/mip semantics are retained.
+    SampledImage,
+    /// An exact-pixel dynamic-rendering local read; no sampler is involved.
+    InputAttachment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceSampledBinding {
     pub pass_node_index: u32,
     pub graph_index: u32,
@@ -326,6 +339,7 @@ pub struct SceneRenderingDeviceSampledBinding {
     pub slot: u32,
     pub target: SceneRenderTargetKind,
     pub target_name: SceneStringId,
+    pub access: SceneRenderingDeviceImageAccess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

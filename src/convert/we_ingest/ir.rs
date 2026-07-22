@@ -528,6 +528,7 @@ pub struct WeIrShaderContract {
     pub shader_key: String,
     pub pipeline_key: String,
     pub texture_slot_mask: u32,
+    pub input_attachment_slot_mask: u32,
     pub constants: Vec<String>,
     pub resource_heap_count: u32,
     pub sampler_heap_count: u32,

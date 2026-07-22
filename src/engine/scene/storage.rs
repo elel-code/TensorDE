@@ -527,6 +527,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidShaderAccessMask {
+        shader: SceneStringId,
+        overlap: u32,
+    },
 }
 
 impl fmt::Display for SceneStorageError {
@@ -623,6 +627,11 @@ impl fmt::Display for SceneStorageError {
                 f,
                 "scene pointer parallax binding for object {} is invalid: {reason}",
                 object.0
+            ),
+            Self::InvalidShaderAccessMask { shader, overlap } => write!(
+                f,
+                "scene shader {} declares overlapping sampled/input-attachment slots: {overlap:#x}",
+                shader.0
             ),
         }
     }

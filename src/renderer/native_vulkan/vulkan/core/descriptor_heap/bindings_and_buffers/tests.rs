@@ -285,8 +285,62 @@
         assert!(
             snapshot
                 .command_order
-                .contains(&"write_image_descriptors_into_same_resource_heap")
+                .contains(&"write_sampled_image_and_input_attachment_descriptors_into_same_resource_heap")
         );
+    }
+
+    #[test]
+    fn mixed_resource_plan_maps_input_attachments_as_read_only_images_without_samplers() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 1,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 32,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
+                    max_sampler_heap_size: 4096,
+                    min_sampler_heap_reserved_range: 0,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    sampler_descriptor_size: 12,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(snapshot.sampled_image_count, 1);
+        assert_eq!(snapshot.input_attachment_count, 1);
+        assert_eq!(snapshot.sampler_count, 1);
+        assert_eq!(snapshot.resource_descriptor_offsets, vec![0, 32, 64]);
+        let mapping =
+            native_vulkan_vulkanalia_descriptor_heap_resource_input_attachment_binding_mapping(
+                &snapshot, 36, 1,
+            )
+            .expect("input attachment mapping");
+        assert_eq!(mapping.first_binding, 36);
+        assert_eq!(
+            mapping.resource_mask,
+            vk::SpirvResourceTypeFlagsEXT::READ_ONLY_IMAGE
+        );
+        unsafe {
+            assert_eq!(mapping.source_data.constant_offset.heap_offset, 32);
+            assert_eq!(mapping.source_data.constant_offset.heap_array_stride, 32);
+            assert_eq!(mapping.source_data.constant_offset.sampler_heap_offset, 0);
+            assert_eq!(
+                mapping.source_data.constant_offset.sampler_heap_array_stride,
+                0
+            );
+        }
     }
 
     #[test]

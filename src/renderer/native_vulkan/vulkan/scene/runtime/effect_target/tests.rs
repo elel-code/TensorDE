@@ -322,6 +322,7 @@ fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
                 slot: 0,
                 target: SceneRenderTargetKind::SceneColor,
                 target_name: SceneStringId::NONE,
+                access: crate::engine::scene::SceneRenderingDeviceImageAccess::SampledImage,
             },
             crate::engine::scene::SceneRenderingDeviceSampledBinding {
                 pass_node_index: 1,
@@ -332,6 +333,7 @@ fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
                 slot: 2,
                 target: SceneRenderTargetKind::FirstClassEffectTarget,
                 target_name: snapshot_name,
+                access: crate::engine::scene::SceneRenderingDeviceImageAccess::SampledImage,
             },
         ],
         graph_physical_target_count: 1,

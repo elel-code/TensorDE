@@ -1,5 +1,14 @@
 use super::*;
 
+#[path = "descriptor_writes/input_attachment.rs"]
+mod input_attachment;
+
+pub(in crate::renderer::native_vulkan) use input_attachment::{
+    native_vulkan_vulkanalia_descriptor_heap_resource_input_attachment_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_input_attachment_binding_mapping,
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_input_attachment,
+};
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_uniform_buffer(
     device: &Device,
     resources: &mut VulkanaliaDescriptorHeapUniformBufferResources,

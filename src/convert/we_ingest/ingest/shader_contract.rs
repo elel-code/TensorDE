@@ -112,6 +112,10 @@ fn shader_contract(
         shader_key,
         pipeline_key,
         texture_slot_mask,
+        // No input attachment is inferred from a shader name or a sampler
+        // slot.  The converter will populate this only from an explicit,
+        // verified exact-pixel contract.
+        input_attachment_slot_mask: 0,
         constants,
         resource_heap_count: texture_count + uniform_count,
         sampler_heap_count: texture_count,

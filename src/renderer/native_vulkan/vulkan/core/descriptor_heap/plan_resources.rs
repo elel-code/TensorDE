@@ -108,6 +108,7 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind {
     SampledImage,
+    InputAttachment,
     UniformBuffer,
     StorageBuffer,
 }
@@ -211,6 +212,7 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
     pub blocking_reason: Option<&'static str>,
     pub resource_descriptor_count: usize,
     pub sampled_image_count: usize,
+    pub input_attachment_count: usize,
     pub uniform_buffer_count: usize,
     pub storage_buffer_count: usize,
     pub sampler_count: usize,
@@ -512,6 +514,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
             **kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
         })
         .count();
+    let input_attachment_count = input
+        .resource_descriptors
+        .iter()
+        .filter(|kind| {
+            **kind
+                == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment
+        })
+        .count();
     let uniform_buffer_count = input
         .resource_descriptors
         .iter()
@@ -579,6 +589,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
                 properties.image_descriptor_size > 0 && image_descriptor_stride > 0
             }
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment => {
+                properties.image_descriptor_size > 0 && image_descriptor_stride > 0
+            }
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
                 properties.buffer_descriptor_size > 0 && buffer_descriptor_stride > 0
             }
@@ -623,6 +636,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         blocking_reason,
         resource_descriptor_count: input.resource_descriptors.len(),
         sampled_image_count,
+        input_attachment_count,
         uniform_buffer_count,
         storage_buffer_count,
         sampler_count: input.sampler_count,
@@ -654,7 +668,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "create_device_addressable_resource_heap_buffer",
                 "create_device_addressable_sampler_heap_buffer",
                 "write_uniform_buffer_descriptors_into_resource_heap",
-                "write_image_descriptors_into_same_resource_heap",
+                "write_sampled_image_and_input_attachment_descriptors_into_same_resource_heap",
                 "write_sampler_descriptors_into_sampler_heap",
                 "cmd_bind_resource_heap_ext_once_per_draw_heap_slice",
                 "cmd_bind_sampler_heap_ext_once_per_draw_heap_slice",

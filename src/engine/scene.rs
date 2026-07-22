@@ -31,10 +31,11 @@ pub use event::{
 pub use rendering_device_graph::{
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceEffectBatch,
     SceneRenderingDeviceEffectBatchFamily, SceneRenderingDeviceEffectBatchInstance,
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMaterialSampledBinding,
-    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
-    SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
-    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation,
+    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceImageAccess,
+    SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDeviceMeshDraw,
+    SceneRenderingDevicePassNode, SceneRenderingDevicePuppetBoneMatrix,
+    SceneRenderingDevicePuppetBonePalette, SceneRenderingDeviceSampledBinding,
+    SceneRenderingDeviceTargetAllocation,
 };
 pub use script::{
     SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptMemorySnapshot,

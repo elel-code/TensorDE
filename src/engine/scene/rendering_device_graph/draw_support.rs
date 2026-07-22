@@ -105,7 +105,27 @@ pub(super) fn sampled_binding(
         slot: binding.slot,
         target: binding.target,
         target_name: binding.name,
+        access: SceneRenderingDeviceImageAccess::SampledImage,
     })
+}
+
+pub(super) fn image_binding_access(
+    storage: &SceneStorage,
+    pass: &SceneRenderPassRecord,
+    slot: u32,
+) -> SceneRenderingDeviceImageAccess {
+    let input_attachment = storage
+        .shader_contracts()
+        .iter()
+        .find(|contract| contract.shader_key == pass.shader_key)
+        .is_some_and(|contract| {
+            slot < u32::BITS && contract.input_attachment_slot_mask & (1 << slot) != 0
+        });
+    if input_attachment {
+        SceneRenderingDeviceImageAccess::InputAttachment
+    } else {
+        SceneRenderingDeviceImageAccess::SampledImage
+    }
 }
 
 fn render_texture_producer_graph(

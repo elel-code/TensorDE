@@ -826,6 +826,7 @@ pub(super) fn encode_shader_contracts(
         put_string_id(&mut out, record.shader_key);
         put_string_id(&mut out, record.pipeline_key);
         put_u32(&mut out, record.texture_slot_mask);
+        put_u32(&mut out, record.input_attachment_slot_mask);
         put_u32(&mut out, record.constant_start);
         put_u32(&mut out, record.constant_count);
         put_u32(&mut out, record.resource_heap_count);
@@ -852,6 +853,7 @@ pub(super) fn decode_shader_contracts(
             shader_key: decoder.string_id()?,
             pipeline_key: decoder.string_id()?,
             texture_slot_mask: decoder.u32()?,
+            input_attachment_slot_mask: decoder.u32()?,
             constant_start: decoder.u32()?,
             constant_count: decoder.u32()?,
             resource_heap_count: decoder.u32()?,

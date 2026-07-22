@@ -427,6 +427,9 @@ fn resource_descriptor_alignment_for_kind(
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
             image_descriptor_alignment
         }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment => {
+            image_descriptor_alignment
+        }
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
             buffer_descriptor_alignment
         }
@@ -443,6 +446,9 @@ fn resource_descriptor_stride_for_kind(
 ) -> u64 {
     match kind {
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
+            image_descriptor_stride
+        }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment => {
             image_descriptor_stride
         }
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {

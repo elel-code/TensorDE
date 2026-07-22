@@ -2,6 +2,29 @@ use super::*;
 use crate::engine::scene::binary::{SceneBinaryDocument, write_scene_binary};
 
 #[test]
+fn storage_rejects_overlapping_sampled_and_input_attachment_slots() {
+    let document = SceneBinaryDocument {
+        strings: vec!["shader".to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 0b101,
+            input_attachment_slot_mask: 0b001,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 2,
+            sampler_heap_count: 1,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidShaderAccessMask { overlap: 0b001, .. })
+    ));
+}
+
+#[test]
 fn storage_borrows_resource_payload_slices() {
     let mut document = SceneBinaryDocument {
         strings: vec!["scene".to_owned(), "scene.json".to_owned()],

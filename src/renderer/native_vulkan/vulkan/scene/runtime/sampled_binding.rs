@@ -7,6 +7,7 @@
 
 use crate::engine::scene::{
     SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+    SceneRenderingDeviceImageAccess,
     SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneResourceId,
     SceneStringId,
 };
@@ -237,6 +238,12 @@ fn lower_pass_sampled_bindings(
     sources: &mut [SceneSampledImageSource],
 ) -> Result<(), String> {
     for binding in bindings {
+        if binding.access != SceneRenderingDeviceImageAccess::SampledImage {
+            return Err(format!(
+                "scene image binding pass {} slot {} declares {:?} but reached sampled-image lowering",
+                binding.pass_node_index, binding.slot, binding.access
+            ));
+        }
         if binding.kind == crate::engine::scene::SceneRenderBindingKind::VideoFrame {
             lower_video_frame_binding(draw_start, draw_count, binding, sampled_slots, sources)?;
             continue;
@@ -539,6 +546,30 @@ mod tests {
     }
 
     #[test]
+    fn sampled_binding_plan_rejects_input_attachment_access() {
+        let target_name = SceneStringId(9);
+        let mut binding = sampled_binding(0, 0, target_name, 0, 1);
+        binding.access = SceneRenderingDeviceImageAccess::InputAttachment;
+        let graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![pass_node(
+                0,
+                SceneRenderPassKind::EffectMaterial,
+                SceneStringId::NONE,
+                0,
+                1,
+            )],
+            target_allocations: vec![allocation(target_name, 0)],
+            sampled_bindings: vec![binding],
+            mesh_draws: vec![draw()],
+            ..empty_graph_plan()
+        };
+
+        let error = scene_sampled_image_binding_plan(&graph, &[0])
+            .expect_err("input attachments must not be sampled-image lowered");
+        assert!(error.contains("reached sampled-image lowering"));
+    }
+
+    #[test]
     fn sampled_binding_plan_follows_lowered_ping_pong_previous_targets() {
         let graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![
@@ -655,6 +686,7 @@ mod tests {
             slot: 0,
             target: SceneRenderTargetKind::SceneColor,
             target_name: SceneStringId::NONE,
+            access: crate::engine::scene::SceneRenderingDeviceImageAccess::SampledImage,
         };
         let snapshot_consumer = SceneRenderingDeviceSampledBinding {
             pass_node_index: 1,
@@ -665,6 +697,7 @@ mod tests {
             slot: 2,
             target: SceneRenderTargetKind::FirstClassEffectTarget,
             target_name: snapshot_name,
+            access: crate::engine::scene::SceneRenderingDeviceImageAccess::SampledImage,
         };
         let mut graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![copy, consumer],
@@ -716,6 +749,7 @@ mod tests {
                 slot: 3,
                 target: SceneRenderTargetKind::VideoExternalImage,
                 target_name: SceneStringId::NONE,
+                access: crate::engine::scene::SceneRenderingDeviceImageAccess::SampledImage,
             }],
             mesh_draws: vec![draw()],
             ..empty_graph_plan()
@@ -790,6 +824,7 @@ mod tests {
             slot,
             target: SceneRenderTargetKind::NamedFbo,
             target_name,
+            access: SceneRenderingDeviceImageAccess::SampledImage,
         }
     }
 
@@ -807,6 +842,7 @@ mod tests {
             slot: 0,
             target,
             target_name: SceneStringId::NONE,
+            access: SceneRenderingDeviceImageAccess::SampledImage,
         }
     }
 

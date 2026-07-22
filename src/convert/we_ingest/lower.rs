@@ -807,6 +807,7 @@ fn lower_shader_contracts(
             shader_key: strings.id(&contract.shader_key),
             pipeline_key: strings.id(&contract.pipeline_key),
             texture_slot_mask: contract.texture_slot_mask,
+            input_attachment_slot_mask: contract.input_attachment_slot_mask,
             constant_start,
             constant_count: contract.constants.len() as u32,
             resource_heap_count: contract.resource_heap_count,

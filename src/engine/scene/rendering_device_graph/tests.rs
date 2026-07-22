@@ -340,6 +340,7 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 0b1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 2,
@@ -429,6 +430,59 @@ fn rendering_device_graph_allocates_named_effect_targets_from_pass_bindings() {
     assert_eq!(
         graph.sampled_bindings[1].logical_target(),
         Some((0, SceneRenderTargetKind::NamedFbo, SceneStringId(1)))
+    );
+}
+
+#[test]
+fn rendering_device_graph_preserves_explicit_input_attachment_access() {
+    let mut consumer = scene_color_pass_reading_fbo(3, 1, 1);
+    consumer.shader_key = SceneStringId(2);
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "fbo_a".to_owned(),
+            "fbo_b".to_owned(),
+            "typed/local-read".to_owned(),
+            "pipeline".to_owned(),
+        ],
+        render_graphs: vec![SceneRenderGraphRecord {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
+            pass_start: 0,
+            pass_count: 3,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        render_passes: vec![
+            named_fbo_pass(1, 0, SceneStringId(0), 0, 0),
+            named_fbo_pass(2, 1, SceneStringId(1), 0, 1),
+            consumer,
+        ],
+        render_bindings: vec![
+            named_fbo_binding(SceneStringId(0), 0),
+            named_fbo_binding(SceneStringId(1), 2),
+        ],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(2),
+            pipeline_key: SceneStringId(3),
+            texture_slot_mask: 0,
+            input_attachment_slot_mask: 1 << 2,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 1,
+            sampler_heap_count: 0,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+
+    assert_eq!(
+        graph.sampled_bindings[0].access,
+        SceneRenderingDeviceImageAccess::SampledImage
+    );
+    assert_eq!(
+        graph.sampled_bindings[1].access,
+        SceneRenderingDeviceImageAccess::InputAttachment
     );
 }
 

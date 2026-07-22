@@ -698,6 +698,12 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             contract.constant_count,
             document.shader_constant_names.len(),
         )?;
+        if contract.texture_slot_mask & contract.input_attachment_slot_mask != 0 {
+            return Err(SceneStorageError::InvalidShaderAccessMask {
+                shader: contract.shader_key,
+                overlap: contract.texture_slot_mask & contract.input_attachment_slot_mask,
+            });
+        }
     }
     for name in &document.shader_constant_names {
         validate_string(document, "shader_contract.constant_name", *name)?;

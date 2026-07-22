@@ -13,6 +13,29 @@ fn scene_binary_rejects_the_immediately_previous_layout() {
 }
 
 #[test]
+fn scene_binary_round_trip_preserves_typed_image_access_masks() {
+    let document = SceneBinaryDocument {
+        strings: vec!["local-read".to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 1 << 1,
+            input_attachment_slot_mask: 1 << 2,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 2,
+            sampler_heap_count: 1,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+    write_scene_binary(&document, &mut bytes).expect("write scene");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene");
+
+    assert_eq!(decoded.shader_contracts, document.shader_contracts);
+}
+
+#[test]
 fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
     let mut document = SceneBinaryDocument {
         strings: vec![

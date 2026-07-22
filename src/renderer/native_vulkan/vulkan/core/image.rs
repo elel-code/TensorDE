@@ -248,6 +248,26 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_color_
     width: u32,
     height: u32,
 ) -> Result<NativeVulkanVulkanaliaImage, String> {
+    native_vulkan_vulkanalia_create_color_attachment_sampled_image_with_usage(
+        device,
+        memory_properties,
+        role,
+        format,
+        width,
+        height,
+        false,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_color_attachment_sampled_image_with_usage(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    role: &'static str,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    input_attachment: bool,
+) -> Result<NativeVulkanVulkanaliaImage, String> {
     if format == vk::Format::UNDEFINED {
         return Err(format!("{role} image requires a defined format"));
     }
@@ -255,10 +275,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_color_
         return Err(format!("{role} image requires non-zero extent"));
     }
 
-    let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+    let mut usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
         | vk::ImageUsageFlags::SAMPLED
         | vk::ImageUsageFlags::TRANSFER_SRC
         | vk::ImageUsageFlags::TRANSFER_DST;
+    if input_attachment {
+        usage |= vk::ImageUsageFlags::INPUT_ATTACHMENT;
+    }
     let extent = vk::Extent3D {
         width,
         height,

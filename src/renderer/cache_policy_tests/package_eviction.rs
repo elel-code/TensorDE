@@ -617,6 +617,7 @@ void main() {}
                 shader_key: SceneStringId(4),
                 pipeline_key: SceneStringId(5),
                 texture_slot_mask: 0,
+                input_attachment_slot_mask: 0,
                 constant_start: 0,
                 constant_count: 0,
                 resource_heap_count: 1,

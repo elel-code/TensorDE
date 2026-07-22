@@ -19,6 +19,7 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
                 shader_key: SceneStringId(0),
                 pipeline_key: SceneStringId(2),
                 texture_slot_mask: 0b1,
+                input_attachment_slot_mask: 0,
                 constant_start: 0,
                 constant_count: 0,
                 resource_heap_count: 2,
@@ -28,6 +29,7 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
                 shader_key: SceneStringId(1),
                 pipeline_key: SceneStringId(3),
                 texture_slot_mask: 0b1,
+                input_attachment_slot_mask: 0,
                 constant_start: 0,
                 constant_count: 0,
                 resource_heap_count: 1,
@@ -174,6 +176,7 @@ fn pipeline_indices_include_dynamic_rendering_target_format() {
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 1,
@@ -213,6 +216,7 @@ fn pipeline_indices_include_dynamic_rendering_target_format() {
         batch_atlas_rows: 1,
         persistent_across_frames: true,
         aliased_logical_target_count: 1,
+        input_attachment_required: false,
     }];
 
     let indices = scene_pipeline_indices_for_draws(
@@ -239,6 +243,7 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 1,
@@ -275,6 +280,7 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
         batch_atlas_rows: 1,
         persistent_across_frames: true,
         aliased_logical_target_count: 1,
+        input_attachment_required: false,
     }];
 
     let single_sample = scene_pipeline_indices_for_draws(
@@ -310,6 +316,7 @@ fn final_target_pipeline_keys_include_scene_composite_blend() {
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 2,
@@ -538,6 +545,7 @@ fn rgb_only_alpha_over_preserves_target_alpha_and_has_a_distinct_pipeline_key() 
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 2,
@@ -582,6 +590,7 @@ fn authored_normal_cull_uses_back_faces_and_has_a_distinct_pipeline_key() {
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 2,
@@ -663,6 +672,7 @@ fn single_shader_storage(
             shader_key: SceneStringId(0),
             pipeline_key: SceneStringId(1),
             texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
             constant_start: 0,
             constant_count: 0,
             resource_heap_count: 1,

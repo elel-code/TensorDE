@@ -1,7 +1,7 @@
 //! Scene binary compatibility and fixed-size texture metadata contracts.
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 25;
+pub const SCENE_BINARY_VERSION: u32 = 26;
 pub const SCENE_BINARY_MIN_READ_VERSION: u32 = SCENE_BINARY_VERSION;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
 

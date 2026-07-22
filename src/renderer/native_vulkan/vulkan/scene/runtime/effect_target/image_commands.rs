@@ -43,6 +43,15 @@ pub(super) fn target_spec(
             SceneRenderTargetKind::NamedFbo | SceneRenderTargetKind::FirstClassEffectTarget
         ),
         aliased_logical_target_count: 1,
+        input_attachment_required: graph.sampled_bindings.iter().any(|binding| {
+            binding.access == SceneRenderingDeviceImageAccess::InputAttachment
+                && binding.logical_target()
+                    == Some((
+                        allocation.graph_index,
+                        allocation.target,
+                        allocation.target_name,
+                    ))
+        }),
     })
 }
 
