@@ -50,8 +50,9 @@ any long-lived renderer state is created.
 Physical-device ranking lives in `render/device.rs`. The policy is configurable but the default
 prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
 in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
-feature bit, requires a graphics queue and a complete primary/render node pair reported through
-`VK_EXT_physical_device_drm`, timeline semaphores, and requires external dma-buf memory, explicit DRM modifiers, foreign
+feature bit, and requires a graphics queue, timeline semaphores, usable descriptor-heap limits, a
+complete primary/render node pair reported through `VK_EXT_physical_device_drm`, external dma-buf
+memory, explicit DRM modifiers, foreign
 queue-family ownership transfer, and bidirectional binary `SYNC_FD` semaphore support. The logical
 device enables only the extensions for this native path and descriptor heap; there is no
 descriptor-set or descriptor-buffer fallback.

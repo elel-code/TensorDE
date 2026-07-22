@@ -9,6 +9,8 @@ An eligible physical device must provide all of the following before ranking:
 
 - Vulkan 1.4 and a graphics queue.
 - `VK_EXT_descriptor_heap`, including its feature bit.
+- A usable resource heap: non-zero heap alignment, maximum size beyond the implementation's
+  reserved range, and non-zero image descriptor size/alignment.
 - `VK_EXT_physical_device_drm` with a complete primary/render node pair.
 - `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`.
 - `VK_EXT_image_drm_format_modifier`.
@@ -66,6 +68,11 @@ allocator, retains the previous `SceneSnapshot` per output, computes damage, and
 ranges live until the Vulkan timeline value retires them. `render/vulkan/frame.rs` uses three
 resettable command buffers and one timeline semaphore to exercise that lifetime contract. A lost
 device stops future frame scheduling instead of recycling GPU-visible ranges.
+
+The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the
+reported image descriptor alignment, and adds the implementation's reserved range before capping
+the configured usable budget at `maxResourceHeapSize`. These are device properties, not a
+substitute for the eventual Vulkan heap binding and descriptor writes.
 
 The current boundary deliberately submits an empty command buffer. Native Vulkan image allocation,
 descriptor writes, dma-buf export, queue-family release, and Smithay atomic KMS commit are the next

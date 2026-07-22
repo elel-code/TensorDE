@@ -7,8 +7,8 @@ mod target;
 mod vulkan;
 
 pub use device::{
-    DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeError, DrmNodeId,
-    GpuPreference, ParseGpuPreferenceError,
+    DescriptorHeapProperties, DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity,
+    DrmNodeError, DrmNodeId, GpuPreference, ParseGpuPreferenceError,
 };
 #[cfg(not(feature = "tty"))]
 pub(crate) use format::VulkanFormatCapability;

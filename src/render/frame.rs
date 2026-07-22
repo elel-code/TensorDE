@@ -5,10 +5,6 @@ use thiserror::Error;
 
 use crate::scene::{DamageSet, SceneSnapshot};
 
-const DESCRIPTOR_ALIGNMENT: u64 = 32;
-const NODE_DESCRIPTOR_BYTES: u64 = 128;
-const CLEAR_DESCRIPTOR_BYTES: u64 = 64;
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RenderOutputId {
     pub(crate) device_id: u64,
@@ -38,15 +34,30 @@ pub(crate) struct FrameScheduler {
     outputs: BTreeMap<RenderOutputId, OutputFrameState>,
     next_timeline_value: u64,
     device_lost: bool,
+    descriptor_stride: u64,
 }
 
 impl FrameScheduler {
-    pub(crate) fn new(descriptor_heap_size: u64) -> Result<Self, FrameError> {
+    pub(crate) fn new(
+        descriptor_heap_size: u64,
+        descriptor_alignment: u64,
+        reserved_range: u64,
+        descriptor_size: u64,
+    ) -> Result<Self, FrameError> {
+        if descriptor_size == 0 {
+            return Err(FrameError::InvalidDescriptorSize);
+        }
         Ok(Self {
-            descriptors: DescriptorHeap::new(descriptor_heap_size)?,
+            descriptors: DescriptorHeap::new(
+                descriptor_heap_size,
+                descriptor_alignment,
+                reserved_range,
+            )?,
             outputs: BTreeMap::new(),
             next_timeline_value: 1,
             device_lost: false,
+            descriptor_stride: align_up(descriptor_size, descriptor_alignment)
+                .ok_or(FrameError::DescriptorSizeOverflow)?,
         })
     }
 
@@ -99,10 +110,10 @@ impl FrameScheduler {
             .next_timeline_value
             .checked_add(1)
             .ok_or(FrameError::TimelineExhausted)?;
-        let descriptor_bytes = CLEAR_DESCRIPTOR_BYTES.saturating_add(
+        let descriptor_bytes = self.descriptor_stride.saturating_add(
             u64::try_from(scene.nodes().len())
                 .unwrap_or(u64::MAX)
-                .saturating_mul(NODE_DESCRIPTOR_BYTES),
+                .saturating_mul(self.descriptor_stride),
         );
         let descriptors = self
             .descriptors
@@ -166,6 +177,8 @@ impl OutputFrameState {
 #[derive(Debug)]
 pub(crate) struct DescriptorHeap {
     capacity: u64,
+    alignment: u64,
+    first_usable_offset: u64,
     cursor: u64,
     active: Vec<ActiveAllocation>,
 }
@@ -177,33 +190,42 @@ struct ActiveAllocation {
 }
 
 impl DescriptorHeap {
-    fn new(capacity: u64) -> Result<Self, FrameError> {
-        if capacity < DESCRIPTOR_ALIGNMENT {
-            return Err(FrameError::DescriptorHeapTooSmall { capacity });
+    fn new(capacity: u64, alignment: u64, reserved_range: u64) -> Result<Self, FrameError> {
+        if alignment == 0 || !alignment.is_power_of_two() {
+            return Err(FrameError::InvalidDescriptorAlignment { alignment });
+        }
+        let first_usable_offset =
+            align_up(reserved_range, alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
+        if capacity <= first_usable_offset {
+            return Err(FrameError::DescriptorHeapTooSmall {
+                capacity,
+                reserved: first_usable_offset,
+            });
         }
         Ok(Self {
             capacity,
-            cursor: 0,
+            alignment,
+            first_usable_offset,
+            cursor: first_usable_offset,
             active: Vec::new(),
         })
     }
 
     fn allocate(&mut self, size: u64, retire_timeline: u64) -> Result<HeapAllocation, FrameError> {
-        let size =
-            align_up(size, DESCRIPTOR_ALIGNMENT).ok_or(FrameError::DescriptorSizeOverflow)?;
-        if size > self.capacity {
+        let size = align_up(size, self.alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
+        if size > self.capacity.saturating_sub(self.first_usable_offset) {
             return Err(FrameError::DescriptorRequestTooLarge {
                 requested: size,
                 capacity: self.capacity,
             });
         }
 
-        let start = align_up(self.cursor, DESCRIPTOR_ALIGNMENT)
-            .ok_or(FrameError::DescriptorSizeOverflow)?;
+        let start =
+            align_up(self.cursor, self.alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
         let offset = if self.fits(start, size) {
             start
-        } else if self.fits(0, size) {
-            0
+        } else if self.fits(self.first_usable_offset, size) {
+            self.first_usable_offset
         } else {
             return Err(FrameError::DescriptorHeapExhausted {
                 requested: size,
@@ -237,7 +259,7 @@ impl DescriptorHeap {
         self.active
             .retain(|active| active.retire_timeline > completed_timeline);
         if self.active.is_empty() && self.cursor >= self.capacity {
-            self.cursor = 0;
+            self.cursor = self.first_usable_offset;
         }
     }
 }
@@ -249,8 +271,12 @@ fn align_up(value: u64, alignment: u64) -> Option<u64> {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub(crate) enum FrameError {
-    #[error("descriptor heap capacity {capacity} is smaller than the required alignment")]
-    DescriptorHeapTooSmall { capacity: u64 },
+    #[error("descriptor heap capacity {capacity} does not exceed reserved range {reserved}")]
+    DescriptorHeapTooSmall { capacity: u64, reserved: u64 },
+    #[error("descriptor alignment {alignment} must be a non-zero power of two")]
+    InvalidDescriptorAlignment { alignment: u64 },
+    #[error("descriptor size must be non-zero")]
+    InvalidDescriptorSize,
     #[error("descriptor size overflowed the frame allocator")]
     DescriptorSizeOverflow,
     #[error("descriptor request of {requested} bytes exceeds heap capacity {capacity}")]
@@ -311,7 +337,7 @@ mod tests {
 
     #[test]
     fn first_frame_and_scene_change_produce_damage() {
-        let mut scheduler = FrameScheduler::new(4096).unwrap();
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert_eq!(first.serial, 1);
@@ -327,7 +353,7 @@ mod tests {
 
     #[test]
     fn in_flight_output_cannot_reuse_descriptors() {
-        let mut scheduler = FrameScheduler::new(4096).unwrap();
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert!(matches!(
@@ -344,7 +370,7 @@ mod tests {
 
     #[test]
     fn descriptor_exhaustion_is_reported_until_timeline_retires() {
-        let mut scheduler = FrameScheduler::new(256).unwrap();
+        let mut scheduler = FrameScheduler::new(96, 32, 0, 32).unwrap();
         scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
         scheduler.register_output(SECOND_OUTPUT, VIEWPORT).unwrap();
         let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
@@ -361,7 +387,7 @@ mod tests {
 
     #[test]
     fn invalid_and_unknown_outputs_fail_at_boundary() {
-        let mut scheduler = FrameScheduler::new(4096).unwrap();
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         assert!(matches!(
             scheduler.register_output(OUTPUT, Rect::new(0, 0, 0, 100)),
             Err(FrameError::InvalidViewport(_))
@@ -374,12 +400,33 @@ mod tests {
 
     #[test]
     fn device_loss_stops_future_frame_submission() {
-        let mut scheduler = FrameScheduler::new(4096).unwrap();
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
         scheduler.mark_device_lost();
         assert_eq!(
             scheduler.submit(OUTPUT, scene(1), 0),
             Err(FrameError::DeviceLost)
         );
+    }
+
+    #[test]
+    fn descriptor_heap_respects_reserved_range_and_alignment() {
+        let mut scheduler = FrameScheduler::new(4096, 64, 96, 48).unwrap();
+        scheduler.register_output(OUTPUT, VIEWPORT).unwrap();
+        let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        assert_eq!(frame.descriptors.offset, 128);
+        assert_eq!(frame.descriptors.size, 128);
+    }
+
+    #[test]
+    fn invalid_descriptor_heap_layout_fails_before_output_registration() {
+        assert!(matches!(
+            FrameScheduler::new(4096, 0, 0, 32),
+            Err(FrameError::InvalidDescriptorAlignment { .. })
+        ));
+        assert!(matches!(
+            FrameScheduler::new(4096, 64, 4096, 32),
+            Err(FrameError::DescriptorHeapTooSmall { .. })
+        ));
     }
 }

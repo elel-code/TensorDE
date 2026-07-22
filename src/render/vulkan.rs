@@ -10,8 +10,8 @@ use vulkanalia::{
 };
 
 use super::{
-    DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, NativeInteropCapabilities,
-    RendererTarget, VulkanFormatCapability,
+    DescriptorHeapProperties, DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId,
+    NativeInteropCapabilities, RendererTarget, VulkanFormatCapability,
 };
 #[cfg(feature = "tty")]
 use super::{FrameError, FrameScheduler, FrameSubmission, RenderOutputId};
@@ -51,6 +51,7 @@ pub(crate) struct SelectedDevice {
     pub(crate) render_node: DrmNodeId,
     pub(crate) interop: NativeInteropCapabilities,
     pub(crate) formats: Vec<VulkanFormatCapability>,
+    pub(crate) descriptor_heap: DescriptorHeapProperties,
 }
 
 impl VulkanRenderer {
@@ -81,6 +82,11 @@ impl VulkanRenderer {
                 api = %device.candidate.api_version,
                 device_type = ?device.candidate.device_type,
                 descriptor_heap = device.candidate.descriptor_heap_supported,
+                descriptor_heap_alignment = device.candidate.descriptor_heap.resource_heap_alignment,
+                descriptor_heap_max = device.candidate.descriptor_heap.max_resource_heap_size,
+                descriptor_heap_reserved = device.candidate.descriptor_heap.min_resource_heap_reserved_range,
+                image_descriptor_size = device.candidate.descriptor_heap.image_descriptor_size,
+                image_descriptor_alignment = device.candidate.descriptor_heap.image_descriptor_alignment,
                 timeline_semaphore = device.candidate.timeline_semaphore_supported,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
                 native_output_formats = device.candidate.native_output_format_count,
@@ -91,6 +97,25 @@ impl VulkanRenderer {
             .device
             .select(probed.iter().map(|device| &device.candidate))?;
         let selected = &probed[selected.ordinal];
+        #[cfg(feature = "tty")]
+        let frames = FrameScheduler::new(
+            selected
+                .candidate
+                .descriptor_heap
+                .min_resource_heap_reserved_range
+                .saturating_add(DESCRIPTOR_HEAP_BYTES)
+                .min(selected.candidate.descriptor_heap.max_resource_heap_size),
+            selected
+                .candidate
+                .descriptor_heap
+                .image_descriptor_alignment,
+            selected
+                .candidate
+                .descriptor_heap
+                .min_resource_heap_reserved_range,
+            selected.candidate.descriptor_heap.image_descriptor_size,
+        )
+        .map_err(|error| RendererError::Frame(error.to_string()))?;
         let graphics_queue_family = selected
             .candidate
             .graphics_queue_family
@@ -119,6 +144,7 @@ impl VulkanRenderer {
             render_node,
             interop: selected.candidate.interop,
             formats: selected.formats.clone(),
+            descriptor_heap: selected.candidate.descriptor_heap,
         };
         let client_import_formats = selected_info
             .formats
@@ -138,6 +164,11 @@ impl VulkanRenderer {
             primary_node = %selected_info.primary_node,
             render_node = %selected_info.render_node,
             descriptor_heap = true,
+            descriptor_heap_alignment = selected_info.descriptor_heap.resource_heap_alignment,
+            descriptor_heap_max = selected_info.descriptor_heap.max_resource_heap_size,
+            descriptor_heap_reserved = selected_info.descriptor_heap.min_resource_heap_reserved_range,
+            image_descriptor_size = selected_info.descriptor_heap.image_descriptor_size,
+            image_descriptor_alignment = selected_info.descriptor_heap.image_descriptor_alignment,
             dma_buf = selected_info.interop.dma_buf_memory,
             drm_format_modifier = selected_info.interop.drm_format_modifier,
             foreign_queue_family = selected_info.interop.foreign_queue_family,
@@ -159,8 +190,7 @@ impl VulkanRenderer {
             target,
             selected: selected_info,
             #[cfg(feature = "tty")]
-            frames: FrameScheduler::new(DESCRIPTOR_HEAP_BYTES)
-                .expect("the built-in descriptor heap size is valid"),
+            frames,
         })
     }
 
@@ -291,6 +321,11 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
             .any(|extension| extension.extension_name == vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name);
         let descriptor_heap_supported =
             has_heap_extension && descriptor_heap_feature(instance, handle);
+        let descriptor_heap = if has_heap_extension {
+            descriptor_heap_properties(instance, handle)
+        } else {
+            DescriptorHeapProperties::default()
+        };
         let timeline_semaphore_supported = timeline_semaphore_feature(instance, handle);
         let has_drm_extension = extensions.iter().any(|extension| {
             extension.extension_name == vk::EXT_PHYSICAL_DEVICE_DRM_EXTENSION.name
@@ -307,6 +342,7 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
         };
         let interop = native_interop_capabilities(instance, handle, &extensions);
         let formats = if descriptor_heap_supported
+            && descriptor_heap.is_usable()
             && timeline_semaphore_supported
             && Version::from(properties.api_version) >= Version::V1_4_0
             && graphics_queue_family.is_some()
@@ -329,6 +365,7 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 device_type: properties.device_type,
                 api_version: properties.api_version.into(),
                 descriptor_heap_supported,
+                descriptor_heap,
                 timeline_semaphore_supported,
                 graphics_queue_family,
                 drm,
@@ -526,6 +563,22 @@ fn descriptor_heap_feature(instance: &Instance, device: vk::PhysicalDevice) -> b
     let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut descriptor_heap);
     unsafe { instance.get_physical_device_features2(device, &mut features) };
     descriptor_heap.descriptor_heap != 0
+}
+
+fn descriptor_heap_properties(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+) -> DescriptorHeapProperties {
+    let mut heap = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceProperties2::builder().push_next(&mut heap);
+    unsafe { instance.get_physical_device_properties2(device, &mut properties) };
+    DescriptorHeapProperties {
+        resource_heap_alignment: heap.resource_heap_alignment,
+        max_resource_heap_size: heap.max_resource_heap_size,
+        min_resource_heap_reserved_range: heap.min_resource_heap_reserved_range,
+        image_descriptor_size: heap.image_descriptor_size,
+        image_descriptor_alignment: heap.image_descriptor_alignment,
+    }
 }
 
 fn timeline_semaphore_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {
