@@ -273,6 +273,7 @@ mod tests {
                 descriptor_heap_resource_count: 0,
                 descriptor_heap_sampled_image_count: 0,
                 descriptor_heap_uniform_buffer_count: 0,
+                descriptor_heap_input_attachment_count: 0,
                 descriptor_heap_storage_buffer_count: 0,
                 descriptor_heap_sampler_count: 0,
                 fifo_latest_ready_present_required: true,
@@ -337,6 +338,7 @@ mod tests {
                     descriptor_model: "VK_EXT_descriptor_heap",
                     resource_descriptor_count: 0,
                     sampled_image_descriptor_count: 0,
+                    input_attachment_descriptor_count: 0,
                     uniform_buffer_descriptor_count: 0,
                     storage_buffer_descriptor_count: 0,
                     sampler_descriptor_count: 0,
@@ -366,6 +368,7 @@ mod tests {
             descriptor_heap: NativeVulkanSceneDescriptorHeapPlan {
                 resource_descriptor_count: 0,
                 sampled_image_descriptor_count: 0,
+                input_attachment_descriptor_count: 0,
                 uniform_buffer_descriptor_count: 0,
                 storage_buffer_descriptor_count: 0,
                 sampler_descriptor_count: 0,

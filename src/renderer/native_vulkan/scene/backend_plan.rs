@@ -48,6 +48,7 @@ pub struct NativeVulkanSceneBackendPlan {
 pub struct NativeVulkanSceneDescriptorHeapPlan {
     pub resource_descriptor_count: u32,
     pub sampled_image_descriptor_count: u32,
+    pub input_attachment_descriptor_count: u32,
     pub uniform_buffer_descriptor_count: u32,
     pub storage_buffer_descriptor_count: u32,
     pub sampler_descriptor_count: u32,
@@ -131,6 +132,8 @@ fn build_scene_backend_plan(
             resource_descriptor_count: renderer_scene_render.descriptor_heap_resource_count,
             sampled_image_descriptor_count: renderer_scene_render
                 .descriptor_heap_sampled_image_count,
+            input_attachment_descriptor_count: renderer_scene_render
+                .descriptor_heap_input_attachment_count,
             uniform_buffer_descriptor_count: renderer_scene_render
                 .descriptor_heap_uniform_buffer_count,
             storage_buffer_descriptor_count: renderer_scene_render
@@ -206,10 +209,10 @@ mod tests {
                 shader_key: SceneStringId(0),
                 pipeline_key: SceneStringId(1),
                 texture_slot_mask: 0b101,
-                input_attachment_slot_mask: 0,
+                input_attachment_slot_mask: 0b010,
                 constant_start: 0,
                 constant_count: 0,
-                resource_heap_count: 3,
+                resource_heap_count: 4,
                 sampler_heap_count: 2,
             }],
             objects: vec![SceneObjectRecord {
@@ -311,8 +314,9 @@ mod tests {
 
         assert!(plan.descriptor_heap_only);
         assert_eq!(plan.present_mode, "fifo-latest-ready");
-        assert_eq!(plan.descriptor_heap.resource_descriptor_count, 3);
+        assert_eq!(plan.descriptor_heap.resource_descriptor_count, 4);
         assert_eq!(plan.descriptor_heap.sampled_image_descriptor_count, 2);
+        assert_eq!(plan.descriptor_heap.input_attachment_descriptor_count, 1);
         assert_eq!(plan.descriptor_heap.uniform_buffer_descriptor_count, 1);
         assert_eq!(plan.descriptor_heap.storage_buffer_descriptor_count, 0);
         assert_eq!(plan.descriptor_heap.sampler_descriptor_count, 2);
@@ -321,6 +325,17 @@ mod tests {
         assert_eq!(
             plan.resource_storage.descriptor_heap.descriptor_model,
             "VK_EXT_descriptor_heap"
+        );
+        assert_eq!(
+            plan.resource_storage
+                .descriptor_heap
+                .input_attachment_descriptor_count,
+            1
+        );
+        assert_eq!(
+            plan.resource_storage.shader_heap_slices[0]
+                .input_attachment_descriptor_count,
+            1
         );
         assert_eq!(plan.pipeline_cache.pipeline_count, 1);
         assert_eq!(

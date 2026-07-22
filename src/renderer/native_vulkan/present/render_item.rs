@@ -315,6 +315,7 @@ mod tests {
                     descriptor_heap_resource_count: 1,
                     descriptor_heap_sampled_image_count: 0,
                     descriptor_heap_uniform_buffer_count: 1,
+                    descriptor_heap_input_attachment_count: 0,
                     descriptor_heap_storage_buffer_count: 0,
                     descriptor_heap_sampler_count: 0,
                     fifo_latest_ready_present_required: true,

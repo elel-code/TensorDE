@@ -75,6 +75,12 @@ impl<'a> RenderingServer<'a> {
             .iter()
             .map(|contract| contract.texture_slot_mask.count_ones())
             .sum();
+        let descriptor_heap_input_attachment_count: u32 = self
+            .storage
+            .shader_contracts()
+            .iter()
+            .map(|contract| contract.input_attachment_slot_mask.count_ones())
+            .sum();
         let descriptor_heap_sampler_count: u32 = self
             .storage
             .shader_contracts()
@@ -121,7 +127,9 @@ impl<'a> RenderingServer<'a> {
             descriptor_heap_resource_count,
             descriptor_heap_sampled_image_count,
             descriptor_heap_uniform_buffer_count: contract_resource_descriptor_count
-                .saturating_sub(descriptor_heap_sampled_image_count),
+                .saturating_sub(descriptor_heap_sampled_image_count)
+                .saturating_sub(descriptor_heap_input_attachment_count),
+            descriptor_heap_input_attachment_count,
             descriptor_heap_storage_buffer_count,
             descriptor_heap_sampler_count,
             fifo_latest_ready_present_required: true,
@@ -273,6 +281,7 @@ pub struct RendererSceneRenderPlan {
     pub descriptor_heap_resource_count: u32,
     pub descriptor_heap_sampled_image_count: u32,
     pub descriptor_heap_uniform_buffer_count: u32,
+    pub descriptor_heap_input_attachment_count: u32,
     pub descriptor_heap_storage_buffer_count: u32,
     pub descriptor_heap_sampler_count: u32,
     pub fifo_latest_ready_present_required: bool,
@@ -295,6 +304,7 @@ mod tests {
     use super::*;
     use crate::engine::scene::binary::SceneBinaryDocument;
     use crate::engine::scene::storage::SceneStorage;
+    use crate::engine::scene::{SceneShaderContractRecord, SceneStringId};
 
     #[test]
     fn rendering_server_counts_scene_storage_boundaries() {
@@ -322,5 +332,32 @@ mod tests {
             .resolved_semantic_frame()
             .expect("resolved semantic frame");
         assert!(semantic_frame.objects.is_empty());
+    }
+
+    #[test]
+    fn rendering_server_separates_input_attachment_resources_from_uniforms() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["shader".to_owned(), "pipeline".to_owned()],
+            shader_contracts: vec![SceneShaderContractRecord {
+                shader_key: SceneStringId(0),
+                pipeline_key: SceneStringId(1),
+                texture_slot_mask: 1 << 0,
+                input_attachment_slot_mask: 1 << 1,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 3,
+                sampler_heap_count: 1,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+
+        let plan = RenderingServer::new(&storage).renderer_scene_render_plan();
+
+        assert_eq!(plan.descriptor_heap_resource_count, 3);
+        assert_eq!(plan.descriptor_heap_sampled_image_count, 1);
+        assert_eq!(plan.descriptor_heap_input_attachment_count, 1);
+        assert_eq!(plan.descriptor_heap_uniform_buffer_count, 1);
+        assert_eq!(plan.descriptor_heap_sampler_count, 1);
     }
 }

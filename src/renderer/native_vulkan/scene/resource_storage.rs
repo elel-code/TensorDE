@@ -69,6 +69,7 @@ pub struct NativeVulkanSceneHeapStoragePlan {
     pub descriptor_model: &'static str,
     pub resource_descriptor_count: u32,
     pub sampled_image_descriptor_count: u32,
+    pub input_attachment_descriptor_count: u32,
     pub uniform_buffer_descriptor_count: u32,
     pub storage_buffer_descriptor_count: u32,
     pub sampler_descriptor_count: u32,
@@ -82,6 +83,7 @@ pub struct NativeVulkanSceneShaderHeapSlice {
     pub resource_descriptor_start: u32,
     pub resource_descriptor_count: u32,
     pub sampled_image_descriptor_count: u32,
+    pub input_attachment_descriptor_count: u32,
     pub uniform_buffer_descriptor_count: u32,
     pub sampler_descriptor_start: u32,
     pub sampler_descriptor_count: u32,
@@ -135,6 +137,8 @@ pub fn native_vulkan_scene_resource_storage_plan(
             resource_descriptor_count: renderer_scene_render.descriptor_heap_resource_count,
             sampled_image_descriptor_count: renderer_scene_render
                 .descriptor_heap_sampled_image_count,
+            input_attachment_descriptor_count: renderer_scene_render
+                .descriptor_heap_input_attachment_count,
             uniform_buffer_descriptor_count: renderer_scene_render
                 .descriptor_heap_uniform_buffer_count,
             storage_buffer_descriptor_count: renderer_scene_render
@@ -183,15 +187,19 @@ fn shader_heap_slices(
     let mut slices = Vec::with_capacity(contracts.len());
     for contract in contracts {
         let sampled_image_descriptor_count = contract.texture_slot_mask.count_ones();
+        let input_attachment_descriptor_count =
+            contract.input_attachment_slot_mask.count_ones();
         let uniform_buffer_descriptor_count = contract
             .resource_heap_count
-            .saturating_sub(sampled_image_descriptor_count);
+            .saturating_sub(sampled_image_descriptor_count)
+            .saturating_sub(input_attachment_descriptor_count);
         slices.push(NativeVulkanSceneShaderHeapSlice {
             shader_key: contract.shader_key,
             pipeline_key: contract.pipeline_key,
             resource_descriptor_start,
             resource_descriptor_count: contract.resource_heap_count,
             sampled_image_descriptor_count,
+            input_attachment_descriptor_count,
             uniform_buffer_descriptor_count,
             sampler_descriptor_start,
             sampler_descriptor_count: contract.sampler_heap_count,
@@ -238,10 +246,10 @@ mod tests {
                     shader_key: SceneStringId(2),
                     pipeline_key: SceneStringId(3),
                     texture_slot_mask: 0b1,
-                    input_attachment_slot_mask: 0,
+                    input_attachment_slot_mask: 0b10,
                     constant_start: 0,
                     constant_count: 0,
-                    resource_heap_count: 2,
+                    resource_heap_count: 3,
                     sampler_heap_count: 1,
                 },
             ],
@@ -255,8 +263,9 @@ mod tests {
         let plan = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
 
         assert_eq!(plan.resource_payload_bytes, 4);
-        assert_eq!(plan.descriptor_heap.resource_descriptor_count, 6);
+        assert_eq!(plan.descriptor_heap.resource_descriptor_count, 7);
         assert_eq!(plan.descriptor_heap.sampled_image_descriptor_count, 3);
+        assert_eq!(plan.descriptor_heap.input_attachment_descriptor_count, 1);
         assert_eq!(plan.descriptor_heap.uniform_buffer_descriptor_count, 3);
         assert_eq!(plan.descriptor_heap.sampler_descriptor_count, 3);
         assert_eq!(plan.shader_heap_slices.len(), 2);
@@ -264,6 +273,11 @@ mod tests {
         assert_eq!(plan.shader_heap_slices[0].sampler_descriptor_start, 0);
         assert_eq!(plan.shader_heap_slices[1].resource_descriptor_start, 4);
         assert_eq!(plan.shader_heap_slices[1].sampler_descriptor_start, 2);
+        assert_eq!(
+            plan.shader_heap_slices[1].input_attachment_descriptor_count,
+            1
+        );
+        assert_eq!(plan.shader_heap_slices[1].uniform_buffer_descriptor_count, 1);
         assert_eq!(
             plan.payload_residency,
             "scene-resource-payload-offset-slices"
