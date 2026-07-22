@@ -9,9 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
-      - run: ./scripts/check-file-lines.sh
+      - run: uv run scripts/check_file_lines.py
       - run: cargo test --all-targets

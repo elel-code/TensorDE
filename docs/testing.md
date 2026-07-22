@@ -16,6 +16,6 @@ Every change runs:
 
 ```sh
 cargo fmt --all -- --check
-./scripts/check-file-lines.sh
+uv run scripts/check_file_lines.py
 cargo test --workspace --all-targets
 ```

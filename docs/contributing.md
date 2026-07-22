@@ -13,6 +13,6 @@ Examples are `render: require descriptor heap`, `ecs: stabilize workspace orderi
 `docs: record startup gates`. Do not require `feat():` Conventional Commit prefixes. Add a concise
 body for non-obvious tradeoffs and list the verification commands used.
 
-Hand-written source files are limited to 800 lines by `scripts/check-file-lines.sh`. Generated
+Hand-written source files are limited to 800 lines by `uv run scripts/check_file_lines.py`. Generated
 protocol bindings and explicit data-heavy fixtures may be excluded only with a documented reason.
 Dependency ranges use broad compatible major/minor constraints, never `"*"`.
