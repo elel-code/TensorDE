@@ -16,12 +16,18 @@ impl Rect {
         }
     }
 
-    pub const fn right(self) -> i32 {
-        self.x.saturating_add(self.width as i32)
+    pub fn right(self) -> i32 {
+        self.x.saturating_add(match i32::try_from(self.width) {
+            Ok(value) => value,
+            Err(_) => i32::MAX,
+        })
     }
 
-    pub const fn bottom(self) -> i32 {
-        self.y.saturating_add(self.height as i32)
+    pub fn bottom(self) -> i32 {
+        self.y.saturating_add(match i32::try_from(self.height) {
+            Ok(value) => value,
+            Err(_) => i32::MAX,
+        })
     }
 }
 
