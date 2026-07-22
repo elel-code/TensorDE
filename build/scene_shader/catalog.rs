@@ -652,7 +652,6 @@ pub(crate) fn build_scene_shader_catalog() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let shader_dir = out_dir.join("scene_shader_catalog");
     fs::create_dir_all(&shader_dir).expect("create scene shader catalog build dir");
-
     let mut generated = String::new();
     generated.push_str("#[derive(Debug, Clone, Copy)]\n");
     generated.push_str("pub struct BuiltinSceneShader {\n");
@@ -663,9 +662,9 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub vertex_spirv: &'static [u32],\n");
     generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
+    generated.push_str("    pub input_attachment_fragment_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
-
     let mut entries = String::new();
     for spec in BUILTIN_SCENE_SHADER_SPECS
         .iter()
@@ -692,12 +691,34 @@ pub(crate) fn build_scene_shader_catalog() {
         };
         let fragment_path =
             compile_scene_shader_stage(&shader_dir, spec.key, "frag", &fragment_source);
+        let input_attachment_fragment_path = super::input_attachment_fragment_source(matches!(
+            spec.family,
+            SceneShaderFamily::FlatPassthrough
+        ))
+        .map(|source| {
+            compile_scene_shader_stage(
+                &shader_dir,
+                &format!("{}__INPUT_ATTACHMENT", spec.key),
+                "frag",
+                &source,
+            )
+        });
         let vertex_path = vertex_path
             .to_str()
             .expect("built-in scene vertex shader path must be UTF-8");
         let fragment_path = fragment_path
             .to_str()
             .expect("built-in scene fragment shader path must be UTF-8");
+        let input_attachment_fragment_spirv = input_attachment_fragment_path.as_ref().map_or_else(
+            || "None".to_owned(),
+            |path| {
+                format!(
+                    "Some(vulkanalia::include_shader_code!({:?}))",
+                    path.to_str()
+                        .expect("built-in input-attachment fragment shader path must be UTF-8")
+                )
+            },
+        );
         let object_mesh_vertex_spirv = object_mesh_vertex_path.as_ref().map_or_else(
             || "None".to_owned(),
             |path| {
@@ -711,11 +732,12 @@ pub(crate) fn build_scene_shader_catalog() {
         let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
-            spec.key, vertex_path, fragment_path,
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), input_attachment_fragment_spirv: {input_attachment_fragment_spirv}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            spec.key,
+            vertex_path,
+            fragment_path,
         ));
     }
-
     generated.push_str("pub static BUILTIN_SCENE_SHADERS: &[BuiltinSceneShader] = &[\n");
     generated.push_str(&entries);
     generated.push_str("];\n");

@@ -157,6 +157,7 @@ mod tests {
         assert!(!shader.vertex_spirv.is_empty());
         assert!(shader.object_mesh_vertex_spirv.is_none());
         assert!(!shader.fragment_spirv.is_empty());
+        assert!(shader.input_attachment_fragment_spirv.is_none());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
         assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
@@ -194,6 +195,20 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn passthrough_catalog_exposes_only_the_explicit_exact_pixel_variant() {
+        let passthrough = native_vulkan_scene_shader_for_key("we/passthrough")
+            .expect("passthrough shader");
+        let variant = passthrough
+            .input_attachment_fragment_spirv
+            .expect("exact-pixel input-attachment variant");
+        assert!(!variant.is_empty());
+        assert!(native_vulkan_scene_shader_for_key("we/genericimage4")
+            .expect("generic image shader")
+            .input_attachment_fragment_spirv
+            .is_none());
     }
 
     #[test]

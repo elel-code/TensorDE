@@ -14,6 +14,8 @@ mod effect_program;
 mod final_effect;
 #[path = "scene_shader/lightning.rs"]
 mod lightning;
+#[path = "scene_shader/local_read.rs"]
+mod local_read;
 #[path = "scene_shader/lut.rs"]
 mod lut;
 #[path = "scene_shader/oscilloscope.rs"]
@@ -45,6 +47,7 @@ pub(crate) use effect_program::{
 pub(super) use final_effect::{
     FINAL_EFFECT_SHADER_SPECS, final_effect_parameter_layout, final_effect_sources,
 };
+pub(crate) use local_read::input_attachment_fragment_source;
 pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
 pub(crate) use vertex_primitive::scene_shader_vertex_primitive;
