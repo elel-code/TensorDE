@@ -113,3 +113,10 @@ The plan also carries the preferred native fourcc, explicit modifier, and plane 
 the Vulkan/KMS/GBM intersection. A format change is therefore an output change rather than hidden
 backend state. The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner` without
 changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
+
+For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exported
+dma-bufs. The tty backend imports those dma-bufs into GBM and owns the imported scanout objects;
+this is the handoff point for the future Smithay atomic framebuffer/page-flip path. Initial output
+resource construction is a startup gate: failure aborts backend preparation before readiness.
+Hotplug resource failures are isolated to the affected output and do not invalidate already-live
+outputs.

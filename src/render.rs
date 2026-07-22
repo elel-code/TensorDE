@@ -20,4 +20,6 @@ pub(crate) use format::{
 pub(crate) use frame::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
 pub use interop::NativeInteropCapabilities;
 pub use target::RendererTarget;
+#[cfg(feature = "tty")]
+pub(crate) use vulkan::NativeOutputBuffer;
 pub(crate) use vulkan::{RendererError, VulkanRenderer};

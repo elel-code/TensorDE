@@ -89,11 +89,18 @@ impl WaylandRuntime {
             if self.state.backend.is_some() {
                 return Ok(());
             }
-            let mut backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
+            let backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
                 .map_err(|error| ProtocolError::Backend(error.to_string()))?;
-            self.state
-                .apply_backend_output_events(backend.take_output_events());
             self.state.backend = Some(backend);
+            let events = self
+                .state
+                .backend
+                .as_mut()
+                .expect("backend was installed")
+                .take_output_events();
+            self.state
+                .apply_backend_output_events(events)
+                .map_err(ProtocolError::Backend)?;
             Ok(())
         }
         #[cfg(not(feature = "tty"))]

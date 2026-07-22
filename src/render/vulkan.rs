@@ -18,6 +18,11 @@ use super::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId}
 
 #[cfg(feature = "tty")]
 mod frame;
+#[cfg(feature = "tty")]
+mod target;
+
+#[cfg(feature = "tty")]
+pub(crate) use target::NativeOutputBuffer;
 
 #[cfg(feature = "tty")]
 const DESCRIPTOR_HEAP_BYTES: u64 = 16 * 1024 * 1024;
@@ -34,6 +39,8 @@ const OUTPUT_FORMATS: &[(Fourcc, vk::Format)] = &[
 ];
 
 pub(crate) struct VulkanRenderer {
+    #[cfg(feature = "tty")]
+    native_targets: target::NativeTargetManager,
     _owner: VulkanOwner,
     target: RendererTarget,
     selected: SelectedDevice,
@@ -120,6 +127,14 @@ impl VulkanRenderer {
             .candidate
             .graphics_queue_family
             .ok_or(DeviceSelectionError::MissingGraphicsQueue)?;
+        let (primary_node, render_node) = selected
+            .candidate
+            .drm
+            .and_then(DrmDeviceIdentity::node_pair)
+            .ok_or(DeviceSelectionError::MissingDrmNodePair)?;
+        #[cfg(feature = "tty")]
+        let native_targets = target::NativeTargetManager::new(render_node)
+            .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
         let device = create_device(&instance.instance, selected.handle, graphics_queue_family)?;
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         #[cfg(feature = "tty")]
@@ -130,11 +145,6 @@ impl VulkanRenderer {
                 return Err(RendererError::CreateFrameResources(source));
             }
         };
-        let (primary_node, render_node) = selected
-            .candidate
-            .drm
-            .and_then(DrmDeviceIdentity::node_pair)
-            .ok_or(DeviceSelectionError::MissingDrmNodePair)?;
         let selected_info = SelectedDevice {
             name: selected.candidate.name.clone(),
             api_version: selected.candidate.api_version,
@@ -179,6 +189,8 @@ impl VulkanRenderer {
         );
 
         Ok(Self {
+            #[cfg(feature = "tty")]
+            native_targets,
             _owner: VulkanOwner {
                 device,
                 instance,
@@ -206,7 +218,7 @@ impl VulkanRenderer {
     pub(crate) fn register_output(
         &mut self,
         target: NativeOutputTarget,
-    ) -> Result<(), RendererError> {
+    ) -> Result<Vec<NativeOutputBuffer>, RendererError> {
         if !self.selected.formats.iter().copied().any(|candidate| {
             candidate.format == target.format.format
                 && candidate.plane_count == target.format.plane_count
@@ -218,14 +230,33 @@ impl VulkanRenderer {
                 plane_count: target.format.plane_count,
             });
         }
+        let completed = self
+            ._owner
+            .frame_executor
+            .completed(&self._owner.device)
+            .map_err(RendererError::QueryTimeline)?;
+        self.frames.retire_completed(completed);
+        self.native_targets
+            .retire_completed(&self._owner.device, completed);
+        let buffers = self
+            .native_targets
+            .register(
+                &self._owner.instance.instance,
+                &self._owner.device,
+                self._owner._physical_device,
+                target,
+            )
+            .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
         self.frames
             .register_output(target)
-            .map_err(|error| RendererError::Frame(error.to_string()))
+            .map_err(|error| RendererError::Frame(error.to_string()))?;
+        Ok(buffers)
     }
 
     #[cfg(feature = "tty")]
     pub(crate) fn unregister_output(&mut self, output: RenderOutputId) {
         self.frames.unregister_output(output);
+        self.native_targets.unregister(output);
     }
 
     pub(crate) fn output_count(&self) -> usize {
@@ -251,6 +282,8 @@ impl VulkanRenderer {
             }
         };
         self.frames.retire_completed(completed);
+        self.native_targets
+            .retire_completed(&self._owner.device, completed);
         let frame = self
             .frames
             .submit(output, scene, completed)
@@ -269,7 +302,16 @@ impl VulkanRenderer {
             }
             return Err(RendererError::SubmitFrame(format!("{source:?}")));
         }
+        self.native_targets
+            .mark_submitted(output, frame.timeline_value);
         Ok(frame)
+    }
+}
+
+impl Drop for VulkanRenderer {
+    fn drop(&mut self) {
+        #[cfg(feature = "tty")]
+        self.native_targets.destroy(&self._owner.device);
     }
 }
 
@@ -504,6 +546,13 @@ fn native_image_usage() -> vk::ImageUsageFlags {
         | vk::ImageUsageFlags::TRANSFER_DST
 }
 
+#[cfg(feature = "tty")]
+fn vulkan_format_for_fourcc(fourcc: Fourcc) -> Option<vk::Format> {
+    OUTPUT_FORMATS
+        .iter()
+        .find_map(|(candidate, format)| (*candidate == fourcc).then_some(*format))
+}
+
 fn native_interop_capabilities(
     instance: &Instance,
     device: vk::PhysicalDevice,
@@ -674,6 +723,9 @@ pub enum RendererError {
     #[error("failed to create Vulkan frame resources: {0:?}")]
     #[cfg(feature = "tty")]
     CreateFrameResources(vk::ErrorCode),
+    #[error("failed to create a native Vulkan output target: {0}")]
+    #[cfg(feature = "tty")]
+    NativeTarget(String),
     #[error(
         "native output target {format} modifier {modifier:#x} with {plane_count} planes is not exportable by the selected Vulkan device"
     )]

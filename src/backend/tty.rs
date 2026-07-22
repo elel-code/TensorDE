@@ -7,7 +7,7 @@ use smithay::{
     backend::{
         allocator::{
             Format as DrmFormat,
-            gbm::{GbmBufferFlags, GbmDevice},
+            gbm::{GbmBuffer, GbmBufferFlags, GbmDevice},
         },
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -35,6 +35,8 @@ use crate::{
     render::{GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats},
 };
 
+mod buffers;
+
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
     session: LibSeatSession,
@@ -57,6 +59,7 @@ struct OpenDevice {
     scanner: DrmScanner,
     connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
     output_formats: BTreeMap<super::BackendOutputId, Vec<OutputFormat>>,
+    native_targets: BTreeMap<super::BackendOutputId, Vec<GbmBuffer>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -339,6 +342,7 @@ impl TtyBackend {
                 scanner: DrmScanner::new(),
                 connectors: BTreeMap::new(),
                 output_formats: BTreeMap::new(),
+                native_targets: BTreeMap::new(),
             },
         );
         self.topology_generation = self.topology_generation.wrapping_add(1);
@@ -399,6 +403,13 @@ impl TtyBackend {
             if current == device.connectors && output_formats == device.output_formats {
                 false
             } else {
+                let unchanged = current
+                    .iter()
+                    .filter_map(|(id, connector)| {
+                        (device.connectors.get(id) == Some(connector)).then_some(*id)
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                device.native_targets.retain(|id, _| unchanged.contains(id));
                 device.connectors = current;
                 device.output_formats = output_formats;
                 true
@@ -609,6 +620,8 @@ pub(crate) enum BackendError {
     Source(String),
     #[error("unknown DRM device {device_id}")]
     UnknownDevice { device_id: libc::dev_t },
+    #[error("unknown output {0:?}")]
+    UnknownOutput(super::BackendOutputId),
     #[error("failed to scan DRM connectors for device {device_id}: {message}")]
     ConnectorScan {
         device_id: libc::dev_t,
@@ -616,4 +629,6 @@ pub(crate) enum BackendError {
     },
     #[error("failed to negotiate a native output format for {output}: {message}")]
     OutputFormats { output: String, message: String },
+    #[error("failed to install native output buffers for {output}: {message}")]
+    OutputBuffers { output: String, message: String },
 }

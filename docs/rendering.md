@@ -47,6 +47,14 @@ fourcc, explicit modifier, and plane count. The renderer checks the target again
 Vulkan device again before registering it. A target change clears scene-damage history but retains
 in-flight timeline ownership until the old submission retires.
 
+Registration now allocates three native output slots per target. Each slot is a Vulkan 2D image
+created with `DRM_FORMAT_MODIFIER_EXT`, dedicated exportable dma-buf memory, and an image view. The
+created modifier is queried back and must equal the negotiated modifier; every reported memory
+plane is exported with its offset and row pitch. The tty boundary imports those dma-bufs through
+Smithay's GBM device and validates dimensions, fourcc, modifier, and plane count before retaining
+the GBM objects. Vulkan image resources replaced by a mode or format change remain in a retired
+queue until their last renderer timeline value completes.
+
 GBM remains owned by Smithay and does not become a renderer. Its check validates the allocation and
 KMS-facing boundary; Vulkanalia remains the only component that creates and renders native output
 images.
@@ -81,11 +89,12 @@ reported image descriptor alignment, and adds the implementation's reserved rang
 the configured usable budget at `maxResourceHeapSize`. These are device properties, not a
 substitute for the eventual Vulkan heap binding and descriptor writes.
 
-The current boundary deliberately submits an empty command buffer. Native output target value
-negotiation and validation are connected, but Vulkan image allocation, descriptor writes, dma-buf
-export, queue-family release, and Smithay atomic KMS commit are the next required layer. Until those
-handles and fences are connected, presentation-time, alpha-modifier, and background-effect globals
-remain unadvertised; a timeline submission alone is not a displayed frame.
+The current boundary deliberately submits an empty command buffer. Native output image allocation,
+modifier/plane export, and Smithay GBM import are connected, but descriptor writes, queue-family
+release, Smithay atomic KMS framebuffer/commit, and vblank completion are the next required layer.
+Until those handles and fences are connected, presentation-time, alpha-modifier, and
+background-effect globals remain unadvertised; allocated buffers and a timeline submission alone
+are not a displayed frame.
 
 ## Synchronization
 

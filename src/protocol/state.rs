@@ -358,8 +358,15 @@ impl RuntimeState {
             return;
         };
         backend.handle_udev_event(event);
-        self.apply_backend_output_events(backend.take_output_events());
         self.backend = Some(backend);
+        let events = self
+            .backend
+            .as_mut()
+            .expect("backend was restored")
+            .take_output_events();
+        if let Err(error) = self.apply_backend_output_events(events) {
+            warn!(%error, "failed to apply udev output event");
+        }
     }
 
     #[cfg(feature = "tty")]
@@ -368,30 +375,45 @@ impl RuntimeState {
             return;
         };
         backend.handle_session_event(event);
-        self.apply_backend_output_events(backend.take_output_events());
         self.backend = Some(backend);
+        let events = self
+            .backend
+            .as_mut()
+            .expect("backend was restored")
+            .take_output_events();
+        if let Err(error) = self.apply_backend_output_events(events) {
+            warn!(%error, "failed to apply session output event");
+        }
     }
 
     #[cfg(feature = "tty")]
     pub(crate) fn apply_backend_output_events(
         &mut self,
         events: impl IntoIterator<Item = BackendOutputEvent>,
-    ) {
+    ) -> Result<(), String> {
+        let mut first_error = None;
         for event in events {
-            match event {
+            let result = match event {
                 BackendOutputEvent::Connected(descriptor) => self.connect_output(descriptor),
                 BackendOutputEvent::Changed(descriptor) => self.change_output(descriptor),
-                BackendOutputEvent::Disconnected(id) => self.disconnect_output(id),
+                BackendOutputEvent::Disconnected(id) => {
+                    self.disconnect_output(id);
+                    Ok(())
+                }
+            };
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     #[cfg(feature = "tty")]
-    fn connect_output(&mut self, descriptor: OutputDescriptor) {
+    fn connect_output(&mut self, descriptor: OutputDescriptor) -> Result<(), String> {
         if self.outputs.contains_key(&descriptor.id) {
-            self.change_output(descriptor);
-            return;
+            return self.change_output(descriptor);
         }
+        self.register_renderer_output(&descriptor, None)?;
         info!(
             output = descriptor.name,
             device_id = descriptor.id.device_id,
@@ -419,33 +441,22 @@ impl RuntimeState {
             None,
             Some((0, 0).into()),
         );
-        if let Some(renderer) = self.renderer.as_mut() {
-            let viewport = Rect::new(
-                0,
-                0,
-                u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
-                u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
-            );
-            if let Err(error) = renderer.register_output(NativeOutputTarget {
-                output: RenderOutputId {
-                    device_id: descriptor.id.device_id,
-                    connector_id: descriptor.id.connector_id,
-                },
-                viewport,
-                format: descriptor.native_format,
-            }) {
-                warn!(%error, output = descriptor.name, "failed to register renderer output");
-            }
-        }
         let global = output.create_global::<Self>(&self.display_handle);
         self.space.map_output(&output, (0, 0));
-        self.outputs
-            .insert(descriptor.id, ManagedOutput { output, global });
+        self.outputs.insert(
+            descriptor.id,
+            ManagedOutput {
+                output,
+                global,
+                descriptor,
+            },
+        );
         self.reflow_outputs();
+        Ok(())
     }
 
     #[cfg(feature = "tty")]
-    fn change_output(&mut self, descriptor: OutputDescriptor) {
+    fn change_output(&mut self, descriptor: OutputDescriptor) -> Result<(), String> {
         info!(
             output = descriptor.name,
             device_id = descriptor.id.device_id,
@@ -453,10 +464,20 @@ impl RuntimeState {
             crtc = descriptor.crtc,
             "Smithay output modes changed"
         );
-        let Some(managed) = self.outputs.get(&descriptor.id) else {
-            self.connect_output(descriptor);
-            return;
-        };
+        if !self.outputs.contains_key(&descriptor.id) {
+            return self.connect_output(descriptor);
+        }
+        let previous_descriptor = self
+            .outputs
+            .get(&descriptor.id)
+            .expect("output existence was checked before renderer registration")
+            .descriptor
+            .clone();
+        self.register_renderer_output(&descriptor, Some(&previous_descriptor))?;
+        let managed = self
+            .outputs
+            .get_mut(&descriptor.id)
+            .expect("output existence was checked before renderer registration");
         for mode in managed.output.modes() {
             managed.output.delete_mode(mode);
         }
@@ -467,25 +488,9 @@ impl RuntimeState {
         managed
             .output
             .change_current_state(Some(descriptor.preferred_mode), None, None, None);
-        if let Some(renderer) = self.renderer.as_mut() {
-            let viewport = Rect::new(
-                0,
-                0,
-                u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
-                u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
-            );
-            if let Err(error) = renderer.register_output(NativeOutputTarget {
-                output: RenderOutputId {
-                    device_id: descriptor.id.device_id,
-                    connector_id: descriptor.id.connector_id,
-                },
-                viewport,
-                format: descriptor.native_format,
-            }) {
-                warn!(%error, output = descriptor.name, "failed to resize renderer output");
-            }
-        }
+        managed.descriptor = descriptor;
         self.reflow_outputs();
+        Ok(())
     }
 
     #[cfg(feature = "tty")]
@@ -500,6 +505,9 @@ impl RuntimeState {
                 connector_id: id.connector_id,
             });
         }
+        if let Some(backend) = self.backend.as_mut() {
+            backend.remove_output_buffers(id);
+        }
         self.display_handle.remove_global::<Self>(managed.global);
         self.reflow_outputs();
         info!(
@@ -507,6 +515,36 @@ impl RuntimeState {
             connector_id = id.connector_id,
             "Smithay output disconnected"
         );
+    }
+
+    #[cfg(feature = "tty")]
+    fn register_renderer_output(
+        &mut self,
+        descriptor: &OutputDescriptor,
+        restore: Option<&OutputDescriptor>,
+    ) -> Result<(), String> {
+        let target = renderer_target(descriptor);
+        let result = self
+            .renderer
+            .as_mut()
+            .map(|renderer| renderer.register_output(target));
+        let Some(result) = result else {
+            return Ok(());
+        };
+        let buffers = result.map_err(|error| error.to_string())?;
+        if let Some(backend) = self.backend.as_mut()
+            && let Err(error) = backend.install_output_buffers(descriptor.id, buffers)
+        {
+            if let Some(previous) = restore {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let _ = renderer.register_output(renderer_target(previous));
+                }
+            } else if let Some(renderer) = self.renderer.as_mut() {
+                renderer.unregister_output(target.output);
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 
     #[cfg(feature = "tty")]
@@ -538,6 +576,23 @@ impl RuntimeState {
     }
 }
 
+#[cfg(feature = "tty")]
+fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
+    NativeOutputTarget {
+        output: RenderOutputId {
+            device_id: descriptor.id.device_id,
+            connector_id: descriptor.id.connector_id,
+        },
+        viewport: Rect::new(
+            0,
+            0,
+            u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
+            u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
+        ),
+        format: descriptor.native_format,
+    }
+}
+
 pub(crate) fn xdg_size_constraints(
     min_size: smithay::utils::Size<i32, smithay::utils::Logical>,
     max_size: smithay::utils::Size<i32, smithay::utils::Logical>,
@@ -561,6 +616,7 @@ fn maximum_axis(value: i32) -> Option<u32> {
 struct ManagedOutput {
     output: smithay::output::Output,
     global: smithay::reexports::wayland_server::backend::GlobalId,
+    descriptor: OutputDescriptor,
 }
 
 #[cfg(feature = "tty")]
@@ -636,23 +692,27 @@ mod tests {
             LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         );
 
-        state.apply_backend_output_events([
-            BackendOutputEvent::Connected(descriptor(2, "DP-2", 2560)),
-            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
-        ]);
+        state
+            .apply_backend_output_events([
+                BackendOutputEvent::Connected(descriptor(2, "DP-2", 2560)),
+                BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            ])
+            .unwrap();
         assert_eq!(state.output_count(), 2);
         assert_eq!(output_location(&state, "DP-1"), 0);
         assert_eq!(output_location(&state, "DP-2"), 1920);
 
-        state.apply_backend_output_events([BackendOutputEvent::Changed(descriptor(
-            1, "DP-1", 1280,
-        ))]);
+        state
+            .apply_backend_output_events([BackendOutputEvent::Changed(descriptor(1, "DP-1", 1280))])
+            .unwrap();
         assert_eq!(output_location(&state, "DP-2"), 1280);
 
-        state.apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId {
-            device_id: 1,
-            connector_id: 1,
-        })]);
+        state
+            .apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId {
+                device_id: 1,
+                connector_id: 1,
+            })])
+            .unwrap();
         assert_eq!(state.output_count(), 1);
         assert_eq!(output_location(&state, "DP-2"), 0);
     }
