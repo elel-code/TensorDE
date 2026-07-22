@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -55,19 +56,28 @@ def main() -> int:
         )
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        run(
-            [
-                "cargo",
-                "build",
-                "--release",
-                "--features",
-                "native-vulkan-renderer",
-                "--bin",
-                "gilder-native-vulkan",
-            ]
-        )
-
-        binary = ROOT / "target/release/gilder-native-vulkan"
+        if args.prebuilt_release_binary:
+            binary = Path(args.prebuilt_release_binary).expanduser().resolve()
+            if not binary.is_file():
+                raise FileNotFoundError(f"prebuilt release binary does not exist: {binary}")
+            if not os.access(binary, os.X_OK):
+                raise PermissionError(f"prebuilt release binary is not executable: {binary}")
+            binary_source = "prebuilt-release"
+        else:
+            run(
+                [
+                    "cargo",
+                    "build",
+                    "--release",
+                    "--features",
+                    "native-vulkan-renderer",
+                    "--bin",
+                    "gilder-native-vulkan",
+                ]
+            )
+            binary = ROOT / "target/release/gilder-native-vulkan"
+            binary_source = "current-release-build"
+        binary_sha256 = hashlib.sha256(binary.read_bytes()).hexdigest()
         dgop_pss_dirty_available = dgop_exposes_pss_dirty()
         runtime = subprocess.Popen(
             [
@@ -136,6 +146,9 @@ def main() -> int:
             "sampling_interval_seconds": args.interval,
             "startup_sampling_interval_seconds": min(args.interval, 0.05),
             "build_profile": "release",
+            "renderer_binary": str(binary),
+            "renderer_binary_source": binary_source,
+            "renderer_binary_sha256": binary_sha256,
             "fps_limit": None,
             "frames_presented": report["frames_presented"],
             "average_present_fps": report["average_present_fps"],
@@ -298,6 +311,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=1.0)
     parser.add_argument("--artifact-dir", default="")
     parser.add_argument("--source", default="", help="existing .gscene to measure")
+    parser.add_argument(
+        "--prebuilt-release-binary",
+        default="",
+        help="run this explicit executable without rebuilding the renderer",
+    )
     parser.add_argument(
         "--gpu-timing",
         action="store_true",
