@@ -24,6 +24,9 @@ use crate::{
     layout::{LayoutEngine, LayoutKind},
 };
 
+#[cfg(feature = "tty")]
+use crate::backend::TtyBackend;
+
 pub(crate) const DEFAULT_WORKSPACE: WorkspaceId = WorkspaceId::new(0);
 
 pub(crate) struct RuntimeState {
@@ -39,6 +42,10 @@ pub(crate) struct RuntimeState {
     pub(crate) popups: PopupManager,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
+    #[cfg(feature = "tty")]
+    pub(crate) backend: Option<TtyBackend>,
+    #[cfg(feature = "tty")]
+    pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
     surface_views: HashMap<ObjectId, ViewId>,
     next_view_id: u64,
 }
@@ -66,6 +73,10 @@ impl RuntimeState {
             popups: PopupManager::default(),
             world: CompositorWorld::new(),
             layout: LayoutEngine::new(layout),
+            #[cfg(feature = "tty")]
+            backend: None,
+            #[cfg(feature = "tty")]
+            input_devices: HashMap::new(),
             surface_views: HashMap::new(),
             next_view_id: 1,
         }
@@ -116,6 +127,14 @@ impl RuntimeState {
             .expect("compositor exhausted the stable view ID space");
         view_id
     }
+}
+
+#[cfg(feature = "tty")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InputDeviceCapabilities {
+    pub(crate) keyboard: bool,
+    pub(crate) pointer: bool,
+    pub(crate) touch: bool,
 }
 
 #[derive(Debug, Default)]

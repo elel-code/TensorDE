@@ -18,6 +18,7 @@ pub struct Config {
     pub initial_layout: LayoutKind,
     pub ipc_socket: PathBuf,
     pub gpu_preference: GpuPreference,
+    pub render_device: Option<PathBuf>,
     pub systemd: SystemdMode,
     pub xwayland: XWaylandConfig,
     pub startup_commands: Vec<StartupCommand>,
@@ -42,6 +43,9 @@ impl Config {
         if let Some(preference) = env::var_os("TENSOR_GPU") {
             let preference = preference.to_str().ok_or(ConfigError::NonUnicodeGpu)?;
             config.gpu_preference = GpuPreference::from_str(preference)?;
+        }
+        if let Some(path) = env::var_os("TENSOR_RENDER_DEVICE") {
+            config.render_device = Some(path.into());
         }
         if let Some(mode) = env::var_os("TENSOR_SYSTEMD") {
             let mode = mode.to_str().ok_or(ConfigError::NonUnicodeSystemd)?;
@@ -103,6 +107,7 @@ impl Config {
             .map(GpuPreference::from_str)
             .transpose()?
             .unwrap_or_default();
+        let render_device = parsed.render_device.map(PathBuf::from);
         let systemd = parsed
             .systemd
             .as_deref()
@@ -129,6 +134,7 @@ impl Config {
             initial_layout,
             ipc_socket,
             gpu_preference,
+            render_device,
             systemd,
             xwayland: XWaylandConfig::new(xwayland),
             startup_commands,
@@ -144,6 +150,7 @@ impl Default for Config {
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
             gpu_preference: GpuPreference::default(),
+            render_device: None,
             systemd: SystemdMode::default(),
             xwayland: XWaylandConfig::default(),
             startup_commands: Vec::new(),
@@ -159,6 +166,8 @@ struct FileConfig {
     ipc_socket: Option<String>,
     #[knus(child, unwrap(argument))]
     gpu: Option<String>,
+    #[knus(child, unwrap(argument))]
+    render_device: Option<String>,
     #[knus(child, unwrap(argument))]
     systemd: Option<String>,
     #[knus(child, unwrap(argument))]
@@ -202,7 +211,7 @@ mod tests {
     fn parses_kdl_layout_and_ipc_socket() {
         let config = Config::from_kdl(
             Path::new("test.kdl"),
-            "layout \"spatial-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
+            "layout \"spatial-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nrender-device \"/dev/dri/renderD128\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
         )
         .unwrap();
 
@@ -212,6 +221,10 @@ mod tests {
             PathBuf::from("/run/user/1000/tensor.sock")
         );
         assert_eq!(config.gpu_preference, GpuPreference::Integrated);
+        assert_eq!(
+            config.render_device,
+            Some(PathBuf::from("/dev/dri/renderD128"))
+        );
         assert_eq!(config.systemd, SystemdMode::Disabled);
         assert!(config.xwayland.enabled());
         assert_eq!(

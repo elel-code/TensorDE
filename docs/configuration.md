@@ -11,14 +11,16 @@ Configuration path precedence is:
 4. `$HOME/.config/tensor/config.kdl`
 5. `/etc/tensor/config.kdl`
 
-`TENSOR_LAYOUT`, `TENSOR_IPC_SOCKET`, `TENSOR_GPU`, `TENSOR_SYSTEMD`, and `TENSOR_XWAYLAND` are
-development overrides applied after file parsing.
+`TENSOR_LAYOUT`, `TENSOR_IPC_SOCKET`, `TENSOR_GPU`, `TENSOR_RENDER_DEVICE`, `TENSOR_SYSTEMD`, and
+`TENSOR_XWAYLAND` are development overrides applied after file parsing.
 The current schema is intentionally small:
 
 ```kdl
 layout "scrolling-1d"
 ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
+# Optional DRM primary or render node. Without this, Smithay selects the seat's primary GPU.
+# render-device "/dev/dri/renderD128"
 systemd "auto"
 xwayland true
 spawn-at-startup "waybar"
@@ -39,6 +41,12 @@ as an early compatibility mode.
 CPU, and candidates without `VK_EXT_descriptor_heap` are rejected before ranking. Use `integrated`
 or `any` only when the machine's topology requires it. `TENSOR_GPU` overrides the file for local
 development.
+
+`render-device` selects the DRM node pair used by the tty backend. Either a primary node
+(`cardN`) or render node (`renderDN`) is accepted; Tensor resolves and retains both nodes and
+rejects a node without its paired counterpart. When omitted, Smithay's udev seat scan selects the
+boot GPU, then a GPU with a render node. `TENSOR_RENDER_DEVICE` overrides the file. This DRM choice
+is independent from Vulkan physical-device ranking, which still requires `VK_EXT_descriptor_heap`.
 
 `systemd` accepts `auto`, `enabled`, or `disabled`. The default `auto` mode activates when
 `NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, or `MANAGERPID` identifies a user-manager launch. Explicit

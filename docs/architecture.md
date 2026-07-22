@@ -46,4 +46,7 @@ lifecycles: compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, selectio
 popup tracking. A toplevel is assigned a stable `ViewId` at creation and removed idempotently from
 both Smithay's `Space<Window>` and ECS when either the shell or surface destruction callback fires.
 The next backend work is compositor-specific glue around Smithay's DRM/KMS, GBM, libinput, udev,
-and libseat adapters; Tensor does not reimplement those low-level protocols.
+and libseat adapters; Tensor does not reimplement those low-level protocols. The tty backend now
+owns session activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier
+tokens, and GBM lifetime. It accepts an explicit `render-device` node or uses Smithay's seat-aware
+primary-GPU selection, requiring a paired primary/render node before opening hardware.

@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use std::ffi::OsString;
 
 use crate::{
+    backend::BackendConfig,
     config::{Config, StartupCommand},
     ecs::{CompositorWorld, WorkspaceId},
     ipc::{
@@ -25,6 +26,7 @@ use crate::service::EnvironmentValue;
 pub struct Compositor {
     protocol: WaylandRuntime,
     ipc: IpcServer,
+    backend_config: BackendConfig,
     renderer: RendererTarget,
     launcher: ProcessLauncher,
     startup_commands: Vec<StartupCommand>,
@@ -38,6 +40,7 @@ impl Compositor {
             initial_layout,
             ipc_socket,
             gpu_preference,
+            render_device,
             systemd,
             xwayland,
             startup_commands,
@@ -54,6 +57,7 @@ impl Compositor {
         Ok(Self {
             protocol,
             ipc,
+            backend_config: BackendConfig { render_device },
             renderer: RendererTarget::with_gpu_preference(gpu_preference),
             launcher: ProcessLauncher::new(systemd).with_environment(environment),
             startup_commands,
@@ -131,6 +135,7 @@ impl Compositor {
 
     pub fn prepare_runtime(&mut self) -> Result<(), CompositorError> {
         self.protocol.prepare(self.xwayland.enabled())?;
+        self.protocol.prepare_backend(&self.backend_config)?;
         Ok(())
     }
 
@@ -138,6 +143,7 @@ impl Compositor {
         let Self {
             mut protocol,
             ipc,
+            backend_config: _,
             renderer,
             launcher,
             startup_commands,

@@ -39,6 +39,8 @@ cargo run -- --config examples/config.kdl --check
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 `VK_EXT_descriptor_heap`.
+`TENSOR_RENDER_DEVICE` optionally pins the DRM primary/render node pair used by the tty backend;
+without it Smithay's udev seat scan chooses the primary GPU.
 The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
 `$XDG_CONFIG_HOME/tensor/config.kdl` as the default.
 

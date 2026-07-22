@@ -12,8 +12,15 @@ members = [".", "crates/tensor-util"]
 resolver = "3"
 
 [features]
-default = ["xwayland"]
+default = ["tty", "xwayland"]
 systemd = ["dep:sd-notify", "dep:zbus"]
+tty = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    "smithay/backend_udev",
+]
 xwayland = ["smithay/xwayland"]
 
 [dependencies]

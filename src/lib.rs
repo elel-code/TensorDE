@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+mod backend;
 mod compositor;
 mod config;
 pub mod ecs;

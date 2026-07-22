@@ -8,6 +8,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::{
+    backend::BackendConfig,
     ipc::{IpcReply, IpcServer, Request},
     layout::LayoutKind,
 };
@@ -65,6 +66,24 @@ impl WaylandRuntime {
 
     pub(crate) fn state_mut(&mut self) -> &mut RuntimeState {
         &mut self.state
+    }
+
+    pub(crate) fn prepare_backend(&mut self, config: &BackendConfig) -> Result<(), ProtocolError> {
+        #[cfg(feature = "tty")]
+        {
+            if self.state.backend.is_some() {
+                return Ok(());
+            }
+            let backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
+                .map_err(|error| ProtocolError::Backend(error.to_string()))?;
+            self.state.backend = Some(backend);
+            return Ok(());
+        }
+        #[cfg(not(feature = "tty"))]
+        {
+            let _ = config;
+            Err(ProtocolError::TtyBackendDisabled)
+        }
     }
 
     pub fn prepare(&mut self, enable_xwayland: bool) -> Result<(), ProtocolError> {
@@ -201,6 +220,11 @@ pub enum ProtocolError {
     #[error("XWayland support was not compiled in")]
     #[allow(dead_code)]
     XWaylandDisabled,
+    #[error("the tty DRM backend was not compiled in")]
+    TtyBackendDisabled,
+    #[cfg(feature = "tty")]
+    #[error("failed to initialize the tty DRM backend: {0}")]
+    Backend(String),
 }
 
 #[allow(unsafe_code)]

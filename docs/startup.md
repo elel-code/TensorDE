@@ -9,8 +9,8 @@ The startup sequence is a set of ordered gates:
 5. Create Vulkan and reject devices without `VK_EXT_descriptor_heap`.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
-8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, input, and
-   backend event sources.
+8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, libinput,
+   udev, libseat session notifications, and DRM notifier sources.
 9. Publish the session environment and notify optional systemd integration after every required
    gate succeeds.
 10. Enter the event loop.
