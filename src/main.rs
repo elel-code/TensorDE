@@ -1,17 +1,3 @@
-#![deny(unsafe_code)]
-
-mod compositor;
-mod config;
-mod ecs;
-mod ipc;
-mod layout;
-mod protocol;
-mod render;
-mod startup;
-
-#[cfg(feature = "systemd")]
-mod service;
-
-fn main() -> Result<(), startup::StartupError> {
-    startup::run()
+fn main() -> Result<(), tensor_compositor::startup::StartupError> {
+    tensor_compositor::startup::run()
 }

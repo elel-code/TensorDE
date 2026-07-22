@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Tensor
+Comment=A high-performance Wayland compositor
+Exec=tensor-session
+Type=Application
+DesktopNames=tensor

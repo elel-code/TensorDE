@@ -11,4 +11,7 @@ pub struct Cli {
     /// Validate startup dependencies, then exit before the event loop.
     #[arg(long)]
     pub check: bool,
+    /// Start as the primary Wayland session and publish its environment.
+    #[arg(long)]
+    pub session: bool,
 }

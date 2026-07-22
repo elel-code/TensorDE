@@ -9,6 +9,8 @@ use thiserror::Error;
 use crate::{
     layout::LayoutKind,
     render::{GpuPreference, ParseGpuPreferenceError},
+    service::{ParseSystemdModeError, SystemdMode},
+    xwayland::XWaylandConfig,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +18,8 @@ pub struct Config {
     pub initial_layout: LayoutKind,
     pub ipc_socket: PathBuf,
     pub gpu_preference: GpuPreference,
+    pub systemd: SystemdMode,
+    pub xwayland: XWaylandConfig,
 }
 
 impl Config {
@@ -32,6 +36,13 @@ impl Config {
         if let Some(preference) = env::var_os("TENSOR_GPU") {
             let preference = preference.to_str().ok_or(ConfigError::NonUnicodeGpu)?;
             config.gpu_preference = GpuPreference::from_str(preference)?;
+        }
+        if let Some(mode) = env::var_os("TENSOR_SYSTEMD") {
+            let mode = mode.to_str().ok_or(ConfigError::NonUnicodeSystemd)?;
+            config.systemd = SystemdMode::from_str(mode)?;
+        }
+        if let Some(enabled) = env::var_os("TENSOR_XWAYLAND") {
+            config.xwayland = XWaylandConfig::from_environment(enabled.to_str())?;
         }
 
         Ok(config)
@@ -66,7 +77,7 @@ impl Config {
     fn from_kdl(path: &Path, document: &str) -> Result<Self, ConfigError> {
         let path_name = path.to_string_lossy();
         let parsed: FileConfig =
-            knuffel::parse(&path_name, document).map_err(|error| ConfigError::Parse {
+            knus::parse(&path_name, document).map_err(|error| ConfigError::Parse {
                 path: path.to_owned(),
                 message: error.to_string(),
             })?;
@@ -86,11 +97,22 @@ impl Config {
             .map(GpuPreference::from_str)
             .transpose()?
             .unwrap_or_default();
+        let systemd = parsed
+            .systemd
+            .as_deref()
+            .map(SystemdMode::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        let xwayland = parsed
+            .xwayland
+            .unwrap_or_else(|| XWaylandConfig::default().enabled());
 
         Ok(Self {
             initial_layout,
             ipc_socket,
             gpu_preference,
+            systemd,
+            xwayland: XWaylandConfig::new(xwayland),
         })
     }
 }
@@ -103,18 +125,24 @@ impl Default for Config {
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
             gpu_preference: GpuPreference::default(),
+            systemd: SystemdMode::default(),
+            xwayland: XWaylandConfig::default(),
         }
     }
 }
 
-#[derive(Debug, knuffel::Decode)]
+#[derive(Debug, knus::Decode)]
 struct FileConfig {
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     layout: Option<String>,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     ipc_socket: Option<String>,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     gpu: Option<String>,
+    #[knus(child, unwrap(argument))]
+    systemd: Option<String>,
+    #[knus(child, unwrap(argument))]
+    xwayland: Option<bool>,
 }
 
 #[derive(Debug, Error)]
@@ -123,6 +151,8 @@ pub enum ConfigError {
     NonUnicodeLayout,
     #[error("TENSOR_GPU is not valid Unicode")]
     NonUnicodeGpu,
+    #[error("TENSOR_SYSTEMD is not valid Unicode")]
+    NonUnicodeSystemd,
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -134,6 +164,10 @@ pub enum ConfigError {
     UnknownLayout(#[from] crate::layout::ParseLayoutError),
     #[error(transparent)]
     UnknownGpu(#[from] ParseGpuPreferenceError),
+    #[error(transparent)]
+    UnknownSystemd(#[from] ParseSystemdModeError),
+    #[error(transparent)]
+    XWayland(#[from] crate::xwayland::XWaylandConfigError),
 }
 
 #[cfg(test)]
@@ -144,7 +178,7 @@ mod tests {
     fn parses_kdl_layout_and_ipc_socket() {
         let config = Config::from_kdl(
             Path::new("test.kdl"),
-            "layout \"nourish-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"",
+            "layout \"nourish-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true",
         )
         .unwrap();
 
@@ -154,5 +188,23 @@ mod tests {
             PathBuf::from("/run/user/1000/tensor.sock")
         );
         assert_eq!(config.gpu_preference, GpuPreference::Integrated);
+        assert_eq!(config.systemd, SystemdMode::Disabled);
+        assert!(config.xwayland.enabled());
+    }
+
+    #[test]
+    fn rejects_unknown_systemd_mode() {
+        assert!(matches!(
+            Config::from_kdl(Path::new("test.kdl"), "systemd \"launchd\""),
+            Err(ConfigError::UnknownSystemd(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_kdl_nodes() {
+        assert!(matches!(
+            Config::from_kdl(Path::new("test.kdl"), "compatibility true"),
+            Err(ConfigError::Parse { .. })
+        ));
     }
 }

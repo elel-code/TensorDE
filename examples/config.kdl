@@ -3,3 +3,7 @@ layout "niri-1d"
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"
+// auto enables integration when launched by the systemd user manager.
+systemd "auto"
+// XWayland serves individual X11 applications; Tensor never provides an X11 session.
+xwayland true

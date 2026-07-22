@@ -1,6 +1,9 @@
 use thiserror::Error;
 use tracing::info;
 
+#[cfg(feature = "systemd")]
+use std::ffi::OsString;
+
 use crate::{
     config::Config,
     ecs::CompositorWorld,
@@ -8,7 +11,12 @@ use crate::{
     layout::{LayoutEngine, Rect},
     protocol::{ProtocolError, WaylandRuntime},
     render::RendererTarget,
+    service::SystemdMode,
+    xwayland::XWaylandConfig,
 };
+
+#[cfg(feature = "systemd")]
+use crate::service::{EnvironmentValue, session_environment};
 
 pub struct Compositor {
     protocol: WaylandRuntime,
@@ -16,6 +24,8 @@ pub struct Compositor {
     world: CompositorWorld,
     layout: LayoutEngine,
     renderer: RendererTarget,
+    systemd: SystemdMode,
+    xwayland: XWaylandConfig,
 }
 
 impl Compositor {
@@ -24,6 +34,8 @@ impl Compositor {
             initial_layout,
             ipc_socket,
             gpu_preference,
+            systemd,
+            xwayland,
         } = config;
         Ok(Self {
             protocol: WaylandRuntime::new()?,
@@ -31,6 +43,8 @@ impl Compositor {
             world: CompositorWorld::new(),
             layout: LayoutEngine::new(initial_layout),
             renderer: RendererTarget::with_gpu_preference(gpu_preference),
+            systemd,
+            xwayland,
         })
     }
 
@@ -44,10 +58,38 @@ impl Compositor {
             descriptors = self.renderer.descriptor_heap.name(),
             gpu = self.renderer.device.preference().name(),
             layout = self.layout.kind().name(),
+            systemd = self.systemd.name(),
+            xwayland = self.xwayland.enabled(),
             preview_views = preview.len(),
             ecs_views = self.world.view_count(0),
             "compositor skeleton is ready"
         );
+    }
+
+    pub fn systemd_mode(&self) -> SystemdMode {
+        self.systemd
+    }
+
+    #[cfg(feature = "systemd")]
+    pub fn session_environment(&self) -> Result<Vec<EnvironmentValue>, CompositorError> {
+        let wayland = self
+            .protocol
+            .socket_name()
+            .ok_or(CompositorError::MissingWaylandSocket)?;
+        Ok(session_environment(
+            wayland.to_os_string(),
+            OsString::from(self.ipc.path()),
+        ))
+    }
+
+    pub fn prepare_runtime(&mut self) -> Result<(), CompositorError> {
+        self.protocol.prepare(self.xwayland.enabled())?;
+        Ok(())
+    }
+
+    pub fn run(mut self) -> Result<(), CompositorError> {
+        self.protocol.run()?;
+        Ok(())
     }
 }
 
@@ -57,4 +99,7 @@ pub enum CompositorError {
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
     Ipc(#[from] IpcError),
+    #[cfg(feature = "systemd")]
+    #[error("Smithay did not provide a Wayland socket name")]
+    MissingWaylandSocket,
 }
