@@ -64,7 +64,7 @@ fn storage_rejects_duplicate_or_non_bool_visible_user_bindings() {
         object: SceneObjectHandle(0),
         property: SceneStringId(1),
         target: SceneUserPropertyTarget::Visible,
-        predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+        predicate: SceneUserPropertyPredicate::BooleanValue,
     };
     let document = |schema: &str, bindings: Vec<SceneUserPropertyBindingRecord>| {
         let mut document = SceneBinaryDocument {
@@ -94,6 +94,12 @@ fn storage_rejects_duplicate_or_non_bool_visible_user_bindings() {
             r#"{"rain":{"type":"slider","value":0}}"#,
             vec![binding],
         )),
+        Err(SceneStorageError::InvalidUserPropertyBinding { .. })
+    ));
+    let mut mismatched = document(r#"{"rain":{"type":"bool","value":true}}"#, vec![binding]);
+    mismatched.objects[0].visible = false;
+    assert!(matches!(
+        SceneStorage::from_document(mismatched),
         Err(SceneStorageError::InvalidUserPropertyBinding { .. })
     ));
 }

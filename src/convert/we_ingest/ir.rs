@@ -81,7 +81,7 @@ pub struct WeIrUserPropertyBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WeIrUserPropertyPredicate {
-    BooleanEquals(bool),
+    BooleanValue,
     StringEquals(String),
 }
 

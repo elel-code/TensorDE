@@ -13,9 +13,9 @@ pub(super) fn encode_user_property_bindings(
         put_string_id(&mut out, binding.property);
         put_u32(&mut out, binding.target.to_u32());
         match binding.predicate {
-            SceneUserPropertyPredicate::BooleanEquals(value) => {
+            SceneUserPropertyPredicate::BooleanValue => {
                 put_u32(&mut out, 1);
-                put_u32(&mut out, u32::from(value));
+                put_u32(&mut out, 0);
             }
             SceneUserPropertyPredicate::StringEquals(value) => {
                 put_u32(&mut out, 2);
@@ -42,16 +42,13 @@ pub(super) fn decode_user_property_bindings(
         let predicate_kind = decoder.u32()?;
         let predicate_value = decoder.u32()?;
         let predicate = match predicate_kind {
-            1 => match predicate_value {
-                0 => SceneUserPropertyPredicate::BooleanEquals(false),
-                1 => SceneUserPropertyPredicate::BooleanEquals(true),
-                value => {
-                    return Err(SceneBinaryError::InvalidChunkValue(
-                        "user property boolean predicate",
-                        value,
-                    ));
-                }
-            },
+            1 if predicate_value == 0 => SceneUserPropertyPredicate::BooleanValue,
+            1 => {
+                return Err(SceneBinaryError::InvalidChunkValue(
+                    "user property boolean predicate payload",
+                    predicate_value,
+                ));
+            }
             2 => SceneUserPropertyPredicate::StringEquals(SceneStringId(predicate_value)),
             value => {
                 return Err(SceneBinaryError::InvalidChunkValue(

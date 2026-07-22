@@ -77,9 +77,15 @@ fn direct_boolean_visibility(
             ));
         }
     }
-    if !definition.get("value").is_some_and(Value::is_boolean) {
+    let authored = definition
+        .get("value")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            format!("visible user binding property {property:?} must have a boolean authored value")
+        })?;
+    if visible != authored {
         return Err(format!(
-            "visible user binding property {property:?} must have a boolean authored value"
+            "visible user binding authored value {visible} does not match {property:?} boolean default {authored}"
         ));
     }
     Ok((
@@ -88,7 +94,7 @@ fn direct_boolean_visibility(
             object,
             property: property.to_owned(),
             target: SceneUserPropertyTarget::Visible,
-            predicate: WeIrUserPropertyPredicate::BooleanEquals(visible),
+            predicate: WeIrUserPropertyPredicate::BooleanValue,
         }),
     ))
 }
@@ -201,9 +207,19 @@ mod tests {
         assert!(!visible);
         let binding = binding.expect("binding");
         assert_eq!(binding.property, "rain");
+        assert_eq!(binding.predicate, WeIrUserPropertyPredicate::BooleanValue);
+        let enabled_properties =
+            Map::from_iter([("rain".to_owned(), json!({"type": "bool", "value": true}))]);
+        let (visible, binding) = object_visibility(
+            7,
+            Some(&json!({"user": "rain", "value": true})),
+            &enabled_properties,
+        )
+        .expect("enabled typed binding");
+        assert!(visible);
         assert_eq!(
-            binding.predicate,
-            WeIrUserPropertyPredicate::BooleanEquals(false)
+            binding.expect("enabled binding").predicate,
+            WeIrUserPropertyPredicate::BooleanValue
         );
         assert!(
             object_visibility(
@@ -224,6 +240,7 @@ mod tests {
             json!({"user": {"name": "rain"}, "value": false}),
             json!({"user": "rain", "condition": "rain.value", "value": false}),
             json!({"script": 1, "user": "rain", "value": false}),
+            json!({"user": "rain", "value": true}),
         ] {
             assert!(object_visibility(7, Some(&invalid), &properties).is_err());
         }

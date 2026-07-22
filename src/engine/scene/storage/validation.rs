@@ -764,20 +764,26 @@ fn validate_user_property_bindings(
                 reason: format!("unknown project property {property:?}"),
             })?;
         match binding.predicate {
-            SceneUserPropertyPredicate::BooleanEquals(_) => {
+            SceneUserPropertyPredicate::BooleanValue => {
                 if definition.get("type").and_then(serde_json::Value::as_str) != Some("bool") {
                     return Err(SceneStorageError::InvalidUserPropertyBinding {
                         object: binding.object,
                         reason: format!("project property {property:?} must declare type \"bool\""),
                     });
                 }
-                if !definition
+                let authored = definition
                     .get("value")
-                    .is_some_and(serde_json::Value::is_boolean)
-                {
-                    return Err(SceneStorageError::InvalidUserPropertyBinding {
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| SceneStorageError::InvalidUserPropertyBinding {
                         object: binding.object,
                         reason: format!("project property {property:?} must have a boolean value"),
+                    })?;
+                if document.objects[binding.object.0 as usize].visible != authored {
+                    return Err(SceneStorageError::InvalidUserPropertyBinding {
+                        object: binding.object,
+                        reason: format!(
+                            "authored visibility does not match boolean default for {property:?}"
+                        ),
                     });
                 }
             }

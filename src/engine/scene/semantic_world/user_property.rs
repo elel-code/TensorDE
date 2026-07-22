@@ -44,12 +44,9 @@ pub(super) fn resolved_visibility(
             .get(property)
             .expect("scene storage validates bound user properties");
         let predicate_matches = match binding.predicate {
-            SceneUserPropertyPredicate::BooleanEquals(expected) => {
-                value
-                    .as_bool()
-                    .expect("scene storage validates boolean user predicates")
-                    == expected
-            }
+            SceneUserPropertyPredicate::BooleanValue => value
+                .as_bool()
+                .expect("scene storage validates boolean user properties"),
             SceneUserPropertyPredicate::StringEquals(expected) => {
                 value
                     .as_str()

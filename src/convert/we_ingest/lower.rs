@@ -543,9 +543,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             property: strings.id(&binding.property),
             target: binding.target,
             predicate: match &binding.predicate {
-                WeIrUserPropertyPredicate::BooleanEquals(value) => {
-                    SceneUserPropertyPredicate::BooleanEquals(*value)
-                }
+                WeIrUserPropertyPredicate::BooleanValue => SceneUserPropertyPredicate::BooleanValue,
                 WeIrUserPropertyPredicate::StringEquals(value) => {
                     SceneUserPropertyPredicate::StringEquals(strings.id(value))
                 }

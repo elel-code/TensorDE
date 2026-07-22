@@ -16,7 +16,7 @@ fn visible_user_property_binding_reaches_strict_typed_binary() {
     assert_eq!(ir.user_property_bindings[0].property, "rain");
     assert_eq!(
         ir.user_property_bindings[0].predicate,
-        WeIrUserPropertyPredicate::BooleanEquals(false)
+        WeIrUserPropertyPredicate::BooleanValue
     );
     assert_eq!(
         ir.user_property_bindings[0].target,
@@ -28,7 +28,7 @@ fn visible_user_property_binding_reaches_strict_typed_binary() {
     assert_eq!(document.user_property_bindings.len(), 1);
     assert_eq!(
         document.user_property_bindings[0].predicate,
-        SceneUserPropertyPredicate::BooleanEquals(false)
+        SceneUserPropertyPredicate::BooleanValue
     );
     crate::engine::scene::SceneStorage::from_document(document)
         .expect("validate user binding storage");
@@ -97,6 +97,11 @@ fn visible_user_property_binding_rejects_wrong_schema_case_value_and_condition()
                 "value": false,
                 "condition": "rain.value"
             }),
+        ),
+        (
+            "default-mismatch",
+            serde_json::json!({"type": "bool", "value": false}),
+            serde_json::json!({"user": "rain", "value": true}),
         ),
     ] {
         let root = write_visible_user_binding_fixture(name, property, visibility);

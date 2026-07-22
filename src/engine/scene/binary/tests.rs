@@ -511,7 +511,7 @@ fn scene_binary_round_trip_preserves_typed_user_property_bindings() {
                 object: SceneObjectHandle(3),
                 property: SceneStringId(0),
                 target: SceneUserPropertyTarget::Visible,
-                predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+                predicate: SceneUserPropertyPredicate::BooleanValue,
             },
             SceneUserPropertyBindingRecord {
                 object: SceneObjectHandle(4),

@@ -66,6 +66,7 @@ fn resolve_frame_keeps_parent_and_child_visual_state_independent() {
 #[test]
 fn visible_user_property_resolves_before_parent_visibility_and_keeps_effect_state_independent() {
     let mut document = semantic_document();
+    document.objects[0].visible = false;
     let schema = document.strings.len() as u32;
     document
         .strings
@@ -79,7 +80,7 @@ fn visible_user_property_resolves_before_parent_visibility_and_keeps_effect_stat
             object: SceneObjectHandle(0),
             property: SceneStringId(property),
             target: SceneUserPropertyTarget::Visible,
-            predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+            predicate: SceneUserPropertyPredicate::BooleanValue,
         });
     document.effects.push(SceneEffectRecord {
         id: SceneEffectHandle(0),
@@ -105,19 +106,19 @@ fn visible_user_property_resolves_before_parent_visibility_and_keeps_effect_stat
     let default_frame = world.resolve_frame().expect("default property frame");
 
     assert!(
-        default_frame
+        !default_frame
             .object(SceneObjectHandle(0))
             .unwrap()
             .self_visible
     );
     assert!(
-        default_frame
+        !default_frame
             .object(SceneObjectHandle(1))
             .unwrap()
             .resolved_visible
     );
     assert!(default_frame.object_effects[0].self_visible);
-    assert!(default_frame.object_effects[0].resolved_visible);
+    assert!(!default_frame.object_effects[0].resolved_visible);
 
     let overrides = [("rain".to_owned(), serde_json::Value::Bool(true))]
         .into_iter()
@@ -126,18 +127,18 @@ fn visible_user_property_resolves_before_parent_visibility_and_keeps_effect_stat
         .resolve_frame_with_user_properties_at(0.0, &overrides)
         .expect("enabled property frame");
     assert!(
-        !enabled_frame
+        enabled_frame
             .object(SceneObjectHandle(0))
             .unwrap()
             .self_visible
     );
     assert!(
-        !enabled_frame
+        enabled_frame
             .object(SceneObjectHandle(1))
             .unwrap()
             .resolved_visible
     );
-    assert!(!enabled_frame.object_effects[0].resolved_visible);
+    assert!(enabled_frame.object_effects[0].resolved_visible);
 
     let resolver = SemanticFrameResolver::from_world_with_user_properties(&world, &overrides)
         .expect("retained resolver");
