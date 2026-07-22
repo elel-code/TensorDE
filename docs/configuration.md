@@ -21,4 +21,3 @@ ipc-socket "/run/user/1000/tensor.sock"
 
 Future reloads parse and validate off the event-loop critical path. A failed reload must preserve
 the last valid configuration and report a structured error through logs and IPC.
-

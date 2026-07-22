@@ -19,4 +19,3 @@ cargo fmt --all -- --check
 ./scripts/check-file-lines.sh
 cargo test --workspace --all-targets
 ```
-

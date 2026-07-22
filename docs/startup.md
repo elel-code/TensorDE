@@ -18,4 +18,3 @@ must never emit systemd readiness. Partial initialization must unwind owned sock
 
 Niri is the primary lifecycle reference, particularly its ordering of configuration, calloop,
 Wayland display/socket, IPC, environment publication, watcher registration, and final run loop.
-

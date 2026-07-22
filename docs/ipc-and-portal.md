@@ -15,4 +15,3 @@ and cannot bypass renderer extraction policy.
 
 systemd is separately optional. Readiness is an output of the completed startup state, not a
 prerequisite or an owner of the compositor lifecycle.
-

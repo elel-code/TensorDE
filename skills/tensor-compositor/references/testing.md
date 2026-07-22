@@ -28,4 +28,3 @@ The local Niri and Hyprland worktrees are behavioral references, not dependencie
 - Keep Vulkan tests capability-gated and report the missing descriptor-heap feature explicitly.
 - Snapshot final extracted scene data when a visual regression is more useful than many individual
   coordinate assertions.
-

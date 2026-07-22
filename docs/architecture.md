@@ -18,4 +18,3 @@ any long-lived renderer state is created.
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.
-

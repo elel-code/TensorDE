@@ -17,4 +17,3 @@ be introduced before the core design has stabilized.
 
 See `references/SOURCES.md` for the pinned local snapshots of Niri, Hyprland, Nourish, and Bevy.
 Use those trees for behavior and lifecycle research, not as dependencies or code to copy wholesale.
-
