@@ -403,13 +403,7 @@ impl LayerShellHandler for NativeWaylandState {
     }
 }
 
-delegate_compositor!(NativeWaylandState);
-delegate_output!(NativeWaylandState);
-delegate_shm!(NativeWaylandState);
-delegate_dmabuf!(NativeWaylandState);
-delegate_seat!(NativeWaylandState);
-delegate_pointer!(NativeWaylandState);
-delegate_layer!(NativeWaylandState);
+delegate_dispatch2!(NativeWaylandState);
 delegate_registry!(NativeWaylandState);
 
 impl ProvidesRegistryState for NativeWaylandState {

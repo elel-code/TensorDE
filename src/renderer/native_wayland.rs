@@ -8,9 +8,8 @@
 
 use serde::Serialize;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_dmabuf, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
+    delegate_dispatch2, delegate_registry,
     dmabuf::{DmabufFeedback, DmabufHandler, DmabufState},
     output::{OutputHandler, OutputInfo, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
@@ -747,7 +746,9 @@ impl NativeWaylandState {
         let Some(layer) = self.layer.as_ref() else {
             return;
         };
-        layer.wl_surface().frame(qh, layer.wl_surface().clone());
+        layer
+            .wl_surface()
+            .frame(qh, FrameCallbackData(layer.wl_surface().clone()));
         self.frame_callback.request();
     }
 
