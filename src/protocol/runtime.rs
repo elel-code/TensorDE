@@ -254,7 +254,10 @@ fn dispatch_display(
 mod tests {
     use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-    use smithay::wayland::seat::WaylandFocus;
+    use smithay::{
+        output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+        wayland::seat::WaylandFocus,
+    };
     use wayland_client::{
         Connection, Dispatch, QueueHandle, delegate_noop,
         globals::{GlobalListContents, registry_queue_init},
@@ -266,12 +269,13 @@ mod tests {
 
     #[derive(Debug, Eq, PartialEq)]
     enum ClientEvent {
-        Configured,
+        Configured((i32, i32)),
         Destroyed,
     }
 
     struct TestClient {
         configured: bool,
+        configured_size: Option<(i32, i32)>,
     }
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for TestClient {
@@ -288,7 +292,20 @@ mod tests {
 
     delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
     delegate_noop!(TestClient: ignore wl_surface::WlSurface);
-    delegate_noop!(TestClient: ignore xdg_toplevel::XdgToplevel);
+    impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
+        fn event(
+            state: &mut Self,
+            _: &xdg_toplevel::XdgToplevel,
+            event: xdg_toplevel::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                state.configured_size = Some((width, height));
+            }
+        }
+    }
 
     impl Dispatch<xdg_wm_base::XdgWmBase, ()> for TestClient {
         fn event(
@@ -325,6 +342,7 @@ mod tests {
     fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         let mut runtime =
             WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
+        install_test_output(&mut runtime);
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
         let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name().unwrap());
         runtime.prepare(false).unwrap();
@@ -349,11 +367,16 @@ mod tests {
             toplevel.set_max_size(640, 480);
             surface.commit();
 
-            let mut state = TestClient { configured: false };
+            let mut state = TestClient {
+                configured: false,
+                configured_size: None,
+            };
             while !state.configured {
                 queue.blocking_dispatch(&mut state).unwrap();
             }
-            event_tx.send(ClientEvent::Configured).unwrap();
+            event_tx
+                .send(ClientEvent::Configured(state.configured_size.unwrap()))
+                .unwrap();
             release_rx.recv().unwrap();
 
             toplevel.destroy();
@@ -365,9 +388,24 @@ mod tests {
 
         assert_eq!(
             dispatch_until(&mut runtime, &event_rx),
-            ClientEvent::Configured
+            ClientEvent::Configured((488, 480))
         );
         assert_eq!(runtime.state.view_count(), 1);
+        let window = runtime.state.space.elements().next().unwrap().clone();
+        assert_eq!(
+            runtime.state.space.element_location(&window),
+            Some((8, 160).into())
+        );
+        assert_eq!(
+            runtime
+                .state
+                .world
+                .layout_snapshot(super::super::state::DEFAULT_WORKSPACE)
+                .unwrap()
+                .placements[0]
+                .geometry,
+            crate::layout::Rect::new(8, 160, 488, 480)
+        );
         let view_id = runtime.state.view_for_surface(
             runtime
                 .state
@@ -407,6 +445,27 @@ mod tests {
         }
         assert_eq!(runtime.state.view_count(), 0);
         client.join().unwrap();
+    }
+
+    fn install_test_output(runtime: &mut WaylandRuntime) {
+        let mode = OutputMode {
+            size: (1000, 800).into(),
+            refresh: 60_000,
+        };
+        let output = Output::new(
+            "test-output".to_owned(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Tensor".to_owned(),
+                model: "Nested".to_owned(),
+                serial_number: "test".to_owned(),
+            },
+        );
+        output.add_mode(mode);
+        output.set_preferred(mode);
+        output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+        runtime.state.space.map_output(&output, (0, 0));
     }
 
     fn dispatch_until(

@@ -73,7 +73,11 @@ impl CompositorHandler for RuntimeState {
                     let current = cached.current();
                     xdg_size_constraints(current.min_size, current.max_size)
                 });
-                self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
+                let constraints_changed =
+                    self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
+                if constraints_changed || !toplevel.is_initial_configure_sent() {
+                    self.reflow_default_workspace();
+                }
                 if !toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
                 }

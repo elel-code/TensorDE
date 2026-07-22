@@ -176,7 +176,13 @@ impl Compositor {
         let runtime_owners = (renderer, launcher, startup_commands, systemd, xwayland);
         let stop_signal = protocol.stop_signal();
         protocol.run_with_ipc(&ipc, move |request, state| {
-            handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal)
+            let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
+            let reply =
+                handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal);
+            if reflow {
+                state.reflow_default_workspace();
+            }
+            reply
         })?;
         drop(runtime_owners);
         Ok(())

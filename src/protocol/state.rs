@@ -115,6 +115,7 @@ impl RuntimeState {
         if let Err(error) = self.world.remove_view(view_id) {
             warn!(%error, view_id = view_id.get(), "Wayland view was missing from ECS");
         }
+        self.reflow_default_workspace();
         Some(view_id)
     }
 
@@ -126,13 +127,85 @@ impl RuntimeState {
         &mut self,
         surface: &WlSurface,
         constraints: SizeConstraints,
-    ) {
+    ) -> bool {
         let Some(view_id) = self.view_for_surface(surface) else {
-            return;
+            return false;
         };
-        if let Err(error) = self.world.set_view_constraints(view_id, constraints) {
-            warn!(%error, view_id = view_id.get(), "failed to update XDG size constraints");
+        match self.world.set_view_constraints(view_id, constraints) {
+            Ok(changed) => changed,
+            Err(error) => {
+                warn!(%error, view_id = view_id.get(), "failed to update XDG size constraints");
+                false
+            }
         }
+    }
+
+    pub(crate) fn reflow_default_workspace(&mut self) -> bool {
+        let Some(area) = self.default_workspace_area() else {
+            return false;
+        };
+        self.world
+            .arrange_workspace(DEFAULT_WORKSPACE, self.layout, area);
+
+        let windows = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                let surface = window.wl_surface()?;
+                let view_id = self.view_for_surface(&surface)?;
+                let geometry = self.world.geometry(view_id)?;
+                Some((window.clone(), window.toplevel().cloned(), geometry))
+            })
+            .collect::<Vec<_>>();
+
+        for (window, toplevel, geometry) in windows {
+            self.space
+                .relocate_element(&window, (geometry.x, geometry.y));
+            if let Some(toplevel) = toplevel {
+                let size = (
+                    i32::try_from(geometry.width).unwrap_or(i32::MAX),
+                    i32::try_from(geometry.height).unwrap_or(i32::MAX),
+                )
+                    .into();
+                let bounds = (
+                    i32::try_from(area.width).unwrap_or(i32::MAX),
+                    i32::try_from(area.height).unwrap_or(i32::MAX),
+                )
+                    .into();
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(size);
+                    state.bounds = Some(bounds);
+                });
+                toplevel.send_pending_configure();
+            }
+        }
+        self.space.refresh();
+        true
+    }
+
+    fn default_workspace_area(&self) -> Option<tensor_util::Rect> {
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                let geometry = self.space.output_geometry(output)?;
+                let width = u32::try_from(geometry.size.w).ok()?;
+                let height = u32::try_from(geometry.size.h).ok()?;
+                (width > 0 && height > 0).then(|| {
+                    (
+                        geometry.loc.x,
+                        geometry.loc.y,
+                        output.name(),
+                        tensor_util::Rect::new(geometry.loc.x, geometry.loc.y, width, height),
+                    )
+                })
+            })
+            .min_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then(left.1.cmp(&right.1))
+                    .then(left.2.cmp(&right.2))
+            })
+            .map(|(_, _, _, geometry)| geometry)
     }
 
     pub(crate) fn view_count(&mut self) -> usize {
@@ -274,6 +347,7 @@ impl RuntimeState {
                 .map(|mode| mode.size.w)
                 .unwrap_or(0);
         }
+        self.reflow_default_workspace();
     }
 
     fn allocate_view_id(&mut self) -> ViewId {

@@ -11,8 +11,9 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
 - KDL tests separate valid documents, malformed syntax, schema errors, includes, and reload races.
 - IPC tests cover fragmented reads, multiple frames per read, malformed/oversized input, request-ID
   round trips, permissions, and socket ownership.
-- Nested Wayland tests are added when globals and dispatch state exist; pure geometry never requires
-  a compositor session.
+- Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
+  the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
+  requires a compositor session.
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
 - Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
   and invalid configured node paths without requiring a Vulkan driver.

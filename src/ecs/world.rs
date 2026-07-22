@@ -11,6 +11,7 @@ pub struct CompositorWorld {
     world: World,
     view_entities: HashMap<ViewId, bevy_ecs::entity::Entity>,
     layout_states: HashMap<WorkspaceId, LayoutState>,
+    layout_snapshots: HashMap<WorkspaceId, LayoutSnapshot>,
 }
 
 impl CompositorWorld {
@@ -19,6 +20,7 @@ impl CompositorWorld {
             world: World::new(),
             view_entities: HashMap::new(),
             layout_states: HashMap::new(),
+            layout_snapshots: HashMap::new(),
         }
     }
 
@@ -39,6 +41,7 @@ impl CompositorWorld {
             ))
             .id();
         self.view_entities.insert(view_id, entity);
+        self.layout_snapshots.remove(&workspace_id);
         Ok(())
     }
 
@@ -47,8 +50,14 @@ impl CompositorWorld {
             .view_entities
             .remove(&view_id)
             .ok_or(ViewLifecycleError::MissingViewId(view_id))?;
+        let workspace_id = self
+            .world
+            .get::<Workspace>(entity)
+            .expect("every view has a workspace")
+            .id;
         let removed = self.world.despawn(entity);
         debug_assert!(removed, "view index must reference a live ECS entity");
+        self.layout_snapshots.remove(&workspace_id);
         Ok(())
     }
 
@@ -78,6 +87,8 @@ impl CompositorWorld {
             .expect("every view has a workspace")
             .id = workspace_id;
         entity.remove::<ViewGeometry>();
+        self.layout_snapshots.remove(&current_workspace_id);
+        self.layout_snapshots.remove(&workspace_id);
         Ok(())
     }
 
@@ -87,7 +98,13 @@ impl CompositorWorld {
         layout: ViewLayout,
     ) -> Result<(), ViewLifecycleError> {
         let entity = self.entity_for(view_id)?;
+        let workspace_id = self
+            .world
+            .get::<Workspace>(entity)
+            .expect("every view has a workspace")
+            .id;
         self.world.entity_mut(entity).insert(layout);
+        self.layout_snapshots.remove(&workspace_id);
         Ok(())
     }
 
@@ -95,17 +112,32 @@ impl CompositorWorld {
         &mut self,
         view_id: ViewId,
         constraints: SizeConstraints,
-    ) -> Result<(), ViewLifecycleError> {
+    ) -> Result<bool, ViewLifecycleError> {
         let entity = self.entity_for(view_id)?;
+        let current = self
+            .world
+            .get::<ViewLayout>(entity)
+            .expect("every view has layout state")
+            .constraints;
+        if current == constraints {
+            return Ok(false);
+        }
+        let workspace_id = self
+            .world
+            .get::<Workspace>(entity)
+            .expect("every view has a workspace")
+            .id;
         self.world
             .get_mut::<ViewLayout>(entity)
             .expect("every view has layout state")
             .constraints = constraints;
-        Ok(())
+        self.layout_snapshots.remove(&workspace_id);
+        Ok(true)
     }
 
     pub fn reset_layout_states(&mut self) {
         self.layout_states.clear();
+        self.layout_snapshots.clear();
     }
 
     pub fn focus_view(&mut self, view_id: ViewId) -> Result<(), ViewLifecycleError> {
@@ -120,6 +152,7 @@ impl CompositorWorld {
             self.world.entity_mut(focused_entity).remove::<Focused>();
         }
         self.world.entity_mut(entity).insert(Focused);
+        self.layout_snapshots.remove(&workspace_id);
         Ok(())
     }
 
@@ -136,7 +169,7 @@ impl CompositorWorld {
         workspace_id: WorkspaceId,
         engine: LayoutEngine,
         output: Rect,
-    ) -> LayoutSnapshot {
+    ) -> &LayoutSnapshot {
         let mut entities = {
             let mut query = self
                 .world
@@ -167,7 +200,10 @@ impl CompositorWorld {
                 .entity_mut(entity)
                 .insert(ViewGeometry(placement.geometry));
         }
-        snapshot
+        self.layout_snapshots.insert(workspace_id, snapshot);
+        self.layout_snapshots
+            .get(&workspace_id)
+            .expect("layout snapshot was just inserted")
     }
 
     pub fn view_count(&mut self, workspace_id: WorkspaceId) -> usize {
@@ -186,6 +222,10 @@ impl CompositorWorld {
     pub fn view_layout(&self, view_id: ViewId) -> Option<ViewLayout> {
         let entity = self.view_entities.get(&view_id).copied()?;
         self.world.get::<ViewLayout>(entity).copied()
+    }
+
+    pub fn layout_snapshot(&self, workspace_id: WorkspaceId) -> Option<&LayoutSnapshot> {
+        self.layout_snapshots.get(&workspace_id)
     }
 
     pub fn is_focused(&self, view_id: ViewId) -> bool {
@@ -317,7 +357,8 @@ mod tests {
             .unwrap();
 
         let constraints = SizeConstraints::new(Size::new(200, 100), Some(800), Some(600));
-        world.set_view_constraints(view(1), constraints).unwrap();
+        assert!(world.set_view_constraints(view(1), constraints).unwrap());
+        assert!(!world.set_view_constraints(view(1), constraints).unwrap());
 
         assert_eq!(
             world.view_layout(view(1)),
@@ -326,6 +367,25 @@ mod tests {
                 primary_size: Some(LayoutLength::fixed(420)),
             })
         );
+    }
+
+    #[test]
+    fn layout_snapshot_is_shared_and_invalidated_by_scene_changes() {
+        let mut world = CompositorWorld::new();
+        world.spawn_view(view(1), workspace(1)).unwrap();
+        world.arrange_workspace(
+            workspace(1),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            Rect::new(0, 0, 100, 80),
+        );
+
+        assert_eq!(
+            world.layout_snapshot(workspace(1)).unwrap().placements[0].geometry,
+            Rect::new(8, 8, 38, 64)
+        );
+
+        world.spawn_view(view(2), workspace(1)).unwrap();
+        assert_eq!(world.layout_snapshot(workspace(1)), None);
     }
 
     #[test]

@@ -22,6 +22,12 @@ the resolved scrolling offset. Rendering, effects, damage, and hit testing consu
 snapshot; they must not maintain competing geometry calculations. Switching layout families
 clears stored viewport offsets but retains configured gaps and width policy.
 
+ECS retains the last valid snapshot for each workspace and invalidates it on view, focus,
+constraint, or policy changes. Runtime reflow is event-driven rather than tied to every surface
+commit: initial XDG configuration, committed min/max changes, output topology, and explicit layout
+commands recompute geometry. The resulting snapshot relocates Smithay elements without changing
+their stacking order and supplies both the XDG suggested size and output-relative bounds.
+
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
 responsible for lifecycle, workspace membership, focus uniqueness, and geometry updates.
