@@ -21,14 +21,15 @@ pub fn run() -> Result<(), StartupError> {
     info!(config = %config_path.display(), "configuration loaded");
     let systemd_active = resolve_systemd_integration(cli.check, cli.session, config.systemd)?;
     let mut compositor = Compositor::new(config)?;
-    compositor.check_ready();
     let mut gates = StartupGates::new(cli.check, cli.session, systemd_active);
 
     if cli.check {
+        compositor.check_ready();
         info!("startup check completed");
     } else {
         compositor.prepare_runtime()?;
         gates.mark_runtime_prepared();
+        compositor.check_ready();
         #[cfg(feature = "systemd")]
         let mut _manager_environment = None;
         if cli.session {

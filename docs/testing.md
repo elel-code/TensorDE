@@ -15,6 +15,9 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
   and invalid configured node paths without requiring a Vulkan driver.
 - Native interop tests reject each missing external-memory, dma-buf, modifier, foreign
   queue-family, external-semaphore, and bidirectional `SYNC_FD` capability independently.
+- Native format tests keep Vulkan import and output-export roles distinct and reject unsupported
+  fourccs, mismatched modifiers, non-exportable images, non-scanout GBM paths, and mismatched plane
+  topology. Preference ordering must be deterministic regardless of probe order.
 - Startup-gate tests prove that runtime preparation, process-environment publication, active
   user-manager publication, and readiness cannot be skipped or reordered before session autostart.
   Check and non-session modes must never receive an autostart permit.

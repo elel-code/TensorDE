@@ -5,7 +5,10 @@ use std::{
 
 use smithay::{
     backend::{
-        allocator::gbm::GbmDevice,
+        allocator::{
+            Format as DrmFormat,
+            gbm::{GbmBufferFlags, GbmDevice},
+        },
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
@@ -27,7 +30,10 @@ use super::{
     BackendConfig, BackendOutputEvent,
     output::{ConnectorSnapshot, ConnectorState, OutputPlan, OutputPolicy, diff_output_plans},
 };
-use crate::protocol::RuntimeState;
+use crate::{
+    protocol::RuntimeState,
+    render::{GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats},
+};
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
@@ -38,6 +44,7 @@ pub(crate) struct TtyBackend {
     render_node: DrmNode,
     devices: HashMap<libc::dev_t, OpenDevice>,
     output_policy: OutputPolicy,
+    renderer_formats: Vec<VulkanFormatCapability>,
     outputs: OutputPlan,
     pending_outputs: Vec<BackendOutputEvent>,
     topology_generation: u64,
@@ -49,6 +56,7 @@ struct OpenDevice {
     gbm: GbmDevice<DrmDeviceFd>,
     scanner: DrmScanner,
     connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
+    output_formats: BTreeMap<super::BackendOutputId, Vec<OutputFormat>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +69,7 @@ pub(crate) struct BackendStatus {
     pub(crate) session_active: bool,
     pub(crate) topology_generation: u64,
     pub(crate) outputs: usize,
+    pub(crate) native_format_candidates: usize,
 }
 
 impl TtyBackend {
@@ -107,6 +116,7 @@ impl TtyBackend {
             render_node,
             devices: HashMap::new(),
             output_policy: OutputPolicy,
+            renderer_formats: config.renderer_formats.clone(),
             outputs: OutputPlan::new(),
             pending_outputs: Vec::new(),
             topology_generation: 0,
@@ -137,6 +147,7 @@ impl TtyBackend {
             render_node = %status.render_node.display(),
             drm_devices = status.drm_devices,
             outputs = status.outputs,
+            native_format_candidates = status.native_format_candidates,
             primary_gbm_ready = status.primary_gbm_ready,
             session_active = status.session_active,
             "Smithay tty backend initialized"
@@ -158,6 +169,12 @@ impl TtyBackend {
             render_node: node_path(self.render_node),
             drm_devices: self.devices.len(),
             outputs: self.outputs.len(),
+            native_format_candidates: self
+                .devices
+                .values()
+                .flat_map(|device| device.output_formats.values())
+                .map(Vec::len)
+                .sum(),
             primary_gbm_ready,
             session_active: self.session.is_active(),
             topology_generation: self.topology_generation,
@@ -321,6 +338,7 @@ impl TtyBackend {
                 gbm,
                 scanner: DrmScanner::new(),
                 connectors: BTreeMap::new(),
+                output_formats: BTreeMap::new(),
             },
         );
         self.topology_generation = self.topology_generation.wrapping_add(1);
@@ -343,6 +361,7 @@ impl TtyBackend {
     }
 
     fn rescan_device(&mut self, device_id: libc::dev_t) -> Result<(), BackendError> {
+        let renderer_formats = &self.renderer_formats;
         let changed = {
             let device = self
                 .devices
@@ -369,10 +388,13 @@ impl TtyBackend {
                 })
                 .map(|connector| (connector.id, connector))
                 .collect::<BTreeMap<_, _>>();
-            if current == device.connectors {
+            let output_formats =
+                negotiate_device_output_formats(device_id, device, &current, renderer_formats)?;
+            if current == device.connectors && output_formats == device.output_formats {
                 false
             } else {
                 device.connectors = current;
+                device.output_formats = output_formats;
                 true
             }
         };
@@ -394,6 +416,78 @@ impl TtyBackend {
             .extend(diff_output_plans(&self.outputs, &current));
         self.outputs = current;
     }
+}
+
+fn negotiate_device_output_formats(
+    device_id: libc::dev_t,
+    device: &OpenDevice,
+    connectors: &BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
+    renderer_formats: &[VulkanFormatCapability],
+) -> Result<BTreeMap<super::BackendOutputId, Vec<OutputFormat>>, BackendError> {
+    let outputs = OutputPolicy.plan(connectors.values());
+    let mut negotiated = BTreeMap::new();
+    for output in outputs.values() {
+        let crtc = device
+            .drm
+            .crtcs()
+            .iter()
+            .copied()
+            .find(|crtc| u32::from(*crtc) == output.crtc)
+            .ok_or_else(|| BackendError::OutputFormats {
+                output: output.name.clone(),
+                message: format!("mapped CRTC {} disappeared", output.crtc),
+            })?;
+        let planes = device
+            .drm
+            .planes(&crtc)
+            .map_err(|error| BackendError::OutputFormats {
+                output: output.name.clone(),
+                message: error.to_string(),
+            })?;
+        let mut kms_scanout = Vec::<DrmFormat>::new();
+        for format in planes
+            .primary
+            .iter()
+            .flat_map(|plane| plane.formats.iter())
+            .copied()
+        {
+            if !kms_scanout.contains(&format) {
+                kms_scanout.push(format);
+            }
+        }
+
+        let usage = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING;
+        let gbm = kms_scanout
+            .iter()
+            .copied()
+            .map(|format| GbmFormatCapability {
+                format,
+                scanout: device.gbm.is_format_supported(format.code, usage),
+                plane_count: device
+                    .gbm
+                    .format_modifier_plane_count(format.code, format.modifier),
+            })
+            .collect::<Vec<_>>();
+        let candidates =
+            negotiate_output_formats(renderer_formats, &kms_scanout, &gbm).map_err(|error| {
+                BackendError::OutputFormats {
+                    output: output.name.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        let preferred = candidates[0];
+        debug!(
+            device_id,
+            output = output.name,
+            format = %preferred.format.code,
+            modifier = %format_args!("{:#x}", u64::from(preferred.format.modifier)),
+            planes = preferred.plane_count,
+            candidates = candidates.len(),
+            "native output formats negotiated"
+        );
+        negotiated.insert(output.id, candidates);
+    }
+    Ok(negotiated)
 }
 
 fn describe_connector(
@@ -507,4 +601,6 @@ pub(crate) enum BackendError {
         device_id: libc::dev_t,
         message: String,
     },
+    #[error("failed to negotiate a native output format for {output}: {message}")]
+    OutputFormats { output: String, message: String },
 }

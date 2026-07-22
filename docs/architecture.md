@@ -31,6 +31,12 @@ feature bit, requires a graphics queue and a complete primary/render node pair r
 queue-family ownership transfer, and bidirectional binary `SYNC_FD` semaphore support. The logical
 device enables only the extensions for this native path and descriptor heap; there is no
 descriptor-set or descriptor-buffer fallback.
+Before ranking, each otherwise eligible device must also expose at least one explicit DRM modifier
+that supports the real native image usage and exportable dma-buf memory. Import and export support
+remain separate values. After Smithay opens the selected DRM pair, `render/format.rs` intersects
+that Vulkan snapshot with each active output's primary-plane `FormatSet` and GBM capability. Only
+fourcc, modifier, plane count, and capability flags cross this boundary; neither side receives the
+other subsystem's handles.
 The selected DRM identity is then passed to Smithay as the sole native device choice. An explicit
 `render-device` filters Vulkan candidates by major/minor before ranking; Vulkan and the tty backend
 never choose devices independently. Pure ranking remains testable without a GPU. The complete
@@ -56,13 +62,12 @@ The protocol layer already owns the complete initial Wayland global set needed f
 lifecycles: compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, selection/data-device, and
 popup tracking. A toplevel is assigned a stable `ViewId` at creation and removed idempotently from
 both Smithay's `Space<Window>` and ECS when either the shell or surface destruction callback fires.
-The next backend work is compositor-specific glue around Smithay's DRM/KMS, GBM, libinput, udev,
-and libseat adapters; Tensor does not reimplement those low-level protocols. The tty backend now
-owns session activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier
-tokens, and GBM lifetime. It opens the primary/render pair selected during Vulkan probing and
-requires that pair to be available through the active libseat session. Future
-connector modesetting, page flips, and direct scanout remain in this Smithay backend; Vulkanalia
-only produces renderable buffers and completion synchronization for it. Connector discovery uses
+Tensor does not reimplement DRM/KMS, GBM, libinput, udev, or libseat. The tty backend owns session
+activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier tokens, GBM
+lifetime, and per-output native-format validation. It opens the primary/render pair selected during
+Vulkan probing and requires that pair to be available through the active libseat session. Future
+surface creation, modesetting, page flips, and direct scanout remain in this Smithay backend;
+Vulkanalia only produces renderable buffers and completion synchronization for it. Connector discovery uses
 Smithay master’s companion `smithay-drm-extras::DrmScanner`, from the same upstream revision as
 Smithay core. It preserves connector-to-CRTC mappings across startup, udev hotplug, delayed mode
 discovery, DP-MST removal, and session resume.

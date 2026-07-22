@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
 use thiserror::Error;
 use tracing::{debug, info};
 use vulkanalia::{
@@ -10,8 +11,19 @@ use vulkanalia::{
 
 use super::{
     DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, NativeInteropCapabilities,
-    RendererTarget,
+    RendererTarget, VulkanFormatCapability,
 };
+
+const OUTPUT_FORMATS: &[(Fourcc, vk::Format)] = &[
+    (Fourcc::Xrgb8888, vk::Format::B8G8R8A8_SRGB),
+    (Fourcc::Argb8888, vk::Format::B8G8R8A8_SRGB),
+    (Fourcc::Xbgr8888, vk::Format::R8G8B8A8_SRGB),
+    (Fourcc::Abgr8888, vk::Format::R8G8B8A8_SRGB),
+    (Fourcc::Xrgb2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
+    (Fourcc::Argb2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
+    (Fourcc::Xbgr2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
+    (Fourcc::Abgr2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
+];
 
 pub(crate) struct VulkanRenderer {
     _owner: VulkanOwner,
@@ -28,6 +40,7 @@ pub(crate) struct SelectedDevice {
     pub(crate) primary_node: DrmNodeId,
     pub(crate) render_node: DrmNodeId,
     pub(crate) interop: NativeInteropCapabilities,
+    pub(crate) formats: Vec<VulkanFormatCapability>,
 }
 
 impl VulkanRenderer {
@@ -59,6 +72,7 @@ impl VulkanRenderer {
                 device_type = ?device.candidate.device_type,
                 descriptor_heap = device.candidate.descriptor_heap_supported,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
+                native_output_formats = device.candidate.native_output_format_count,
                 "Vulkan physical device probed"
             );
         }
@@ -85,7 +99,18 @@ impl VulkanRenderer {
             primary_node,
             render_node,
             interop: selected.candidate.interop,
+            formats: selected.formats.clone(),
         };
+        let client_import_formats = selected_info
+            .formats
+            .iter()
+            .filter(|format| format.supports_client_import())
+            .count();
+        let output_export_formats = selected_info
+            .formats
+            .iter()
+            .filter(|format| format.supports_output_export())
+            .count();
         info!(
             name = selected_info.name,
             api = %selected_info.api_version,
@@ -98,6 +123,8 @@ impl VulkanRenderer {
             drm_format_modifier = selected_info.interop.drm_format_modifier,
             foreign_queue_family = selected_info.interop.foreign_queue_family,
             sync_fd = selected_info.interop.sync_fd_semaphore,
+            client_import_formats,
+            output_export_formats,
             "Vulkanalia renderer device initialized"
         );
 
@@ -125,6 +152,7 @@ impl VulkanRenderer {
 struct ProbedDevice {
     handle: vk::PhysicalDevice,
     candidate: DeviceCandidate,
+    formats: Vec<VulkanFormatCapability>,
 }
 
 struct InstanceOwner {
@@ -187,6 +215,21 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
                 .map(|index| index as u32)
         };
+        let interop = native_interop_capabilities(instance, handle, &extensions);
+        let formats = if descriptor_heap_supported
+            && Version::from(properties.api_version) >= Version::V1_4_0
+            && graphics_queue_family.is_some()
+            && drm.and_then(DrmDeviceIdentity::node_pair).is_some()
+            && interop.is_complete()
+        {
+            probe_format_capabilities(instance, handle)?
+        } else {
+            Vec::new()
+        };
+        let native_output_format_count = formats
+            .iter()
+            .filter(|format| format.supports_output_export())
+            .count();
         candidates.push(ProbedDevice {
             handle,
             candidate: DeviceCandidate {
@@ -197,11 +240,127 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 descriptor_heap_supported,
                 graphics_queue_family,
                 drm,
-                interop: native_interop_capabilities(instance, handle, &extensions),
+                interop,
+                native_output_format_count,
             },
+            formats,
         });
     }
     Ok(candidates)
+}
+
+fn probe_format_capabilities(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+) -> Result<Vec<VulkanFormatCapability>, RendererError> {
+    let mut capabilities = Vec::new();
+    for &(fourcc, vulkan_format) in OUTPUT_FORMATS {
+        for modifier in drm_modifier_properties(instance, device, vulkan_format) {
+            let Some(capability) =
+                probe_format_capability(instance, device, fourcc, vulkan_format, modifier)?
+            else {
+                continue;
+            };
+            capabilities.push(capability);
+        }
+    }
+    Ok(capabilities)
+}
+
+fn drm_modifier_properties(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+    format: vk::Format,
+) -> Vec<vk::DrmFormatModifierProperties2EXT> {
+    let mut modifier_list = vk::DrmFormatModifierPropertiesList2EXT::default();
+    let mut properties = vk::FormatProperties2::builder().push_next(&mut modifier_list);
+    unsafe { instance.get_physical_device_format_properties2(device, format, &mut properties) };
+    if modifier_list.drm_format_modifier_count == 0 {
+        return Vec::new();
+    }
+
+    let mut modifiers = vec![
+        vk::DrmFormatModifierProperties2EXT::default();
+        modifier_list.drm_format_modifier_count as usize
+    ];
+    let written = {
+        let mut modifier_list = vk::DrmFormatModifierPropertiesList2EXT::builder()
+            .drm_format_modifier_properties(&mut modifiers);
+        let mut properties = vk::FormatProperties2::builder().push_next(&mut modifier_list);
+        unsafe { instance.get_physical_device_format_properties2(device, format, &mut properties) };
+        modifier_list.drm_format_modifier_count as usize
+    };
+    modifiers.truncate(written);
+    modifiers
+}
+
+fn probe_format_capability(
+    instance: &Instance,
+    device: vk::PhysicalDevice,
+    fourcc: Fourcc,
+    vulkan_format: vk::Format,
+    modifier: vk::DrmFormatModifierProperties2EXT,
+) -> Result<Option<VulkanFormatCapability>, RendererError> {
+    if !modifier
+        .drm_format_modifier_tiling_features
+        .contains(vk::FormatFeatureFlags2::COLOR_ATTACHMENT)
+    {
+        return Ok(None);
+    }
+
+    let mut drm = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::builder()
+        .drm_format_modifier(modifier.drm_format_modifier)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    let dma_buf = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
+    let mut external = vk::PhysicalDeviceExternalImageFormatInfo::builder().handle_type(dma_buf);
+    let input = vk::PhysicalDeviceImageFormatInfo2::builder()
+        .format(vulkan_format)
+        .type_(vk::ImageType::_2D)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(native_image_usage())
+        .push_next(&mut drm)
+        .push_next(&mut external);
+    let mut external_properties = vk::ExternalImageFormatProperties::default();
+    let mut properties = vk::ImageFormatProperties2::builder().push_next(&mut external_properties);
+    match unsafe {
+        instance.get_physical_device_image_format_properties2(device, &input, &mut properties)
+    } {
+        Ok(()) => {}
+        Err(error) if error == vk::ErrorCode::FORMAT_NOT_SUPPORTED => return Ok(None),
+        Err(source) => {
+            return Err(RendererError::ProbeFormat {
+                format: fourcc,
+                modifier: modifier.drm_format_modifier,
+                source,
+            });
+        }
+    }
+
+    let external = external_properties.external_memory_properties;
+    let compatible = external.compatible_handle_types.contains(dma_buf);
+    Ok(Some(VulkanFormatCapability {
+        format: DrmFormat {
+            code: fourcc,
+            modifier: Modifier::from(modifier.drm_format_modifier),
+        },
+        plane_count: modifier.drm_format_modifier_plane_count,
+        renderable: true,
+        importable: compatible
+            && external
+                .external_memory_features
+                .contains(vk::ExternalMemoryFeatureFlags::IMPORTABLE),
+        exportable: compatible
+            && external
+                .external_memory_features
+                .contains(vk::ExternalMemoryFeatureFlags::EXPORTABLE),
+    }))
+}
+
+fn native_image_usage() -> vk::ImageUsageFlags {
+    vk::ImageUsageFlags::COLOR_ATTACHMENT
+        | vk::ImageUsageFlags::SAMPLED
+        | vk::ImageUsageFlags::TRANSFER_SRC
+        | vk::ImageUsageFlags::TRANSFER_DST
 }
 
 fn native_interop_capabilities(
@@ -334,6 +493,12 @@ pub enum RendererError {
     EnumerateDevices(vk::ErrorCode),
     #[error("failed to enumerate Vulkan device extensions: {0:?}")]
     EnumerateExtensions(vk::ErrorCode),
+    #[error("failed to probe Vulkan dma-buf format {format} modifier {modifier:#x}: {source:?}")]
+    ProbeFormat {
+        format: Fourcc,
+        modifier: u64,
+        source: vk::ErrorCode,
+    },
     #[error(transparent)]
     Selection(#[from] DeviceSelectionError),
     #[error("failed to create the Vulkan descriptor-heap dma-buf device: {0:?}")]

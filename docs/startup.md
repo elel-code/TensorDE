@@ -6,11 +6,13 @@ The startup sequence is a set of ordered gates:
 2. Resolve, parse, and validate the complete KDL configuration.
 3. Initialize logging and diagnostics.
 4. Create calloop, the Smithay display, and the Wayland listening socket.
-5. Create Vulkan and reject devices without `VK_EXT_descriptor_heap`.
+5. Create Vulkan and reject devices without `VK_EXT_descriptor_heap` or a usable exportable native
+   format/modifier.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
 8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, libinput,
-   udev, libseat session notifications, and DRM notifier sources.
+   udev, libseat session notifications, and DRM notifier sources. Intersect every active output's
+   KMS/GBM formats with the Vulkan capability snapshot before this gate completes.
 9. Publish the session environment to the compositor-owned process launcher.
 10. When systemd integration is active, synchronously publish the same values to the user manager.
 11. Publish readiness after every required gate succeeds.

@@ -132,6 +132,7 @@ pub struct DeviceCandidate {
     pub graphics_queue_family: Option<u32>,
     pub drm: Option<DrmDeviceIdentity>,
     pub interop: NativeInteropCapabilities,
+    pub native_output_format_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +250,13 @@ impl DeviceSelector {
         {
             return Err(DeviceSelectionError::MissingSyncFdSemaphore);
         }
+        if !candidates.iter().any(|candidate| {
+            native_base(candidate)
+                && candidate.interop.is_complete()
+                && candidate.native_output_format_count > 0
+        }) {
+            return Err(DeviceSelectionError::MissingNativeOutputFormat);
+        }
 
         candidates
             .into_iter()
@@ -262,8 +270,9 @@ impl DeviceSelector {
                     .is_some()
             })
             .filter(|candidate| candidate.interop.is_complete())
+            .filter(|candidate| candidate.native_output_format_count > 0)
             .min_by_key(|candidate| (self.rank(candidate.device_type), candidate.ordinal))
-            .ok_or(DeviceSelectionError::MissingSyncFdSemaphore)
+            .ok_or(DeviceSelectionError::MissingNativeOutputFormat)
     }
 
     fn rank(self, device_type: vk::PhysicalDeviceType) -> u8 {
@@ -329,6 +338,8 @@ pub enum DeviceSelectionError {
     MissingExternalSemaphoreFd,
     #[error("no eligible Vulkan device can import and export binary SYNC_FD semaphores")]
     MissingSyncFdSemaphore,
+    #[error("no eligible Vulkan device exposes a renderable and dma-buf-exportable DRM modifier")]
+    MissingNativeOutputFormat,
 }
 
 #[cfg(test)]
@@ -363,6 +374,7 @@ mod tests {
                 Some(DrmNodeId::new(226, 128 + ordinal as u32)),
             )),
             interop: required_interop(),
+            native_output_format_count: 1,
         }
     }
 
@@ -544,5 +556,18 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error, expected);
         }
+    }
+
+    #[test]
+    fn device_without_an_exportable_output_format_is_not_selected() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.native_output_format_count = 0;
+
+        assert_eq!(
+            DeviceSelector::new(GpuPreference::Discrete)
+                .select([&candidate])
+                .unwrap_err(),
+            DeviceSelectionError::MissingNativeOutputFormat
+        );
     }
 }

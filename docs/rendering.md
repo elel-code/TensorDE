@@ -19,8 +19,28 @@ An eligible physical device must provide all of the following before ranking:
 
 Extension availability alone does not prove that a usable image exists. Output initialization must
 also intersect Vulkan's per-format external-image modifier properties with Smithay's DRM plane and
-scanout formats. Readiness must eventually include at least one renderable, exportable, and
-scanout-compatible format/modifier pair for every active output path.
+GBM scanout capabilities. Readiness requires at least one renderable, exportable, explicit-modifier
+format for every active output path.
+
+## Native Format Gate
+
+`render::format` is the value-only boundary between Vulkanalia and the Smithay tty backend. Vulkan
+probing enumerates `VkDrmFormatModifierPropertiesList2EXT`, rejects modifiers without color-target
+support, and calls `vkGetPhysicalDeviceImageFormatProperties2` with the real sampled,
+color-attachment, and transfer usage. `VkExternalImageFormatProperties` records dma-buf import and
+export separately: client imports and compositor-owned output exports are different capability
+roles and are never inferred from each other.
+
+For each connector with a mode and mapped CRTC, the tty backend reads Smithay's primary-plane
+`FormatSet`, checks the matching GBM format/modifier plane topology and scanout/rendering usage, and
+passes only value data into the deterministic intersection. Vendor modifiers precede linear;
+implicit `DRM_FORMAT_MOD_INVALID` is rejected. XRGB8888 is the first format preference, followed by
+the corresponding alpha, channel-order, and 10-bit candidates. An empty initial intersection is a
+startup error, so systemd readiness and session autostart cannot run with an unusable output path.
+
+GBM remains owned by Smithay and does not become a renderer. Its check validates the allocation and
+KMS-facing boundary; Vulkanalia remains the only component that creates and renders native output
+images.
 
 ## Buffer Ownership
 

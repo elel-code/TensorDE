@@ -16,7 +16,7 @@ The repository currently contains the long-lived Smithay protocol state machine 
 xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
 startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tty device/session
 ownership, and a Vulkanalia device gate. KMS outputs and Vulkan frame submission are not connected
-yet.
+yet; their fourcc/modifier path is already validated across Vulkan, GBM, and primary KMS planes.
 
 ## Requirements
 
@@ -29,7 +29,8 @@ The renderer targets Vulkan 1.4 and requires `VK_EXT_descriptor_heap`, external 
 explicit DRM modifiers, `VK_EXT_queue_family_foreign`, and importable/exportable `SYNC_FD`
 semaphores. Descriptor sets are not a supported backend and are intentionally not planned as a
 future compatibility path. Device selection fails before logical-device creation when any native
-renderer capability is unavailable.
+renderer capability is unavailable, including the lack of a renderable and dma-buf-exportable
+explicit DRM modifier.
 
 ## Quick start
 
@@ -82,11 +83,10 @@ The module boundaries are deliberate ownership boundaries:
 
 ## Roadmap
 
-1. Define the backend contract and connect Smithay DRM/KMS, GBM, libinput, udev, and libseat
-   adapters without duplicating their protocol or ioctl implementations.
-2. Connect the selected Vulkanalia descriptor-heap device to Smithay-owned GBM allocations and DRM
-   outputs through dma-buf and explicit synchronization.
-3. Import dmabufs, handle explicit synchronization and damage, and submit direct-scanout
+1. Create Smithay DRM surfaces from the existing output plan and negotiated native format lists.
+2. Allocate Vulkanalia descriptor-heap output images, export their dma-buf planes, and attach them
+   to Smithay-owned KMS framebuffers.
+3. Import client dma-bufs, handle explicit synchronization and damage, and submit direct-scanout
    candidates through Smithay's DRM/KMS backend.
 4. Connect output/workspace policy and the three layouts to persistent scene extraction and IPC
    commands.

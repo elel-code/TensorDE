@@ -57,6 +57,7 @@ impl Compositor {
             ipc,
             backend_config: BackendConfig {
                 drm_node: renderer.selected().render_node,
+                renderer_formats: renderer.selected().formats.clone(),
             },
             renderer,
             launcher: ProcessLauncher::new(systemd),
