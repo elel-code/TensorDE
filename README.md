@@ -14,8 +14,9 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 
 The repository currently contains the long-lived Smithay protocol state machine (compositor,
 xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
-startup, bounded IPC framing, a Bevy ECS scene world, and tested layout geometry. It does not yet
-acquire DRM devices or submit Vulkan commands.
+startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tty device/session
+ownership, and a Vulkanalia device gate. KMS outputs and Vulkan frame submission are not connected
+yet.
 
 ## Requirements
 
@@ -56,7 +57,11 @@ Smithay protocol/input events
                        |
                        v
           Vulkanalia renderer
-     descriptor heap -> frame graph -> KMS
+       descriptor heap -> frame graph
+                       |
+                dma-buf + fence
+                       |
+               Smithay DRM/KMS
 ```
 
 The module boundaries are deliberate ownership boundaries:
@@ -76,10 +81,10 @@ The module boundaries are deliberate ownership boundaries:
 
 1. Define the backend contract and connect Smithay DRM/KMS, GBM, libinput, udev, and libseat
    adapters without duplicating their protocol or ioctl implementations.
-2. Add Vulkan instance/device selection and renderer initialization with mandatory
-   `VK_EXT_descriptor_heap` feature probing.
+2. Connect the selected Vulkanalia descriptor-heap device to Smithay-owned GBM allocations and DRM
+   outputs through dma-buf and explicit synchronization.
 3. Import dmabufs, handle explicit synchronization and damage, and submit direct-scanout
-   candidates to KMS.
+   candidates through Smithay's DRM/KMS backend.
 4. Connect output/workspace policy and the three layouts to persistent scene extraction and IPC
    commands.
 5. Complete rootless XWayland surface association using the same protocol-owned lifecycle and

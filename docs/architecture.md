@@ -2,9 +2,11 @@
 
 Tensor is a Rust Wayland compositor built around four ownership domains:
 
-1. Smithay owns protocol objects, input/session state, and the calloop event loop.
+1. Smithay owns protocol objects, input/session state, the calloop event loop, DRM/KMS, GBM,
+   connectors, CRTCs, page flips, and scanout policy.
 2. Bevy ECS owns compositor intent: stable IDs, lifecycle, workspace membership, focus, and geometry.
-3. Vulkanalia owns GPU handles, descriptor heaps, frame extraction, synchronization, and KMS output.
+3. Vulkanalia owns Vulkan GPU handles, queues, descriptor heaps, frame extraction, rendering, and
+   synchronization. It returns dma-bufs and fences to Smithay instead of owning KMS state.
 4. IPC and portal adapters translate external requests into validated ECS commands.
 
 Smithay and Vulkan objects do not become ordinary ECS components. Thread-affine Smithay state stays
@@ -21,9 +23,11 @@ The renderer requires Vulkan 1.4 plus `VK_EXT_descriptor_heap`. Descriptor sets 
 buffers are not alternative backends. A device that lacks the heap capability fails startup before
 any long-lived renderer state is created.
 
-Physical-device enumeration and ranking live in `render/device.rs`. The policy is configurable but
-the default prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. This
-policy is separate from Vulkan instance/device creation so probing can be tested without a GPU.
+Physical-device ranking lives in `render/device.rs`. The policy is configurable but the default
+prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
+in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
+feature bit, requires a graphics queue, and creates the logical device with no descriptor-set or
+descriptor-buffer fallback. Pure ranking remains testable without a GPU.
 
 Session-manager selection uses one `SystemdMode` policy for startup and child supervision. `auto`
 follows the detected user-manager environment, while `enabled` and `disabled` are explicit.
@@ -49,4 +53,6 @@ The next backend work is compositor-specific glue around Smithay's DRM/KMS, GBM,
 and libseat adapters; Tensor does not reimplement those low-level protocols. The tty backend now
 owns session activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier
 tokens, and GBM lifetime. It accepts an explicit `render-device` node or uses Smithay's seat-aware
-primary-GPU selection, requiring a paired primary/render node before opening hardware.
+primary-GPU selection, requiring a paired primary/render node before opening hardware. Future
+connector scanning, modesetting, page flips, and direct scanout remain in this Smithay backend;
+Vulkanalia only produces renderable buffers and completion synchronization for it.

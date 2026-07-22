@@ -1,9 +1,7 @@
-#[allow(dead_code)]
 mod device;
 mod target;
+mod vulkan;
 
-#[allow(unused_imports)]
-pub use device::{
-    DeviceCandidate, DeviceSelectionError, DeviceSelector, GpuPreference, ParseGpuPreferenceError,
-};
+pub use device::{DeviceCandidate, DeviceSelectionError, GpuPreference, ParseGpuPreferenceError};
 pub use target::RendererTarget;
+pub(crate) use vulkan::{RendererError, VulkanRenderer};

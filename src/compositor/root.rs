@@ -14,7 +14,7 @@ use crate::{
     },
     layout::{LayoutEngine, Rect},
     protocol::{ProtocolError, WaylandRuntime},
-    render::RendererTarget,
+    render::{RendererError, RendererTarget, VulkanRenderer},
     service::{SystemdMode, session_environment},
     spawn::ProcessLauncher,
     xwayland::XWaylandConfig,
@@ -27,7 +27,7 @@ pub struct Compositor {
     protocol: WaylandRuntime,
     ipc: IpcServer,
     backend_config: BackendConfig,
-    renderer: RendererTarget,
+    renderer: VulkanRenderer,
     launcher: ProcessLauncher,
     startup_commands: Vec<StartupCommand>,
     systemd: SystemdMode,
@@ -46,6 +46,7 @@ impl Compositor {
             startup_commands,
         } = config;
         let protocol = WaylandRuntime::new(initial_layout)?;
+        let renderer = VulkanRenderer::new(RendererTarget::with_gpu_preference(gpu_preference))?;
         let ipc = IpcServer::bind(ipc_socket)?;
         let environment = session_environment(
             protocol
@@ -58,7 +59,7 @@ impl Compositor {
             protocol,
             ipc,
             backend_config: BackendConfig { render_device },
-            renderer: RendererTarget::with_gpu_preference(gpu_preference),
+            renderer,
             launcher: ProcessLauncher::new(systemd).with_environment(environment),
             startup_commands,
             systemd,
@@ -67,6 +68,8 @@ impl Compositor {
     }
 
     pub fn check_ready(&mut self) {
+        let renderer_target = self.renderer.target();
+        let selected_device = self.renderer.selected();
         let (preview_views, layout, ecs_views, seat, xdg_output) = {
             let state = self.protocol.state_mut();
             (
@@ -84,9 +87,12 @@ impl Compositor {
             protocol = self.protocol.backend_name(),
             wayland_socket = ?self.protocol.socket_name(),
             ipc = %self.ipc.path().display(),
-            vulkan = %self.renderer.api_version,
-            descriptors = self.renderer.descriptor_heap.name(),
-            gpu = self.renderer.device.preference().name(),
+            vulkan = %renderer_target.api_version,
+            descriptors = renderer_target.descriptor_heap.name(),
+            gpu_preference = renderer_target.device.preference().name(),
+            gpu = selected_device.name,
+            gpu_type = ?selected_device.device_type,
+            graphics_queue_family = selected_device.graphics_queue_family,
             layout = layout.name(),
             systemd = self.systemd.name(),
             spawn_strategy = self.launcher.strategy().name(),
@@ -204,6 +210,8 @@ pub enum CompositorError {
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
     Ipc(#[from] IpcError),
+    #[error(transparent)]
+    Renderer(#[from] RendererError),
     #[error("Smithay did not provide a Wayland socket name")]
     MissingWaylandSocket,
 }

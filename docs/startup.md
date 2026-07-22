@@ -21,8 +21,9 @@ releasing the client, and it terminates the still-blocked child if `systemd "ena
 that scope. `auto` reports the scope failure and permits a direct child; `disabled` always uses the
 direct path.
 
-`--check` executes the initialization gates that exist, reports their resolved state, and exits. It
-must never emit systemd readiness. Partial initialization must unwind owned sockets and handles.
+`--check` executes the Vulkan device gate as well as the other initialization gates, reports the
+selected physical device, and exits. It must never emit systemd readiness. Partial initialization
+unwinds the logical device, instance, loader, sockets, and other owned handles in dependency order.
 
 Niri is the primary lifecycle reference, particularly its ordering of configuration, calloop,
 Wayland display/socket, IPC, environment publication, watcher registration, and final run loop.

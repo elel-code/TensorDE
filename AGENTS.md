@@ -6,10 +6,12 @@ APIs for their own sake.
 
 ## Core Direction
 
-- Smithay `master` is the Wayland protocol, input, session, and calloop foundation.
+- Smithay `master` owns the Wayland protocol, input, session, calloop, DRM/KMS, GBM, connector,
+  CRTC, page-flip, and scanout lifecycle.
 - Vulkanalia is the renderer binding. The renderer requires Vulkan `VK_EXT_descriptor_heap` and
   models it as a first-class `DescriptorHeap`. Descriptor sets are not a backend and must not be
-  added as a compatibility path.
+  added as a compatibility path. Vulkanalia owns rendering and synchronization, then exports
+  dma-bufs and fences back to Smithay; it must not bypass Smithay to own KMS state.
 - Physical-device selection is a renderer submodule and a configuration value. Default ranking
   prefers discrete GPUs, then integrated/virtual hardware, with CPU last; all candidates still need
   the descriptor-heap feature.
