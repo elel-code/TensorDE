@@ -50,6 +50,10 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub instance_capacity: u32,
     pub particle_indirect_index: Option<u32>,
     pub resource_descriptor_base: usize,
+    pub material_resource_descriptor: Option<usize>,
+    pub skinning_resource_descriptor: Option<usize>,
+    pub sampled_resource_descriptor_base: usize,
+    pub input_attachment_resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,
     pub skinning_byte_count: u64,
@@ -159,7 +163,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
         unsafe {
             device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
         }
-        if !scene.sampled_slots.is_empty() {
+        if !scene.descriptor_layout.sampled_slots.is_empty() {
             let sampler_bind =
                 native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor(
                     &frame.descriptor_heap,

@@ -511,7 +511,7 @@ pub(super) fn with_scene_present(
             acquire_wait_total_micros.saturating_add(elapsed_micros_u64(acquire_wait_started));
         let image_index = image_index as usize;
         let sampled_descriptor_update_started = Instant::now();
-        let sampled_descriptor_updates = write_scene_frame_sampled_descriptors(
+        let sampled_descriptor_updates = write_scene_frame_image_descriptors(
             device,
             &mut scene_resources,
             frame_slot,
@@ -817,7 +817,11 @@ pub(super) fn with_scene_present(
         .sum();
     let mesh_draw_recorded = mesh_draw_count > 0;
     let command_order = scene_command_order(
-        scene_resources.sampled_slots.is_empty(),
+        scene_resources.descriptor_layout.sampled_slots.is_empty(),
+        !scene_resources
+            .descriptor_layout
+            .input_attachment_slots
+            .is_empty(),
         sampled_fallback_texture_count != 0,
         scene_texture_image_count != 0,
         scene_resources

@@ -55,18 +55,19 @@ impl SceneSampledImageBindingPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LogicalTargetReference {
-    graph_index: u32,
-    target: SceneRenderTargetKind,
-    target_name: SceneStringId,
-    physical_slot: u32,
+pub(super) struct LogicalTargetReference {
+    pub(super) graph_index: u32,
+    pub(super) target: SceneRenderTargetKind,
+    pub(super) target_name: SceneStringId,
+    pub(super) physical_slot: u32,
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_plan(
     graph: &SceneRenderingDeviceGraphPlan,
     sampled_slots: &[u32],
+    input_attachment_slots: &[u32],
 ) -> Result<SceneSampledImageBindingPlan, String> {
-    scene_sampled_image_binding_cycle(graph, sampled_slots)?
+    scene_sampled_image_binding_cycle(graph, sampled_slots, input_attachment_slots)?
         .into_iter()
         .next()
         .ok_or_else(|| "scene sampled binding cycle is empty".to_owned())
@@ -75,6 +76,7 @@ pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_plan(
 pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_cycle(
     graph: &SceneRenderingDeviceGraphPlan,
     sampled_slots: &[u32],
+    input_attachment_slots: &[u32],
 ) -> Result<Vec<SceneSampledImageBindingPlan>, String> {
     let initial_references = logical_target_references(&graph.target_allocations);
     let mut references = initial_references.clone();
@@ -93,6 +95,7 @@ pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_cycle(
         cycle.push(scene_sampled_image_binding_plan_for_references(
             graph,
             sampled_slots,
+            input_attachment_slots,
             &mut references,
         )?);
         if references == initial_references {
@@ -121,6 +124,7 @@ pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_cycle(
 fn scene_sampled_image_binding_plan_for_references(
     graph: &SceneRenderingDeviceGraphPlan,
     sampled_slots: &[u32],
+    input_attachment_slots: &[u32],
     references: &mut [LogicalTargetReference],
 ) -> Result<SceneSampledImageBindingPlan, String> {
     let source_count = graph.mesh_draws.len().saturating_mul(sampled_slots.len());
@@ -153,6 +157,7 @@ fn scene_sampled_image_binding_plan_for_references(
             pass.mesh_draw_count,
             &pass_bindings,
             sampled_slots,
+            input_attachment_slots,
             references,
             &mut sources,
         )?;
@@ -221,7 +226,7 @@ fn lower_material_sampled_bindings(
     Ok(())
 }
 
-fn reference_physical_slots(references: &[LogicalTargetReference]) -> Vec<u32> {
+pub(super) fn reference_physical_slots(references: &[LogicalTargetReference]) -> Vec<u32> {
     references
         .iter()
         .map(|reference| reference.physical_slot)
@@ -234,13 +239,23 @@ fn lower_pass_sampled_bindings(
     draw_count: u32,
     bindings: &[&SceneRenderingDeviceSampledBinding],
     sampled_slots: &[u32],
+    input_attachment_slots: &[u32],
     references: &[LogicalTargetReference],
     sources: &mut [SceneSampledImageSource],
 ) -> Result<(), String> {
     for binding in bindings {
+        if binding.access == SceneRenderingDeviceImageAccess::InputAttachment {
+            if !input_attachment_slots.contains(&binding.slot) {
+                return Err(format!(
+                    "scene input-attachment binding pass {} slot {} is absent from input-attachment shader contracts",
+                    binding.pass_node_index, binding.slot
+                ));
+            }
+            continue;
+        }
         if binding.access != SceneRenderingDeviceImageAccess::SampledImage {
             return Err(format!(
-                "scene image binding pass {} slot {} declares {:?} but reached sampled-image lowering",
+                "scene image binding pass {} slot {} has an unsupported access {:?}",
                 binding.pass_node_index, binding.slot, binding.access
             ));
         }
@@ -386,7 +401,7 @@ pub(in crate::renderer::native_vulkan) fn target_is_direct_scene_color_snapshot(
         })
 }
 
-fn apply_swap_reference(
+pub(super) fn apply_swap_reference(
     graph_index: u32,
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
@@ -409,7 +424,7 @@ fn apply_swap_reference(
     Ok(())
 }
 
-fn logical_target_references(
+pub(super) fn logical_target_references(
     allocations: &[SceneRenderingDeviceTargetAllocation],
 ) -> Vec<LogicalTargetReference> {
     allocations
@@ -423,7 +438,7 @@ fn logical_target_references(
         .collect()
 }
 
-fn reference_physical_slot(
+pub(super) fn reference_physical_slot(
     references: &[LogicalTargetReference],
     graph_index: u32,
     target: SceneRenderTargetKind,
@@ -433,7 +448,7 @@ fn reference_physical_slot(
         .map(|index| references[index].physical_slot)
 }
 
-fn reference_index(
+pub(super) fn reference_index(
     references: &[LogicalTargetReference],
     graph_index: u32,
     target: SceneRenderTargetKind,
@@ -450,9 +465,9 @@ fn reference_index(
 mod tests {
     use super::*;
     use crate::engine::scene::{
-        SceneRenderBindingKind, SceneRenderingDeviceGraphPlan,
+        SceneBinaryDocument, SceneRenderBindingKind, SceneRenderingDeviceGraphPlan,
         SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDevicePassNode,
-        SceneRenderingDeviceSampledBinding,
+        SceneRenderingDeviceSampledBinding, SceneStorage,
     };
 
     #[test]
@@ -507,8 +522,10 @@ mod tests {
             ..empty_graph_plan()
         };
 
-        let plan = scene_sampled_image_binding_plan(&graph, &[0, 2]).expect("binding plan");
-        let cycle = scene_sampled_image_binding_cycle(&graph, &[0, 2]).expect("binding cycle");
+        let plan = scene_sampled_image_binding_plan(&graph, &[0, 2], &[])
+            .expect("binding plan");
+        let cycle = scene_sampled_image_binding_cycle(&graph, &[0, 2], &[])
+            .expect("binding cycle");
 
         assert_eq!(plan.effect_target_descriptor_count, 2);
         assert_eq!(plan.scene_texture_descriptor_count, 1);
@@ -546,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_binding_plan_rejects_input_attachment_access() {
+    fn sampled_binding_plan_rejects_unowned_input_attachment_access() {
         let target_name = SceneStringId(9);
         let mut binding = sampled_binding(0, 0, target_name, 0, 1);
         binding.access = SceneRenderingDeviceImageAccess::InputAttachment;
@@ -564,9 +581,66 @@ mod tests {
             ..empty_graph_plan()
         };
 
-        let error = scene_sampled_image_binding_plan(&graph, &[0])
+        let error = scene_sampled_image_binding_plan(&graph, &[0], &[])
             .expect_err("input attachments must not be sampled-image lowered");
-        assert!(error.contains("reached sampled-image lowering"));
+        assert!(error.contains("absent from input-attachment shader contracts"));
+    }
+
+    #[test]
+    fn input_attachment_binding_plan_keeps_target_source_out_of_sampled_lane() {
+        let target_name = SceneStringId(9);
+        let mut binding = sampled_binding(0, 0, target_name, 0, 1);
+        binding.access = SceneRenderingDeviceImageAccess::InputAttachment;
+        let mut graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![pass_node(
+                0,
+                SceneRenderPassKind::EffectMaterial,
+                target_name,
+                0,
+                1,
+            )],
+            target_allocations: vec![allocation(target_name, 4)],
+            sampled_bindings: vec![binding],
+            mesh_draws: vec![draw()],
+            ..empty_graph_plan()
+        };
+        graph.mesh_draws[0].shader_key = SceneStringId(0);
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["effects/opacity__SLOTS_1".to_owned(), "pipeline".to_owned()],
+            shader_contracts: vec![crate::engine::scene::SceneShaderContractRecord {
+                shader_key: SceneStringId(0),
+                pipeline_key: SceneStringId(1),
+                texture_slot_mask: 0,
+                input_attachment_slot_mask: 1,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 1,
+                sampler_heap_count: 0,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("input storage");
+        let sampled = scene_sampled_image_binding_plan(&graph, &[], &[0])
+            .expect("sampled lane");
+        let input = super::super::input_attachment_binding::scene_input_attachment_binding_cycle(
+            &storage,
+            &graph,
+            &[0],
+            &[sampled.clone()],
+        )
+        .expect("input lane");
+
+        assert_eq!(sampled.sampled_slot_count, 0);
+        assert_eq!(input[0].input_attachment_slot_count, 1);
+        assert_eq!(
+            input[0].source(0, 0),
+            Some(
+                super::super::input_attachment_binding::SceneInputAttachmentSource::EffectTarget {
+                    physical_slot: 4,
+                    batch_atlas_tile: 0,
+                }
+            )
+        );
     }
 
     #[test]
@@ -633,7 +707,8 @@ mod tests {
             ..empty_graph_plan()
         };
 
-        let plan = scene_sampled_image_binding_plan(&graph, &[0]).expect("ping-pong plan");
+        let plan = scene_sampled_image_binding_plan(&graph, &[0], &[])
+            .expect("ping-pong plan");
 
         assert_eq!(
             plan.source(1, 0),
@@ -755,7 +830,8 @@ mod tests {
             ..empty_graph_plan()
         };
 
-        let plan = scene_sampled_image_binding_plan(&graph, &[3]).expect("video frame plan");
+        let plan = scene_sampled_image_binding_plan(&graph, &[3], &[])
+            .expect("video frame plan");
 
         assert_eq!(plan.fallback_descriptor_count, 0);
         assert_eq!(plan.video_frame_descriptor_count, 1);

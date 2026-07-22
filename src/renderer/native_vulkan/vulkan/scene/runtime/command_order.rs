@@ -6,6 +6,7 @@
 
 pub(in crate::renderer::native_vulkan) fn scene_command_order(
     no_sampled_slots: bool,
+    input_attachment_slots_enabled: bool,
     fallback_texture_enabled: bool,
     scene_textures_enabled: bool,
     skinning_buffer_enabled: bool,
@@ -45,7 +46,12 @@ pub(in crate::renderer::native_vulkan) fn scene_command_order(
     if skinning_buffer_enabled {
         order.push("write_descriptor_heap_skinning_storage_buffer_descriptors");
     }
-    order.push("write_descriptor_heap_sampled_image_descriptors");
+    if !no_sampled_slots {
+        order.push("write_descriptor_heap_sampled_image_descriptors");
+    }
+    if input_attachment_slots_enabled {
+        order.push("write_descriptor_heap_input_attachment_descriptors");
+    }
     order.push("update_scene_transform_uniforms_per_frame");
     if dynamic_effect_uniforms_enabled {
         order.push("update_scene_effect_uniforms_per_frame");
@@ -97,7 +103,7 @@ mod tests {
     #[test]
     fn command_order_reports_per_draw_pipeline_variant_selection() {
         let order = scene_command_order(
-            false, true, true, true, true, true, false, false, false, false, false,
+            false, false, true, true, true, true, true, false, false, false, false, false,
         );
 
         assert!(order.contains(&"cmd_bind_scene_pass_pipeline"));
@@ -106,5 +112,6 @@ mod tests {
         assert!(order.contains(&"update_scene_effect_uniforms_per_frame"));
         assert!(order.contains(&"update_scene_skinning_storage_per_frame"));
         assert!(order.contains(&"upload_scene_material_textures"));
+        assert!(!order.contains(&"write_descriptor_heap_input_attachment_descriptors"));
     }
 }

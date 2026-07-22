@@ -49,7 +49,8 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         instance_count: 1,
     };
     let layout = pipeline::ScenePipelineDescriptorLayout {
-        sampled_slots: Vec::new(),
+        sampled_slots: vec![1, 3],
+        input_attachment_slots: vec![7],
         material_uniform_enabled: true,
         skinning_storage_enabled: true,
     };
@@ -69,6 +70,9 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment,
         ]
     );
     assert_eq!(
@@ -80,4 +84,9 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         3 * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64
     );
     assert_eq!(commands[0].pipeline_index, 2);
+    assert_eq!(commands[0].resource_descriptor_base, 0);
+    assert_eq!(commands[0].material_resource_descriptor, Some(1));
+    assert_eq!(commands[0].skinning_resource_descriptor, Some(2));
+    assert_eq!(commands[0].sampled_resource_descriptor_base, 3);
+    assert_eq!(commands[0].input_attachment_resource_descriptor_base, 5);
 }

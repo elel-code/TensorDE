@@ -10,6 +10,7 @@ use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder}
 mod descriptor_writes;
 
 pub(in crate::renderer::native_vulkan) use descriptor_writes::*;
+pub(in crate::renderer::native_vulkan) use descriptor_writes::native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping;
 
 use super::features::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 use super::memory::{
@@ -628,6 +629,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         None
     };
 
+    let mut command_order = vec![
+        "pack_draw_heap_slices",
+        "create_device_addressable_resource_heap_buffer",
+    ];
+    if input.sampler_count != 0 {
+        command_order.push("create_device_addressable_sampler_heap_buffer");
+    }
+    if uniform_buffer_count != 0 {
+        command_order.push("write_uniform_buffer_descriptors_into_resource_heap");
+    }
+    if sampled_image_count != 0 {
+        command_order.push("write_sampled_image_descriptors_into_same_resource_heap");
+    }
+    if input_attachment_count != 0 {
+        command_order.push(
+            "write_input_attachment_descriptors_into_same_resource_heap_without_sampler",
+        );
+    }
+    if input.sampler_count != 0 {
+        command_order.push("write_sampler_descriptors_into_sampler_heap");
+    }
+    command_order.push("cmd_bind_resource_heap_ext_once_per_draw_heap_slice");
+    if input.sampler_count != 0 {
+        command_order.push("cmd_bind_sampler_heap_ext_once_per_draw_heap_slice");
+    }
+
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
         binding: "vulkanalia",
         route: "descriptor-heap-mixed-resource-plan",
@@ -663,16 +690,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         max_resource_heap_size: properties.max_resource_heap_size,
         max_sampler_heap_size: properties.max_sampler_heap_size,
         command_order: if backend_ready {
-            vec![
-                "pack_draw_heap_slices",
-                "create_device_addressable_resource_heap_buffer",
-                "create_device_addressable_sampler_heap_buffer",
-                "write_uniform_buffer_descriptors_into_resource_heap",
-                "write_sampled_image_and_input_attachment_descriptors_into_same_resource_heap",
-                "write_sampler_descriptors_into_sampler_heap",
-                "cmd_bind_resource_heap_ext_once_per_draw_heap_slice",
-                "cmd_bind_sampler_heap_ext_once_per_draw_heap_slice",
-            ]
+            command_order
         } else {
             vec!["wait_for_descriptor_heap_capabilities"]
         },
@@ -818,6 +836,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descri
         }
     };
 
+    let mut command_order = vec![
+        "create_device_addressable_resource_heap_buffer",
+    ];
+    if plan.sampler_count != 0 {
+        command_order.push("create_device_addressable_sampler_heap_buffer");
+    }
+    if plan.uniform_buffer_count != 0 {
+        command_order.push("write_uniform_buffer_descriptors_into_resource_heap");
+    }
+    if plan.sampled_image_count != 0 {
+        command_order.push("write_sampled_image_descriptors_into_same_resource_heap");
+    }
+    if plan.input_attachment_count != 0 {
+        command_order.push(
+            "write_input_attachment_descriptors_into_same_resource_heap_without_sampler",
+        );
+    }
+    if plan.sampler_count != 0 {
+        command_order.push("write_sampler_descriptors_into_sampler_heap");
+    }
+    command_order.push("cmd_bind_resource_heap_ext");
+    if plan.sampler_count != 0 {
+        command_order.push("cmd_bind_sampler_heap_ext_when_sampled_images_exist");
+    }
+    command_order.push("draw_with_mixed_resource_heap_mapping");
+
     Ok(VulkanaliaDescriptorHeapResourceResources {
         snapshot: NativeVulkanVulkanaliaDescriptorHeapResourceResourceSnapshot {
             binding: "vulkanalia",
@@ -828,17 +872,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descri
             resource_descriptors_written: 0,
             sampler_descriptors_written: 0,
             shader_mapping_source: "heap-with-constant-offset",
-            shader_resource_mask: "uniform-buffer|combined-sampled-image",
-            command_order: vec![
-                "create_device_addressable_resource_heap_buffer",
-                "create_device_addressable_sampler_heap_buffer_when_sampled_images_exist",
-                "write_uniform_buffer_descriptors_into_resource_heap",
-                "write_sampled_image_descriptors_into_same_resource_heap",
-                "write_sampler_descriptors_into_sampler_heap",
-                "cmd_bind_resource_heap_ext",
-                "cmd_bind_sampler_heap_ext_when_sampled_images_exist",
-                "draw_with_mixed_resource_heap_mapping",
-            ],
+            shader_resource_mask: mixed_resource_shader_mask(plan),
+            command_order,
             zero_copy_gate: "uniform payload and sampled images remain retained GPU resources; descriptor heap only binds device address ranges and image/sampler handles",
             primary_reference: plan.primary_reference,
         },
@@ -846,6 +881,40 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descri
         resource_heap,
         sampler_heap,
     })
+}
+
+fn mixed_resource_shader_mask(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+) -> &'static str {
+    match (
+        plan.uniform_buffer_count != 0,
+        plan.storage_buffer_count != 0,
+        plan.sampled_image_count != 0,
+        plan.input_attachment_count != 0,
+    ) {
+        (false, false, false, false) => "none",
+        (true, false, false, false) => "uniform-buffer",
+        (false, true, false, false) => "storage-buffer",
+        (false, false, true, false) => "combined-sampled-image",
+        (false, false, false, true) => "input-attachment",
+        (true, true, false, false) => "uniform-buffer|storage-buffer",
+        (true, false, true, false) => "uniform-buffer|combined-sampled-image",
+        (true, false, false, true) => "uniform-buffer|input-attachment",
+        (false, true, true, false) => "storage-buffer|combined-sampled-image",
+        (false, true, false, true) => "storage-buffer|input-attachment",
+        (false, false, true, true) => "combined-sampled-image|input-attachment",
+        (true, true, true, false) => "uniform-buffer|storage-buffer|combined-sampled-image",
+        (true, true, false, true) => "uniform-buffer|storage-buffer|input-attachment",
+        (true, false, true, true) => {
+            "uniform-buffer|combined-sampled-image|input-attachment"
+        }
+        (false, true, true, true) => {
+            "storage-buffer|combined-sampled-image|input-attachment"
+        }
+        (true, true, true, true) => {
+            "uniform-buffer|storage-buffer|combined-sampled-image|input-attachment"
+        }
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(

@@ -63,6 +63,7 @@ use super::super::present::swapchain::{
 mod alpha_coverage_scissor;
 mod command_order;
 mod composite_scissor;
+mod descriptor_layout;
 mod draw_recording;
 mod draw_uniform;
 mod effect_target;
@@ -74,6 +75,7 @@ mod fullscreen_primitive;
 mod gpu_resource_lifecycle;
 mod gpu_timing;
 mod graph_execution;
+mod input_attachment_binding;
 mod material_uniform;
 mod mesh_payload;
 mod local_read;
@@ -121,13 +123,18 @@ use material_uniform::{
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
-    scene_disabled_pipeline_indices_for_draws, scene_pipeline_descriptor_layout,
-    scene_pipeline_indices_for_draws,
+    scene_disabled_pipeline_indices_for_draws, scene_pipeline_indices_for_draws,
+};
+use descriptor_layout::{
+    ScenePipelineDescriptorLayout, scene_pipeline_descriptor_layout,
 };
 use resource_cleanup::destroy_scene_present_runtime_resources;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,
+};
+use input_attachment_binding::{
+    SceneInputAttachmentBindingPlan, scene_input_attachment_binding_cycle,
 };
 use scene_color_clear::SceneGpuSceneColorClear;
 
@@ -377,10 +384,10 @@ struct SceneGpuResources {
     particle_global_descriptor_base: Option<usize>,
     pipelines: ScenePipelineResources,
     draw_commands: Vec<SceneGpuDrawCommand>,
-    sampled_slots: Vec<u32>,
+    descriptor_layout: ScenePipelineDescriptorLayout,
     sampled_binding_cycle: Vec<SceneSampledImageBindingPlan>,
+    input_attachment_binding_cycle: Vec<SceneInputAttachmentBindingPlan>,
     sampled_descriptor_dirty_update_enabled: bool,
-    material_uniform_enabled: bool,
     frame_topology: SceneFrameTopology,
     dynamic_effect_uniforms: bool,
     scene_color_msaa_enabled: bool,
@@ -463,7 +470,7 @@ struct SceneGpuFrameResources {
     material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     descriptor_heap: VulkanaliaDescriptorHeapResourceResources,
-    sampled_binding_phase: usize,
+    image_binding_phase: usize,
 }
 
 impl SceneGpuResources {
@@ -661,7 +668,7 @@ fn end_one_time_commands(
 fn scene_descriptor_plan_inputs(
     draws: &[SceneRenderingDeviceMeshDraw],
     particle_emitters: &[SceneParticleGpuEmitterPlan],
-    layout: &pipeline::ScenePipelineDescriptorLayout,
+    layout: &ScenePipelineDescriptorLayout,
     pipeline_indices: &[u32],
     disabled_pipeline_indices: &[Option<u32>],
     alpha_coverage_scissors: &[Vec<SceneGpuScissor>],
@@ -669,10 +676,7 @@ fn scene_descriptor_plan_inputs(
     Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     Vec<SceneGpuDrawCommand>,
 ) {
-    let per_draw_resource_count = 1
-        + usize::from(layout.material_uniform_enabled)
-        + usize::from(layout.skinning_storage_enabled)
-        + layout.sampled_slots.len();
+    let per_draw_resource_count = layout.per_draw_resource_count();
     let mut resources = Vec::with_capacity(draws.len().saturating_mul(per_draw_resource_count));
     let mut commands = Vec::with_capacity(draws.len());
     for (index, draw) in draws.iter().enumerate() {
@@ -695,6 +699,9 @@ fn scene_descriptor_plan_inputs(
                 .iter()
                 .map(|_| NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage),
         );
+        resources.extend(layout.input_attachment_slots.iter().map(|_| {
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment
+        }));
         commands.push(SceneGpuDrawCommand {
             enabled: true,
             primitive: draw.primitive,
@@ -712,10 +719,19 @@ fn scene_descriptor_plan_inputs(
                 .find(|emitter| {
                     draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard
                         && emitter.object == draw.object
-                })
+            })
                 .map(|emitter| emitter.indirect_draw_index),
             resource_descriptor_base: base,
-            sampler_descriptor_base: index * layout.sampled_slots.len(),
+            material_resource_descriptor: layout
+                .material_resource_offset()
+                .map(|offset| base + offset),
+            skinning_resource_descriptor: layout
+                .skinning_resource_offset()
+                .map(|offset| base + offset),
+            sampled_resource_descriptor_base: base + layout.sampled_resource_offset(),
+            input_attachment_resource_descriptor_base:
+                base + layout.input_attachment_resource_offset(),
+            sampler_descriptor_base: index * layout.sampler_count_per_draw(),
             skinning_byte_offset,
             skinning_byte_count,
             scissor: None,

@@ -470,7 +470,7 @@ pub(in crate::renderer::native_vulkan) fn effect_target_memory_bytes(
         .sum()
 }
 
-pub(in crate::renderer::native_vulkan) fn effect_target_sampled_image_view_info(
+pub(in crate::renderer::native_vulkan) fn effect_target_image_view_info(
     resource: &SceneEffectTargetImageResource,
     _batch_atlas_tile: u32,
 ) -> vk::ImageViewCreateInfo {

@@ -6,6 +6,7 @@ mod input_attachment;
 pub(in crate::renderer::native_vulkan) use input_attachment::{
     native_vulkan_vulkanalia_descriptor_heap_resource_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_input_attachment_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_input_attachment,
 };
 

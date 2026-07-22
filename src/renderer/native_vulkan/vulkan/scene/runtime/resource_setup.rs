@@ -1,4 +1,6 @@
 use super::*;
+mod descriptor_writes;
+
 pub(super) fn create_scene_gpu_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -29,10 +31,20 @@ pub(super) fn create_scene_gpu_resources(
     let sampled_binding_cycle = scene_sampled_image_binding_cycle(
         &backend_plan.rendering_device_graph,
         &descriptor_layout.sampled_slots,
+        &descriptor_layout.input_attachment_slots,
     )?;
     let sampled_binding_plan = sampled_binding_cycle
         .first()
         .ok_or_else(|| "scene sampled binding cycle is empty".to_owned())?;
+    let input_attachment_binding_cycle = scene_input_attachment_binding_cycle(
+        storage,
+        &backend_plan.rendering_device_graph,
+        &descriptor_layout.input_attachment_slots,
+        &sampled_binding_cycle,
+    )?;
+    let input_attachment_binding_plan = input_attachment_binding_cycle
+        .first()
+        .ok_or_else(|| "scene input-attachment binding cycle is empty".to_owned())?;
     let effect_target_plans = effect_target::scene_effect_target_image_plan(
         storage,
         &backend_plan.rendering_device_graph,
@@ -220,8 +232,7 @@ pub(super) fn create_scene_gpu_resources(
         NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
             resource_descriptors,
             sampler_count: descriptor_layout
-                .sampled_slots
-                .len()
+                .sampler_count_per_draw()
                 .saturating_mul(draw_count),
             properties: *descriptor_heap_properties,
         },
@@ -338,6 +349,7 @@ pub(super) fn create_scene_gpu_resources(
         &scene_textures,
         &effect_targets,
         sampled_binding_plan,
+        input_attachment_binding_plan,
         Some((initial_scene_color_image, target_format)),
     ) {
         scene_texture::destroy_scene_texture_images(device, scene_textures);
@@ -501,7 +513,7 @@ pub(super) fn create_scene_gpu_resources(
         material_buffer,
         skinning_buffer,
         descriptor_heap,
-        sampled_binding_phase: 0,
+        image_binding_phase: 0,
     }];
     for _ in 1..frame_slot_count {
         match create_additional_scene_frame_resources(
@@ -516,6 +528,7 @@ pub(super) fn create_scene_gpu_resources(
             &scene_textures,
             &effect_targets,
             sampled_binding_plan,
+            input_attachment_binding_plan,
             initial_scene_color_image,
             target_format,
             particle_resources.as_ref(),
@@ -569,13 +582,13 @@ pub(super) fn create_scene_gpu_resources(
         particle_global_descriptor_base,
         pipelines: pipeline_resources,
         draw_commands,
-        sampled_slots: descriptor_layout.sampled_slots,
+        descriptor_layout: descriptor_layout.clone(),
         sampled_binding_cycle,
+        input_attachment_binding_cycle,
         sampled_descriptor_dirty_update_enabled: std::env::var_os(
             "GILDER_NATIVE_VULKAN_DISABLE_SAMPLED_DESCRIPTOR_DIRTY_UPDATE",
         )
         .is_none(),
-        material_uniform_enabled: descriptor_layout.material_uniform_enabled,
         frame_topology,
         dynamic_effect_uniforms,
         scene_color_msaa_enabled,
@@ -598,6 +611,7 @@ fn create_additional_scene_frame_resources(
     scene_textures: &[scene_texture::SceneTextureImageResource],
     effect_targets: &[effect_target::SceneEffectTargetImageResource],
     sampled_binding_plan: &SceneSampledImageBindingPlan,
+    input_attachment_binding_plan: &SceneInputAttachmentBindingPlan,
     initial_scene_color_image: vk::Image,
     target_format: vk::Format,
     particle_resources: Option<&particle_resources::SceneParticleGpuResources>,
@@ -680,6 +694,7 @@ fn create_additional_scene_frame_resources(
         scene_textures,
         effect_targets,
         sampled_binding_plan,
+        input_attachment_binding_plan,
         Some((initial_scene_color_image, target_format)),
     ) {
         native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
@@ -722,7 +737,7 @@ fn create_additional_scene_frame_resources(
         material_buffer,
         skinning_buffer,
         descriptor_heap,
-        sampled_binding_phase: 0,
+        image_binding_phase: 0,
     })
 }
 
@@ -737,6 +752,7 @@ pub(super) fn write_scene_descriptors(
     scene_textures: &[scene_texture::SceneTextureImageResource],
     effect_targets: &[effect_target::SceneEffectTargetImageResource],
     sampled_binding_plan: &SceneSampledImageBindingPlan,
+    input_attachment_binding_plan: &SceneInputAttachmentBindingPlan,
     scene_color: Option<(vk::Image, vk::Format)>,
 ) -> Result<(), String> {
     for (draw_index, draw) in draw_commands.iter().enumerate() {
@@ -749,8 +765,10 @@ pub(super) fn write_scene_descriptors(
                 .saturating_add(draw_index as u64 * SCENE_DRAW_UNIFORM_BYTES),
             SCENE_DRAW_UNIFORM_BYTES,
         )?;
-        let mut resource_descriptor_index = draw.resource_descriptor_base + 1;
-        if let Some(material_buffer) = material_buffer {
+        if let Some(resource_descriptor_index) = draw.material_resource_descriptor {
+            let material_buffer = material_buffer.ok_or_else(|| {
+                format!("scene draw {draw_index} has a material descriptor without a material buffer")
+            })?;
             native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer(
                 device,
                 descriptor_heap,
@@ -760,9 +778,11 @@ pub(super) fn write_scene_descriptors(
                     .saturating_add(draw_index as u64 * SCENE_MATERIAL_UNIFORM_BYTES),
                 SCENE_MATERIAL_UNIFORM_BYTES,
             )?;
-            resource_descriptor_index += 1;
         }
-        if let Some(skinning_buffer) = skinning_buffer {
+        if let Some(resource_descriptor_index) = draw.skinning_resource_descriptor {
+            let skinning_buffer = skinning_buffer.ok_or_else(|| {
+                format!("scene draw {draw_index} has a skinning descriptor without a skinning buffer")
+            })?;
             native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
                 device,
                 descriptor_heap,
@@ -774,7 +794,7 @@ pub(super) fn write_scene_descriptors(
             )?;
         }
     }
-    write_scene_sampled_descriptors(
+    descriptor_writes::write_scene_sampled_descriptors(
         device,
         descriptor_heap,
         draw_commands,
@@ -783,12 +803,17 @@ pub(super) fn write_scene_descriptors(
         effect_targets,
         sampled_binding_plan,
         scene_color,
-        material_buffer.is_some(),
-        skinning_buffer.is_some(),
+    )?;
+    descriptor_writes::write_scene_input_attachment_descriptors(
+        device,
+        descriptor_heap,
+        draw_commands,
+        effect_targets,
+        input_attachment_binding_plan,
     )
 }
 
-pub(super) fn write_scene_frame_sampled_descriptors(
+pub(super) fn write_scene_frame_image_descriptors(
     device: &Device,
     scene: &mut SceneGpuResources,
     frame_slot: usize,
@@ -800,25 +825,28 @@ pub(super) fn write_scene_frame_sampled_descriptors(
         .sampled_binding_cycle
         .get(reference_phase)
         .ok_or_else(|| format!("scene sampled binding phase {reference_phase} is missing"))?;
+    let input_attachment_binding_plan = scene
+        .input_attachment_binding_cycle
+        .get(reference_phase)
+        .ok_or_else(|| {
+            format!("scene input-attachment binding phase {reference_phase} is missing")
+        })?;
     let frame = scene
         .frame_resources
         .get_mut(frame_slot)
         .ok_or_else(|| format!("scene frame slot {frame_slot} is missing"))?;
-    if scene.sampled_descriptor_dirty_update_enabled
-        && frame.sampled_binding_phase == reference_phase
+    if scene.sampled_descriptor_dirty_update_enabled && frame.image_binding_phase == reference_phase
     {
-        return write_scene_color_snapshot_descriptors(
+        return descriptor_writes::write_scene_color_snapshot_descriptors(
             device,
             &mut frame.descriptor_heap,
             &scene.draw_commands,
             sampled_binding_plan,
             scene_color_image,
             scene_color_format,
-            scene.material_uniform_enabled,
-            frame.skinning_buffer.is_some(),
         );
     }
-    write_scene_sampled_descriptors(
+    descriptor_writes::write_scene_sampled_descriptors(
         device,
         &mut frame.descriptor_heap,
         &scene.draw_commands,
@@ -827,148 +855,17 @@ pub(super) fn write_scene_frame_sampled_descriptors(
         &scene.effect_targets,
         sampled_binding_plan,
         Some((scene_color_image, scene_color_format)),
-        scene.material_uniform_enabled,
-        frame.skinning_buffer.is_some(),
     )?;
-    frame.sampled_binding_phase = reference_phase;
+    descriptor_writes::write_scene_input_attachment_descriptors(
+        device,
+        &mut frame.descriptor_heap,
+        &scene.draw_commands,
+        &scene.effect_targets,
+        input_attachment_binding_plan,
+    )?;
+    frame.image_binding_phase = reference_phase;
     Ok(scene
         .draw_commands
         .len()
         .saturating_mul(sampled_binding_plan.sampled_slot_count))
-}
-
-fn write_scene_color_snapshot_descriptors(
-    device: &Device,
-    descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
-    draw_commands: &[SceneGpuDrawCommand],
-    sampled_binding_plan: &SceneSampledImageBindingPlan,
-    scene_color_image: vk::Image,
-    scene_color_format: vk::Format,
-    material_uniform_enabled: bool,
-    skinning_storage_enabled: bool,
-) -> Result<usize, String> {
-    let image_view_info = scene_color_image_view_info(scene_color_image, scene_color_format);
-    let sampler_info = scene_sampled_sampler_info();
-    let mut update_count = 0usize;
-    for (draw_index, draw) in draw_commands.iter().enumerate() {
-        let resource_descriptor_index = draw.resource_descriptor_base
-            + 1
-            + usize::from(material_uniform_enabled)
-            + usize::from(skinning_storage_enabled);
-        for sampled_index in 0..sampled_binding_plan.sampled_slot_count {
-            if sampled_binding_plan.source(draw_index, sampled_index)
-                != Some(SceneSampledImageSource::SceneColorSnapshot)
-            {
-                continue;
-            }
-            native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
-                device,
-                descriptor_heap,
-                resource_descriptor_index + sampled_index,
-                draw.sampler_descriptor_base + sampled_index,
-                &image_view_info,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                &sampler_info,
-            )?;
-            update_count += 1;
-        }
-    }
-    Ok(update_count)
-}
-
-pub(super) fn write_scene_sampled_descriptors(
-    device: &Device,
-    descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
-    draw_commands: &[SceneGpuDrawCommand],
-    white_image: Option<&NativeVulkanVulkanaliaImage>,
-    scene_textures: &[scene_texture::SceneTextureImageResource],
-    effect_targets: &[effect_target::SceneEffectTargetImageResource],
-    sampled_binding_plan: &SceneSampledImageBindingPlan,
-    scene_color: Option<(vk::Image, vk::Format)>,
-    material_uniform_enabled: bool,
-    skinning_storage_enabled: bool,
-) -> Result<(), String> {
-    let fallback_image_view_info = white_image.map(scene_white_image_view_info);
-    let fallback_sampler_info = scene_sampled_sampler_info();
-    for (draw_index, draw) in draw_commands.iter().enumerate() {
-        let resource_descriptor_index = draw.resource_descriptor_base
-            + 1
-            + usize::from(material_uniform_enabled)
-            + usize::from(skinning_storage_enabled);
-        for sampled_index in 0..sampled_binding_plan.sampled_slot_count {
-            let source = sampled_binding_plan
-                .source(draw_index, sampled_index)
-                .ok_or_else(|| {
-                    format!(
-                        "scene draw {draw_index} sampled descriptor {sampled_index} has no binding plan"
-                    )
-                })?;
-            let (image_view_info, sampler_info) = match source {
-                SceneSampledImageSource::FallbackWhite => (
-                    fallback_image_view_info.ok_or_else(|| {
-                        "scene fallback sampled binding has no fallback texture".to_owned()
-                    })?,
-                    fallback_sampler_info,
-                ),
-                SceneSampledImageSource::SceneTexture { resource } => {
-                    let texture = scene_texture::scene_texture_image(scene_textures, resource)
-                        .ok_or_else(|| {
-                            format!(
-                                "scene sampled texture resource {} has no GPU image",
-                                resource.0
-                            )
-                        })?;
-                    (
-                        scene_texture::scene_texture_image_view_info(texture),
-                        scene_texture::scene_texture_sampler_info(texture),
-                    )
-                }
-                SceneSampledImageSource::SceneColorSnapshot => {
-                    let (image, format) = scene_color.ok_or_else(|| {
-                        "scene color snapshot descriptor is unavailable before image acquire"
-                            .to_owned()
-                    })?;
-                    (
-                        scene_color_image_view_info(image, format),
-                        fallback_sampler_info,
-                    )
-                }
-                SceneSampledImageSource::EffectTarget {
-                    physical_slot,
-                    batch_atlas_tile,
-                } => {
-                    let resource = effect_targets
-                        .iter()
-                        .find(|resource| resource.plan.physical_slot == physical_slot)
-                        .ok_or_else(|| {
-                            format!(
-                                "scene sampled effect target physical slot {physical_slot} has no image"
-                            )
-                        })?;
-                    (
-                        effect_target::effect_target_sampled_image_view_info(
-                            resource,
-                            batch_atlas_tile,
-                        ),
-                        fallback_sampler_info,
-                    )
-                }
-                SceneSampledImageSource::VideoFrame { media_instance } => {
-                    return Err(format!(
-                        "scene video media instance {media_instance} has no external frame resource for descriptor resolution"
-                    ));
-                }
-            };
-            native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
-                device,
-                descriptor_heap,
-                resource_descriptor_index + sampled_index,
-                draw.sampler_descriptor_base + sampled_index,
-                &image_view_info,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                &sampler_info,
-            )?;
-        }
-    }
-    Ok(())
 }

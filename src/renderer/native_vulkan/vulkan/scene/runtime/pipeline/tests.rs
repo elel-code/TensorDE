@@ -1,4 +1,5 @@
 use super::*;
+use super::super::descriptor_layout::scene_pipeline_descriptor_layout;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
@@ -59,6 +60,40 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
     assert_eq!(layout.sampled_slots, vec![0]);
     assert!(layout.material_uniform_enabled);
     assert_eq!(indices, vec![0, 1]);
+}
+
+#[test]
+fn descriptor_layout_keeps_sampled_and_input_attachment_slots_disjoint_in_storage() {
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["effects/opacity__SLOTS_1".to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 1 << 0,
+            input_attachment_slot_mask: 1 << 2,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 2,
+            sampler_heap_count: 1,
+        }],
+        render_passes: vec![render_pass(
+            0,
+            SceneStringId(0),
+            ScenePipelineBlend::Normal,
+        )],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let graph = graph_with_passes(vec![pass_node(0, 0, 1)]);
+
+    let layout = scene_pipeline_descriptor_layout(&storage, &graph).expect("layout");
+
+    assert_eq!(layout.sampled_slots, vec![0]);
+    assert_eq!(layout.input_attachment_slots, vec![2]);
+    assert_eq!(layout.sampled_resource_offset(), 2);
+    assert_eq!(layout.input_attachment_resource_offset(), 3);
+    assert_eq!(layout.per_draw_resource_count(), 4);
+    assert_eq!(layout.sampler_count_per_draw(), 1);
 }
 
 #[test]

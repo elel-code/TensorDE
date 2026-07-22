@@ -21,12 +21,20 @@ use crate::renderer::native_vulkan::scene::{
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 
 use super::effect_target::SceneEffectTargetImagePlan;
+pub(in crate::renderer::native_vulkan) use super::descriptor_layout::{
+    ScenePipelineDescriptorLayout,
+};
+use super::descriptor_layout::{
+    ScenePipelineShaderDescriptorAccess, scene_passthrough_descriptor_access,
+    scene_pipeline_shader_descriptor_access,
+};
 
 mod blend;
 mod diagnostics;
@@ -38,13 +46,6 @@ pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diag
 use blend::scene_color_blend_attachment;
 use samples::ScenePipelineSamples;
 use shader_module::create_shader_module;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct ScenePipelineDescriptorLayout {
-    pub sampled_slots: Vec<u32>,
-    pub material_uniform_enabled: bool,
-    pub skinning_storage_enabled: bool,
-}
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineResources {
     pub entries: Vec<ScenePipelineEntry>,
@@ -110,42 +111,6 @@ impl SceneGpuBlend {
             Self::HslColor => "hsl-color",
         }
     }
-}
-
-pub(in crate::renderer::native_vulkan) fn scene_pipeline_descriptor_layout(
-    storage: &SceneStorage,
-    graph: &SceneRenderingDeviceGraphPlan,
-) -> Result<ScenePipelineDescriptorLayout, String> {
-    let mut texture_slot_mask = 0u32;
-    let mut material_uniform_enabled = false;
-    for key in drawn_pass_material_keys(storage, graph)? {
-        let ScenePipelineShader::Authored(shader_id) = key.shader else {
-            continue;
-        };
-        let shader_key = storage
-            .string(shader_id)
-            .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
-        let contract = storage
-            .shader_contracts()
-            .iter()
-            .find(|contract| contract.shader_key == shader_id)
-            .ok_or_else(|| format!("scene shader {shader_key:?} has no shader contract"))?;
-        let shader = native_vulkan_scene_shader_for_key(shader_key)
-            .ok_or_else(|| format!("scene shader {shader_key:?} is not built into the catalog"))?;
-        texture_slot_mask |= contract.texture_slot_mask;
-        material_uniform_enabled |= shader.parameter_layout.uses_material_uniform();
-    }
-    if graph.pass_nodes.iter().any(|pass| {
-        pass.effect_visibility_policy
-            == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
-    }) {
-        texture_slot_mask |= 1;
-    }
-    Ok(ScenePipelineDescriptorLayout {
-        sampled_slots: sampled_slots(texture_slot_mask),
-        material_uniform_enabled,
-        skinning_storage_enabled: !graph.puppet_bone_matrices.is_empty(),
-    })
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
@@ -312,8 +277,26 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             .ok_or_else(|| {
                 format!(
                     "scene fragment shader {fragment_shader_key:?} is not in the built-in catalog"
-                )
-            })?;
+            )
+        })?;
+        let descriptor_access = match key.shader {
+            ScenePipelineShader::Authored(shader_id) => {
+                scene_pipeline_shader_descriptor_access(storage, shader_id)?
+            }
+            ScenePipelineShader::EffectPassthrough(_) => scene_passthrough_descriptor_access(),
+        };
+        if !descriptor_access.input_attachment_slots.is_empty() {
+            destroy_scene_pipelines(
+                device,
+                ScenePipelineResources {
+                    entries,
+                    particle_compute: None,
+                },
+            );
+            return Err(format!(
+                "scene shader {fragment_shader_key:?} declares input attachments but its subpassInput shader variant is not connected"
+            ));
+        }
         let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(
             vertex_shader,
             key.primitive,
@@ -340,6 +323,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             fragment_shader.fragment_spirv,
             descriptor_heap_plan,
             descriptor_layout,
+            &descriptor_access,
             key.blend,
             key.cull_mode,
             key.color_write_mask,
@@ -703,6 +687,7 @@ fn create_scene_pipeline(
     fragment_spirv: &[u32],
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
+    descriptor_access: &ScenePipelineShaderDescriptorAccess,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
@@ -724,6 +709,7 @@ fn create_scene_pipeline(
             fragment_module,
             descriptor_heap_plan,
             descriptor_layout,
+            descriptor_access,
             blend,
             cull_mode,
             color_write_mask,
@@ -750,6 +736,7 @@ fn create_scene_pipeline_with_modules(
     fragment_module: vk::ShaderModule,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
+    descriptor_access: &ScenePipelineShaderDescriptorAccess,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
@@ -809,18 +796,39 @@ fn create_scene_pipeline_with_modules(
             )?,
         );
     }
-    let sampled_base = 1
-        + usize::from(descriptor_layout.material_uniform_enabled)
-        + usize::from(descriptor_layout.skinning_storage_enabled);
-    for (sampled_index, slot) in descriptor_layout.sampled_slots.iter().enumerate() {
+    for slot in &descriptor_access.sampled_slots {
+        let sampled_index = descriptor_layout
+            .sampled_slots
+            .iter()
+            .position(|candidate| candidate == slot)
+            .ok_or_else(|| {
+                format!("scene shader sampled slot {slot} is absent from the global descriptor layout")
+            })?;
         fragment_mappings.push(
             native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
                 descriptor_heap_plan,
                 scene_sampled_shader_binding(*slot),
                 0,
-                sampled_base + sampled_index,
+                descriptor_layout.sampled_resource_offset() + sampled_index,
                 0,
                 sampled_index,
+            )?,
+        );
+    }
+    for slot in &descriptor_access.input_attachment_slots {
+        let input_index = descriptor_layout
+            .input_attachment_slots
+            .iter()
+            .position(|candidate| candidate == slot)
+            .ok_or_else(|| {
+                format!("scene shader input-attachment slot {slot} is absent from the global descriptor layout")
+            })?;
+        fragment_mappings.push(
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping(
+                descriptor_heap_plan,
+                scene_input_attachment_shader_binding(*slot),
+                0,
+                descriptor_layout.input_attachment_resource_offset() + input_index,
             )?,
         );
     }
@@ -853,6 +861,13 @@ fn scene_sampled_shader_binding(slot: u32) -> u32 {
     // logical texture slot stays 3 in IR and heap planning, while SPIR-V uses
     // a collision-free binding selected here and in build.rs.
     if slot == 3 { 35 } else { slot }
+}
+
+fn scene_input_attachment_shader_binding(slot: u32) -> u32 {
+    // Input attachments use the same logical slot namespace as sampled images,
+    // but a separate SPIR-V binding namespace until the subpassInput catalog
+    // variants are connected.  The mapping remains sampler-free.
+    64 + scene_sampled_shader_binding(slot)
 }
 
 fn create_graphics_pipeline(
@@ -977,10 +992,6 @@ fn scene_vk_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
         SceneCullMode::None => vk::CullModeFlags::NONE,
         SceneCullMode::Normal => vk::CullModeFlags::BACK,
     }
-}
-
-fn sampled_slots(mask: u32) -> Vec<u32> {
-    (0..32).filter(|slot| mask & (1u32 << slot) != 0).collect()
 }
 
 #[cfg(test)]

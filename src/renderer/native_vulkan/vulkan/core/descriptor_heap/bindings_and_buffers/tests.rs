@@ -285,8 +285,46 @@
         assert!(
             snapshot
                 .command_order
-                .contains(&"write_sampled_image_and_input_attachment_descriptors_into_same_resource_heap")
+                .contains(&"write_sampled_image_descriptors_into_same_resource_heap")
         );
+        assert!(!snapshot.command_order.contains(
+            &"write_input_attachment_descriptors_into_same_resource_heap_without_sampler"
+        ));
+    }
+
+    #[test]
+    fn input_only_resource_plan_reports_only_input_attachment_write_without_sampler_steps() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment,
+                ],
+                sampler_count: 0,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    max_resource_heap_size: 4096,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(snapshot.input_attachment_count, 1);
+        assert_eq!(mixed_resource_shader_mask(&snapshot), "input-attachment");
+        assert!(snapshot
+            .command_order
+            .contains(&"write_input_attachment_descriptors_into_same_resource_heap_without_sampler"));
+        assert!(!snapshot
+            .command_order
+            .contains(&"create_device_addressable_sampler_heap_buffer"));
+        assert!(!snapshot
+            .command_order
+            .contains(&"write_sampler_descriptors_into_sampler_heap"));
+        assert!(!snapshot
+            .command_order
+            .contains(&"cmd_bind_sampler_heap_ext_once_per_draw_heap_slice"));
     }
 
     #[test]
@@ -340,6 +378,47 @@
                 mapping.source_data.constant_offset.sampler_heap_array_stride,
                 0
             );
+        }
+    }
+
+    #[test]
+    fn mixed_input_attachment_mapping_anchors_at_transform_uniform() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment,
+                ],
+                sampler_count: 0,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    max_resource_heap_size: 4096,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+        let mapping = native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping(
+            &snapshot,
+            66,
+            0,
+            1,
+        )
+        .expect("mixed input-attachment mapping");
+
+        assert_eq!(mapping.first_binding, 66);
+        assert_eq!(
+            mapping.resource_mask,
+            vk::SpirvResourceTypeFlagsEXT::READ_ONLY_IMAGE
+        );
+        unsafe {
+            assert_eq!(mapping.source_data.constant_offset.heap_offset, 32);
+            assert_eq!(mapping.source_data.constant_offset.heap_array_stride, 32);
+            assert_eq!(mapping.source_data.constant_offset.sampler_heap_offset, 0);
+            assert_eq!(mapping.source_data.constant_offset.sampler_heap_array_stride, 0);
         }
     }
 
