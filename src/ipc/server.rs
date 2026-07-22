@@ -116,7 +116,9 @@ mod tests {
 
     #[test]
     fn socket_is_removed_only_when_server_owns_it() {
-        let directory = tempfile::tempdir_in("target").unwrap();
+        let directory = tempfile::tempdir_in("/run/user/1000")
+            .or_else(|_| tempfile::tempdir_in("target"))
+            .unwrap();
         let path = directory.path().join("tensor.sock");
         {
             let server = IpcServer::bind(&path).unwrap();
