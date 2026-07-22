@@ -24,7 +24,6 @@ pub struct Compositor {
     protocol: WaylandRuntime,
     ipc: IpcServer,
     backend_config: BackendConfig,
-    renderer: VulkanRenderer,
     launcher: ProcessLauncher,
     startup_commands: Vec<StartupCommand>,
     systemd: SystemdMode,
@@ -43,7 +42,7 @@ impl Compositor {
             xwayland,
             startup_commands,
         } = config;
-        let protocol =
+        let mut protocol =
             WaylandRuntime::new(LayoutEngine::with_options(initial_layout, layout_options))?;
         let requested_drm_node = render_device
             .as_deref()
@@ -53,15 +52,16 @@ impl Compositor {
             gpu_preference,
             requested_drm_node,
         ))?;
+        let backend_config = BackendConfig {
+            drm_node: renderer.selected().render_node,
+            renderer_formats: renderer.selected().formats.clone(),
+        };
+        protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;
         Ok(Self {
             protocol,
             ipc,
-            backend_config: BackendConfig {
-                drm_node: renderer.selected().render_node,
-                renderer_formats: renderer.selected().formats.clone(),
-            },
-            renderer,
+            backend_config,
             launcher: ProcessLauncher::new(systemd),
             startup_commands,
             systemd,
@@ -70,8 +70,12 @@ impl Compositor {
     }
 
     pub fn check_ready(&mut self) {
-        let renderer_target = self.renderer.target();
-        let selected_device = self.renderer.selected();
+        let Some(renderer) = self.protocol.renderer() else {
+            return;
+        };
+        let renderer_target = renderer.target();
+        let selected_device = renderer.selected().clone();
+        let renderer_outputs = renderer.output_count();
         let (
             preview_views,
             layout,
@@ -112,6 +116,7 @@ impl Compositor {
             protocol = self.protocol.backend_name(),
             wayland_socket = ?self.protocol.socket_name(),
             ipc = %self.ipc.path().display(),
+            renderer_outputs,
             vulkan = %renderer_target.api_version,
             descriptors = renderer_target.descriptor_heap.name(),
             gpu_preference = renderer_target.device.preference().name(),
@@ -178,13 +183,12 @@ impl Compositor {
             mut protocol,
             ipc,
             backend_config: _,
-            renderer,
             launcher,
             startup_commands,
             systemd,
             xwayland,
         } = self;
-        let runtime_owners = (renderer, launcher, startup_commands, systemd, xwayland);
+        let runtime_owners = (launcher, startup_commands, systemd, xwayland);
         let stop_signal = protocol.stop_signal();
         protocol.run_with_ipc(&ipc, move |request, state| {
             let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });

@@ -59,6 +59,20 @@ entry is keyed by stable buffer identity plus format, modifier, dimensions, plan
 strides; an fd number is never an identity. Buffer reuse waits for the KMS release path before
 Vulkan writes the image again.
 
+## Frame Boundary Status
+
+`render/frame.rs` is the renderer-to-scene boundary. It owns a bounded resource descriptor heap
+allocator, retains the previous `SceneSnapshot` per output, computes damage, and keeps descriptor
+ranges live until the Vulkan timeline value retires them. `render/vulkan/frame.rs` uses three
+resettable command buffers and one timeline semaphore to exercise that lifetime contract. A lost
+device stops future frame scheduling instead of recycling GPU-visible ranges.
+
+The current boundary deliberately submits an empty command buffer. Native Vulkan image allocation,
+descriptor writes, dma-buf export, queue-family release, and Smithay atomic KMS commit are the next
+required layer. Until those handles and fences are connected, presentation-time, alpha-modifier,
+and background-effect globals remain unadvertised; a timeline submission alone is not a displayed
+frame.
+
 ## Synchronization
 
 Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as

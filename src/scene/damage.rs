@@ -10,6 +10,17 @@ pub struct DamageSet {
 }
 
 impl DamageSet {
+    pub(crate) fn full(viewport: Rect) -> Self {
+        Self {
+            regions: non_empty(viewport).into_iter().collect(),
+        }
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+
     pub fn regions(&self) -> &[Rect] {
         &self.regions
     }
@@ -42,14 +53,10 @@ impl DamageSet {
 
 pub(super) fn between(previous: Option<&SceneSnapshot>, current: &SceneSnapshot) -> DamageSet {
     let Some(previous) = previous else {
-        return DamageSet {
-            regions: non_empty(current.viewport).into_iter().collect(),
-        };
+        return DamageSet::full(current.viewport);
     };
     if previous.workspace_id != current.workspace_id || previous.viewport != current.viewport {
-        return DamageSet {
-            regions: non_empty(current.viewport).into_iter().collect(),
-        };
+        return DamageSet::full(current.viewport);
     }
 
     let mut damage = DamageSet::default();

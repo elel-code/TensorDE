@@ -129,6 +129,7 @@ pub struct DeviceCandidate {
     pub device_type: vk::PhysicalDeviceType,
     pub api_version: Version,
     pub descriptor_heap_supported: bool,
+    pub timeline_semaphore_supported: bool,
     pub graphics_queue_family: Option<u32>,
     pub drm: Option<DrmDeviceIdentity>,
     pub interop: NativeInteropCapabilities,
@@ -182,12 +183,20 @@ impl DeviceSelector {
             return Err(DeviceSelectionError::MissingDescriptorHeap);
         }
         if !candidates.iter().any(|candidate| {
-            candidate.descriptor_heap_supported && candidate.api_version >= Version::V1_4_0
+            candidate.descriptor_heap_supported && candidate.timeline_semaphore_supported
+        }) {
+            return Err(DeviceSelectionError::MissingTimelineSemaphore);
+        }
+        if !candidates.iter().any(|candidate| {
+            candidate.descriptor_heap_supported
+                && candidate.timeline_semaphore_supported
+                && candidate.api_version >= Version::V1_4_0
         }) {
             return Err(DeviceSelectionError::VulkanTooOld);
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.timeline_semaphore_supported
                 && candidate.api_version >= Version::V1_4_0
                 && candidate.graphics_queue_family.is_some()
         }) {
@@ -195,6 +204,7 @@ impl DeviceSelector {
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.timeline_semaphore_supported
                 && candidate.api_version >= Version::V1_4_0
                 && candidate.graphics_queue_family.is_some()
                 && candidate
@@ -261,6 +271,7 @@ impl DeviceSelector {
         candidates
             .into_iter()
             .filter(|candidate| candidate.descriptor_heap_supported)
+            .filter(|candidate| candidate.timeline_semaphore_supported)
             .filter(|candidate| candidate.api_version >= Version::V1_4_0)
             .filter(|candidate| candidate.graphics_queue_family.is_some())
             .filter(|candidate| {
@@ -306,6 +317,7 @@ impl DeviceSelector {
 
 fn native_base(candidate: &DeviceCandidate) -> bool {
     candidate.descriptor_heap_supported
+        && candidate.timeline_semaphore_supported
         && candidate.api_version >= Version::V1_4_0
         && candidate.graphics_queue_family.is_some()
         && candidate
@@ -318,6 +330,8 @@ fn native_base(candidate: &DeviceCandidate) -> bool {
 pub enum DeviceSelectionError {
     #[error("no Vulkan device supports the required VK_EXT_descriptor_heap feature")]
     MissingDescriptorHeap,
+    #[error("no descriptor-heap Vulkan device supports timeline semaphores")]
+    MissingTimelineSemaphore,
     #[error("no descriptor-heap Vulkan device supports Vulkan 1.4")]
     VulkanTooOld,
     #[error("no Vulkan 1.4 descriptor-heap device exposes a graphics queue")]
@@ -368,6 +382,7 @@ mod tests {
             device_type,
             api_version: Version::V1_4_0,
             descriptor_heap_supported: heap,
+            timeline_semaphore_supported: true,
             graphics_queue_family: Some(0),
             drm: Some(DrmDeviceIdentity::new(
                 Some(DrmNodeId::new(226, ordinal as u32)),
@@ -405,6 +420,17 @@ mod tests {
         assert!(matches!(
             DeviceSelector::new(GpuPreference::Any).select(&candidates),
             Err(DeviceSelectionError::MissingDescriptorHeap)
+        ));
+    }
+
+    #[test]
+    fn timeline_semaphores_are_required_for_native_frame_scheduling() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.timeline_semaphore_supported = false;
+
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::MissingTimelineSemaphore)
         ));
     }
 

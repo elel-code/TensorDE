@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::state::{RuntimeState, WaylandClientState};
+use crate::render::VulkanRenderer;
 
 #[cfg(feature = "xwayland")]
 use smithay::reexports::wayland_server::Client;
@@ -72,6 +73,14 @@ impl WaylandRuntime {
 
     pub(crate) fn state_mut(&mut self) -> &mut RuntimeState {
         &mut self.state
+    }
+
+    pub(crate) fn install_renderer(&mut self, renderer: VulkanRenderer) {
+        self.state.install_renderer(renderer);
+    }
+
+    pub(crate) fn renderer(&self) -> Option<&VulkanRenderer> {
+        self.state.renderer()
     }
 
     pub(crate) fn prepare_backend(&mut self, config: &BackendConfig) -> Result<(), ProtocolError> {

@@ -33,7 +33,11 @@ for linear snapshot comparison and carry an independent stacking-order index for
 styles resolve conservative visual bounds (including shadows and clipped output edges); damage
 merges adjacent regions, caps pathological fragmentation, and expands regions that feed a
 backdrop-blur dependency. Vulkan descriptor allocation consumes this compact scene data after ECS
-queries finish.
+queries finish. `render/frame.rs` now owns per-output scene history, damage, descriptor-heap range
+allocation, and timeline retirement, and is connected to `RuntimeState` output lifecycle. The
+Vulkan executor submits an empty command buffer while native image/KMS submission is still being
+built, so this is an explicit synchronization boundary rather than a claim that pixels are already
+displayed.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
@@ -47,7 +51,7 @@ Physical-device ranking lives in `render/device.rs`. The policy is configurable 
 prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
 in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
 feature bit, requires a graphics queue and a complete primary/render node pair reported through
-`VK_EXT_physical_device_drm`, and requires external dma-buf memory, explicit DRM modifiers, foreign
+`VK_EXT_physical_device_drm`, timeline semaphores, and requires external dma-buf memory, explicit DRM modifiers, foreign
 queue-family ownership transfer, and bidirectional binary `SYNC_FD` semaphore support. The logical
 device enables only the extensions for this native path and descriptor heap; there is no
 descriptor-set or descriptor-buffer fallback.

@@ -28,8 +28,14 @@ use tracing::warn;
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
+    render::VulkanRenderer,
 };
 use tensor_util::Size;
+
+#[cfg(feature = "tty")]
+use crate::render::RenderOutputId;
+#[cfg(feature = "tty")]
+use tensor_util::Rect;
 
 use super::globals::ProtocolGlobals;
 
@@ -52,6 +58,7 @@ pub(crate) struct RuntimeState {
     pub(crate) popups: PopupManager,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
+    pub(crate) renderer: Option<VulkanRenderer>,
     #[cfg(feature = "tty")]
     outputs: HashMap<BackendOutputId, ManagedOutput>,
     #[cfg(feature = "tty")]
@@ -87,6 +94,7 @@ impl RuntimeState {
             popups: PopupManager::default(),
             world: CompositorWorld::new(),
             layout,
+            renderer: None,
             #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
@@ -96,6 +104,18 @@ impl RuntimeState {
             surface_views: HashMap::new(),
             next_view_id: 1,
         }
+    }
+
+    pub(crate) fn install_renderer(&mut self, renderer: VulkanRenderer) {
+        assert!(
+            self.renderer.is_none(),
+            "renderer was installed more than once"
+        );
+        self.renderer = Some(renderer);
+    }
+
+    pub(crate) fn renderer(&self) -> Option<&VulkanRenderer> {
+        self.renderer.as_ref()
     }
 
     pub(crate) fn register_toplevel(&mut self, surface: ToplevelSurface) -> ViewId {
@@ -193,7 +213,60 @@ impl RuntimeState {
                 toplevel.send_pending_configure();
             }
         }
+        #[cfg(feature = "tty")]
+        self.submit_default_workspace_frame();
         true
+    }
+
+    #[cfg(feature = "tty")]
+    fn submit_default_workspace_frame(&mut self) {
+        let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE) else {
+            return;
+        };
+        let Some((output_id, _)) = self.outputs.iter().find(|(_, managed)| {
+            let Some(geometry) = self.space.output_geometry(&managed.output) else {
+                return false;
+            };
+            geometry.loc.x == scene.viewport.x
+                && geometry.loc.y == scene.viewport.y
+                && geometry.size.w == i32::try_from(scene.viewport.width).unwrap_or(i32::MAX)
+                && geometry.size.h == i32::try_from(scene.viewport.height).unwrap_or(i32::MAX)
+        }) else {
+            return;
+        };
+        let output_id = *output_id;
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match renderer.submit_scene(
+            RenderOutputId {
+                device_id: output_id.device_id,
+                connector_id: output_id.connector_id,
+            },
+            scene,
+        ) {
+            Ok(frame) => info!(
+                output_device = output_id.device_id,
+                output_connector = output_id.connector_id,
+                serial = frame.serial,
+                timeline = frame.timeline_value,
+                damage_regions = frame.damage.regions().len(),
+                descriptor_offset = frame.descriptors.offset,
+                descriptor_bytes = frame.descriptors.size,
+                scene_nodes = frame.scene.nodes().len(),
+                damage_empty = frame.damage.is_empty(),
+                frame_output_device = frame.output.device_id,
+                frame_output_connector = frame.output.connector_id,
+                viewport = ?frame.viewport,
+                "renderer frame boundary submitted"
+            ),
+            Err(error) => warn!(
+                output_device = output_id.device_id,
+                output_connector = output_id.connector_id,
+                %error,
+                "renderer frame boundary failed"
+            ),
+        }
     }
 
     pub(crate) fn update_surface_scale(&self, surface: &WlSurface) {
@@ -329,7 +402,7 @@ impl RuntimeState {
                 size: descriptor.physical_size.into(),
                 subpixel: descriptor.subpixel,
                 make: "Unknown".to_owned(),
-                model: descriptor.name,
+                model: descriptor.name.clone(),
                 serial_number: "Unknown".to_owned(),
             },
         );
@@ -343,6 +416,23 @@ impl RuntimeState {
             None,
             Some((0, 0).into()),
         );
+        if let Some(renderer) = self.renderer.as_mut() {
+            let viewport = Rect::new(
+                0,
+                0,
+                u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
+                u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
+            );
+            if let Err(error) = renderer.register_output(
+                RenderOutputId {
+                    device_id: descriptor.id.device_id,
+                    connector_id: descriptor.id.connector_id,
+                },
+                viewport,
+            ) {
+                warn!(%error, output = descriptor.name, "failed to register renderer output");
+            }
+        }
         let global = output.create_global::<Self>(&self.display_handle);
         self.space.map_output(&output, (0, 0));
         self.outputs
@@ -373,6 +463,23 @@ impl RuntimeState {
         managed
             .output
             .change_current_state(Some(descriptor.preferred_mode), None, None, None);
+        if let Some(renderer) = self.renderer.as_mut() {
+            let viewport = Rect::new(
+                0,
+                0,
+                u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
+                u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
+            );
+            if let Err(error) = renderer.register_output(
+                RenderOutputId {
+                    device_id: descriptor.id.device_id,
+                    connector_id: descriptor.id.connector_id,
+                },
+                viewport,
+            ) {
+                warn!(%error, output = descriptor.name, "failed to resize renderer output");
+            }
+        }
         self.reflow_outputs();
     }
 
@@ -382,6 +489,12 @@ impl RuntimeState {
             return;
         };
         self.space.unmap_output(&managed.output);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.unregister_output(RenderOutputId {
+                device_id: id.device_id,
+                connector_id: id.connector_id,
+            });
+        }
         self.display_handle.remove_global::<Self>(managed.global);
         self.reflow_outputs();
         info!(

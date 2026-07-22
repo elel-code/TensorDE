@@ -13,6 +13,14 @@ use super::{
     DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId, NativeInteropCapabilities,
     RendererTarget, VulkanFormatCapability,
 };
+#[cfg(feature = "tty")]
+use super::{FrameError, FrameScheduler, FrameSubmission, RenderOutputId};
+
+#[cfg(feature = "tty")]
+mod frame;
+
+#[cfg(feature = "tty")]
+const DESCRIPTOR_HEAP_BYTES: u64 = 16 * 1024 * 1024;
 
 const OUTPUT_FORMATS: &[(Fourcc, vk::Format)] = &[
     (Fourcc::Xrgb8888, vk::Format::B8G8R8A8_SRGB),
@@ -29,6 +37,8 @@ pub(crate) struct VulkanRenderer {
     _owner: VulkanOwner,
     target: RendererTarget,
     selected: SelectedDevice,
+    #[cfg(feature = "tty")]
+    frames: FrameScheduler,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +81,7 @@ impl VulkanRenderer {
                 api = %device.candidate.api_version,
                 device_type = ?device.candidate.device_type,
                 descriptor_heap = device.candidate.descriptor_heap_supported,
+                timeline_semaphore = device.candidate.timeline_semaphore_supported,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
                 native_output_formats = device.candidate.native_output_format_count,
                 "Vulkan physical device probed"
@@ -86,6 +97,14 @@ impl VulkanRenderer {
             .ok_or(DeviceSelectionError::MissingGraphicsQueue)?;
         let device = create_device(&instance.instance, selected.handle, graphics_queue_family)?;
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+        #[cfg(feature = "tty")]
+        let frame_executor = match frame::VulkanFrameExecutor::new(&device, graphics_queue_family) {
+            Ok(executor) => executor,
+            Err(source) => {
+                unsafe { device.destroy_device(None) };
+                return Err(RendererError::CreateFrameResources(source));
+            }
+        };
         let (primary_node, render_node) = selected
             .candidate
             .drm
@@ -134,9 +153,14 @@ impl VulkanRenderer {
                 instance,
                 _physical_device: selected.handle,
                 _graphics_queue: graphics_queue,
+                #[cfg(feature = "tty")]
+                frame_executor,
             },
             target,
             selected: selected_info,
+            #[cfg(feature = "tty")]
+            frames: FrameScheduler::new(DESCRIPTOR_HEAP_BYTES)
+                .expect("the built-in descriptor heap size is valid"),
         })
     }
 
@@ -146,6 +170,64 @@ impl VulkanRenderer {
 
     pub(crate) fn selected(&self) -> &SelectedDevice {
         &self.selected
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn register_output(
+        &mut self,
+        output: RenderOutputId,
+        viewport: tensor_util::Rect,
+    ) -> Result<(), FrameError> {
+        self.frames.register_output(output, viewport)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn unregister_output(&mut self, output: RenderOutputId) {
+        self.frames.unregister_output(output);
+    }
+
+    pub(crate) fn output_count(&self) -> usize {
+        #[cfg(not(feature = "tty"))]
+        return 0;
+        #[cfg(feature = "tty")]
+        self.frames.output_count()
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn submit_scene(
+        &mut self,
+        output: RenderOutputId,
+        scene: crate::scene::SceneSnapshot,
+    ) -> Result<FrameSubmission, RendererError> {
+        let completed = match self._owner.frame_executor.completed(&self._owner.device) {
+            Ok(value) => value,
+            Err(error) => {
+                if error == vk::ErrorCode::DEVICE_LOST {
+                    self.frames.mark_device_lost();
+                }
+                return Err(RendererError::QueryTimeline(error));
+            }
+        };
+        self.frames.retire_completed(completed);
+        let frame = self
+            .frames
+            .submit(output, scene, completed)
+            .map_err(|error| RendererError::Frame(error.to_string()))?;
+        if let Err(source) = self._owner.frame_executor.submit(
+            &self._owner.device,
+            self._owner._graphics_queue,
+            frame.timeline_value,
+            completed,
+        ) {
+            if matches!(
+                source,
+                frame::VulkanFrameError::Vulkan(vk::ErrorCode::DEVICE_LOST)
+            ) {
+                self.frames.mark_device_lost();
+            }
+            return Err(RendererError::SubmitFrame(format!("{source:?}")));
+        }
+        Ok(frame)
     }
 }
 
@@ -172,10 +254,17 @@ struct VulkanOwner {
     instance: InstanceOwner,
     _physical_device: vk::PhysicalDevice,
     _graphics_queue: vk::Queue,
+    #[cfg(feature = "tty")]
+    frame_executor: frame::VulkanFrameExecutor,
 }
 
 impl Drop for VulkanOwner {
     fn drop(&mut self) {
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            #[cfg(feature = "tty")]
+            self.frame_executor.destroy(&self.device);
+        }
         unsafe { self.device.destroy_device(None) };
         let _ = &self.instance;
     }
@@ -202,6 +291,7 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
             .any(|extension| extension.extension_name == vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name);
         let descriptor_heap_supported =
             has_heap_extension && descriptor_heap_feature(instance, handle);
+        let timeline_semaphore_supported = timeline_semaphore_feature(instance, handle);
         let has_drm_extension = extensions.iter().any(|extension| {
             extension.extension_name == vk::EXT_PHYSICAL_DEVICE_DRM_EXTENSION.name
         });
@@ -217,6 +307,7 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
         };
         let interop = native_interop_capabilities(instance, handle, &extensions);
         let formats = if descriptor_heap_supported
+            && timeline_semaphore_supported
             && Version::from(properties.api_version) >= Version::V1_4_0
             && graphics_queue_family.is_some()
             && drm.and_then(DrmDeviceIdentity::node_pair).is_some()
@@ -238,6 +329,7 @@ fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError
                 device_type: properties.device_type,
                 api_version: properties.api_version.into(),
                 descriptor_heap_supported,
+                timeline_semaphore_supported,
                 graphics_queue_family,
                 drm,
                 interop,
@@ -436,6 +528,13 @@ fn descriptor_heap_feature(instance: &Instance, device: vk::PhysicalDevice) -> b
     descriptor_heap.descriptor_heap != 0
 }
 
+fn timeline_semaphore_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {
+    let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut vulkan12);
+    unsafe { instance.get_physical_device_features2(device, &mut features) };
+    vulkan12.timeline_semaphore != 0
+}
+
 fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
@@ -469,9 +568,13 @@ fn create_device(
     let mut descriptor_heap = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
         .descriptor_heap(true)
         .build();
+    let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::builder()
+        .timeline_semaphore(true)
+        .build();
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queues)
         .enabled_extension_names(&extensions)
+        .push_next(&mut vulkan12)
         .push_next(&mut descriptor_heap);
     unsafe { instance.create_device(physical_device, &info, None) }
         .map_err(RendererError::CreateDevice)
@@ -503,4 +606,16 @@ pub enum RendererError {
     Selection(#[from] DeviceSelectionError),
     #[error("failed to create the Vulkan descriptor-heap dma-buf device: {0:?}")]
     CreateDevice(vk::ErrorCode),
+    #[error("failed to create Vulkan frame resources: {0:?}")]
+    #[cfg(feature = "tty")]
+    CreateFrameResources(vk::ErrorCode),
+    #[error("failed to query the renderer timeline semaphore: {0:?}")]
+    #[cfg(feature = "tty")]
+    QueryTimeline(vk::ErrorCode),
+    #[error("failed to submit a renderer frame: {0}")]
+    #[cfg(feature = "tty")]
+    SubmitFrame(String),
+    #[error("renderer frame could not be prepared: {0}")]
+    #[cfg(feature = "tty")]
+    Frame(String),
 }
