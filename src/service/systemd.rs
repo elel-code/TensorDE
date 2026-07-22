@@ -24,7 +24,21 @@ pub fn notify_ready() -> io::Result<()> {
     ])
 }
 
-pub fn import_environment(values: &[EnvironmentValue]) -> Result<(), SystemdError> {
+pub struct ImportedEnvironment {
+    _private: (),
+}
+
+impl Drop for ImportedEnvironment {
+    fn drop(&mut self) {
+        if let Err(error) = unset_environment() {
+            warn!(%error, "failed to clear session environment");
+        }
+    }
+}
+
+pub fn import_environment(
+    values: &[EnvironmentValue],
+) -> Result<ImportedEnvironment, SystemdError> {
     let mut args = vec![OsString::from("--user"), OsString::from("set-environment")];
     args.extend(values.iter().map(|(name, value)| {
         let mut item = name.clone();
@@ -33,6 +47,7 @@ pub fn import_environment(values: &[EnvironmentValue]) -> Result<(), SystemdErro
         item
     }));
     run_systemctl(&args)?;
+    let imported = ImportedEnvironment { _private: () };
 
     let mut dbus_args = Vec::new();
     dbus_args.extend(values.iter().map(|(name, value)| {
@@ -45,12 +60,12 @@ pub fn import_environment(values: &[EnvironmentValue]) -> Result<(), SystemdErro
         .args(&dbus_args)
         .status()
     {
-        Ok(status) if status.success() => Ok(()),
+        Ok(status) if status.success() => Ok(imported),
         Ok(status) => {
             warn!(%status, "D-Bus activation environment update failed");
-            Ok(())
+            Ok(imported)
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(imported),
         Err(source) => Err(SystemdError::Command {
             command: "dbus-update-activation-environment",
             source,
@@ -58,7 +73,7 @@ pub fn import_environment(values: &[EnvironmentValue]) -> Result<(), SystemdErro
     }
 }
 
-pub fn unset_environment() -> Result<(), SystemdError> {
+fn unset_environment() -> Result<(), SystemdError> {
     let args = [
         OsString::from("--user"),
         OsString::from("unset-environment"),

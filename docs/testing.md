@@ -15,6 +15,9 @@ Tensor borrows test strategy from Niri and Hyprland without copying implementati
   and invalid configured node paths without requiring a Vulkan driver.
 - Native interop tests reject each missing external-memory, dma-buf, modifier, foreign
   queue-family, external-semaphore, and bidirectional `SYNC_FD` capability independently.
+- Startup-gate tests prove that runtime preparation, process-environment publication, active
+  user-manager publication, and readiness cannot be skipped or reordered before session autostart.
+  Check and non-session modes must never receive an autostart permit.
 - Output lifecycle tests drive synthetic connector events through Smithay `Output`/`Space` state;
   they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
 - Output policy tests retain incomplete connector snapshots while excluding them from scanout, and

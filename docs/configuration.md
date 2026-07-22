@@ -51,16 +51,23 @@ the tty backend. When omitted, Vulkan capability filtering and `gpu` ranking cho
 the active libseat session fails startup.
 
 `systemd` accepts `auto`, `enabled`, or `disabled`. The default `auto` mode activates when
-`NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, or `MANAGERPID` identifies a user-manager launch. Explicit
-configuration overrides detection without changing the optional Cargo feature boundary.
+the `systemd` Cargo feature is present and `NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, or `MANAGERPID`
+identifies a user-manager launch. Without that feature, `auto` resolves to the direct path while
+`enabled` fails startup. Explicit configuration never manufactures unavailable integration.
 
 `xwayland` defaults to `true`. It starts the rootless XWayland process and calloop source when the
 compositor enters its event loop. This is not an X11 backend: Tensor rejects primary X11 sessions.
 
 Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
-only for `--session` startup, after environment publication and readiness notification. Values are
-passed directly to the executable: Tensor does not invoke a shell, expand variables, or interpret
-pipes and redirections. Use a dedicated executable when orchestration is more complex than argv.
+only for `--session` startup. Tensor first prepares the runtime, installs `WAYLAND_DISPLAY`,
+`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, and `TENSOR_IPC_SOCKET` in the child environment, waits
+for an active systemd user manager to accept the same values, and publishes readiness. Only then
+does the one-shot autostart gate release commands in configuration order. `--check`, ordinary
+non-session startup, environment-sync failure, and readiness failure launch none of them.
+
+Values are passed directly to the executable: Tensor does not invoke a shell, expand variables, or
+interpret pipes and redirections. Use a dedicated executable when orchestration is more complex
+than argv.
 
 Future reloads parse and validate off the event-loop critical path. A failed reload must preserve
 the last valid configuration and report a structured error through logs and IPC.

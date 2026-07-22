@@ -1,8 +1,7 @@
+use std::ffi::OsString;
+
 use thiserror::Error;
 use tracing::{info, warn};
-
-#[cfg(feature = "systemd")]
-use std::ffi::OsString;
 
 use crate::{
     backend::BackendConfig,
@@ -15,13 +14,11 @@ use crate::{
     layout::{LayoutEngine, Rect},
     protocol::{ProtocolError, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
-    service::{SystemdMode, session_environment},
+    service::{EnvironmentValue, SystemdMode, session_environment},
     spawn::ProcessLauncher,
+    startup::SessionAutostartPermit,
     xwayland::XWaylandConfig,
 };
-
-#[cfg(feature = "systemd")]
-use crate::service::EnvironmentValue;
 
 pub struct Compositor {
     protocol: WaylandRuntime,
@@ -55,13 +52,6 @@ impl Compositor {
             requested_drm_node,
         ))?;
         let ipc = IpcServer::bind(ipc_socket)?;
-        let environment = session_environment(
-            protocol
-                .socket_name()
-                .ok_or(CompositorError::MissingWaylandSocket)?
-                .to_os_string(),
-            ipc.path().as_os_str().to_os_string(),
-        );
         Ok(Self {
             protocol,
             ipc,
@@ -69,7 +59,7 @@ impl Compositor {
                 drm_node: renderer.selected().render_node,
             },
             renderer,
-            launcher: ProcessLauncher::new(systemd).with_environment(environment),
+            launcher: ProcessLauncher::new(systemd),
             startup_commands,
             systemd,
             xwayland,
@@ -117,11 +107,7 @@ impl Compositor {
         );
     }
 
-    pub fn systemd_mode(&self) -> SystemdMode {
-        self.systemd
-    }
-
-    pub fn spawn_startup_commands(&self) {
+    pub(crate) fn spawn_startup_commands(&self, _permit: SessionAutostartPermit) {
         for command in &self.startup_commands {
             let Some((program, args)) = command.argv.split_first() else {
                 continue;
@@ -138,16 +124,17 @@ impl Compositor {
         }
     }
 
-    #[cfg(feature = "systemd")]
-    pub fn session_environment(&self) -> Result<Vec<EnvironmentValue>, CompositorError> {
+    pub(crate) fn publish_session_environment(
+        &mut self,
+    ) -> Result<Vec<EnvironmentValue>, CompositorError> {
         let wayland = self
             .protocol
             .socket_name()
             .ok_or(CompositorError::MissingWaylandSocket)?;
-        Ok(session_environment(
-            wayland.to_os_string(),
-            OsString::from(self.ipc.path()),
-        ))
+        let environment =
+            session_environment(wayland.to_os_string(), OsString::from(self.ipc.path()));
+        self.launcher.set_environment(environment.clone());
+        Ok(environment)
     }
 
     pub fn prepare_runtime(&mut self) -> Result<(), CompositorError> {

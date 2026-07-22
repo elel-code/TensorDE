@@ -73,10 +73,14 @@ Keep this order explicit and testable:
 6. Bind the IPC socket and optional portal/systemd adapters.
 7. Construct ECS resources/components and the initial scene.
 8. Register watchers, signals, and event sources.
-9. Publish the session environment, notify systemd after all required gates pass, then enter the
+9. Publish the session environment, synchronously update an active systemd user manager, notify
+   readiness after all required gates pass, then authorize session autostart and enter the
    compositor event loop.
 
 Do not notify readiness before the Wayland socket, renderer, ECS, and IPC gates are complete.
+`spawn-at-startup` must require the one-shot startup permit; control-flow ordering alone is not a
+gate. `--check`, non-session startup, failed environment publication, and failed readiness must
+never launch configured commands.
 
 ## Verification
 

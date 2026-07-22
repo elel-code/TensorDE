@@ -76,15 +76,29 @@ impl ProcessLauncher {
         K: Into<OsString>,
         V: Into<OsString>,
     {
+        self.set_environment(values);
+        self
+    }
+
+    pub fn set_environment<I, K, V>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
         self.environment = values
             .into_iter()
             .map(|(name, value)| (name.into(), value.into()))
             .collect();
-        self
     }
 
     pub const fn strategy(&self) -> SpawnStrategy {
-        if self.mode.resolve(self.systemd_detected) {
+        let systemd_scope = match self.mode {
+            SystemdMode::Enabled => true,
+            SystemdMode::Auto => cfg!(feature = "systemd") && self.systemd_detected,
+            SystemdMode::Disabled => false,
+        };
+        if systemd_scope {
             SpawnStrategy::SystemdScope
         } else {
             SpawnStrategy::Direct
@@ -445,9 +459,15 @@ mod tests {
 
     #[test]
     fn strategy_follows_mode_and_detection() {
+        #[cfg(feature = "systemd")]
         assert_eq!(
             ProcessLauncher::with_systemd_detection(SystemdMode::Auto, true).strategy(),
             SpawnStrategy::SystemdScope
+        );
+        #[cfg(not(feature = "systemd"))]
+        assert_eq!(
+            ProcessLauncher::with_systemd_detection(SystemdMode::Auto, true).strategy(),
+            SpawnStrategy::Direct
         );
         assert_eq!(
             ProcessLauncher::with_systemd_detection(SystemdMode::Auto, false).strategy(),
