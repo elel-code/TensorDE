@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tensor Compositor Engineering"
+  short_description: "Build Tensor with strict compositor architecture"
+  default_prompt: "Use $tensor-compositor to implement a Tensor compositor change within its architecture rules."
