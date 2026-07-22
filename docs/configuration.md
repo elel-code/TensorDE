@@ -29,7 +29,7 @@ The initial layout surface has three layout families:
 
 - `scrolling-1d` keeps views on one navigable axis and is the default policy.
 - `spatial-2d` places views in a two-dimensional tiled arrangement.
-- `classic` provides the traditional master-and-stack arrangement.
+- `master-stack` provides the traditional master-and-stack arrangement.
 
 Floating, fullscreen, and monocle behavior are workspace or view state modifiers, not additional
 layout families. `tabbed` is reserved for a later container-tree extension rather than being added

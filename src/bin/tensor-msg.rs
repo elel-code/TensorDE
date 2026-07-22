@@ -139,10 +139,10 @@ mod tests {
         assert!(matches!(Command::from(CliCommand::Ping), Command::Ping));
         assert!(matches!(
             Command::from(CliCommand::SetLayout {
-                layout: LayoutKind::Classic
+                layout: LayoutKind::MasterStack
             }),
             Command::SetLayout {
-                layout: LayoutKind::Classic
+                layout: LayoutKind::MasterStack
             }
         ));
     }

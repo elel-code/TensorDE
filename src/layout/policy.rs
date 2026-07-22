@@ -12,8 +12,8 @@ pub enum LayoutKind {
     Scrolling1D,
     #[serde(rename = "spatial-2d")]
     Spatial2D,
-    #[serde(rename = "classic")]
-    Classic,
+    #[serde(rename = "master-stack")]
+    MasterStack,
 }
 
 impl LayoutKind {
@@ -21,7 +21,7 @@ impl LayoutKind {
         match self {
             Self::Scrolling1D => "scrolling-1d",
             Self::Spatial2D => "spatial-2d",
-            Self::Classic => "classic",
+            Self::MasterStack => "master-stack",
         }
     }
 }
@@ -33,14 +33,14 @@ impl FromStr for LayoutKind {
         match value {
             "scrolling-1d" => Ok(Self::Scrolling1D),
             "spatial-2d" => Ok(Self::Spatial2D),
-            "classic" => Ok(Self::Classic),
+            "master-stack" => Ok(Self::MasterStack),
             _ => Err(ParseLayoutError(value.to_owned())),
         }
     }
 }
 
 #[derive(Debug, Error)]
-#[error("unknown layout '{0}'; expected scrolling-1d, spatial-2d, or classic")]
+#[error("unknown layout '{0}'; expected scrolling-1d, spatial-2d, or master-stack")]
 pub struct ParseLayoutError(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +61,7 @@ impl LayoutEngine {
         match self.kind {
             LayoutKind::Scrolling1D => arrange_columns(area, view_count),
             LayoutKind::Spatial2D => arrange_grid(area, view_count),
-            LayoutKind::Classic => arrange_master_stack(area, view_count),
+            LayoutKind::MasterStack => arrange_master_stack(area, view_count),
         }
     }
 }
@@ -147,7 +147,7 @@ mod tests {
         for kind in [
             LayoutKind::Scrolling1D,
             LayoutKind::Spatial2D,
-            LayoutKind::Classic,
+            LayoutKind::MasterStack,
         ] {
             assert!(LayoutEngine::new(kind).arrange(OUTPUT, 0).is_empty());
         }
@@ -184,8 +184,8 @@ mod tests {
     }
 
     #[test]
-    fn classic_layout_builds_master_and_stack() {
-        let rects = LayoutEngine::new(LayoutKind::Classic).arrange(OUTPUT, 3);
+    fn master_stack_layout_builds_master_and_stack() {
+        let rects = LayoutEngine::new(LayoutKind::MasterStack).arrange(OUTPUT, 3);
 
         assert_eq!(rects[0], Rect::new(0, 0, 1056, 1080));
         assert_eq!(rects[1], Rect::new(1056, 0, 864, 540));

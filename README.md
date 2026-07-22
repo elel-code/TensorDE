@@ -5,7 +5,7 @@ Tensor is an early-stage Wayland compositor written in Rust. Its intended stack 
 - Smithay for Wayland protocol state, input, DRM/KMS integration, and the event loop.
 - Vulkanalia for a custom Vulkan renderer.
 - A bindless descriptor heap backed by `VK_EXT_descriptor_heap`.
-- Pluggable layouts: scrolling 1D, spatial 2D, and classic master-stack.
+- Pluggable layouts: scrolling 1D, spatial 2D, and master-stack.
 
 Design records live in `docs/`: [architecture](docs/architecture.md),
 [startup](docs/startup.md), [configuration](docs/configuration.md),
@@ -35,7 +35,7 @@ TENSOR_LAYOUT=spatial-2d cargo run -- --check
 cargo run -- --config examples/config.kdl --check
 ```
 
-`TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `classic`.
+`TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 `VK_EXT_descriptor_heap`.
 The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
