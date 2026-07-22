@@ -19,3 +19,8 @@ cargo fmt --all -- --check
 uv run scripts/check_file_lines.py
 cargo test --workspace --all-targets
 ```
+
+The IPC tests cover fragmented and coalesced frames, multiple requests on one non-blocking client,
+version rejection, layout mutation, and graceful shutdown. A running session can be queried with
+`tensor-msg --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensor-msg --socket "$TENSOR_IPC_SOCKET"
+quit` for a manual smoke-test shutdown.

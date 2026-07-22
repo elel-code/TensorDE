@@ -6,19 +6,21 @@ use thiserror::Error;
 use super::geometry::Rect;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum LayoutKind {
     #[default]
-    Niri1D,
-    Nourish2D,
+    #[serde(rename = "scrolling-1d")]
+    Scrolling1D,
+    #[serde(rename = "spatial-2d")]
+    Spatial2D,
+    #[serde(rename = "classic")]
     Classic,
 }
 
 impl LayoutKind {
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Niri1D => "niri-1d",
-            Self::Nourish2D => "nourish-2d",
+            Self::Scrolling1D => "scrolling-1d",
+            Self::Spatial2D => "spatial-2d",
             Self::Classic => "classic",
         }
     }
@@ -29,8 +31,8 @@ impl FromStr for LayoutKind {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "niri-1d" => Ok(Self::Niri1D),
-            "nourish-2d" => Ok(Self::Nourish2D),
+            "scrolling-1d" => Ok(Self::Scrolling1D),
+            "spatial-2d" => Ok(Self::Spatial2D),
             "classic" => Ok(Self::Classic),
             _ => Err(ParseLayoutError(value.to_owned())),
         }
@@ -38,7 +40,7 @@ impl FromStr for LayoutKind {
 }
 
 #[derive(Debug, Error)]
-#[error("unknown layout '{0}'; expected niri-1d, nourish-2d, or classic")]
+#[error("unknown layout '{0}'; expected scrolling-1d, spatial-2d, or classic")]
 pub struct ParseLayoutError(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +59,8 @@ impl LayoutEngine {
 
     pub fn arrange(self, area: Rect, view_count: usize) -> Vec<Rect> {
         match self.kind {
-            LayoutKind::Niri1D => arrange_columns(area, view_count),
-            LayoutKind::Nourish2D => arrange_grid(area, view_count),
+            LayoutKind::Scrolling1D => arrange_columns(area, view_count),
+            LayoutKind::Spatial2D => arrange_grid(area, view_count),
             LayoutKind::Classic => arrange_master_stack(area, view_count),
         }
     }
@@ -143,8 +145,8 @@ mod tests {
     #[test]
     fn empty_layout_has_no_rectangles() {
         for kind in [
-            LayoutKind::Niri1D,
-            LayoutKind::Nourish2D,
+            LayoutKind::Scrolling1D,
+            LayoutKind::Spatial2D,
             LayoutKind::Classic,
         ] {
             assert!(LayoutEngine::new(kind).arrange(OUTPUT, 0).is_empty());
@@ -152,8 +154,20 @@ mod tests {
     }
 
     #[test]
+    fn serialized_names_match_configuration_names() {
+        assert_eq!(
+            serde_json::to_string(&LayoutKind::Scrolling1D).unwrap(),
+            "\"scrolling-1d\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LayoutKind::Spatial2D).unwrap(),
+            "\"spatial-2d\""
+        );
+    }
+
+    #[test]
     fn scrolling_layout_builds_full_height_columns() {
-        let rects = LayoutEngine::new(LayoutKind::Niri1D).arrange(OUTPUT, 3);
+        let rects = LayoutEngine::new(LayoutKind::Scrolling1D).arrange(OUTPUT, 3);
 
         assert_eq!(rects.len(), 3);
         assert_eq!(rects[0], Rect::new(0, 0, 640, 1080));
@@ -162,7 +176,7 @@ mod tests {
 
     #[test]
     fn spatial_layout_builds_a_compact_grid() {
-        let rects = LayoutEngine::new(LayoutKind::Nourish2D).arrange(OUTPUT, 4);
+        let rects = LayoutEngine::new(LayoutKind::Spatial2D).arrange(OUTPUT, 4);
 
         assert_eq!(rects.len(), 4);
         assert_eq!(rects[0], Rect::new(0, 0, 960, 540));
@@ -180,7 +194,7 @@ mod tests {
 
     #[test]
     fn uneven_splits_cover_the_whole_axis() {
-        let rects = LayoutEngine::new(LayoutKind::Niri1D).arrange(Rect::new(10, 20, 7, 5), 3);
+        let rects = LayoutEngine::new(LayoutKind::Scrolling1D).arrange(Rect::new(10, 20, 7, 5), 3);
 
         assert_eq!(rects.iter().map(|rect| rect.width).sum::<u32>(), 7);
         assert_eq!(

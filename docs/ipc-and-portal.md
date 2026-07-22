@@ -5,9 +5,14 @@ envelope. Every request carries a protocol version and request ID. Frames are ca
 socket is mode `0600`, bind never removes an existing path, and drop removes only the inode owned by
 that server instance.
 
-Connection handling must verify peer credentials before dispatch. Commands enter a bounded queue
-and are validated before becoming ECS events. External clients never receive Smithay objects,
-Vulkan handles, or direct mutable ECS access.
+The server is registered in the Smithay calloop. Each client has bounded frame decoding, a bounded
+response queue, and a separate non-blocking response writer, so a slow IPC peer cannot stall
+Wayland dispatch or grow compositor memory without limit.
+`tensor-msg` exposes `ping`, `get-state`, `set-layout`, and `quit` using the same codec.
+
+Connection handling verifies peer credentials before dispatch. Requests are validated and dispatched
+on the compositor event-loop thread; they do not receive direct access to ECS, Smithay, or Vulkan
+objects. External clients never receive Smithay objects, Vulkan handles, or mutable ECS access.
 
 XDP means xdg-desktop-portal in this repository. The future portal implementation is an optional
 D-Bus/PipeWire adapter for controlled capture and sharing. It follows the same command gate as IPC

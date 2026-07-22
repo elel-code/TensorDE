@@ -202,11 +202,11 @@ mod tests {
     fn parses_kdl_layout_and_ipc_socket() {
         let config = Config::from_kdl(
             Path::new("test.kdl"),
-            "layout \"nourish-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
+            "layout \"spatial-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
         )
         .unwrap();
 
-        assert_eq!(config.initial_layout, LayoutKind::Nourish2D);
+        assert_eq!(config.initial_layout, LayoutKind::Spatial2D);
         assert_eq!(
             config.ipc_socket,
             PathBuf::from("/run/user/1000/tensor.sock")

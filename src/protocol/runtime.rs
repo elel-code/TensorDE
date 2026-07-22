@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use smithay::reexports::{
-    calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
+    calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
     wayland_server::{
         Display, DisplayHandle,
         backend::{ClientData, ClientId, DisconnectReason},
@@ -9,6 +9,8 @@ use smithay::reexports::{
 };
 use thiserror::Error;
 use tracing::warn;
+
+use crate::ipc::{IpcReply, IpcServer, Request};
 
 #[cfg(feature = "xwayland")]
 use smithay::reexports::wayland_server::Client;
@@ -54,6 +56,10 @@ impl WaylandRuntime {
         self.socket.as_ref().map(ListeningSocketSource::socket_name)
     }
 
+    pub fn stop_signal(&self) -> LoopSignal {
+        self.event_loop.get_signal()
+    }
+
     pub fn prepare(&mut self, enable_xwayland: bool) -> Result<(), ProtocolError> {
         if self.prepared {
             return Ok(());
@@ -93,6 +99,15 @@ impl WaylandRuntime {
         self.event_loop
             .run(None, &mut state, |_| {})
             .map_err(ProtocolError::Run)
+    }
+
+    pub fn run_with_ipc<H>(&mut self, ipc: &IpcServer, handler: H) -> Result<(), ProtocolError>
+    where
+        H: FnMut(Request) -> IpcReply + 'static,
+    {
+        ipc.register(&self.event_loop.handle(), handler)
+            .map_err(|error| ProtocolError::IpcSource(error.to_string()))?;
+        self.run()
     }
 
     #[cfg(feature = "xwayland")]
@@ -163,6 +178,8 @@ pub enum ProtocolError {
     SocketSource(String),
     #[error("failed to register the Wayland display source: {0}")]
     DisplaySource(String),
+    #[error("failed to register the IPC source: {0}")]
+    IpcSource(String),
     #[error("Wayland display was already moved into the event loop")]
     DisplayConsumed,
     #[error("Wayland socket was already moved into the event loop")]

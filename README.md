@@ -31,11 +31,11 @@ selection must fail early when the heap feature is unavailable.
 ```sh
 cargo test
 cargo run -- --check
-TENSOR_LAYOUT=nourish-2d cargo run -- --check
+TENSOR_LAYOUT=spatial-2d cargo run -- --check
 cargo run -- --config examples/config.kdl --check
 ```
 
-`TENSOR_LAYOUT` accepts `niri-1d`, `nourish-2d`, and `classic`.
+`TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `classic`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 `VK_EXT_descriptor_heap`.
 The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
@@ -86,6 +86,9 @@ are capped at 1 MiB, carry a protocol version and request ID, and return structu
 server never removes an existing socket when binding fails, and its destructor removes only the
 socket inode it created. This is intentionally a new protocol surface; compatibility shims are not
 part of the initial design.
+
+`tensor-msg` is the matching CLI for `ping`, `get-state`, `set-layout`, and graceful `quit`. It uses
+the same framed protocol and never shells out.
 
 ## systemd (optional)
 

@@ -7,26 +7,51 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use thiserror::Error;
 
-#[allow(dead_code)]
+use super::message::{Request, Response};
+
+mod connection;
+
+pub(crate) struct IpcReply {
+    pub(crate) response: Response,
+    pub(crate) stop_after_flush: Option<LoopSignal>,
+}
+
+impl IpcReply {
+    pub(crate) fn new(response: Response) -> Self {
+        Self {
+            response,
+            stop_after_flush: None,
+        }
+    }
+
+    pub(crate) fn stop_after_flush(response: Response, signal: LoopSignal) -> Self {
+        Self {
+            response,
+            stop_after_flush: Some(signal),
+        }
+    }
+}
+
 pub struct IpcServer {
     listener: UnixListener,
     path: PathBuf,
     identity: SocketIdentity,
 }
 
-#[allow(dead_code)]
 impl IpcServer {
     pub fn bind(path: impl Into<PathBuf>) -> Result<Self, IpcError> {
         let path = path.into();
         if path.as_os_str().is_empty() {
             return Err(IpcError::EmptyPath);
         }
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                fs::create_dir_all(parent).map_err(IpcError::CreateParent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent).map_err(IpcError::CreateParent)?;
         }
 
         let listener = UnixListener::bind(&path).map_err(IpcError::Bind)?;
@@ -62,6 +87,18 @@ impl IpcServer {
             Err(error) => Err(IpcError::Accept(error)),
         }
     }
+
+    pub(crate) fn register<H>(
+        &self,
+        handle: &LoopHandle<'static, ()>,
+        handler: H,
+    ) -> Result<(), IpcError>
+    where
+        H: FnMut(Request) -> IpcReply + 'static,
+    {
+        let listener = self.listener.try_clone().map_err(IpcError::CloneListener)?;
+        connection::register_listener(handle, listener, handler).map_err(IpcError::Source)
+    }
 }
 
 impl Drop for IpcServer {
@@ -91,7 +128,6 @@ impl SocketIdentity {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum IpcError {
     #[error("IPC socket path is empty")]
@@ -108,11 +144,19 @@ pub enum IpcError {
     Identity(io::Error),
     #[error("failed to accept IPC connection: {0}")]
     Accept(io::Error),
+    #[error("failed to clone IPC listener: {0}")]
+    CloneListener(io::Error),
+    #[error("failed to register IPC source: {0}")]
+    Source(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::{Command, FrameDecoder, Request, Response, ResultBody, encode};
+    use smithay::reexports::calloop::EventLoop;
+    use std::io::{Read, Write};
+    use std::time::Duration;
 
     #[test]
     fn socket_identity_is_stable_for_an_owned_path() {
@@ -124,5 +168,104 @@ mod tests {
 
         assert_eq!(first, second);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn registered_server_processes_multiple_requests_on_one_connection() {
+        let path = PathBuf::from(format!("target/tensor-ipc-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let mut event_loop = EventLoop::<()>::try_new().unwrap();
+        server
+            .register(&event_loop.handle(), |request| {
+                let result = match request.command {
+                    Command::Ping => ResultBody::Pong,
+                    _ => ResultBody::Accepted,
+                };
+                IpcReply::new(Response::new(request.request_id, result))
+            })
+            .unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        let mut outgoing = encode(&Request::new(1, Command::Ping)).unwrap();
+        outgoing.extend(encode(&Request::new(2, Command::GetState)).unwrap());
+        client.write_all(&outgoing).unwrap();
+        client.set_nonblocking(true).unwrap();
+
+        let mut decoder = FrameDecoder::new();
+        let mut received = Vec::new();
+        let mut buffer = [0; 4096];
+        for _ in 0..32 {
+            event_loop
+                .dispatch(Duration::from_millis(2), &mut ())
+                .unwrap();
+            match client.read(&mut buffer) {
+                Ok(read) => received.extend(decoder.push::<Response>(&buffer[..read]).unwrap()),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("IPC client read failed: {error}"),
+            }
+            if received.len() == 2 {
+                break;
+            }
+        }
+
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].request_id, 1);
+        assert_eq!(received[1].request_id, 2);
+        drop(client);
+        drop(event_loop);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn shutdown_signal_follows_the_accepted_response() {
+        let path = PathBuf::from(format!("target/tensor-ipc-shutdown-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let mut event_loop = EventLoop::<()>::try_new().unwrap();
+        let stop_signal = event_loop.get_signal();
+        server
+            .register(&event_loop.handle(), move |request| {
+                IpcReply::stop_after_flush(
+                    Response::new(request.request_id, ResultBody::Accepted),
+                    stop_signal.clone(),
+                )
+            })
+            .unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .write_all(&encode(&Request::new(3, Command::Quit)).unwrap())
+            .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+
+        let fallback_signal = event_loop.get_signal();
+        let dispatches = std::rc::Rc::new(std::cell::Cell::new(0));
+        let callback_dispatches = dispatches.clone();
+        event_loop
+            .run(Some(Duration::from_millis(10)), &mut (), move |_| {
+                let next = callback_dispatches.get() + 1;
+                callback_dispatches.set(next);
+                if next == 10 {
+                    fallback_signal.stop();
+                }
+            })
+            .unwrap();
+
+        let mut buffer = [0; 4096];
+        let read = client.read(&mut buffer).unwrap();
+        let responses = FrameDecoder::new()
+            .push::<Response>(&buffer[..read])
+            .unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].request_id, 3);
+        assert!(matches!(responses[0].result, ResultBody::Accepted));
+        drop(client);
+        drop(event_loop);
+        drop(server);
+        assert!(!path.exists());
     }
 }

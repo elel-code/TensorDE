@@ -72,7 +72,7 @@ mod tests {
 
         world.arrange_workspace(
             1,
-            LayoutEngine::new(LayoutKind::Niri1D),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
             Rect::new(0, 0, 100, 80),
         );
 

@@ -21,12 +21,33 @@ impl Request {
     }
 }
 
+impl Response {
+    pub fn new(request_id: u64, result: ResultBody) -> Self {
+        Self {
+            version: IPC_PROTOCOL_VERSION,
+            request_id,
+            result,
+        }
+    }
+
+    pub fn error(request_id: u64, code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(
+            request_id,
+            ResultBody::Error(IpcErrorBody {
+                code: code.into(),
+                message: message.into(),
+            }),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Command {
     Ping,
     GetState,
     SetLayout { layout: LayoutKind },
+    Quit,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

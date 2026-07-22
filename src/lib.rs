@@ -3,8 +3,8 @@
 mod compositor;
 mod config;
 mod ecs;
-mod ipc;
-mod layout;
+pub mod ipc;
+pub mod layout;
 mod protocol;
 mod render;
 pub mod service;
