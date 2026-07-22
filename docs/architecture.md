@@ -8,8 +8,10 @@ Tensor is a Rust Wayland compositor built around four ownership domains:
 4. IPC and portal adapters translate external requests into validated ECS commands.
 
 Smithay and Vulkan objects do not become ordinary ECS components. Thread-affine Smithay state stays
-in the protocol owner or a Bevy `NonSend` resource. The renderer consumes a compact scene extracted
-from ECS once per frame rather than issuing ECS queries in GPU submission loops.
+in the protocol owner or a Bevy `NonSend` resource. `RuntimeState` is the calloop data object and
+serializes Smithay dispatch, popup/seat state, surface-to-view indexing, layout intent, and ECS
+lifecycle changes. The renderer consumes a compact scene extracted from ECS once per frame rather
+than issuing ECS queries in GPU submission loops.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
@@ -38,3 +40,10 @@ backend. Tensor ships only a Wayland session entry and rejects an inherited X11-
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.
+
+The protocol layer already owns the complete initial Wayland global set needed for application
+lifecycles: compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, selection/data-device, and
+popup tracking. A toplevel is assigned a stable `ViewId` at creation and removed idempotently from
+both Smithay's `Space<Window>` and ECS when either the shell or surface destruction callback fires.
+The next backend work is compositor-specific glue around Smithay's DRM/KMS, GBM, libinput, udev,
+and libseat adapters; Tensor does not reimplement those low-level protocols.

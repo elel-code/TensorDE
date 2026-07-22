@@ -32,6 +32,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 zbus = { version = "5", optional = true }
 
+[dev-dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

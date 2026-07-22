@@ -12,14 +12,15 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 [IPC/portal gates](docs/ipc-and-portal.md), [testing](docs/testing.md), and
 [contributing](docs/contributing.md).
 
-The repository currently contains a Smithay display/socket event-loop bootstrap, rootless XWayland
+The repository currently contains the long-lived Smithay protocol state machine (compositor,
+xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
 startup, bounded IPC framing, a Bevy ECS scene world, and tested layout geometry. It does not yet
 acquire DRM devices or submit Vulkan commands.
 
 ## Requirements
 
 - Rust 1.97 or newer.
-- Linux for the eventual DRM/KMS backend. The current skeleton and tests are platform-light.
+- Linux for the DRM/KMS backend. Protocol and layout tests remain platform-light.
 - A Vulkan 1.4 loader and driver advertising `VK_EXT_descriptor_heap` for the renderer target.
 
 The renderer targets Vulkan 1.4 and requires `VK_EXT_descriptor_heap`. Descriptor sets are not a
@@ -56,9 +57,10 @@ Smithay protocol/input events
      descriptor heap -> frame graph -> KMS
 ```
 
-The initial module boundaries are deliberately narrow:
+The module boundaries are deliberate ownership boundaries:
 
-- `src/protocol.rs`: Smithay/calloop ownership and, later, protocol dispatch.
+- `src/protocol.rs`: Smithay/calloop ownership; `RuntimeState` serializes protocol, input, popup,
+  and ECS lifecycle transitions.
 - `src/ipc.rs`: versioned compositor control protocol over a bounded Unix-socket framing layer.
 - `src/ecs.rs`: Bevy ECS components and deterministic scene/layout state.
 - `src/render.rs`: Vulkan target capabilities and, later, device/swapchain lifetime.
@@ -70,13 +72,17 @@ The initial module boundaries are deliberately narrow:
 
 ## Roadmap
 
-1. Add a nested winit backend for fast development and validation.
-2. Build Smithay compositor, xdg-shell, seat, output, and data-device state.
-3. Add Vulkan instance/device selection with `VK_EXT_descriptor_heap` feature probing.
-4. Import dmabufs, handle explicit synchronization, and submit direct-scanout candidates to KMS.
-5. Connect the three layout policies to a persistent workspace/view model and IPC commands.
-6. Add a libinput + udev + libseat DRM session backend and XWayland support where explicitly desired.
-7. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
+1. Define the backend contract and connect Smithay DRM/KMS, GBM, libinput, udev, and libseat
+   adapters without duplicating their protocol or ioctl implementations.
+2. Add Vulkan instance/device selection and renderer initialization with mandatory
+   `VK_EXT_descriptor_heap` feature probing.
+3. Import dmabufs, handle explicit synchronization and damage, and submit direct-scanout
+   candidates to KMS.
+4. Connect output/workspace policy and the three layouts to persistent scene extraction and IPC
+   commands.
+5. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
+   stable ECS view IDs.
+6. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
    handles into IPC or ECS.
 
 ## IPC contract
@@ -109,7 +115,7 @@ can keep the client direct after reporting the scope failure.
 
 The default build enables Smithay's rootless XWayland process and event-source bootstrap.
 `xwayland false` or `TENSOR_XWAYLAND=off` disables it. X11 window-manager policy and surface
-association remain part of the compositor-state implementation; they are not emulated by a second
+association will use the protocol owner's stable view index; it is not emulated by a second
 backend. Tensor has no X11 compositor backend and refuses `--session` startup when it detects an
 inherited X11-only session.
 

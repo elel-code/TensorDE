@@ -25,8 +25,6 @@ use crate::service::EnvironmentValue;
 pub struct Compositor {
     protocol: WaylandRuntime,
     ipc: IpcServer,
-    world: CompositorWorld,
-    layout: LayoutEngine,
     renderer: RendererTarget,
     launcher: ProcessLauncher,
     startup_commands: Vec<StartupCommand>,
@@ -44,7 +42,7 @@ impl Compositor {
             xwayland,
             startup_commands,
         } = config;
-        let protocol = WaylandRuntime::new()?;
+        let protocol = WaylandRuntime::new(initial_layout)?;
         let ipc = IpcServer::bind(ipc_socket)?;
         let environment = session_environment(
             protocol
@@ -56,8 +54,6 @@ impl Compositor {
         Ok(Self {
             protocol,
             ipc,
-            world: CompositorWorld::new(),
-            layout: LayoutEngine::new(initial_layout),
             renderer: RendererTarget::with_gpu_preference(gpu_preference),
             launcher: ProcessLauncher::new(systemd).with_environment(environment),
             startup_commands,
@@ -67,7 +63,19 @@ impl Compositor {
     }
 
     pub fn check_ready(&mut self) {
-        let preview = self.layout.arrange(Rect::new(0, 0, 1920, 1080), 3);
+        let (preview_views, layout, ecs_views, seat, xdg_output) = {
+            let state = self.protocol.state_mut();
+            (
+                state.layout.arrange(Rect::new(0, 0, 1920, 1080), 3).len(),
+                state.layout.kind(),
+                state.view_count(),
+                state.seat.name().to_owned(),
+                state
+                    .output_manager_state
+                    .xdg_output_manager_global()
+                    .is_some(),
+            )
+        };
         info!(
             protocol = self.protocol.backend_name(),
             wayland_socket = ?self.protocol.socket_name(),
@@ -75,14 +83,16 @@ impl Compositor {
             vulkan = %self.renderer.api_version,
             descriptors = self.renderer.descriptor_heap.name(),
             gpu = self.renderer.device.preference().name(),
-            layout = self.layout.kind().name(),
+            layout = layout.name(),
             systemd = self.systemd.name(),
             spawn_strategy = self.launcher.strategy().name(),
             startup_commands = self.startup_commands.len(),
             xwayland = self.xwayland.enabled(),
-            preview_views = preview.len(),
-            ecs_views = self.world.view_count(WorkspaceId::new(0)),
-            "compositor skeleton is ready"
+            preview_views,
+            ecs_views,
+            seat,
+            xdg_output,
+            "compositor runtime is ready"
         );
     }
 
@@ -128,8 +138,6 @@ impl Compositor {
         let Self {
             mut protocol,
             ipc,
-            mut world,
-            mut layout,
             renderer,
             launcher,
             startup_commands,
@@ -138,8 +146,8 @@ impl Compositor {
         } = self;
         let runtime_owners = (renderer, launcher, startup_commands, systemd, xwayland);
         let stop_signal = protocol.stop_signal();
-        protocol.run_with_ipc(&ipc, move |request| {
-            handle_ipc_request(request, &mut layout, &mut world, &stop_signal)
+        protocol.run_with_ipc(&ipc, move |request, state| {
+            handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal)
         })?;
         drop(runtime_owners);
         Ok(())

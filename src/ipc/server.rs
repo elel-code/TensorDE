@@ -88,13 +88,14 @@ impl IpcServer {
         }
     }
 
-    pub(crate) fn register<H>(
+    pub(crate) fn register<T, H>(
         &self,
-        handle: &LoopHandle<'static, ()>,
+        handle: &LoopHandle<'static, T>,
         handler: H,
     ) -> Result<(), IpcError>
     where
-        H: FnMut(Request) -> IpcReply + 'static,
+        T: 'static,
+        H: FnMut(Request, &mut T) -> IpcReply + 'static,
     {
         let listener = self.listener.try_clone().map_err(IpcError::CloneListener)?;
         connection::register_listener(handle, listener, handler).map_err(IpcError::Source)
@@ -177,7 +178,7 @@ mod tests {
         let server = IpcServer::bind(&path).unwrap();
         let mut event_loop = EventLoop::<()>::try_new().unwrap();
         server
-            .register(&event_loop.handle(), |request| {
+            .register(&event_loop.handle(), |request, _| {
                 let result = match request.command {
                     Command::Ping => ResultBody::Pong,
                     _ => ResultBody::Accepted,
@@ -226,7 +227,7 @@ mod tests {
         let mut event_loop = EventLoop::<()>::try_new().unwrap();
         let stop_signal = event_loop.get_signal();
         server
-            .register(&event_loop.handle(), move |request| {
+            .register(&event_loop.handle(), move |request, _| {
                 IpcReply::stop_after_flush(
                     Response::new(request.request_id, ResultBody::Accepted),
                     stop_signal.clone(),

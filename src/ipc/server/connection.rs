@@ -15,20 +15,21 @@ use tracing::warn;
 
 use super::{super::codec, super::message::Request, IpcReply};
 
-type Handler = Rc<RefCell<dyn FnMut(Request) -> IpcReply>>;
+type Handler<T> = Rc<RefCell<dyn FnMut(Request, &mut T) -> IpcReply>>;
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_PENDING_BYTES: usize = 4 * codec::MAX_FRAME_SIZE;
 
-pub(super) fn register_listener<H>(
-    handle: &LoopHandle<'static, ()>,
+pub(super) fn register_listener<T, H>(
+    handle: &LoopHandle<'static, T>,
     listener: UnixListener,
     handler: H,
 ) -> Result<(), String>
 where
-    H: FnMut(Request) -> IpcReply + 'static,
+    T: 'static,
+    H: FnMut(Request, &mut T) -> IpcReply + 'static,
 {
-    let handler: Handler = Rc::new(RefCell::new(handler));
+    let handler: Handler<T> = Rc::new(RefCell::new(handler));
     let listener_handle = handle.clone();
     handle
         .insert_source(
@@ -55,10 +56,10 @@ where
         .map_err(|error| error.to_string())
 }
 
-fn register_client(
-    handle: &LoopHandle<'static, ()>,
+fn register_client<T: 'static>(
+    handle: &LoopHandle<'static, T>,
     stream: UnixStream,
-    handler: Handler,
+    handler: Handler<T>,
 ) -> Result<(), String> {
     verify_peer(&stream).map_err(|error| format!("IPC peer credentials rejected: {error}"))?;
     stream
@@ -71,7 +72,9 @@ fn register_client(
     handle
         .insert_source(
             Generic::new(stream, Interest::READ, Mode::Level),
-            move |_, source, _| on_readable(&client_handle, &client_state, &client_handler, source),
+            move |_, source, data| {
+                on_readable(&client_handle, &client_state, &client_handler, source, data)
+            },
         )
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -100,11 +103,12 @@ struct ClientState {
     stop_after_flush: Option<LoopSignal>,
 }
 
-fn on_readable(
-    handle: &LoopHandle<'static, ()>,
+fn on_readable<T: 'static>(
+    handle: &LoopHandle<'static, T>,
     state: &Rc<RefCell<ClientState>>,
-    handler: &Handler,
+    handler: &Handler<T>,
     source: &mut smithay::reexports::calloop::generic::NoIoDrop<UnixStream>,
+    data: &mut T,
 ) -> Result<PostAction, io::Error> {
     let stream = source_mut(source);
     let mut read_buffer = [0; READ_BUFFER_SIZE];
@@ -131,7 +135,7 @@ fn on_readable(
                     }
                 };
                 for request in requests {
-                    let reply = (handler.borrow_mut())(request);
+                    let reply = (handler.borrow_mut())(request, data);
                     let frame = match codec::encode(&reply.response) {
                         Ok(frame) => frame,
                         Err(error) => {
