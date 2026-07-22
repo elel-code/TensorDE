@@ -9,12 +9,21 @@ The startup sequence is a set of ordered gates:
 5. Create Vulkan and reject devices without `VK_EXT_descriptor_heap`.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
-8. Register signals, configuration watchers, IPC, input, and backend event sources.
-9. Enter the event loop.
-10. Notify optional systemd integration only after every required gate succeeds.
+8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, input, and
+   backend event sources.
+9. Publish the session environment and notify optional systemd integration after every required
+   gate succeeds.
+10. Enter the event loop.
 
 `--check` executes the initialization gates that exist, reports their resolved state, and exits. It
 must never emit systemd readiness. Partial initialization must unwind owned sockets and handles.
 
 Niri is the primary lifecycle reference, particularly its ordering of configuration, calloop,
 Wayland display/socket, IPC, environment publication, watcher registration, and final run loop.
+
+`tensor-session` is a Rust session launcher modeled on `niri-session`. It auto-detects the systemd
+user manager, imports the login environment, starts `tensor.service` with `--wait`, triggers
+`tensor-shutdown.target` during teardown, and clears session-only variables. Without a usable user
+manager it executes `tensor-compositor --session` directly. No shell is used for this policy.
+Display managers launch `tensor-session` through the Wayland-only desktop entry in
+`contrib/wayland-sessions`; an X11 `xsessions` entry is intentionally forbidden.

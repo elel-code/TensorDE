@@ -12,8 +12,8 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 [IPC/portal gates](docs/ipc-and-portal.md), [testing](docs/testing.md), and
 [contributing](docs/contributing.md).
 
-The repository currently contains the architectural skeleton, a real Smithay display/socket
-bootstrap, bounded IPC framing, a Bevy ECS scene world, and tested layout geometry. It does not yet
+The repository currently contains a Smithay display/socket event-loop bootstrap, rootless XWayland
+startup, bounded IPC framing, a Bevy ECS scene world, and tested layout geometry. It does not yet
 acquire DRM devices or submit Vulkan commands.
 
 ## Requirements
@@ -38,7 +38,7 @@ cargo run -- --config examples/config.kdl --check
 `TENSOR_LAYOUT` accepts `niri-1d`, `nourish-2d`, and `classic`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 `VK_EXT_descriptor_heap`.
-The file format is KDL; `TENSOR_CONFIG` and `--config` select a file, with
+The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
 `$XDG_CONFIG_HOME/tensor/config.kdl` as the default.
 
 ## Architecture
@@ -89,11 +89,21 @@ part of the initial design.
 
 ## systemd (optional)
 
-Enable `--features systemd` at build time to compile the `sd_notify` adapter. The bootstrap binary
-does not claim readiness until the real compositor event-loop handoff is implemented; `--check`
-always exits without sending `READY=1`. The compositor does not require systemd and runs without
-the feature. A service template is provided in `contrib/systemd/tensor-compositor.service` for
-installations that choose to use it.
+Enable `--features systemd` at build time to compile environment publication and `sd_notify`.
+`tensor-session` is a Rust equivalent of Niri's `niri-session`: it detects a working user manager,
+starts `tensor.service`, waits for the compositor, drives `tensor-shutdown.target`, and clears the
+published environment. `systemd "auto"` is the default; `enabled` and `disabled` override detection.
+The compositor still runs directly without systemd, and `--check` never sends `READY=1`.
+Display managers should install `contrib/wayland-sessions/tensor.desktop`; no entry is provided under
+`xsessions`, because Tensor is never an X11 session.
+
+## XWayland, not an X11 session
+
+The default build enables Smithay's rootless XWayland process and event-source bootstrap.
+`xwayland false` or `TENSOR_XWAYLAND=off` disables it. X11 window-manager policy and surface
+association remain part of the compositor-state implementation; they are not emulated by a second
+backend. Tensor has no X11 compositor backend and refuses `--session` startup when it detects an
+inherited X11-only session.
 
 ## XDP portal gate (reserved boundary)
 

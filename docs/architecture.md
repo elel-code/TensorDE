@@ -19,6 +19,14 @@ Physical-device enumeration and ranking live in `render/device.rs`. The policy i
 the default prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. This
 policy is separate from Vulkan instance/device creation so probing can be tested without a GPU.
 
+Session-manager selection uses one `SystemdMode` policy for startup and future child supervision.
+`auto` follows the detected user-manager environment, while `enabled` and `disabled` are explicit.
+Child scopes will use systemd's D-Bus transient-unit API rather than shelling through
+`systemd-run`; a direct spawn path remains required when systemd integration is inactive.
+
+XWayland is a rootless compatibility server for individual applications, never a compositor
+backend. Tensor ships only a Wayland session entry and rejects an inherited X11-only session.
+
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.

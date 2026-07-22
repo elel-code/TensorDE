@@ -16,12 +16,15 @@ APIs for their own sake.
 - `bevy_ecs` is the long-term ECS kernel. Use only the `bevy_ecs` crate, not Bevy's renderer or
   window stack. Smithay objects and other thread-affine handles stay in `NonSend` resources or the
   protocol layer; ECS components contain stable IDs, state, and renderable geometry.
-- KDL parsed with `knuffel` is the user configuration format. Keep parsing, validation, defaults,
+- KDL parsed with `knus` is the user configuration format. Keep parsing, validation, defaults,
   includes, and file watching in the config boundary.
 - IPC is a versioned Unix-socket protocol with request IDs, bounded length-prefixed frames, and
   structured errors. It is a new protocol surface; do not add compatibility shims prematurely.
 - systemd readiness/activation is optional behind a Cargo feature. Core startup must work without
-  systemd.
+  systemd. Follow Niri's session lifecycle: a compiled `tensor-session` launcher, a user service,
+  graphical-session targets, explicit environment publication, and readiness only after gates.
+- XWayland supports individual legacy applications in rootless mode. Tensor never provides an X11
+  session or an X11 compositor backend.
 - XDP means the xdg-desktop-portal boundary in this project. Portal/D-Bus/PipeWire integration is
   an optional capability gate and must not receive direct renderer or Smithay object ownership.
 
@@ -32,6 +35,9 @@ the upstream `master` branch.
 Commit messages use a module-first scope: `where: imperative summary`, for example
 `render: require descriptor heap`. Do not enforce `feat():`/Conventional Commits prefixes. Add a
 short body when the change has a non-obvious architectural tradeoff, followed by test commands.
+
+Repository automation under `scripts/` is Python run through `uv`. Do not grow long-lived policy in
+shell scripts. Session-manager policy belongs in the compiled `tensor-session` binary.
 
 ## Module Layout
 
@@ -59,12 +65,13 @@ Keep this order explicit and testable:
 6. Bind the IPC socket and optional portal/systemd adapters.
 7. Construct ECS resources/components and the initial scene.
 8. Register watchers, signals, and event sources.
-9. Enter the compositor event loop; only then notify systemd after all required gates pass.
+9. Publish the session environment, notify systemd after all required gates pass, then enter the
+   compositor event loop.
 
 Do not notify readiness before the Wayland socket, renderer, ECS, and IPC gates are complete.
 
 ## Verification
 
-Run `cargo fmt --all`, `./scripts/check-file-lines.sh`, and `cargo test --all-targets` for every
+Run `cargo fmt --all`, `uv run scripts/check_file_lines.py`, and `cargo test --all-targets` for every
 change. Changes to startup, IPC, ECS, or renderer contracts require focused tests for failure paths,
 not only happy-path construction.
