@@ -125,6 +125,18 @@ pub fn native_vulkan_scene_shader_for_key(key: &str) -> Option<&'static BuiltinS
         .find(|shader| shader.key == key)
 }
 
+pub fn native_vulkan_scene_vertex_spirv_for_primitive(
+    shader: &'static BuiltinSceneShader,
+    primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive,
+) -> Option<&'static [u32]> {
+    if shader.vertex_primitive == primitive {
+        return Some(shader.vertex_spirv);
+    }
+    (primitive == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh)
+        .then_some(shader.object_mesh_vertex_spirv)
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,12 +150,50 @@ mod tests {
             shader.parameter_layout,
             BuiltinSceneParameterLayout::StandardMaterial
         );
+        assert_eq!(
+            shader.vertex_primitive,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
+        );
         assert!(!shader.vertex_spirv.is_empty());
+        assert!(shader.object_mesh_vertex_spirv.is_none());
         assert!(!shader.fragment_spirv.is_empty());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
         assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key(" we/genericimage4").is_none());
+    }
+
+    #[test]
+    fn effect_catalog_carries_distinct_fullscreen_and_object_mesh_vertex_domains() {
+        let shimmer = native_vulkan_scene_shader_for_key("effects/shimmer__SLOTS_9")
+            .expect("shimmer shader");
+        assert_eq!(
+            shimmer.vertex_primitive,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        );
+        let object_mesh = native_vulkan_scene_vertex_spirv_for_primitive(
+            shimmer,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        )
+        .expect("shimmer object-mesh vertex shader");
+        assert_ne!(object_mesh, shimmer.vertex_spirv);
+        assert_eq!(
+            native_vulkan_scene_vertex_spirv_for_primitive(
+                shimmer,
+                crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            ),
+            Some(shimmer.vertex_spirv)
+        );
+
+        let iris = native_vulkan_scene_shader_for_key("effects/iris__SLOTS_3__MASK_1")
+            .expect("iris shader");
+        assert!(
+            native_vulkan_scene_vertex_spirv_for_primitive(
+                iris,
+                crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            )
+            .is_none()
+        );
     }
 
     #[test]

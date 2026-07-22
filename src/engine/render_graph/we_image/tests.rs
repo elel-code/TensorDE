@@ -1,5 +1,7 @@
 use super::*;
 
+mod effect_visibility;
+
 #[test]
 fn generated_temporary_target_names_keep_transient_lifetime_semantics() {
     assert_eq!(
@@ -721,6 +723,154 @@ fn composelayer_final_effect_material_composites_directly_to_scene() {
         PipelineBlendMode::Translucent
     );
     assert_eq!(graph.passes[2].state.color_write_mask, ColorWriteMask::Rgb);
+    assert!(
+        !graph.passes[2]
+            .bindings
+            .iter()
+            .any(|binding| texture_binding_uses_slot(binding, 2))
+    );
+}
+
+#[test]
+fn effect_only_terminal_keeps_local_source_and_declared_scene_snapshot_slots() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 12,
+        base_material_index: Some(5),
+        base_shader: Some("composelayer".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+            target_name: "_rt_FullFrameBuffer".to_owned(),
+            texture_slot: 0,
+            composite_to_object_mesh: true,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
+        }),
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: false,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: None,
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 12,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
+            runtime_visibility: true,
+            material_index: Some(6),
+            effect_file: "effects/oscilloscope/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some(
+                "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16".to_owned(),
+            ),
+            source: None,
+            target: None,
+            binds: [
+                (0, "previous".to_owned()),
+                (2, "_rt_FullFrameBuffer".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            combos: [("RESOLUTION".to_owned(), 16)].into_iter().collect(),
+        }],
+    });
+
+    let terminal = graph.passes.last().expect("terminal pass");
+    assert_eq!(terminal.role, RenderPassRole::SceneComposite);
+    assert!(
+        terminal
+            .bindings
+            .contains(&TextureBindingRole::PreviousGraphTarget { slot: 0 })
+    );
+    assert!(
+        terminal
+            .bindings
+            .contains(&TextureBindingRole::EffectTarget {
+                slot: 2,
+                name: "_rt_FullFrameBuffer".to_owned(),
+            })
+    );
+}
+
+#[test]
+fn shader_only_scene_snapshot_is_not_injected_into_the_base_pass() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 9,
+        base_material_index: Some(2),
+        base_shader: Some("genericimage4".to_owned()),
+        base_material_blending: Some("normal".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+            target_name: "_rt_FullFrameBuffer".to_owned(),
+            texture_slot: 0,
+            composite_to_object_mesh: false,
+            usage: WeFramebufferSnapshotUsage::EffectShaderInput,
+        }),
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: false,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: None,
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 9,
+            effect_binding_start: 0,
+            effect_binding_count: 1,
+            runtime_visibility: true,
+            material_index: Some(3),
+            effect_file: "effects/framebuffer/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some("effects/framebuffer__SLOTS_5".to_owned()),
+            source: None,
+            target: Some("_rt_output".to_owned()),
+            binds: [
+                (0, "previous".to_owned()),
+                (2, "_rt_FullFrameBuffer".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
+    assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+    let base = graph
+        .passes
+        .iter()
+        .find(|pass| pass.role == RenderPassRole::BaseMaterial)
+        .expect("base pass");
+    assert!(
+        !base
+            .bindings
+            .iter()
+            .any(|binding| texture_binding_uses_slot(binding, 2))
+    );
+    let effect = graph
+        .passes
+        .iter()
+        .find(|pass| pass.role == RenderPassRole::EffectMaterial)
+        .expect("effect pass");
+    assert!(effect.bindings.contains(&TextureBindingRole::EffectTarget {
+        slot: 2,
+        name: "_rt_FullFrameBuffer".to_owned(),
+    }));
 }
 
 #[test]
@@ -835,72 +985,5 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
     assert_eq!(
         graph.passes[0].effect_visibility,
         RenderPassEffectVisibility::material_stages(17, 1)
-    );
-}
-
-#[test]
-fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
-    let effect_passes = [
-        (
-            17,
-            "effects/iris/effect.json",
-            "effects/iris__SLOTS_3__MASK_1",
-        ),
-        (
-            18,
-            "effects/waterripple/effect.json",
-            "effects/waterripple__SLOTS_7",
-        ),
-    ]
-    .into_iter()
-    .map(
-        |(effect_binding_start, effect_file, shader)| WeEffectPassContract {
-            object_index: 3,
-            effect_binding_start,
-            effect_binding_count: 1,
-            runtime_visibility: true,
-            material_index: Some(4),
-            effect_file: effect_file.to_owned(),
-            pass_index: 0,
-            command: None,
-            shader: Some(shader.to_owned()),
-            source: None,
-            target: None,
-            binds: [(0, "previous".to_owned())].into_iter().collect(),
-            pass_constants: Vec::new(),
-            material_blending: Some("normal".to_owned()),
-            depthtest: None,
-            depthwrite: None,
-            cullmode: None,
-            combos: BTreeMap::new(),
-        },
-    )
-    .collect();
-    let graph = we_image_graph(&WeImageGraphContract {
-        object_index: 3,
-        base_material_index: Some(1),
-        base_shader: Some("genericimage4".to_owned()),
-        base_material_blending: Some("translucent".to_owned()),
-        base_texture_slots: vec![0],
-        base_pass_constants: Vec::new(),
-        framebuffer_snapshot: None,
-        final_scene_blend: SceneBlendMode::Alpha,
-        effects_in_authored_texture_space: true,
-        puppet_skinning_after_effects: true,
-        waterwaves_uv_field_material_index: None,
-        waterwaves_direct_material: None,
-        foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
-        final_effect_material: Some(WeFinalEffectMaterial {
-            material_index: 9,
-            shader: "we/puppet-iris-waterripple-final".to_owned(),
-        }),
-        effect_passes,
-    });
-
-    assert_eq!(graph.passes.len(), 1);
-    assert_eq!(
-        graph.passes[0].effect_visibility,
-        RenderPassEffectVisibility::material_stages(17, 2)
     );
 }

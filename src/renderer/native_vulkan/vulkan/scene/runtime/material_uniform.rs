@@ -164,7 +164,11 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::Lut => lut_values(&parameters),
         BuiltinSceneParameterLayout::Oscilloscope => {
-            oscilloscope::oscilloscope_values(&parameters, spectrum)
+            oscilloscope::oscilloscope_values(
+                &parameters,
+                spectrum,
+                draw.authored_source_extent,
+            )
         }
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
         BuiltinSceneParameterLayout::ProceduralNoise => {

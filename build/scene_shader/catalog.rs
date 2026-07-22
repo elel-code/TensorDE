@@ -623,7 +623,7 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/audio_responsive_oscilloscope__SLOTS_1__RESOLUTION_16",
+        key: "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -653,7 +653,11 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("#[derive(Debug, Clone, Copy)]\n");
     generated.push_str("pub struct BuiltinSceneShader {\n");
     generated.push_str("    pub key: &'static str,\n");
+    generated.push_str(
+        "    pub vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive,\n",
+    );
     generated.push_str("    pub vertex_spirv: &'static [u32],\n");
+    generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
@@ -665,6 +669,23 @@ pub(crate) fn build_scene_shader_catalog() {
     {
         let (vertex_source, fragment_source) = scene_shader_sources(*spec);
         let vertex_path = compile_scene_shader_stage(&shader_dir, spec.key, "vert", &vertex_source);
+        let object_mesh_vertex_path = match spec.family {
+            SceneShaderFamily::Effect => {
+                let shader = effect_shader_name_for_key(spec.key);
+                let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
+                super::effect_object_mesh_vertex_source(spec.key, shader, texture_slot_mask).map(
+                    |source| {
+                        compile_scene_shader_stage(
+                            &shader_dir,
+                            &format!("{}__OBJECT_MESH", spec.key),
+                            "vert",
+                            &source,
+                        )
+                    },
+                )
+            }
+            _ => None,
+        };
         let fragment_path =
             compile_scene_shader_stage(&shader_dir, spec.key, "frag", &fragment_source);
         let vertex_path = vertex_path
@@ -673,9 +694,20 @@ pub(crate) fn build_scene_shader_catalog() {
         let fragment_path = fragment_path
             .to_str()
             .expect("built-in scene fragment shader path must be UTF-8");
+        let object_mesh_vertex_spirv = object_mesh_vertex_path.as_ref().map_or_else(
+            || "None".to_owned(),
+            |path| {
+                format!(
+                    "Some(vulkanalia::include_shader_code!({:?}))",
+                    path.to_str()
+                        .expect("built-in object-mesh vertex shader path must be UTF-8")
+                )
+            },
+        );
+        let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_spirv: vulkanalia::include_shader_code!({:?}), fragment_spirv: vulkanalia::include_shader_code!({:?}), parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key, vertex_path, fragment_path,
         ));
     }
@@ -869,7 +901,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             super::waterwaves_direct::static_black_output_from_shader_key(spec.key),
         ),
         SceneShaderFamily::MeshUtilityComposite => (
-            scene_mesh_vertex_source(),
+            flattexture_vertex_source(),
             super::passthrough_fragment_source(),
         ),
         SceneShaderFamily::EffectWaterWavesUvField => super::waterwaves_uv_field_sources(),

@@ -547,6 +547,23 @@ impl WeIrBuilder {
             effect_passes,
         };
         if graph_contract.framebuffer_snapshot.is_none()
+            && graph_contract.effect_passes.iter().any(|effect| {
+                effect
+                    .binds
+                    .values()
+                    .any(|target| target == FULL_FRAMEBUFFER_TARGET)
+            })
+        {
+            graph_contract.framebuffer_snapshot =
+                Some(crate::engine::render_graph::WeFramebufferSnapshotContract {
+                    target_name: FULL_FRAMEBUFFER_TARGET.to_owned(),
+                    texture_slot: 0,
+                    composite_to_object_mesh: false,
+                    usage:
+                        crate::engine::render_graph::WeFramebufferSnapshotUsage::EffectShaderInput,
+                });
+        }
+        if graph_contract.framebuffer_snapshot.is_none()
             && we_image_graph_requires_generated_scene_snapshot(&graph_contract)
         {
             graph_contract.framebuffer_snapshot =
@@ -652,7 +669,6 @@ impl WeIrBuilder {
             if let Some(instance_pass) = instance_pass {
                 push_instance_combo_overrides(instance_pass, &mut combos);
             }
-            apply_builtin_effect_texture_defaults(&effect_file, &combos, &mut binds);
             let base_shader = material_pass
                 .as_ref()
                 .map(|pass| pass.shader_key.clone())
@@ -662,6 +678,16 @@ impl WeIrBuilder {
                 .map(|shader| self.shader_combo_defaults(shader))
                 .transpose()?
                 .unwrap_or_default();
+            apply_builtin_effect_texture_defaults(&effect_file, &combos, &mut binds);
+            if let Some(base_shader) = base_shader.as_deref() {
+                let runtime_defaults = self.shader_runtime_texture_defaults(base_shader)?;
+                apply_shader_runtime_texture_defaults(
+                    &runtime_defaults,
+                    &combos,
+                    &combo_defaults,
+                    &mut binds,
+                );
+            }
             let shader = base_shader
                 .as_deref()
                 .map(|shader| effect_shader_variant_key(shader, &binds, &combos, &combo_defaults));
@@ -825,6 +851,47 @@ impl WeIrBuilder {
             }
         }
         self.shader_combo_defaults_by_shader
+            .insert(shader_key.to_owned(), defaults.clone());
+        Ok(defaults)
+    }
+
+    pub(super) fn shader_runtime_texture_defaults(
+        &mut self,
+        shader_key: &str,
+    ) -> Result<Vec<ShaderRuntimeTextureDefault>, WeIngestError> {
+        let shader_key = shader_key.split("__").next().unwrap_or(shader_key);
+        if let Some(defaults) = self
+            .shader_runtime_texture_defaults_by_shader
+            .get(shader_key)
+        {
+            return Ok(defaults.clone());
+        }
+        let mut defaults = Vec::<ShaderRuntimeTextureDefault>::new();
+        for extension in ["vert", "frag"] {
+            let path = format!("shaders/{shader_key}.{extension}");
+            let Some(asset) = self.source.read_optional_asset(&path)? else {
+                continue;
+            };
+            let source = String::from_utf8_lossy(&asset.bytes);
+            for default in parse_shader_runtime_texture_defaults(&source)
+                .map_err(|message| WeIngestError::InvalidProject(format!("{path}: {message}")))?
+            {
+                if let Some(existing) = defaults
+                    .iter()
+                    .find(|existing| existing.slot == default.slot)
+                {
+                    if *existing != default {
+                        return Err(WeIngestError::InvalidProject(format!(
+                            "shader {shader_key} declares conflicting runtime targets for texture slot {}",
+                            default.slot
+                        )));
+                    }
+                } else {
+                    defaults.push(default);
+                }
+            }
+        }
+        self.shader_runtime_texture_defaults_by_shader
             .insert(shader_key.to_owned(), defaults.clone());
         Ok(defaults)
     }

@@ -535,6 +535,23 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         lower_render_graphs(ir, &mut strings)?;
     let (shader_contracts, shader_constant_names) = lower_shader_contracts(ir, &mut strings);
     let event_bindings = event_binding::lower_event_bindings(ir, &mut strings);
+    let user_property_bindings = ir
+        .user_property_bindings
+        .iter()
+        .map(|binding| SceneUserPropertyBindingRecord {
+            object: SceneObjectHandle(binding.object),
+            property: strings.id(&binding.property),
+            target: binding.target,
+            predicate: match &binding.predicate {
+                WeIrUserPropertyPredicate::BooleanEquals(value) => {
+                    SceneUserPropertyPredicate::BooleanEquals(*value)
+                }
+                WeIrUserPropertyPredicate::StringEquals(value) => {
+                    SceneUserPropertyPredicate::StringEquals(strings.id(value))
+                }
+            },
+        })
+        .collect();
     Ok(SceneBinaryDocument {
         feature_flags: SCENE_DEFAULT_FEATURE_FLAGS,
         strings: strings.finish(),
@@ -582,6 +599,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         shader_contracts,
         shader_constant_names,
         script_programs: event_bindings.scripts,
+        user_property_bindings,
         camera_parallax: event_bindings.camera_parallax,
         object_parallax_depths: event_bindings.object_parallax_depths,
     })

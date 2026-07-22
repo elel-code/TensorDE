@@ -163,8 +163,26 @@ fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::convert::we_ingest::ingest_wallpaper_engine_project;
+    use crate::convert::we_ingest::ir::WeIrImageTargetRole;
     use crate::engine::render_graph::RenderPassRole;
     use std::fs;
+
+    fn scene_package(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut header = Vec::new();
+        header.extend_from_slice(&8u32.to_le_bytes());
+        header.extend_from_slice(b"PKGV0024");
+        header.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let mut data = Vec::new();
+        for (path, payload) in entries {
+            header.extend_from_slice(&(path.len() as u32).to_le_bytes());
+            header.extend_from_slice(path.as_bytes());
+            header.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            header.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        }
+        header.extend(data);
+        header
+    }
 
     #[test]
     fn effect_variant_key_preserves_sparse_slots_and_nonzero_combos() {
@@ -396,6 +414,74 @@ mod tests {
                 .iter()
                 .all(|contract| contract.shader_key != "effects/opacity")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ingest_materializes_shader_declared_full_framebuffer_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "gilder-we-shader-runtime-target-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test directory");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json","title":"Framebuffer input"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.pkg"),
+            scene_package(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"id":7,"image":"models/util/composelayer.json","effects":[{"file":"effects/oscilloscope/effect.json","passes":[{"combos":{"RESOLUTION":16}}]}]}]}"#,
+                ),
+                (
+                    "effects/oscilloscope/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/oscilloscope.json"}]}"#,
+                ),
+                (
+                    "materials/effects/oscilloscope.json",
+                    br#"{"passes":[{"shader":"workshop/test/effects/audio_responsive_oscilloscope","blending":"normal"}]}"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/audio_responsive_oscilloscope.vert",
+                    br#"// [COMBO] {"combo":"RESOLUTION","type":"options","default":32}
+attribute vec3 a_Position;"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/audio_responsive_oscilloscope.frag",
+                    br#"// [COMBO] {"combo":"RESOLUTION","type":"options","default":32}
+uniform sampler2D g_Texture0; // {"material":"framebuffer","hidden":true}
+uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,"material":"backgroundTexture"}"#,
+                ),
+            ]),
+        )
+        .expect("scene package");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("effect IR");
+        let terminal = ir.render_graphs[0].passes.last().expect("terminal pass");
+
+        assert_eq!(terminal.role, RenderPassRole::SceneComposite);
+        assert_eq!(
+            terminal.shader.as_deref(),
+            Some("effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16")
+        );
+        assert!(terminal.bindings.contains(
+            &crate::engine::render_graph::TextureBindingRole::PreviousGraphTarget { slot: 0 }
+        ));
+        assert!(terminal.bindings.contains(
+            &crate::engine::render_graph::TextureBindingRole::EffectTarget {
+                slot: 2,
+                name: "_rt_FullFrameBuffer".to_owned(),
+            }
+        ));
+        assert!(ir.image_targets.iter().any(|target| {
+            target.name == "_rt_FullFrameBuffer"
+                && target.role == WeIrImageTargetRole::FirstClassEffectTarget
+        }));
 
         let _ = fs::remove_dir_all(root);
     }

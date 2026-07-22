@@ -15,7 +15,6 @@ Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
     present_delta_over_6250us_count,
     present_delta_over_8334us_count,
     clear_color: options.clear_color,
-    capture_scene_graph,
     selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
         physical_device_index: selection.physical_device_index,
         physical_device_name: selection.physical_device_name,
@@ -140,5 +139,4 @@ Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
     mesh_draw_recorded,
     command_order,
     present_backend: "vulkanalia-scene-present-runtime",
-    frame_capture: frame_capture_snapshot,
 })

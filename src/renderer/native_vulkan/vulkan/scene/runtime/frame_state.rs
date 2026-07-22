@@ -23,6 +23,9 @@ use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_atta
 
 mod topology;
 
+#[cfg(test)]
+mod visibility_tests;
+
 pub(super) use topology::pack_scene_skinning_palette;
 use topology::{resolved_draw_effect_visibility_mask, validate_topology_slice};
 
@@ -338,7 +341,7 @@ pub(super) fn write_scene_frame_buffers(
     let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
     let graph_started = cpu_timing_enabled.then(Instant::now);
     let graph = topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
-    update_draw_visibility(storage, graph, semantic_frame, draw_commands);
+    update_draw_visibility(graph, semantic_frame, draw_commands);
     update_effect_draw_pipelines(graph, draw_commands)?;
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
@@ -416,32 +419,16 @@ pub(super) fn write_scene_frame_buffers(
 }
 
 fn update_draw_visibility(
-    storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     frame: &ResolvedSemanticFrame,
     draw_commands: &mut [SceneGpuDrawCommand],
 ) {
-    let hidden_render_texture_objects = graph
-        .pass_nodes
+    for (draw, command) in graph
+        .mesh_draws
         .iter()
-        .filter(|pass| {
-            pass.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
-                && storage
-                    .string(pass.target_name)
-                    .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"))
-        })
-        .flat_map(|pass| {
-            graph
-                .mesh_draws
-                .iter()
-                .skip(pass.mesh_draw_start as usize)
-                .take(pass.mesh_draw_count as usize)
-                .map(|draw| draw.object)
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
+        .zip(draw_commands.iter_mut())
+    {
         command.enabled = draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID
-            || hidden_render_texture_objects.contains(&draw.object)
             || frame
                 .object(draw.object)
                 .is_some_and(|object| object.resolved_visible);
@@ -563,8 +550,7 @@ mod tests {
     use crate::engine::scene::{
         SceneEffectHandle, SceneMaterialHandle, SceneRenderGraphActivationPolicy,
         SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDevicePassNode,
-        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
-        SceneStringId,
+        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette, SceneStringId,
     };
     use crate::renderer::native_vulkan::NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES;
 
@@ -674,10 +660,6 @@ mod tests {
                 u32::MAX,
             ),
         ];
-        let storage = SceneStorage::from_document(
-            crate::engine::scene::binary::SceneBinaryDocument::default(),
-        )
-        .expect("empty storage");
         let mut commands = vec![
             draw_command(10, None),
             draw_command(11, Some(21)),
@@ -685,11 +667,11 @@ mod tests {
         ];
         let mut frame = frame_with_effect_visibility(false);
 
-        update_draw_visibility(&storage, &graph, &frame, &mut commands);
+        update_draw_visibility(&graph, &frame, &mut commands);
         assert!(commands.iter().all(|command| !command.enabled));
 
         frame.object_effects[0].resolved_visible = true;
-        update_draw_visibility(&storage, &graph, &frame, &mut commands);
+        update_draw_visibility(&graph, &frame, &mut commands);
         assert!(commands.iter().all(|command| command.enabled));
     }
 

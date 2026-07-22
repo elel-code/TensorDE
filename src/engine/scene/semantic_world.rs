@@ -19,6 +19,7 @@ pub mod resolved_frame;
 mod semantic_resolution;
 pub mod timeline;
 pub mod transform_animation;
+mod user_property;
 pub use components::{
     MaterialBindingComponent, MeshBindingComponent, ParentComponent, ParticleEmitterComponent,
     PuppetBindingComponent, SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent,
@@ -48,6 +49,7 @@ pub use semantic_resolution::SemanticFrameResolver;
 use semantic_resolution::{RetainedPuppetTopology, resolve_retained_attachment_anchor};
 use timeline::{sampled_object_transform, sampled_puppet_bone_local_state};
 pub use transform_animation::TransformAnimationComponent;
+pub use user_property::SemanticUserPropertyBinding;
 
 use super::abi::*;
 use super::storage::SceneStorage;
@@ -70,6 +72,7 @@ pub struct SceneSemanticWorld<'a> {
     particle_components: Vec<Option<ParticleEmitterComponent>>,
     mesh_bindings: Vec<SemanticMeshBinding>,
     object_effect_bindings: Vec<SemanticObjectEffectBinding>,
+    user_property_bindings: Vec<SemanticUserPropertyBinding>,
 }
 
 impl<'a> SceneSemanticWorld<'a> {
@@ -94,6 +97,11 @@ impl<'a> SceneSemanticWorld<'a> {
                 .object_effects()
                 .iter()
                 .map(SemanticObjectEffectBinding::from_record)
+                .collect(),
+            user_property_bindings: storage
+                .user_property_bindings()
+                .iter()
+                .map(SemanticUserPropertyBinding::from_record)
                 .collect(),
         };
 
@@ -210,6 +218,10 @@ impl<'a> SceneSemanticWorld<'a> {
         self.object_effect_bindings.get(start..end).unwrap_or(&[])
     }
 
+    pub fn user_property_bindings(&self) -> &[SemanticUserPropertyBinding] {
+        &self.user_property_bindings
+    }
+
     pub fn puppet_binding(&self, object: SceneObjectHandle) -> Option<&PuppetBindingComponent> {
         self.component_for_object(object, &self.puppet_components)
     }
@@ -258,13 +270,28 @@ impl<'a> SceneSemanticWorld<'a> {
         &self,
         scene_time_seconds: f32,
     ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
-        self.resolve_frame_with_dynamic_values_at(scene_time_seconds, &[])
+        self.resolve_frame_with_user_properties_at(scene_time_seconds, &serde_json::Map::new())
+    }
+
+    pub fn resolve_frame_with_user_properties_at(
+        &self,
+        scene_time_seconds: f32,
+        user_property_overrides: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
+        let user_property_visibility =
+            user_property::resolved_visibility(self, user_property_overrides)?;
+        self.resolve_frame_with_dynamic_values_at(
+            scene_time_seconds,
+            &[],
+            &user_property_visibility,
+        )
     }
 
     fn resolve_frame_with_dynamic_values_at(
         &self,
         scene_time_seconds: f32,
         script_deltas: &[SceneScriptDelta],
+        user_property_visibility: &[Option<bool>],
     ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
         let mut states = vec![None; self.entities.len()];
         let mut visits = vec![ResolveVisitState::Unvisited; self.entities.len()];
@@ -279,6 +306,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 &mut attachment_links,
                 &mut retained_puppets,
                 script_deltas,
+                user_property_visibility,
                 scene_time_seconds,
             )?;
         }
@@ -449,6 +477,7 @@ impl<'a> SceneSemanticWorld<'a> {
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         script_deltas: &[SceneScriptDelta],
+        user_property_visibility: &[Option<bool>],
         scene_time_seconds: f32,
     ) -> Result<ResolvedObjectState, SceneSemanticWorldError> {
         match visits[entity_index] {
@@ -526,10 +555,17 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment_links,
             retained_puppets,
             script_deltas,
+            user_property_visibility,
             scene_time_seconds,
         )?;
         let self_visible = script_scalar(script_deltas, object.id, SceneScriptTarget::Visible)
             .map(|value| value != 0.0)
+            .or_else(|| {
+                user_property_visibility
+                    .get(entity_index)
+                    .copied()
+                    .flatten()
+            })
             .unwrap_or(visibility.visible);
         let self_color = script_vector(script_deltas, object.id, SceneScriptTarget::Color)
             .unwrap_or(visual.color);
@@ -571,6 +607,7 @@ impl<'a> SceneSemanticWorld<'a> {
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         script_deltas: &[SceneScriptDelta],
+        user_property_visibility: &[Option<bool>],
         scene_time_seconds: f32,
     ) -> Result<ResolvedParentState, SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
@@ -600,6 +637,7 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment_links,
             retained_puppets,
             script_deltas,
+            user_property_visibility,
             scene_time_seconds,
         )?;
         let mut parent_anchor = parent_state.world_matrix;

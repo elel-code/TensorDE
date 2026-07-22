@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use super::*;
 
 pub(super) fn rows_from_column_major(matrix: [f32; 16]) -> [[f32; 4]; 4] {
@@ -93,7 +91,8 @@ pub(super) fn sampled_binding(
         return None;
     }
     let producer_graph = if binding.kind == SceneRenderBindingKind::EffectTarget {
-        render_texture_producer_graph(storage, binding.target, binding.name).unwrap_or(graph_index)
+        render_texture_producer_graph(storage, graph_index, binding.target, binding.name)
+            .unwrap_or(graph_index)
     } else {
         graph_index
     };
@@ -109,31 +108,99 @@ pub(super) fn sampled_binding(
     })
 }
 
-pub(super) fn render_texture_producer_graphs(storage: &SceneStorage) -> BTreeSet<u32> {
-    storage
-        .render_graphs()
-        .iter()
-        .flat_map(|graph| storage.render_graph_passes(graph))
-        .flat_map(|pass| storage.render_pass_bindings(pass))
-        .filter(|binding| binding.kind == SceneRenderBindingKind::EffectTarget)
-        .filter_map(|binding| render_texture_producer_graph(storage, binding.target, binding.name))
-        .collect()
-}
-
 fn render_texture_producer_graph(
     storage: &SceneStorage,
+    preferred_graph_index: u32,
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
 ) -> Option<u32> {
+    let graph_writes_target = |graph: &SceneRenderGraphRecord| {
+        storage
+            .render_graph_passes(graph)
+            .iter()
+            .any(|pass| pass.target == target && pass.target_name == target_name)
+    };
+    if storage
+        .render_graphs()
+        .get(preferred_graph_index as usize)
+        .is_some_and(graph_writes_target)
+    {
+        return Some(preferred_graph_index);
+    }
     storage
         .render_graphs()
         .iter()
         .enumerate()
-        .find(|(_, graph)| {
-            storage
-                .render_graph_passes(graph)
-                .iter()
-                .any(|pass| pass.target == target && pass.target_name == target_name)
-        })
+        .find(|(_, graph)| graph_writes_target(graph))
         .map(|(index, _)| index as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::scene::SceneBinaryDocument;
+
+    #[test]
+    fn same_named_effect_target_prefers_the_current_graph_producer() {
+        let target_name = SceneStringId(0);
+        let target_pass = |id| SceneRenderPassRecord {
+            id,
+            role: SceneRenderPassKind::CopyTarget,
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            pass_index: 0,
+            shader_key: SceneStringId::NONE,
+            target: SceneRenderTargetKind::FirstClassEffectTarget,
+            target_name,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            scene_blend: SceneCompositeBlend::Alpha,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
+        };
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["_rt_FullFrameBuffer".to_owned()],
+            render_graphs: vec![
+                SceneRenderGraphRecord {
+                    object: SceneObjectHandle(INVALID_OBJECT_ID),
+                    activation_policy: SceneRenderGraphActivationPolicy::Always,
+                    pass_start: 0,
+                    pass_count: 1,
+                    unsupported_start: 0,
+                    unsupported_count: 0,
+                },
+                SceneRenderGraphRecord {
+                    object: SceneObjectHandle(INVALID_OBJECT_ID),
+                    activation_policy: SceneRenderGraphActivationPolicy::Always,
+                    pass_start: 1,
+                    pass_count: 1,
+                    unsupported_start: 0,
+                    unsupported_count: 0,
+                },
+            ],
+            render_passes: vec![target_pass(0), target_pass(0)],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let binding = SceneRenderBindingRecord {
+            kind: SceneRenderBindingKind::EffectTarget,
+            slot: 2,
+            target: SceneRenderTargetKind::FirstClassEffectTarget,
+            name: target_name,
+        };
+
+        let sampled = sampled_binding(&storage, 1, 3, 7, 1, &binding).expect("sampled binding");
+
+        assert_eq!(sampled.graph_index, 1);
+        assert_eq!(sampled.pass_node_index, 3);
+        assert_eq!(sampled.mesh_draw_start, 7);
+        assert_eq!(sampled.slot, 2);
+    }
 }

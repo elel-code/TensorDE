@@ -9,9 +9,6 @@
 
 mod runtime;
 
-pub use runtime::{
-    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
-};
 pub(in crate::renderer::native_vulkan) use runtime::{
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,

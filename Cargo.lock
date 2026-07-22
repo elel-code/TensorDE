@@ -319,7 +319,6 @@ dependencies = [
  "oxc_ast_visit",
  "oxc_parser",
  "oxc_span",
- "png",
  "rquickjs",
  "rustix",
  "serde",

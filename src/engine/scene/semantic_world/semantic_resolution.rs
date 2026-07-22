@@ -36,6 +36,7 @@ pub struct SemanticFrameResolver {
     script_runtime: Option<SceneScriptRuntime>,
     script_deltas: Vec<SceneScriptDelta>,
     script_delta_updates: Vec<SceneScriptDelta>,
+    user_property_visibility: Vec<Option<bool>>,
     pointer_clicks: Vec<SceneScriptPointerClick>,
     pressed_click_targets: Vec<(u32, Option<SceneObjectHandle>)>,
     last_pointer_sequence: Option<SceneEventSequence>,
@@ -70,7 +71,10 @@ impl SemanticFrameResolver {
         world: &SceneSemanticWorld<'_>,
         user_property_overrides: &Map<String, Value>,
     ) -> Result<Self, SceneSemanticWorldError> {
-        let frame = world.resolve_frame_at(0.0)?;
+        let user_property_visibility =
+            super::user_property::resolved_visibility(world, user_property_overrides)?;
+        let frame =
+            world.resolve_frame_with_dynamic_values_at(0.0, &[], &user_property_visibility)?;
         let dynamic_entities = dynamic_entity_closure(world);
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
@@ -97,6 +101,7 @@ impl SemanticFrameResolver {
             script_runtime,
             script_deltas: Vec::new(),
             script_delta_updates: Vec::new(),
+            user_property_visibility,
             pointer_clicks: Vec::new(),
             pressed_click_targets: Vec::new(),
             last_pointer_sequence: None,
@@ -126,8 +131,11 @@ impl SemanticFrameResolver {
             let text_values = std::mem::take(&mut self.frame.script_text_values);
             let media_clock = self.frame.media_clock;
             let video_frame = self.frame.video_frame;
-            self.frame = world
-                .resolve_frame_with_dynamic_values_at(scene_time_seconds, &self.script_deltas)?;
+            self.frame = world.resolve_frame_with_dynamic_values_at(
+                scene_time_seconds,
+                &self.script_deltas,
+                &self.user_property_visibility,
+            )?;
             self.frame.audio_band_material_values = audio_values;
             self.frame.script_text_values = text_values;
             self.frame.media_clock = media_clock;
@@ -161,6 +169,7 @@ impl SemanticFrameResolver {
                 &mut self.attachment_scratch,
                 &mut retained_puppets,
                 &self.script_deltas,
+                &self.user_property_visibility,
                 scene_time_seconds,
             )?;
         }
@@ -700,6 +709,12 @@ fn dynamic_entity_closure(world: &SceneSemanticWorld<'_>) -> Vec<usize> {
 
     for program in world.storage.script_programs() {
         if let Some(entity) = world.index.entity_for_object(program.object) {
+            dynamic[entity.index()] = true;
+        }
+    }
+
+    for binding in world.user_property_bindings() {
+        if let Some(entity) = world.index.entity_for_object(binding.object) {
             dynamic[entity.index()] = true;
         }
     }

@@ -41,7 +41,13 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
-    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+    let graph = graph_with_passes_and_primitives(
+        vec![pass_node(0, 0, 1), pass_node(1, 1, 1)],
+        [
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        ],
+    );
 
     let layout = scene_pipeline_descriptor_layout(&storage, &graph).expect("layout");
     let indices =
@@ -51,6 +57,113 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
     assert_eq!(layout.sampled_slots, vec![0]);
     assert!(layout.material_uniform_enabled);
     assert_eq!(indices, vec![0, 1]);
+}
+
+#[test]
+fn same_effect_shader_uses_distinct_fullscreen_and_object_mesh_pipelines() {
+    let storage = single_shader_storage(
+        "effects/shimmer__SLOTS_9",
+        vec![
+            render_pass(0, SceneStringId(0), ScenePipelineBlend::Normal),
+            render_pass(1, SceneStringId(0), ScenePipelineBlend::Normal),
+        ],
+    );
+    let mut second_pass = pass_node(1, 1, 1);
+    second_pass.effect_visibility_policy =
+        crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough;
+    let graph = graph_with_passes_and_primitives(
+        vec![pass_node(0, 0, 1), second_pass],
+        [
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        ],
+    );
+
+    let indices = scene_pipeline_indices_for_draws(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        &[],
+        false,
+    )
+    .expect("primitive-specific indices");
+    let disabled = scene_disabled_pipeline_indices_for_draws(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        &[],
+        false,
+    )
+    .expect("primitive-specific passthrough indices");
+    let keys = drawn_pass_pipeline_keys(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        &[],
+        false,
+    )
+    .expect("pipeline keys");
+
+    assert_eq!(indices, vec![0, 1]);
+    assert_eq!(disabled, vec![None, Some(2)]);
+    assert!(keys.iter().any(|key| {
+        key.shader == ScenePipelineShader::EffectPassthrough(SceneStringId(0))
+            && key.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+    }));
+}
+
+#[test]
+fn object_mesh_effect_without_a_typed_vertex_program_fails_strictly() {
+    let storage = single_shader_storage(
+        "effects/iris__SLOTS_3__MASK_1",
+        vec![render_pass(
+            0,
+            SceneStringId(0),
+            ScenePipelineBlend::Normal,
+        )],
+    );
+    let graph = object_mesh_graph_with_passes(vec![pass_node(0, 0, 1)]);
+
+    let error = scene_pipeline_indices_for_draws(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        &[],
+        false,
+    )
+    .expect_err("object-mesh iris must not guess a vertex ABI");
+
+    assert!(error.contains("has no ObjectMesh vertex program"));
+}
+
+#[test]
+fn one_pass_cannot_mix_incompatible_draw_primitives() {
+    let storage = single_shader_storage(
+        "effects/shimmer__SLOTS_9",
+        vec![render_pass(
+            0,
+            SceneStringId(0),
+            ScenePipelineBlend::Normal,
+        )],
+    );
+    let graph = graph_with_passes_and_primitives(
+        vec![pass_node(0, 0, 2)],
+        [
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        ],
+    );
+
+    let error = scene_pipeline_indices_for_draws(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        &[],
+        false,
+    )
+    .expect_err("mixed primitive pass must fail");
+
+    assert!(error.contains("mixes incompatible draw primitives"));
 }
 
 #[test]
@@ -206,7 +319,10 @@ fn final_target_pipeline_keys_include_scene_composite_blend() {
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
-    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+    let graph = object_mesh_graph_with_passes(vec![
+        pass_node(0, 0, 1),
+        pass_node(1, 1, 1),
+    ]);
 
     let indices =
         scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
@@ -388,7 +504,10 @@ fn rgb_only_alpha_over_preserves_target_alpha_and_has_a_distinct_pipeline_key() 
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
-    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+    let graph = object_mesh_graph_with_passes(vec![
+        pass_node(0, 0, 1),
+        pass_node(1, 1, 1),
+    ]);
 
     let indices =
         scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
@@ -429,7 +548,10 @@ fn authored_normal_cull_uses_back_faces_and_has_a_distinct_pipeline_key() {
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
-    let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
+    let graph = object_mesh_graph_with_passes(vec![
+        pass_node(0, 0, 1),
+        pass_node(1, 1, 1),
+    ]);
 
     let indices =
         scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
@@ -479,9 +601,62 @@ fn gpu_blend_attachments_match_we_composite_equations() {
 fn graph_with_passes(
     pass_nodes: Vec<SceneRenderingDevicePassNode>,
 ) -> SceneRenderingDeviceGraphPlan {
+    graph_with_passes_and_primitives(
+        pass_nodes,
+        [
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        ],
+    )
+}
+
+fn single_shader_storage(
+    shader: &str,
+    render_passes: Vec<SceneRenderPassRecord>,
+) -> SceneStorage {
+    SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec![shader.to_owned(), "pipeline".to_owned()],
+        shader_contracts: vec![SceneShaderContractRecord {
+            shader_key: SceneStringId(0),
+            pipeline_key: SceneStringId(1),
+            texture_slot_mask: 1,
+            constant_start: 0,
+            constant_count: 0,
+            resource_heap_count: 1,
+            sampler_heap_count: 1,
+        }],
+        render_passes,
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage")
+}
+
+fn object_mesh_graph_with_passes(
+    pass_nodes: Vec<SceneRenderingDevicePassNode>,
+) -> SceneRenderingDeviceGraphPlan {
+    graph_with_passes_and_primitives(
+        pass_nodes,
+        [
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        ],
+    )
+}
+
+fn graph_with_passes_and_primitives(
+    pass_nodes: Vec<SceneRenderingDevicePassNode>,
+    primitives: [SceneRenderingDeviceDrawPrimitive; 2],
+) -> SceneRenderingDeviceGraphPlan {
     SceneRenderingDeviceGraphPlan {
         pass_nodes,
-        mesh_draws: vec![draw(), draw()],
+        mesh_draws: primitives
+            .into_iter()
+            .map(|primitive| {
+                let mut draw = draw();
+                draw.primitive = primitive;
+                draw
+            })
+            .collect(),
         target_allocations: Vec::new(),
         effect_batches: Vec::new(),
         effect_batch_instances: Vec::new(),

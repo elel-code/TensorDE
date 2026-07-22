@@ -12,7 +12,7 @@
 use serde::Serialize;
 
 use crate::engine::scene::{
-    RendererSceneRenderPlan, RenderingServer, SceneParticleSystemRecord,
+    RendererSceneRenderPlan, RenderingServer, ResolvedSemanticFrame, SceneParticleSystemRecord,
     SceneRenderingDeviceGraphPlan, SceneStorage,
 };
 use crate::renderer::native_vulkan::present::render_item::NativeVulkanRenderItem;
@@ -74,8 +74,33 @@ pub fn native_vulkan_scene_backend_plan_at(
 ) -> NativeVulkanSceneBackendPlan {
     let rendering_server = RenderingServer::new(storage);
     let scene_engine = rendering_server.scene_engine_render_plan_at(scene_time_seconds);
-    let renderer_scene_render = scene_engine.renderer_scene_render;
-    let rendering_device_graph = scene_engine.rendering_device_graph;
+    build_scene_backend_plan(
+        storage,
+        scene_engine.renderer_scene_render,
+        scene_engine.rendering_device_graph,
+    )
+}
+
+pub fn native_vulkan_scene_backend_plan_from_semantic_frame(
+    storage: &SceneStorage,
+    semantic_frame: &ResolvedSemanticFrame,
+) -> NativeVulkanSceneBackendPlan {
+    let rendering_server = RenderingServer::new(storage);
+    let renderer_scene_render =
+        rendering_server.renderer_scene_render_plan_from_semantic_frame(semantic_frame);
+    let rendering_device_graph = SceneRenderingDeviceGraphPlan::from_storage_with_semantic_frame(
+        storage,
+        renderer_scene_render,
+        semantic_frame,
+    );
+    build_scene_backend_plan(storage, renderer_scene_render, rendering_device_graph)
+}
+
+fn build_scene_backend_plan(
+    storage: &SceneStorage,
+    renderer_scene_render: RendererSceneRenderPlan,
+    rendering_device_graph: SceneRenderingDeviceGraphPlan,
+) -> NativeVulkanSceneBackendPlan {
     let utility_vertex_count =
         usize::from(rendering_device_graph.uses_fullscreen_utility_primitive()) * 3;
     let mesh_upload_vertex_count = renderer_scene_render

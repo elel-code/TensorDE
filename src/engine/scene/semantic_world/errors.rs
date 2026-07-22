@@ -82,6 +82,7 @@ pub enum SceneSemanticWorldError {
         object: SceneObjectHandle,
     },
     ScriptRuntime(String),
+    UserProperty(String),
 }
 
 impl fmt::Display for SceneSemanticWorldError {
@@ -209,6 +210,7 @@ impl fmt::Display for SceneSemanticWorldError {
                 object.0
             ),
             Self::ScriptRuntime(message) => write!(f, "scene script runtime failed: {message}"),
+            Self::UserProperty(message) => write!(f, "scene user property failed: {message}"),
         }
     }
 }

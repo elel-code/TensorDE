@@ -17,8 +17,8 @@ use serde_json::{Map, Value};
 use crate::engine::scene::{SceneScriptRuntime, SceneStorage};
 use crate::renderer::native_vulkan::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
-    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanVulkanaliaScenePresentOptions,
-    NativeVulkanVulkanaliaScenePresentSnapshot, run_native_vulkan_vulkanalia_scene_present,
+    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
+    run_native_vulkan_vulkanalia_scene_present,
 };
 
 use super::NativeVulkanSceneBackendPlan;
@@ -28,15 +28,6 @@ pub struct NativeVulkanSceneRunOptions {
     pub user_property_overrides: Map<String, Value>,
     pub pointer_events: bool,
     pub pointer_replay_normalized: Option<[f64; 2]>,
-    pub capture_frame: Option<PathBuf>,
-    pub capture_frame_number: u64,
-    pub capture_frame_count: u64,
-    pub capture_frame_step: u64,
-    pub capture_frame_downscale: u32,
-    pub capture_frame_region: Option<(u32, u32, u32, u32)>,
-    pub capture_frame_reference: Option<PathBuf>,
-    pub capture_frame_time_step_seconds: Option<f32>,
-    pub capture_scene_graph: Option<u32>,
     pub clear_color_override: Option<NativeVulkanClearColor>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
@@ -48,15 +39,6 @@ impl Default for NativeVulkanSceneRunOptions {
             user_property_overrides: Map::new(),
             pointer_events: true,
             pointer_replay_normalized: None,
-            capture_frame: None,
-            capture_frame_number: 1,
-            capture_frame_count: 1,
-            capture_frame_step: 1,
-            capture_frame_downscale: 1,
-            capture_frame_region: None,
-            capture_frame_reference: None,
-            capture_frame_time_step_seconds: None,
-            capture_scene_graph: None,
             clear_color_override: None,
             surface_extent: None,
             gpu_timing: false,
@@ -69,8 +51,6 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
     pub source: PathBuf,
-    pub frame_capture: Option<NativeVulkanSceneFrameCaptureSnapshot>,
-    pub capture_scene_graph: Option<u32>,
     pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
     pub frames_presented: u64,
     pub average_present_fps: f64,
@@ -107,73 +87,6 @@ pub fn run_scene_with_options(
     scene_options: NativeVulkanSceneRunOptions,
 ) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
     validate_pointer_replay_position(scene_options.pointer_replay_normalized)?;
-    if scene_options.capture_frame.is_some() && duration.is_zero() {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture requires a non-zero runtime duration".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_some() && scene_options.capture_frame_number == 0 {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture number must be at least 1".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_some() && scene_options.capture_frame_count == 0 {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture count must be at least 1".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_some() && scene_options.capture_frame_step == 0 {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture step must be at least 1".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_some() && scene_options.capture_frame_downscale == 0 {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture downscale must be at least 1".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_none() && scene_options.capture_frame_region.is_some() {
-        return Err(NativeVulkanError::Scene(
-            "scene frame capture region requires frame capture".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_none() && scene_options.capture_frame_reference.is_some() {
-        return Err(NativeVulkanError::Scene(
-            "scene temporal reference requires frame capture".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame_reference.is_some() && scene_options.capture_frame_count < 3 {
-        return Err(NativeVulkanError::Scene(
-            "scene temporal reference requires at least three captured frames".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame_reference.is_some()
-        && scene_options.capture_frame_time_step_seconds.is_none()
-    {
-        return Err(NativeVulkanError::Scene(
-            "scene temporal reference requires a deterministic capture time step".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_none()
-        && scene_options.capture_frame_time_step_seconds.is_some()
-    {
-        return Err(NativeVulkanError::Scene(
-            "scene deterministic capture time step requires frame capture".to_owned(),
-        ));
-    }
-    if scene_options
-        .capture_frame_time_step_seconds
-        .is_some_and(|step| !step.is_finite() || step <= 0.0)
-    {
-        return Err(NativeVulkanError::Scene(
-            "scene deterministic capture time step must be finite and positive".to_owned(),
-        ));
-    }
-    if scene_options.capture_frame.is_none() && scene_options.capture_scene_graph.is_some() {
-        return Err(NativeVulkanError::Scene(
-            "scene graph isolation requires frame capture".to_owned(),
-        ));
-    }
     let file = std::fs::File::open(&source).map_err(|err| {
         NativeVulkanError::Scene(format!(
             "open scene engine binary {}: {err}",
@@ -194,7 +107,6 @@ pub fn run_scene_with_options(
     let clear_color = scene_options
         .clear_color_override
         .unwrap_or_else(|| scene_clear_color(&storage));
-    let capture_scene_graph = scene_options.capture_scene_graph;
     let mut host = options.host;
     host.input_passthrough = !scene_options.pointer_events;
 
@@ -207,21 +119,11 @@ pub fn run_scene_with_options(
             clear_color,
             storage,
             user_property_overrides: scene_options.user_property_overrides,
-            capture_frame: scene_options.capture_frame,
-            capture_frame_number: scene_options.capture_frame_number,
-            capture_frame_count: scene_options.capture_frame_count,
-            capture_frame_step: scene_options.capture_frame_step,
-            capture_frame_downscale: scene_options.capture_frame_downscale,
-            capture_frame_region: scene_options.capture_frame_region,
-            capture_frame_reference: scene_options.capture_frame_reference,
-            capture_frame_time_step_seconds: scene_options.capture_frame_time_step_seconds,
-            capture_scene_graph,
             surface_extent: scene_options.surface_extent,
             gpu_timing: scene_options.gpu_timing,
             pointer_replay_normalized: scene_options.pointer_replay_normalized,
         })
         .map_err(NativeVulkanError::Scene)?;
-    let frame_capture = present.frame_capture.clone();
     let render_graph_draw_count = present.mesh_draw_count;
     let mesh_draw_count = present.mesh_draw_count;
     let mesh_draw_recording_ready = render_graph_draw_count > 0
@@ -233,8 +135,6 @@ pub fn run_scene_with_options(
         binding: "vulkanalia",
         route: "scene-engine-vulkan-present-runtime",
         source,
-        frame_capture,
-        capture_scene_graph,
         frames_presented: present.frames_presented,
         average_present_fps: present.average_present_fps,
         present_delta_min_micros: present.present_delta_min_micros,

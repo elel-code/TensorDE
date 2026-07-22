@@ -501,3 +501,34 @@ fn scene_binary_round_trip_preserves_effect_visibility_ownership() {
         SceneRenderEffectVisibilityPolicy::MaterialStages
     );
 }
+
+#[test]
+fn scene_binary_round_trip_preserves_typed_user_property_bindings() {
+    let document = SceneBinaryDocument {
+        strings: vec!["rain".to_owned(), "theme".to_owned(), "2".to_owned()],
+        user_property_bindings: vec![
+            SceneUserPropertyBindingRecord {
+                object: SceneObjectHandle(3),
+                property: SceneStringId(0),
+                target: SceneUserPropertyTarget::Visible,
+                predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+            },
+            SceneUserPropertyBindingRecord {
+                object: SceneObjectHandle(4),
+                property: SceneStringId(1),
+                target: SceneUserPropertyTarget::Visible,
+                predicate: SceneUserPropertyPredicate::StringEquals(SceneStringId(2)),
+            },
+        ],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+
+    write_scene_binary(&document, &mut bytes).expect("write scene binary");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene binary");
+
+    assert_eq!(
+        decoded.user_property_bindings,
+        document.user_property_bindings
+    );
+}

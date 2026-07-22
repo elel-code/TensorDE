@@ -24,6 +24,7 @@ mod scene_chunks;
 mod script_binding;
 mod texture;
 mod timeline;
+mod user_property_binding;
 
 use particle::{decode_particles, encode_particles};
 use pointer_binding::{decode_pointer_bindings, encode_pointer_bindings};
@@ -35,6 +36,7 @@ pub use document::SceneBinaryDocument;
 use document::empty_project_record;
 use texture::{decode_texture_mips, decode_textures, encode_texture_mips, encode_textures};
 use timeline::{SceneTimelineRecords, decode_timelines, encode_timelines};
+use user_property_binding::{decode_user_property_bindings, encode_user_property_bindings};
 
 const HEADER_LEN: usize = 36;
 const CHUNK_ENTRY_LEN: usize = 32;
@@ -245,6 +247,14 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "script binding",
         script_programs.len(),
     )?;
+    let user_property_bindings =
+        decode_user_property_bindings(chunk_payload(&chunks, CHUNK_USER_PROPERTY_BINDING)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_USER_PROPERTY_BINDING,
+        "user property binding",
+        user_property_bindings.len(),
+    )?;
     ensure_chunk_count(&chunks, CHUNK_AUDIO, "audio", 0)?;
     let (camera_parallax, object_parallax_depths) =
         decode_pointer_bindings(chunk_payload(&chunks, CHUNK_POINTER_BINDING)?)?;
@@ -302,6 +312,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts,
         shader_constant_names,
         script_programs,
+        user_property_bindings,
         camera_parallax,
         object_parallax_depths,
     })
@@ -501,6 +512,14 @@ fn encode_chunks(
                 document.camera_parallax,
                 &document.object_parallax_depths,
             )?,
+        },
+        SceneEncodedChunk {
+            kind: CHUNK_USER_PROPERTY_BINDING,
+            item_count: checked_u32(
+                document.user_property_bindings.len(),
+                "user property binding count",
+            )?,
+            data: encode_user_property_bindings(&document.user_property_bindings)?,
         },
         SceneEncodedChunk {
             kind: CHUNK_RENDER_GRAPH,

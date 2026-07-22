@@ -4,6 +4,8 @@ use crate::engine::render_graph::{
 };
 use crate::engine::scene::ScenePipelineBlend;
 
+mod user_property;
+
 #[test]
 fn effect_image_target_role_and_scale_follow_we_fbo_semantics() {
     assert_eq!(

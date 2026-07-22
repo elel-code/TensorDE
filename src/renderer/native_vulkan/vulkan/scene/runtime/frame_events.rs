@@ -73,7 +73,7 @@ impl SceneRuntimeEventSources {
         Ok(!host.is_closed())
     }
 
-    pub(super) fn capture_frame(
+    pub(super) fn sample_frame_events(
         &mut self,
         sample_time_ns: u64,
         surface_size: Option<(u32, u32)>,
@@ -114,7 +114,7 @@ impl SceneRuntimeEventSources {
     pub(super) fn audio_summary(&mut self, frame_presented: bool) -> SceneRuntimeAudioSummary {
         if !frame_presented {
             self.audio_monitor.publish_latest();
-            self.capture_frame(0, None);
+            self.sample_frame_events(0, None);
         }
         let (model, ready) = self.audio.status();
         let (peak, active_band_count) = audio_state_summary(&self.frame.audio);

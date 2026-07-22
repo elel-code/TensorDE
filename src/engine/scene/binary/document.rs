@@ -50,6 +50,7 @@ pub struct SceneBinaryDocument {
     pub shader_contracts: Vec<SceneShaderContractRecord>,
     pub shader_constant_names: Vec<SceneStringId>,
     pub script_programs: Vec<SceneScriptProgramRecord>,
+    pub user_property_bindings: Vec<SceneUserPropertyBindingRecord>,
     pub camera_parallax: SceneCameraParallaxRecord,
     pub object_parallax_depths: Vec<SceneObjectParallaxDepthRecord>,
 }
@@ -103,6 +104,7 @@ impl Default for SceneBinaryDocument {
             shader_contracts: Vec::new(),
             shader_constant_names: Vec::new(),
             script_programs: Vec::new(),
+            user_property_bindings: Vec::new(),
             camera_parallax: SceneCameraParallaxRecord::default(),
             object_parallax_depths: Vec::new(),
         }

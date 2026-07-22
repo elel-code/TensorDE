@@ -1,6 +1,7 @@
 use super::*;
 use crate::engine::scene::abi::SceneStringId;
 use crate::engine::scene::event::SceneEventSequence;
+use crate::engine::scene::user_property::resolve_raw_scene_user_properties;
 
 fn program(
     target: SceneScriptTarget,
@@ -118,7 +119,7 @@ fn user_property_resolution_is_exact_and_type_strict() {
     let overrides = [("jia".to_owned(), Value::Bool(false))]
         .into_iter()
         .collect();
-    let resolved = resolve_user_properties(authored, &overrides).expect("properties");
+    let resolved = resolve_raw_scene_user_properties(authored, &overrides).expect("properties");
     assert_eq!(resolved["jia"], Value::Bool(false));
     assert_eq!(resolved["speed"], Value::from(1));
 
@@ -128,16 +129,16 @@ fn user_property_resolution_is_exact_and_type_strict() {
             .collect(),
         [("jia".to_owned(), Value::from(0))].into_iter().collect(),
     ] {
-        assert!(resolve_user_properties(authored, &invalid).is_err());
+        assert!(resolve_raw_scene_user_properties(authored, &invalid).is_err());
     }
     assert!(
-        resolve_user_properties(r#"{"group":{}}"#, &Map::new())
+        resolve_raw_scene_user_properties(r#"{"group":{}}"#, &Map::new())
             .expect("non-runtime project entry")
             .is_empty()
     );
     let invalid_group = [("group".to_owned(), Value::Null)].into_iter().collect();
-    assert!(resolve_user_properties(r#"{"group":{}}"#, &invalid_group).is_err());
-    assert!(resolve_user_properties(r#"{"jia":true}"#, &Map::new()).is_err());
+    assert!(resolve_raw_scene_user_properties(r#"{"group":{}}"#, &invalid_group).is_err());
+    assert!(resolve_raw_scene_user_properties(r#"{"jia":true}"#, &Map::new()).is_err());
 }
 
 #[test]

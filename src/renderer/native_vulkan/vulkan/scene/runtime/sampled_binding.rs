@@ -336,19 +336,46 @@ pub(in crate::renderer::native_vulkan) fn target_is_direct_scene_color_snapshot(
     if target != SceneRenderTargetKind::FirstClassEffectTarget {
         return false;
     }
-    graph
+    let Some(copy_pass_index) = graph
         .pass_nodes
         .iter()
         .enumerate()
-        .any(|(pass_index, pass)| {
-            pass.graph_index == graph_index
+        .find_map(|(pass_index, pass)| {
+            (pass.graph_index == graph_index
                 && pass.role == SceneRenderPassKind::CopyTarget
                 && pass.target == target
                 && pass.target_name == target_name
                 && graph.sampled_bindings.iter().any(|binding| {
                     binding.pass_node_index == pass_index as u32
                         && binding.target == SceneRenderTargetKind::SceneColor
-                })
+                }))
+            .then_some(pass_index)
+        })
+    else {
+        return false;
+    };
+    let mut consumers = graph
+        .sampled_bindings
+        .iter()
+        .filter(|binding| {
+            binding.graph_index == graph_index
+                && binding.target == target
+                && binding.target_name == target_name
+        })
+        .peekable();
+    consumers.peek().is_some()
+        && consumers.all(|binding| {
+            let consumer_index = binding.pass_node_index as usize;
+            consumer_index > copy_pass_index
+                && graph
+                    .pass_nodes
+                    .get(copy_pass_index + 1..=consumer_index)
+                    .is_some_and(|passes| {
+                        passes.iter().all(|pass| {
+                            pass.graph_index == graph_index
+                                && pass.target != SceneRenderTargetKind::SceneColor
+                        })
+                    })
         })
 }
 
@@ -598,6 +625,76 @@ mod tests {
                 batch_atlas_tile: 0,
             })
         );
+    }
+
+    #[test]
+    fn direct_scene_snapshot_requires_consumption_before_scene_color_rendering() {
+        let snapshot_name = SceneStringId(7);
+        let mut copy = pass_node(
+            0,
+            SceneRenderPassKind::CopyTarget,
+            snapshot_name,
+            0,
+            0,
+        );
+        copy.target = SceneRenderTargetKind::FirstClassEffectTarget;
+        let mut consumer = pass_node(
+            1,
+            SceneRenderPassKind::EffectMaterial,
+            SceneStringId::NONE,
+            0,
+            1,
+        );
+        consumer.target = SceneRenderTargetKind::ImageLocalMain;
+        let copy_source = SceneRenderingDeviceSampledBinding {
+            pass_node_index: 0,
+            graph_index: 0,
+            mesh_draw_start: 0,
+            mesh_draw_count: 0,
+            kind: SceneRenderBindingKind::GraphTarget,
+            slot: 0,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+        };
+        let snapshot_consumer = SceneRenderingDeviceSampledBinding {
+            pass_node_index: 1,
+            graph_index: 0,
+            mesh_draw_start: 0,
+            mesh_draw_count: 1,
+            kind: SceneRenderBindingKind::EffectTarget,
+            slot: 2,
+            target: SceneRenderTargetKind::FirstClassEffectTarget,
+            target_name: snapshot_name,
+        };
+        let mut graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![copy, consumer],
+            sampled_bindings: vec![copy_source, snapshot_consumer],
+            mesh_draws: vec![draw()],
+            ..empty_graph_plan()
+        };
+
+        assert!(target_is_direct_scene_color_snapshot(
+            &graph,
+            0,
+            SceneRenderTargetKind::FirstClassEffectTarget,
+            snapshot_name,
+        ));
+
+        graph.pass_nodes[1].target = SceneRenderTargetKind::SceneColor;
+        assert!(!target_is_direct_scene_color_snapshot(
+            &graph,
+            0,
+            SceneRenderTargetKind::FirstClassEffectTarget,
+            snapshot_name,
+        ));
+
+        graph.sampled_bindings.pop();
+        assert!(!target_is_direct_scene_color_snapshot(
+            &graph,
+            0,
+            SceneRenderTargetKind::FirstClassEffectTarget,
+            snapshot_name,
+        ));
     }
 
     #[test]

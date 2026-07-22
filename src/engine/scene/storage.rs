@@ -272,6 +272,10 @@ impl SceneStorage {
         &self.document.script_programs
     }
 
+    pub fn user_property_bindings(&self) -> &[SceneUserPropertyBindingRecord] {
+        &self.document.user_property_bindings
+    }
+
     pub fn particle_for_object(
         &self,
         object: SceneObjectHandle,
@@ -515,6 +519,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidUserPropertyBinding {
+        object: SceneObjectHandle,
+        reason: String,
+    },
     InvalidPointerParallaxBinding {
         object: SceneObjectHandle,
         reason: &'static str,
@@ -604,6 +612,11 @@ impl fmt::Display for SceneStorageError {
             Self::InvalidScriptProgram { object, reason } => write!(
                 f,
                 "scene script program for object {} is invalid: {reason}",
+                object.0
+            ),
+            Self::InvalidUserPropertyBinding { object, reason } => write!(
+                f,
+                "scene user property binding for object {} is invalid: {reason}",
                 object.0
             ),
             Self::InvalidPointerParallaxBinding { object, reason } => write!(

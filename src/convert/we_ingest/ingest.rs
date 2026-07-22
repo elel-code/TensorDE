@@ -11,6 +11,7 @@ mod builtin_effect_texture;
 mod caustics_specialization;
 mod effect_instance;
 mod effect_target;
+mod error;
 mod final_effect;
 mod foliage_ripple;
 mod image_layer_composite;
@@ -29,14 +30,15 @@ mod ripple_flow;
 mod script_program;
 mod shader_combo;
 mod shader_contract;
+mod shader_texture_default;
 mod text_font_binding;
 mod text_layer;
 mod texture_resolver;
 mod transform_animation;
+mod user_property_binding;
 mod utility_layer;
 mod waterwaves_displacement;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -55,15 +57,14 @@ use crate::engine::scene::abi::{
 
 use super::ir::*;
 use super::mdl::parse_mdl_model;
-use super::pkg::ScenePackageError;
 use super::tex::{
-    TexParseError, block_compression::transcode_texture_upload, decode_tex_upload,
-    texture_alpha_coverage_rows,
+    block_compression::transcode_texture_upload, decode_tex_upload, texture_alpha_coverage_rows,
 };
 use animation_layer::animation_layer_initial_progress;
 use asset_source::WeAssetSource;
 use builtin_effect_texture::apply_builtin_effect_texture_defaults;
 use effect_target::{image_target_role, scale_divisor_to_milli};
+pub use error::WeIngestError;
 use image_plane::image_plane_extent;
 use json_value::{
     bound_bool, bound_string, compact_json, finite_f32, infer_project_type, non_empty_string,
@@ -85,6 +86,10 @@ use script_program::{
 };
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
+use shader_texture_default::{
+    ShaderRuntimeTextureDefault, apply_shader_runtime_texture_defaults,
+    parse_shader_runtime_texture_defaults,
+};
 use text_font_binding::text_font_overrides;
 use text_layer::{
     ingest_text_layer, retained_text_effect_is_supported,
@@ -146,64 +151,6 @@ pub fn ingest_wallpaper_engine_project(
         builder.ingest_object(index, object)?;
     }
     builder.finish()
-}
-
-#[derive(Debug)]
-pub enum WeIngestError {
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    Package(ScenePackageError),
-    Json {
-        path: String,
-        source: serde_json::Error,
-    },
-    Tex {
-        path: String,
-        source: TexParseError,
-    },
-    MissingAsset(String),
-    UnsafePath(String),
-    UnsupportedProjectType {
-        wallpaper_type: String,
-    },
-    InvalidProject(String),
-    Script {
-        object: u32,
-        message: String,
-    },
-}
-
-impl fmt::Display for WeIngestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, source } => write!(f, "failed to read {}: {source}", path.display()),
-            Self::Package(err) => write!(f, "{err}"),
-            Self::Json { path, source } => write!(f, "failed to parse WE JSON {path}: {source}"),
-            Self::Tex { path, source } => write!(f, "failed to parse WE texture {path}: {source}"),
-            Self::MissingAsset(path) => write!(f, "missing WE asset {path}"),
-            Self::UnsafePath(path) => write!(f, "unsafe WE asset path {path}"),
-            Self::UnsupportedProjectType { wallpaper_type } => {
-                write!(
-                    f,
-                    "Wallpaper Engine type {wallpaper_type:?} is not a scene wallpaper"
-                )
-            }
-            Self::InvalidProject(message) => write!(f, "invalid WE project: {message}"),
-            Self::Script { object, message } => {
-                write!(f, "invalid SceneScript on object {object}: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for WeIngestError {}
-
-impl From<ScenePackageError> for WeIngestError {
-    fn from(value: ScenePackageError) -> Self {
-        Self::Package(value)
-    }
 }
 
 fn parse_project_ir(project: &Value) -> Result<WeProjectIr, WeIngestError> {
@@ -286,6 +233,7 @@ struct WeIrBuilder {
     object_transform_channels: Vec<WeIrObjectTransformChannel>,
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     script_programs: Vec<WeIrScriptProgram>,
+    user_property_bindings: Vec<WeIrUserPropertyBinding>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -314,6 +262,7 @@ struct WeIrBuilder {
     effect_combos: Vec<WeIrEffectCombo>,
     shader_combo_definitions: Vec<WeIrShaderComboDefinition>,
     shader_combo_defaults_by_shader: BTreeMap<String, BTreeMap<String, i64>>,
+    shader_runtime_texture_defaults_by_shader: BTreeMap<String, Vec<ShaderRuntimeTextureDefault>>,
     effect_fbos: Vec<WeIrEffectFbo>,
     render_graphs: Vec<crate::engine::render_graph::RenderGraph>,
     image_targets: Vec<WeIrImageTarget>,
@@ -350,6 +299,7 @@ impl WeIrBuilder {
             object_transform_channels: Vec::new(),
             object_transform_keyframes: Vec::new(),
             script_programs: Vec::new(),
+            user_property_bindings: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -378,6 +328,7 @@ impl WeIrBuilder {
             effect_combos: Vec::new(),
             shader_combo_definitions: Vec::new(),
             shader_combo_defaults_by_shader: BTreeMap::new(),
+            shader_runtime_texture_defaults_by_shader: BTreeMap::new(),
             effect_fbos: Vec::new(),
             render_graphs: Vec::new(),
             image_targets: Vec::new(),
@@ -404,6 +355,7 @@ impl WeIrBuilder {
             object_transform_channels: self.object_transform_channels,
             object_transform_keyframes: self.object_transform_keyframes,
             script_programs: self.script_programs,
+            user_property_bindings: self.user_property_bindings,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
@@ -710,6 +662,18 @@ impl WeIrBuilder {
                     .to_owned(),
             });
         }
+        let (visible, user_property_binding) = user_property_binding::object_visibility(
+            handle,
+            value.get("visible"),
+            &self.project_property_defaults,
+        )
+        .map_err(|message| WeIngestError::Script {
+            object: handle,
+            message,
+        })?;
+        if let Some(binding) = user_property_binding {
+            self.user_property_bindings.push(binding);
+        }
         self.objects.push(WeIrObject {
             handle,
             we_id,
@@ -732,8 +696,7 @@ impl WeIrBuilder {
                 .filter(|alpha| alpha.is_finite())
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0),
-            visible: bound_bool(value.get("visible")).unwrap_or(true)
-                && !media_controlled_group_hidden,
+            visible: visible && !media_controlled_group_hidden,
             color_blend_mode,
             sort_order: value_i32(value.get("sortorder")).unwrap_or(index as i32),
             parallax_depth: parse_vec3(value.get("parallaxDepth"))

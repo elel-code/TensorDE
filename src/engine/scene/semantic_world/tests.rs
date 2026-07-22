@@ -64,6 +64,149 @@ fn resolve_frame_keeps_parent_and_child_visual_state_independent() {
 }
 
 #[test]
+fn visible_user_property_resolves_before_parent_visibility_and_keeps_effect_state_independent() {
+    let mut document = semantic_document();
+    let schema = document.strings.len() as u32;
+    document
+        .strings
+        .push(r#"{"rain":{"type":"bool","value":false}}"#.to_owned());
+    let property = document.strings.len() as u32;
+    document.strings.push("rain".to_owned());
+    document.project.properties_json = SceneStringId(schema);
+    document
+        .user_property_bindings
+        .push(SceneUserPropertyBindingRecord {
+            object: SceneObjectHandle(0),
+            property: SceneStringId(property),
+            target: SceneUserPropertyTarget::Visible,
+            predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+        });
+    document.effects.push(SceneEffectRecord {
+        id: SceneEffectHandle(0),
+        resource: SceneResourceId::NONE,
+        replacement_key: SceneStringId::NONE,
+        pass_start: 0,
+        pass_count: 0,
+        fbo_start: 0,
+        fbo_count: 0,
+    });
+    document.object_effects.push(SceneObjectEffectRecord {
+        object: SceneObjectHandle(0),
+        effect: SceneEffectHandle(0),
+        name: SceneStringId::NONE,
+        instance_id: 12,
+        visible: true,
+    });
+    document.objects[0].effect_start = 0;
+    document.objects[0].effect_count = 1;
+
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let default_frame = world.resolve_frame().expect("default property frame");
+
+    assert!(
+        default_frame
+            .object(SceneObjectHandle(0))
+            .unwrap()
+            .self_visible
+    );
+    assert!(
+        default_frame
+            .object(SceneObjectHandle(1))
+            .unwrap()
+            .resolved_visible
+    );
+    assert!(default_frame.object_effects[0].self_visible);
+    assert!(default_frame.object_effects[0].resolved_visible);
+
+    let overrides = [("rain".to_owned(), serde_json::Value::Bool(true))]
+        .into_iter()
+        .collect();
+    let enabled_frame = world
+        .resolve_frame_with_user_properties_at(0.0, &overrides)
+        .expect("enabled property frame");
+    assert!(
+        !enabled_frame
+            .object(SceneObjectHandle(0))
+            .unwrap()
+            .self_visible
+    );
+    assert!(
+        !enabled_frame
+            .object(SceneObjectHandle(1))
+            .unwrap()
+            .resolved_visible
+    );
+    assert!(!enabled_frame.object_effects[0].resolved_visible);
+
+    let resolver = SemanticFrameResolver::from_world_with_user_properties(&world, &overrides)
+        .expect("retained resolver");
+    assert_eq!(resolver.dynamic_entity_count(), 2);
+}
+
+#[test]
+fn combo_visibility_condition_resolves_by_exact_string_equality() {
+    let mut document = semantic_document();
+    document.objects[0].visible = false;
+    let schema = document.strings.len() as u32;
+    document.strings.push(
+        r#"{"theme":{"type":"combo","value":"1","options":[{"value":"1"},{"value":"2"}]}}"#
+            .to_owned(),
+    );
+    let property = document.strings.len() as u32;
+    document.strings.push("theme".to_owned());
+    let condition = document.strings.len() as u32;
+    document.strings.push("2".to_owned());
+    document.project.properties_json = SceneStringId(schema);
+    document
+        .user_property_bindings
+        .push(SceneUserPropertyBindingRecord {
+            object: SceneObjectHandle(0),
+            property: SceneStringId(property),
+            target: SceneUserPropertyTarget::Visible,
+            predicate: SceneUserPropertyPredicate::StringEquals(SceneStringId(condition)),
+        });
+
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let default_frame = world.resolve_frame().expect("default combo frame");
+    assert!(
+        !default_frame
+            .object(SceneObjectHandle(0))
+            .unwrap()
+            .self_visible
+    );
+    assert!(
+        !default_frame
+            .object(SceneObjectHandle(1))
+            .unwrap()
+            .resolved_visible
+    );
+
+    let overrides = [(
+        "theme".to_owned(),
+        serde_json::Value::String("2".to_owned()),
+    )]
+    .into_iter()
+    .collect();
+    let selected_frame = world
+        .resolve_frame_with_user_properties_at(0.0, &overrides)
+        .expect("selected combo frame");
+    assert!(
+        selected_frame
+            .object(SceneObjectHandle(0))
+            .unwrap()
+            .self_visible
+    );
+    assert!(
+        selected_frame
+            .object(SceneObjectHandle(1))
+            .unwrap()
+            .resolved_visible
+    );
+}
+
+#[test]
 fn semantic_world_exposes_puppet_bones_and_attachments_without_abi_entities() {
     let storage = SceneStorage::from_document(semantic_document()).expect("storage");
     let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
@@ -166,7 +309,7 @@ fn resolve_frame_carries_object_effect_visibility_and_pass_ranges() {
         },
     ];
     let mutated = world
-        .resolve_frame_with_dynamic_values_at(0.0, &deltas)
+        .resolve_frame_with_dynamic_values_at(0.0, &deltas, &[None; 2])
         .expect("mutated effect frame");
     assert!(!mutated.object_effects[0].resolved_visible);
     assert!(mutated.object_effects[1].resolved_visible);

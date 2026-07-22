@@ -14,10 +14,7 @@ use crate::engine::scene::event::{SceneMediaClockState, SceneMediaPlaybackState}
 use crate::engine::scene::storage::SceneStorage;
 
 use super::standard_library;
-
-mod user_property;
-
-use user_property::resolve_user_properties;
+use crate::engine::scene::resolve_scene_user_properties;
 
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const DEFAULT_STACK_LIMIT: usize = 512 * 1024;
@@ -496,15 +493,8 @@ impl SceneScriptHostCatalog {
         storage: &SceneStorage,
         user_property_overrides: &Map<String, Value>,
     ) -> Result<Self, SceneScriptError> {
-        let properties_id = storage.project().properties_json;
-        let raw_properties = if properties_id.is_some() {
-            storage
-                .string(properties_id)
-                .expect("scene storage validates project property strings")
-        } else {
-            "{}"
-        };
-        let user_properties = resolve_user_properties(raw_properties, user_property_overrides)?;
+        let user_properties = resolve_scene_user_properties(storage, user_property_overrides)
+            .map_err(|error| SceneScriptError::InvalidProjectProperties(error.to_string()))?;
         let layers = storage
             .objects()
             .iter()

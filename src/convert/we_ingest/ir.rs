@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
-    SceneResourceKind, SceneScriptSubscriptions, SceneScriptTarget, SceneTextureFormat, SceneVec3,
+    SceneResourceKind, SceneScriptSubscriptions, SceneScriptTarget, SceneTextureFormat,
+    SceneUserPropertyTarget, SceneVec3,
 };
 
 mod particle;
@@ -38,6 +39,7 @@ pub struct WeSceneIr {
     pub object_transform_channels: Vec<WeIrObjectTransformChannel>,
     pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     pub script_programs: Vec<WeIrScriptProgram>,
+    pub user_property_bindings: Vec<WeIrUserPropertyBinding>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -67,6 +69,20 @@ pub struct WeSceneIr {
     pub image_targets: Vec<WeIrImageTarget>,
     pub shader_contracts: Vec<WeIrShaderContract>,
     pub unsupported: Vec<WeIrUnsupported>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrUserPropertyBinding {
+    pub object: u32,
+    pub property: String,
+    pub target: SceneUserPropertyTarget,
+    pub predicate: WeIrUserPropertyPredicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WeIrUserPropertyPredicate {
+    BooleanEquals(bool),
+    StringEquals(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -30,6 +30,8 @@ mod raindrop;
 mod shimmer;
 #[path = "scene_shader/swing.rs"]
 mod swing;
+#[path = "scene_shader/vertex_primitive.rs"]
+mod vertex_primitive;
 #[path = "scene_shader/waterwaves_direct.rs"]
 mod waterwaves_direct;
 
@@ -37,12 +39,15 @@ pub(super) use core_material::{
     color_fragment_source, generic_particle_fragment_source, minimal_alpha_fragment_source,
     passthrough_fragment_source, text_fragment_source,
 };
-pub(crate) use effect_program::{effect_fragment_source, effect_vertex_source};
+pub(crate) use effect_program::{
+    effect_fragment_source, effect_object_mesh_vertex_source, effect_vertex_source,
+};
 pub(super) use final_effect::{
     FINAL_EFFECT_SHADER_SPECS, final_effect_parameter_layout, final_effect_sources,
 };
 pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
+pub(crate) use vertex_primitive::scene_shader_vertex_primitive;
 pub(super) use waterwaves_direct::waterwaves_direct_sources;
 
 pub(super) fn generic_image_fragment_source() -> String {

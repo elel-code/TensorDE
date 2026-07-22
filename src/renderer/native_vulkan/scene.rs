@@ -20,6 +20,7 @@ pub use backend_plan::{
     NativeVulkanSceneBackendPlan, NativeVulkanSceneDescriptorHeapPlan,
     NativeVulkanSceneMeshUploadPlan, native_vulkan_scene_backend_plan,
     native_vulkan_scene_backend_plan_from_render_item,
+    native_vulkan_scene_backend_plan_from_semantic_frame,
 };
 pub use pipeline_cache::{
     NativeVulkanScenePipelineCacheEntry, NativeVulkanScenePipelineCachePlan,
@@ -42,4 +43,5 @@ pub(crate) use runtime::validate_scene_runtime_plan;
 pub use shader_catalog::{
     BuiltinSceneParameterLayout, BuiltinSceneShader, native_vulkan_particle_compute_shader,
     native_vulkan_scene_shader_catalog, native_vulkan_scene_shader_for_key,
+    native_vulkan_scene_vertex_spirv_for_primitive,
 };

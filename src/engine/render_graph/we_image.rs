@@ -173,6 +173,7 @@ pub struct WeFramebufferSnapshotContract {
 pub enum WeFramebufferSnapshotUsage {
     ObjectSource,
     EffectOnlyLayer,
+    EffectShaderInput,
 }
 
 pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
@@ -322,12 +323,18 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                         .cloned()
                         .map(|name| TextureBindingRole::PassConstant { name }),
                 )
-                .chain(contract.framebuffer_snapshot.iter().map(|snapshot| {
-                    TextureBindingRole::EffectTarget {
-                        slot: snapshot.texture_slot,
-                        name: snapshot.target_name.clone(),
-                    }
-                }))
+                .chain(
+                    contract
+                        .framebuffer_snapshot
+                        .iter()
+                        .filter(|snapshot| {
+                            snapshot.usage != WeFramebufferSnapshotUsage::EffectShaderInput
+                        })
+                        .map(|snapshot| TextureBindingRole::EffectTarget {
+                            slot: snapshot.texture_slot,
+                            name: snapshot.target_name.clone(),
+                        }),
+                )
                 .collect(),
             effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {

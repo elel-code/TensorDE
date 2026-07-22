@@ -22,29 +22,18 @@ use super::{NativeVulkanClearColor, SceneGpuResources, color_subresource_range, 
 
 pub(super) fn scene_graph_execution_order(
     graph: &SceneRenderingDeviceGraphPlan,
-    capture_scene_graph: Option<u32>,
-) -> Result<Vec<u32>, String> {
+) -> Vec<u32> {
     let mut order = Vec::new();
     for pass in graph
         .pass_nodes
         .iter()
         .filter(|pass| pass.mesh_draw_count != 0)
     {
-        if capture_scene_graph.is_some_and(|selected| selected != pass.graph_index) {
-            continue;
-        }
         if order.last().copied() != Some(pass.graph_index) {
             order.push(pass.graph_index);
         }
     }
-    if let Some(selected) = capture_scene_graph
-        && order.is_empty()
-    {
-        return Err(format!(
-            "captured scene graph {selected} does not exist or has no render passes"
-        ));
-    }
-    Ok(order)
+    order
 }
 
 pub(super) fn record_scene_graphs_to_swapchain(
@@ -807,15 +796,7 @@ mod tests {
             pass_nodes: vec![pass(0), pass(0), pass(2)],
             ..empty_graph()
         };
-        assert_eq!(
-            scene_graph_execution_order(&graph, None).expect("execution order"),
-            vec![0, 2]
-        );
-        assert_eq!(
-            scene_graph_execution_order(&graph, Some(2)).expect("isolated graph"),
-            vec![2]
-        );
-        assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
+        assert_eq!(scene_graph_execution_order(&graph), vec![0, 2]);
     }
 
     #[test]
@@ -827,11 +808,7 @@ mod tests {
             ..empty_graph()
         };
 
-        assert_eq!(
-            scene_graph_execution_order(&graph, None).expect("execution order"),
-            vec![0, 2]
-        );
-        assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
+        assert_eq!(scene_graph_execution_order(&graph), vec![0, 2]);
     }
 
     #[test]

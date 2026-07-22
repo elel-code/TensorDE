@@ -49,7 +49,6 @@ oxc_ast = "0"
 oxc_ast_visit = "0"
 oxc_parser = "0"
 oxc_span = "0"
-png = "0.18"
 rquickjs = { version = "0", features = ["loader"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

@@ -1,8 +1,13 @@
 use super::super::*;
 use super::blend::{blend_fragment_source, blend_gradient_fragment_source};
-use super::lightning::{lightning_fragment_source, lightning_vertex_source};
+use super::lightning::{
+    lightning_fragment_source, lightning_object_mesh_vertex_source, lightning_vertex_source,
+};
 use super::lut::lut_fragment_source;
-use super::oscilloscope::oscilloscope_fragment_source;
+use super::oscilloscope::{
+    oscilloscope_fragment_source, oscilloscope_object_mesh_vertex_source,
+    oscilloscope_vertex_source,
+};
 use super::raindrop::raindrop_fragment_source;
 use super::shimmer::shimmer_fragment_source;
 use super::swing::swing_fragment_source;
@@ -21,7 +26,7 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
         return waterwaves_effect_vertex_source();
     }
     if shader == "effects/audio_responsive_oscilloscope" {
-        return waterwaves_effect_vertex_source();
+        return oscilloscope_vertex_source();
     }
     if shader == "effects/waterflow" {
         return waterflow_effect_vertex_source();
@@ -57,6 +62,168 @@ void main() {{
 }}
 "#
     )
+}
+
+pub(crate) fn effect_object_mesh_vertex_source(
+    key: &str,
+    shader: &str,
+    _texture_slot_mask: u32,
+) -> Option<String> {
+    if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
+        return Some(framebuffer_overlay_effect_object_mesh_vertex_source());
+    }
+    if shader == "effects/iris" {
+        return None;
+    }
+    if shader == "effects/111" {
+        return Some(lightning_object_mesh_vertex_source());
+    }
+    if shader == "effects/waterflow" {
+        return Some(waterflow_effect_object_mesh_vertex_source());
+    }
+    if shader == "effects/audio_responsive_oscilloscope" {
+        return Some(oscilloscope_object_mesh_vertex_source());
+    }
+    if matches!(
+        shader,
+        "effects/blend"
+            | "effects/blendgradient"
+            | "effects/waterwaves"
+            | "effects/scroll"
+            | "effects/skew"
+            | "effects/tech_circle"
+            | "effects/simple_audio_bars"
+    ) {
+        return Some(object_uv_affine_effect_object_mesh_vertex_source());
+    }
+    if shader == "effects/rounded_mask" {
+        return Some(object_local_effect_object_mesh_vertex_source());
+    }
+    Some(super::super::scene_mesh_vertex_source())
+}
+
+fn object_uv_affine_effect_object_mesh_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(set = 0, binding = 2) uniform ObjectUvAffineDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
+void main() {
+    v_TexCoord = a_TexCoord;
+    v_ObjectTexCoord = a_TexCoord;
+    v_ObjectUvToScreenUv = vec4(
+        u_Draw.g_ObjectUvToScreenUvRow0.xy,
+        u_Draw.g_ObjectUvToScreenUvRow1.xy);
+    vec2 screen_uv = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
+    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn waterflow_effect_object_mesh_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(set = 0, binding = 2) uniform WaterFlowDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(set = 0, binding = 3) uniform WaterFlowUniform {
+    vec4 g_TimeSpeedFeatherStrength;
+    vec4 g_PhaseScale;
+    vec4 g_Texture1Resolution;
+    vec4 g_Unused;
+} u_Effect;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
+layout(location = 3) flat out vec4 v_Cycles;
+layout(location = 4) flat out vec2 v_BlendWeight;
+layout(location = 5) out vec2 v_FlowTexCoord;
+void main() {
+    v_TexCoord = a_TexCoord;
+    v_ObjectTexCoord = a_TexCoord;
+    v_ObjectUvToScreenUv = vec4(
+        u_Draw.g_ObjectUvToScreenUvRow0.xy,
+        u_Draw.g_ObjectUvToScreenUvRow1.xy);
+    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
+        * u_Effect.g_TimeSpeedFeatherStrength.y;
+    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75));
+    vec2 blend_phase = 2.0 * abs(vec2(cycles.x, cycles.z) - vec2(0.5));
+    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
+    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
+    v_Cycles = cycles - vec4(0.5);
+    v_BlendWeight = smoothstep(smooth_range.x, smooth_range.y, blend_phase);
+    v_FlowTexCoord = a_TexCoord
+        * u_Effect.g_Texture1Resolution.zw / u_Effect.g_Texture1Resolution.xy;
+    vec2 screen_uv = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
+    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn framebuffer_overlay_effect_object_mesh_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_FramebufferCoord;
+void main() {
+    v_TexCoord = a_TexCoord;
+    v_FramebufferCoord = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
+    gl_Position = vec4(v_FramebufferCoord * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn object_local_effect_object_mesh_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(set = 0, binding = 2) uniform ObjectLocalEffectDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec3 v_ObjectPixelExtent;
+void main() {
+    v_TexCoord = a_TexCoord;
+    v_ObjectTexCoord = a_TexCoord;
+    v_ObjectPixelExtent = u_Draw.g_ObjectUvToScreenUvRow0.xyz;
+    vec2 screen_uv = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
+    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
 }
 
 fn waterflow_effect_vertex_source() -> String {

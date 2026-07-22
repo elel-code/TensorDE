@@ -270,6 +270,98 @@ fn effect_target_commands_track_copy_swap_and_dynamic_passes() {
 }
 
 #[test]
+fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
+    let snapshot_name = SceneStringId(0);
+    let mut copy_record = render_pass_record(false);
+    copy_record.role = SceneRenderPassKind::CopyTarget;
+    copy_record.target = SceneRenderTargetKind::FirstClassEffectTarget;
+    copy_record.target_name = snapshot_name;
+    copy_record.binding_count = 1;
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["scene_snapshot".to_owned(), "rgba8".to_owned()],
+        image_targets: vec![SceneImageTargetRecord {
+            name: snapshot_name,
+            role: SceneRenderTargetKind::FirstClassEffectTarget,
+            format: SceneStringId(1),
+            width_divisor_milli: 1_000,
+            height_divisor_milli: 1_000,
+        }],
+        render_bindings: vec![crate::engine::scene::SceneRenderBindingRecord {
+            kind: crate::engine::scene::SceneRenderBindingKind::GraphTarget,
+            slot: 0,
+            target: SceneRenderTargetKind::SceneColor,
+            name: SceneStringId::NONE,
+        }],
+        render_passes: vec![copy_record],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let mut copy = pass_node(0, SceneRenderPassKind::CopyTarget, snapshot_name, 0);
+    copy.target = SceneRenderTargetKind::FirstClassEffectTarget;
+    let mut consumer = pass_node(
+        1,
+        SceneRenderPassKind::EffectMaterial,
+        SceneStringId::NONE,
+        1,
+    );
+    consumer.target = SceneRenderTargetKind::SceneColor;
+    let graph = SceneRenderingDeviceGraphPlan {
+        pass_nodes: vec![copy, consumer],
+        target_allocations: vec![allocation(
+            4,
+            SceneRenderTargetKind::FirstClassEffectTarget,
+            snapshot_name,
+        )],
+        sampled_bindings: vec![
+            crate::engine::scene::SceneRenderingDeviceSampledBinding {
+                pass_node_index: 0,
+                graph_index: 0,
+                mesh_draw_start: 0,
+                mesh_draw_count: 0,
+                kind: crate::engine::scene::SceneRenderBindingKind::GraphTarget,
+                slot: 0,
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+            },
+            crate::engine::scene::SceneRenderingDeviceSampledBinding {
+                pass_node_index: 1,
+                graph_index: 0,
+                mesh_draw_start: 0,
+                mesh_draw_count: 1,
+                kind: crate::engine::scene::SceneRenderBindingKind::EffectTarget,
+                slot: 2,
+                target: SceneRenderTargetKind::FirstClassEffectTarget,
+                target_name: snapshot_name,
+            },
+        ],
+        graph_physical_target_count: 1,
+        ..empty_graph_plan()
+    };
+
+    let images = scene_effect_target_image_plan(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        vk::Extent2D {
+            width: 3840,
+            height: 2160,
+        },
+    )
+    .expect("effect target plan");
+    let commands = scene_effect_target_commands(&storage, &graph);
+    let command_plan = scene_effect_target_command_plan(&commands, &graph);
+
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].physical_slot, 4);
+    assert_eq!((images[0].width, images[0].height), (3840, 2160));
+    assert_eq!(commands.len(), 1);
+    assert!(!commands[0].direct_scene_color_snapshot);
+    assert_eq!(command_plan.copy_command_count, 1);
+    assert!(graph_copies_scene_color(&commands, 0));
+    assert!(!graph_uses_direct_scene_color_snapshot(&commands, 0));
+}
+
+#[test]
 fn repeated_effect_target_passes_load_after_the_initial_clear() {
     let mut initialized = Vec::new();
 

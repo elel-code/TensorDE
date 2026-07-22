@@ -12,10 +12,11 @@ use vulkanalia::vk::{self, HasBuilder};
 use crate::engine::scene::{
     SceneColorWriteMask, SceneCompositeBlend, SceneCullMode, ScenePipelineBlend,
     SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
-    SceneRenderingDeviceGraphPlan, SceneStorage, SceneStringId,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
+    SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
-    BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
+    native_vulkan_scene_shader_for_key, native_vulkan_scene_vertex_spirv_for_primitive,
 };
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -27,12 +28,14 @@ use crate::renderer::native_vulkan::{
 
 use super::effect_target::SceneEffectTargetImagePlan;
 
+mod blend;
 mod diagnostics;
 mod particle_compute;
 mod samples;
 mod shader_module;
 
 pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
+use blend::scene_color_blend_attachment;
 use samples::ScenePipelineSamples;
 use shader_module::create_shader_module;
 
@@ -56,6 +59,7 @@ pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScenePipelineKey {
     shader: ScenePipelineShader,
+    primitive: SceneRenderingDeviceDrawPrimitive,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
@@ -68,7 +72,7 @@ struct ScenePipelineKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScenePipelineShader {
     Authored(SceneStringId),
-    EffectPassthrough,
+    EffectPassthrough(SceneStringId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,8 +173,10 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
             .render_passes
             .get(pass.pass_record_index as usize)
             .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
+        let primitive = pass_draw_primitive(graph, pass)?;
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
+            primitive,
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             cull_mode: pass_record.cull_mode,
             color_write_mask: pass_record.color_write_mask,
@@ -218,8 +224,10 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
             .render_passes
             .get(pass.pass_record_index as usize)
             .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
+        let primitive = pass_draw_primitive(graph, pass)?;
         let key = ScenePipelineKey {
-            shader: ScenePipelineShader::EffectPassthrough,
+            shader: ScenePipelineShader::EffectPassthrough(pass_record.shader_key),
+            primitive,
             blend: SceneGpuBlend::Replace,
             cull_mode: pass_record.cull_mode,
             color_write_mask: pass_record.color_write_mask,
@@ -283,25 +291,53 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     }
     let mut entries = Vec::with_capacity(keys.len());
     for key in keys {
-        let shader_key = match key.shader {
-            ScenePipelineShader::Authored(shader_id) => storage
-                .string(shader_id)
-                .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?,
-            ScenePipelineShader::EffectPassthrough => "we/passthrough",
+        let (vertex_shader_key, fragment_shader_key) = match key.shader {
+            ScenePipelineShader::Authored(shader_id) => {
+                let shader_key = storage
+                    .string(shader_id)
+                    .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
+                (shader_key, shader_key)
+            }
+            ScenePipelineShader::EffectPassthrough(shader_id) => (
+                storage
+                    .string(shader_id)
+                    .ok_or_else(|| "scene passthrough pass has no authored shader key".to_owned())?,
+                "we/passthrough",
+            ),
         };
-        let shader = native_vulkan_scene_shader_for_key(shader_key)
-            .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
+        let vertex_shader = native_vulkan_scene_shader_for_key(vertex_shader_key).ok_or_else(|| {
+            format!("scene vertex shader {vertex_shader_key:?} is not in the built-in catalog")
+        })?;
+        let fragment_shader = native_vulkan_scene_shader_for_key(fragment_shader_key)
+            .ok_or_else(|| {
+                format!(
+                    "scene fragment shader {fragment_shader_key:?} is not in the built-in catalog"
+                )
+            })?;
+        let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(
+            vertex_shader,
+            key.primitive,
+        )
+        .ok_or_else(|| {
+            format!(
+                "scene shader {vertex_shader_key:?} has no {:?} vertex program",
+                key.primitive
+            )
+        })?;
         let pipeline_debug =
             std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some();
         if pipeline_debug {
-            eprintln!("gilder-scene-pipeline-create: begin shader={shader_key:?}");
+            eprintln!(
+                "gilder-scene-pipeline-create: begin vertex={vertex_shader_key:?} fragment={fragment_shader_key:?} primitive={:?}",
+                key.primitive
+            );
         }
         match create_scene_pipeline(
             device,
             key.target_format,
             extent,
-            shader.vertex_spirv,
-            shader.fragment_spirv,
+            vertex_spirv,
+            fragment_shader.fragment_spirv,
             descriptor_heap_plan,
             descriptor_layout,
             key.blend,
@@ -310,7 +346,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             key.advanced_source_premultiplied,
             key.advanced_blend_overlap,
             key.samples,
-            if shader.parameter_layout == BuiltinSceneParameterLayout::Particle {
+            if key.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
                 vk::PrimitiveTopology::TRIANGLE_STRIP
             } else {
                 vk::PrimitiveTopology::TRIANGLE_LIST
@@ -318,7 +354,10 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
         ) {
             Ok(pipeline) => {
                 if pipeline_debug {
-                    eprintln!("gilder-scene-pipeline-create: complete shader={shader_key:?}");
+                    eprintln!(
+                        "gilder-scene-pipeline-create: complete vertex={vertex_shader_key:?} fragment={fragment_shader_key:?} primitive={:?}",
+                        key.primitive
+                    );
                 }
                 entries.push(ScenePipelineEntry { key, pipeline });
             }
@@ -381,8 +420,11 @@ fn drawn_pass_pipeline_keys(
         if pass_record.shader_key == SceneStringId::NONE {
             return Err("scene drawable pass has no shader key".to_owned());
         }
+        let primitive = pass_draw_primitive(graph, pass)?;
+        validate_authored_shader_primitive(storage, pass_record.shader_key, primitive)?;
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
+            primitive,
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             cull_mode: pass_record.cull_mode,
             color_write_mask: pass_record.color_write_mask,
@@ -398,7 +440,8 @@ fn drawn_pass_pipeline_keys(
             == crate::engine::scene::SceneRenderEffectVisibilityPolicy::Passthrough
         {
             let disabled = ScenePipelineKey {
-                shader: ScenePipelineShader::EffectPassthrough,
+                shader: ScenePipelineShader::EffectPassthrough(pass_record.shader_key),
+                primitive,
                 blend: SceneGpuBlend::Replace,
                 cull_mode: pass_record.cull_mode,
                 color_write_mask: pass_record.color_write_mask,
@@ -433,8 +476,11 @@ fn drawn_pass_material_keys(
         if pass_record.shader_key == SceneStringId::NONE {
             return Err("scene drawable pass has no shader key".to_owned());
         }
+        let primitive = pass_draw_primitive(graph, pass)?;
+        validate_authored_shader_primitive(storage, pass_record.shader_key, primitive)?;
         let key = ScenePipelineKey {
             shader: ScenePipelineShader::Authored(pass_record.shader_key),
+            primitive,
             blend: scene_gpu_blend(storage, pass_record, pass.target),
             cull_mode: pass_record.cull_mode,
             color_write_mask: pass_record.color_write_mask,
@@ -448,6 +494,55 @@ fn drawn_pass_material_keys(
         }
     }
     Ok(keys)
+}
+
+fn pass_draw_primitive(
+    graph: &SceneRenderingDeviceGraphPlan,
+    pass: &SceneRenderingDevicePassNode,
+) -> Result<SceneRenderingDeviceDrawPrimitive, String> {
+    let start = pass.mesh_draw_start as usize;
+    let end = start
+        .checked_add(pass.mesh_draw_count as usize)
+        .ok_or_else(|| "scene drawable pass draw range overflows".to_owned())?;
+    let draws = graph.mesh_draws.get(start..end).ok_or_else(|| {
+        format!(
+            "scene drawable pass {} draw range {}..{} is outside {} draws",
+            pass.pass_id,
+            start,
+            end,
+            graph.mesh_draws.len()
+        )
+    })?;
+    let primitive = draws
+        .first()
+        .ok_or_else(|| format!("scene drawable pass {} has an empty draw range", pass.pass_id))?
+        .primitive;
+    if draws.iter().any(|draw| draw.primitive != primitive) {
+        return Err(format!(
+            "scene drawable pass {} mixes incompatible draw primitives",
+            pass.pass_id
+        ));
+    }
+    Ok(primitive)
+}
+
+fn validate_authored_shader_primitive(
+    storage: &SceneStorage,
+    shader_id: SceneStringId,
+    primitive: SceneRenderingDeviceDrawPrimitive,
+) -> Result<(), String> {
+    let shader_key = storage
+        .string(shader_id)
+        .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
+    let shader = native_vulkan_scene_shader_for_key(shader_key)
+        .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
+    native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive)
+        .map(|_| ())
+        .ok_or_else(|| {
+            format!(
+                "scene shader {shader_key:?} has no {primitive:?} vertex program"
+            )
+        })
 }
 
 fn scene_gpu_blend(
@@ -877,97 +972,6 @@ fn scene_vk_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
         SceneCullMode::None => vk::CullModeFlags::NONE,
         SceneCullMode::Normal => vk::CullModeFlags::BACK,
     }
-}
-
-fn scene_color_blend_attachment(
-    blend: SceneGpuBlend,
-    color_write_mask: SceneColorWriteMask,
-) -> vk::PipelineColorBlendAttachmentState {
-    let mut components = vk::ColorComponentFlags::R
-        | vk::ColorComponentFlags::G
-        | vk::ColorComponentFlags::B;
-    if color_write_mask == SceneColorWriteMask::Rgba {
-        components |= vk::ColorComponentFlags::A;
-    }
-    let builder =
-        vk::PipelineColorBlendAttachmentState::builder().color_write_mask(components);
-    match blend {
-        SceneGpuBlend::Replace | SceneGpuBlend::AlphaToCoverage => {
-            builder.blend_enable(false).build()
-        }
-        SceneGpuBlend::Additive => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .build(),
-        SceneGpuBlend::Multiply => advanced_blend_attachment(builder, vk::BlendOp::MULTIPLY_EXT),
-        SceneGpuBlend::MultiplyPremultiplied => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .build(),
-        SceneGpuBlend::Screen => advanced_blend_attachment(builder, vk::BlendOp::SCREEN_EXT),
-        SceneGpuBlend::ScreenPremultiplied => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::ONE)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_COLOR)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .build(),
-        SceneGpuBlend::HslColor => advanced_blend_attachment(builder, vk::BlendOp::HSL_COLOR_EXT),
-        SceneGpuBlend::Maximum => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::ONE)
-            .dst_color_blend_factor(vk::BlendFactor::ONE)
-            .color_blend_op(vk::BlendOp::MAX)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-            .alpha_blend_op(vk::BlendOp::MAX)
-            .build(),
-        SceneGpuBlend::Modulate => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
-            .dst_color_blend_factor(vk::BlendFactor::ONE)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .build(),
-        SceneGpuBlend::Alpha => builder
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .build(),
-    }
-}
-
-fn advanced_blend_attachment(
-    builder: vk::PipelineColorBlendAttachmentStateBuilder,
-    operation: vk::BlendOp,
-) -> vk::PipelineColorBlendAttachmentState {
-    builder
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::ONE)
-        .dst_color_blend_factor(vk::BlendFactor::ZERO)
-        .color_blend_op(operation)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(operation)
-        .build()
 }
 
 fn sampled_slots(mask: u32) -> Vec<u32> {

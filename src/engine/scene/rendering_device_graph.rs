@@ -17,8 +17,8 @@ mod draw_support;
 mod effect_batch;
 
 use draw_support::{
-    material_sampled_bindings, pass_draw_material, render_texture_producer_graphs,
-    rows_from_column_major, sampled_binding, skinning_palette_count, skinning_palette_start,
+    material_sampled_bindings, pass_draw_material, rows_from_column_major, sampled_binding,
+    skinning_palette_count, skinning_palette_start,
 };
 
 pub use effect_batch::{
@@ -87,19 +87,12 @@ impl SceneRenderingDeviceGraphPlan {
                 alpha: matrix.alpha,
             })
             .collect::<Vec<_>>();
-        let render_texture_producers = render_texture_producer_graphs(storage);
-
         for (graph_index, graph) in storage.render_graphs().iter().enumerate() {
             for (local_pass_index, pass) in storage.render_graph_passes(graph).iter().enumerate() {
                 let pass_node_index = pass_nodes.len() as u32;
                 let mesh_draw_start = mesh_draws.len() as u32;
                 let effect_visibility_mask = resolved_effect_visibility_mask(semantic_frame, pass);
-                let pass_object_state = visible_pass_object(
-                    semantic_frame,
-                    pass,
-                    render_texture_producers.contains(&(graph_index as u32))
-                        && pass.target != SceneRenderTargetKind::SceneColor,
-                );
+                let pass_object_state = pass_object(semantic_frame, pass);
                 if let (true, Some(pass_object_state)) =
                     (pass_draws_object_mesh(storage, pass), pass_object_state)
                 {
@@ -461,10 +454,9 @@ fn pass_mesh_index_range(
         .map(|slice| (slice.index_start, slice.index_count))
 }
 
-fn visible_pass_object<'frame>(
+fn pass_object<'frame>(
     semantic_frame: &'frame ResolvedSemanticFrame,
     pass: &SceneRenderPassRecord,
-    _allow_hidden_render_texture: bool,
 ) -> Option<&'frame ResolvedObjectState> {
     semantic_frame.object(pass.object)
 }

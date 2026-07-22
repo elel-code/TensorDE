@@ -45,13 +45,25 @@ pub(super) fn pack_scene_draw_uniforms(
                     waterwaves_draw_values(storage, draw, output_extent)
                 }
                 BuiltinSceneParameterLayout::AudioBars
-                | BuiltinSceneParameterLayout::TechCircle => identity_uv_affine_rows(),
+                | BuiltinSceneParameterLayout::TechCircle => {
+                    effect_uv_affine_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::Oscilloscope
+                    if draw.primitive
+                        == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh =>
+                {
+                    matrix_draw_values(scene_cover_clip_transform(
+                        storage.project(),
+                        output_extent,
+                        draw.clip_transform,
+                    ))
+                }
                 BuiltinSceneParameterLayout::Blend
                 | BuiltinSceneParameterLayout::BlendGradient
                 | BuiltinSceneParameterLayout::Oscilloscope
                 | BuiltinSceneParameterLayout::Scroll
                 | BuiltinSceneParameterLayout::Skew => {
-                    object_local_effect_draw_values(storage, draw, output_extent)
+                    effect_uv_affine_draw_values(storage, draw, output_extent)
                 }
                 BuiltinSceneParameterLayout::Caustics
                     if material_shader_key(storage, draw.material).is_some_and(|key| {
@@ -78,7 +90,7 @@ pub(super) fn pack_scene_draw_uniforms(
                 }
                 }
                 BuiltinSceneParameterLayout::WaterFlow => {
-                    object_local_effect_draw_values(storage, draw, output_extent)
+                    effect_uv_affine_draw_values(storage, draw, output_extent)
                 }
                 _ => matrix_draw_values(scene_cover_clip_transform(
                     storage.project(),
@@ -142,6 +154,19 @@ fn waterwaves_draw_values(
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    effect_uv_affine_draw_values(storage, draw, output_extent)
+}
+
+fn effect_uv_affine_draw_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    if draw.primitive
+        == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
+    {
+        return projected_object_uv_draw_values(storage, draw, output_extent);
+    }
     object_local_effect_draw_values(storage, draw, output_extent)
 }
 
@@ -531,6 +556,33 @@ mod tests {
     }
 
     #[test]
+    fn oscilloscope_object_mesh_terminal_uses_authored_position_mvp() {
+        let storage = oscilloscope_storage();
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.primitive = SceneRenderingDeviceDrawPrimitive::ObjectMesh;
+        draw.authored_source_extent = [20.0, 40.0];
+        draw.clip_transform = [
+            [0.1, 0.0, 0.0, 0.25],
+            [0.0, -0.05, 0.0, -0.125],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let expected = matrix_draw_values(scene_cover_clip_transform(
+            storage.project(),
+            [100, 100],
+            draw.clip_transform,
+        ));
+
+        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [100, 100]);
+
+        for (lane, expected) in expected.into_iter().enumerate() {
+            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
+        }
+        assert_close(payload_f32(&payload, 12), 0.25);
+        assert_close(payload_f32(&payload, 28), -0.125);
+    }
+
+    #[test]
     fn object_composite_maps_screen_uv_back_to_object_uv() {
         let mut document = audio_bars_storage().document().clone();
         document.strings.push("we/objectcomposite".to_owned());
@@ -746,6 +798,37 @@ mod tests {
             ..SceneBinaryDocument::default()
         })
         .expect("audio bars storage")
+    }
+
+    fn oscilloscope_storage() -> SceneStorage {
+        SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec![
+                "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16".to_owned(),
+            ],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId::NONE,
+                pass_start: 0,
+                pass_count: 1,
+            }],
+            material_passes: vec![SceneMaterialPassRecord {
+                material: SceneMaterialHandle(0),
+                shader_key: SceneStringId(0),
+                target: SceneStringId::NONE,
+                texture_start: 0,
+                texture_count: 0,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: SceneStringId::NONE,
+                clear_target: false,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("oscilloscope storage")
     }
 
     fn rounded_mask_storage() -> SceneStorage {

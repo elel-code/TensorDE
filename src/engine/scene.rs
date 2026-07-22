@@ -15,6 +15,7 @@ pub mod script;
 pub mod semantic_world;
 pub mod server;
 pub mod storage;
+pub mod user_property;
 
 pub use abi::*;
 pub use binary::{
@@ -44,13 +45,14 @@ pub use semantic_world::{
     PuppetBindingComponent, ResolvedAttachmentLink, ResolvedObjectEffectState, ResolvedObjectState,
     ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld,
     SceneSemanticWorldError, SemanticEntity, SemanticEntityRecord, SemanticMeshBinding,
-    SemanticObjectEffectBinding, SemanticRenderPlanInputs, TransformAnimationComponent,
-    TransformComponent, VisibilityComponent,
+    SemanticObjectEffectBinding, SemanticRenderPlanInputs, SemanticUserPropertyBinding,
+    TransformAnimationComponent, TransformComponent, VisibilityComponent,
 };
 pub use server::{
     RendererSceneRenderPlan, RenderingServer, SceneEngineRenderPlan, SceneObjectRenderGraph,
 };
 pub use storage::{SceneStorage, SceneStorageError};
+pub use user_property::{SceneUserPropertyError, resolve_scene_user_properties};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

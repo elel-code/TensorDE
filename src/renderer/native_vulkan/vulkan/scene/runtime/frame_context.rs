@@ -13,12 +13,8 @@ pub(super) struct ScenePresentFrameContext {
     pub fence: vk::Fence,
 }
 
-pub(super) fn scene_frame_slot_count(
-    capture_enabled: bool,
-    gpu_timing_enabled: bool,
-    allow_multislot_capture: bool,
-) -> usize {
-    if gpu_timing_enabled || (capture_enabled && !allow_multislot_capture) {
+pub(super) fn scene_frame_slot_count(gpu_timing_enabled: bool) -> usize {
+    if gpu_timing_enabled {
         return 1;
     }
     std::env::var("GILDER_NATIVE_VULKAN_SCENE_FRAME_SLOT_COUNT")
@@ -81,9 +77,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_and_single_pool_gpu_timing_force_one_frame_slot() {
-        assert_eq!(scene_frame_slot_count(true, false, false), 1);
-        assert_eq!(scene_frame_slot_count(false, true, false), 1);
-        assert_eq!(scene_frame_slot_count(true, true, true), 1);
+    fn single_pool_gpu_timing_forces_one_frame_slot() {
+        assert_eq!(scene_frame_slot_count(true), 1);
     }
 }

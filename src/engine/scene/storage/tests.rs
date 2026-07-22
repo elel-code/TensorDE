@@ -38,6 +38,123 @@ fn storage_borrows_resource_payload_slices() {
 }
 
 #[test]
+fn storage_rejects_duplicate_or_non_bool_visible_user_bindings() {
+    let object = SceneObjectRecord {
+        id: SceneObjectHandle(0),
+        we_id: 1,
+        name: SceneStringId::NONE,
+        kind: SceneObjectKind::Image,
+        resource: SceneResourceId::NONE,
+        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+        parent_we_id: INVALID_OBJECT_ID,
+        attachment: SceneStringId::NONE,
+        origin: SceneVec3::default(),
+        angles: SceneVec3::default(),
+        scale: SceneVec3::ONE,
+        color: SceneVec3::ONE,
+        alpha: 1.0,
+        visible: false,
+        color_blend_mode: 0,
+        sort_order: 0,
+        effect_start: u32::MAX,
+        effect_count: 0,
+        render_graph: u32::MAX,
+    };
+    let binding = SceneUserPropertyBindingRecord {
+        object: SceneObjectHandle(0),
+        property: SceneStringId(1),
+        target: SceneUserPropertyTarget::Visible,
+        predicate: SceneUserPropertyPredicate::BooleanEquals(false),
+    };
+    let document = |schema: &str, bindings: Vec<SceneUserPropertyBindingRecord>| {
+        let mut document = SceneBinaryDocument {
+            strings: vec![schema.to_owned(), "rain".to_owned()],
+            objects: vec![object],
+            user_property_bindings: bindings,
+            ..SceneBinaryDocument::default()
+        };
+        document.project.properties_json = SceneStringId(0);
+        document
+    };
+
+    SceneStorage::from_document(document(
+        r#"{"rain":{"type":"bool","value":false}}"#,
+        vec![binding],
+    ))
+    .expect("strict bool binding");
+    assert!(matches!(
+        SceneStorage::from_document(document(
+            r#"{"rain":{"type":"bool","value":false}}"#,
+            vec![binding, binding],
+        )),
+        Err(SceneStorageError::InvalidUserPropertyBinding { .. })
+    ));
+    assert!(matches!(
+        SceneStorage::from_document(document(
+            r#"{"rain":{"type":"slider","value":0}}"#,
+            vec![binding],
+        )),
+        Err(SceneStorageError::InvalidUserPropertyBinding { .. })
+    ));
+}
+
+#[test]
+fn storage_validates_combo_visibility_predicate_and_authored_default() {
+    let object = SceneObjectRecord {
+        id: SceneObjectHandle(0),
+        we_id: 1,
+        name: SceneStringId::NONE,
+        kind: SceneObjectKind::Image,
+        resource: SceneResourceId::NONE,
+        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+        parent_we_id: INVALID_OBJECT_ID,
+        attachment: SceneStringId::NONE,
+        origin: SceneVec3::default(),
+        angles: SceneVec3::default(),
+        scale: SceneVec3::ONE,
+        color: SceneVec3::ONE,
+        alpha: 1.0,
+        visible: false,
+        color_blend_mode: 0,
+        sort_order: 0,
+        effect_start: u32::MAX,
+        effect_count: 0,
+        render_graph: u32::MAX,
+    };
+    let binding = SceneUserPropertyBindingRecord {
+        object: SceneObjectHandle(0),
+        property: SceneStringId(1),
+        target: SceneUserPropertyTarget::Visible,
+        predicate: SceneUserPropertyPredicate::StringEquals(SceneStringId(2)),
+    };
+    let document = |visible: bool, condition: &str| {
+        let mut object = object;
+        object.visible = visible;
+        let mut document = SceneBinaryDocument {
+            strings: vec![
+                r#"{"theme":{"type":"combo","value":"1","options":[{"value":"1"},{"value":"2"}]}}"#
+                    .to_owned(),
+                "theme".to_owned(),
+                condition.to_owned(),
+            ],
+            objects: vec![object],
+            user_property_bindings: vec![binding],
+            ..SceneBinaryDocument::default()
+        };
+        document.project.properties_json = SceneStringId(0);
+        document
+    };
+
+    SceneStorage::from_document(document(false, "2")).expect("strict combo predicate");
+    for invalid in [document(true, "2"), document(false, "3")] {
+        assert!(matches!(
+            SceneStorage::from_document(invalid),
+            Err(SceneStorageError::InvalidUserPropertyBinding { .. })
+        ));
+    }
+}
+
+#[test]
 fn storage_releases_uploaded_texture_payload_but_keeps_texture_metadata() {
     let resource = SceneResourceId(7);
     let mut document = SceneBinaryDocument {

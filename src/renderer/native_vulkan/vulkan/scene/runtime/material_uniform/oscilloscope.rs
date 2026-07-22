@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn oscilloscope_values(
     parameters: &MaterialParameters<'_>,
     spectrum: Option<&[f32; 32]>,
+    source_extent: [f32; 2],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
@@ -22,5 +23,8 @@ pub(super) fn oscilloscope_values(
     if let Some(spectrum) = spectrum {
         values[16..32].copy_from_slice(&spectrum[..16]);
     }
+    let width = source_extent[0].max(1.0);
+    let height = source_extent[1].max(1.0);
+    values[32..36].copy_from_slice(&[width, height, width, height]);
     values
 }

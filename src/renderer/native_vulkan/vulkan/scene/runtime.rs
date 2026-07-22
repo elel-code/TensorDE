@@ -7,7 +7,6 @@
 //! - `reverse-engineered/docs/shader-conventions.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
 
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,7 +34,8 @@ use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaRecordedBufferUpload,
     NativeVulkanVulkanaliaRecordedImageUpload, NativeVulkanVulkanaliaSwapchainSnapshot,
     VulkanaliaDescriptorHeapResourceResources,
-    native_vulkan_scene_backend_plan, native_vulkan_vulkanalia_create_buffer,
+    native_vulkan_scene_backend_plan_from_semantic_frame,
+    native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_create_descriptor_heap_resource_resources,
     native_vulkan_vulkanalia_descriptor_heap_resource_plan,
@@ -67,7 +67,6 @@ mod draw_recording;
 mod draw_uniform;
 mod effect_target;
 mod flat_rounded_mask_coverage;
-mod frame_capture;
 mod frame_context;
 mod frame_events;
 mod frame_state;
@@ -100,10 +99,6 @@ use draw_recording::{
     scene_color_draw_ranges,
 };
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
-use frame_capture::SceneFrameCapture;
-pub use frame_capture::{
-    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
-};
 use frame_context::{
     ScenePresentFrameContext, create_scene_present_frame_contexts,
     destroy_scene_present_frame_contexts, scene_frame_slot_count,
@@ -147,15 +142,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub clear_color: NativeVulkanClearColor,
     pub storage: SceneStorage,
     pub user_property_overrides: Map<String, Value>,
-    pub capture_frame: Option<PathBuf>,
-    pub capture_frame_number: u64,
-    pub capture_frame_count: u64,
-    pub capture_frame_step: u64,
-    pub capture_frame_downscale: u32,
-    pub capture_frame_region: Option<(u32, u32, u32, u32)>,
-    pub capture_frame_reference: Option<PathBuf>,
-    pub capture_frame_time_step_seconds: Option<f32>,
-    pub capture_scene_graph: Option<u32>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
     pub pointer_replay_normalized: Option<[f64; 2]>,
@@ -189,7 +175,6 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub present_delta_over_6250us_count: u64,
     pub present_delta_over_8334us_count: u64,
     pub clear_color: NativeVulkanClearColor,
-    pub capture_scene_graph: Option<u32>,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
@@ -284,9 +269,6 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
-    #[serde(skip)]
-    pub(in crate::renderer::native_vulkan) frame_capture:
-        Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
 fn scene_script_effect_visibility_snapshot(
@@ -390,7 +372,6 @@ struct SceneGpuResources {
     scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
     scene_color_attachment_clear_enabled: bool,
     graph_execution_order: Vec<u32>,
-    capture_scene_graph: Option<u32>,
     descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     particle_global_descriptor_base: Option<usize>,
     pipelines: ScenePipelineResources,
@@ -532,7 +513,6 @@ fn record_scene_present_command_buffer(
     clear_color: NativeVulkanClearColor,
     scene: &SceneGpuResources,
     reference_phase: usize,
-    frame_capture: Option<&SceneFrameCapture>,
     gpu_timing: Option<&SceneGpuTiming>,
 ) -> Result<(), String> {
     unsafe {
@@ -561,11 +541,7 @@ fn record_scene_present_command_buffer(
         reference_phase,
         gpu_timing,
     )?;
-    if let Some(capture) = frame_capture {
-        capture.record_swapchain_copy(device, command_buffer, swapchain_image);
-    } else {
-        graph_execution::transition_swapchain_to_present(device, command_buffer, swapchain_image);
-    }
+    graph_execution::transition_swapchain_to_present(device, command_buffer, swapchain_image);
     if let Some(timing) = gpu_timing {
         timing.record_finish(device, command_buffer);
     }

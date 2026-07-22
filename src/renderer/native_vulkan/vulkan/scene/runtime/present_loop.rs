@@ -8,7 +8,16 @@ pub(super) fn with_scene_present(
     vulkan: &NativeVulkanVulkanaliaInstance,
     mut options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
-    let backend_plan = native_vulkan_scene_backend_plan(&options.storage);
+    let initial_semantic_frame = RenderingServer::new(&options.storage)
+        .semantic_world()
+        .and_then(|world| {
+            world.resolve_frame_with_user_properties_at(0.0, &options.user_property_overrides)
+        })
+        .map_err(|error| format!("resolve initial scene user properties: {error}"))?;
+    let backend_plan = native_vulkan_scene_backend_plan_from_semantic_frame(
+        &options.storage,
+        &initial_semantic_frame,
+    );
     crate::renderer::native_vulkan::scene::validate_scene_runtime_plan(&backend_plan)
         .map_err(|error| error.to_string())?;
     let audio_spectrum_required = material_uniform::scene_uses_audio_spectrum(
@@ -107,11 +116,7 @@ pub(super) fn with_scene_present(
             ));
         }
     };
-    let frame_slot_count = scene_frame_slot_count(
-        options.capture_frame.is_some(),
-        options.gpu_timing,
-        std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_ALLOW_MULTISLOT_CAPTURE").is_some(),
-    );
+    let frame_slot_count = scene_frame_slot_count(options.gpu_timing);
     let command_pool_info = vk::CommandPoolCreateInfo::builder()
         .flags(
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
@@ -208,7 +213,6 @@ pub(super) fn with_scene_present(
         present_device
             .feature_selection
             .multisampled_render_to_single_sampled_enabled,
-        options.capture_scene_graph,
         frame_slot_count,
     ) {
         Ok(resources) => resources,
@@ -315,44 +319,6 @@ pub(super) fn with_scene_present(
             }
         }
     }
-    let mut frame_capture = if let Some(path) = options.capture_frame.clone() {
-        match SceneFrameCapture::create(
-            device,
-            &memory_properties,
-            path,
-            swapchain_plan.extent,
-            swapchain_plan.format.format,
-            options.capture_frame_number,
-            options.capture_frame_count,
-            options.capture_frame_step,
-            options.capture_frame_downscale,
-            options.capture_frame_region,
-            options.capture_frame_reference.clone(),
-            options.capture_frame_time_step_seconds,
-        ) {
-            Ok(capture) => Some(capture),
-            Err(err) => {
-                destroy_scene_present_frame_contexts(device, frame_contexts);
-                unsafe {
-                    for semaphore in render_finished {
-                        device.destroy_semaphore(semaphore, None);
-                    }
-                    for view in swapchain_views {
-                        device.destroy_image_view(view, None);
-                    }
-                }
-                destroy_scene_gpu_resources(device, scene_resources);
-                unsafe {
-                    device.destroy_command_pool(command_pool, None);
-                    device.destroy_swapchain_khr(swapchain, None);
-                    present_device.device.destroy_device(None);
-                }
-                return Err(err);
-            }
-        }
-    } else {
-        None
-    };
     let effect_timing_commands = options
         .gpu_timing
         .then(|| {
@@ -378,7 +344,6 @@ pub(super) fn with_scene_present(
                 frame_contexts,
                 render_finished,
                 swapchain_views,
-                frame_capture,
                 None,
                 scene_resources,
                 command_pool,
@@ -453,21 +418,15 @@ pub(super) fn with_scene_present(
         {
             eprintln!("gilder-scene-startup: first-frame-fence-ready");
         }
-        if let Some(capture) = frame_capture.as_mut() {
-            capture.read_completed_frame(device)?;
-        }
         fence_wait_total_micros =
             fence_wait_total_micros.saturating_add(elapsed_micros_u64(fence_wait_started));
         if let Some(timing) = gpu_timing.as_mut() {
             timing.collect_completed(device)?;
         }
-        let scene_time_seconds = options
-            .capture_frame_time_step_seconds
-            .map(|step| frames_presented as f32 * step)
-            .or(fixed_scene_time_seconds)
+        let scene_time_seconds = fixed_scene_time_seconds
             .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
         let sample_time_ns = started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        let frame_events = event_sources.capture_frame(sample_time_ns, host.logical_size());
+        let frame_events = event_sources.sample_frame_events(sample_time_ns, host.logical_size());
         scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
         let frame_resources = &scene_resources.frame_resources[frame_slot];
@@ -573,12 +532,6 @@ pub(super) fn with_scene_present(
             format!("swapchain image index {image_index} has no present semaphore")
         })?;
         let command_buffer = frame_context.command_buffer;
-        let frame_number = frames_presented.saturating_add(1);
-        let capture_this_frame = frame_capture
-            .as_ref()
-            .is_some_and(|capture| capture.should_capture(frame_number));
-        let pending_frame_capture = capture_this_frame.then(|| frame_capture.as_ref()).flatten();
-
         let command_recording_started = Instant::now();
         record_scene_present_command_buffer(
             device,
@@ -590,7 +543,6 @@ pub(super) fn with_scene_present(
             options.clear_color,
             &scene_resources,
             reference_phase,
-            pending_frame_capture,
             gpu_timing.as_ref(),
         )?;
         if frames_presented == 0
@@ -632,9 +584,6 @@ pub(super) fn with_scene_present(
         }
         queue_present_total_micros =
             queue_present_total_micros.saturating_add(elapsed_micros_u64(queue_present_started));
-        if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
-            capture.mark_submitted(frame_number, scene_time_seconds);
-        }
         let present_completed_at = Instant::now();
         if let Some(last_present_completed_at) = last_present_completed_at {
             let delta_micros = present_completed_at
@@ -668,9 +617,6 @@ pub(super) fn with_scene_present(
         }
         }
         let _ = unsafe { device.device_wait_idle() };
-        if let Some(capture) = frame_capture.as_mut() {
-            capture.read_completed_frame(device)?;
-        }
         if let Some(timing) = gpu_timing.as_mut() {
             timing.collect_completed(device)?;
         }
@@ -682,7 +628,6 @@ pub(super) fn with_scene_present(
             frame_contexts,
             render_finished,
             swapchain_views,
-            frame_capture,
             gpu_timing,
             scene_resources,
             command_pool,
@@ -702,7 +647,6 @@ pub(super) fn with_scene_present(
                     frame_contexts,
                     render_finished,
                     swapchain_views,
-                    frame_capture,
                     gpu_timing,
                     scene_resources,
                     command_pool,
@@ -716,9 +660,6 @@ pub(super) fn with_scene_present(
         };
     let elapsed = started_at.elapsed();
     let gpu_timing_snapshot = gpu_timing.as_ref().map(SceneGpuTiming::snapshot);
-    let frame_capture_write_error = frame_capture
-        .as_mut()
-        .and_then(|capture| capture.write_png().err());
     let vertex_buffer_bytes = scene_resources
         .mesh_uploads
         .vertex
@@ -875,12 +816,6 @@ pub(super) fn with_scene_present(
         .map(|scissor| u64::from(scissor.extent[0]) * u64::from(scissor.extent[1]))
         .sum();
     let mesh_draw_recorded = mesh_draw_count > 0;
-    let capture_scene_graph = scene_resources.capture_scene_graph;
-    let frame_capture_requested = frame_capture.is_some();
-    let frame_capture_snapshot = frame_capture
-        .as_ref()
-        .and_then(SceneFrameCapture::snapshot)
-        .cloned();
     let command_order = scene_command_order(
         scene_resources.sampled_slots.is_empty(),
         sampled_fallback_texture_count != 0,
@@ -903,7 +838,6 @@ pub(super) fn with_scene_present(
         frame_contexts,
         render_finished,
         swapchain_views,
-        frame_capture.take(),
         gpu_timing.take(),
         scene_resources,
         command_pool,
@@ -912,16 +846,6 @@ pub(super) fn with_scene_present(
     unsafe {
         present_device.device.destroy_device(None);
     }
-    if let Some(err) = frame_capture_write_error {
-        return Err(err);
-    }
-    if frame_capture_requested && frame_capture_snapshot.is_none() {
-        return Err(
-            "scene frame capture requested, but the runtime ended before presenting a frame"
-                .to_owned(),
-        );
-    }
-
     let audio_summary = event_sources.audio_summary(frames_presented != 0);
     include!("present_loop/snapshot.rs")
 }

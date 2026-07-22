@@ -589,6 +589,23 @@ fn audio_bars_uniform_duplicates_mono_spectrum_into_stereo_vec4_arrays() {
 }
 
 #[test]
+fn oscilloscope_uniform_carries_the_authored_local_target_resolution() {
+    let storage = storage_with_constants(
+        "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16",
+        &[],
+    );
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.authored_source_extent = [905.0, 200.0];
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 32 * 4), 905.0);
+    assert_eq!(f32_from_payload(&payload, 33 * 4), 200.0);
+    assert_eq!(f32_from_payload(&payload, 34 * 4), 905.0);
+    assert_eq!(f32_from_payload(&payload, 35 * 4), 200.0);
+}
+
+#[test]
 fn final_audio_bars_uses_object_local_source_resolution_for_deformity() {
     let storage = storage_with_constants("we/audio-bars-final", &[]);
     let mut draw = draw_with_material(SceneMaterialHandle(0));

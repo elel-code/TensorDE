@@ -137,7 +137,6 @@ def main() -> int:
             "startup_sampling_interval_seconds": min(args.interval, 0.05),
             "build_profile": "release",
             "fps_limit": None,
-            "frame_capture": report.get("frame_capture"),
             "frames_presented": report["frames_presented"],
             "average_present_fps": report["average_present_fps"],
             "present_delta_min_micros": report["present_delta_min_micros"],
@@ -273,8 +272,6 @@ def main() -> int:
             raise AssertionError(report["present_mode"])
         if summary["surface_extent"] != [PERF_SURFACE_WIDTH, PERF_SURFACE_HEIGHT]:
             raise AssertionError(summary["surface_extent"])
-        if report.get("frame_capture") is not None:
-            raise AssertionError("performance smoke must run with frame capture disabled")
         if report["frames_presented"] <= 0:
             raise AssertionError(report["frames_presented"])
         if report["descriptor_model"] != "VK_EXT_descriptor_heap":

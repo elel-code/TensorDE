@@ -46,6 +46,41 @@ void main() {
     .to_owned()
 }
 
+pub(super) fn lightning_object_mesh_vertex_source() -> String {
+    lightning_vertex_source()
+        .replacen(
+            r#"layout(location = 0) out vec2 v_TexCoord;"#,
+            r#"layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(location = 0) out vec2 v_TexCoord;
+layout(set = 0, binding = 2) uniform SceneDrawTransform {
+    vec4 g_ModelViewProjectionMatrix[4];
+} g_Draw;"#,
+            1,
+        )
+        .replacen(
+            r#"    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0)
+    );
+    vec2 position = positions[gl_VertexIndex];
+    v_TexCoord = position * 0.5 + 0.5;"#,
+            r#"    v_TexCoord = a_TexCoord;
+    vec4 local_position = vec4(a_Position, 0.0, 1.0);"#,
+            1,
+        )
+        .replacen(
+            "    gl_Position = vec4(position, 0.0, 1.0);",
+            r#"    gl_Position = vec4(
+        dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));"#,
+            1,
+        )
+}
+
 pub(super) fn lightning_fragment_source(key: &str, texture_slot_mask: u32) -> String {
     assert_ne!(texture_slot_mask & 1, 0);
     let blend_mode = effect_combo_value_for_key(key, "BLENDMODE", 9);
