@@ -1,4 +1,8 @@
 use super::*;
+use super::super::input_attachment_binding::{
+    SceneInputAttachmentBindingPlan, SceneInputAttachmentSource,
+};
+use super::super::sampled_binding::SceneSampledImageBindingPlan;
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneColorWriteMask,
     SceneCompositeBlend, SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle,
@@ -131,6 +135,141 @@ fn effect_target_image_plan_uses_backbuffer_format_for_missing_target_records() 
     assert_eq!(plans[0].format, vk::Format::B8G8R8A8_UNORM);
     assert_eq!(plans[0].width, 1280);
     assert_eq!(plans[0].height, 720);
+}
+
+#[test]
+fn input_attachment_usage_covers_every_physical_slot_in_the_reference_cycle() {
+    let mut plans = vec![
+        SceneEffectTargetImagePlan {
+            physical_slot: 0,
+            graph_index: 0,
+            target: SceneRenderTargetKind::ImageLocalMain,
+            target_name: SceneStringId::NONE,
+            format: vk::Format::R8G8B8A8_UNORM,
+            width: 64,
+            height: 64,
+            batch_field_count: 1,
+            batch_atlas_columns: 1,
+            batch_atlas_rows: 1,
+            persistent_across_frames: false,
+            aliased_logical_target_count: 1,
+            input_attachment_required: false,
+        },
+        SceneEffectTargetImagePlan {
+            physical_slot: 1,
+            graph_index: 0,
+            target: SceneRenderTargetKind::ImageLocalSub,
+            target_name: SceneStringId::NONE,
+            format: vk::Format::R8G8B8A8_UNORM,
+            width: 64,
+            height: 64,
+            batch_field_count: 1,
+            batch_atlas_columns: 1,
+            batch_atlas_rows: 1,
+            persistent_across_frames: false,
+            aliased_logical_target_count: 1,
+            input_attachment_required: false,
+        },
+    ];
+    let cycle = vec![
+        SceneInputAttachmentBindingPlan {
+            input_attachment_slot_count: 1,
+            sources: vec![Some(SceneInputAttachmentSource::EffectTarget {
+                physical_slot: 0,
+                batch_atlas_tile: 0,
+            })],
+            effect_target_descriptor_count: 1,
+        },
+        SceneInputAttachmentBindingPlan {
+            input_attachment_slot_count: 1,
+            sources: vec![Some(SceneInputAttachmentSource::EffectTarget {
+                physical_slot: 1,
+                batch_atlas_tile: 0,
+            })],
+            effect_target_descriptor_count: 1,
+        },
+    ];
+
+    apply_scene_effect_target_input_attachment_usage(&mut plans, &cycle)
+        .expect("input usage plan");
+
+    assert!(plans.iter().all(|plan| plan.input_attachment_required));
+}
+
+#[test]
+fn local_read_candidate_usage_covers_destination_and_reference_permutations() {
+    let target_plan = |physical_slot, target_name| SceneEffectTargetImagePlan {
+        physical_slot,
+        graph_index: 0,
+        target: SceneRenderTargetKind::NamedFbo,
+        target_name,
+        format: vk::Format::R8G8B8A8_UNORM,
+        width: 64,
+        height: 64,
+        batch_field_count: 1,
+        batch_atlas_columns: 1,
+        batch_atlas_rows: 1,
+        persistent_across_frames: false,
+        aliased_logical_target_count: 1,
+        input_attachment_required: false,
+    };
+    let mut producer = pass_node(
+        0,
+        SceneRenderPassKind::BaseMaterial,
+        SceneStringId(0),
+        0,
+    );
+    producer.mesh_draw_count = 1;
+    let mut consumer = pass_node(
+        1,
+        SceneRenderPassKind::EffectMaterial,
+        SceneStringId(1),
+        0,
+    );
+    consumer.mesh_draw_start = 1;
+    consumer.mesh_draw_count = 1;
+    let graph = SceneRenderingDeviceGraphPlan {
+        pass_nodes: vec![producer, consumer],
+        target_allocations: vec![
+            allocation(0, SceneRenderTargetKind::NamedFbo, SceneStringId(0)),
+            allocation(1, SceneRenderTargetKind::NamedFbo, SceneStringId(1)),
+            allocation(2, SceneRenderTargetKind::NamedFbo, SceneStringId(2)),
+        ],
+        sampled_bindings: vec![crate::engine::scene::SceneRenderingDeviceSampledBinding {
+            pass_node_index: 1,
+            graph_index: 0,
+            mesh_draw_start: 1,
+            mesh_draw_count: 1,
+            kind: crate::engine::scene::SceneRenderBindingKind::PreviousGraphTarget,
+            slot: 0,
+            target: SceneRenderTargetKind::NamedFbo,
+            target_name: SceneStringId(0),
+            access: SceneRenderingDeviceImageAccess::InputAttachment,
+        }],
+        graph_physical_target_count: 3,
+        ..empty_graph_plan()
+    };
+    let sampled_phase = |slots| SceneSampledImageBindingPlan {
+        sampled_slot_count: 0,
+        sources: Vec::new(),
+        initial_reference_physical_slots: slots,
+        fallback_descriptor_count: 0,
+        scene_texture_descriptor_count: 0,
+        scene_color_snapshot_descriptor_count: 0,
+        effect_target_descriptor_count: 0,
+        video_frame_descriptor_count: 0,
+    };
+    let sampled_cycle = vec![sampled_phase(vec![0, 1, 2]), sampled_phase(vec![2, 0, 1])];
+    let mut plans = vec![
+        target_plan(0, SceneStringId(0)),
+        target_plan(1, SceneStringId(1)),
+        target_plan(2, SceneStringId(2)),
+    ];
+
+    apply_scene_effect_target_local_read_candidate_usage(&mut plans, &graph, &sampled_cycle)
+        .expect("candidate local-read usage");
+
+    assert!(plans.iter().all(|plan| plan.input_attachment_required));
 }
 
 #[test]
@@ -383,6 +522,59 @@ fn repeated_effect_target_passes_load_after_the_initial_clear() {
     assert_eq!(
         effect_target_load_op(&initialized, 4, true, false, true),
         vk::AttachmentLoadOp::DONT_CARE
+    );
+}
+
+#[test]
+fn interleaved_execution_state_keeps_authored_reference_swaps_between_slices() {
+    let source = LogicalEffectTargetKey {
+        graph_index: 0,
+        target: SceneRenderTargetKind::NamedFbo,
+        name: SceneStringId(0),
+    };
+    let target = LogicalEffectTargetKey {
+        graph_index: 0,
+        target: SceneRenderTargetKind::NamedFbo,
+        name: SceneStringId(1),
+    };
+    let allocations = vec![
+        allocation(0, SceneRenderTargetKind::NamedFbo, source.name),
+        allocation(1, SceneRenderTargetKind::NamedFbo, target.name),
+    ];
+    let mut state = SceneEffectTargetExecutionState::new(&allocations, &[0, 1], &[])
+        .expect("initial reference state");
+    let swap = SceneEffectTargetCommand {
+        kind: SceneEffectTargetCommandKind::SwapReferences,
+        pass_record_index: 0,
+        target,
+        source: Some(SceneEffectTargetCommandSource::LogicalTarget(source)),
+        mesh_draw_start: 0,
+        mesh_draw_count: 0,
+        clear_before_draw: false,
+        fully_overwrites_target: false,
+        direct_scene_color_snapshot: false,
+        batch_physical_slot: None,
+        batch_atlas_tile: None,
+    };
+
+    swap_logical_references(swap, &mut state.references).expect("authored swap");
+    assert_eq!(
+        state
+            .references
+            .iter()
+            .find(|reference| reference.key == source)
+            .expect("source reference")
+            .physical_slot,
+        1
+    );
+    assert_eq!(
+        state
+            .references
+            .iter()
+            .find(|reference| reference.key == target)
+            .expect("target reference")
+            .physical_slot,
+        0
     );
 }
 

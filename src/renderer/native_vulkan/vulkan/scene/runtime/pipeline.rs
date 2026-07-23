@@ -36,18 +36,21 @@ use super::descriptor_layout::{
     scene_pipeline_shader_descriptor_access,
 };
 use super::local_read::{
-    SceneLocalReadPipelineMetadata, validate_scene_local_read_shader_variant,
+    SceneLocalReadDeviceLimits, SceneLocalReadPipelineMetadata, SceneLocalReadScopePassRole,
+    SceneLocalReadScopePlan,
 };
 
 mod blend;
 mod diagnostics;
 mod graphics;
+mod local_read_key;
 mod particle_compute;
 mod samples;
 mod shader_module;
 
 pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
 use graphics::create_graphics_pipeline;
+use local_read_key::{ScenePipelineLocalReadRole, local_read_pipeline_role};
 use samples::ScenePipelineSamples;
 use shader_module::create_shader_module;
 
@@ -72,6 +75,7 @@ struct ScenePipelineKey {
     advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
     samples: ScenePipelineSamples,
+    local_read_role: Option<ScenePipelineLocalReadRole>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,11 +128,30 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
     effect_target_plans: &[SceneEffectTargetImagePlan],
     scene_color_msaa_enabled: bool,
 ) -> Result<Vec<u32>, String> {
+    scene_pipeline_indices_for_draws_with_local_read(
+        storage,
+        graph,
+        swapchain_format,
+        effect_target_plans,
+        &[],
+        scene_color_msaa_enabled,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws_with_local_read(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    swapchain_format: vk::Format,
+    effect_target_plans: &[SceneEffectTargetImagePlan],
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    scene_color_msaa_enabled: bool,
+) -> Result<Vec<u32>, String> {
     let keys = drawn_pass_pipeline_keys(
         storage,
         graph,
         swapchain_format,
         effect_target_plans,
+        local_read_scopes,
         scene_color_msaa_enabled,
     )?;
     let mut indices = vec![0u32; graph.mesh_draws.len()];
@@ -153,6 +176,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
+            local_read_role: local_read_pipeline_role(local_read_scopes, pass, false)?,
         };
         let pipeline_index = keys
             .iter()
@@ -175,11 +199,30 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
     effect_target_plans: &[SceneEffectTargetImagePlan],
     scene_color_msaa_enabled: bool,
 ) -> Result<Vec<Option<u32>>, String> {
+    scene_disabled_pipeline_indices_for_draws_with_local_read(
+        storage,
+        graph,
+        swapchain_format,
+        effect_target_plans,
+        &[],
+        scene_color_msaa_enabled,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_draws_with_local_read(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    swapchain_format: vk::Format,
+    effect_target_plans: &[SceneEffectTargetImagePlan],
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    scene_color_msaa_enabled: bool,
+) -> Result<Vec<Option<u32>>, String> {
     let keys = drawn_pass_pipeline_keys(
         storage,
         graph,
         swapchain_format,
         effect_target_plans,
+        local_read_scopes,
         scene_color_msaa_enabled,
     )?;
     let mut indices = vec![None; graph.mesh_draws.len()];
@@ -209,6 +252,7 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
                 effect_target_plans,
             )?,
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
+            local_read_role: local_read_pipeline_role(local_read_scopes, pass, true)?,
         };
         let pipeline_index = keys
             .iter()
@@ -237,12 +281,15 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
     scene_color_msaa_enabled: bool,
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    local_read_limits: SceneLocalReadDeviceLimits,
 ) -> Result<ScenePipelineResources, String> {
     let keys = drawn_pass_pipeline_keys(
         storage,
         graph,
         target_format,
         effect_target_plans,
+        local_read_scopes,
         scene_color_msaa_enabled,
     )?;
     if keys.is_empty() {
@@ -287,25 +334,58 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             ScenePipelineShader::Authored(shader_id) => {
                 scene_pipeline_shader_descriptor_access(storage, shader_id)?
             }
-            ScenePipelineShader::EffectPassthrough(_) => scene_passthrough_descriptor_access(),
+            ScenePipelineShader::EffectPassthrough(_) => match key.local_read_role {
+                Some(ScenePipelineLocalReadRole::Consumer(scope_index)) => {
+                    let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
+                        format!("scene pipeline references missing local-read scope {scope_index}")
+                    })?;
+                    ScenePipelineShaderDescriptorAccess {
+                        sampled_slots: Vec::new(),
+                        input_attachment_slots: vec![scope.input_slot()],
+                    }
+                }
+                _ => scene_passthrough_descriptor_access(),
+            },
         };
-        if !descriptor_access.input_attachment_slots.is_empty() {
-            let variant_validation = validate_scene_local_read_shader_variant(
-                &descriptor_access,
-                fragment_shader.local_read_shader.as_ref(),
-            );
-            destroy_scene_pipelines(
-                device,
-                ScenePipelineResources {
-                    entries,
-                    particle_compute: None,
-                },
-            );
-            variant_validation?;
-            return Err(format!(
-                "scene shader {fragment_shader_key:?} has a verified subpassInput variant but dynamic-rendering local-read scope command recording is not connected"
-            ));
-        }
+        let local_read_metadata = match key.local_read_role {
+            Some(ScenePipelineLocalReadRole::Producer(scope_index)) => {
+                let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
+                    format!("scene pipeline references missing local-read scope {scope_index}")
+                })?;
+                Some(scope.pipeline_metadata(
+                    SceneLocalReadScopePassRole::Producer,
+                    &descriptor_access,
+                    None,
+                    local_read_limits,
+                )?)
+            }
+            Some(ScenePipelineLocalReadRole::Consumer(scope_index)) => {
+                let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
+                    format!("scene pipeline references missing local-read scope {scope_index}")
+                })?;
+                Some(scope.pipeline_metadata(
+                    SceneLocalReadScopePassRole::Consumer,
+                    &descriptor_access,
+                    fragment_shader.local_read_shader.as_ref(),
+                    local_read_limits,
+                )?)
+            }
+            None => {
+                if !descriptor_access.input_attachment_slots.is_empty() {
+                    destroy_scene_pipelines(
+                        device,
+                        ScenePipelineResources {
+                            entries,
+                            particle_compute: None,
+                        },
+                    );
+                    return Err(format!(
+                        "scene shader {fragment_shader_key:?} declares input attachments outside a planned local-read scope"
+                    ));
+                }
+                None
+            }
+        };
         let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(
             vertex_shader,
             key.primitive,
@@ -333,7 +413,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             descriptor_heap_plan,
             descriptor_layout,
             &descriptor_access,
-            None,
+            local_read_metadata.as_ref(),
             key.blend,
             key.cull_mode,
             key.color_write_mask,
@@ -398,6 +478,7 @@ fn drawn_pass_pipeline_keys(
     graph: &SceneRenderingDeviceGraphPlan,
     swapchain_format: vk::Format,
     effect_target_plans: &[SceneEffectTargetImagePlan],
+    local_read_scopes: &[SceneLocalReadScopePlan],
     scene_color_msaa_enabled: bool,
 ) -> Result<Vec<ScenePipelineKey>, String> {
     let mut keys = Vec::<ScenePipelineKey>::new();
@@ -426,6 +507,7 @@ fn drawn_pass_pipeline_keys(
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
+            local_read_role: local_read_pipeline_role(local_read_scopes, pass, false)?,
         };
         if !keys.contains(&key) {
             keys.push(key);
@@ -443,6 +525,7 @@ fn drawn_pass_pipeline_keys(
                 advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
                 target_format: key.target_format,
                 samples: key.samples,
+                local_read_role: local_read_pipeline_role(local_read_scopes, pass, true)?,
             };
             if !keys.contains(&disabled) {
                 keys.push(disabled);
@@ -482,6 +565,7 @@ fn drawn_pass_material_keys(
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: vk::Format::UNDEFINED,
             samples: ScenePipelineSamples::Single,
+            local_read_role: None,
         };
         if !keys.contains(&key) {
             keys.push(key);
@@ -713,7 +797,7 @@ fn create_scene_pipeline(
     let vertex_module = create_shader_module(device, vertex_spirv, "scene vertex")?;
     let result = (|| -> Result<vk::Pipeline, String> {
         let fragment_spirv = local_read_metadata
-            .map(SceneLocalReadPipelineMetadata::fragment_spirv)
+            .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv)
             .unwrap_or(fragment_spirv);
         let fragment_module = create_shader_module(device, fragment_spirv, "scene fragment")?;
         let result = create_scene_pipeline_with_modules(

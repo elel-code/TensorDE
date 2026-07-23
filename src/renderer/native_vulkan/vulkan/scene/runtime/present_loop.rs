@@ -186,6 +186,10 @@ pub(super) fn with_scene_present(
 
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let physical_device_properties =
+        unsafe { instance.get_physical_device_properties(selection.physical_device) };
+    let local_read_limits =
+        SceneLocalReadDeviceLimits::from_physical_device_limits(&physical_device_properties.limits);
     begin_one_time_commands(device, setup_command_buffer, "scene setup")?;
     let mut scene_resources = match create_scene_gpu_resources(
         device,
@@ -213,6 +217,7 @@ pub(super) fn with_scene_present(
         present_device
             .feature_selection
             .multisampled_render_to_single_sampled_enabled,
+        local_read_limits,
         frame_slot_count,
     ) {
         Ok(resources) => resources,

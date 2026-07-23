@@ -212,10 +212,13 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 swapchain_image,
                 extent,
                 *graph_index,
+                0,
                 &scene.effect_target_commands,
                 &scene.effect_target_allocations,
                 reference_slots,
                 &scene.effect_targets,
+                &scene.local_read_scopes,
+                scene.local_read_limits,
                 &mut record_effect_draws,
                 &mut record_effect_command_timing,
             )?;
@@ -363,13 +366,21 @@ fn record_interleaved_target_graph(
     scene_color_rendering_active: &mut bool,
     scene_color_resolve_dirty: &mut bool,
 ) -> Result<(), String> {
-    for pass in scene
-        .pass_nodes
-        .iter()
-        .filter(|pass| pass.graph_index == graph_index)
-    {
+    let mut effect_target_state = effect_target::SceneEffectTargetExecutionState::new(
+        &scene.effect_target_allocations,
+        reference_slots,
+        &scene.effect_targets,
+    )?;
+    let mut pass_index = 0usize;
+    while pass_index < scene.pass_nodes.len() {
+        let pass = &scene.pass_nodes[pass_index];
+        if pass.graph_index != graph_index {
+            pass_index += 1;
+            continue;
+        }
         if pass_is_scene_color(pass) {
             if pass.mesh_draw_count == 0 {
+                pass_index += 1;
                 continue;
             }
             if !*scene_color_rendering_active {
@@ -397,9 +408,11 @@ fn record_interleaved_target_graph(
             )?;
             *scene_color_initialized = true;
             *scene_color_resolve_dirty = true;
+            pass_index += 1;
             continue;
         }
         if !pass_targets_effect_image(pass) {
+            pass_index += 1;
             continue;
         }
         if *scene_color_rendering_active {
@@ -435,19 +448,90 @@ fn record_interleaved_target_graph(
                 timing.record_effect_command(device, command_buffer, source_position, starting);
             }
         };
-        effect_target::record_scene_effect_target_pass(
+        if let Some(scope) = scene.local_read_scopes.iter().find(|scope| {
+            scope.graph_index() == graph_index
+                && scope.producer_pass_node_index() == pass_index as u32
+        }) {
+            let consumer_index = scope.consumer_pass_node_index() as usize;
+            if consumer_index != pass_index + 1 {
+                return Err(format!(
+                    "scene graph {graph_index} local-read producer pass node {pass_index} is not adjacent to consumer node {consumer_index}"
+                ));
+            }
+            let consumer_pass = scene.pass_nodes.get(consumer_index).ok_or_else(|| {
+                format!(
+                    "scene graph {graph_index} local-read scope consumer node {consumer_index} is missing"
+                )
+            })?;
+            if consumer_pass.graph_index != graph_index {
+                return Err(format!(
+                    "scene graph {graph_index} local-read scope crosses into graph {}",
+                    consumer_pass.graph_index
+                ));
+            }
+            let (producer_position, producer_command) =
+                effect_target::scene_effect_target_command_for_pass(
+                    &scene.effect_target_commands,
+                    pass,
+                )?;
+            let (consumer_position, consumer_command) =
+                effect_target::scene_effect_target_command_for_pass(
+                    &scene.effect_target_commands,
+                    consumer_pass,
+                )?;
+            if consumer_position != producer_position + 1 {
+                return Err(format!(
+                    "scene graph {graph_index} local-read commands are not adjacent at positions {producer_position} and {consumer_position}"
+                ));
+            }
+            if !effect_target::scene_effect_target_command_is_dynamic(producer_command)
+                || !effect_target::scene_effect_target_command_is_dynamic(consumer_command)
+            {
+                return Err(format!(
+                    "scene graph {graph_index} local-read scope has a non-dynamic command pair"
+                ));
+            }
+            effect_target::record_scene_effect_target_graph_passes_with_state(
+                device,
+                command_buffer,
+                swapchain_image,
+                extent,
+                graph_index,
+                producer_position,
+                &scene.effect_target_commands[producer_position..=consumer_position],
+                &scene.effect_targets,
+                &scene.local_read_scopes,
+                scene.local_read_limits,
+                &mut effect_target_state,
+                &mut record_draws,
+                &mut record_effect_command_timing,
+            )?;
+            pass_index = consumer_index + 1;
+            continue;
+        }
+        if scene.local_read_scopes.iter().any(|scope| {
+            scope.graph_index() == graph_index
+                && scope.consumer_pass_node_index() == pass_index as u32
+        }) {
+            return Err(format!(
+                "scene graph {graph_index} local-read consumer pass node {pass_index} was not recorded with its producer"
+            ));
+        }
+        effect_target::record_scene_effect_target_pass_with_state(
             device,
             command_buffer,
             swapchain_image,
             extent,
             pass,
             &scene.effect_target_commands,
-            &scene.effect_target_allocations,
-            reference_slots,
             &scene.effect_targets,
+            &scene.local_read_scopes,
+            scene.local_read_limits,
+            &mut effect_target_state,
             &mut record_draws,
             &mut record_effect_command_timing,
         )?;
+        pass_index += 1;
     }
     Ok(())
 }

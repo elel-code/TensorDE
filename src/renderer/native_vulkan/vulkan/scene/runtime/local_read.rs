@@ -18,6 +18,12 @@ use crate::renderer::native_vulkan::scene::BuiltinSceneLocalReadShader;
 
 use super::descriptor_layout::ScenePipelineShaderDescriptorAccess;
 
+mod scope_plan;
+
+pub(super) use scope_plan::{
+    SceneLocalReadScopePassRole, SceneLocalReadScopePlan, scene_local_read_scope_plans,
+};
+
 const LOCAL_READ_PRODUCER_STAGE: vk::PipelineStageFlags2 =
     vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
 const LOCAL_READ_CONSUMER_STAGE: vk::PipelineStageFlags2 =
@@ -75,6 +81,22 @@ impl SceneLocalReadAttachmentMapping {
         max_color_attachments: u32,
         max_per_stage_descriptor_input_attachments: u32,
     ) -> Result<Self, String> {
+        Self::new_for_scope(
+            color_attachment_locations,
+            color_attachment_input_indices,
+            max_color_attachments,
+            max_per_stage_descriptor_input_attachments,
+            true,
+        )
+    }
+
+    fn new_for_scope(
+        color_attachment_locations: &[u32],
+        color_attachment_input_indices: &[u32],
+        max_color_attachments: u32,
+        max_per_stage_descriptor_input_attachments: u32,
+        input_attachment_required: bool,
+    ) -> Result<Self, String> {
         if color_attachment_locations.len() != color_attachment_input_indices.len() {
             return Err(format!(
                 "local-read color location/input-index arrays differ in length ({} vs {})",
@@ -99,7 +121,8 @@ impl SceneLocalReadAttachmentMapping {
             max_per_stage_descriptor_input_attachments,
             "input attachment index",
         )?;
-        if !color_attachment_input_indices
+        if input_attachment_required
+            && !color_attachment_input_indices
             .iter()
             .any(|index| *index != vk::ATTACHMENT_UNUSED)
         {
@@ -150,7 +173,7 @@ impl SceneLocalReadAttachmentMapping {
 /// decision to create and execute such a scope.
 #[derive(Debug, Clone)]
 pub(super) struct SceneLocalReadPipelineMetadata<'a> {
-    shader: &'a BuiltinSceneLocalReadShader,
+    shader: Option<&'a BuiltinSceneLocalReadShader>,
     color_attachment_formats: Vec<vk::Format>,
     attachment_mapping: SceneLocalReadAttachmentMapping,
 }
@@ -217,14 +240,79 @@ impl<'a> SceneLocalReadPipelineMetadata<'a> {
         )?;
 
         Ok(Self {
-            shader,
+            shader: Some(shader),
             color_attachment_formats: color_attachment_formats.to_vec(),
             attachment_mapping,
         })
     }
 
-    pub(super) fn fragment_spirv(&self) -> &'a [u32] {
-        self.shader.fragment_spirv
+    pub(super) fn output_only(
+        descriptor_access: &ScenePipelineShaderDescriptorAccess,
+        color_attachment_formats: &[vk::Format],
+        color_attachment_locations: &[u32],
+        limits: SceneLocalReadDeviceLimits,
+    ) -> Result<Self, String> {
+        let input_indices = vec![vk::ATTACHMENT_UNUSED; color_attachment_locations.len()];
+        Self::output_only_with_input_mapping(
+            descriptor_access,
+            color_attachment_formats,
+            color_attachment_locations,
+            &input_indices,
+            limits,
+        )
+    }
+
+    pub(super) fn output_only_with_input_mapping(
+        descriptor_access: &ScenePipelineShaderDescriptorAccess,
+        color_attachment_formats: &[vk::Format],
+        color_attachment_locations: &[u32],
+        color_attachment_input_indices: &[u32],
+        limits: SceneLocalReadDeviceLimits,
+    ) -> Result<Self, String> {
+        validate_unique_values(&descriptor_access.sampled_slots, "sampled slot")?;
+        if !descriptor_access.input_attachment_slots.is_empty() {
+            return Err(
+                "local-read producer pipeline cannot declare input-attachment slots".to_owned(),
+            );
+        }
+        if color_attachment_formats.len() != color_attachment_locations.len() {
+            return Err(format!(
+                "local-read producer color format/location arrays differ in length ({} vs {})",
+                color_attachment_formats.len(),
+                color_attachment_locations.len()
+            ));
+        }
+        if color_attachment_formats.is_empty()
+            || color_attachment_formats
+                .iter()
+                .any(|format| *format == vk::Format::UNDEFINED)
+        {
+            return Err(
+                "local-read producer pipeline requires defined color attachment formats"
+                    .to_owned(),
+            );
+        }
+        validate_exact_non_unused_values(
+            color_attachment_locations,
+            &[0],
+            "color attachment location",
+        )?;
+        let attachment_mapping = SceneLocalReadAttachmentMapping::new_for_scope(
+            color_attachment_locations,
+            color_attachment_input_indices,
+            limits.max_color_attachments,
+            limits.max_per_stage_descriptor_input_attachments,
+            false,
+        )?;
+        Ok(Self {
+            shader: None,
+            color_attachment_formats: color_attachment_formats.to_vec(),
+            attachment_mapping,
+        })
+    }
+
+    pub(super) fn local_read_fragment_spirv(&self) -> Option<&'a [u32]> {
+        self.shader.map(|shader| shader.fragment_spirv)
     }
 
     pub(super) fn color_attachment_formats(&self) -> &[vk::Format] {
@@ -232,7 +320,7 @@ impl<'a> SceneLocalReadPipelineMetadata<'a> {
     }
 
     pub(super) fn input_attachment_binding(&self, slot: u32) -> Option<u32> {
-        self.shader
+        self.shader?
             .input_attachments
             .iter()
             .find(|input| input.slot == slot)
@@ -324,6 +412,11 @@ pub(super) fn validate_scene_local_read_shader_variant<'a>(
         .map(|input| input.binding)
         .collect::<Vec<_>>();
     validate_unique_values(&shader_slots, "shader input-attachment slot")?;
+    if shader_indices.contains(&vk::ATTACHMENT_UNUSED) {
+        return Err(
+            "local-read shader input attachment index cannot be VK_ATTACHMENT_UNUSED".to_owned(),
+        );
+    }
     validate_unique_values(&shader_indices, "shader input attachment index")?;
     validate_unique_values(&shader_bindings, "shader input-attachment binding")?;
     validate_unique_values(shader.color_output_locations, "shader color output location")?;
@@ -441,6 +534,61 @@ pub(super) fn scene_local_read_attachment_transition_barrier(
         .build()
 }
 
+/// Transitions a retained effect target from the ordinary sampled resting
+/// layout into a local-read rendering scope.  The broad destination masks
+/// cover both attachments because either one may be loaded/written, while the
+/// source attachment is later read through the explicit by-region dependency.
+pub(super) fn scene_local_read_scope_entry_barrier(
+    image: vk::Image,
+    subresource_range: vk::ImageSubresourceRange,
+) -> vk::ImageMemoryBarrier2 {
+    vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+        .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+        .dst_stage_mask(
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        )
+        .dst_access_mask(
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags2::INPUT_ATTACHMENT_READ,
+        )
+        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .new_layout(vk::ImageLayout::RENDERING_LOCAL_READ)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(subresource_range)
+        .build()
+}
+
+/// Returns a local-read attachment to the retained sampled resting layout
+/// after every authored write in the scope has been stored.
+pub(super) fn scene_local_read_scope_exit_barrier(
+    image: vk::Image,
+    subresource_range: vk::ImageSubresourceRange,
+) -> vk::ImageMemoryBarrier2 {
+    vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        )
+        .src_access_mask(
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags2::INPUT_ATTACHMENT_READ,
+        )
+        .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+        .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+        .old_layout(vk::ImageLayout::RENDERING_LOCAL_READ)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(subresource_range)
+        .build()
+}
+
 /// Produces the by-region dependency between an authored color write and a
 /// later exact-pixel input-attachment read in the same rendering scope.
 pub(super) fn scene_local_read_producer_to_consumer_barrier(
@@ -475,6 +623,7 @@ pub(super) fn scene_local_read_by_region_dependency(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::native_vulkan::scene::BuiltinSceneInputAttachment;
     use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 
     fn color_range() -> vk::ImageSubresourceRange {
@@ -586,7 +735,10 @@ mod tests {
         )
         .expect("valid local-read pipeline metadata");
 
-        assert_eq!(metadata.fragment_spirv(), shader.fragment_spirv);
+        assert_eq!(
+            metadata.local_read_fragment_spirv(),
+            Some(shader.fragment_spirv)
+        );
         assert_eq!(
             metadata.color_attachment_formats(),
             &[vk::Format::R8G8B8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
@@ -632,6 +784,30 @@ mod tests {
         );
         assert_eq!(blend_attachments[0].blend_enable, vk::FALSE);
         assert_eq!(blend_attachments[1], active);
+    }
+
+    #[test]
+    fn output_only_pipeline_metadata_uses_the_same_two_attachment_scope_without_input() {
+        let metadata = SceneLocalReadPipelineMetadata::output_only(
+            &descriptor_access(&[1], &[]),
+            &[vk::Format::R8G8B8A8_UNORM, vk::Format::R8G8B8A8_UNORM],
+            &[0, vk::ATTACHMENT_UNUSED],
+            SceneLocalReadDeviceLimits::new(8, 8),
+        )
+        .expect("valid local-read producer metadata");
+
+        assert_eq!(metadata.local_read_fragment_spirv(), None);
+        assert_eq!(metadata.input_attachment_binding(0), None);
+        let indices = metadata.input_attachment_index_info();
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    indices.color_attachment_input_indices,
+                    indices.color_attachment_count as usize,
+                ),
+                &[vk::ATTACHMENT_UNUSED, vk::ATTACHMENT_UNUSED]
+            );
+        }
     }
 
     #[test]
@@ -686,6 +862,26 @@ mod tests {
         )
         .expect_err("empty shader must fail");
         assert!(empty.contains("shader variant is empty"));
+
+        const INVALID_INPUT: [BuiltinSceneInputAttachment; 1] = [BuiltinSceneInputAttachment {
+            slot: 0,
+            input_attachment_index: vk::ATTACHMENT_UNUSED,
+            binding: 64,
+        }];
+        let invalid_index_shader = BuiltinSceneLocalReadShader {
+            input_attachments: &INVALID_INPUT,
+            ..shader
+        };
+        let invalid_index = SceneLocalReadPipelineMetadata::new(
+            &descriptor_access(&[], &[0]),
+            Some(&invalid_index_shader),
+            &formats,
+            &[0],
+            &[0],
+            SceneLocalReadDeviceLimits::new(8, 8),
+        )
+        .expect_err("shader input attachment index must be concrete");
+        assert!(invalid_index.contains("cannot be VK_ATTACHMENT_UNUSED"));
     }
 
     #[test]
@@ -773,5 +969,24 @@ mod tests {
             scene_local_read_attachment_transition_barrier(image, color_range());
         assert_eq!(transition.old_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         assert_eq!(transition.new_layout, vk::ImageLayout::RENDERING_LOCAL_READ);
+
+        let entry = scene_local_read_scope_entry_barrier(image, color_range());
+        assert_eq!(entry.old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(entry.new_layout, vk::ImageLayout::RENDERING_LOCAL_READ);
+        assert!(
+            entry
+                .dst_access_mask
+                .contains(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+        );
+        assert!(
+            entry
+                .dst_access_mask
+                .contains(vk::AccessFlags2::INPUT_ATTACHMENT_READ)
+        );
+
+        let exit = scene_local_read_scope_exit_barrier(image, color_range());
+        assert_eq!(exit.old_layout, vk::ImageLayout::RENDERING_LOCAL_READ);
+        assert_eq!(exit.new_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        assert_eq!(exit.dst_access_mask, vk::AccessFlags2::SHADER_SAMPLED_READ);
     }
 }

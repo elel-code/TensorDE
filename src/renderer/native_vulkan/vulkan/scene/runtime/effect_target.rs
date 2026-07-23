@@ -21,8 +21,19 @@ use crate::renderer::native_vulkan::{
 };
 
 mod image_commands;
+mod execution_state;
+mod local_read_scope;
+mod local_read_usage;
 
+pub(in crate::renderer::native_vulkan) use execution_state::SceneEffectTargetExecutionState;
 use image_commands::*;
+use local_read_scope::*;
+use super::local_read::{SceneLocalReadDeviceLimits, SceneLocalReadScopePlan};
+pub(in crate::renderer::native_vulkan) use local_read_usage::{
+    apply_scene_effect_target_input_attachment_usage,
+    apply_scene_effect_target_local_read_candidate_usage,
+    apply_scene_effect_target_local_read_scope_usage,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct SceneEffectTargetImagePlan {
@@ -644,44 +655,148 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     scene_color_image: vk::Image,
     scene_color_extent: vk::Extent2D,
     graph_index: u32,
+    command_position_offset: usize,
     commands: &[SceneEffectTargetCommand],
     target_allocations: &[SceneRenderingDeviceTargetAllocation],
     initial_reference_physical_slots: &[u32],
     resources: &[SceneEffectTargetImageResource],
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    local_read_limits: SceneLocalReadDeviceLimits,
     mut record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
-    let mut references = logical_target_references(target_allocations);
-    if references.len() != initial_reference_physical_slots.len() {
-        return Err(format!(
-            "scene effect target reference phase has {} slots for {} logical targets",
-            initial_reference_physical_slots.len(),
-            references.len()
-        ));
-    }
-    for (reference, physical_slot) in references
-        .iter_mut()
-        .zip(initial_reference_physical_slots.iter().copied())
-    {
-        reference.physical_slot = physical_slot;
-    }
-    let mut initialized_physical_slots = resources
+    let mut state = SceneEffectTargetExecutionState::new(
+        target_allocations,
+        initial_reference_physical_slots,
+        resources,
+    )?;
+    record_scene_effect_target_graph_passes_with_state(
+        device,
+        command_buffer,
+        scene_color_image,
+        scene_color_extent,
+        graph_index,
+        command_position_offset,
+        commands,
+        resources,
+        local_read_scopes,
+        local_read_limits,
+        &mut state,
+        &mut record_draws,
+        &mut record_command_timing,
+    )
+}
+
+/// Records a command slice while retaining caller-owned target state across interleaved passes.
+pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passes_with_state(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene_color_image: vk::Image,
+    scene_color_extent: vk::Extent2D,
+    graph_index: u32,
+    command_position_offset: usize,
+    commands: &[SceneEffectTargetCommand],
+    resources: &[SceneEffectTargetImageResource],
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    local_read_limits: SceneLocalReadDeviceLimits,
+    state: &mut SceneEffectTargetExecutionState,
+    mut record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
+    mut record_command_timing: impl FnMut(usize, bool),
+) -> Result<(), String> {
+    let references = &mut state.references;
+    let initialized_physical_slots = &mut state.initialized_physical_slots;
+    let initialized_logical_targets = &mut state.initialized_logical_targets;
+    let mut next_command_position = 0usize;
+    while let Some((relative_position, command)) = commands
         .iter()
-        .map(|resource| resource.plan.physical_slot)
-        .collect::<Vec<_>>();
-    let mut initialized_logical_targets = references
-        .iter()
-        .filter(|reference| {
-            resources.iter().any(|resource| {
-                resource.plan.physical_slot == reference.physical_slot
-                    && resource.plan.persistent_across_frames
-            })
+        .enumerate()
+        .skip(next_command_position)
+        .find(|command| {
+            command.1.target.graph_index == graph_index && command.1.batch_atlas_tile.is_none()
         })
-        .map(|reference| reference.key)
-        .collect::<Vec<_>>();
-    for (command_position, command) in commands.iter().enumerate().filter(|command| {
-        command.1.target.graph_index == graph_index && command.1.batch_atlas_tile.is_none()
-    }) {
+    {
+        next_command_position = relative_position + 1;
+        let command_position = command_position_offset.saturating_add(relative_position);
+        if let Some(scope) = local_read_scopes
+            .iter()
+            .filter(|scope| scope.graph_index() == graph_index)
+            .find(|scope| local_read_scope_matches_command(scope, command, true))
+        {
+            let (consumer_relative_position, consumer) = commands
+                .iter()
+                .enumerate()
+                .skip(next_command_position)
+                .find(|consumer| {
+                    consumer.1.target.graph_index == graph_index
+                        && consumer.1.batch_atlas_tile.is_none()
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "scene graph {graph_index} local-read producer pass record {} has no adjacent consumer command",
+                        command.pass_record_index
+                    )
+                })?;
+            next_command_position = consumer_relative_position + 1;
+            let consumer_position =
+                command_position_offset.saturating_add(consumer_relative_position);
+            if !local_read_scope_matches_command(scope, consumer, false) {
+                return Err(format!(
+                    "scene graph {graph_index} local-read producer pass record {} is followed by pass record {}, not its planned consumer {}",
+                    command.pass_record_index,
+                    consumer.pass_record_index,
+                    scope.consumer_pass_record_index()
+                ));
+            }
+            let source = resource_for_key(resources, &references, command.target)?;
+            let destination = resource_for_key(resources, &references, consumer.target)?;
+            let source_load_op = effect_target_load_op(
+                &initialized_physical_slots,
+                source.plan.physical_slot,
+                initialized_logical_targets.contains(&command.target),
+                command.clear_before_draw,
+                command.fully_overwrites_target,
+            );
+            let destination_load_op = effect_target_load_op(
+                &initialized_physical_slots,
+                destination.plan.physical_slot,
+                initialized_logical_targets.contains(&consumer.target),
+                consumer.clear_before_draw,
+                consumer.fully_overwrites_target,
+            );
+            record_scene_local_read_scope(
+                device,
+                command_buffer,
+                source,
+                destination,
+                *command,
+                *consumer,
+                source_load_op,
+                destination_load_op,
+                scope,
+                local_read_limits,
+                command_position,
+                consumer_position,
+                &mut record_draws,
+                &mut record_command_timing,
+            )?;
+            for (key, resource) in [(command.target, source), (consumer.target, destination)] {
+                mark_target_initialized(
+                    initialized_physical_slots,
+                    resource.plan.physical_slot,
+                );
+                mark_logical_target_initialized(initialized_logical_targets, key);
+            }
+            continue;
+        }
+        if local_read_scopes.iter().any(|scope| {
+            scope.graph_index() == graph_index
+                && local_read_scope_matches_command(scope, command, false)
+        }) {
+            return Err(format!(
+                "scene graph {graph_index} local-read consumer pass record {} was not recorded with its producer",
+                command.pass_record_index
+            ));
+        }
         record_command_timing(command_position, true);
         match command.kind {
             SceneEffectTargetCommandKind::Copy => {
@@ -697,19 +812,19 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
                     )?;
                     let resource = resource_for_key(resources, &references, command.target)?;
                     mark_target_initialized(
-                        &mut initialized_physical_slots,
+                        initialized_physical_slots,
                         resource.plan.physical_slot,
                     );
                 }
-                mark_logical_target_initialized(&mut initialized_logical_targets, command.target);
+                mark_logical_target_initialized(initialized_logical_targets, command.target);
             }
             SceneEffectTargetCommandKind::SwapReferences => {
-                swap_logical_references(*command, &mut references)?;
+                swap_logical_references(*command, references)?;
                 mark_swapped_initialized_targets(
                     *command,
                     &references,
                     &initialized_physical_slots,
-                    &mut initialized_logical_targets,
+                    initialized_logical_targets,
                 );
             }
             SceneEffectTargetCommandKind::DynamicRender => {
@@ -741,10 +856,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
                     &mut record_draws,
                 )?;
                 mark_target_initialized(
-                    &mut initialized_physical_slots,
+                    initialized_physical_slots,
                     resource.plan.physical_slot,
                 );
-                mark_logical_target_initialized(&mut initialized_logical_targets, command.target);
+                mark_logical_target_initialized(initialized_logical_targets, command.target);
                 record_effect_target_barrier(
                     device,
                     command_buffer,
@@ -763,20 +878,46 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     Ok(())
 }
 
-pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
+pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass_with_state(
     device: &Device,
     command_buffer: vk::CommandBuffer,
     scene_color_image: vk::Image,
     scene_color_extent: vk::Extent2D,
     pass: &SceneRenderingDevicePassNode,
     commands: &[SceneEffectTargetCommand],
-    target_allocations: &[SceneRenderingDeviceTargetAllocation],
-    initial_reference_physical_slots: &[u32],
     resources: &[SceneEffectTargetImageResource],
+    local_read_scopes: &[SceneLocalReadScopePlan],
+    local_read_limits: SceneLocalReadDeviceLimits,
+    state: &mut SceneEffectTargetExecutionState,
     record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
-    let (command_position, command) = commands
+    let (command_position, command) = scene_effect_target_command_for_pass(commands, pass)?;
+    record_command_timing(command_position, true);
+    let result = record_scene_effect_target_graph_passes_with_state(
+        device,
+        command_buffer,
+        scene_color_image,
+        scene_color_extent,
+        pass.graph_index,
+        command_position,
+        std::slice::from_ref(&command),
+        resources,
+        local_read_scopes,
+        local_read_limits,
+        state,
+        record_draws,
+        |_, _| {},
+    );
+    record_command_timing(command_position, false);
+    result
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_effect_target_command_for_pass(
+    commands: &[SceneEffectTargetCommand],
+    pass: &SceneRenderingDevicePassNode,
+) -> Result<(usize, SceneEffectTargetCommand), String> {
+    commands
         .iter()
         .enumerate()
         .find(|command| {
@@ -793,29 +934,13 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
                 "scene graph {} pass {} has no matching effect-target command",
                 pass.graph_index, pass.pass_id
             )
-        })?;
-    if command.kind != SceneEffectTargetCommandKind::DynamicRender {
-        return Err(format!(
-            "scene graph {} pass {} cannot execute {:?} as an interleaved dynamic render",
-            pass.graph_index, pass.pass_id, command.kind
-        ));
-    }
-    record_command_timing(command_position, true);
-    let result = record_scene_effect_target_graph_passes(
-        device,
-        command_buffer,
-        scene_color_image,
-        scene_color_extent,
-        pass.graph_index,
-        std::slice::from_ref(&command),
-        target_allocations,
-        initial_reference_physical_slots,
-        resources,
-        record_draws,
-        |_, _| {},
-    );
-    record_command_timing(command_position, false);
-    result
+        })
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_effect_target_command_is_dynamic(
+    command: SceneEffectTargetCommand,
+) -> bool {
+    matches!(command.kind, SceneEffectTargetCommandKind::DynamicRender)
 }
 
 fn effect_target_load_op(

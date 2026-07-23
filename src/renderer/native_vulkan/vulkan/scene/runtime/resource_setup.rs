@@ -16,6 +16,7 @@ pub(super) fn create_scene_gpu_resources(
     advanced_blend_coherent: bool,
     scene_color_msaa_enabled: bool,
     multisampled_render_to_single_sampled_enabled: bool,
+    local_read_limits: SceneLocalReadDeviceLimits,
     frame_slot_count: usize,
 ) -> Result<SceneGpuResources, String> {
     if frame_slot_count == 0 {
@@ -45,11 +46,31 @@ pub(super) fn create_scene_gpu_resources(
     let input_attachment_binding_plan = input_attachment_binding_cycle
         .first()
         .ok_or_else(|| "scene input-attachment binding cycle is empty".to_owned())?;
-    let effect_target_plans = effect_target::scene_effect_target_image_plan(
+    let mut effect_target_plans = effect_target::scene_effect_target_image_plan(
         storage,
         &backend_plan.rendering_device_graph,
         target_format,
         extent,
+    )?;
+    effect_target::apply_scene_effect_target_input_attachment_usage(
+        &mut effect_target_plans,
+        &input_attachment_binding_cycle,
+    )?;
+    effect_target::apply_scene_effect_target_local_read_candidate_usage(
+        &mut effect_target_plans,
+        &backend_plan.rendering_device_graph,
+        &sampled_binding_cycle,
+    )?;
+    let local_read_scopes = scene_local_read_scope_plans(
+        storage,
+        &backend_plan.rendering_device_graph,
+        &effect_target_plans,
+    )?;
+    effect_target::apply_scene_effect_target_local_read_scope_usage(
+        &mut effect_target_plans,
+        &backend_plan.rendering_device_graph,
+        &local_read_scopes,
+        &sampled_binding_cycle,
     )?;
     let effect_target_commands =
         effect_target::scene_effect_target_commands(storage, &backend_plan.rendering_device_graph);
@@ -64,18 +85,20 @@ pub(super) fn create_scene_gpu_resources(
     let scene_color_ranges = scene_color_draw_ranges(&backend_plan.rendering_device_graph);
     let graph_execution_order =
         graph_execution::scene_graph_execution_order(&backend_plan.rendering_device_graph);
-    let pipeline_indices = scene_pipeline_indices_for_draws(
+    let pipeline_indices = scene_pipeline_indices_for_draws_with_local_read(
         storage,
         &backend_plan.rendering_device_graph,
         target_format,
         &effect_target_plans,
+        &local_read_scopes,
         scene_color_msaa_enabled,
     )?;
-    let disabled_pipeline_indices = scene_disabled_pipeline_indices_for_draws(
+    let disabled_pipeline_indices = scene_disabled_pipeline_indices_for_draws_with_local_read(
         storage,
         &backend_plan.rendering_device_graph,
         target_format,
         &effect_target_plans,
+        &local_read_scopes,
         scene_color_msaa_enabled,
     )?;
     emit_scene_pipeline_diagnostics_if_requested(
@@ -383,6 +406,8 @@ pub(super) fn create_scene_gpu_resources(
         advanced_blend_enabled,
         advanced_blend_coherent,
         scene_color_msaa_enabled,
+        &local_read_scopes,
+        local_read_limits,
     ) {
         Ok(resources) => resources,
         Err(err) => {
@@ -585,6 +610,8 @@ pub(super) fn create_scene_gpu_resources(
         descriptor_layout: descriptor_layout.clone(),
         sampled_binding_cycle,
         input_attachment_binding_cycle,
+        local_read_scopes,
+        local_read_limits,
         sampled_descriptor_dirty_update_enabled: std::env::var_os(
             "GILDER_NATIVE_VULKAN_DISABLE_SAMPLED_DESCRIPTOR_DIRTY_UPDATE",
         )

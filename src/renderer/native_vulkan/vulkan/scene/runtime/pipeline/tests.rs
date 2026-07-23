@@ -139,6 +139,7 @@ fn same_effect_shader_uses_distinct_fullscreen_and_object_mesh_pipelines() {
         &graph,
         vk::Format::B8G8R8A8_UNORM,
         &[],
+        &[],
         false,
     )
     .expect("pipeline keys");

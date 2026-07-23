@@ -123,7 +123,11 @@ use material_uniform::{
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
-    scene_disabled_pipeline_indices_for_draws, scene_pipeline_indices_for_draws,
+    scene_disabled_pipeline_indices_for_draws_with_local_read,
+    scene_pipeline_indices_for_draws_with_local_read,
+};
+use local_read::{
+    SceneLocalReadDeviceLimits, SceneLocalReadScopePlan, scene_local_read_scope_plans,
 };
 use descriptor_layout::{
     ScenePipelineDescriptorLayout, scene_pipeline_descriptor_layout,
@@ -387,6 +391,8 @@ struct SceneGpuResources {
     descriptor_layout: ScenePipelineDescriptorLayout,
     sampled_binding_cycle: Vec<SceneSampledImageBindingPlan>,
     input_attachment_binding_cycle: Vec<SceneInputAttachmentBindingPlan>,
+    local_read_scopes: Vec<SceneLocalReadScopePlan>,
+    local_read_limits: SceneLocalReadDeviceLimits,
     sampled_descriptor_dirty_update_enabled: bool,
     frame_topology: SceneFrameTopology,
     dynamic_effect_uniforms: bool,
