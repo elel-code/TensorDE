@@ -1,6 +1,37 @@
 # Testing
 
 Tensor borrows test strategy from Niri and Hyprland without copying implementation code.
+The local Nourish checkout is used for the ECS and retained-scene contracts. The converted
+behavioral suite lives in [`tests/reference_contracts.rs`](../tests/reference_contracts.rs), with
+one child module per reference project; it is an ordinary Tensor integration test and never links
+or executes an upstream test fixture.
+
+## Reference-to-Tensor test conversion
+
+The local checkouts are treated as behavioral references. Their tests are translated into Tensor
+contracts over stable IDs, ECS snapshots, KDL values, Vulkan capability records, and Smithay state;
+the reference projects are never linked into the build and their fixtures are not copied.
+
+| Reference behavior | Tensor contract | Current tests |
+| --- | --- | --- |
+| Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
+| Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
+| Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
+| Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
+| Hyprland IPC and client protocol checks | bounded framed requests, request IDs, version errors, and protocol-global ownership | `tests/reference_contracts/hyprland.rs`, `ipc`, `compositor::root`, `protocol::globals` |
+| Nourish 2-D scene/ECS invariants | stable view IDs, unique focus, lifecycle invalidation, geometry independent of draw order | `tests/reference_contracts/nourish.rs`, `ecs::world`, `scene::model` |
+| Nourish Vulkan memory/target boundaries | explicit modifier, fd-memory compatibility, plane topology and deferred resource retirement | `render::format`, `render::vulkan::target`, `render::vulkan::import` |
+
+The reference modules deliberately assert Tensor invariants rather than upstream implementation
+details: Niri's configure/ack behavior becomes a geometry-and-scene contract, Hyprland's monitor
+and control tests become deterministic layout/IPC contracts, and Nourish's world tests become ECS
+lifecycle plus retained-scene contracts. When a reference behavior is not implemented yet (for
+example layer-shell or multi-plane client imports), it remains a documented gap instead of being
+represented by a vacuous passing test.
+
+Hardware-dependent tests remain split into a deterministic state-machine layer and an optional TTY
+smoke layer. A missing Vulkan descriptor heap or a missing native dma-buf capability is a reported
+selection result, never a silently skipped compatibility path.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
 - Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
@@ -42,6 +73,9 @@ Every change runs:
 cargo fmt --all -- --check
 uv run scripts/check_file_lines.py
 cargo test --workspace --all-targets
+cargo test --workspace --all-targets --features systemd
+cargo test --workspace --all-targets --no-default-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 The IPC tests cover fragmented and coalesced frames, multiple requests on one non-blocking client,

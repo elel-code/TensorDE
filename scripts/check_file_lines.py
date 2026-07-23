@@ -13,7 +13,7 @@ SOURCE_SUFFIXES = {".py", ".rs"}
 
 def source_files(root: Path) -> list[Path]:
     files: list[Path] = []
-    for directory in (root / "src", root / "scripts", root / "crates"):
+    for directory in (root / "src", root / "scripts", root / "crates", root / "tests"):
         if not directory.exists():
             continue
         files.extend(
