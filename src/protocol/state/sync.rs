@@ -127,6 +127,10 @@ pub(super) enum PendingClientRelease {
 }
 
 impl RuntimeState {
+    pub(crate) fn finish_unused_explicit_sync(&mut self, points: ExplicitSyncPoints) {
+        self.queue_client_release(points.release, ClientReleaseFence::Ready);
+    }
+
     pub(crate) fn reconcile_surface_sync(
         &mut self,
         surface: &WlSurface,

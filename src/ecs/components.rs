@@ -25,9 +25,9 @@ pub struct ViewEffects(pub EffectStyle);
 
 /// Renderable surface values extracted from the protocol boundary.
 ///
-/// The component contains no Smithay resources.  A view may eventually carry
-/// a root surface plus subsurfaces; keeping a flat value list here makes that
-/// extension independent from the renderer and from Bevy entity identity.
+/// The component contains no Smithay resources. A view carries its root,
+/// subsurfaces, and popups in protocol draw order; the flat value list keeps
+/// that tree independent from the renderer and from Bevy entity identity.
 #[derive(Clone, Component, Debug, Default, Eq, PartialEq)]
 pub struct ViewContent {
     pub surfaces: Vec<SurfaceContent>,

@@ -18,8 +18,9 @@ startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tt
 ownership, Smithay-owned atomic KMS output submission, and a Vulkanalia renderer. The renderer
 allocates explicit-modifier output dma-bufs, samples imported one-plane RGB client buffers through
 the descriptor heap, and integrates `wp_linux_drm_syncobj_v1` acquire/release fences without a CPU
-wait or descriptor-set fallback. Multi-plane formats, implicit-sync clients, surface trees, and
-presentation feedback remain open renderer gates.
+wait or descriptor-set fallback. Toplevel, subsurface, and popup trees are flattened into the
+value-only ECS scene with transaction-aware synchronized commits and popup-aware damage. Multi-plane
+formats, implicit-sync clients, and presentation feedback remain open renderer gates.
 
 ## Requirements
 
@@ -90,13 +91,12 @@ The module boundaries are deliberate ownership boundaries:
 ## Roadmap
 
 1. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
-2. Flatten subsurface and popup trees into the existing value-only scene content table.
-3. Add presentation-time feedback, frame callbacks, and damage-driven partial rendering around the
+2. Add presentation-time feedback, frame callbacks, and damage-driven partial rendering around the
    existing timeline/KMS completion model.
-4. Add direct-scanout candidate selection without moving KMS ownership out of Smithay.
-5. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
+3. Add direct-scanout candidate selection without moving KMS ownership out of Smithay.
+4. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
    stable ECS view IDs.
-6. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
+5. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
    handles into IPC or ECS.
 
 ## IPC contract

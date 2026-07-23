@@ -4,7 +4,7 @@ use tensor_util::Rect;
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
-    scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceTransform},
+    scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceLayer, SurfaceTransform},
 };
 
 use super::FrameError;
@@ -36,27 +36,33 @@ impl FrameDrawPlan {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
         let mut draws = Vec::new();
+        let output_viewport = Rect::new(0, 0, scene.viewport.width, scene.viewport.height);
 
         for node in scene.draw_order() {
-            if node.visual_bounds(scene.viewport).is_none() {
+            if scene.visual_bounds(node).is_none() {
                 continue;
             }
-            let Some(view_clip) = node.placement.visible else {
-                continue;
-            };
-            let output_viewport = Rect::new(0, 0, scene.viewport.width, scene.viewport.height);
-            let view_clip = view_clip.translated(-scene.viewport.x, -scene.viewport.y);
+            let view_clip = node
+                .placement
+                .visible
+                .map(|clip| clip.translated(-scene.viewport.x, -scene.viewport.y));
             for content in scene.contents_for(node) {
                 let destination = content.local_geometry.translated(
                     node.placement.geometry.x.saturating_sub(scene.viewport.x),
                     node.placement.geometry.y.saturating_sub(scene.viewport.y),
                 );
-                let Some(clip) = destination
-                    .intersection(view_clip)
-                    .and_then(|clip| clip.intersection(output_viewport))
-                else {
-                    continue;
+                let clip = match content.layer {
+                    SurfaceLayer::View => {
+                        let Some(view_clip) = view_clip else {
+                            continue;
+                        };
+                        destination
+                            .intersection(view_clip)
+                            .and_then(|clip| clip.intersection(output_viewport))
+                    }
+                    SurfaceLayer::Popup => destination.intersection(output_viewport),
                 };
+                let Some(clip) = clip else { continue };
                 let image_descriptor = match image_descriptors.get(&content.buffer_id) {
                     Some(index) => *index,
                     None => {
@@ -101,7 +107,7 @@ mod tests {
     use crate::{
         ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{ContentRevision, SceneNode, SurfaceContent, SurfaceTransform},
+        scene::{ContentRevision, SceneNode, SurfaceContent, SurfaceLayer, SurfaceTransform},
     };
 
     use super::*;
@@ -118,6 +124,7 @@ mod tests {
                 surface_id: SurfaceId::new(1),
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(1),
+                layer: SurfaceLayer::View,
                 buffer_size: Size::new(80, 60),
                 local_geometry: Rect::new(0, 0, 80, 60),
                 buffer_scale: 1,
@@ -127,6 +134,7 @@ mod tests {
                 surface_id: SurfaceId::new(2),
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(2),
+                layer: SurfaceLayer::View,
                 buffer_size: Size::new(20, 20),
                 local_geometry: Rect::new(5, 5, 20, 20),
                 buffer_scale: 1,
@@ -161,6 +169,7 @@ mod tests {
             surface_id: SurfaceId::new(1),
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(3),
+            layer: SurfaceLayer::View,
             buffer_size: Size::new(80, 100),
             local_geometry: Rect::new(10, 5, 80, 60),
             buffer_scale: 1,
@@ -183,5 +192,39 @@ mod tests {
         assert_eq!(draw.destination, Rect::new(-10, -5, 80, 60));
         assert_eq!(draw.clip, Rect::new(0, 0, 70, 55));
         assert_eq!(draw.transform, SurfaceTransform::Rotate90);
+    }
+
+    #[test]
+    fn popup_draws_beyond_the_layout_tile_but_not_beyond_output() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(10, 10, 20, 20),
+            visible: Some(Rect::new(10, 10, 20, 20)),
+        };
+        let contents = vec![SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(2),
+            revision: ContentRevision::new(1),
+            layer: SurfaceLayer::Popup,
+            buffer_size: Size::new(30, 10),
+            local_geometry: Rect::new(15, 5, 30, 10),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        }];
+        let span = crate::scene::ContentSpan::new(0, 1).unwrap();
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, placement, EffectStyle::default())
+                    .with_content(span),
+            ],
+            contents,
+        );
+
+        let plan = FrameDrawPlan::build(&scene).unwrap();
+        assert_eq!(plan.draws().len(), 1);
+        assert_eq!(plan.draws()[0].destination, Rect::new(25, 15, 30, 10));
+        assert_eq!(plan.draws()[0].clip, Rect::new(25, 15, 30, 10));
     }
 }

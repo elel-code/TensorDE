@@ -48,10 +48,17 @@ allocation, three native output slots, and timeline retirement, and is connected
 output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
 client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports a
 binary `SYNC_FD`, and hands it to Smithay's atomic KMS path. The current slice is intentionally
-limited to one-plane RGB; implicit dma-buf synchronization, multi-plane formats, surface trees, and
-damage-driven partial rendering remain later gates. Explicit clients use Smithay's
+limited to one-plane RGB; implicit dma-buf synchronization, multi-plane formats, and damage-driven
+partial rendering remain later gates. Explicit clients use Smithay's
 `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
 sync-file fds and stable `SurfaceId` values reach Vulkanalia.
+
+The protocol owner traverses each mapped toplevel, subsurface tree, and popup tree in Smithay draw
+order and copies only stable identities, buffer metadata, placement, and layer policy into the flat
+ECS content table. Synchronized subsurface callbacks are deferred until their non-synchronized
+ancestor applies the complete Smithay transaction; explicit acquire/release points follow the same
+gate. Popup content remains owned by its toplevel but is clipped by the output rather than the
+layout tile, and its old/new bounds participate in scene damage.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely

@@ -17,6 +17,7 @@ the reference projects are never linked into the build and their fixtures are no
 | Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
 | Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
 | Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
+| Smithay/Niri surface-tree transactions | subsurface order is stable, synchronized children defer to the parent transaction, and popups escape tile clipping without escaping output damage | `protocol::state::surfaces`, `protocol::state::tree`, `render::frame::plan`, `scene::damage` |
 | Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
 | Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
 | Hyprland IPC and client protocol checks | bounded framed requests, request IDs, version errors, and protocol-global ownership | `tests/reference_contracts/hyprland.rs`, `ipc`, `compositor::root`, `protocol::globals` |
@@ -36,7 +37,8 @@ selection result, never a silently skipped compatibility path.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
 - Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
-  frame/full damage, old/new movement damage, region coalescing, and blur dependency propagation.
+  frame/full damage, old/new movement damage, popup bounds outside layout tiles, region coalescing,
+  and blur dependency propagation.
 - Scrolling tests cover focus visibility, persistent workspace offsets, oversized columns, and
   full-geometry versus visible-clip output. Grid and master-stack tests apply view min/max
   constraints after deterministic track allocation.

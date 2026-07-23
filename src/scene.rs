@@ -3,7 +3,8 @@ mod damage;
 mod model;
 
 pub use content::{
-    ContentRevision, ContentSpan, SurfaceContent, SurfaceTransform, SurfaceUvTransform,
+    ContentRevision, ContentSpan, SurfaceContent, SurfaceLayer, SurfaceTransform,
+    SurfaceUvTransform,
 };
 pub use damage::DamageSet;
 pub use model::{

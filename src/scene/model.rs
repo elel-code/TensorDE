@@ -215,6 +215,34 @@ impl SceneSnapshot {
         &self.contents[range]
     }
 
+    /// Return the output-visible bounds of a node and all popup content it
+    /// owns.  Layout geometry remains the clip for view content, while popup
+    /// surfaces extend the visual region independently until the viewport
+    /// boundary.
+    pub fn visual_bounds(&self, node: &SceneNode) -> Option<Rect> {
+        let mut bounds = node.visual_bounds(self.viewport);
+        if node.effects.opacity == UnitFraction::TRANSPARENT {
+            return None;
+        }
+        for content in self
+            .contents_for(node)
+            .iter()
+            .filter(|content| content.layer == super::SurfaceLayer::Popup)
+        {
+            let destination = content
+                .local_geometry
+                .translated(node.placement.geometry.x, node.placement.geometry.y);
+            let Some(popup_bounds) = destination.intersection(self.viewport) else {
+                continue;
+            };
+            bounds = Some(match bounds {
+                Some(bounds) => bounds.union(popup_bounds),
+                None => popup_bounds,
+            });
+        }
+        bounds
+    }
+
     /// Return each imported image referenced by the scene once, in stable
     /// scene-table order.  Descriptor allocation and Vulkan descriptor writes
     /// consume the same ordering, so a missing image fails deterministically.
@@ -233,6 +261,10 @@ impl SceneSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use tensor_util::Size;
+
+    use crate::scene::{ContentRevision, SurfaceLayer, SurfaceTransform};
+
     use super::*;
 
     fn view(value: u64) -> ViewId {
@@ -297,6 +329,37 @@ mod tests {
         assert_eq!(
             node.visual_bounds(Rect::new(0, 0, 100, 100)),
             Some(Rect::new(19, 17, 52, 32))
+        );
+    }
+
+    #[test]
+    fn popup_content_extends_visual_bounds_beyond_the_tile() {
+        let viewport = Rect::new(0, 0, 100, 100);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(10, 10, 20, 20),
+            visible: Some(Rect::new(10, 10, 20, 20)),
+        };
+        let content = SurfaceContent {
+            surface_id: crate::ecs::SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(1),
+            revision: ContentRevision::new(1),
+            layer: SurfaceLayer::Popup,
+            buffer_size: Size::new(10, 10),
+            local_geometry: Rect::new(20, 5, 10, 10),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        };
+        let span = ContentSpan::new(0, 1).unwrap();
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![SceneNode::new(view(1), 0, placement, EffectStyle::default()).with_content(span)],
+            vec![content],
+        );
+
+        assert_eq!(
+            scene.visual_bounds(&scene.nodes()[0]),
+            Some(Rect::new(10, 10, 30, 20))
         );
     }
 }

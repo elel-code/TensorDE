@@ -69,26 +69,26 @@ pub(super) fn between(previous: Option<&SceneSnapshot>, current: &SceneSnapshot)
         ) {
             (Some(old), Some(new)) if old.view_id == new.view_id => {
                 if old != new || previous.contents_for(old) != current.contents_for(new) {
-                    add_node_bounds(&mut damage, *old, current.viewport);
-                    add_node_bounds(&mut damage, *new, current.viewport);
+                    add_node_bounds(&mut damage, previous, *old);
+                    add_node_bounds(&mut damage, current, *new);
                 }
                 old_index += 1;
                 new_index += 1;
             }
             (Some(old), Some(new)) if old.view_id < new.view_id => {
-                add_node_bounds(&mut damage, *old, current.viewport);
+                add_node_bounds(&mut damage, previous, *old);
                 old_index += 1;
             }
             (Some(_), Some(new)) => {
-                add_node_bounds(&mut damage, *new, current.viewport);
+                add_node_bounds(&mut damage, current, *new);
                 new_index += 1;
             }
             (Some(old), None) => {
-                add_node_bounds(&mut damage, *old, current.viewport);
+                add_node_bounds(&mut damage, previous, *old);
                 old_index += 1;
             }
             (None, Some(new)) => {
-                add_node_bounds(&mut damage, *new, current.viewport);
+                add_node_bounds(&mut damage, current, *new);
                 new_index += 1;
             }
             (None, None) => break,
@@ -100,9 +100,9 @@ pub(super) fn between(previous: Option<&SceneSnapshot>, current: &SceneSnapshot)
     damage
 }
 
-fn add_node_bounds(damage: &mut DamageSet, node: SceneNode, viewport: Rect) {
-    if let Some(bounds) = node.visual_bounds(viewport) {
-        damage.add(bounds, viewport);
+fn add_node_bounds(damage: &mut DamageSet, scene: &SceneSnapshot, node: SceneNode) {
+    if let Some(bounds) = scene.visual_bounds(&node) {
+        damage.add(bounds, scene.viewport);
     }
 }
 
@@ -115,7 +115,7 @@ fn propagate_background_dependencies(damage: &mut DamageSet, current: &SceneSnap
             .iter()
             .filter(|node| node.samples_background())
         {
-            let Some(bounds) = node.visual_bounds(current.viewport) else {
+            let Some(bounds) = current.visual_bounds(node) else {
                 continue;
             };
             if damage
@@ -145,7 +145,7 @@ mod tests {
         layout::LayoutPlacement,
         scene::{
             BackdropBlur, ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot,
-            SurfaceContent, SurfaceTransform,
+            SurfaceContent, SurfaceLayer, SurfaceTransform,
         },
     };
     use tensor_util::Size;
@@ -268,6 +268,7 @@ mod tests {
             surface_id: SurfaceId::new(1),
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(revision),
+            layer: SurfaceLayer::View,
             buffer_size: Size::new(40, 40),
             local_geometry: Rect::new(0, 0, 40, 40),
             buffer_scale: 1,
@@ -288,5 +289,50 @@ mod tests {
         );
 
         assert_eq!(new.damage_since(Some(&old)).regions(), [placement.geometry]);
+    }
+
+    #[test]
+    fn popup_motion_damages_both_old_and_new_output_regions() {
+        let placement = LayoutPlacement {
+            geometry: Rect::new(10, 10, 20, 20),
+            visible: Some(Rect::new(10, 10, 20, 20)),
+        };
+        let content = |x, revision| SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(2),
+            revision: ContentRevision::new(revision),
+            layer: SurfaceLayer::Popup,
+            buffer_size: Size::new(10, 10),
+            local_geometry: Rect::new(x, 5, 10, 10),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        };
+        let span = ContentSpan::new(0, 1).unwrap();
+        let old = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            VIEWPORT,
+            vec![node(1, placement.geometry, EffectStyle::default()).with_content(span)],
+            vec![content(25, 1)],
+        );
+        let new = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            VIEWPORT,
+            vec![node(1, placement.geometry, EffectStyle::default()).with_content(span)],
+            vec![content(55, 2)],
+        );
+
+        let damage = new.damage_since(Some(&old));
+        assert!(
+            damage
+                .regions()
+                .iter()
+                .any(|region| region.contains_rect(Rect::new(35, 15, 10, 10)))
+        );
+        assert!(
+            damage
+                .regions()
+                .iter()
+                .any(|region| region.contains_rect(Rect::new(65, 15, 10, 10)))
+        );
     }
 }

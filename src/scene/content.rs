@@ -39,6 +39,18 @@ pub enum SurfaceTransform {
     Flipped270,
 }
 
+/// Placement policy for one surface inside a view scene.
+///
+/// Toplevel and subsurface content follows the layout clip assigned to the
+/// view. Popups are still owned by that view, but may extend beyond its tile
+/// and are clipped only by the output viewport.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SurfaceLayer {
+    #[default]
+    View,
+    Popup,
+}
+
 /// Affine mapping from surface-local unit coordinates to normalized buffer
 /// coordinates.  Keeping this as integer coefficients makes the scene
 /// contract value-only and lossless; the Vulkan boundary converts it to
@@ -111,6 +123,7 @@ pub struct SurfaceContent {
     pub surface_id: SurfaceId,
     pub buffer_id: SurfaceBufferId,
     pub revision: ContentRevision,
+    pub layer: SurfaceLayer,
     pub buffer_size: Size,
     /// Surface-local destination after buffer scale, transform, and viewport
     /// destination have been resolved by Smithay.

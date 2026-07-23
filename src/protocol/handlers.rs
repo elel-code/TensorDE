@@ -75,48 +75,60 @@ impl CompositorHandler for RuntimeState {
 
     fn commit(&mut self, surface: &WlSurface) {
         #[cfg(feature = "tty")]
-        let explicit_sync = take_explicit_sync_points(surface);
-        #[cfg(feature = "tty")]
-        let mut explicit_sync = match explicit_sync {
+        let mut explicit_sync = match take_explicit_sync_points(surface) {
             ExplicitSyncCommit::None => None,
             ExplicitSyncCommit::Points(points) => Some(points),
             ExplicitSyncCommit::Rejected => {
                 on_commit_buffer_handler::<Self>(surface);
-                self.unregister_toplevel(surface);
+                let root = self
+                    .owning_view_root(surface)
+                    .unwrap_or_else(|| surface_root(surface));
+                self.discard_deferred_surface_sync(surface);
+                self.unregister_toplevel(&root);
                 self.flush_client_releases();
                 return;
             }
         };
-        #[cfg(feature = "tty")]
-        let mut sync_reconciled = false;
         on_commit_buffer_handler::<Self>(surface);
+        self.popups.commit(surface);
 
         #[cfg(feature = "tty")]
         let mut content_changed = false;
         #[cfg(feature = "tty")]
         let mut reflowed = false;
-        if !is_sync_subsurface(surface) {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
+        let root = surface_root(surface);
+        #[cfg(feature = "tty")]
+        let root = self.owning_view_root(surface).unwrap_or(root);
+
+        if is_sync_subsurface(surface) {
             #[cfg(feature = "tty")]
-            {
-                content_changed = self.update_surface_content(&root);
-                if &root == surface {
-                    self.reconcile_surface_sync(surface, explicit_sync.take());
-                    sync_reconciled = true;
-                }
+            if let Some(view_id) = self.view_for_surface(&root) {
+                self.defer_surface_sync(&root, surface, explicit_sync.take());
+                self.pending_content_repaints.insert(view_id);
+            } else if let Some(points) = explicit_sync.take() {
+                self.finish_unused_explicit_sync(points);
             }
-            let toplevel = self
+        } else {
+            let window = self
                 .space
                 .elements()
                 .find(|window| window.wl_surface().as_deref() == Some(&root))
-                .and_then(|window| {
-                    window.on_commit();
-                    window.toplevel().cloned()
-                });
-            if let Some(toplevel) = toplevel {
+                .cloned();
+            if let Some(window) = &window {
+                window.on_commit();
+            }
+
+            #[cfg(feature = "tty")]
+            {
+                content_changed = self.update_surface_content(&root);
+                self.reconcile_surface_sync(surface, explicit_sync.take());
+                self.reconcile_deferred_surface_sync(&root);
+            }
+
+            if let Some(window) = window
+                && window.wl_surface().as_deref() == Some(&root)
+                && let Some(toplevel) = window.toplevel().cloned()
+            {
                 let constraints = with_states(toplevel.wl_surface(), |states| {
                     let mut cached = states.cached_state.get::<SurfaceCachedState>();
                     let current = cached.current();
@@ -141,16 +153,15 @@ impl CompositorHandler for RuntimeState {
         }
 
         #[cfg(feature = "tty")]
-        if !sync_reconciled {
-            self.reconcile_surface_sync(surface, explicit_sync);
-        }
-
+        let deferred_repaint = !is_sync_subsurface(surface)
+            && self
+                .view_for_surface(&root)
+                .is_some_and(|view_id| self.pending_content_repaints.remove(&view_id));
         #[cfg(feature = "tty")]
-        if content_changed && !reflowed {
+        if (content_changed || deferred_repaint) && !reflowed {
             self.submit_default_workspace_frame();
         }
 
-        self.popups.commit(surface);
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
             && let Err(error) = popup.send_configure()
@@ -163,8 +174,42 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        #[cfg(feature = "tty")]
+        {
+            self.discard_deferred_surface_sync(surface);
+            if self.view_for_surface(surface).is_some() {
+                self.unregister_toplevel(surface);
+            } else if let Some(root) = self.owning_view_root(surface) {
+                if let Some(window) = self
+                    .space
+                    .elements()
+                    .find(|window| window.wl_surface().as_deref() == Some(&root))
+                {
+                    window.on_commit();
+                }
+                let changed = self.update_surface_content(&root);
+                self.reconcile_deferred_surface_sync(&root);
+                let deferred_repaint = self
+                    .view_for_surface(&root)
+                    .is_some_and(|view_id| self.pending_content_repaints.remove(&view_id));
+                if changed || deferred_repaint {
+                    self.submit_default_workspace_frame();
+                }
+            }
+            self.popups.cleanup();
+            self.flush_client_releases();
+        }
+        #[cfg(not(feature = "tty"))]
         self.unregister_toplevel(surface);
     }
+}
+
+fn surface_root(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
 }
 
 impl BufferHandler for RuntimeState {

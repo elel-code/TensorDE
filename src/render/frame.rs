@@ -386,7 +386,8 @@ mod tests {
         ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
         layout::LayoutPlacement,
         scene::{
-            ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceContent, SurfaceTransform,
+            ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceContent, SurfaceLayer,
+            SurfaceTransform,
         },
     };
     use tensor_util::Size;
@@ -420,6 +421,7 @@ mod tests {
             surface_id: SurfaceId::new(view_id),
             buffer_id: SurfaceBufferId::new(view_id),
             revision: ContentRevision::new(1),
+            layer: SurfaceLayer::View,
             buffer_size: Size::new(640, 480),
             local_geometry: Rect::new(0, 0, 640, 480),
             buffer_scale: 1,

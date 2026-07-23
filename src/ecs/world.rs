@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn scene_extraction_keeps_surface_content_out_of_smithay_and_entity_ids() {
-        use crate::scene::{ContentRevision, SurfaceContent, SurfaceTransform};
+        use crate::scene::{ContentRevision, SurfaceContent, SurfaceLayer, SurfaceTransform};
 
         let mut world = CompositorWorld::new();
         world.spawn_view(view(1), workspace(1)).unwrap();
@@ -555,6 +555,7 @@ mod tests {
             surface_id: crate::ecs::SurfaceId::new(7),
             buffer_id: crate::ecs::SurfaceBufferId::new(9),
             revision: ContentRevision::new(3),
+            layer: SurfaceLayer::View,
             buffer_size: Size::new(640, 480),
             local_geometry: Rect::new(0, 0, 640, 480),
             buffer_scale: 1,

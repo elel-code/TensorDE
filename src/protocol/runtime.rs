@@ -277,7 +277,7 @@ mod tests {
     use wayland_client::{
         Connection, Dispatch, QueueHandle, delegate_noop,
         globals::{GlobalListContents, registry_queue_init},
-        protocol::{wl_compositor, wl_registry, wl_surface},
+        protocol::{wl_compositor, wl_registry, wl_subcompositor, wl_subsurface, wl_surface},
     };
     use wayland_protocols::{
         wp::{
@@ -304,6 +304,9 @@ mod tests {
             preferred_scale: u32,
             client_side_decoration: bool,
         },
+        SubsurfaceDeferred,
+        SubsurfaceCommitted,
+        SubsurfaceDestroyed,
         Destroyed,
     }
 
@@ -327,6 +330,8 @@ mod tests {
     }
 
     delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
+    delegate_noop!(TestClient: ignore wl_subcompositor::WlSubcompositor);
+    delegate_noop!(TestClient: ignore wl_subsurface::WlSubsurface);
     delegate_noop!(TestClient: ignore wl_surface::WlSurface);
     delegate_noop!(TestClient: ignore wp_viewporter::WpViewporter);
     delegate_noop!(TestClient: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
@@ -431,6 +436,9 @@ mod tests {
             let compositor = globals
                 .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
                 .unwrap();
+            let subcompositor = globals
+                .bind::<wl_subcompositor::WlSubcompositor, _, _>(&handle, 1..=1, ())
+                .unwrap();
             let wm_base = globals
                 .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
                 .unwrap();
@@ -494,6 +502,24 @@ mod tests {
                     client_side_decoration: state.client_side_decoration,
                 })
                 .unwrap();
+
+            let child = compositor.create_surface(&handle, ());
+            let subsurface = subcompositor.get_subsurface(&child, &surface, &handle, ());
+            subsurface.set_position(12, 9);
+            child.commit();
+            connection.roundtrip().unwrap();
+            event_tx.send(ClientEvent::SubsurfaceDeferred).unwrap();
+            release_rx.recv().unwrap();
+
+            surface.commit();
+            connection.roundtrip().unwrap();
+            event_tx.send(ClientEvent::SubsurfaceCommitted).unwrap();
+            release_rx.recv().unwrap();
+
+            subsurface.destroy();
+            child.destroy();
+            connection.roundtrip().unwrap();
+            event_tx.send(ClientEvent::SubsurfaceDestroyed).unwrap();
             release_rx.recv().unwrap();
 
             _decoration.destroy();
@@ -552,6 +578,36 @@ mod tests {
             })
         );
 
+        #[cfg(feature = "tty")]
+        let root = runtime
+            .state
+            .space
+            .elements()
+            .next()
+            .unwrap()
+            .wl_surface()
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::SubsurfaceDeferred
+        );
+        #[cfg(feature = "tty")]
+        assert_eq!(runtime.state.surface_tree_member_count(&root), 1);
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::SubsurfaceCommitted
+        );
+        #[cfg(feature = "tty")]
+        assert_eq!(runtime.state.surface_tree_member_count(&root), 2);
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::SubsurfaceDestroyed
+        );
+        #[cfg(feature = "tty")]
+        assert_eq!(runtime.state.surface_tree_member_count(&root), 1);
         release_tx.send(()).unwrap();
         assert_eq!(
             dispatch_until(&mut runtime, &event_rx),

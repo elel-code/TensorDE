@@ -4,6 +4,8 @@ mod output;
 mod surfaces;
 #[cfg(feature = "tty")]
 mod sync;
+#[cfg(feature = "tty")]
+mod tree;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -32,8 +34,6 @@ use smithay::{
 };
 use tracing::warn;
 
-#[cfg(feature = "tty")]
-use crate::scene::SurfaceTransform;
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
@@ -43,7 +43,7 @@ use tensor_util::Size;
 
 use super::globals::ProtocolGlobals;
 #[cfg(feature = "tty")]
-use surfaces::{SurfaceBufferRegistry, SurfaceCommit};
+use surfaces::SurfaceBufferRegistry;
 #[cfg(feature = "tty")]
 pub(super) use sync::ExplicitSyncPoints;
 #[cfg(feature = "tty")]
@@ -55,6 +55,13 @@ use crate::backend::BackendOutputEvent;
 use crate::backend::{BackendOutputId, OutputDescriptor, TtyBackend};
 
 pub(crate) const DEFAULT_WORKSPACE: WorkspaceId = WorkspaceId::new(0);
+
+#[cfg(feature = "tty")]
+struct DeferredSurfaceSync {
+    root: ObjectId,
+    surface: WlSurface,
+    points: Option<ExplicitSyncPoints>,
+}
 
 pub(crate) struct RuntimeState {
     pub(crate) display_handle: DisplayHandle,
@@ -77,6 +84,10 @@ pub(crate) struct RuntimeState {
     surface_sync: SurfaceSyncRegistry,
     #[cfg(feature = "tty")]
     pending_client_releases: Vec<PendingClientRelease>,
+    #[cfg(feature = "tty")]
+    pub(super) pending_content_repaints: HashSet<ViewId>,
+    #[cfg(feature = "tty")]
+    pending_surface_sync: HashMap<ObjectId, DeferredSurfaceSync>,
     #[cfg(feature = "tty")]
     outputs: HashMap<BackendOutputId, ManagedOutput>,
     #[cfg(feature = "tty")]
@@ -121,6 +132,10 @@ impl RuntimeState {
             surface_sync: SurfaceSyncRegistry::default(),
             #[cfg(feature = "tty")]
             pending_client_releases: Vec::new(),
+            #[cfg(feature = "tty")]
+            pending_content_repaints: HashSet::new(),
+            #[cfg(feature = "tty")]
+            pending_surface_sync: HashMap::new(),
             #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
@@ -183,7 +198,7 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         if self
             .surface_buffers
-            .register_surface(surface.wl_surface().id())
+            .register_view_root(surface.wl_surface().id())
             .is_none()
         {
             warn!("surface identity space is exhausted; rejecting new toplevel");
@@ -212,17 +227,21 @@ impl RuntimeState {
 
         let view_id = self.surface_views.remove(&surface.id())?;
         #[cfg(feature = "tty")]
-        if let Some(surface_id) = self.surface_buffers.surface_id(&surface.id())
-            && let Some(sync) = self.surface_sync.remove(surface_id)
-        {
-            self.finish_surface_sync(surface_id, sync.release);
+        self.discard_deferred_view_sync(&surface.id());
+        #[cfg(feature = "tty")]
+        let removal = self.surface_buffers.remove_view_tree(&surface.id());
+        #[cfg(feature = "tty")]
+        for surface_id in removal.surfaces {
+            if let Some(sync) = self.surface_sync.remove(surface_id) {
+                self.finish_surface_sync(surface_id, sync.release);
+            }
         }
         #[cfg(feature = "tty")]
-        let released = self.surface_buffers.remove_surface(&surface.id());
-        #[cfg(feature = "tty")]
-        self.release_client_buffers(released);
+        self.release_client_buffers(removal.released_buffers);
         #[cfg(feature = "tty")]
         self.flush_client_releases();
+        #[cfg(feature = "tty")]
+        self.pending_content_repaints.remove(&view_id);
         if let Err(error) = self.world.remove_view(view_id) {
             warn!(%error, view_id = view_id.get(), "Wayland view was missing from ECS");
         }
@@ -234,51 +253,9 @@ impl RuntimeState {
         self.surface_views.get(&surface.id()).copied()
     }
 
-    #[cfg(feature = "tty")]
-    pub(crate) fn update_surface_content(&mut self, surface: &WlSurface) -> bool {
-        let Some(view_id) = self.view_for_surface(surface) else {
-            return false;
-        };
-        let Some(snapshot) =
-            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
-                let buffer = state.buffer().map(|buffer| buffer.id());
-                let logical_size = state.surface_size().and_then(|size| {
-                    Some(tensor_util::Size::new(
-                        u32::try_from(size.w).ok()?,
-                        u32::try_from(size.h).ok()?,
-                    ))
-                });
-                let local_offset = state
-                    .view()
-                    .map(|view| (view.offset.x, view.offset.y))
-                    .unwrap_or_default();
-                SurfaceCommit {
-                    buffer,
-                    logical_size,
-                    local_offset,
-                    commit: state.current_commit(),
-                    buffer_scale: u32::try_from(state.buffer_scale()).unwrap_or(1),
-                    transform: surface_transform(state.buffer_transform()),
-                }
-            })
-        else {
-            return false;
-        };
-        let update = self
-            .surface_buffers
-            .update_surface(&surface.id(), &snapshot);
-        self.release_client_buffers(update.released_buffers);
-        if !update.changed {
-            return false;
-        }
-        let content = update.content.into_iter().collect();
-        match self.world.set_view_content(view_id, content) {
-            Ok(changed) => changed,
-            Err(error) => {
-                warn!(%error, view_id = view_id.get(), "failed to update view surface content");
-                false
-            }
-        }
+    #[cfg(all(test, feature = "tty"))]
+    pub(crate) fn surface_tree_member_count(&self, root: &WlSurface) -> usize {
+        self.surface_buffers.view_member_count(&root.id())
     }
 
     #[cfg(feature = "tty")]
@@ -471,20 +448,6 @@ impl RuntimeState {
             .checked_add(1)
             .expect("compositor exhausted the stable view ID space");
         view_id
-    }
-}
-
-#[cfg(feature = "tty")]
-fn surface_transform(transform: smithay::utils::Transform) -> SurfaceTransform {
-    match transform {
-        smithay::utils::Transform::Normal => SurfaceTransform::Normal,
-        smithay::utils::Transform::_90 => SurfaceTransform::Rotate90,
-        smithay::utils::Transform::_180 => SurfaceTransform::Rotate180,
-        smithay::utils::Transform::_270 => SurfaceTransform::Rotate270,
-        smithay::utils::Transform::Flipped => SurfaceTransform::Flipped,
-        smithay::utils::Transform::Flipped90 => SurfaceTransform::Flipped90,
-        smithay::utils::Transform::Flipped180 => SurfaceTransform::Flipped180,
-        smithay::utils::Transform::Flipped270 => SurfaceTransform::Flipped270,
     }
 }
 

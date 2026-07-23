@@ -109,13 +109,20 @@ reservation-fence interop remains a separate gate.
 
 The protocol-to-scene handoff has an explicit value-only boundary. A
 compositor-assigned `SurfaceBufferId` is registered after a successful
-linux-dmabuf import; current surface content, revision, scale, transform, and
-surface-local destination geometry are copied into ECS as `ViewContent`. The
-scene flattens those values into a content table and builds a per-frame draw
-plan that deduplicates image descriptor slots while preserving surface draw
-order. Destroyed buffers remain renderer-live while any surface still refers to
-them, and imported images are marked with the submission timeline used by that
-plan.
+linux-dmabuf import. Smithay's toplevel, synchronized/asynchronous subsurface,
+and popup trees are traversed in draw order; content revision, scale, transform,
+surface-local destination geometry, and `View`/`Popup` clip policy are copied
+into ECS as `ViewContent`. No `WlSurface`, popup handle, or renderer state enters
+ECS. Synchronized child commits and their explicit sync points remain pending
+until the non-synchronized ancestor applies the complete transaction.
+
+The scene builds a per-frame draw plan that deduplicates image descriptor slots
+while preserving the flattened surface order. View content is intersected with
+the layout-visible tile and output; popup content is intersected only with the
+output. Scene visual bounds include popup content so popup motion or destruction
+damages both the old and new regions outside the tile. Destroyed buffers remain
+renderer-live while any surface still refers to them, and imported images are
+marked with the submission timeline used by that plan.
 
 ## Frame Boundary Status
 
@@ -146,8 +153,8 @@ The current command stream is deliberately limited to:
 4. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
-complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, subsurface/popup trees,
-presentation feedback, and damage-driven partial rendering remain separate gates. Debug diagnostics
+complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, presentation feedback, and
+damage-driven partial rendering remain separate gates. Debug diagnostics
 report draw count, unique client-image descriptor count, surface-content count, and damage-region
 count for each prepared frame.
 
@@ -176,6 +183,12 @@ samples that dma-buf. The acquire point is exported to a sync file, imported int
 Vulkan semaphore payload, and waited at the fragment-shader stage. A failed `queue_submit2` leaves
 that imported semaphore pending for retry and does not advance imported-image state or the client
 release point.
+
+Smithay applies synchronized subsurfaces before invoking their non-synchronized ancestor commit
+callback. Tensor records those child sync points without changing ECS or renderer attachment state;
+the ancestor callback rebuilds the complete tree first and then reconciles every deferred point
+against the newly active `SurfaceBufferId`. This preserves transaction atomicity and prevents a
+release point from being associated with the child's previous buffer.
 
 After a successful submission, the acquire semaphore is retired by the internal Vulkan timeline.
 The exported binary completion sync file is retained per explicitly synchronized surface while a
