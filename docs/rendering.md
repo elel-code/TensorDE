@@ -13,6 +13,8 @@ An eligible physical device must provide all of the following before ranking:
   or descriptor-set fallback is permitted).
 - A usable resource heap: non-zero heap alignment, maximum size beyond the implementation's
   reserved range, and non-zero image descriptor size/alignment.
+- A sampler heap range large enough for `minSamplerHeapReservedRangeWithEmbedded`, plus at least one
+  embedded sampler and enough push data for Tensor's 64-byte draw record.
 - `VK_EXT_physical_device_drm` with a complete primary/render node pair.
 - `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`.
 - `VK_EXT_image_drm_format_modifier`.
@@ -94,9 +96,14 @@ planes, implicit modifiers, unsupported formats, and Vulkan failures call `faile
 image cache is keyed by `SurfaceBufferId` and retires resources after the renderer timeline, so a
 duplicated fd or recycled Wayland object ID cannot alias a live scene image accidentally.
 
-Client images are now accepted by the protocol boundary. Scene sampling and draw-pipeline wiring
-are the next renderer step; until that is complete, the native output path remains the only path
-that can put pixels on a KMS plane.
+Client images are now accepted by the protocol boundary and have a first real sampling path. A
+client image is acquired from the foreign queue family, selected through a descriptor-heap push
+index, sampled with an embedded linear sampler, and composited by a dynamic-rendering pipeline with
+premultiplied-alpha blending. The first acquire uses `UNDEFINED + FOREIGN` to preserve the
+producer's explicit-modifier contents; only a successful queue submission advances the cache to the
+subsequent `GENERAL + FOREIGN` path. Resource and sampler heap ranges share one device allocation but
+are disjoint, including the implementation-reserved sampler range required by embedded samplers.
+The path is intentionally limited to one-plane RGB today.
 
 The protocol-to-scene handoff has an explicit value-only boundary. A
 compositor-assigned `SurfaceBufferId` is registered after a successful
@@ -113,14 +120,14 @@ plan.
 `render/frame.rs` is the renderer-to-scene boundary. It owns a bounded resource descriptor heap
 allocator, retains the previous `SceneSnapshot` per output, computes damage, assigns one of three
 native output image slots, and keeps descriptor ranges live until the Vulkan timeline value retires.
-`render/vulkan/heap.rs` creates the actual device-addressable resource-heap buffer with
+`render/vulkan/heap.rs` creates the actual device-addressable resource and sampler heap ranges with
 `VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT`, a host-visible staging buffer, and the descriptor write
 path. `render/vulkan/frame.rs` writes the native output and deduplicated client-image descriptors
-into staging, copies them into the device-local heap, binds it with
-`vkCmdBindResourceHeapEXT`, and submits through three resettable command buffers plus one timeline
-semaphore. The frame allocation also reserves the future draw-record range; those bytes are
-currently zeroed until the sampled-image pipeline consumes them. A lost device stops future frame
-scheduling instead of recycling GPU-visible ranges.
+into staging, copies them into the device-local resource range, binds both heaps, and submits through
+three resettable command buffers plus one timeline semaphore. The sampled-image pipeline pushes a
+64-byte draw record whose first word is the descriptor index relative to the resource heap's user
+range, while the pipeline mapping supplies the implementation-reserved byte offset. A lost device
+stops future frame scheduling instead of recycling GPU-visible ranges.
 
 The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the
 reported image descriptor alignment, and adds the implementation's reserved range before capping
@@ -130,15 +137,17 @@ simulation.
 
 The current command stream is deliberately limited to:
 
-1. upload native/client image descriptors and bind the resource heap;
-2. acquire and clear the selected native output image;
-3. release that image to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
+1. upload native/client image descriptors and bind the resource and sampler heaps;
+2. acquire the selected output and imported client images from `VK_QUEUE_FAMILY_FOREIGN_EXT`;
+3. run dynamic rendering and draw sampled client rectangles with transform, opacity, clip, and
+   corner-radius data;
+4. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
 
-The draw plan is ready for a sampled-image pipeline, but scene draw pipelines still need to sample
-imported client images and emit real scene pixels; the clear is an intentional diagnostic frame,
-not a claim that the compositor already renders application content. Debug diagnostics report draw
-count, unique client-image descriptor count, surface-content count, and damage-region count for
-each prepared frame.
+This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
+complete Wayland renderer: client producer fences from explicit synchronization, multi-plane YUV,
+subsurface/popup trees, presentation feedback, and damage-driven partial rendering remain separate
+gates. Debug diagnostics report draw count, unique client-image descriptor count, surface-content
+count, and damage-region count for each prepared frame.
 
 ## Synchronization
 
@@ -149,7 +158,10 @@ as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bound
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
 
-Client acquire fences are imported as temporary binary semaphore payloads. Exporting or importing
-a sync file is an explicit API boundary, not a reason to wait on the CPU. A device without both
-importable and exportable `SYNC_FD` support fails selection; Tensor does not silently fall back to
-blocking queue-idle synchronization.
+Client producer fences from `zwp_linux_explicit_synchronization_v1` are not wired into the frame
+submit path yet; the compositor therefore does not advertise that protocol as complete and must not
+claim that client acquire synchronization is solved. Once implemented, those fences will be
+imported as temporary binary semaphore payloads rather than waited on by the CPU. Exporting or
+importing a sync file is an explicit API boundary, not a reason to wait on the CPU. A device without
+both importable and exportable `SYNC_FD` support fails selection; Tensor does not silently fall back
+to blocking queue-idle synchronization.

@@ -55,6 +55,9 @@ selection result, never a silently skipped compatibility path.
   and invalid configured node paths without requiring a Vulkan driver.
 - Native interop tests reject each missing external-memory, dma-buf, modifier, foreign
   queue-family, external-semaphore, and bidirectional `SYNC_FD` capability independently.
+- Descriptor-heap renderer tests cover resource/sampler heap limits, embedded-sampler reservation,
+  user-range-relative push-index arithmetic, first-use `UNDEFINED + FOREIGN` acquisition, and the
+  retained `GENERAL + FOREIGN` path after a successful submission.
 - Native format tests keep Vulkan import and output-export roles distinct and reject unsupported
   fourccs, mismatched modifiers, non-exportable images, non-scanout GBM paths, and mismatched plane
   topology. Preference ordering must be deterministic regardless of probe order.

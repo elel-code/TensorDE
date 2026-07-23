@@ -35,6 +35,7 @@ pub(crate) struct NativeOutputBuffer {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct NativeOutputImageInfo {
     pub(super) image: vk::Image,
+    pub(super) view: vk::ImageView,
     pub(super) view_info: vk::ImageViewCreateInfo,
     pub(super) foreign_owned: bool,
 }
@@ -103,6 +104,7 @@ impl NativeTargetManager {
             .and_then(|target| target.images.get(usize::from(slot)))
             .map(|image| NativeOutputImageInfo {
                 image: image.image,
+                view: image.view,
                 view_info: image.view_info,
                 foreign_owned: image.foreign_owned,
             })

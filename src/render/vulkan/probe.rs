@@ -275,12 +275,21 @@ fn descriptor_heap_properties(
     let mut properties = vk::PhysicalDeviceProperties2::builder().push_next(&mut heap);
     unsafe { instance.get_physical_device_properties2(device, &mut properties) };
     DescriptorHeapProperties {
+        sampler_heap_alignment: heap.sampler_heap_alignment,
         resource_heap_alignment: heap.resource_heap_alignment,
+        max_sampler_heap_size: heap.max_sampler_heap_size,
         max_resource_heap_size: heap.max_resource_heap_size,
+        min_sampler_heap_reserved_range: heap.min_sampler_heap_reserved_range,
+        min_sampler_heap_reserved_range_with_embedded: heap
+            .min_sampler_heap_reserved_range_with_embedded,
         min_resource_heap_reserved_range: heap.min_resource_heap_reserved_range,
+        sampler_descriptor_size: heap.sampler_descriptor_size,
         buffer_descriptor_alignment: heap.buffer_descriptor_alignment,
         image_descriptor_size: heap.image_descriptor_size,
+        sampler_descriptor_alignment: heap.sampler_descriptor_alignment,
         image_descriptor_alignment: heap.image_descriptor_alignment,
+        max_push_data_size: heap.max_push_data_size,
+        max_descriptor_heap_embedded_samplers: heap.max_descriptor_heap_embedded_samplers,
     }
 }
 

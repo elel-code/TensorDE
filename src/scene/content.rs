@@ -39,6 +39,69 @@ pub enum SurfaceTransform {
     Flipped270,
 }
 
+/// Affine mapping from surface-local unit coordinates to normalized buffer
+/// coordinates.  Keeping this as integer coefficients makes the scene
+/// contract value-only and lossless; the Vulkan boundary converts it to
+/// floating-point push data immediately before recording a draw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceUvTransform {
+    pub origin: (i8, i8),
+    pub axis_x: (i8, i8),
+    pub axis_y: (i8, i8),
+}
+
+impl SurfaceTransform {
+    /// Return the full-buffer UV mapping prescribed by the Wayland transform.
+    ///
+    /// The coefficients intentionally operate on normalized coordinates.  A
+    /// future viewport/source-rectangle contract can compose another affine
+    /// transform here without changing the renderer's draw-record shape.
+    pub const fn uv_transform(self) -> SurfaceUvTransform {
+        match self {
+            Self::Normal => SurfaceUvTransform {
+                origin: (0, 0),
+                axis_x: (1, 0),
+                axis_y: (0, 1),
+            },
+            Self::Rotate90 => SurfaceUvTransform {
+                origin: (1, 0),
+                axis_x: (0, 1),
+                axis_y: (-1, 0),
+            },
+            Self::Rotate180 => SurfaceUvTransform {
+                origin: (1, 1),
+                axis_x: (-1, 0),
+                axis_y: (0, -1),
+            },
+            Self::Rotate270 => SurfaceUvTransform {
+                origin: (0, 1),
+                axis_x: (0, -1),
+                axis_y: (1, 0),
+            },
+            Self::Flipped => SurfaceUvTransform {
+                origin: (1, 0),
+                axis_x: (-1, 0),
+                axis_y: (0, 1),
+            },
+            Self::Flipped90 => SurfaceUvTransform {
+                origin: (0, 0),
+                axis_x: (0, 1),
+                axis_y: (1, 0),
+            },
+            Self::Flipped180 => SurfaceUvTransform {
+                origin: (0, 1),
+                axis_x: (1, 0),
+                axis_y: (0, -1),
+            },
+            Self::Flipped270 => SurfaceUvTransform {
+                origin: (1, 1),
+                axis_x: (0, -1),
+                axis_y: (-1, 0),
+            },
+        }
+    }
+}
+
 /// Renderable state extracted from a live Wayland surface.
 ///
 /// Vulkan and Wayland handles stay in their owners.  A scene snapshot carries
@@ -92,6 +155,27 @@ impl ContentSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uv_transforms_match_smithay_normalized_point_semantics() {
+        let transforms = [
+            (SurfaceTransform::Normal, (0, 0), (1, 0), (0, 1)),
+            (SurfaceTransform::Rotate90, (1, 0), (0, 1), (-1, 0)),
+            (SurfaceTransform::Rotate180, (1, 1), (-1, 0), (0, -1)),
+            (SurfaceTransform::Rotate270, (0, 1), (0, -1), (1, 0)),
+            (SurfaceTransform::Flipped, (1, 0), (-1, 0), (0, 1)),
+            (SurfaceTransform::Flipped90, (0, 0), (0, 1), (1, 0)),
+            (SurfaceTransform::Flipped180, (0, 1), (1, 0), (0, -1)),
+            (SurfaceTransform::Flipped270, (1, 1), (0, -1), (-1, 0)),
+        ];
+
+        for (transform, origin, axis_x, axis_y) in transforms {
+            let uv = transform.uv_transform();
+            assert_eq!(uv.origin, origin);
+            assert_eq!(uv.axis_x, axis_x);
+            assert_eq!(uv.axis_y, axis_y);
+        }
+    }
 
     #[test]
     fn revisions_wrap_without_aliasing_protocol_counters() {

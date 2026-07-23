@@ -27,6 +27,8 @@ mod frame;
 mod heap;
 #[cfg(feature = "tty")]
 mod import;
+#[cfg(feature = "tty")]
+mod pipeline;
 mod probe;
 #[cfg(feature = "tty")]
 mod target;
@@ -109,12 +111,19 @@ impl VulkanRenderer {
                 api = %device.candidate.api_version,
                 device_type = ?device.candidate.device_type,
                 descriptor_heap = device.candidate.descriptor_heap_supported,
+                sampler_heap_alignment = device.candidate.descriptor_heap.sampler_heap_alignment,
                 descriptor_heap_alignment = device.candidate.descriptor_heap.resource_heap_alignment,
+                sampler_heap_max = device.candidate.descriptor_heap.max_sampler_heap_size,
                 descriptor_heap_max = device.candidate.descriptor_heap.max_resource_heap_size,
+                sampler_heap_reserved = device.candidate.descriptor_heap.min_sampler_heap_reserved_range_with_embedded,
                 descriptor_heap_reserved = device.candidate.descriptor_heap.min_resource_heap_reserved_range,
+                sampler_descriptor_size = device.candidate.descriptor_heap.sampler_descriptor_size,
+                sampler_descriptor_alignment = device.candidate.descriptor_heap.sampler_descriptor_alignment,
                 buffer_descriptor_alignment = device.candidate.descriptor_heap.buffer_descriptor_alignment,
                 image_descriptor_size = device.candidate.descriptor_heap.image_descriptor_size,
                 image_descriptor_alignment = device.candidate.descriptor_heap.image_descriptor_alignment,
+                max_push_data_size = device.candidate.descriptor_heap.max_push_data_size,
+                max_embedded_samplers = device.candidate.descriptor_heap.max_descriptor_heap_embedded_samplers,
                 buffer_device_address = device.candidate.buffer_device_address_supported,
                 timeline_semaphore = device.candidate.timeline_semaphore_supported,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
@@ -127,6 +136,17 @@ impl VulkanRenderer {
             .select(probed.iter().map(|device| &device.candidate))?;
         let selected = &probed[selected.ordinal];
         #[cfg(feature = "tty")]
+        let frame_heap_alignment = selected
+            .candidate
+            .descriptor_heap
+            .resource_heap_alignment
+            .max(
+                selected
+                    .candidate
+                    .descriptor_heap
+                    .image_descriptor_alignment,
+            );
+        #[cfg(feature = "tty")]
         let frames = FrameScheduler::new(
             selected
                 .candidate
@@ -134,10 +154,7 @@ impl VulkanRenderer {
                 .min_resource_heap_reserved_range
                 .saturating_add(DESCRIPTOR_HEAP_BYTES)
                 .min(selected.candidate.descriptor_heap.max_resource_heap_size),
-            selected
-                .candidate
-                .descriptor_heap
-                .image_descriptor_alignment,
+            frame_heap_alignment,
             selected
                 .candidate
                 .descriptor_heap
@@ -147,6 +164,9 @@ impl VulkanRenderer {
         .map_err(|error| RendererError::Frame(error.to_string()))?;
         #[cfg(feature = "tty")]
         let frame_heap_layout = frames.layout();
+        #[cfg(feature = "tty")]
+        let sampler_heap_layout = frame::sampler_heap_layout(selected.candidate.descriptor_heap)
+            .map_err(|error| RendererError::Frame(error.to_string()))?;
         let graphics_queue_family = selected
             .candidate
             .graphics_queue_family
@@ -168,6 +188,7 @@ impl VulkanRenderer {
             selected.handle,
             graphics_queue_family,
             frame_heap_layout,
+            sampler_heap_layout,
         ) {
             Ok(executor) => executor,
             Err(source) => {
@@ -204,12 +225,19 @@ impl VulkanRenderer {
             primary_node = %selected_info.primary_node,
             render_node = %selected_info.render_node,
             descriptor_heap = true,
+            sampler_heap_alignment = selected_info.descriptor_heap.sampler_heap_alignment,
             descriptor_heap_alignment = selected_info.descriptor_heap.resource_heap_alignment,
+            sampler_heap_max = selected_info.descriptor_heap.max_sampler_heap_size,
             descriptor_heap_max = selected_info.descriptor_heap.max_resource_heap_size,
+            sampler_heap_reserved = selected_info.descriptor_heap.min_sampler_heap_reserved_range_with_embedded,
             descriptor_heap_reserved = selected_info.descriptor_heap.min_resource_heap_reserved_range,
+            sampler_descriptor_size = selected_info.descriptor_heap.sampler_descriptor_size,
+            sampler_descriptor_alignment = selected_info.descriptor_heap.sampler_descriptor_alignment,
             buffer_descriptor_alignment = selected_info.descriptor_heap.buffer_descriptor_alignment,
             image_descriptor_size = selected_info.descriptor_heap.image_descriptor_size,
             image_descriptor_alignment = selected_info.descriptor_heap.image_descriptor_alignment,
+            max_push_data_size = selected_info.descriptor_heap.max_push_data_size,
+            max_embedded_samplers = selected_info.descriptor_heap.max_descriptor_heap_embedded_samplers,
             buffer_device_address = true,
             dma_buf = selected_info.interop.dma_buf_memory,
             drm_format_modifier = selected_info.interop.drm_format_modifier,
@@ -389,11 +417,11 @@ impl VulkanRenderer {
             damage_regions = frame.damage.regions().len(),
             "prepared Vulkan scene frame"
         );
-        let client_descriptors = match client_ids
+        let client_images = match client_ids
             .iter()
             .map(|id| {
                 self.client_images
-                    .descriptor(*id)
+                    .image_info(*id)
                     .ok_or(RendererError::MissingClientImage(*id))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -419,37 +447,45 @@ impl VulkanRenderer {
             self._owner._graphics_queue,
             &frame,
             &image,
-            &client_descriptors,
+            &client_images,
             completed,
         ) {
             Ok(fd) => fd,
             Err(source) => {
                 if matches!(
-                    source,
+                    &source,
                     frame::VulkanFrameError::Vulkan(vk::ErrorCode::DEVICE_LOST)
                 ) {
                     self.frames.mark_device_lost();
                 }
                 if source.was_submitted() {
                     self.client_images
-                        .mark_used(client_ids.iter().copied(), frame.timeline_value);
-                    let _ = self.frames.commit(&frame);
+                        .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
                     self.native_targets.mark_submitted(
                         output,
                         frame.output_slot,
                         frame.timeline_value,
                     );
+                    if let Err(error) = self.frames.commit(&frame) {
+                        self.frames.mark_device_lost();
+                        return Err(RendererError::SubmitFrame(format!(
+                            "{source:?}; submitted frame state could not commit: {error}"
+                        )));
+                    }
                 } else {
                     let _ = self.frames.abort(&frame);
                 }
                 return Err(RendererError::SubmitFrame(format!("{source:?}")));
             }
         };
-        self.frames
-            .commit(&frame)
-            .map_err(|error| RendererError::Frame(error.to_string()))?;
         self.client_images
-            .mark_used(client_ids.iter().copied(), frame.timeline_value);
+            .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
+        self.native_targets
+            .mark_submitted(output, frame.output_slot, frame.timeline_value);
+        if let Err(error) = self.frames.commit(&frame) {
+            self.frames.mark_device_lost();
+            return Err(RendererError::Frame(error.to_string()));
+        }
         self.pending_sync_fds
             .insert((output, frame.timeline_value), sync_fd);
         while self
@@ -469,8 +505,6 @@ impl VulkanRenderer {
             };
             self.pending_sync_fds.remove(&oldest);
         }
-        self.native_targets
-            .mark_submitted(output, frame.output_slot, frame.timeline_value);
         Ok(frame)
     }
 }

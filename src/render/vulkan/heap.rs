@@ -9,7 +9,56 @@ use vulkanalia::vk::{
 };
 use vulkanalia::{Device, Instance, vk};
 
+use crate::render::DescriptorHeapProperties;
 use crate::render::frame::{DescriptorHeapLayout, HeapAllocation};
+
+/// The sampler heap is currently reserved for embedded samplers.  It shares
+/// the backing descriptor-heap allocation with the resource heap, but occupies
+/// a disjoint, sampler-aligned address range so the implementation-reserved
+/// regions can never overlap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SamplerHeapLayout {
+    pub(super) capacity: u64,
+    pub(super) alignment: u64,
+    pub(super) reserved_range: u64,
+}
+
+pub(super) fn sampler_heap_layout(
+    properties: DescriptorHeapProperties,
+) -> Result<SamplerHeapLayout, DescriptorHeapError> {
+    if properties.sampler_heap_alignment == 0
+        || !properties.sampler_heap_alignment.is_power_of_two()
+    {
+        return Err(DescriptorHeapError::InvalidSamplerLayout(
+            SamplerHeapLayout {
+                capacity: 0,
+                alignment: properties.sampler_heap_alignment,
+                reserved_range: properties
+                    .min_sampler_heap_reserved_range
+                    .max(properties.min_sampler_heap_reserved_range_with_embedded),
+            },
+        ));
+    }
+    let reserved_range = properties
+        .min_sampler_heap_reserved_range
+        .max(properties.min_sampler_heap_reserved_range_with_embedded);
+    let capacity = align_up(reserved_range.max(1), properties.sampler_heap_alignment)
+        .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+    if capacity > properties.max_sampler_heap_size {
+        return Err(DescriptorHeapError::InvalidSamplerLayout(
+            SamplerHeapLayout {
+                capacity,
+                alignment: properties.sampler_heap_alignment,
+                reserved_range,
+            },
+        ));
+    }
+    Ok(SamplerHeapLayout {
+        capacity,
+        alignment: properties.sampler_heap_alignment,
+        reserved_range,
+    })
+}
 
 /// The Vulkan resource heap is a device-address range backed by a buffer with
 /// `VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT`. Descriptor bytes are generated
@@ -21,6 +70,9 @@ pub(super) struct DescriptorHeapResource {
     heap_address: vk::DeviceAddress,
     heap_size: u64,
     reserved_range: u64,
+    sampler_heap_address: vk::DeviceAddress,
+    sampler_heap_size: u64,
+    sampler_reserved_range: u64,
     descriptor_size: u64,
     descriptor_stride: u64,
     staging_buffer: vk::Buffer,
@@ -35,33 +87,45 @@ impl DescriptorHeapResource {
         device: &Device,
         physical_device: vk::PhysicalDevice,
         layout: DescriptorHeapLayout,
+        sampler_layout: SamplerHeapLayout,
     ) -> Result<Self, DescriptorHeapError> {
         validate_layout(layout)?;
+        validate_sampler_layout(sampler_layout)?;
         // Resolve every arithmetic failure before creating a Vulkan object.  A
         // fallible expression in the final struct literal would otherwise
         // return after the heap and staging resources had already been
         // allocated, leaking them on an extreme (but testable) layout.
         let descriptor_stride = align_up(layout.descriptor_size, layout.alignment)
             .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        let sampler_offset = align_up(layout.capacity, sampler_layout.alignment)
+            .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        let backing_size = sampler_offset
+            .checked_add(sampler_layout.capacity)
+            .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        if backing_size > vk::WHOLE_SIZE - 1 {
+            return Err(DescriptorHeapError::DescriptorRangeOverflow);
+        }
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         let heap_buffer = create_buffer(
             device,
-            layout.capacity,
+            backing_size,
             vk::BufferUsageFlags::DESCRIPTOR_HEAP_EXT
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_DST,
         )
         .map_err(DescriptorHeapError::CreateHeapBuffer)?;
         let heap_requirements = unsafe { device.get_buffer_memory_requirements(heap_buffer) };
-        let heap_memory_type = select_memory_type(
+        let Some(heap_memory_type) = select_memory_type(
             &memory_properties,
             heap_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::empty(),
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .ok_or(DescriptorHeapError::NoHeapMemoryType)?;
+        ) else {
+            unsafe { device.destroy_buffer(heap_buffer, None) };
+            return Err(DescriptorHeapError::NoHeapMemoryType);
+        };
         let mut address_flags = vk::MemoryAllocateFlagsInfo::builder()
             .flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS)
             .build();
@@ -93,6 +157,23 @@ impl DescriptorHeapResource {
             return Err(DescriptorHeapError::InvalidHeapAddress {
                 address: heap_address,
                 alignment: layout.alignment,
+            });
+        }
+        let Some(sampler_heap_address) = heap_address.checked_add(sampler_offset) else {
+            unsafe {
+                device.destroy_buffer(heap_buffer, None);
+                device.free_memory(heap_memory, None);
+            }
+            return Err(DescriptorHeapError::DescriptorRangeOverflow);
+        };
+        if sampler_heap_address % sampler_layout.alignment != 0 {
+            unsafe {
+                device.destroy_buffer(heap_buffer, None);
+                device.free_memory(heap_memory, None);
+            }
+            return Err(DescriptorHeapError::InvalidSamplerHeapAddress {
+                address: sampler_heap_address,
+                alignment: sampler_layout.alignment,
             });
         }
 
@@ -168,6 +249,9 @@ impl DescriptorHeapResource {
             heap_address,
             heap_size: layout.capacity,
             reserved_range: layout.reserved_range,
+            sampler_heap_address,
+            sampler_heap_size: sampler_layout.capacity,
+            sampler_reserved_range: sampler_layout.reserved_range,
             descriptor_size: layout.descriptor_size,
             descriptor_stride,
             staging_buffer,
@@ -271,12 +355,31 @@ impl DescriptorHeapResource {
         Ok(())
     }
 
+    pub(super) const fn descriptor_stride(&self) -> u64 {
+        self.descriptor_stride
+    }
+
+    pub(super) const fn resource_heap_base(&self) -> u64 {
+        self.reserved_range
+    }
+
     pub(super) unsafe fn record_copy_and_bind(
         &self,
         device: &Device,
         command_buffer: vk::CommandBuffer,
         allocation: HeapAllocation,
     ) {
+        let sampler_heap_range = vk::DeviceAddressRangeEXT::builder()
+            .address(self.sampler_heap_address)
+            .size(self.sampler_heap_size)
+            .build();
+        let sampler_bind_info = vk::BindHeapInfoEXT::builder()
+            .heap_range(sampler_heap_range)
+            .reserved_range_offset(0)
+            .reserved_range_size(self.sampler_reserved_range)
+            .build();
+        unsafe { device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind_info) };
+
         let heap_range = vk::DeviceAddressRangeEXT::builder()
             .address(self.heap_address)
             .size(self.heap_size)
@@ -343,9 +446,21 @@ fn validate_layout(layout: DescriptorHeapLayout) -> Result<(), DescriptorHeapErr
         || layout.capacity > vk::WHOLE_SIZE - 1
         || !layout.alignment.is_power_of_two()
         || layout.reserved_range >= layout.capacity
+        || !layout.reserved_range.is_multiple_of(layout.alignment)
         || layout.descriptor_size == 0
     {
         return Err(DescriptorHeapError::InvalidLayout(layout));
+    }
+    Ok(())
+}
+
+fn validate_sampler_layout(layout: SamplerHeapLayout) -> Result<(), DescriptorHeapError> {
+    if layout.capacity == 0
+        || layout.capacity > vk::WHOLE_SIZE - 1
+        || !layout.alignment.is_power_of_two()
+        || layout.reserved_range > layout.capacity
+    {
+        return Err(DescriptorHeapError::InvalidSamplerLayout(layout));
     }
     Ok(())
 }
@@ -431,6 +546,8 @@ fn select_host_memory_type(
 pub(super) enum DescriptorHeapError {
     #[error("descriptor heap layout is invalid: {0:?}")]
     InvalidLayout(DescriptorHeapLayout),
+    #[error("sampler heap layout is invalid: {0:?}")]
+    InvalidSamplerLayout(SamplerHeapLayout),
     #[error("failed to create the descriptor heap buffer: {0:?}")]
     CreateHeapBuffer(vk::ErrorCode),
     #[error("no compatible memory type exists for the descriptor heap")]
@@ -443,6 +560,8 @@ pub(super) enum DescriptorHeapError {
         "descriptor heap buffer returned an invalid device address {address:#x} (alignment {alignment})"
     )]
     InvalidHeapAddress { address: u64, alignment: u64 },
+    #[error("sampler heap returned an invalid device address {address:#x} (alignment {alignment})")]
+    InvalidSamplerHeapAddress { address: u64, alignment: u64 },
     #[error("failed to create the descriptor staging buffer: {0:?}")]
     CreateStagingBuffer(vk::ErrorCode),
     #[error("no host-visible memory type exists for descriptor staging")]
@@ -469,4 +588,53 @@ pub(super) enum DescriptorHeapError {
     NoImageDescriptors,
     #[error("failed to flush descriptor staging memory: {0:?}")]
     FlushStaging(vk::ErrorCode),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn properties() -> DescriptorHeapProperties {
+        DescriptorHeapProperties {
+            sampler_heap_alignment: 64,
+            resource_heap_alignment: 32,
+            max_sampler_heap_size: 4096,
+            max_resource_heap_size: 4096,
+            min_sampler_heap_reserved_range: 32,
+            min_sampler_heap_reserved_range_with_embedded: 96,
+            min_resource_heap_reserved_range: 0,
+            sampler_descriptor_size: 32,
+            buffer_descriptor_alignment: 32,
+            image_descriptor_size: 32,
+            sampler_descriptor_alignment: 32,
+            image_descriptor_alignment: 32,
+            max_push_data_size: 128,
+            max_descriptor_heap_embedded_samplers: 1,
+        }
+    }
+
+    #[test]
+    fn embedded_sampler_heap_uses_the_larger_reserved_range() {
+        let layout = sampler_heap_layout(properties()).unwrap();
+        assert_eq!(layout.reserved_range, 96);
+        assert_eq!(layout.capacity, 128);
+        assert_eq!(layout.alignment, 64);
+    }
+
+    #[test]
+    fn sampler_heap_rejects_zero_alignment_and_insufficient_capacity() {
+        let mut invalid = properties();
+        invalid.sampler_heap_alignment = 0;
+        assert!(matches!(
+            sampler_heap_layout(invalid),
+            Err(DescriptorHeapError::InvalidSamplerLayout(_))
+        ));
+
+        let mut too_small = properties();
+        too_small.max_sampler_heap_size = 64;
+        assert!(matches!(
+            sampler_heap_layout(too_small),
+            Err(DescriptorHeapError::InvalidSamplerLayout(_))
+        ));
+    }
 }

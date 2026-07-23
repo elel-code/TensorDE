@@ -47,6 +47,8 @@ pub(crate) struct FrameSubmission {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DescriptorHeapLayout {
     pub(crate) capacity: u64,
+    /// Common power-of-two alignment satisfying both resource-heap binding
+    /// and sampled-image descriptor addressing.
     pub(crate) alignment: u64,
     pub(crate) reserved_range: u64,
     pub(crate) descriptor_size: u64,
@@ -182,8 +184,7 @@ impl FrameScheduler {
         let client_image_descriptors = u32::try_from(draw_plan.images().len())
             .map_err(|_| FrameError::DescriptorSizeOverflow)?;
         let descriptor_count = 1u64
-            .checked_add(u64::try_from(draw_plan.draws().len()).unwrap_or(u64::MAX))
-            .and_then(|count| count.checked_add(u64::from(client_image_descriptors)))
+            .checked_add(u64::from(client_image_descriptors))
             .ok_or(FrameError::DescriptorSizeOverflow)?;
         let descriptor_bytes = self
             .descriptor_stride
@@ -526,7 +527,7 @@ mod tests {
         scheduler.register_output(target(OUTPUT)).unwrap();
         let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert_eq!(frame.descriptors.offset, 128);
-        assert_eq!(frame.descriptors.size, 192);
+        assert_eq!(frame.descriptors.size, 128);
     }
 
     #[test]

@@ -140,25 +140,62 @@ pub struct DeviceCandidate {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DescriptorHeapProperties {
+    pub sampler_heap_alignment: u64,
     pub resource_heap_alignment: u64,
+    pub max_sampler_heap_size: u64,
     pub max_resource_heap_size: u64,
+    pub min_sampler_heap_reserved_range: u64,
+    pub min_sampler_heap_reserved_range_with_embedded: u64,
     pub min_resource_heap_reserved_range: u64,
+    pub sampler_descriptor_size: u64,
     pub buffer_descriptor_alignment: u64,
     pub image_descriptor_size: u64,
+    pub sampler_descriptor_alignment: u64,
     pub image_descriptor_alignment: u64,
+    pub max_push_data_size: u64,
+    pub max_descriptor_heap_embedded_samplers: u32,
 }
 
 impl DescriptorHeapProperties {
+    pub const REQUIRED_DRAW_PUSH_DATA_SIZE: u64 = 64;
+
     pub const fn is_usable(self) -> bool {
-        self.resource_heap_alignment.is_power_of_two()
+        let sampler_reserved = if self.min_sampler_heap_reserved_range
+            > self.min_sampler_heap_reserved_range_with_embedded
+        {
+            self.min_sampler_heap_reserved_range
+        } else {
+            self.min_sampler_heap_reserved_range_with_embedded
+        };
+        self.sampler_heap_alignment.is_power_of_two()
+            && self.resource_heap_alignment.is_power_of_two()
+            && self.sampler_descriptor_alignment.is_power_of_two()
             && self.buffer_descriptor_alignment.is_power_of_two()
             && self.image_descriptor_alignment.is_power_of_two()
+            && self.sampler_descriptor_size > 0
             && self.max_resource_heap_size
                 > self
                     .min_resource_heap_reserved_range
                     .saturating_add(self.image_descriptor_alignment.saturating_mul(2))
+            && heap_range_fits(
+                self.max_sampler_heap_size,
+                sampler_reserved,
+                self.sampler_heap_alignment,
+            )
             && self.image_descriptor_size > 0
+            && self.max_push_data_size >= Self::REQUIRED_DRAW_PUSH_DATA_SIZE
+            && self.max_descriptor_heap_embedded_samplers > 0
     }
+}
+
+const fn heap_range_fits(maximum: u64, reserved: u64, alignment: u64) -> bool {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return false;
+    }
+    let requested = if reserved == 0 { 1 } else { reserved };
+    let remainder = requested % alignment;
+    let padding = (alignment - remainder) % alignment;
+    requested <= maximum && padding <= maximum - requested
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -432,12 +469,20 @@ mod tests {
             api_version: Version::V1_4_0,
             descriptor_heap_supported: heap,
             descriptor_heap: DescriptorHeapProperties {
+                sampler_heap_alignment: 32,
                 resource_heap_alignment: 32,
+                max_sampler_heap_size: 4096,
                 max_resource_heap_size: 16 * 1024 * 1024,
+                min_sampler_heap_reserved_range: 0,
+                min_sampler_heap_reserved_range_with_embedded: 32,
                 min_resource_heap_reserved_range: 0,
+                sampler_descriptor_size: 32,
                 buffer_descriptor_alignment: 32,
                 image_descriptor_size: 32,
+                sampler_descriptor_alignment: 32,
                 image_descriptor_alignment: 32,
+                max_push_data_size: 128,
+                max_descriptor_heap_embedded_samplers: 8,
             },
             buffer_device_address_supported: true,
             timeline_semaphore_supported: true,
@@ -508,6 +553,37 @@ mod tests {
         let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
         candidate.descriptor_heap.max_resource_heap_size = 0;
 
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::InvalidDescriptorHeapProperties)
+        ));
+    }
+
+    #[test]
+    fn descriptor_heap_draw_push_and_embedded_sampler_limits_are_required() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.descriptor_heap.max_push_data_size = 32;
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::InvalidDescriptorHeapProperties)
+        ));
+
+        candidate.descriptor_heap.max_push_data_size = 128;
+        candidate
+            .descriptor_heap
+            .max_descriptor_heap_embedded_samplers = 0;
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::InvalidDescriptorHeapProperties)
+        ));
+
+        candidate
+            .descriptor_heap
+            .max_descriptor_heap_embedded_samplers = 8;
+        candidate
+            .descriptor_heap
+            .min_sampler_heap_reserved_range_with_embedded = 33;
+        candidate.descriptor_heap.max_sampler_heap_size = 40;
         assert!(matches!(
             DeviceSelector::new(GpuPreference::Any).select([&candidate]),
             Err(DeviceSelectionError::InvalidDescriptorHeapProperties)

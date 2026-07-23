@@ -16,3 +16,7 @@ body for non-obvious tradeoffs and list the verification commands used.
 Hand-written source files are limited to 800 lines by `uv run scripts/check_file_lines.py`. Generated
 protocol bindings and explicit data-heavy fixtures may be excluded only with a documented reason.
 Dependency ranges use broad compatible major/minor constraints, never `"*"`.
+
+TTY builds compile the descriptor-heap client shaders with `glslangValidator`; install the Vulkan
+shader tools before running the renderer-enabled checks. The generated SPIR-V is build output and
+does not bypass the 800-line gate.

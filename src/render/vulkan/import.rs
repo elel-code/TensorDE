@@ -21,6 +21,21 @@ pub(super) struct ClientImageCache {
     retired: Vec<ImportedClientImage>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ClientImageInfo {
+    pub(super) image: vk::Image,
+    pub(super) view_info: vk::ImageViewCreateInfo,
+    /// Imported dma-buf storage is owned by the non-Vulkan producer between
+    /// submissions.  The frame executor performs an explicit FOREIGN acquire
+    /// and release around every sampling pass.
+    pub(super) foreign_owned: bool,
+    /// The first FOREIGN acquire must pair `UNDEFINED` with the foreign queue
+    /// family.  Once a queue submission succeeds, subsequent acquires use the
+    /// preserved `GENERAL` layout instead.  This is intentionally a snapshot:
+    /// the cache updates it only after queue submission, never while recording.
+    pub(super) needs_initial_acquire: bool,
+}
+
 impl ClientImageCache {
     pub(super) fn import(
         &mut self,
@@ -43,17 +58,26 @@ impl ClientImageCache {
         }
     }
 
-    pub(super) fn descriptor(&self, id: SurfaceBufferId) -> Option<vk::ImageViewCreateInfo> {
-        self.active.get(&id).map(|image| image.view_info)
+    pub(super) fn image_info(&self, id: SurfaceBufferId) -> Option<ClientImageInfo> {
+        self.active.get(&id).map(|image| ClientImageInfo {
+            image: image.image,
+            view_info: image.view_info,
+            foreign_owned: true,
+            needs_initial_acquire: !image.initialized,
+        })
     }
 
-    pub(super) fn mark_used(
+    /// Commit imported-image state after the queue accepted a frame.  This is
+    /// deliberately separate from command recording: a failed queue submit
+    /// must leave a fresh import on the `UNDEFINED` acquire path.
+    pub(super) fn mark_submitted(
         &mut self,
         ids: impl IntoIterator<Item = SurfaceBufferId>,
         timeline: u64,
     ) {
         for id in ids {
             if let Some(image) = self.active.get_mut(&id) {
+                image.initialized = true;
                 image.last_use_timeline = image.last_use_timeline.max(timeline);
             }
         }
@@ -91,6 +115,7 @@ struct ImportedClientImage {
     memory: vk::DeviceMemory,
     view: vk::ImageView,
     view_info: vk::ImageViewCreateInfo,
+    initialized: bool,
     last_use_timeline: u64,
 }
 
@@ -184,6 +209,7 @@ impl ImportedClientImage {
             memory,
             view,
             view_info,
+            initialized: false,
             last_use_timeline: 0,
         })
     }

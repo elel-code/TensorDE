@@ -4,7 +4,7 @@ use tensor_util::Rect;
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
-    scene::{ContentRevision, EffectStyle, SceneSnapshot},
+    scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceTransform},
 };
 
 use super::FrameError;
@@ -28,6 +28,7 @@ pub(crate) struct SurfaceDraw {
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
     pub(crate) effects: EffectStyle,
+    pub(crate) transform: SurfaceTransform,
 }
 
 impl FrameDrawPlan {
@@ -43,13 +44,16 @@ impl FrameDrawPlan {
             let Some(view_clip) = node.placement.visible else {
                 continue;
             };
+            let output_viewport = Rect::new(0, 0, scene.viewport.width, scene.viewport.height);
+            let view_clip = view_clip.translated(-scene.viewport.x, -scene.viewport.y);
             for content in scene.contents_for(node) {
-                let destination = content
-                    .local_geometry
-                    .translated(node.placement.geometry.x, node.placement.geometry.y);
+                let destination = content.local_geometry.translated(
+                    node.placement.geometry.x.saturating_sub(scene.viewport.x),
+                    node.placement.geometry.y.saturating_sub(scene.viewport.y),
+                );
                 let Some(clip) = destination
                     .intersection(view_clip)
-                    .and_then(|clip| clip.intersection(scene.viewport))
+                    .and_then(|clip| clip.intersection(output_viewport))
                 else {
                     continue;
                 };
@@ -73,6 +77,7 @@ impl FrameDrawPlan {
                     destination,
                     clip,
                     effects: node.effects,
+                    transform: content.transform,
                 });
             }
         }
@@ -143,5 +148,40 @@ mod tests {
         assert_eq!(plan.images(), [SurfaceBufferId::new(9)]);
         assert_eq!(plan.draws().len(), 2);
         assert!(plan.draws().iter().all(|draw| draw.image_descriptor == 1));
+    }
+
+    #[test]
+    fn draw_geometry_is_output_local_and_preserves_buffer_transform() {
+        let viewport = Rect::new(200, 100, 160, 90);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(180, 90, 100, 80),
+            visible: Some(Rect::new(200, 100, 80, 70)),
+        };
+        let contents = vec![SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(2),
+            revision: ContentRevision::new(3),
+            buffer_size: Size::new(80, 100),
+            local_geometry: Rect::new(10, 5, 80, 60),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Rotate90,
+        }];
+        let span = crate::scene::ContentSpan::new(0, contents.len()).unwrap();
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, placement, EffectStyle::default())
+                    .with_content(span),
+            ],
+            contents,
+        );
+
+        let plan = FrameDrawPlan::build(&scene).unwrap();
+        assert_eq!(plan.draws().len(), 1);
+        let draw = plan.draws()[0];
+        assert_eq!(draw.destination, Rect::new(-10, -5, 80, 60));
+        assert_eq!(draw.clip, Rect::new(0, 0, 70, 55));
+        assert_eq!(draw.transform, SurfaceTransform::Rotate90);
     }
 }

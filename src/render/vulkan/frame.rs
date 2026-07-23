@@ -1,4 +1,7 @@
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::{
+    collections::HashMap,
+    os::fd::{FromRawFd, OwnedFd},
+};
 
 use thiserror::Error;
 use vulkanalia::vk::KhrExternalSemaphoreFdExtensionDeviceCommands;
@@ -8,9 +11,16 @@ use vulkanalia::{Device, vk};
 use crate::render::{DescriptorHeapLayout, FrameSubmission};
 
 use super::{
-    heap::{DescriptorHeapError, DescriptorHeapResource},
+    heap::{DescriptorHeapError, DescriptorHeapResource, SamplerHeapLayout},
+    import::ClientImageInfo,
+    pipeline::{ClientImagePipeline, ClientPipelineError},
     target::NativeOutputImageInfo,
 };
+
+pub(super) use super::heap::sampler_heap_layout;
+
+mod record;
+use record::{SceneRecord, prepare_draws, record_scene};
 
 const COMMAND_BUFFER_COUNT: usize = 3;
 
@@ -22,6 +32,7 @@ pub(super) struct VulkanFrameExecutor {
     render_complete: [vk::Semaphore; COMMAND_BUFFER_COUNT],
     heap: DescriptorHeapResource,
     graphics_queue_family: u32,
+    pipelines: HashMap<vk::Format, ClientImagePipeline>,
 }
 
 impl VulkanFrameExecutor {
@@ -31,7 +42,9 @@ impl VulkanFrameExecutor {
         physical_device: vk::PhysicalDevice,
         graphics_queue_family: u32,
         heap_layout: DescriptorHeapLayout,
+        sampler_heap_layout: SamplerHeapLayout,
     ) -> Result<Self, VulkanFrameError> {
+        debug_assert_eq!(record::DRAW_PUSH_DATA_SIZE, 64);
         let pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(graphics_queue_family);
@@ -96,8 +109,13 @@ impl VulkanFrameExecutor {
             }
         }
         let render_complete = [render_complete[0], render_complete[1], render_complete[2]];
-        let heap = match DescriptorHeapResource::new(instance, device, physical_device, heap_layout)
-        {
+        let heap = match DescriptorHeapResource::new(
+            instance,
+            device,
+            physical_device,
+            heap_layout,
+            sampler_heap_layout,
+        ) {
             Ok(heap) => heap,
             Err(source) => {
                 unsafe {
@@ -119,6 +137,7 @@ impl VulkanFrameExecutor {
             render_complete,
             heap,
             graphics_queue_family,
+            pipelines: HashMap::new(),
         })
     }
 
@@ -132,19 +151,19 @@ impl VulkanFrameExecutor {
         queue: vk::Queue,
         frame: &FrameSubmission,
         image: &NativeOutputImageInfo,
-        client_views: &[vk::ImageViewCreateInfo],
+        client_images: &[ClientImageInfo],
         completed_value: u64,
     ) -> Result<OwnedFd, VulkanFrameError> {
         // Validate the scene-to-Vulkan descriptor contract before touching a
         // command buffer.  Returning after `begin_command_buffer` would leave
         // that buffer in the recording state and make the failure path depend
         // on a later reset.
-        if client_views.len()
+        if client_images.len()
             != usize::try_from(frame.client_image_descriptors).unwrap_or(usize::MAX)
         {
             return Err(VulkanFrameError::DescriptorImageCountMismatch {
                 expected: frame.client_image_descriptors,
-                found: client_views.len(),
+                found: client_images.len(),
             });
         }
         let Some((slot, command_buffer)) = self
@@ -152,44 +171,61 @@ impl VulkanFrameExecutor {
             .iter()
             .enumerate()
             .find(|(slot, _)| self.retire_values[*slot] <= completed_value)
+            .map(|(slot, command_buffer)| (slot, *command_buffer))
         else {
             return Err(VulkanFrameError::NoCommandBuffer);
         };
-        let mut descriptor_views = Vec::with_capacity(1 + client_views.len());
+        let mut descriptor_views = Vec::with_capacity(1 + client_images.len());
         descriptor_views.push(image.view_info);
-        descriptor_views.extend_from_slice(client_views);
+        descriptor_views.extend(client_images.iter().map(|client| client.view_info));
         // Descriptor encoding is a host-side operation.  Do it before
         // beginning the command buffer so a write/flush failure cannot leave
         // the buffer in the recording state.
         self.heap
             .prepare_image_descriptors(device, frame.descriptors, &descriptor_views)
             .map_err(VulkanFrameError::DescriptorHeap)?;
+        let draws = prepare_draws(
+            frame,
+            self.heap.descriptor_stride(),
+            self.heap.resource_heap_base(),
+        )
+        .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
+        let pipeline = if draws.is_empty() {
+            None
+        } else {
+            Some(self.pipeline_for(device, image.view_info.format)?)
+        };
         let begin = vk::CommandBufferBeginInfo::builder();
         unsafe {
             device
-                .reset_command_buffer(*command_buffer, vk::CommandBufferResetFlags::empty())
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .map_err(VulkanFrameError::Vulkan)?;
             device
-                .begin_command_buffer(*command_buffer, &begin)
+                .begin_command_buffer(command_buffer, &begin)
                 .map_err(VulkanFrameError::Vulkan)?;
         }
         unsafe {
             self.heap
-                .record_copy_and_bind(device, *command_buffer, frame.descriptors);
-            record_output_clear(
+                .record_copy_and_bind(device, command_buffer, frame.descriptors);
+            record_scene(
                 device,
-                *command_buffer,
-                *image,
-                self.graphics_queue_family,
-                frame.serial,
+                command_buffer,
+                SceneRecord {
+                    frame,
+                    output: *image,
+                    clients: client_images,
+                    pipeline,
+                    graphics_queue_family: self.graphics_queue_family,
+                    draws: &draws,
+                },
             );
             device
-                .end_command_buffer(*command_buffer)
+                .end_command_buffer(command_buffer)
                 .map_err(VulkanFrameError::Vulkan)?;
         }
 
         let command_info = vk::CommandBufferSubmitInfo::builder()
-            .command_buffer(*command_buffer)
+            .command_buffer(command_buffer)
             .build();
         let signal_info = vk::SemaphoreSubmitInfo::builder()
             .semaphore(self.timeline)
@@ -221,6 +257,9 @@ impl VulkanFrameExecutor {
 
     pub(super) unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
+            for (_, pipeline) in std::mem::take(&mut self.pipelines) {
+                pipeline.destroy(device);
+            }
             device.destroy_semaphore(self.timeline, None);
             for semaphore in self.render_complete {
                 device.destroy_semaphore(semaphore, None);
@@ -230,83 +269,31 @@ impl VulkanFrameExecutor {
             self.heap.destroy(device);
         }
     }
+
+    fn pipeline_for(
+        &mut self,
+        device: &Device,
+        format: vk::Format,
+    ) -> Result<vk::Pipeline, VulkanFrameError> {
+        if !self.pipelines.contains_key(&format) {
+            let pipeline = ClientImagePipeline::new(
+                device,
+                format,
+                self.heap.descriptor_stride(),
+                self.heap.resource_heap_base(),
+            )
+            .map_err(VulkanFrameError::Pipeline)?;
+            self.pipelines.insert(format, pipeline);
+        }
+        Ok(self
+            .pipelines
+            .get(&format)
+            .expect("pipeline was inserted or already present")
+            .handle())
+    }
 }
 
-unsafe fn record_output_clear(
-    device: &Device,
-    command_buffer: vk::CommandBuffer,
-    image: NativeOutputImageInfo,
-    graphics_queue_family: u32,
-    serial: u64,
-) {
-    let subresource = vk::ImageSubresourceRange::builder()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(0)
-        .level_count(1)
-        .base_array_layer(0)
-        .layer_count(1)
-        .build();
-    let (old_layout, src_queue_family, dst_queue_family) = if image.foreign_owned {
-        (
-            vk::ImageLayout::GENERAL,
-            vk::QUEUE_FAMILY_FOREIGN_EXT,
-            graphics_queue_family,
-        )
-    } else {
-        (
-            vk::ImageLayout::UNDEFINED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-        )
-    };
-    let acquire = vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
-        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-        .old_layout(old_layout)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(src_queue_family)
-        .dst_queue_family_index(dst_queue_family)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build();
-    let acquire_dependency =
-        vk::DependencyInfo::builder().image_memory_barriers(std::slice::from_ref(&acquire));
-    unsafe { device.cmd_pipeline_barrier2(command_buffer, &acquire_dependency) };
-
-    let phase = (serial % 120) as f32 / 119.0;
-    let clear = vk::ClearColorValue {
-        float32: [0.025, 0.04 + phase * 0.08, 0.075 + phase * 0.04, 1.0],
-    };
-    unsafe {
-        device.cmd_clear_color_image(
-            command_buffer,
-            image.image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &clear,
-            std::slice::from_ref(&subresource),
-        )
-    };
-
-    let release = vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
-        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-        .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_access_mask(vk::AccessFlags2::NONE)
-        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_queue_family_index(graphics_queue_family)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build();
-    let release_dependency =
-        vk::DependencyInfo::builder().image_memory_barriers(std::slice::from_ref(&release));
-    unsafe { device.cmd_pipeline_barrier2(command_buffer, &release_dependency) };
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub(super) enum VulkanFrameError {
     #[error("no reusable command buffer is available")]
     NoCommandBuffer,
@@ -314,6 +301,10 @@ pub(super) enum VulkanFrameError {
     Vulkan(vk::ErrorCode),
     #[error("descriptor heap operation failed: {0}")]
     DescriptorHeap(DescriptorHeapError),
+    #[error("frame draw preparation failed: {0}")]
+    Record(String),
+    #[error("client image pipeline creation failed: {0}")]
+    Pipeline(ClientPipelineError),
     #[error("frame expected {expected} client image descriptors, got {found}")]
     DescriptorImageCountMismatch { expected: u32, found: usize },
     #[error("failed to export the frame completion SYNC_FD: {0:?}")]
@@ -321,7 +312,7 @@ pub(super) enum VulkanFrameError {
 }
 
 impl VulkanFrameError {
-    pub(super) const fn was_submitted(self) -> bool {
+    pub(super) const fn was_submitted(&self) -> bool {
         matches!(self, Self::ExportSyncFd(_))
     }
 }

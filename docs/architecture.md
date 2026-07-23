@@ -45,17 +45,19 @@ merges adjacent regions, caps pathological fragmentation, and expands regions th
 backdrop-blur dependency. Vulkan descriptor allocation consumes this compact scene data after ECS
 queries finish. `render/frame.rs` now owns per-output scene history, damage, descriptor-heap range
 allocation, three native output slots, and timeline retirement, and is connected to `RuntimeState`
-output lifecycle. The Vulkan executor clears a native image, exports a binary `SYNC_FD`, and hands
-it to Smithay's atomic KMS path; scene sampling/draw pipelines are still a separate renderer
-milestone.
+output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
+client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports a
+binary `SYNC_FD`, and hands it to Smithay's atomic KMS path. The current slice is intentionally
+limited to one-plane RGB; explicit client acquire fences, multi-plane formats, surface trees, and
+damage-driven partial rendering remain later gates.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
 responsible for lifecycle, workspace membership, focus uniqueness, and geometry updates.
 
 The renderer requires Vulkan 1.4 plus `VK_EXT_descriptor_heap`. Descriptor sets and descriptor
-buffers are not alternative backends. A device that lacks the heap capability fails startup before
-any long-lived renderer state is created.
+buffers are not alternative backends. A device that lacks usable resource and embedded-sampler heap
+limits fails startup before any long-lived renderer state is created.
 
 Physical-device ranking lives in `render/device.rs`. The policy is configurable but the default
 prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
