@@ -114,5 +114,23 @@ repository policy.
   semantics/runtime changes, repository ignore cleanup, and agent/skill files
   when their review boundaries differ.
 
+## Durable recovery state
+
+- Treat chat context and generated summaries as volatile. For any multi-step
+  scene-engine task, maintain a task-local recovery ledger in the ignored
+  architecture document. Record the current HEAD, tracked worktree state,
+  exact artifact paths, commands and results, established facts, disproved
+  hypotheses, unresolved blockers, and the next executable action.
+- Update that ledger immediately after each material discovery, failed run,
+  semantic decision, performance measurement, revert, and commit. Checkpoint it
+  before a long-running command or any point where context compaction could
+  interrupt the task.
+- On resume, read the ledger and verify its HEAD, worktree state, and artifact
+  existence before acting. Do not restart completed work or replace missing
+  evidence with assumptions from a conversation summary.
+- Keep this policy and the repository skill sample-independent. Concrete scene
+  IDs, checkpoints, trace paths, performance numbers, and current hypotheses
+  belong only in the task ledger and ignored evidence directories.
+
 For the exact local workflow and commands, use the repository skill
 `$gilder-scene-engine` in `.codex/skills/gilder-scene-engine/`.

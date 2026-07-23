@@ -22,6 +22,20 @@ old Gilder output as the specification.
 5. Reject any proposed old-reader, alias, fallback, permissive parser, compatibility shader, or
    sample-specific branch. Remove obsolete behavior instead of maintaining two paths.
 
+## Preserve recovery state
+
+1. Treat conversation context as a volatile cache. Keep the current task's durable recovery ledger
+   in the ignored architecture document, never only in chat or an automatically generated summary.
+2. Record the current HEAD and tracked worktree state, exact evidence paths, commands and results,
+   proven facts, invalidated hypotheses, remaining blockers, and one next executable action.
+3. Update the ledger after every material discovery, failure, semantic decision, performance run,
+   revert, and commit. Write a checkpoint before long-running commands or likely context compaction.
+4. After a restart or compressed-context handoff, read the ledger first, validate its HEAD and
+   artifacts against the filesystem, then continue from the recorded next action without repeating
+   completed work.
+5. Keep concrete fixtures and task conclusions out of this skill. The ledger supplements formal
+   instruction and performance evidence; it never substitutes for those gates.
+
 ## Implement through typed boundaries
 
 1. Put parsing, script-property application, font rasterization, and asset lowering in the convert
