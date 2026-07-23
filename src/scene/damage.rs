@@ -1,3 +1,5 @@
+#[cfg(any(feature = "tty", test))]
+use tensor_util::OutputScale;
 use tensor_util::Rect;
 
 use super::model::{SceneNode, SceneSnapshot};
@@ -23,6 +25,24 @@ impl DamageSet {
 
     pub fn regions(&self) -> &[Rect] {
         &self.regions
+    }
+
+    #[cfg(any(feature = "tty", test))]
+    pub(crate) fn to_physical(
+        &self,
+        logical_viewport: Rect,
+        physical_viewport: Rect,
+        scale: OutputScale,
+    ) -> Self {
+        let regions = self
+            .regions
+            .iter()
+            .filter_map(|region| region.intersection(logical_viewport))
+            .map(|region| region.translated(-logical_viewport.x, -logical_viewport.y))
+            .map(|region| scale.physical_rect_cover(region))
+            .filter_map(|region| region.intersection(physical_viewport))
+            .collect();
+        Self { regions }
     }
 
     fn add(&mut self, mut region: Rect, viewport: Rect) {
@@ -180,6 +200,27 @@ mod tests {
 
         assert_eq!(scene.damage_since(None).regions(), [VIEWPORT]);
         assert!(scene.damage_since(Some(&scene)).regions().is_empty());
+    }
+
+    #[test]
+    fn logical_damage_covers_fractional_physical_edges() {
+        let logical_viewport = Rect::new(200, 100, 100, 80);
+        let damage = DamageSet {
+            regions: vec![Rect::new(201, 101, 3, 3)],
+        };
+        let physical = damage.to_physical(
+            logical_viewport,
+            Rect::new(0, 0, 125, 100),
+            OutputScale::from_f64(1.25).unwrap(),
+        );
+        assert_eq!(physical.regions(), [Rect::new(1, 1, 4, 4)]);
+
+        let full = DamageSet::full(logical_viewport).to_physical(
+            logical_viewport,
+            Rect::new(0, 0, 125, 100),
+            OutputScale::from_f64(1.25).unwrap(),
+        );
+        assert_eq!(full.regions(), [Rect::new(0, 0, 125, 100)]);
     }
 
     #[test]

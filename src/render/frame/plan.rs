@@ -7,7 +7,7 @@ use crate::{
     scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceLayer, SurfaceTransform},
 };
 
-use super::FrameError;
+use super::{FrameError, NativeOutputTarget};
 
 /// Value-only draw plan produced after ECS extraction and before Vulkan handle
 /// resolution.  Image descriptor indices are stable for the lifetime of one
@@ -32,7 +32,10 @@ pub(crate) struct SurfaceDraw {
 }
 
 impl FrameDrawPlan {
-    pub(crate) fn build(scene: &SceneSnapshot) -> Result<Self, FrameError> {
+    pub(crate) fn build(
+        scene: &SceneSnapshot,
+        target: NativeOutputTarget,
+    ) -> Result<Self, FrameError> {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
         let mut draws = Vec::new();
@@ -47,22 +50,32 @@ impl FrameDrawPlan {
                 .visible
                 .map(|clip| clip.translated(-scene.viewport.x, -scene.viewport.y));
             for content in scene.contents_for(node) {
-                let destination = content.local_geometry.translated(
+                let logical_destination = content.local_geometry.translated(
                     node.placement.geometry.x.saturating_sub(scene.viewport.x),
                     node.placement.geometry.y.saturating_sub(scene.viewport.y),
                 );
-                let clip = match content.layer {
+                let logical_clip = match content.layer {
                     SurfaceLayer::View => {
                         let Some(view_clip) = view_clip else {
                             continue;
                         };
-                        destination
+                        logical_destination
                             .intersection(view_clip)
                             .and_then(|clip| clip.intersection(output_viewport))
                     }
-                    SurfaceLayer::Popup => destination.intersection(output_viewport),
+                    SurfaceLayer::Popup => logical_destination.intersection(output_viewport),
                 };
-                let Some(clip) = clip else { continue };
+                let Some(logical_clip) = logical_clip else {
+                    continue;
+                };
+                let destination = target.scale.physical_rect_round(logical_destination);
+                let Some(clip) = target
+                    .scale
+                    .physical_rect_cover(logical_clip)
+                    .intersection(target.viewport)
+                else {
+                    continue;
+                };
                 let image_descriptor = match image_descriptors.get(&content.buffer_id) {
                     Some(index) => *index,
                     None => {
@@ -102,7 +115,7 @@ impl FrameDrawPlan {
 
 #[cfg(test)]
 mod tests {
-    use tensor_util::Size;
+    use tensor_util::{OutputScale, Size};
 
     use crate::{
         ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
@@ -111,6 +124,26 @@ mod tests {
     };
 
     use super::*;
+
+    fn target(viewport: Rect, scale: OutputScale) -> NativeOutputTarget {
+        let physical_viewport =
+            scale.physical_rect_round(Rect::new(0, 0, viewport.width, viewport.height));
+        NativeOutputTarget {
+            output: super::super::RenderOutputId {
+                device_id: 1,
+                connector_id: 1,
+            },
+            viewport: physical_viewport,
+            format: crate::render::OutputFormat {
+                format: smithay::backend::allocator::Format {
+                    code: smithay::backend::allocator::Fourcc::Xrgb8888,
+                    modifier: smithay::backend::allocator::Modifier::from(9),
+                },
+                plane_count: 1,
+            },
+            scale,
+        }
+    }
 
     #[test]
     fn repeated_images_share_one_heap_descriptor_in_draw_order() {
@@ -152,7 +185,7 @@ mod tests {
             contents,
         );
 
-        let plan = FrameDrawPlan::build(&scene).unwrap();
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
         assert_eq!(plan.images(), [SurfaceBufferId::new(9)]);
         assert_eq!(plan.draws().len(), 2);
         assert!(plan.draws().iter().all(|draw| draw.image_descriptor == 1));
@@ -186,7 +219,7 @@ mod tests {
             contents,
         );
 
-        let plan = FrameDrawPlan::build(&scene).unwrap();
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
         assert_eq!(plan.draws().len(), 1);
         let draw = plan.draws()[0];
         assert_eq!(draw.destination, Rect::new(-10, -5, 80, 60));
@@ -222,9 +255,46 @@ mod tests {
             contents,
         );
 
-        let plan = FrameDrawPlan::build(&scene).unwrap();
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
         assert_eq!(plan.draws().len(), 1);
         assert_eq!(plan.draws()[0].destination, Rect::new(25, 15, 30, 10));
         assert_eq!(plan.draws()[0].clip, Rect::new(25, 15, 30, 10));
+    }
+
+    #[test]
+    fn fractional_scale_maps_logical_draws_to_physical_target_edges() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(1, 2, 3, 4),
+            visible: Some(Rect::new(1, 2, 3, 4)),
+        };
+        let contents = vec![SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(2),
+            revision: ContentRevision::new(1),
+            layer: SurfaceLayer::View,
+            buffer_size: Size::new(3, 4),
+            local_geometry: Rect::new(0, 0, 3, 4),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        }];
+        let span = crate::scene::ContentSpan::new(0, 1).unwrap();
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, placement, EffectStyle::default())
+                    .with_content(span),
+            ],
+            contents,
+        );
+        let plan = FrameDrawPlan::build(
+            &scene,
+            target(viewport, OutputScale::from_f64(1.25).unwrap()),
+        )
+        .unwrap();
+        let draw = plan.draws()[0];
+        assert_eq!(draw.destination, Rect::new(1, 3, 4, 5));
+        assert_eq!(draw.clip, Rect::new(1, 2, 4, 6));
     }
 }

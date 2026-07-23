@@ -541,6 +541,7 @@ mod tests {
                 },
                 plane_count: 1,
             },
+            scale: tensor_util::OutputScale::ONE,
         }
     }
 
@@ -552,6 +553,18 @@ mod tests {
             .unwrap()
             .current_location()
             .x
+    }
+
+    fn output_geometry(
+        state: &RuntimeState,
+        name: &str,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        let output = state
+            .space
+            .outputs()
+            .find(|output| output.name() == name)
+            .unwrap();
+        state.space.output_geometry(output).unwrap()
     }
 
     #[test]
@@ -585,5 +598,34 @@ mod tests {
             .unwrap();
         assert_eq!(state.output_count(), 1);
         assert_eq!(output_location(&state, "DP-2"), 0);
+    }
+
+    #[test]
+    fn fractional_output_scale_controls_logical_reflow() {
+        let display = Display::<RuntimeState>::new().unwrap();
+        let mut state = RuntimeState::new(
+            display.handle(),
+            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        );
+        let mut first = descriptor(1, "DP-1", 1920);
+        first.scale = tensor_util::OutputScale::from_f64(1.25).unwrap();
+        let second = descriptor(2, "DP-2", 1920);
+
+        state
+            .apply_backend_output_events([
+                BackendOutputEvent::Connected(first),
+                BackendOutputEvent::Connected(second),
+            ])
+            .unwrap();
+
+        assert_eq!(output_geometry(&state, "DP-1").size, (1536, 864).into());
+        assert_eq!(output_location(&state, "DP-2"), 1536);
+        let first = state
+            .space
+            .outputs()
+            .find(|output| output.name() == "DP-1")
+            .unwrap();
+        assert_eq!(first.current_scale().fractional_scale(), 1.25);
+        assert_eq!(first.current_scale().integer_scale(), 2);
     }
 }

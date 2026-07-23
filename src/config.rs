@@ -1,9 +1,11 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
+use tensor_util::OutputScale;
 use thiserror::Error;
 
 use crate::{
@@ -13,6 +15,9 @@ use crate::{
     xwayland::XWaylandConfig,
 };
 
+mod scale;
+use scale::ScaleValue;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub initial_layout: LayoutKind,
@@ -20,6 +25,7 @@ pub struct Config {
     pub ipc_socket: PathBuf,
     pub gpu_preference: GpuPreference,
     pub render_device: Option<PathBuf>,
+    pub output_scales: BTreeMap<String, OutputScale>,
     pub systemd: SystemdMode,
     pub xwayland: XWaylandConfig,
     pub startup_commands: Vec<StartupCommand>,
@@ -108,6 +114,7 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let render_device = parsed.render_device.map(PathBuf::from);
+        let output_scales = resolve_output_scales(parsed.outputs)?;
         let systemd = parsed
             .systemd
             .as_deref()
@@ -136,6 +143,7 @@ impl Config {
             ipc_socket,
             gpu_preference,
             render_device,
+            output_scales,
             systemd,
             xwayland: XWaylandConfig::new(xwayland),
             startup_commands,
@@ -153,6 +161,7 @@ impl Default for Config {
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
             gpu_preference: GpuPreference::default(),
             render_device: None,
+            output_scales: BTreeMap::new(),
             systemd: SystemdMode::default(),
             xwayland: XWaylandConfig::default(),
             startup_commands: Vec::new(),
@@ -170,12 +179,44 @@ struct FileConfig {
     gpu: Option<String>,
     #[knus(child, unwrap(argument))]
     render_device: Option<String>,
+    #[knus(children(name = "output"))]
+    outputs: Vec<OutputFileConfig>,
     #[knus(child, unwrap(argument))]
     systemd: Option<String>,
     #[knus(child, unwrap(argument))]
     xwayland: Option<bool>,
     #[knus(children(name = "spawn-at-startup"), unwrap(arguments))]
     spawn_at_startup: Vec<Vec<String>>,
+}
+
+#[derive(Debug, knus::Decode)]
+struct OutputFileConfig {
+    #[knus(argument)]
+    name: String,
+    #[knus(child, unwrap(argument))]
+    scale: Option<ScaleValue>,
+}
+
+fn resolve_output_scales(
+    outputs: Vec<OutputFileConfig>,
+) -> Result<BTreeMap<String, OutputScale>, ConfigError> {
+    let mut scales = BTreeMap::new();
+    for output in outputs {
+        let Some(value) = output.scale else {
+            continue;
+        };
+        let scale =
+            OutputScale::from_f64(value.get()).ok_or_else(|| ConfigError::InvalidOutputScale {
+                output: output.name.clone(),
+                message: "must be finite and between 0.1 and 10".to_owned(),
+            })?;
+        if scales.insert(output.name.clone(), scale).is_some() {
+            return Err(ConfigError::DuplicateOutput {
+                output: output.name,
+            });
+        }
+    }
+    Ok(scales)
 }
 
 #[derive(Debug, knus::Decode)]
@@ -282,6 +323,10 @@ pub enum ConfigError {
         option: &'static str,
         message: String,
     },
+    #[error("invalid scale for output {output}: {message}")]
+    InvalidOutputScale { output: String, message: String },
+    #[error("output {output} has more than one scale rule")]
+    DuplicateOutput { output: String },
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -351,6 +396,42 @@ mod tests {
             LayoutLength::proportion(6250, 10_000)
         );
         assert_eq!(config.layout_options.master_width, LayoutLength::fixed(900));
+    }
+
+    #[test]
+    fn parses_and_quantizes_per_output_fractional_scale() {
+        let config =
+            Config::from_kdl(Path::new("test.kdl"), "output \"eDP-1\" {\n  scale 1.31\n}").unwrap();
+
+        assert_eq!(
+            config.output_scales["eDP-1"],
+            OutputScale::from_units(157).unwrap()
+        );
+    }
+
+    #[test]
+    fn accepts_integer_output_scale_literals() {
+        let config =
+            Config::from_kdl(Path::new("test.kdl"), "output \"eDP-1\" {\n  scale 2\n}").unwrap();
+        assert_eq!(
+            config.output_scales["eDP-1"],
+            OutputScale::from_units(240).unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_output_scales() {
+        assert!(matches!(
+            Config::from_kdl(Path::new("test.kdl"), "output \"DP-1\" {\n  scale 0\n}"),
+            Err(ConfigError::InvalidOutputScale { .. })
+        ));
+        assert!(matches!(
+            Config::from_kdl(
+                Path::new("test.kdl"),
+                "output \"DP-1\" {\n  scale 1.25\n}\noutput \"DP-1\" {\n  scale 1.5\n}"
+            ),
+            Err(ConfigError::DuplicateOutput { .. })
+        ));
     }
 
     #[test]

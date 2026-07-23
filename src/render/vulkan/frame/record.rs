@@ -81,7 +81,10 @@ pub(super) fn prepare_draws(
             Ok(PreparedDraw {
                 push: DrawPushData {
                     descriptor_index,
-                    corner_radius: draw.effects.corner_radius,
+                    corner_radius: frame
+                        .target
+                        .scale
+                        .physical_length_round(draw.effects.corner_radius),
                     opacity: draw.effects.opacity.as_f32(),
                     padding: 0.0,
                     destination: [

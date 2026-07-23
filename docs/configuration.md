@@ -29,6 +29,11 @@ systemd "auto"
 xwayland true
 spawn-at-startup "waybar"
 spawn-at-startup "foot" "--server"
+output "eDP-1" {
+    # Explicit values are quantized to the exact N/120 representation used by
+    # wp_fractional_scale_v1. If omitted, Tensor selects a DPI-based quarter step.
+    scale 1.25
+}
 ```
 
 The initial layout surface has three layout families:
@@ -47,6 +52,12 @@ to the current output working area, while `fixed` is a logical-pixel width. For 
 `default-column-width fixed=900` keeps a 900-pixel scrolling column across output changes. Invalid,
 zero, non-finite, or ambiguous widths reject the whole configuration instead of being silently
 repaired.
+
+Each `output` node matches the connector name reported by DRM. Its optional `scale` is constrained to
+`0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation sent by
+`wp_fractional_scale_v1`. An output without a rule uses the Niri/Mutter-style DPI heuristic and a
+quarter-step scale. Smithay exposes the resulting fractional value to clients, while `wl_output`
+continues to receive the required rounded-up integer scale.
 
 Scrolling layout follows the same core invariants as Niri without copying its renderer: every view
 has min/max size constraints and an optional width override; each workspace owns an independent

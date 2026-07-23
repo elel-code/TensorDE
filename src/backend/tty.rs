@@ -125,7 +125,7 @@ impl TtyBackend {
             primary_node,
             render_node,
             devices: HashMap::new(),
-            output_policy: OutputPolicy,
+            output_policy: OutputPolicy::new(config.output_scales.clone()),
             renderer_formats: config.renderer_formats.clone(),
             outputs: OutputPlan::new(),
             pending_outputs: Vec::new(),

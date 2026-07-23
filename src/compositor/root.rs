@@ -38,6 +38,7 @@ impl Compositor {
             ipc_socket,
             gpu_preference,
             render_device,
+            output_scales,
             systemd,
             xwayland,
             startup_commands,
@@ -55,6 +56,7 @@ impl Compositor {
         let backend_config = BackendConfig {
             drm_node: renderer.selected().render_node,
             renderer_formats: renderer.selected().formats.clone(),
+            output_scales,
         };
         protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;

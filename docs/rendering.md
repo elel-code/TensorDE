@@ -124,6 +124,19 @@ damages both the old and new regions outside the tile. Destroyed buffers remain
 renderer-live while any surface still refers to them, and imported images are
 marked with the submission timeline used by that plan.
 
+Fractional output scale has one coordinate conversion boundary. `OutputScale` stores the exact
+`N/120` protocol value and the scene remains in logical coordinates. The native output target keeps
+the DRM mode's physical dimensions. Draw destinations transform both logical edges with identical
+nearest-pixel rounding so adjacent surfaces retain a common edge; clip and damage rectangles use
+floor/ceil coverage and are intersected with the physical target. Corner radii are converted to
+physical pixels in Vulkan push data. A 1920×1080 output at scale 1.25 therefore lays out as
+1536×864, still renders and scans out 1920×1080, and advertises preferred scale `150`.
+
+This also defines the scaling contract for rootless XWayland windows: they are surface content and
+use the same scene conversion. Legacy clients that only observe `wl_output.scale` receive Smithay's
+rounded-up integer value; the compositor performs the final resampling to the fractional physical
+scale. Tensor does not add an X11-session renderer or a second X11-specific damage path.
+
 ## Frame Boundary Status
 
 `render/frame.rs` is the renderer-to-scene boundary. It owns a bounded resource descriptor heap

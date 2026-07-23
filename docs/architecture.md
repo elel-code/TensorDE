@@ -53,6 +53,13 @@ partial rendering remain later gates. Explicit clients use Smithay's
 `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
 sync-file fds and stable `SurfaceId` values reach Vulkanalia.
 
+Output scale is a shared value primitive, represented exactly in the `N/120` units of
+`wp_fractional_scale_v1`. DRM mode dimensions and Vulkan native targets remain physical pixels;
+Smithay output geometry, ECS layout, XDG configure sizes, hit testing, and relative-pointer
+locations remain logical coordinates. Frame extraction maps shared logical rectangle edges to the
+same rounded physical edge, while damage and scissors round outward and clip to the physical mode.
+This keeps adjacent tiles gapless without allowing partial-edge damage to leave stale pixels.
+
 The protocol owner traverses each mapped toplevel, subsurface tree, and popup tree in Smithay draw
 order and copies only stable identities, buffer metadata, placement, and layer policy into the flat
 ECS content table. Synchronized subsurface callbacks are deferred until their non-synchronized
@@ -98,7 +105,11 @@ available when systemd integration is inactive; `enabled` mode fails closed if t
 created.
 
 XWayland is a rootless compatibility server for individual applications, never a compositor
-backend. Tensor ships only a Wayland session entry and rejects an inherited X11-only session.
+backend. Tensor ships only a Wayland session entry and rejects an inherited X11-only session. Niri's
+current integration obtains its clean scaling boundary by letting `xwayland-satellite` expose X11
+windows as ordinary Wayland surfaces. Tensor's direct Smithay XWayland/XWM path follows the same
+architectural invariant: once mapped, an X11 window must enter the ordinary surface, scene, and
+logical-to-physical output path rather than a parallel X11 renderer or coordinate model.
 
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
@@ -138,10 +149,11 @@ device-local snapshot, including connected connectors that do not yet have a mod
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
 `OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
-The plan also carries the preferred native fourcc, explicit modifier, and plane count selected by
-the Vulkan/KMS/GBM intersection. A format change is therefore an output change rather than hidden
-backend state. The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner` without
-changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
+The plan also carries the preferred native fourcc, explicit modifier, plane count, and resolved
+output scale. Explicit KDL connector rules win; otherwise the Niri/Mutter DPI heuristic chooses a
+representable quarter step. A format or scale change is therefore an output change rather than
+hidden backend state. The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner`
+without changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
 
 For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exported
 dma-bufs. The tty backend imports those dma-bufs into GBM, creates Smithay framebuffers, and submits

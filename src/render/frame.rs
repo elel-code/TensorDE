@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use tensor_util::OutputScale;
 use tensor_util::Rect;
 use thiserror::Error;
 
@@ -23,6 +24,7 @@ pub(crate) struct NativeOutputTarget {
     pub(crate) output: RenderOutputId,
     pub(crate) viewport: Rect,
     pub(crate) format: OutputFormat,
+    pub(crate) scale: OutputScale,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,7 +199,7 @@ impl FrameScheduler {
             .ok_or(FrameError::TimelineExhausted)?;
         let serial = state.next_serial;
         serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
-        let draw_plan = FrameDrawPlan::build(&scene)?;
+        let draw_plan = FrameDrawPlan::build(&scene, state.target)?;
         let client_image_descriptors = u32::try_from(draw_plan.images().len())
             .map_err(|_| FrameError::DescriptorSizeOverflow)?;
         let descriptor_count = 1u64
@@ -210,7 +212,9 @@ impl FrameScheduler {
         let descriptors = self
             .descriptors
             .allocate(descriptor_bytes, timeline_value)?;
-        let damage = scene.damage_since(state.previous_scene.as_ref());
+        let damage = scene
+            .damage_since(state.previous_scene.as_ref())
+            .to_physical(scene.viewport, state.target.viewport, state.target.scale);
         let output_slot = state.next_slot;
         self.next_timeline_value = next_timeline_value;
         state.prepared = Some(PreparedFrameState {
@@ -430,10 +434,15 @@ mod tests {
                 },
                 plane_count: 1,
             },
+            scale: OutputScale::ONE,
         }
     }
 
     fn scene(view_id: u64) -> SceneSnapshot {
+        scene_in(view_id, VIEWPORT)
+    }
+
+    fn scene_in(view_id: u64, viewport: Rect) -> SceneSnapshot {
         let contents = vec![SurfaceContent {
             surface_id: SurfaceId::new(view_id),
             buffer_id: SurfaceBufferId::new(view_id),
@@ -446,7 +455,7 @@ mod tests {
         }];
         SceneSnapshot::with_content(
             WorkspaceId::new(0),
-            VIEWPORT,
+            viewport,
             vec![
                 SceneNode::new(
                     ViewId::new(view_id),
@@ -477,6 +486,27 @@ mod tests {
             .unwrap();
         assert!(!second.damage.is_empty());
         assert_eq!(second.serial, 2);
+    }
+
+    #[test]
+    fn fractional_target_scales_draws_and_damage_to_physical_pixels() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        let scaled_target = NativeOutputTarget {
+            scale: OutputScale::from_f64(1.25).unwrap(),
+            ..target(OUTPUT)
+        };
+        scheduler.register_output(scaled_target).unwrap();
+        let logical_viewport = Rect::new(0, 0, 1536, 864);
+        let frame = scheduler
+            .submit(OUTPUT, scene_in(1, logical_viewport), 0)
+            .unwrap();
+
+        assert_eq!(frame.damage.regions(), [VIEWPORT]);
+        assert_eq!(
+            frame.draw_plan.draws()[0].destination,
+            Rect::new(0, 0, 800, 600)
+        );
+        assert_eq!(frame.draw_plan.draws()[0].clip, Rect::new(0, 0, 800, 600));
     }
 
     #[test]

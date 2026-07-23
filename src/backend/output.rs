@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 
 use smithay::output::{Mode, Subpixel};
+use tensor_util::{OutputScale, Size};
 
 use crate::render::OutputFormat;
+
+mod scale;
+use scale::guess_monitor_scale;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConnectorSnapshot {
@@ -34,6 +38,7 @@ pub(crate) struct OutputDescriptor {
     pub(crate) preferred_mode: Mode,
     pub(crate) crtc: u32,
     pub(crate) native_format: OutputFormat,
+    pub(crate) scale: OutputScale,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -52,18 +57,51 @@ pub(crate) enum BackendOutputEvent {
 pub(crate) type OutputPlan = BTreeMap<BackendOutputId, OutputDescriptor>;
 
 #[derive(Debug, Default)]
-pub(crate) struct OutputPolicy;
+pub(crate) struct OutputPolicy {
+    configured_scales: BTreeMap<String, OutputScale>,
+}
 
 impl OutputPolicy {
+    pub(crate) fn new(configured_scales: BTreeMap<String, OutputScale>) -> Self {
+        Self { configured_scales }
+    }
+
     pub(crate) fn plan<'a>(
         &self,
         connectors: impl IntoIterator<Item = &'a ConnectorSnapshot>,
     ) -> OutputPlan {
         connectors
             .into_iter()
-            .filter_map(output_for_connector)
+            .filter_map(|connector| self.output_for_connector(connector))
             .map(|output| (output.id, output))
             .collect()
+    }
+
+    fn output_for_connector(&self, connector: &ConnectorSnapshot) -> Option<OutputDescriptor> {
+        if connector.state != ConnectorState::Connected {
+            return None;
+        }
+        let preferred_mode = connector.preferred_mode?;
+        let resolution = Size::new(
+            u32::try_from(preferred_mode.size.w).ok()?,
+            u32::try_from(preferred_mode.size.h).ok()?,
+        );
+        let scale = self
+            .configured_scales
+            .get(&connector.name)
+            .copied()
+            .unwrap_or_else(|| guess_monitor_scale(connector.physical_size, resolution));
+        Some(OutputDescriptor {
+            id: connector.id,
+            name: connector.name.clone(),
+            physical_size: connector.physical_size,
+            subpixel: connector.subpixel,
+            modes: connector.modes.clone(),
+            preferred_mode,
+            crtc: connector.mapped_crtc?,
+            native_format: connector.native_format?,
+            scale,
+        })
     }
 }
 
@@ -84,22 +122,6 @@ pub(crate) fn diff_output_plans(
             Some(_) => None,
         });
     disconnected.chain(activated).collect()
-}
-
-fn output_for_connector(connector: &ConnectorSnapshot) -> Option<OutputDescriptor> {
-    if connector.state != ConnectorState::Connected {
-        return None;
-    }
-    Some(OutputDescriptor {
-        id: connector.id,
-        name: connector.name.clone(),
-        physical_size: connector.physical_size,
-        subpixel: connector.subpixel,
-        modes: connector.modes.clone(),
-        preferred_mode: connector.preferred_mode?,
-        crtc: connector.mapped_crtc?,
-        native_format: connector.native_format?,
-    })
 }
 
 #[cfg(test)]
@@ -152,7 +174,7 @@ mod tests {
         let waiting_for_mode = connector(1, 3, ConnectorState::Connected, Some(8), None);
         let disconnected = connector(1, 4, ConnectorState::Disconnected, Some(9), Some(1280));
 
-        let plan = OutputPolicy.plan([
+        let plan = OutputPolicy::default().plan([
             &disconnected,
             &waiting_for_mode,
             &waiting_for_crtc,
@@ -169,7 +191,7 @@ mod tests {
         let later_connector = connector(2, 8, ConnectorState::Connected, Some(2), Some(1920));
         let first = connector(2, 3, ConnectorState::Connected, Some(3), Some(1920));
 
-        let ids = OutputPolicy
+        let ids = OutputPolicy::default()
             .plan([&later_device, &later_connector, &first])
             .into_keys()
             .collect::<Vec<_>>();
@@ -182,7 +204,7 @@ mod tests {
         let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
         connector.native_format = None;
 
-        assert!(OutputPolicy.plan([&connector]).is_empty());
+        assert!(OutputPolicy::default().plan([&connector]).is_empty());
     }
 
     #[test]
@@ -191,8 +213,8 @@ mod tests {
         let old_changed = connector(1, 2, ConnectorState::Connected, Some(2), Some(1920));
         let changed = connector(1, 2, ConnectorState::Connected, Some(2), Some(2560));
         let added = connector(1, 3, ConnectorState::Connected, Some(3), Some(3840));
-        let previous = OutputPolicy.plan([&removed, &old_changed]);
-        let current = OutputPolicy.plan([&changed, &added]);
+        let previous = OutputPolicy::default().plan([&removed, &old_changed]);
+        let current = OutputPolicy::default().plan([&changed, &added]);
 
         let events = diff_output_plans(&previous, &current);
 
@@ -211,12 +233,26 @@ mod tests {
         let old = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
         let mut changed = old.clone();
         changed.native_format = Some(native_format(10));
-        let previous = OutputPolicy.plan([&old]);
-        let current = OutputPolicy.plan([&changed]);
+        let previous = OutputPolicy::default().plan([&old]);
+        let current = OutputPolicy::default().plan([&changed]);
 
         assert_eq!(
             diff_output_plans(&previous, &current),
             vec![BackendOutputEvent::Changed(current[&changed.id].clone())]
+        );
+    }
+
+    #[test]
+    fn configured_scale_overrides_the_monitor_heuristic() {
+        let connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
+        let policy = OutputPolicy::new(
+            [(connector.name.clone(), OutputScale::from_f64(1.25).unwrap())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            policy.plan([&connector])[&connector.id].scale,
+            OutputScale::from_f64(1.25).unwrap()
         );
     }
 }

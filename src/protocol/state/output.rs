@@ -329,6 +329,7 @@ impl RuntimeState {
             device_id = descriptor.id.device_id,
             connector_id = descriptor.id.connector_id,
             crtc = descriptor.crtc,
+            scale = descriptor.scale.as_f64(),
             "Smithay output connected"
         );
         let output = smithay::output::Output::new(
@@ -348,7 +349,9 @@ impl RuntimeState {
         output.change_current_state(
             Some(descriptor.preferred_mode),
             None,
-            None,
+            Some(smithay::output::Scale::Fractional(
+                descriptor.scale.as_f64(),
+            )),
             Some((0, 0).into()),
         );
         let global = output.create_global::<Self>(&self.display_handle);
@@ -372,6 +375,7 @@ impl RuntimeState {
             device_id = descriptor.id.device_id,
             connector_id = descriptor.id.connector_id,
             crtc = descriptor.crtc,
+            scale = descriptor.scale.as_f64(),
             "Smithay output modes changed"
         );
         if !self.outputs.contains_key(&descriptor.id) {
@@ -404,9 +408,14 @@ impl RuntimeState {
             managed.output.add_mode(*mode);
         }
         managed.output.set_preferred(descriptor.preferred_mode);
-        managed
-            .output
-            .change_current_state(Some(descriptor.preferred_mode), None, None, None);
+        managed.output.change_current_state(
+            Some(descriptor.preferred_mode),
+            None,
+            Some(smithay::output::Scale::Fractional(
+                descriptor.scale.as_f64(),
+            )),
+            None,
+        );
         managed.descriptor = descriptor;
         self.reflow_outputs();
         Ok(())
@@ -479,11 +488,12 @@ impl RuntimeState {
                 .output
                 .change_current_state(None, None, None, Some((x, 0).into()));
             self.space.map_output(&managed.output, (x, 0));
-            x += managed
-                .output
-                .current_mode()
-                .map(|mode| mode.size.w)
-                .unwrap_or(0);
+            x = x.saturating_add(
+                self.space
+                    .output_geometry(&managed.output)
+                    .map(|geometry| geometry.size.w)
+                    .unwrap_or(0),
+            );
         }
         self.reflow_default_workspace();
     }
@@ -503,5 +513,6 @@ fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
             u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
         ),
         format: descriptor.native_format,
+        scale: descriptor.scale,
     }
 }

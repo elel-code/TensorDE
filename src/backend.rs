@@ -12,4 +12,5 @@ pub(crate) use tty::TtyBackend;
 pub(crate) struct BackendConfig {
     pub(crate) drm_node: crate::render::DrmNodeId,
     pub(crate) renderer_formats: Vec<crate::render::VulkanFormatCapability>,
+    pub(crate) output_scales: std::collections::BTreeMap<String, tensor_util::OutputScale>,
 }

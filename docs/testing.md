@@ -53,7 +53,8 @@ selection result, never a silently skipped compatibility path.
   requires a compositor session.
 - Protocol-global tests bind viewporter, fractional-scale, xdg-decoration, primary selection,
   relative pointer, pointer gestures, and presentation-time from a real client. They assert
-  preferred-scale, decoration configure, monotonic clock, and discarded-feedback events, including
+  preferred-scale (including `150/120`), decoration configure, monotonic clock, and
+  discarded-feedback events, including
   protocol-correct child-object destruction order.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot

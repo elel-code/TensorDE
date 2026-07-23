@@ -272,7 +272,7 @@ mod tests {
 
     use smithay::{
         desktop::utils::OutputPresentationFeedback,
-        output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+        output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
         utils::{ClockSource, Monotonic},
         wayland::seat::WaylandFocus,
     };
@@ -643,8 +643,8 @@ mod tests {
         assert_eq!(
             dispatch_until(&mut runtime, &event_rx),
             ClientEvent::Configured {
-                size: (488, 480),
-                preferred_scale: 120,
+                size: (388, 480),
+                preferred_scale: 150,
                 client_side_decoration: true,
             }
         );
@@ -667,7 +667,7 @@ mod tests {
         );
         assert_eq!(
             runtime.state.space.element_location(&window),
-            Some((8, 160).into())
+            Some((8, 80).into())
         );
         assert_eq!(
             runtime
@@ -677,7 +677,7 @@ mod tests {
                 .unwrap()
                 .placements[0]
                 .geometry,
-            crate::layout::Rect::new(8, 160, 488, 480)
+            crate::layout::Rect::new(8, 80, 388, 480)
         );
         let view_id = runtime.state.view_for_surface(
             runtime
@@ -767,7 +767,12 @@ mod tests {
         );
         output.add_mode(mode);
         output.set_preferred(mode);
-        output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            None,
+            Some(Scale::Fractional(1.25)),
+            Some((0, 0).into()),
+        );
         runtime.state.space.map_output(&output, (0, 0));
     }
 
