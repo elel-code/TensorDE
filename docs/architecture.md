@@ -9,6 +9,16 @@ Tensor is a Rust Wayland compositor built around four ownership domains:
    synchronization. It returns dma-bufs and fences to Smithay instead of owning KMS state.
 4. IPC and portal adapters translate external requests into validated ECS commands.
 
+Lua is intentionally not a compositor-core dependency and is not a second
+configuration language. The KDL/knus boundary remains authoritative for
+startup, device, layout, IPC, and session policy. If scripting is added later,
+it must be an optional capability boundary: scripts may receive value-only
+snapshots and issue versioned IPC or policy commands, but may not hold Smithay
+resources, Vulkan handles, Bevy entities, or portal ownership. Execution
+budgets, transactional reload, an explicit API version, and a process or
+sandbox boundary are prerequisites so the core event loop and readiness gates
+remain deterministic when scripting is disabled.
+
 Smithay and Vulkan objects do not become ordinary ECS components. Thread-affine Smithay state stays
 in the protocol owner or a Bevy `NonSend` resource. `RuntimeState` is the calloop data object and
 serializes Smithay dispatch, popup/seat state, surface-to-view indexing, layout intent, and ECS
