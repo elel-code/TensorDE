@@ -153,10 +153,19 @@ The current command stream is deliberately limited to:
 4. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
-complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, presentation feedback, and
-damage-driven partial rendering remain separate gates. Debug diagnostics
-report draw count, unique client-image descriptor count, surface-content count, and damage-region
-count for each prepared frame.
+complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, and damage-driven partial
+rendering remain separate gates. Debug diagnostics report draw count, unique client-image descriptor
+count, surface-content count, and damage-region count for each prepared frame.
+
+`wp_presentation` v2 uses `CLOCK_MONOTONIC`. Before Vulkan submission, the protocol layer takes
+feedback only from surfaces intersecting the submitted scene and whose largest output intersection
+selects that output as primary. This is geometry-aware but not yet opaque-region occlusion-aware.
+The resulting owner is keyed by both stable backend output ID and renderer timeline value. Renderer
+failure, missing `SYNC_FD`, atomic KMS failure, output replacement, disconnect, or session pause
+drops that owner and therefore sends `discarded`. Once atomic KMS accepts the frame, frame callbacks
+are released immediately so clients can prepare the next commit; only the matching DRM vblank sends
+`presented`. Monotonic DRM metadata carries `HwClock`; realtime, zero, or missing metadata falls back
+to the compositor's monotonic clock without claiming hardware clock accuracy.
 
 ## Synchronization
 
@@ -166,6 +175,13 @@ an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty 
 as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bounded repaint queue
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
+After VT/session resume, Smithay refreshes each DRM surface while Tensor quarantines the previously
+current and pending slots. A calloop idle repaint runs only after already-ready DRM events drain; the
+first new page flip releases the quarantine. If the old Vulkan submission is still completing, a
+low-frequency one-shot calloop timer polls its timeline until the recovery frame can be selected;
+it stops before KMS slot waiting and never blocks the event loop. If repeated interruption leaves
+every slot uncertain, Tensor resets that DRM device instead of risking writes into a scanned-out
+dma-buf.
 
 Tensor implements the modern `wp_linux_drm_syncobj_v1` path supplied by Smithay master. The global
 is created only when the Vulkan-selected primary DRM device supports `drmSyncobjEventfd`; hot-unplug

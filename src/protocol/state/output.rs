@@ -3,7 +3,7 @@ use tracing::{info, warn};
 
 use crate::{
     backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
-    render::{NativeOutputTarget, RenderOutputId},
+    render::{NativeOutputBuffer, NativeOutputTarget, RenderOutputId},
 };
 
 use super::{DEFAULT_WORKSPACE, ManagedOutput, RuntimeState};
@@ -19,23 +19,34 @@ impl RuntimeState {
             warn!(%error, "client explicit-sync acquire is not ready");
             return;
         }
-        let Some((output_id, _)) = self.outputs.iter().find(|(_, managed)| {
-            let Some(geometry) = self.space.output_geometry(&managed.output) else {
-                return false;
-            };
-            geometry.loc.x == scene.viewport.x
-                && geometry.loc.y == scene.viewport.y
-                && geometry.size.w == i32::try_from(scene.viewport.width).unwrap_or(i32::MAX)
-                && geometry.size.h == i32::try_from(scene.viewport.height).unwrap_or(i32::MAX)
-        }) else {
+        let Some((output_id, output)) = self
+            .outputs
+            .iter()
+            .find(|(_, managed)| {
+                let Some(geometry) = self.space.output_geometry(&managed.output) else {
+                    return false;
+                };
+                geometry.loc.x == scene.viewport.x
+                    && geometry.loc.y == scene.viewport.y
+                    && geometry.size.w == i32::try_from(scene.viewport.width).unwrap_or(i32::MAX)
+                    && geometry.size.h == i32::try_from(scene.viewport.height).unwrap_or(i32::MAX)
+            })
+            .map(|(id, managed)| (*id, managed.output.clone()))
+        else {
             return;
         };
-        let output_id = *output_id;
+        if let Some(renderer) = self.renderer.as_mut()
+            && let Err(error) = renderer.refresh_completed()
+        {
+            self.repaint_pending.insert(output_id);
+            warn!(%error, "renderer completion poll failed before output slot selection");
+            return;
+        }
         let render_output = RenderOutputId {
             device_id: output_id.device_id,
             connector_id: output_id.connector_id,
         };
-        let Some(next_slot) = self
+        let Some(mut next_slot) = self
             .renderer
             .as_ref()
             .and_then(|renderer| renderer.next_output_slot(render_output))
@@ -43,19 +54,40 @@ impl RuntimeState {
             self.repaint_pending.insert(output_id);
             return;
         };
-        if self
-            .backend
-            .as_ref()
-            .is_some_and(|backend| !backend.output_ready_for_slot(output_id, next_slot))
-        {
+        let mut selected_slot = None;
+        for attempt in 0..NativeOutputBuffer::COUNT {
+            if self
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.output_ready_for_slot(output_id, next_slot))
+            {
+                selected_slot = Some(next_slot);
+                break;
+            }
+            if attempt + 1 < NativeOutputBuffer::COUNT {
+                let Some(candidate) = self
+                    .renderer
+                    .as_mut()
+                    .and_then(|renderer| renderer.advance_output_slot(render_output))
+                else {
+                    break;
+                };
+                next_slot = candidate;
+            }
+        }
+        let Some(_selected_slot) = selected_slot else {
             self.repaint_pending.insert(output_id);
             return;
-        }
+        };
+        // Drain feedback only after all retry gates passed. The local owner
+        // below discards it if Vulkan or atomic KMS cannot accept this frame.
+        let captured_presentation = self.capture_scene_presentation(output_id, &output, &scene);
         let Some(result) = self
             .renderer
             .as_mut()
             .map(|renderer| renderer.submit_scene(render_output, scene))
         else {
+            drop(captured_presentation);
             return;
         };
         match result {
@@ -64,6 +96,7 @@ impl RuntimeState {
                     renderer.take_sync_fd(render_output, frame.timeline_value)
                 });
                 let Some(sync_fd) = sync_fd else {
+                    drop(captured_presentation);
                     if let Some(backend) = self.backend.as_mut() {
                         backend.mark_output_faulted(output_id);
                     }
@@ -75,14 +108,24 @@ impl RuntimeState {
                     );
                     return;
                 };
-                if let Some(backend) = self.backend.as_mut()
-                    && let Err(error) = backend.submit_output_frame(
-                        output_id,
-                        frame.output_slot,
-                        frame.timeline_value,
-                        sync_fd,
-                    )
-                {
+                let Some(backend) = self.backend.as_mut() else {
+                    drop(captured_presentation);
+                    warn!(
+                        output_device = output_id.device_id,
+                        output_connector = output_id.connector_id,
+                        timeline = frame.timeline_value,
+                        "renderer frame has no Smithay atomic KMS backend"
+                    );
+                    self.repaint_pending.insert(output_id);
+                    return;
+                };
+                if let Err(error) = backend.submit_output_frame(
+                    output_id,
+                    frame.output_slot,
+                    frame.timeline_value,
+                    sync_fd,
+                ) {
+                    drop(captured_presentation);
                     warn!(
                         output_device = output_id.device_id,
                         output_connector = output_id.connector_id,
@@ -92,6 +135,11 @@ impl RuntimeState {
                     self.repaint_pending.insert(output_id);
                     return;
                 }
+                // Atomic KMS has latched ownership of the submitted client
+                // buffers. Let clients prepare their next frame immediately;
+                // presentation feedback remains pending until vblank.
+                self.send_submitted_frame_callbacks(&output, &captured_presentation);
+                self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
                 self.repaint_pending.remove(&output_id);
                 info!(
                     output_device = output_id.device_id,
@@ -114,6 +162,7 @@ impl RuntimeState {
                 );
             }
             Err(error) => {
+                drop(captured_presentation);
                 self.repaint_pending.insert(output_id);
                 warn!(
                     output_device = output_id.device_id,
@@ -148,6 +197,14 @@ impl RuntimeState {
             sequence = metadata.map(|metadata| metadata.sequence),
             "atomic KMS page flip completed"
         );
+        if !self.finish_presentation(presentation.output, presentation.timeline_value, metadata) {
+            warn!(
+                output_device = presentation.output.device_id,
+                output_connector = presentation.output.connector_id,
+                timeline = presentation.timeline_value,
+                "KMS page flip had no pending Wayland presentation feedback"
+            );
+        }
         if self.repaint_pending.remove(&presentation.output) {
             self.submit_default_workspace_frame();
         }
@@ -173,6 +230,15 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     pub(crate) fn dispatch_session_event(&mut self, event: smithay::backend::session::Event) {
+        if matches!(event, smithay::backend::session::Event::PauseSession) {
+            let discarded = self.discard_all_presentations();
+            if discarded > 0 {
+                info!(
+                    discarded,
+                    "discarded in-flight presentation feedback on session pause"
+                );
+            }
+        }
         let Some(mut backend) = self.backend.take() else {
             return;
         };
@@ -187,6 +253,47 @@ impl RuntimeState {
         if let Err(error) = self.apply_backend_output_events(events) {
             warn!(%error, "failed to apply session output event");
         }
+    }
+
+    /// Repaint only after the session notifier and any already-ready DRM
+    /// events have run. The backend schedules this as a calloop idle callback
+    /// so a stale page-flip cannot be mistaken for the resumed frame.
+    pub(crate) fn repaint_after_session_resume(&mut self) {
+        let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
+        self.repaint_pending.extend(outputs);
+        self.submit_default_workspace_frame();
+        self.schedule_renderer_retry_if_needed();
+    }
+
+    pub(crate) fn retry_renderer_repaint(&mut self) {
+        self.renderer_retry_scheduled = false;
+        self.submit_default_workspace_frame();
+        self.schedule_renderer_retry_if_needed();
+    }
+
+    fn schedule_renderer_retry_if_needed(&mut self) {
+        if self.renderer_retry_scheduled || !self.renderer_repaint_waits_for_gpu() {
+            return;
+        }
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        match backend.schedule_renderer_retry() {
+            Ok(()) => self.renderer_retry_scheduled = true,
+            Err(error) => warn!(%error, "failed to schedule renderer completion retry"),
+        }
+    }
+
+    fn renderer_repaint_waits_for_gpu(&self) -> bool {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return false;
+        };
+        self.repaint_pending.iter().copied().any(|output| {
+            renderer.output_waiting_for_gpu(RenderOutputId {
+                device_id: output.device_id,
+                connector_id: output.connector_id,
+            })
+        })
     }
 
     #[cfg(feature = "tty")]
@@ -277,6 +384,15 @@ impl RuntimeState {
             .descriptor
             .clone();
         self.register_renderer_output(&descriptor, Some(&previous_descriptor))?;
+        let discarded = self.discard_output_presentations(descriptor.id);
+        if discarded > 0 {
+            info!(
+                output_device = descriptor.id.device_id,
+                output_connector = descriptor.id.connector_id,
+                discarded,
+                "discarded presentation feedback for replaced output mode"
+            );
+        }
         let managed = self
             .outputs
             .get_mut(&descriptor.id)
@@ -298,6 +414,7 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     fn disconnect_output(&mut self, id: BackendOutputId) {
+        let discarded = self.discard_output_presentations(id);
         let Some(managed) = self.outputs.remove(&id) else {
             return;
         };
@@ -317,6 +434,7 @@ impl RuntimeState {
         info!(
             device_id = id.device_id,
             connector_id = id.connector_id,
+            discarded_presentations = discarded,
             "Smithay output disconnected"
         );
     }

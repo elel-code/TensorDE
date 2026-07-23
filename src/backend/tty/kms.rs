@@ -10,11 +10,13 @@ use smithay::{
             DrmDevice, DrmDeviceFd, DrmSurface, PlaneConfig, PlaneState,
             gbm::{GbmFramebuffer, framebuffer_from_dmabuf},
         },
+        session::Session,
     },
     reexports::drm::control::{Mode as DrmMode, connector, crtc},
     utils::{Rectangle, Transform},
 };
 use thiserror::Error;
+use tracing::warn;
 
 use crate::{
     backend::{BackendOutputId, OutputDescriptor},
@@ -24,7 +26,53 @@ use crate::{
 use super::{BackendError, TtyBackend};
 
 impl TtyBackend {
+    pub(crate) fn reset_outputs_after_session_resume(&mut self) {
+        for (device_id, device) in &mut self.devices {
+            let mut needs_device_reset = false;
+            for target in device.native_targets.values_mut() {
+                match target.reset_after_session_resume() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        needs_device_reset = true;
+                        warn!(
+                            device_id = *device_id,
+                            output = %target.name,
+                            "no reusable KMS slot remains after session resume"
+                        );
+                    }
+                    Err(error) => {
+                        needs_device_reset = true;
+                        warn!(
+                            device_id = *device_id,
+                            output = %target.name,
+                            %error,
+                            "failed to reset KMS output after session resume"
+                        );
+                    }
+                }
+            }
+            if needs_device_reset {
+                match device.drm.reset_state() {
+                    Ok(()) => {
+                        for target in device.native_targets.values_mut() {
+                            target.reset_after_device_reset();
+                        }
+                    }
+                    Err(error) => {
+                        warn!(device_id = *device_id, %error, "failed to reset DRM device after session resume");
+                        for target in device.native_targets.values_mut() {
+                            target.mark_faulted();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn output_ready_for_slot(&self, output: BackendOutputId, slot: u8) -> bool {
+        if !self.session.is_active() {
+            return false;
+        }
         self.devices
             .get(&(output.device_id as libc::dev_t))
             .and_then(|device| device.native_targets.get(&output))
@@ -184,6 +232,21 @@ impl KmsOutput {
         self.scanout.faulted = true;
     }
 
+    pub(super) fn reset_after_session_resume(&mut self) -> Result<bool, KmsError> {
+        self.surface
+            .reset_state()
+            .map_err(|source| KmsError::ResetState(source.to_string()))?;
+        self.scanout.resume_after_session_loss();
+        Ok(self
+            .slots
+            .iter()
+            .any(|slot| self.scanout.ready_for(slot.slot)))
+    }
+
+    pub(super) fn reset_after_device_reset(&mut self) {
+        self.scanout = ScanoutState::default();
+    }
+
     fn plane_state<'a>(
         &'a self,
         slot: u8,
@@ -239,6 +302,7 @@ struct CompletedScanout {
 struct ScanoutState {
     pending: Option<ScanoutFrame>,
     current: Option<ScanoutFrame>,
+    quarantined: Vec<u8>,
     faulted: bool,
 }
 
@@ -248,12 +312,17 @@ impl ScanoutState {
     }
 
     fn ready_for(&self, slot: u8) -> bool {
-        self.ready() && self.current.is_none_or(|current| current.slot != slot)
+        self.ready()
+            && !self.quarantined.contains(&slot)
+            && self.current.is_none_or(|current| current.slot != slot)
     }
 
     fn validate_queue(&self, slot: u8, timeline_value: u64) -> Result<(), KmsError> {
         if self.faulted {
             return Err(KmsError::Faulted);
+        }
+        if self.quarantined.contains(&slot) {
+            return Err(KmsError::QuarantinedSlot(slot));
         }
         if let Some(pending) = self.pending {
             return Err(KmsError::Busy(pending.timeline_value));
@@ -277,10 +346,22 @@ impl ScanoutState {
     fn present(&mut self) -> Option<CompletedScanout> {
         let presented = self.pending.take()?;
         let released = self.current.replace(presented);
+        self.quarantined.clear();
         Some(CompletedScanout {
             presented,
             released,
         })
+    }
+
+    fn resume_after_session_loss(&mut self) {
+        for frame in [self.current, self.pending].into_iter().flatten() {
+            if !self.quarantined.contains(&frame.slot) {
+                self.quarantined.push(frame.slot);
+            }
+        }
+        self.pending = None;
+        self.current = None;
+        self.faulted = false;
     }
 }
 
@@ -326,12 +407,16 @@ pub(super) enum KmsError {
     Faulted,
     #[error("output slot {0} is still the current scanout buffer")]
     CurrentSlotReuse(u8),
+    #[error("output slot {0} may still be scanned out after session resume")]
+    QuarantinedSlot(u8),
     #[error("output slot {0} is not installed in the KMS target")]
     UnknownSlot(u8),
     #[error("timeline value zero is reserved")]
     InvalidTimeline,
     #[error("atomic KMS commit/page-flip failed: {0}")]
     Commit(String),
+    #[error("failed to refresh KMS surface state after session resume: {0}")]
+    ResetState(String),
 }
 
 #[cfg(test)]
@@ -368,5 +453,44 @@ mod tests {
         ));
         state.faulted = true;
         assert!(matches!(state.validate_queue(1, 4), Err(KmsError::Faulted)));
+    }
+
+    #[test]
+    fn resume_quarantines_old_slots_until_the_first_new_vblank() {
+        let mut state = ScanoutState::default();
+        state.queue(0, 1);
+        state.present().unwrap();
+        state.queue(1, 2);
+
+        state.resume_after_session_loss();
+        assert!(state.present().is_none());
+        assert!(!state.ready_for(0));
+        assert!(!state.ready_for(1));
+        assert!(state.ready_for(2));
+        assert!(matches!(
+            state.validate_queue(0, 3),
+            Err(KmsError::QuarantinedSlot(0))
+        ));
+
+        state.queue(2, 3);
+        state.present().unwrap();
+        assert!(state.ready_for(0));
+        assert!(state.ready_for(1));
+    }
+
+    #[test]
+    fn repeated_resume_can_escalate_when_every_slot_is_quarantined() {
+        let mut state = ScanoutState {
+            quarantined: vec![0, 1],
+            ..ScanoutState::default()
+        };
+        state.queue(2, 7);
+        state.resume_after_session_loss();
+
+        assert!(!state.ready_for(0));
+        assert!(!state.ready_for(1));
+        assert!(!state.ready_for(2));
+        state = ScanoutState::default();
+        assert!(state.ready_for(0));
     }
 }

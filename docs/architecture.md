@@ -107,15 +107,19 @@ own crates/modules.
 The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
 compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
-pointer gestures, and linux-dmabuf when the selected Vulkan device exposes a non-empty validated
-client-import format list. The linux-drm-syncobj global is added only after Smithay opens the
+pointer gestures, presentation-time v2, and linux-dmabuf when the selected Vulkan device exposes a
+non-empty validated client-import format list. The linux-drm-syncobj global is added only after
+Smithay opens the
 Vulkan-selected primary device and verifies syncobj eventfd support. Acquire points become temporary
 binary Vulkan semaphore payloads; release points receive the latest GPU-read completion fence only
 when their surface attachment retires. Preferred integer/fractional scale and transform follow the output
 selected by the authoritative layout placement. Decoration policy currently requires client-side
 decoration; server-side mode will only be exposed when decoration geometry and rendering share the
-scene snapshot. Presentation-time, alpha-modifier, and background-effect are likewise not
-advertised until the Vulkan frame path can honor their feedback and pixels.
+scene snapshot. Presentation feedback is captured from the output-intersecting surface tree in the
+submitted scene and completed only by its output/timeline page flip. Full opaque-region occlusion
+tracking will be added with render-element state; the protocol layer does not claim it before that
+state exists. Alpha-modifier and background-effect remain unadvertised until the Vulkan frame path
+can honor their pixels.
 
 A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Smithay's
 `Space<Window>` and ECS when either the shell or surface destruction callback fires.
@@ -144,4 +148,6 @@ dma-bufs. The tty backend imports those dma-bufs into GBM, creates Smithay frame
 atomic/page-flip state with the renderer's `IN_FENCE_FD`; vblank advances the scanout state. Initial
 output resource construction is a startup gate: failure aborts backend preparation before readiness.
 Hotplug resource failures are isolated to the affected output and do not invalidate already-live
-outputs.
+outputs. Session resume re-reads every live Smithay DRM surface, quarantines slots that may still be
+scanned out, drains already-ready DRM events, and then schedules a repaint. Exhausting all three
+slots escalates to a device state reset rather than reusing an uncertain buffer.

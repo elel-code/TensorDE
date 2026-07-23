@@ -137,6 +137,23 @@ impl FrameScheduler {
             .map(|state| state.next_slot)
     }
 
+    pub(crate) fn output_waiting_for_gpu(&self, output: RenderOutputId) -> bool {
+        !self.device_lost
+            && self
+                .outputs
+                .get(&output)
+                .is_some_and(|state| state.in_flight)
+    }
+
+    pub(crate) fn advance_output_slot(&mut self, output: RenderOutputId) -> Option<u8> {
+        let state = self
+            .outputs
+            .get_mut(&output)
+            .filter(|state| !self.device_lost && state.prepared.is_none() && !state.in_flight)?;
+        state.next_slot = (state.next_slot + 1) % OUTPUT_SLOT_COUNT;
+        Some(state.next_slot)
+    }
+
     pub(crate) const fn layout(&self) -> DescriptorHeapLayout {
         DescriptorHeapLayout {
             capacity: self.descriptors.capacity,
@@ -604,9 +621,26 @@ mod tests {
         assert_eq!(scheduler.next_output_slot(OUTPUT), Some(0));
 
         let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        assert!(scheduler.output_waiting_for_gpu(OUTPUT));
         assert_eq!(scheduler.next_output_slot(OUTPUT), None);
         scheduler.retire_completed(frame.timeline_value);
+        assert!(!scheduler.output_waiting_for_gpu(OUTPUT));
         assert_eq!(scheduler.next_output_slot(OUTPUT), Some(1));
+    }
+
+    #[test]
+    fn idle_output_can_rotate_around_kms_owned_slots() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+
+        assert_eq!(scheduler.advance_output_slot(OUTPUT), Some(1));
+        assert_eq!(scheduler.advance_output_slot(OUTPUT), Some(2));
+        assert_eq!(scheduler.advance_output_slot(OUTPUT), Some(0));
+
+        let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        assert_eq!(scheduler.advance_output_slot(OUTPUT), None);
+        scheduler.retire_completed(frame.timeline_value);
+        assert_eq!(scheduler.advance_output_slot(OUTPUT), Some(2));
     }
 
     #[test]

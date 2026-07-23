@@ -1,8 +1,9 @@
 use smithay::{
     reexports::wayland_server::DisplayHandle,
+    utils::{ClockSource, Monotonic},
     wayland::{
         fractional_scale::FractionalScaleManagerState, pointer_gestures::PointerGesturesState,
-        relative_pointer::RelativePointerManagerState,
+        presentation::PresentationState, relative_pointer::RelativePointerManagerState,
         selection::primary_selection::PrimarySelectionState,
         shell::xdg::decoration::XdgDecorationState, viewporter::ViewporterState,
     },
@@ -27,6 +28,7 @@ pub(crate) struct ProtocolGlobals {
     primary_selection: PrimarySelectionState,
     relative_pointer: RelativePointerManagerState,
     pointer_gestures: PointerGesturesState,
+    presentation: PresentationState,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -42,6 +44,7 @@ impl ProtocolGlobals {
             primary_selection: PrimarySelectionState::new::<RuntimeState>(display),
             relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
+            presentation: PresentationState::new::<RuntimeState>(display, Monotonic::ID as u32),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -92,6 +95,7 @@ impl ProtocolGlobals {
             &self.primary_selection,
             &self.relative_pointer,
             &self.pointer_gestures,
+            &self.presentation,
         );
         ProtocolCapabilities {
             viewporter: true,
@@ -100,6 +104,7 @@ impl ProtocolGlobals {
             primary_selection: true,
             relative_pointer: true,
             pointer_gestures: true,
+            presentation_time: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -118,6 +123,7 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) primary_selection: bool,
     pub(crate) relative_pointer: bool,
     pub(crate) pointer_gestures: bool,
+    pub(crate) presentation_time: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -147,6 +153,7 @@ mod tests {
                 primary_selection: true,
                 relative_pointer: true,
                 pointer_gestures: true,
+                presentation_time: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

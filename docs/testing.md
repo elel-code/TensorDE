@@ -17,6 +17,7 @@ the reference projects are never linked into the build and their fixtures are no
 | Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
 | Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
 | Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
+| Niri/Nourish presentation lifecycle | frame callbacks follow accepted KMS commits while feedback follows the exact output/timeline flip; failures discard it and resume never reuses uncertain slots | `protocol::runtime`, `protocol::state::presentation`, `backend::tty::kms` |
 | Smithay/Niri surface-tree transactions | subsurface order is stable, synchronized children defer to the parent transaction, and popups escape tile clipping without escaping output damage | `protocol::state::surfaces`, `protocol::state::tree`, `render::frame::plan`, `scene::damage` |
 | Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
 | Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
@@ -51,8 +52,12 @@ selection result, never a silently skipped compatibility path.
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
 - Protocol-global tests bind viewporter, fractional-scale, xdg-decoration, primary selection,
-  relative pointer, and pointer gestures from a real client. They assert preferred-scale and
-  decoration configure events, including protocol-correct child-object destruction order.
+  relative pointer, pointer gestures, and presentation-time from a real client. They assert
+  preferred-scale, decoration configure, monotonic clock, and discarded-feedback events, including
+  protocol-correct child-object destruction order.
+- Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
+  conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
+  quarantine across session resume.
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
 - Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
   and invalid configured node paths without requiring a Vulkan driver.

@@ -306,18 +306,7 @@ impl VulkanRenderer {
                 plane_count: target.format.plane_count,
             });
         }
-        let completed = self
-            ._owner
-            .frame_executor
-            .completed(&self._owner.device)
-            .map_err(RendererError::QueryTimeline)?;
-        self.frames.retire_completed(completed);
-        self.native_targets
-            .retire_completed(&self._owner.device, completed);
-        self.client_images
-            .retire_completed(&self._owner.device, completed);
-        self.client_sync
-            .retire_completed(&self._owner.device, completed);
+        self.refresh_completed()?;
         let buffers = self
             .native_targets
             .register(
@@ -358,15 +347,7 @@ impl VulkanRenderer {
         id: SurfaceBufferId,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     ) -> Result<(), RendererError> {
-        let completed = self
-            ._owner
-            .frame_executor
-            .completed(&self._owner.device)
-            .map_err(RendererError::QueryTimeline)?;
-        self.client_images
-            .retire_completed(&self._owner.device, completed);
-        self.client_sync
-            .retire_completed(&self._owner.device, completed);
+        self.refresh_completed()?;
         self.client_images
             .import(id, &self._owner.device, dmabuf)
             .map_err(|error| RendererError::ClientImport(error.to_string()))
@@ -402,6 +383,34 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
+    pub(crate) fn refresh_completed(&mut self) -> Result<u64, RendererError> {
+        let completed = match self._owner.frame_executor.completed(&self._owner.device) {
+            Ok(value) => value,
+            Err(error) => {
+                // Any timeline-query failure makes completion ownership
+                // unknowable. Fail closed instead of polling forever or
+                // recycling GPU-visible resources after a transient-looking
+                // Vulkan error.
+                self.frames.mark_device_lost();
+                return Err(RendererError::QueryTimeline(error));
+            }
+        };
+        self.retire_completed(completed);
+        Ok(completed)
+    }
+
+    #[cfg(feature = "tty")]
+    fn retire_completed(&mut self, completed: u64) {
+        self.frames.retire_completed(completed);
+        self.native_targets
+            .retire_completed(&self._owner.device, completed);
+        self.client_images
+            .retire_completed(&self._owner.device, completed);
+        self.client_sync
+            .retire_completed(&self._owner.device, completed);
+    }
+
+    #[cfg(feature = "tty")]
     pub(crate) fn release_client_image(&mut self, id: SurfaceBufferId) {
         self.client_images.release(id);
     }
@@ -428,27 +437,22 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
+    pub(crate) fn output_waiting_for_gpu(&self, output: RenderOutputId) -> bool {
+        self.frames.output_waiting_for_gpu(output)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn advance_output_slot(&mut self, output: RenderOutputId) -> Option<u8> {
+        self.frames.advance_output_slot(output)
+    }
+
+    #[cfg(feature = "tty")]
     pub(crate) fn submit_scene(
         &mut self,
         output: RenderOutputId,
         scene: crate::scene::SceneSnapshot,
     ) -> Result<FrameSubmission, RendererError> {
-        let completed = match self._owner.frame_executor.completed(&self._owner.device) {
-            Ok(value) => value,
-            Err(error) => {
-                if error == vk::ErrorCode::DEVICE_LOST {
-                    self.frames.mark_device_lost();
-                }
-                return Err(RendererError::QueryTimeline(error));
-            }
-        };
-        self.frames.retire_completed(completed);
-        self.native_targets
-            .retire_completed(&self._owner.device, completed);
-        self.client_images
-            .retire_completed(&self._owner.device, completed);
-        self.client_sync
-            .retire_completed(&self._owner.device, completed);
+        let completed = self.refresh_completed()?;
         let frame = self
             .frames
             .prepare(output, scene, completed)

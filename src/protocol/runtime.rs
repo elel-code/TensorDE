@@ -271,7 +271,9 @@ mod tests {
     use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
     use smithay::{
+        desktop::utils::OutputPresentationFeedback,
         output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+        utils::{ClockSource, Monotonic},
         wayland::seat::WaylandFocus,
     };
     use wayland_client::{
@@ -284,6 +286,7 @@ mod tests {
             fractional_scale::v1::client::wp_fractional_scale_manager_v1,
             fractional_scale::v1::client::wp_fractional_scale_v1,
             pointer_gestures::zv1::client::zwp_pointer_gestures_v1,
+            presentation_time::client::{wp_presentation, wp_presentation_feedback},
             primary_selection::zv1::client::zwp_primary_selection_device_manager_v1,
             relative_pointer::zv1::client::zwp_relative_pointer_manager_v1,
             viewporter::client::wp_viewporter,
@@ -307,6 +310,8 @@ mod tests {
         SubsurfaceDeferred,
         SubsurfaceCommitted,
         SubsurfaceDestroyed,
+        PresentationClock(u32),
+        PresentationDiscarded,
         Destroyed,
     }
 
@@ -315,6 +320,8 @@ mod tests {
         configured_size: Option<(i32, i32)>,
         preferred_scale: Option<u32>,
         client_side_decoration: bool,
+        presentation_clock_id: Option<u32>,
+        presentation_discarded: bool,
     }
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for TestClient {
@@ -339,6 +346,36 @@ mod tests {
     delegate_noop!(TestClient: ignore zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1);
     delegate_noop!(TestClient: ignore zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1);
     delegate_noop!(TestClient: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);
+    impl Dispatch<wp_presentation::WpPresentation, ()> for TestClient {
+        fn event(
+            state: &mut Self,
+            _: &wp_presentation::WpPresentation,
+            event: wp_presentation::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wp_presentation::Event::ClockId { clk_id } = event {
+                state.presentation_clock_id = Some(clk_id);
+            }
+        }
+    }
+
+    impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for TestClient {
+        fn event(
+            state: &mut Self,
+            _: &wp_presentation_feedback::WpPresentationFeedback,
+            event: wp_presentation_feedback::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(event, wp_presentation_feedback::Event::Discarded) {
+                state.presentation_discarded = true;
+            }
+        }
+    }
+
     impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for TestClient {
         fn event(
             state: &mut Self,
@@ -418,6 +455,68 @@ mod tests {
     }
 
     #[test]
+    fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
+        let mut runtime =
+            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
+        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+        let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name().unwrap());
+        runtime.prepare(false).unwrap();
+
+        let (event_tx, event_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let connection =
+                Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+            let (globals, mut queue) = registry_queue_init::<TestClient>(&connection).unwrap();
+            let handle = queue.handle();
+            let compositor = globals
+                .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+                .unwrap();
+            let presentation = globals
+                .bind::<wp_presentation::WpPresentation, _, _>(&handle, 1..=2, ())
+                .unwrap();
+            let surface = compositor.create_surface(&handle, ());
+            let _feedback = presentation.feedback(&surface, &handle, ());
+            surface.commit();
+
+            let mut state = TestClient {
+                configured: false,
+                configured_size: None,
+                preferred_scale: None,
+                client_side_decoration: false,
+                presentation_clock_id: None,
+                presentation_discarded: false,
+            };
+            while state.presentation_clock_id.is_none() {
+                queue.blocking_dispatch(&mut state).unwrap();
+            }
+            event_tx
+                .send(ClientEvent::PresentationClock(
+                    state.presentation_clock_id.unwrap(),
+                ))
+                .unwrap();
+            release_rx.recv().unwrap();
+
+            surface.destroy();
+            while !state.presentation_discarded {
+                queue.blocking_dispatch(&mut state).unwrap();
+            }
+            event_tx.send(ClientEvent::PresentationDiscarded).unwrap();
+        });
+
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::PresentationClock(Monotonic::ID as u32)
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::PresentationDiscarded
+        );
+        client.join().unwrap();
+    }
+
+    #[test]
     fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         let mut runtime =
             WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
@@ -476,7 +575,11 @@ mod tests {
             let _pointer_gestures = globals
                 .bind::<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, _, _>(&handle, 1..=3, ())
                 .unwrap();
+            let presentation = globals
+                .bind::<wp_presentation::WpPresentation, _, _>(&handle, 1..=2, ())
+                .unwrap();
             let surface = compositor.create_surface(&handle, ());
+            let _feedback = presentation.feedback(&surface, &handle, ());
             let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
             let toplevel = xdg_surface.get_toplevel(&handle, ());
             let _fractional_scale =
@@ -491,6 +594,8 @@ mod tests {
                 configured_size: None,
                 preferred_scale: None,
                 client_side_decoration: false,
+                presentation_clock_id: None,
+                presentation_discarded: false,
             };
             while !state.configured {
                 queue.blocking_dispatch(&mut state).unwrap();
@@ -502,6 +607,10 @@ mod tests {
                     client_side_decoration: state.client_side_decoration,
                 })
                 .unwrap();
+            while !state.presentation_discarded {
+                queue.blocking_dispatch(&mut state).unwrap();
+            }
+            event_tx.send(ClientEvent::PresentationDiscarded).unwrap();
 
             let child = compositor.create_surface(&handle, ());
             let subsurface = subcompositor.get_subsurface(&child, &surface, &handle, ());
@@ -541,6 +650,21 @@ mod tests {
         );
         assert_eq!(runtime.state.view_count(), 1);
         let window = runtime.state.space.elements().next().unwrap().clone();
+        let output = runtime.state.space.outputs().next().unwrap().clone();
+        let mut feedback = OutputPresentationFeedback::new(&output);
+        window.take_presentation_feedback(
+            &mut feedback,
+            |_, _| Some(output.clone()),
+            |_, _| {
+                smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::empty()
+            },
+        );
+        drop(feedback);
+        runtime.state.display_handle.flush_clients().unwrap();
+        assert_eq!(
+            dispatch_until(&mut runtime, &event_rx),
+            ClientEvent::PresentationDiscarded
+        );
         assert_eq!(
             runtime.state.space.element_location(&window),
             Some((8, 160).into())

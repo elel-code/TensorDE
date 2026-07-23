@@ -1,6 +1,8 @@
 #[cfg(feature = "tty")]
 mod output;
 #[cfg(feature = "tty")]
+mod presentation;
+#[cfg(feature = "tty")]
 mod surfaces;
 #[cfg(feature = "tty")]
 mod sync;
@@ -42,6 +44,8 @@ use crate::{
 use tensor_util::Size;
 
 use super::globals::ProtocolGlobals;
+#[cfg(feature = "tty")]
+use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
 use surfaces::SurfaceBufferRegistry;
 #[cfg(feature = "tty")]
@@ -93,6 +97,10 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "tty")]
     repaint_pending: HashSet<BackendOutputId>,
     #[cfg(feature = "tty")]
+    renderer_retry_scheduled: bool,
+    #[cfg(feature = "tty")]
+    pending_presentations: PendingPresentations,
+    #[cfg(feature = "tty")]
     pub(crate) backend: Option<TtyBackend>,
     #[cfg(feature = "tty")]
     pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
@@ -140,6 +148,10 @@ impl RuntimeState {
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
             repaint_pending: HashSet::new(),
+            #[cfg(feature = "tty")]
+            renderer_retry_scheduled: false,
+            #[cfg(feature = "tty")]
+            pending_presentations: PendingPresentations::default(),
             #[cfg(feature = "tty")]
             backend: None,
             #[cfg(feature = "tty")]
