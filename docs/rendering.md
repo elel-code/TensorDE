@@ -134,8 +134,18 @@ physical pixels in Vulkan push data. A 1920×1080 output at scale 1.25 therefore
 
 This also defines the scaling contract for rootless XWayland windows: they are surface content and
 use the same scene conversion. Legacy clients that only observe `wl_output.scale` receive Smithay's
-rounded-up integer value; the compositor performs the final resampling to the fractional physical
-scale. Tensor does not add an X11-session renderer or a second X11-specific damage path.
+rounded-up integer value, so a 1.25 output lets XWayland render a 2x client buffer before the
+compositor downsamples it to the fractional physical destination. The embedded surface sampler is
+linear for this final conversion; Tensor must not introduce a default nearest-neighbor XWayland
+branch. Tensor does not add an X11-session renderer, a second X11 coordinate space, or an
+X11-specific damage path.
+
+This follows the quality-producing invariant observed in Niri's xwayland-satellite integration:
+X11 windows become ordinary Wayland surfaces and inherit the normal fractional-scale pipeline.
+Hyprland's separate XWayland monitor positions, `force_zero_scaling` coordinate conversions, and
+default XWayland nearest-neighbor switch are useful reference failure modes, not Tensor APIs to
+copy. A future per-window pixel-art filter may be explicit policy, but X11 provenance alone must
+never reduce sampling quality.
 
 ## Frame Boundary Status
 

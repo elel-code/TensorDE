@@ -118,6 +118,8 @@ impl SurfaceTransform {
 ///
 /// Vulkan and Wayland handles stay in their owners.  A scene snapshot carries
 /// only stable identities and the dimensions needed to build a draw plan.
+/// Rootless XWayland surfaces use this exact representation; their provenance
+/// must never select a second coordinate, damage, or sampling path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceContent {
     pub surface_id: SurfaceId,

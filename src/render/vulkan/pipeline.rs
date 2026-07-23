@@ -11,6 +11,18 @@ const VERTEX_SHADER: &[u32] =
 const FRAGMENT_SHADER: &[u32] =
     vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_client.frag.spv"));
 
+fn surface_sampler_info() -> vk::SamplerCreateInfo {
+    vk::SamplerCreateInfo::builder()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .max_lod(1.0)
+        .build()
+}
+
 /// The first real scene pipeline. It deliberately has no descriptor-set
 /// layout: `VK_EXT_descriptor_heap` maps the sampled-image declaration at
 /// pipeline creation and a per-draw push index selects the frame descriptor.
@@ -49,15 +61,7 @@ impl ClientImagePipeline {
             }
         };
 
-        let sampler = vk::SamplerCreateInfo::builder()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .max_lod(1.0)
-            .build();
+        let sampler = surface_sampler_info();
         let source = vk::DescriptorMappingSourcePushIndexEXT::builder()
             .heap_offset(resource_heap_base)
             .push_offset(0)
@@ -196,4 +200,30 @@ pub(super) enum ClientPipelineError {
     CreatePipeline(vk::ErrorCode),
     #[error("Vulkan returned no client graphics pipeline")]
     NoPipeline,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_sampler_preserves_fractional_downscaling_quality() {
+        let sampler = surface_sampler_info();
+
+        assert_eq!(sampler.mag_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.min_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
+        assert_eq!(
+            sampler.address_mode_u,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            sampler.address_mode_v,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            sampler.address_mode_w,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+    }
 }
