@@ -48,8 +48,10 @@ allocation, three native output slots, and timeline retirement, and is connected
 output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
 client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports a
 binary `SYNC_FD`, and hands it to Smithay's atomic KMS path. The current slice is intentionally
-limited to one-plane RGB; explicit client acquire fences, multi-plane formats, surface trees, and
-damage-driven partial rendering remain later gates.
+limited to one-plane RGB; implicit dma-buf synchronization, multi-plane formats, surface trees, and
+damage-driven partial rendering remain later gates. Explicit clients use Smithay's
+`wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
+sync-file fds and stable `SurfaceId` values reach Vulkanalia.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
@@ -99,7 +101,10 @@ The protocol layer owns long-lived globals as a single `ProtocolGlobals` capabil
 compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
 pointer gestures, and linux-dmabuf when the selected Vulkan device exposes a non-empty validated
-client-import format list. Preferred integer/fractional scale and transform follow the output
+client-import format list. The linux-drm-syncobj global is added only after Smithay opens the
+Vulkan-selected primary device and verifies syncobj eventfd support. Acquire points become temporary
+binary Vulkan semaphore payloads; release points receive the latest GPU-read completion fence only
+when their surface attachment retires. Preferred integer/fractional scale and transform follow the output
 selected by the authoritative layout placement. Decoration policy currently requires client-side
 decoration; server-side mode will only be exposed when decoration geometry and rendering share the
 scene snapshot. Presentation-time, alpha-modifier, and background-effect are likewise not

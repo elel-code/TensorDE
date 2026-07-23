@@ -24,6 +24,14 @@ use record::{SceneRecord, prepare_draws, record_scene};
 
 const COMMAND_BUFFER_COUNT: usize = 3;
 
+pub(super) struct FrameExecution<'a> {
+    pub(super) frame: &'a FrameSubmission,
+    pub(super) output: &'a NativeOutputImageInfo,
+    pub(super) client_images: &'a [ClientImageInfo],
+    pub(super) acquire_semaphores: &'a [vk::Semaphore],
+    pub(super) completed_value: u64,
+}
+
 pub(super) struct VulkanFrameExecutor {
     command_pool: vk::CommandPool,
     command_buffers: [vk::CommandBuffer; COMMAND_BUFFER_COUNT],
@@ -149,11 +157,15 @@ impl VulkanFrameExecutor {
         &mut self,
         device: &Device,
         queue: vk::Queue,
-        frame: &FrameSubmission,
-        image: &NativeOutputImageInfo,
-        client_images: &[ClientImageInfo],
-        completed_value: u64,
+        execution: FrameExecution<'_>,
     ) -> Result<OwnedFd, VulkanFrameError> {
+        let FrameExecution {
+            frame,
+            output: image,
+            client_images,
+            acquire_semaphores,
+            completed_value,
+        } = execution;
         // Validate the scene-to-Vulkan descriptor contract before touching a
         // command buffer.  Returning after `begin_command_buffer` would leave
         // that buffer in the recording state and make the failure path depend
@@ -237,9 +249,17 @@ impl VulkanFrameExecutor {
             .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .build();
         let signal_infos = [signal_info, render_complete_info];
-        let submit_info = vk::SubmitInfo2::builder()
+        let wait_infos = acquire_semaphores
+            .iter()
+            .copied()
+            .map(acquire_wait_info)
+            .collect::<Vec<_>>();
+        let mut submit_info = vk::SubmitInfo2::builder()
             .command_buffer_infos(std::slice::from_ref(&command_info))
             .signal_semaphore_infos(&signal_infos);
+        if !wait_infos.is_empty() {
+            submit_info = submit_info.wait_semaphore_infos(&wait_infos);
+        }
         unsafe {
             device
                 .queue_submit2(queue, std::slice::from_ref(&submit_info), vk::Fence::null())
@@ -293,6 +313,13 @@ impl VulkanFrameExecutor {
     }
 }
 
+fn acquire_wait_info(semaphore: vk::Semaphore) -> vk::SemaphoreSubmitInfo {
+    vk::SemaphoreSubmitInfo::builder()
+        .semaphore(semaphore)
+        .stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+        .build()
+}
+
 #[derive(Debug, Error)]
 pub(super) enum VulkanFrameError {
     #[error("no reusable command buffer is available")]
@@ -314,5 +341,19 @@ pub(super) enum VulkanFrameError {
 impl VulkanFrameError {
     pub(super) const fn was_submitted(&self) -> bool {
         matches!(self, Self::ExportSyncFd(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_acquire_waits_at_the_first_sampling_stage() {
+        let semaphore = vk::Semaphore::from_raw(7);
+        let wait = acquire_wait_info(semaphore);
+        assert_eq!(wait.semaphore, semaphore);
+        assert_eq!(wait.value, 0);
+        assert_eq!(wait.stage_mask, vk::PipelineStageFlags2::FRAGMENT_SHADER);
     }
 }

@@ -16,6 +16,7 @@ the reference projects are never linked into the build and their fixtures are no
 | --- | --- | --- |
 | Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
 | Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
+| Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
 | Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
 | Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
 | Hyprland IPC and client protocol checks | bounded framed requests, request IDs, version errors, and protocol-global ownership | `tests/reference_contracts/hyprland.rs`, `ipc`, `compositor::root`, `protocol::globals` |
@@ -58,6 +59,9 @@ selection result, never a silently skipped compatibility path.
 - Descriptor-heap renderer tests cover resource/sampler heap limits, embedded-sampler reservation,
   user-range-relative push-index arithmetic, first-use `UNDEFINED + FOREIGN` acquisition, and the
   retained `GENERAL + FOREIGN` path after a successful submission.
+- Explicit-sync tests cover acquire import ownership, fragment-stage waits, retry after failed
+  submission, latest-repaint release fences, and the no-early-release timeline fallback when
+  binary completion export fails.
 - Native format tests keep Vulkan import and output-export roles distinct and reject unsupported
   fourccs, mismatched modifiers, non-exportable images, non-scanout GBM paths, and mismatched plane
   topology. Preference ordering must be deterministic regardless of probe order.

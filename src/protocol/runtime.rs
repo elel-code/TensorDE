@@ -91,7 +91,7 @@ impl WaylandRuntime {
             }
             let backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
                 .map_err(|error| ProtocolError::Backend(error.to_string()))?;
-            self.state.backend = Some(backend);
+            self.state.install_backend(backend);
             let events = self
                 .state
                 .backend

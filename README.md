@@ -15,8 +15,11 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 The repository currently contains the long-lived Smithay protocol state machine (compositor,
 xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
 startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tty device/session
-ownership, and a Vulkanalia device gate. KMS outputs and Vulkan frame submission are not connected
-yet; their fourcc/modifier path is already validated across Vulkan, GBM, and primary KMS planes.
+ownership, Smithay-owned atomic KMS output submission, and a Vulkanalia renderer. The renderer
+allocates explicit-modifier output dma-bufs, samples imported one-plane RGB client buffers through
+the descriptor heap, and integrates `wp_linux_drm_syncobj_v1` acquire/release fences without a CPU
+wait or descriptor-set fallback. Multi-plane formats, implicit-sync clients, surface trees, and
+presentation feedback remain open renderer gates.
 
 ## Requirements
 
@@ -75,7 +78,8 @@ The module boundaries are deliberate ownership boundaries:
 - `src/ipc.rs`: versioned compositor control protocol over a bounded Unix-socket framing layer.
 - `src/ecs.rs`: Bevy ECS components and deterministic scene/layout state.
 - `src/scene.rs`: one-shot render scene extraction, effect bounds, and damage snapshots.
-- `src/render.rs`: Vulkan target capabilities and, later, device/swapchain lifetime.
+- `src/render.rs`: Vulkan device selection, descriptor heaps, imported client images, native output
+  image lifetime, explicit synchronization, and frame submission.
 - `src/layout.rs`: constrained geometry, per-workspace scrolling state, and layout snapshots shared
   by scene extraction, damage, effects, and input policy.
 - `src/config.rs`: process configuration.
@@ -85,13 +89,11 @@ The module boundaries are deliberate ownership boundaries:
 
 ## Roadmap
 
-1. Create Smithay DRM surfaces from the existing output plan and negotiated native format lists.
-2. Allocate Vulkanalia descriptor-heap output images, export their dma-buf planes, and attach them
-   to Smithay-owned KMS framebuffers.
-3. Import client dma-bufs, handle explicit synchronization and damage, and submit direct-scanout
-   candidates through Smithay's DRM/KMS backend.
-4. Connect output/workspace policy and the three layouts to persistent scene extraction and IPC
-   commands.
+1. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
+2. Flatten subsurface and popup trees into the existing value-only scene content table.
+3. Add presentation-time feedback, frame callbacks, and damage-driven partial rendering around the
+   existing timeline/KMS completion model.
+4. Add direct-scanout candidate selection without moving KMS ownership out of Smithay.
 5. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
    stable ECS view IDs.
 6. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal

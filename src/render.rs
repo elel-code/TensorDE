@@ -23,5 +23,7 @@ pub(crate) use frame::{
 pub use interop::NativeInteropCapabilities;
 pub use target::RendererTarget;
 #[cfg(feature = "tty")]
+pub(crate) use vulkan::ClientReleaseFence;
+#[cfg(feature = "tty")]
 pub(crate) use vulkan::NativeOutputBuffer;
 pub(crate) use vulkan::{RendererError, VulkanRenderer};

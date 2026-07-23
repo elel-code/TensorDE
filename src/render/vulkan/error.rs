@@ -57,6 +57,9 @@ pub enum RendererError {
     #[error("failed to import a client linux dma-buf: {0}")]
     #[cfg(feature = "tty")]
     ClientImport(String),
+    #[error("failed to import a client explicit-sync acquire fence: {0}")]
+    #[cfg(feature = "tty")]
+    ClientSync(String),
     #[error("scene references client image {0:?}, but its Vulkan import is unavailable")]
     #[cfg(feature = "tty")]
     MissingClientImage(crate::ecs::SurfaceBufferId),

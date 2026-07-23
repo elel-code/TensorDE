@@ -189,6 +189,18 @@ impl TtyBackend {
         std::mem::take(&mut self.pending_outputs)
     }
 
+    /// Primary DRM fd shared with Smithay's syncobj protocol owner.  This is
+    /// the same primary/render identity selected by Vulkan; the backend never
+    /// performs an independent GPU choice.
+    pub(crate) fn syncobj_device(&self) -> Option<DrmDeviceFd> {
+        if !self.session.is_active() {
+            return None;
+        }
+        self.devices
+            .get(&self.primary_node.dev_id())
+            .map(|device| device.drm.device_fd().clone())
+    }
+
     pub(crate) fn handle_udev_event(&mut self, event: UdevEvent) {
         match event {
             UdevEvent::Added { device_id, path } => {

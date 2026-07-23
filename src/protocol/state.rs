@@ -2,6 +2,8 @@
 mod output;
 #[cfg(feature = "tty")]
 mod surfaces;
+#[cfg(feature = "tty")]
+mod sync;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -42,6 +44,10 @@ use tensor_util::Size;
 use super::globals::ProtocolGlobals;
 #[cfg(feature = "tty")]
 use surfaces::{SurfaceBufferRegistry, SurfaceCommit};
+#[cfg(feature = "tty")]
+pub(super) use sync::ExplicitSyncPoints;
+#[cfg(feature = "tty")]
+use sync::{PendingClientRelease, SurfaceSyncRegistry};
 
 #[cfg(all(test, feature = "tty"))]
 use crate::backend::BackendOutputEvent;
@@ -67,6 +73,10 @@ pub(crate) struct RuntimeState {
     pub(crate) renderer: Option<VulkanRenderer>,
     #[cfg(feature = "tty")]
     surface_buffers: SurfaceBufferRegistry,
+    #[cfg(feature = "tty")]
+    surface_sync: SurfaceSyncRegistry,
+    #[cfg(feature = "tty")]
+    pending_client_releases: Vec<PendingClientRelease>,
     #[cfg(feature = "tty")]
     outputs: HashMap<BackendOutputId, ManagedOutput>,
     #[cfg(feature = "tty")]
@@ -108,6 +118,10 @@ impl RuntimeState {
             #[cfg(feature = "tty")]
             surface_buffers: SurfaceBufferRegistry::default(),
             #[cfg(feature = "tty")]
+            surface_sync: SurfaceSyncRegistry::default(),
+            #[cfg(feature = "tty")]
+            pending_client_releases: Vec::new(),
+            #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
             repaint_pending: HashSet::new(),
@@ -145,6 +159,26 @@ impl RuntimeState {
         self.renderer.as_ref()
     }
 
+    #[cfg(feature = "tty")]
+    pub(crate) fn install_backend(&mut self, backend: TtyBackend) {
+        assert!(
+            self.backend.is_none(),
+            "tty backend was installed more than once"
+        );
+        let device = backend.syncobj_device();
+        self.protocol_globals
+            .update_syncobj(&self.display_handle, device);
+        self.backend = Some(backend);
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn refresh_syncobj_device(&mut self) {
+        let device = self.backend.as_ref().and_then(TtyBackend::syncobj_device);
+        self.protocol_globals
+            .update_syncobj(&self.display_handle, device);
+        self.flush_client_releases();
+    }
+
     pub(crate) fn register_toplevel(&mut self, surface: ToplevelSurface) -> Option<ViewId> {
         #[cfg(feature = "tty")]
         if self
@@ -178,9 +212,17 @@ impl RuntimeState {
 
         let view_id = self.surface_views.remove(&surface.id())?;
         #[cfg(feature = "tty")]
+        if let Some(surface_id) = self.surface_buffers.surface_id(&surface.id())
+            && let Some(sync) = self.surface_sync.remove(surface_id)
+        {
+            self.finish_surface_sync(surface_id, sync.release);
+        }
+        #[cfg(feature = "tty")]
         let released = self.surface_buffers.remove_surface(&surface.id());
         #[cfg(feature = "tty")]
         self.release_client_buffers(released);
+        #[cfg(feature = "tty")]
+        self.flush_client_releases();
         if let Err(error) = self.world.remove_view(view_id) {
             warn!(%error, view_id = view_id.get(), "Wayland view was missing from ECS");
         }

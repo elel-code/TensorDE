@@ -103,7 +103,9 @@ premultiplied-alpha blending. The first acquire uses `UNDEFINED + FOREIGN` to pr
 producer's explicit-modifier contents; only a successful queue submission advances the cache to the
 subsequent `GENERAL + FOREIGN` path. Resource and sampler heap ranges share one device allocation but
 are disjoint, including the implementation-reserved sampler range required by embedded samplers.
-The path is intentionally limited to one-plane RGB today.
+The path is intentionally limited to one-plane RGB today. Explicit producer/consumer
+synchronization for these buffers is provided through `wp_linux_drm_syncobj_v1`; implicit dma-buf
+reservation-fence interop remains a separate gate.
 
 The protocol-to-scene handoff has an explicit value-only boundary. A
 compositor-assigned `SurfaceBufferId` is registered after a successful
@@ -144,10 +146,10 @@ The current command stream is deliberately limited to:
 4. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
-complete Wayland renderer: client producer fences from explicit synchronization, multi-plane YUV,
-subsurface/popup trees, presentation feedback, and damage-driven partial rendering remain separate
-gates. Debug diagnostics report draw count, unique client-image descriptor count, surface-content
-count, and damage-region count for each prepared frame.
+complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, subsurface/popup trees,
+presentation feedback, and damage-driven partial rendering remain separate gates. Debug diagnostics
+report draw count, unique client-image descriptor count, surface-content count, and damage-region
+count for each prepared frame.
 
 ## Synchronization
 
@@ -158,10 +160,35 @@ as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bound
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
 
-Client producer fences from `zwp_linux_explicit_synchronization_v1` are not wired into the frame
-submit path yet; the compositor therefore does not advertise that protocol as complete and must not
-claim that client acquire synchronization is solved. Once implemented, those fences will be
-imported as temporary binary semaphore payloads rather than waited on by the CPU. Exporting or
-importing a sync file is an explicit API boundary, not a reason to wait on the CPU. A device without
-both importable and exportable `SYNC_FD` support fails selection; Tensor does not silently fall back
-to blocking queue-idle synchronization.
+Tensor implements the modern `wp_linux_drm_syncobj_v1` path supplied by Smithay master. The global
+is created only when the Vulkan-selected primary DRM device supports `drmSyncobjEventfd`; hot-unplug
+or session pause closes the import device, and hotplug/session recovery updates the same protocol
+owner. Tensor does not publish the older `zwp_linux_explicit_synchronization_v1` as a parallel
+compatibility surface.
+Once a surface binds the syncobj add-on, every non-null buffer attach must provide both points;
+missing, conflicting, or non-dma-buf commits are rejected and unmapped rather than sampled through
+an implicit fallback.
+
+On commit, the protocol owner removes the acquire/release points from Smithay's renderer cache
+before `on_commit_buffer_handler` can consume them. This is deliberate: Smithay objects remain in
+the protocol layer, and its default buffer-drop release must not signal a point while Vulkan still
+samples that dma-buf. The acquire point is exported to a sync file, imported into a temporary binary
+Vulkan semaphore payload, and waited at the fragment-shader stage. A failed `queue_submit2` leaves
+that imported semaphore pending for retry and does not advance imported-image state or the client
+release point.
+
+After a successful submission, the acquire semaphore is retired by the internal Vulkan timeline.
+The exported binary completion sync file is retained per explicitly synchronized surface while a
+duplicate is handed to KMS. Each repaint replaces the retained completion with the latest GPU read,
+so detaching or replacing the surface attachment imports the newest fence into the client's release
+timeline point. Tensor never signals release merely because the first frame completed: the scene may
+reuse that dma-buf on a later repaint. An attachment that was never submitted can be released
+immediately. Sync-file import failures are retained for retry; if queue submission succeeded but
+completion export failed, the release point remains gated by the renderer timeline instead of being
+signalled early.
+
+Exporting or importing a sync file is an explicit API boundary, not a reason to wait on the CPU.
+Timeline semaphores never cross it, descriptor sets are not introduced for this path, and a device
+without both importable and exportable binary `SYNC_FD` support fails selection. Implicit-sync
+clients still need a defined dma-buf reservation-fence policy before Tensor can claim the full
+linux-dmabuf ecosystem is complete.

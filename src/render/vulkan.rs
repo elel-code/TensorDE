@@ -1,7 +1,11 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "tty")]
-use std::{collections::BTreeMap, os::fd::OwnedFd};
+use std::{
+    collections::BTreeMap,
+    os::fd::{AsFd, OwnedFd},
+    sync::Arc,
+};
 
 use smithay::backend::allocator::Fourcc;
 use tracing::{debug, info};
@@ -31,11 +35,15 @@ mod import;
 mod pipeline;
 mod probe;
 #[cfg(feature = "tty")]
+mod sync;
+#[cfg(feature = "tty")]
 mod target;
 
 pub(crate) use error::RendererError;
 use probe::probe_devices;
 
+#[cfg(feature = "tty")]
+pub(crate) use sync::ClientReleaseFence;
 #[cfg(feature = "tty")]
 pub(crate) use target::NativeOutputBuffer;
 
@@ -68,6 +76,8 @@ pub(crate) struct VulkanRenderer {
     frames: FrameScheduler,
     #[cfg(feature = "tty")]
     pending_sync_fds: BTreeMap<(RenderOutputId, u64), OwnedFd>,
+    #[cfg(feature = "tty")]
+    client_sync: sync::ClientSyncManager,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -267,6 +277,8 @@ impl VulkanRenderer {
             frames,
             #[cfg(feature = "tty")]
             pending_sync_fds: BTreeMap::new(),
+            #[cfg(feature = "tty")]
+            client_sync: sync::ClientSyncManager::default(),
         })
     }
 
@@ -303,6 +315,8 @@ impl VulkanRenderer {
         self.native_targets
             .retire_completed(&self._owner.device, completed);
         self.client_images
+            .retire_completed(&self._owner.device, completed);
+        self.client_sync
             .retire_completed(&self._owner.device, completed);
         let buffers = self
             .native_targets
@@ -351,9 +365,40 @@ impl VulkanRenderer {
             .map_err(RendererError::QueryTimeline)?;
         self.client_images
             .retire_completed(&self._owner.device, completed);
+        self.client_sync
+            .retire_completed(&self._owner.device, completed);
         self.client_images
             .import(id, &self._owner.device, dmabuf)
             .map_err(|error| RendererError::ClientImport(error.to_string()))
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn import_client_acquire(
+        &mut self,
+        surface: crate::ecs::SurfaceId,
+        fd: OwnedFd,
+    ) -> Result<(), RendererError> {
+        self.client_sync
+            .import_acquire(&self._owner.device, surface, fd)
+            .map_err(|error| RendererError::ClientSync(error.to_string()))
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn finish_client_sync(
+        &mut self,
+        surface: crate::ecs::SurfaceId,
+        completed_timeline: u64,
+    ) -> ClientReleaseFence {
+        self.client_sync
+            .finish(&self._owner.device, surface, completed_timeline)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn completed_timeline(&self) -> Result<u64, RendererError> {
+        self._owner
+            .frame_executor
+            .completed(&self._owner.device)
+            .map_err(RendererError::QueryTimeline)
     }
 
     #[cfg(feature = "tty")]
@@ -402,6 +447,8 @@ impl VulkanRenderer {
             .retire_completed(&self._owner.device, completed);
         self.client_images
             .retire_completed(&self._owner.device, completed);
+        self.client_sync
+            .retire_completed(&self._owner.device, completed);
         let frame = self
             .frames
             .prepare(output, scene, completed)
@@ -432,6 +479,8 @@ impl VulkanRenderer {
                 return Err(error);
             }
         };
+        let tracked_surfaces = self.client_sync.tracked_surface_ids(&frame);
+        let acquire_semaphores = self.client_sync.wait_semaphores(&tracked_surfaces);
         let image = self
             .native_targets
             .image_info(output, frame.output_slot)
@@ -445,10 +494,13 @@ impl VulkanRenderer {
         let sync_fd = match self._owner.frame_executor.submit(
             &self._owner.device,
             self._owner._graphics_queue,
-            &frame,
-            &image,
-            &client_images,
-            completed,
+            frame::FrameExecution {
+                frame: &frame,
+                output: &image,
+                client_images: &client_images,
+                acquire_semaphores: &acquire_semaphores,
+                completed_value: completed,
+            },
         ) {
             Ok(fd) => fd,
             Err(source) => {
@@ -466,6 +518,8 @@ impl VulkanRenderer {
                         frame.output_slot,
                         frame.timeline_value,
                     );
+                    self.client_sync
+                        .mark_submitted(&tracked_surfaces, frame.timeline_value, None);
                     if let Err(error) = self.frames.commit(&frame) {
                         self.frames.mark_device_lost();
                         return Err(RendererError::SubmitFrame(format!(
@@ -478,16 +532,50 @@ impl VulkanRenderer {
                 return Err(RendererError::SubmitFrame(format!("{source:?}")));
             }
         };
+        let (completion, kms_sync_fd) = if tracked_surfaces.is_empty() {
+            (None, sync_fd)
+        } else {
+            let completion = Arc::new(sync_fd);
+            let kms_sync_fd = match completion.as_fd().try_clone_to_owned() {
+                Ok(fd) => fd,
+                Err(error) => {
+                    self.client_images
+                        .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
+                    self.native_targets.mark_submitted(
+                        output,
+                        frame.output_slot,
+                        frame.timeline_value,
+                    );
+                    self.client_sync.mark_submitted(
+                        &tracked_surfaces,
+                        frame.timeline_value,
+                        Some(completion),
+                    );
+                    if let Err(commit_error) = self.frames.commit(&frame) {
+                        self.frames.mark_device_lost();
+                        return Err(RendererError::SubmitFrame(format!(
+                            "completion fd duplication failed ({error}); submitted frame state could not commit: {commit_error}"
+                        )));
+                    }
+                    return Err(RendererError::SubmitFrame(format!(
+                        "submitted frame completion could not be duplicated for KMS: {error}"
+                    )));
+                }
+            };
+            (Some(completion), kms_sync_fd)
+        };
         self.client_images
             .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
         self.native_targets
             .mark_submitted(output, frame.output_slot, frame.timeline_value);
+        self.client_sync
+            .mark_submitted(&tracked_surfaces, frame.timeline_value, completion);
         if let Err(error) = self.frames.commit(&frame) {
             self.frames.mark_device_lost();
             return Err(RendererError::Frame(error.to_string()));
         }
         self.pending_sync_fds
-            .insert((output, frame.timeline_value), sync_fd);
+            .insert((output, frame.timeline_value), kms_sync_fd);
         while self
             .pending_sync_fds
             .keys()
@@ -511,6 +599,11 @@ impl VulkanRenderer {
 
 impl Drop for VulkanRenderer {
     fn drop(&mut self) {
+        #[cfg(feature = "tty")]
+        unsafe {
+            let _ = self._owner.device.device_wait_idle();
+            self.client_sync.destroy(&self._owner.device);
+        }
         #[cfg(feature = "tty")]
         self.client_images.destroy(&self._owner.device);
         #[cfg(feature = "tty")]

@@ -212,6 +212,28 @@ where
         }
     }
 
+    pub(super) fn current_content(&self, surface: &K) -> Option<SurfaceContent> {
+        let state = self.surfaces.get(surface)?;
+        let current = state.current.as_ref()?;
+        Some(SurfaceContent {
+            surface_id: state.id,
+            buffer_id: current.id,
+            revision: state.revision,
+            buffer_size: self
+                .buffers
+                .get(&current.object)
+                .map(|record| record.size)
+                .unwrap_or(current.local_geometry.size()),
+            local_geometry: current.local_geometry,
+            buffer_scale: state.buffer_scale,
+            transform: state.transform,
+        })
+    }
+
+    pub(super) fn surface_id(&self, surface: &K) -> Option<SurfaceId> {
+        self.surfaces.get(surface).map(|state| state.id)
+    }
+
     pub(super) fn remove_surface(&mut self, surface: &K) -> Vec<SurfaceBufferId> {
         let Some(state) = self.surfaces.remove(surface) else {
             return Vec::new();

@@ -12,9 +12,13 @@ use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
 mod dmabuf;
+#[cfg(feature = "tty")]
+mod syncobj;
 
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
+#[cfg(feature = "tty")]
+use syncobj::DrmSyncobjProtocol;
 
 pub(crate) struct ProtocolGlobals {
     viewporter: ViewporterState,
@@ -25,6 +29,8 @@ pub(crate) struct ProtocolGlobals {
     pointer_gestures: PointerGesturesState,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
+    #[cfg(feature = "tty")]
+    syncobj: DrmSyncobjProtocol,
 }
 
 impl ProtocolGlobals {
@@ -38,6 +44,8 @@ impl ProtocolGlobals {
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
+            #[cfg(feature = "tty")]
+            syncobj: DrmSyncobjProtocol::new(),
         }
     }
 
@@ -54,6 +62,22 @@ impl ProtocolGlobals {
     #[cfg(feature = "tty")]
     pub(crate) fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
         &mut self.dmabuf.state
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn update_syncobj(
+        &mut self,
+        display: &DisplayHandle,
+        device: Option<smithay::backend::drm::DrmDeviceFd>,
+    ) {
+        self.syncobj.update(display, device);
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn drm_syncobj_state(
+        &mut self,
+    ) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
+        self.syncobj.state.as_mut()
     }
 
     pub(crate) fn primary_selection(&mut self) -> &mut PrimarySelectionState {
@@ -78,6 +102,10 @@ impl ProtocolGlobals {
             pointer_gestures: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
+            #[cfg(feature = "tty")]
+            linux_drm_syncobj: self.syncobj.advertised(),
+            #[cfg(feature = "tty")]
+            linux_drm_syncobj_active: self.syncobj.active(),
         }
     }
 }
@@ -92,6 +120,10 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) pointer_gestures: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
+    #[cfg(feature = "tty")]
+    pub(crate) linux_drm_syncobj: bool,
+    #[cfg(feature = "tty")]
+    pub(crate) linux_drm_syncobj_active: bool,
 }
 
 #[cfg(test)]
@@ -117,6 +149,10 @@ mod tests {
                 pointer_gestures: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
+                #[cfg(feature = "tty")]
+                linux_drm_syncobj: false,
+                #[cfg(feature = "tty")]
+                linux_drm_syncobj_active: false,
             }
         );
     }

@@ -14,6 +14,11 @@ impl RuntimeState {
         let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE) else {
             return;
         };
+        if let Err(error) = self.prepare_surface_acquires(&scene) {
+            self.flush_client_releases();
+            warn!(%error, "client explicit-sync acquire is not ready");
+            return;
+        }
         let Some((output_id, _)) = self.outputs.iter().find(|(_, managed)| {
             let Some(geometry) = self.space.output_geometry(&managed.output) else {
                 return false;
@@ -155,6 +160,7 @@ impl RuntimeState {
         };
         backend.handle_udev_event(event);
         self.backend = Some(backend);
+        self.refresh_syncobj_device();
         let events = self
             .backend
             .as_mut()
@@ -172,6 +178,7 @@ impl RuntimeState {
         };
         backend.handle_session_event(event);
         self.backend = Some(backend);
+        self.refresh_syncobj_device();
         let events = self
             .backend
             .as_mut()
