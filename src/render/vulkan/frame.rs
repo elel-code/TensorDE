@@ -132,8 +132,21 @@ impl VulkanFrameExecutor {
         queue: vk::Queue,
         frame: &FrameSubmission,
         image: &NativeOutputImageInfo,
+        client_views: &[vk::ImageViewCreateInfo],
         completed_value: u64,
     ) -> Result<OwnedFd, VulkanFrameError> {
+        // Validate the scene-to-Vulkan descriptor contract before touching a
+        // command buffer.  Returning after `begin_command_buffer` would leave
+        // that buffer in the recording state and make the failure path depend
+        // on a later reset.
+        if client_views.len()
+            != usize::try_from(frame.client_image_descriptors).unwrap_or(usize::MAX)
+        {
+            return Err(VulkanFrameError::DescriptorImageCountMismatch {
+                expected: frame.client_image_descriptors,
+                found: client_views.len(),
+            });
+        }
         let Some((slot, command_buffer)) = self
             .command_buffers
             .iter()
@@ -142,6 +155,15 @@ impl VulkanFrameExecutor {
         else {
             return Err(VulkanFrameError::NoCommandBuffer);
         };
+        let mut descriptor_views = Vec::with_capacity(1 + client_views.len());
+        descriptor_views.push(image.view_info);
+        descriptor_views.extend_from_slice(client_views);
+        // Descriptor encoding is a host-side operation.  Do it before
+        // beginning the command buffer so a write/flush failure cannot leave
+        // the buffer in the recording state.
+        self.heap
+            .prepare_image_descriptors(device, frame.descriptors, &descriptor_views)
+            .map_err(VulkanFrameError::DescriptorHeap)?;
         let begin = vk::CommandBufferBeginInfo::builder();
         unsafe {
             device
@@ -151,9 +173,6 @@ impl VulkanFrameExecutor {
                 .begin_command_buffer(*command_buffer, &begin)
                 .map_err(VulkanFrameError::Vulkan)?;
         }
-        self.heap
-            .prepare_image_descriptor(device, frame.descriptors, &image.view_info)
-            .map_err(VulkanFrameError::DescriptorHeap)?;
         unsafe {
             self.heap
                 .record_copy_and_bind(device, *command_buffer, frame.descriptors);
@@ -295,6 +314,8 @@ pub(super) enum VulkanFrameError {
     Vulkan(vk::ErrorCode),
     #[error("descriptor heap operation failed: {0}")]
     DescriptorHeap(DescriptorHeapError),
+    #[error("frame expected {expected} client image descriptors, got {found}")]
+    DescriptorImageCountMismatch { expected: u32, found: usize },
     #[error("failed to export the frame completion SYNC_FD: {0:?}")]
     ExportSyncFd(vk::ErrorCode),
 }

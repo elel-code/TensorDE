@@ -8,34 +8,54 @@ use thiserror::Error;
 use vulkanalia::vk::{DeviceV1_0, HasBuilder, KhrExternalMemoryFdExtensionDeviceCommands};
 use vulkanalia::{Device, vk};
 
+use crate::ecs::SurfaceBufferId;
+
 use super::vulkan_format_for_fourcc;
 
 /// Imported client images are kept separate from compositor-owned output images.
-/// The key is Smithay's stable `Dmabuf` identity, never a raw file descriptor.
+/// The key is a compositor-assigned stable buffer identity, never a raw file
+/// descriptor or an object ID that can be recycled by a client.
 #[derive(Default)]
 pub(super) struct ClientImageCache {
-    active: HashMap<Dmabuf, ImportedClientImage>,
+    active: HashMap<SurfaceBufferId, ImportedClientImage>,
     retired: Vec<ImportedClientImage>,
 }
 
 impl ClientImageCache {
     pub(super) fn import(
         &mut self,
+        id: SurfaceBufferId,
         device: &Device,
         dmabuf: &Dmabuf,
     ) -> Result<(), ClientImportError> {
-        if self.active.contains_key(dmabuf) {
+        if self.active.contains_key(&id) {
             return Ok(());
         }
 
         let image = ImportedClientImage::create(device, dmabuf)?;
-        self.active.insert(dmabuf.clone(), image);
+        self.active.insert(id, image);
         Ok(())
     }
 
-    pub(super) fn release(&mut self, dmabuf: &Dmabuf) {
-        if let Some(image) = self.active.remove(dmabuf) {
+    pub(super) fn release(&mut self, id: SurfaceBufferId) {
+        if let Some(image) = self.active.remove(&id) {
             self.retired.push(image);
+        }
+    }
+
+    pub(super) fn descriptor(&self, id: SurfaceBufferId) -> Option<vk::ImageViewCreateInfo> {
+        self.active.get(&id).map(|image| image.view_info)
+    }
+
+    pub(super) fn mark_used(
+        &mut self,
+        ids: impl IntoIterator<Item = SurfaceBufferId>,
+        timeline: u64,
+    ) {
+        for id in ids {
+            if let Some(image) = self.active.get_mut(&id) {
+                image.last_use_timeline = image.last_use_timeline.max(timeline);
+            }
         }
     }
 
@@ -70,6 +90,7 @@ struct ImportedClientImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
     view: vk::ImageView,
+    view_info: vk::ImageViewCreateInfo,
     last_use_timeline: u64,
 }
 
@@ -146,6 +167,7 @@ impl ImportedClientImage {
                     .layer_count(1)
                     .build(),
             );
+        let view_info = view_info.build();
         let view = match unsafe { device.create_image_view(&view_info, None) } {
             Ok(view) => view,
             Err(error) => {
@@ -161,6 +183,7 @@ impl ImportedClientImage {
             image,
             memory,
             view,
+            view_info,
             last_use_timeline: 0,
         })
     }
@@ -334,15 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_identity_is_the_dmabuf_object_not_the_fd_number() {
-        let first = dmabuf((64, 64), 1, Modifier::from(9), 256);
-        let same = first.clone();
-        let other = dmabuf((64, 64), 1, Modifier::from(9), 256);
+    fn cache_release_uses_a_stable_buffer_id() {
         let mut cache = ClientImageCache::default();
-        assert_eq!(first, same);
-        assert_ne!(first, other);
         assert_eq!(cache.len(), 0);
-        cache.release(&first);
+        cache.release(SurfaceBufferId::new(1));
         assert_eq!(cache.len(), 0);
     }
 }

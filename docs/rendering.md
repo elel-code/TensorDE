@@ -73,10 +73,11 @@ Before an image leaves Vulkan for KMS or another API, Tensor releases it to
 This is mandatory for multi-plane and driver-compressed modifiers and is never replaced with a
 queue-idle compatibility path.
 
-Imported client dma-bufs and compositor-owned output images use separate lifetime caches. A cache
-entry is keyed by stable buffer identity plus format, modifier, dimensions, plane offsets, and
-strides; an fd number is never an identity. Buffer reuse waits for the KMS release path before
-Vulkan writes the image again.
+Imported client dma-bufs and compositor-owned output images use separate lifetime caches. A client
+cache entry is keyed by the compositor-assigned stable buffer identity and retains the validated
+format, modifier, dimensions, plane offsets, and strides from the Smithay dma-buf object; an fd
+number is never an identity. Buffer reuse waits for the renderer timeline and Wayland release path
+before the Vulkan image is destroyed.
 
 ## Client linux-dmabuf
 
@@ -90,12 +91,22 @@ For each `params` request Smithay validates the protocol shape, then Vulkan crea
 modifier image, intersects image and dma-buf fd memory-type masks, binds imported memory, and
 creates a view. Only a completed image/view import calls `ImportNotifier::successful`; malformed
 planes, implicit modifiers, unsupported formats, and Vulkan failures call `failed` instead. The
-image cache is keyed by Smithay's `Dmabuf` identity and retires resources after the renderer
-timeline, so a duplicated fd cannot alias a live buffer accidentally.
+image cache is keyed by `SurfaceBufferId` and retires resources after the renderer timeline, so a
+duplicated fd or recycled Wayland object ID cannot alias a live scene image accidentally.
 
 Client images are now accepted by the protocol boundary. Scene sampling and draw-pipeline wiring
 are the next renderer step; until that is complete, the native output path remains the only path
 that can put pixels on a KMS plane.
+
+The protocol-to-scene handoff has an explicit value-only boundary. A
+compositor-assigned `SurfaceBufferId` is registered after a successful
+linux-dmabuf import; current surface content, revision, scale, transform, and
+surface-local destination geometry are copied into ECS as `ViewContent`. The
+scene flattens those values into a content table and builds a per-frame draw
+plan that deduplicates image descriptor slots while preserving surface draw
+order. Destroyed buffers remain renderer-live while any surface still refers to
+them, and imported images are marked with the submission timeline used by that
+plan.
 
 ## Frame Boundary Status
 
@@ -104,10 +115,12 @@ allocator, retains the previous `SceneSnapshot` per output, computes damage, ass
 native output image slots, and keeps descriptor ranges live until the Vulkan timeline value retires.
 `render/vulkan/heap.rs` creates the actual device-addressable resource-heap buffer with
 `VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT`, a host-visible staging buffer, and the descriptor write
-path. `render/vulkan/frame.rs` writes the output image descriptor into staging, copies it into the
-device-local heap, binds it with `vkCmdBindResourceHeapEXT`, and submits through three resettable
-command buffers plus one timeline semaphore. A lost device stops future frame scheduling instead of
-recycling GPU-visible ranges.
+path. `render/vulkan/frame.rs` writes the native output and deduplicated client-image descriptors
+into staging, copies them into the device-local heap, binds it with
+`vkCmdBindResourceHeapEXT`, and submits through three resettable command buffers plus one timeline
+semaphore. The frame allocation also reserves the future draw-record range; those bytes are
+currently zeroed until the sampled-image pipeline consumes them. A lost device stops future frame
+scheduling instead of recycling GPU-visible ranges.
 
 The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the
 reported image descriptor alignment, and adds the implementation's reserved range before capping
@@ -115,10 +128,17 @@ the configured usable budget at `maxResourceHeapSize`. The Vulkan heap uses the 
 offset contract, so allocator ranges are now copied into the real heap rather than remaining a
 simulation.
 
-The current command stream uploads descriptors, binds the resource heap, clears the selected native
-output image, and releases it to `VK_QUEUE_FAMILY_FOREIGN_EXT`. Scene draw pipelines still need to
-sample imported client images and emit real scene nodes; the clear is an intentional diagnostic
-frame, not a claim that the compositor already renders application content.
+The current command stream is deliberately limited to:
+
+1. upload native/client image descriptors and bind the resource heap;
+2. acquire and clear the selected native output image;
+3. release that image to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
+
+The draw plan is ready for a sampled-image pipeline, but scene draw pipelines still need to sample
+imported client images and emit real scene pixels; the clear is an intentional diagnostic frame,
+not a claim that the compositor already renders application content. Debug diagnostics report draw
+count, unique client-image descriptor count, surface-content count, and damage-region count for
+each prepared frame.
 
 ## Synchronization
 

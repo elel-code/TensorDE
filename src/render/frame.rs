@@ -7,6 +7,11 @@ use crate::scene::{DamageSet, SceneSnapshot};
 
 use super::format::OutputFormat;
 
+mod heap;
+mod plan;
+use heap::DescriptorHeap;
+use plan::FrameDrawPlan;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RenderOutputId {
     pub(crate) device_id: u64,
@@ -35,6 +40,8 @@ pub(crate) struct FrameSubmission {
     pub(crate) scene: SceneSnapshot,
     pub(crate) damage: DamageSet,
     pub(crate) descriptors: HeapAllocation,
+    pub(crate) client_image_descriptors: u32,
+    pub(crate) draw_plan: FrameDrawPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,11 +178,17 @@ impl FrameScheduler {
             .ok_or(FrameError::TimelineExhausted)?;
         let serial = state.next_serial;
         serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
-        let descriptor_bytes = self.descriptor_stride.saturating_add(
-            u64::try_from(scene.nodes().len())
-                .unwrap_or(u64::MAX)
-                .saturating_mul(self.descriptor_stride),
-        );
+        let draw_plan = FrameDrawPlan::build(&scene)?;
+        let client_image_descriptors = u32::try_from(draw_plan.images().len())
+            .map_err(|_| FrameError::DescriptorSizeOverflow)?;
+        let descriptor_count = 1u64
+            .checked_add(u64::try_from(draw_plan.draws().len()).unwrap_or(u64::MAX))
+            .and_then(|count| count.checked_add(u64::from(client_image_descriptors)))
+            .ok_or(FrameError::DescriptorSizeOverflow)?;
+        let descriptor_bytes = self
+            .descriptor_stride
+            .checked_mul(descriptor_count)
+            .ok_or(FrameError::DescriptorSizeOverflow)?;
         let descriptors = self
             .descriptors
             .allocate(descriptor_bytes, timeline_value)?;
@@ -197,6 +210,8 @@ impl FrameScheduler {
             scene,
             damage,
             descriptors,
+            client_image_descriptors,
+            draw_plan,
         })
     }
 
@@ -316,110 +331,6 @@ impl OutputFrameState {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct DescriptorHeap {
-    capacity: u64,
-    alignment: u64,
-    first_usable_offset: u64,
-    cursor: u64,
-    active: Vec<ActiveAllocation>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ActiveAllocation {
-    allocation: HeapAllocation,
-    retire_timeline: u64,
-}
-
-impl DescriptorHeap {
-    fn new(capacity: u64, alignment: u64, reserved_range: u64) -> Result<Self, FrameError> {
-        if alignment == 0 || !alignment.is_power_of_two() {
-            return Err(FrameError::InvalidDescriptorAlignment { alignment });
-        }
-        let first_usable_offset =
-            align_up(reserved_range, alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
-        if capacity <= first_usable_offset {
-            return Err(FrameError::DescriptorHeapTooSmall {
-                capacity,
-                reserved: first_usable_offset,
-            });
-        }
-        Ok(Self {
-            capacity,
-            alignment,
-            first_usable_offset,
-            cursor: first_usable_offset,
-            active: Vec::new(),
-        })
-    }
-
-    fn allocate(&mut self, size: u64, retire_timeline: u64) -> Result<HeapAllocation, FrameError> {
-        let size = align_up(size, self.alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
-        if size > self.capacity.saturating_sub(self.first_usable_offset) {
-            return Err(FrameError::DescriptorRequestTooLarge {
-                requested: size,
-                capacity: self.capacity,
-            });
-        }
-
-        let start =
-            align_up(self.cursor, self.alignment).ok_or(FrameError::DescriptorSizeOverflow)?;
-        let offset = if self.fits(start, size) {
-            start
-        } else if self.fits(self.first_usable_offset, size) {
-            self.first_usable_offset
-        } else {
-            return Err(FrameError::DescriptorHeapExhausted {
-                requested: size,
-                capacity: self.capacity,
-            });
-        };
-        let allocation = HeapAllocation { offset, size };
-        self.cursor = offset.saturating_add(size);
-        self.active.push(ActiveAllocation {
-            allocation,
-            retire_timeline,
-        });
-        Ok(allocation)
-    }
-
-    fn fits(&self, offset: u64, size: u64) -> bool {
-        let Some(end) = offset.checked_add(size) else {
-            return false;
-        };
-        end <= self.capacity
-            && self.active.iter().all(|active| {
-                let active_end = active
-                    .allocation
-                    .offset
-                    .saturating_add(active.allocation.size);
-                end <= active.allocation.offset || offset >= active_end
-            })
-    }
-
-    fn reclaim(&mut self, completed_timeline: u64) {
-        self.active
-            .retain(|active| active.retire_timeline > completed_timeline);
-        if self.active.is_empty() && self.cursor >= self.capacity {
-            self.cursor = self.first_usable_offset;
-        }
-    }
-
-    fn cancel(&mut self, allocation: HeapAllocation) {
-        let Some(index) = self
-            .active
-            .iter()
-            .position(|active| active.allocation == allocation)
-        else {
-            return;
-        };
-        self.active.remove(index);
-        if self.cursor == allocation.offset.saturating_add(allocation.size) {
-            self.cursor = allocation.offset;
-        }
-    }
-}
-
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
     let remainder = value % alignment;
     value.checked_add((alignment - remainder) % alignment)
@@ -471,10 +382,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        ecs::{ViewId, WorkspaceId},
+        ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{EffectStyle, SceneNode},
+        scene::{
+            ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceContent, SurfaceTransform,
+        },
     };
+    use tensor_util::Size;
 
     const OUTPUT: RenderOutputId = RenderOutputId {
         device_id: 1,
@@ -501,18 +415,31 @@ mod tests {
     }
 
     fn scene(view_id: u64) -> SceneSnapshot {
-        SceneSnapshot::new(
+        let contents = vec![SurfaceContent {
+            surface_id: SurfaceId::new(view_id),
+            buffer_id: SurfaceBufferId::new(view_id),
+            revision: ContentRevision::new(1),
+            buffer_size: Size::new(640, 480),
+            local_geometry: Rect::new(0, 0, 640, 480),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        }];
+        SceneSnapshot::with_content(
             WorkspaceId::new(0),
             VIEWPORT,
-            vec![SceneNode::new(
-                ViewId::new(view_id),
-                view_id,
-                LayoutPlacement {
-                    geometry: Rect::new(0, 0, 640, 480),
-                    visible: Some(Rect::new(0, 0, 640, 480)),
-                },
-                EffectStyle::default(),
-            )],
+            vec![
+                SceneNode::new(
+                    ViewId::new(view_id),
+                    view_id,
+                    LayoutPlacement {
+                        geometry: Rect::new(0, 0, 640, 480),
+                        visible: Some(Rect::new(0, 0, 640, 480)),
+                    },
+                    EffectStyle::default(),
+                )
+                .with_content(ContentSpan::new(0, 1).unwrap()),
+            ],
+            contents,
         )
     }
 
@@ -599,7 +526,7 @@ mod tests {
         scheduler.register_output(target(OUTPUT)).unwrap();
         let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
         assert_eq!(frame.descriptors.offset, 128);
-        assert_eq!(frame.descriptors.size, 128);
+        assert_eq!(frame.descriptors.size, 192);
     }
 
     #[test]

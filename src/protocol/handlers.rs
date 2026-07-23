@@ -1,6 +1,6 @@
 #[cfg(feature = "tty")]
 use smithay::{
-    backend::allocator::dmabuf::Dmabuf,
+    backend::allocator::{Buffer, dmabuf::Dmabuf},
     wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
 };
 use smithay::{
@@ -63,10 +63,18 @@ impl CompositorHandler for RuntimeState {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
 
+        #[cfg(feature = "tty")]
+        let mut content_changed = false;
+        #[cfg(feature = "tty")]
+        let mut reflowed = false;
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
                 root = parent;
+            }
+            #[cfg(feature = "tty")]
+            {
+                content_changed = self.update_surface_content(&root);
             }
             let toplevel = self
                 .space
@@ -85,12 +93,24 @@ impl CompositorHandler for RuntimeState {
                 let constraints_changed =
                     self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
                 if constraints_changed || !toplevel.is_initial_configure_sent() {
-                    self.reflow_default_workspace();
+                    #[cfg(feature = "tty")]
+                    {
+                        reflowed = self.reflow_default_workspace();
+                    }
+                    #[cfg(not(feature = "tty"))]
+                    {
+                        self.reflow_default_workspace();
+                    }
                 }
                 if !toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
                 }
             }
+        }
+
+        #[cfg(feature = "tty")]
+        if content_changed && !reflowed {
+            self.submit_default_workspace_frame();
         }
 
         self.popups.commit(surface);
@@ -111,11 +131,7 @@ impl CompositorHandler for RuntimeState {
 impl BufferHandler for RuntimeState {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
         #[cfg(feature = "tty")]
-        if let Some(dmabuf) = _buffer.data::<Dmabuf>().cloned()
-            && let Some(renderer) = self.renderer.as_mut()
-        {
-            renderer.release_client_dmabuf(&dmabuf);
-        }
+        self.buffer_destroyed(&_buffer.id());
     }
 }
 
@@ -131,7 +147,7 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        self.register_toplevel(surface);
+        let _ = self.register_toplevel(surface);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -282,23 +298,53 @@ impl DmabufHandler for RuntimeState {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        let Some(renderer) = self.renderer.as_mut() else {
+        let Some(size) = dmabuf_size(&dmabuf) else {
             notifier.failed();
             return;
         };
-        match renderer.import_client_dmabuf(&dmabuf) {
-            Ok(()) => {
-                if let Err(error) = notifier.successful::<RuntimeState>() {
-                    renderer.release_client_dmabuf(&dmabuf);
+        let Some(_) = self.renderer.as_ref() else {
+            notifier.failed();
+            return;
+        };
+        let Some(buffer_id) = self.allocate_client_buffer_id() else {
+            warn!("client buffer identity space is exhausted; rejecting linux-dmabuf import");
+            notifier.failed();
+            return;
+        };
+        let import_result = self
+            .renderer
+            .as_mut()
+            .expect("renderer existence was checked above")
+            .import_client_dmabuf(buffer_id, &dmabuf);
+        match import_result {
+            Ok(()) => match notifier.successful::<RuntimeState>() {
+                Ok(buffer) => {
+                    if !self.register_imported_client_buffer(buffer.id(), buffer_id, size) {
+                        self.release_client_buffers([buffer_id]);
+                        warn!("linux-dmabuf buffer identity was already occupied; released import");
+                    }
+                }
+                Err(error) => {
+                    self.release_client_buffers([buffer_id]);
                     warn!(%error, "client disappeared while completing linux-dmabuf import");
                 }
-            }
+            },
             Err(error) => {
                 warn!(%error, "client linux-dmabuf import failed");
                 notifier.failed();
             }
         }
     }
+}
+
+#[cfg(feature = "tty")]
+fn dmabuf_size(dmabuf: &Dmabuf) -> Option<tensor_util::Size> {
+    let size = dmabuf.size();
+    Some(tensor_util::Size::new(
+        u32::try_from(size.w).ok()?,
+        u32::try_from(size.h).ok()?,
+    ))
+    .filter(|size| size.width > 0 && size.height > 0)
 }
 
 impl DndGrabHandler for RuntimeState {}

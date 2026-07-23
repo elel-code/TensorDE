@@ -22,6 +22,7 @@ pub(super) struct DescriptorHeapResource {
     heap_size: u64,
     reserved_range: u64,
     descriptor_size: u64,
+    descriptor_stride: u64,
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_mapping: *mut u8,
@@ -36,6 +37,12 @@ impl DescriptorHeapResource {
         layout: DescriptorHeapLayout,
     ) -> Result<Self, DescriptorHeapError> {
         validate_layout(layout)?;
+        // Resolve every arithmetic failure before creating a Vulkan object.  A
+        // fallible expression in the final struct literal would otherwise
+        // return after the heap and staging resources had already been
+        // allocated, leaking them on an extreme (but testable) layout.
+        let descriptor_stride = align_up(layout.descriptor_size, layout.alignment)
+            .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
@@ -162,6 +169,7 @@ impl DescriptorHeapResource {
             heap_size: layout.capacity,
             reserved_range: layout.reserved_range,
             descriptor_size: layout.descriptor_size,
+            descriptor_stride,
             staging_buffer,
             staging_memory,
             staging_mapping,
@@ -169,20 +177,30 @@ impl DescriptorHeapResource {
         })
     }
 
-    pub(super) fn prepare_image_descriptor(
+    pub(super) fn prepare_image_descriptors(
         &self,
         device: &Device,
         allocation: HeapAllocation,
-        view_info: &vk::ImageViewCreateInfo,
+        view_infos: &[vk::ImageViewCreateInfo],
     ) -> Result<(), DescriptorHeapError> {
+        if view_infos.is_empty() {
+            return Err(DescriptorHeapError::NoImageDescriptors);
+        }
         let offset = usize::try_from(allocation.offset)
             .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
         let size = usize::try_from(allocation.size)
             .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
         let descriptor_size = usize::try_from(self.descriptor_size)
             .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
+        let descriptor_count = u64::try_from(view_infos.len())
+            .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
+        let required_size = self
+            .descriptor_stride
+            .checked_mul(descriptor_count)
+            .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
         if descriptor_size == 0
             || descriptor_size > size
+            || required_size > allocation.size
             || allocation.offset > self.heap_size
             || allocation.size > self.heap_size.saturating_sub(allocation.offset)
         {
@@ -198,26 +216,44 @@ impl DescriptorHeapResource {
         unsafe {
             ptr::write_bytes(self.staging_mapping.add(offset), 0, size);
         }
-        let image = vk::ImageDescriptorInfoEXT::builder()
-            .view(view_info)
-            .layout(vk::ImageLayout::GENERAL)
-            .build();
-        let resource = vk::ResourceDescriptorInfoEXT::builder()
-            .type_(vk::DescriptorType::SAMPLED_IMAGE)
-            .data(vk::ResourceDescriptorDataEXT {
-                image: ptr::from_ref(&image),
+        let images = view_infos
+            .iter()
+            .map(|view_info| {
+                vk::ImageDescriptorInfoEXT::builder()
+                    .view(view_info)
+                    .layout(vk::ImageLayout::GENERAL)
+                    .build()
             })
-            .build();
-        let destination = vk::HostAddressRangeEXT {
-            address: unsafe { self.staging_mapping.add(offset).cast() },
-            size: descriptor_size,
-        };
+            .collect::<Vec<_>>();
+        let resources = images
+            .iter()
+            .map(|image| {
+                vk::ResourceDescriptorInfoEXT::builder()
+                    .type_(vk::DescriptorType::SAMPLED_IMAGE)
+                    .data(vk::ResourceDescriptorDataEXT {
+                        image: ptr::from_ref(image),
+                    })
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        let destinations = (0..view_infos.len())
+            .map(|index| {
+                let byte_offset = self
+                    .descriptor_stride
+                    .checked_mul(u64::try_from(index).unwrap_or(u64::MAX))
+                    .and_then(|value| value.checked_add(allocation.offset))
+                    .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+                let byte_offset = usize::try_from(byte_offset)
+                    .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
+                Ok(vk::HostAddressRangeEXT {
+                    address: unsafe { self.staging_mapping.add(byte_offset).cast() },
+                    size: descriptor_size,
+                })
+            })
+            .collect::<Result<Vec<_>, DescriptorHeapError>>()?;
         unsafe {
             device
-                .write_resource_descriptors_ext(
-                    slice::from_ref(&resource),
-                    slice::from_ref(&destination),
-                )
+                .write_resource_descriptors_ext(&resources, &destinations)
                 .map_err(DescriptorHeapError::WriteDescriptor)?;
         }
         if !self.staging_coherent {
@@ -312,6 +348,11 @@ fn validate_layout(layout: DescriptorHeapLayout) -> Result<(), DescriptorHeapErr
         return Err(DescriptorHeapError::InvalidLayout(layout));
     }
     Ok(())
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    let remainder = value % alignment;
+    value.checked_add((alignment - remainder) % alignment)
 }
 
 fn create_buffer(
@@ -424,6 +465,8 @@ pub(super) enum DescriptorHeapError {
     },
     #[error("failed to encode an image descriptor: {0:?}")]
     WriteDescriptor(vk::ErrorCode),
+    #[error("at least one image descriptor is required for a frame")]
+    NoImageDescriptors,
     #[error("failed to flush descriptor staging memory: {0:?}")]
     FlushStaging(vk::ErrorCode),
 }

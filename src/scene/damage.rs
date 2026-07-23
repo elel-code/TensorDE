@@ -68,7 +68,7 @@ pub(super) fn between(previous: Option<&SceneSnapshot>, current: &SceneSnapshot)
             current.nodes().get(new_index),
         ) {
             (Some(old), Some(new)) if old.view_id == new.view_id => {
-                if old != new {
+                if old != new || previous.contents_for(old) != current.contents_for(new) {
                     add_node_bounds(&mut damage, *old, current.viewport);
                     add_node_bounds(&mut damage, *new, current.viewport);
                 }
@@ -141,10 +141,14 @@ fn non_empty(rect: Rect) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ecs::{ViewId, WorkspaceId},
+        ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{BackdropBlur, EffectStyle, SceneNode, SceneSnapshot},
+        scene::{
+            BackdropBlur, ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot,
+            SurfaceContent, SurfaceTransform,
+        },
     };
+    use tensor_util::Size;
 
     use super::*;
 
@@ -252,5 +256,37 @@ mod tests {
             new.damage_since(Some(&old)).regions(),
             [Rect::new(0, 0, 100, 80)]
         );
+    }
+
+    #[test]
+    fn reused_buffer_with_a_new_revision_damages_the_surface() {
+        let placement = LayoutPlacement {
+            geometry: Rect::new(10, 10, 40, 40),
+            visible: Some(Rect::new(10, 10, 40, 40)),
+        };
+        let content = |revision| SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(2),
+            revision: ContentRevision::new(revision),
+            buffer_size: Size::new(40, 40),
+            local_geometry: Rect::new(0, 0, 40, 40),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        };
+        let span = ContentSpan::new(0, 1).unwrap();
+        let old = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            VIEWPORT,
+            vec![node(1, placement.geometry, EffectStyle::default()).with_content(span)],
+            vec![content(1)],
+        );
+        let new = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            VIEWPORT,
+            vec![node(1, placement.geometry, EffectStyle::default()).with_content(span)],
+            vec![content(2)],
+        );
+
+        assert_eq!(new.damage_since(Some(&old)).regions(), [placement.geometry]);
     }
 }

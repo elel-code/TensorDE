@@ -1,7 +1,11 @@
+use std::collections::HashSet;
+
 use crate::{
-    ecs::{ViewId, WorkspaceId},
+    ecs::{SurfaceBufferId, ViewId, WorkspaceId},
     layout::{LayoutPlacement, Rect},
 };
+
+use super::{ContentSpan, SurfaceContent};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UnitFraction(u16);
@@ -107,6 +111,7 @@ pub struct SceneNode {
     pub stacking_order: u64,
     pub placement: LayoutPlacement,
     pub effects: EffectStyle,
+    content: ContentSpan,
 }
 
 impl SceneNode {
@@ -121,7 +126,13 @@ impl SceneNode {
             stacking_order,
             placement,
             effects: effects.resolved_for(placement.geometry),
+            content: ContentSpan::default(),
         }
+    }
+
+    pub(crate) fn with_content(mut self, content: ContentSpan) -> Self {
+        self.content = content;
+        self
     }
 
     pub fn visual_bounds(self, viewport: Rect) -> Option<Rect> {
@@ -145,11 +156,26 @@ pub struct SceneSnapshot {
     pub workspace_id: WorkspaceId,
     pub viewport: Rect,
     nodes: Vec<SceneNode>,
+    contents: Vec<SurfaceContent>,
     draw_order: Vec<u32>,
 }
 
 impl SceneSnapshot {
-    pub fn new(workspace_id: WorkspaceId, viewport: Rect, mut nodes: Vec<SceneNode>) -> Self {
+    pub fn new(workspace_id: WorkspaceId, viewport: Rect, nodes: Vec<SceneNode>) -> Self {
+        Self::with_content(workspace_id, viewport, nodes, Vec::new())
+    }
+
+    pub(crate) fn with_content(
+        workspace_id: WorkspaceId,
+        viewport: Rect,
+        mut nodes: Vec<SceneNode>,
+        contents: Vec<SurfaceContent>,
+    ) -> Self {
+        debug_assert!(nodes.iter().all(|node| {
+            node.content
+                .range()
+                .is_some_and(|range| range.end <= contents.len())
+        }));
         nodes.sort_unstable_by_key(|node| node.view_id);
         let mut draw_order = (0..nodes.len())
             .map(|index| u32::try_from(index).unwrap_or(u32::MAX))
@@ -162,6 +188,7 @@ impl SceneSnapshot {
             workspace_id,
             viewport,
             nodes,
+            contents,
             draw_order,
         }
     }
@@ -174,6 +201,29 @@ impl SceneSnapshot {
         self.draw_order
             .iter()
             .map(|index| &self.nodes[*index as usize])
+    }
+
+    pub fn contents(&self) -> &[SurfaceContent] {
+        &self.contents
+    }
+
+    pub fn contents_for(&self, node: &SceneNode) -> &[SurfaceContent] {
+        let range = node
+            .content
+            .range()
+            .expect("scene content span was validated during extraction");
+        &self.contents[range]
+    }
+
+    /// Return each imported image referenced by the scene once, in stable
+    /// scene-table order.  Descriptor allocation and Vulkan descriptor writes
+    /// consume the same ordering, so a missing image fails deterministically.
+    pub fn buffer_ids(&self) -> Vec<SurfaceBufferId> {
+        let mut seen = HashSet::new();
+        self.contents
+            .iter()
+            .filter_map(|content| seen.insert(content.buffer_id).then_some(content.buffer_id))
+            .collect()
     }
 
     pub fn damage_since(&self, previous: Option<&Self>) -> super::DamageSet {

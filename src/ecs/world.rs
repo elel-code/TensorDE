@@ -4,11 +4,11 @@ use bevy_ecs::{entity::Entity, world::World};
 use thiserror::Error;
 
 use super::components::{
-    Focused, StackingOrder, View, ViewEffects, ViewGeometry, ViewLayout, Workspace,
+    Focused, StackingOrder, View, ViewContent, ViewEffects, ViewGeometry, ViewLayout, Workspace,
 };
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
-use crate::scene::{EffectStyle, SceneNode, SceneSnapshot};
+use crate::scene::{EffectStyle, SceneNode, SceneSnapshot, SurfaceContent};
 
 pub struct CompositorWorld {
     world: World,
@@ -44,6 +44,7 @@ impl CompositorWorld {
                 View { id: view_id },
                 Workspace { id: workspace_id },
                 ViewLayout::default(),
+                ViewContent::default(),
                 ViewEffects::default(),
                 StackingOrder(stacking_order),
             ))
@@ -184,6 +185,28 @@ impl CompositorWorld {
         Ok(true)
     }
 
+    pub fn set_view_content(
+        &mut self,
+        view_id: ViewId,
+        surfaces: Vec<SurfaceContent>,
+    ) -> Result<bool, ViewLifecycleError> {
+        let entity = self.entity_for(view_id)?;
+        let mut current = self
+            .world
+            .get_mut::<ViewContent>(entity)
+            .expect("every view has content state");
+        if current.surfaces == surfaces {
+            return Ok(false);
+        }
+        current.surfaces = surfaces;
+        Ok(true)
+    }
+
+    pub fn view_content(&self, view_id: ViewId) -> Option<ViewContent> {
+        let entity = self.view_entities.get(&view_id).copied()?;
+        self.world.get::<ViewContent>(entity).cloned()
+    }
+
     pub fn focused_view(&mut self, workspace_id: WorkspaceId) -> Option<ViewId> {
         let mut query = self.world.query::<(&View, &Workspace, Option<&Focused>)>();
         query
@@ -272,6 +295,7 @@ impl CompositorWorld {
             return None;
         }
         let mut nodes = Vec::with_capacity(view_ids.len());
+        let mut contents = Vec::new();
         for (view_id, placement) in view_ids.into_iter().zip(layout.placements.iter().copied()) {
             let entity = self.view_entities[&view_id];
             let stacking_order = self
@@ -284,9 +308,24 @@ impl CompositorWorld {
                 .get::<ViewEffects>(entity)
                 .expect("every view has effect state")
                 .0;
-            nodes.push(SceneNode::new(view_id, stacking_order, placement, effects));
+            let content = self
+                .world
+                .get::<ViewContent>(entity)
+                .expect("every view has content state");
+            let start = contents.len();
+            contents.extend(content.surfaces.iter().copied());
+            let span = crate::scene::ContentSpan::new(start, content.surfaces.len())
+                .expect("compositor scene content table exhausted");
+            nodes.push(
+                SceneNode::new(view_id, stacking_order, placement, effects).with_content(span),
+            );
         }
-        Some(SceneSnapshot::new(workspace_id, layout.viewport, nodes))
+        Some(SceneSnapshot::with_content(
+            workspace_id,
+            layout.viewport,
+            nodes,
+            contents,
+        ))
     }
 
     pub fn is_focused(&self, view_id: ViewId) -> bool {
@@ -340,6 +379,7 @@ pub enum ViewLifecycleError {
 mod tests {
     use super::*;
     use crate::layout::LayoutKind;
+    use tensor_util::Size;
 
     fn view(value: u64) -> ViewId {
         ViewId::new(value)
@@ -503,6 +543,34 @@ mod tests {
             [view(1), view(2)]
         );
         assert_eq!(scene.nodes()[1].effects, effects);
+    }
+
+    #[test]
+    fn scene_extraction_keeps_surface_content_out_of_smithay_and_entity_ids() {
+        use crate::scene::{ContentRevision, SurfaceContent, SurfaceTransform};
+
+        let mut world = CompositorWorld::new();
+        world.spawn_view(view(1), workspace(1)).unwrap();
+        let content = SurfaceContent {
+            surface_id: crate::ecs::SurfaceId::new(7),
+            buffer_id: crate::ecs::SurfaceBufferId::new(9),
+            revision: ContentRevision::new(3),
+            buffer_size: Size::new(640, 480),
+            local_geometry: Rect::new(0, 0, 640, 480),
+            buffer_scale: 1,
+            transform: SurfaceTransform::Normal,
+        };
+        assert!(world.set_view_content(view(1), vec![content]).unwrap());
+        assert_eq!(world.view_content(view(1)).unwrap().surfaces, [content]);
+        world.arrange_workspace(
+            workspace(1),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            Rect::new(0, 0, 100, 80),
+        );
+
+        let scene = world.extract_scene(workspace(1)).unwrap();
+        assert_eq!(scene.contents(), [content]);
+        assert_eq!(scene.contents_for(&scene.nodes()[0]), [content]);
     }
 
     #[test]

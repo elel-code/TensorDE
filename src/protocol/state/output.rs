@@ -10,7 +10,7 @@ use super::{DEFAULT_WORKSPACE, ManagedOutput, RuntimeState};
 
 impl RuntimeState {
     #[cfg(feature = "tty")]
-    pub(super) fn submit_default_workspace_frame(&mut self) {
+    pub(crate) fn submit_default_workspace_frame(&mut self) {
         let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE) else {
             return;
         };

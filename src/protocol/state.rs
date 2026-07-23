@@ -1,5 +1,7 @@
 #[cfg(feature = "tty")]
 mod output;
+#[cfg(feature = "tty")]
+mod surfaces;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -28,6 +30,8 @@ use smithay::{
 };
 use tracing::warn;
 
+#[cfg(feature = "tty")]
+use crate::scene::SurfaceTransform;
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
@@ -36,6 +40,8 @@ use crate::{
 use tensor_util::Size;
 
 use super::globals::ProtocolGlobals;
+#[cfg(feature = "tty")]
+use surfaces::{SurfaceBufferRegistry, SurfaceCommit};
 
 #[cfg(all(test, feature = "tty"))]
 use crate::backend::BackendOutputEvent;
@@ -59,6 +65,8 @@ pub(crate) struct RuntimeState {
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
     pub(crate) renderer: Option<VulkanRenderer>,
+    #[cfg(feature = "tty")]
+    surface_buffers: SurfaceBufferRegistry,
     #[cfg(feature = "tty")]
     outputs: HashMap<BackendOutputId, ManagedOutput>,
     #[cfg(feature = "tty")]
@@ -98,6 +106,8 @@ impl RuntimeState {
             layout,
             renderer: None,
             #[cfg(feature = "tty")]
+            surface_buffers: SurfaceBufferRegistry::default(),
+            #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
             repaint_pending: HashSet::new(),
@@ -135,7 +145,16 @@ impl RuntimeState {
         self.renderer.as_ref()
     }
 
-    pub(crate) fn register_toplevel(&mut self, surface: ToplevelSurface) -> ViewId {
+    pub(crate) fn register_toplevel(&mut self, surface: ToplevelSurface) -> Option<ViewId> {
+        #[cfg(feature = "tty")]
+        if self
+            .surface_buffers
+            .register_surface(surface.wl_surface().id())
+            .is_none()
+        {
+            warn!("surface identity space is exhausted; rejecting new toplevel");
+            return None;
+        }
         let view_id = self.allocate_view_id();
         self.world
             .spawn_view(view_id, DEFAULT_WORKSPACE)
@@ -144,7 +163,7 @@ impl RuntimeState {
             .insert(surface.wl_surface().id(), view_id);
         self.space
             .map_element(Window::new_wayland_window(surface), (0, 0), false);
-        view_id
+        Some(view_id)
     }
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
@@ -158,6 +177,10 @@ impl RuntimeState {
         }
 
         let view_id = self.surface_views.remove(&surface.id())?;
+        #[cfg(feature = "tty")]
+        let released = self.surface_buffers.remove_surface(&surface.id());
+        #[cfg(feature = "tty")]
+        self.release_client_buffers(released);
         if let Err(error) = self.world.remove_view(view_id) {
             warn!(%error, view_id = view_id.get(), "Wayland view was missing from ECS");
         }
@@ -167,6 +190,90 @@ impl RuntimeState {
 
     pub(crate) fn view_for_surface(&self, surface: &WlSurface) -> Option<ViewId> {
         self.surface_views.get(&surface.id()).copied()
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn update_surface_content(&mut self, surface: &WlSurface) -> bool {
+        let Some(view_id) = self.view_for_surface(surface) else {
+            return false;
+        };
+        let Some(snapshot) =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
+                let buffer = state.buffer().map(|buffer| buffer.id());
+                let logical_size = state.surface_size().and_then(|size| {
+                    Some(tensor_util::Size::new(
+                        u32::try_from(size.w).ok()?,
+                        u32::try_from(size.h).ok()?,
+                    ))
+                });
+                let local_offset = state
+                    .view()
+                    .map(|view| (view.offset.x, view.offset.y))
+                    .unwrap_or_default();
+                SurfaceCommit {
+                    buffer,
+                    logical_size,
+                    local_offset,
+                    commit: state.current_commit(),
+                    buffer_scale: u32::try_from(state.buffer_scale()).unwrap_or(1),
+                    transform: surface_transform(state.buffer_transform()),
+                }
+            })
+        else {
+            return false;
+        };
+        let update = self
+            .surface_buffers
+            .update_surface(&surface.id(), &snapshot);
+        self.release_client_buffers(update.released_buffers);
+        if !update.changed {
+            return false;
+        }
+        let content = update.content.into_iter().collect();
+        match self.world.set_view_content(view_id, content) {
+            Ok(changed) => changed,
+            Err(error) => {
+                warn!(%error, view_id = view_id.get(), "failed to update view surface content");
+                false
+            }
+        }
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn allocate_client_buffer_id(&mut self) -> Option<crate::ecs::SurfaceBufferId> {
+        self.surface_buffers.allocate_buffer_id_for_import()
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn register_imported_client_buffer(
+        &mut self,
+        object: smithay::reexports::wayland_server::backend::ObjectId,
+        id: crate::ecs::SurfaceBufferId,
+        size: tensor_util::Size,
+    ) -> bool {
+        self.surface_buffers
+            .register_imported_buffer(object, id, size)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn buffer_destroyed(
+        &mut self,
+        object: &smithay::reexports::wayland_server::backend::ObjectId,
+    ) {
+        let released = self.surface_buffers.buffer_destroyed(object);
+        self.release_client_buffers(released);
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn release_client_buffers(
+        &mut self,
+        ids: impl IntoIterator<Item = crate::ecs::SurfaceBufferId>,
+    ) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            for id in ids {
+                renderer.release_client_image(id);
+            }
+        }
     }
 
     pub(crate) fn update_toplevel_constraints(
@@ -322,6 +429,20 @@ impl RuntimeState {
             .checked_add(1)
             .expect("compositor exhausted the stable view ID space");
         view_id
+    }
+}
+
+#[cfg(feature = "tty")]
+fn surface_transform(transform: smithay::utils::Transform) -> SurfaceTransform {
+    match transform {
+        smithay::utils::Transform::Normal => SurfaceTransform::Normal,
+        smithay::utils::Transform::_90 => SurfaceTransform::Rotate90,
+        smithay::utils::Transform::_180 => SurfaceTransform::Rotate180,
+        smithay::utils::Transform::_270 => SurfaceTransform::Rotate270,
+        smithay::utils::Transform::Flipped => SurfaceTransform::Flipped,
+        smithay::utils::Transform::Flipped90 => SurfaceTransform::Flipped90,
+        smithay::utils::Transform::Flipped180 => SurfaceTransform::Flipped180,
+        smithay::utils::Transform::Flipped270 => SurfaceTransform::Flipped270,
     }
 }
 

@@ -17,6 +17,8 @@ use super::{
 };
 #[cfg(feature = "tty")]
 use super::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
+#[cfg(feature = "tty")]
+use crate::ecs::SurfaceBufferId;
 
 mod error;
 #[cfg(feature = "tty")]
@@ -311,6 +313,7 @@ impl VulkanRenderer {
     #[cfg(feature = "tty")]
     pub(crate) fn import_client_dmabuf(
         &mut self,
+        id: SurfaceBufferId,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     ) -> Result<(), RendererError> {
         let completed = self
@@ -321,16 +324,13 @@ impl VulkanRenderer {
         self.client_images
             .retire_completed(&self._owner.device, completed);
         self.client_images
-            .import(&self._owner.device, dmabuf)
+            .import(id, &self._owner.device, dmabuf)
             .map_err(|error| RendererError::ClientImport(error.to_string()))
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn release_client_dmabuf(
-        &mut self,
-        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
-    ) {
-        self.client_images.release(dmabuf);
+    pub(crate) fn release_client_image(&mut self, id: SurfaceBufferId) {
+        self.client_images.release(id);
     }
 
     #[cfg(feature = "tty")]
@@ -378,6 +378,32 @@ impl VulkanRenderer {
             .frames
             .prepare(output, scene, completed)
             .map_err(|error| RendererError::Frame(error.to_string()))?;
+        let client_ids = frame.draw_plan.images().to_vec();
+        debug!(
+            output = ?output,
+            serial = frame.serial,
+            timeline = frame.timeline_value,
+            draws = frame.draw_plan.draws().len(),
+            unique_client_images = client_ids.len(),
+            surface_contents = frame.scene.contents().len(),
+            damage_regions = frame.damage.regions().len(),
+            "prepared Vulkan scene frame"
+        );
+        let client_descriptors = match client_ids
+            .iter()
+            .map(|id| {
+                self.client_images
+                    .descriptor(*id)
+                    .ok_or(RendererError::MissingClientImage(*id))
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(descriptors) => descriptors,
+            Err(error) => {
+                let _ = self.frames.abort(&frame);
+                return Err(error);
+            }
+        };
         let image = self
             .native_targets
             .image_info(output, frame.output_slot)
@@ -393,6 +419,7 @@ impl VulkanRenderer {
             self._owner._graphics_queue,
             &frame,
             &image,
+            &client_descriptors,
             completed,
         ) {
             Ok(fd) => fd,
@@ -404,6 +431,8 @@ impl VulkanRenderer {
                     self.frames.mark_device_lost();
                 }
                 if source.was_submitted() {
+                    self.client_images
+                        .mark_used(client_ids.iter().copied(), frame.timeline_value);
                     let _ = self.frames.commit(&frame);
                     self.native_targets.mark_submitted(
                         output,
@@ -419,6 +448,8 @@ impl VulkanRenderer {
         self.frames
             .commit(&frame)
             .map_err(|error| RendererError::Frame(error.to_string()))?;
+        self.client_images
+            .mark_used(client_ids.iter().copied(), frame.timeline_value);
         self.pending_sync_fds
             .insert((output, frame.timeline_value), sync_fd);
         while self
