@@ -7,6 +7,9 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
         MeshGenericParticle => "ParticleBillboard",
         MeshFlatRoundedMaskComposite => "ObjectUvSupportQuad",
         MeshFinalEffect if spec.key == "we/flat-rounded-opacity-final" => "ObjectUvSupportQuad",
+        MeshFinalEffect if spec.key == "we/framebuffer-water-quantized-water-opacity" => {
+            "FullscreenTriangle"
+        }
         MeshObjectComposite
         | MeshUtilityComposite
         | EffectWaterWavesUvField

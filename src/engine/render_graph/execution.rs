@@ -164,7 +164,8 @@ mod tests {
     use super::*;
     use crate::core::SceneBlendMode;
     use crate::engine::render_graph::{
-        CullMode, DepthTestMode, PassState, PipelineBlendMode, TextureBindingRole,
+        CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderPassDrawPrimitive,
+        TextureBindingRole,
     };
 
     fn pass(
@@ -176,6 +177,7 @@ mod tests {
         RenderPassNode {
             id,
             role: RenderPassRole::EffectMaterial,
+            draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
             object_index: Some(7),
             material_index: None,
             pass_index: id,

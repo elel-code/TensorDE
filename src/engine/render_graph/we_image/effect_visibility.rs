@@ -57,7 +57,11 @@ fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
             shader: "we/puppet-iris-waterripple-final".to_owned(),
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
+            effect_stage_index: 0,
+            effect_stage_count: 2,
             prepass: None,
+            intermediate: None,
         }),
         effect_passes,
     });
@@ -138,11 +142,20 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
         ripple_flow_material_indices: None,
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
-            shader: "we/framebuffer-water-quantized-final".to_owned(),
+            shader: "we/framebuffer-water-quantized-shake-final".to_owned(),
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
+            effect_stage_index: 3,
+            effect_stage_count: 1,
             prepass: Some(WeFinalEffectPrepass {
                 material_index: 8,
                 shader: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1".to_owned(),
                 effect_stage_index: 0,
+            }),
+            intermediate: Some(WeFinalEffectIntermediate {
+                material_index: 10,
+                shader: "we/framebuffer-water-quantized-water-opacity".to_owned(),
+                effect_stage_index: 1,
+                effect_stage_count: 2,
             }),
         }),
         effect_passes,
@@ -152,8 +165,12 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
         graph.activation_policy,
         RenderGraphActivationPolicy::AnyEffectVisible
     );
-    assert_eq!(graph.passes.len(), 3);
+    assert_eq!(graph.passes.len(), 4);
     assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+    assert_eq!(
+        graph.passes[0].draw_primitive,
+        RenderPassDrawPrimitive::None
+    );
     assert_eq!(
         graph.passes[0].target,
         RenderTargetRole::FirstClassEffectTarget
@@ -163,6 +180,10 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
         Some("rgba_backbuffer")
     );
     assert_eq!(graph.passes[1].role, RenderPassRole::EffectMaterial);
+    assert_eq!(
+        graph.passes[1].draw_primitive,
+        RenderPassDrawPrimitive::FullscreenTriangle
+    );
     assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalMain);
     assert_eq!(graph.passes[1].target_format.as_deref(), Some("rgba8"));
     assert_eq!(
@@ -176,11 +197,15 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
             name: "_rt_FullFrameBuffer".to_owned(),
         }]
     );
-    assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
-    assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+    assert_eq!(graph.passes[2].role, RenderPassRole::EffectMaterial);
+    assert_eq!(
+        graph.passes[2].draw_primitive,
+        RenderPassDrawPrimitive::FullscreenTriangle
+    );
+    assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalSub);
     assert_eq!(
         graph.passes[2].effect_visibility,
-        RenderPassEffectVisibility::material_stages(17, 4)
+        RenderPassEffectVisibility::material_stages(18, 2)
     );
     assert_eq!(
         graph.passes[2].bindings,
@@ -188,7 +213,25 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
     );
     assert_eq!(
         graph.passes[2].state.pipeline_blend,
+        PipelineBlendMode::Normal
+    );
+    assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[3].draw_primitive,
+        RenderPassDrawPrimitive::ObjectMesh
+    );
+    assert_eq!(graph.passes[3].target, RenderTargetRole::SceneColor);
+    assert_eq!(
+        graph.passes[3].effect_visibility,
+        RenderPassEffectVisibility::material_stages(20, 1)
+    );
+    assert_eq!(
+        graph.passes[3].bindings,
+        vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }]
+    );
+    assert_eq!(
+        graph.passes[3].state.pipeline_blend,
         PipelineBlendMode::Translucent
     );
-    assert_eq!(graph.passes[2].state.color_write_mask, ColorWriteMask::Rgb);
+    assert_eq!(graph.passes[3].state.color_write_mask, ColorWriteMask::Rgb);
 }

@@ -279,6 +279,39 @@ impl SceneRenderPassKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum SceneRenderPassDrawPrimitive {
+    None,
+    ObjectMesh,
+    FullscreenTriangle,
+    ObjectUvSupportQuad,
+    ParticleBillboard,
+}
+
+impl SceneRenderPassDrawPrimitive {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::ObjectMesh => 1,
+            Self::FullscreenTriangle => 2,
+            Self::ObjectUvSupportQuad => 3,
+            Self::ParticleBillboard => 4,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::ObjectMesh),
+            2 => Some(Self::FullscreenTriangle),
+            3 => Some(Self::ObjectUvSupportQuad),
+            4 => Some(Self::ParticleBillboard),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SceneRenderGraphActivationPolicy {
     Always,
     AnyEffectVisible,
@@ -920,6 +953,7 @@ pub struct SceneRenderGraphRecord {
 pub struct SceneRenderPassRecord {
     pub id: u32,
     pub role: SceneRenderPassKind,
+    pub draw_primitive: SceneRenderPassDrawPrimitive,
     pub object: SceneObjectHandle,
     pub material: SceneMaterialHandle,
     pub pass_index: u32,

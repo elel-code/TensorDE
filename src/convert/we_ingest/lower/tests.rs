@@ -3,6 +3,36 @@ use crate::core::SceneBlendMode;
 use crate::engine::scene::SceneResourceKind;
 
 #[test]
+fn lower_render_pass_draw_primitive_preserves_all_typed_variants() {
+    let cases = [
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::None,
+            SceneRenderPassDrawPrimitive::None,
+        ),
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::ObjectMesh,
+            SceneRenderPassDrawPrimitive::ObjectMesh,
+        ),
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::FullscreenTriangle,
+            SceneRenderPassDrawPrimitive::FullscreenTriangle,
+        ),
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::ObjectUvSupportQuad,
+            SceneRenderPassDrawPrimitive::ObjectUvSupportQuad,
+        ),
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::ParticleBillboard,
+            SceneRenderPassDrawPrimitive::ParticleBillboard,
+        ),
+    ];
+
+    for (source, expected) in cases {
+        assert_eq!(lower_pass_draw_primitive(source), expected);
+    }
+}
+
+#[test]
 fn lower_scene_blend_preserves_all_typed_composite_modes() {
     let cases = [
         (SceneBlendMode::Alpha, SceneCompositeBlend::Alpha),

@@ -3,12 +3,12 @@
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     ColorWriteMask, CullMode, DepthTestMode, PipelineBlendMode, RenderGraphActivationPolicy,
-    RenderPassEffectVisibilityPolicy, RenderPassRole, RenderTargetRole,
+    RenderPassDrawPrimitive, RenderPassEffectVisibilityPolicy, RenderPassRole, RenderTargetRole,
 };
 use crate::engine::scene::{
     SceneColorWriteMask, SceneCompositeBlend, SceneCullMode, SceneDepthTest, ScenePipelineBlend,
-    SceneRenderEffectVisibilityPolicy, SceneRenderGraphActivationPolicy, SceneRenderPassKind,
-    SceneRenderTargetKind,
+    SceneRenderEffectVisibilityPolicy, SceneRenderGraphActivationPolicy,
+    SceneRenderPassDrawPrimitive, SceneRenderPassKind, SceneRenderTargetKind,
 };
 
 pub(super) fn lower_render_graph_activation_policy(
@@ -40,6 +40,24 @@ pub(super) fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
         RenderPassRole::MeshVisibleRemainder => SceneRenderPassKind::MeshVisibleRemainder,
         RenderPassRole::DebugEvidence => SceneRenderPassKind::DebugEvidence,
         RenderPassRole::Unsupported => SceneRenderPassKind::Unsupported,
+    }
+}
+
+pub(super) fn lower_pass_draw_primitive(
+    primitive: RenderPassDrawPrimitive,
+) -> SceneRenderPassDrawPrimitive {
+    match primitive {
+        RenderPassDrawPrimitive::None => SceneRenderPassDrawPrimitive::None,
+        RenderPassDrawPrimitive::ObjectMesh => SceneRenderPassDrawPrimitive::ObjectMesh,
+        RenderPassDrawPrimitive::FullscreenTriangle => {
+            SceneRenderPassDrawPrimitive::FullscreenTriangle
+        }
+        RenderPassDrawPrimitive::ObjectUvSupportQuad => {
+            SceneRenderPassDrawPrimitive::ObjectUvSupportQuad
+        }
+        RenderPassDrawPrimitive::ParticleBillboard => {
+            SceneRenderPassDrawPrimitive::ParticleBillboard
+        }
     }
 }
 

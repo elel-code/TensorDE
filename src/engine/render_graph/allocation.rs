@@ -263,8 +263,8 @@ fn render_graph_target_role_is_allocatable(role: RenderTargetRole) -> bool {
 mod tests {
     use super::*;
     use crate::engine::render_graph::{
-        DepthTestMode, PassState, PipelineBlendMode, RenderPassNode, RenderPassRole,
-        TextureBindingRole,
+        DepthTestMode, PassState, PipelineBlendMode, RenderPassDrawPrimitive, RenderPassNode,
+        RenderPassRole, TextureBindingRole,
     };
 
     fn pass(
@@ -276,6 +276,7 @@ mod tests {
         RenderPassNode {
             id,
             role: RenderPassRole::EffectMaterial,
+            draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
             object_index: Some(7),
             material_index: None,
             pass_index: id,

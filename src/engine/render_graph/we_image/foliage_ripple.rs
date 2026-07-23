@@ -2,7 +2,8 @@
 
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassNode, RenderPassRole, RenderTargetRole,
+    PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassNode, RenderPassRole,
+    RenderTargetRole,
 };
 
 #[cfg(test)]
@@ -57,6 +58,7 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
         object_index: Some(contract.object_index),
         material_index: Some(material.material_index),
         pass_index: 0,

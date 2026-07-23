@@ -94,7 +94,7 @@ impl SceneRenderingDeviceGraphPlan {
                 let effect_visibility_mask = resolved_effect_visibility_mask(semantic_frame, pass);
                 let pass_object_state = pass_object(semantic_frame, pass);
                 if let (true, Some(pass_object_state)) =
-                    (pass_draws_object_mesh(storage, pass), pass_object_state)
+                    (pass_draws_object_mesh(pass), pass_object_state)
                 {
                     let resolved_object_index = pass_object_state.object_index;
                     for (mesh_index, mesh) in storage.meshes().iter().enumerate() {
@@ -422,24 +422,9 @@ pub struct SceneRenderingDevicePuppetBoneMatrix {
     pub alpha: f32,
 }
 
-fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) -> bool {
+fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
     pass.object.0 != INVALID_OBJECT_ID
-        && (pass.role == SceneRenderPassKind::BaseMaterial
-            || matches!(
-                pass.role,
-                SceneRenderPassKind::MeshVisiblePrefix
-                    | SceneRenderPassKind::MeshClippingMask
-                    | SceneRenderPassKind::MeshClippedTarget
-                    | SceneRenderPassKind::MeshVisibleRemainder
-            )
-            || (pass.role == SceneRenderPassKind::SceneComposite
-                && !storage.string(pass.shader_key).is_some_and(|key| {
-                    key.eq_ignore_ascii_case("we/objectcomposite")
-                        || key.eq_ignore_ascii_case("we/objectcomposite-screen-group")
-                        || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
-                        || key.eq_ignore_ascii_case("we/flat-rounded-hsl-source")
-                        || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
-                })))
+        && pass.draw_primitive == SceneRenderPassDrawPrimitive::ObjectMesh
 }
 
 fn pass_mesh_index_range(
@@ -480,7 +465,7 @@ fn pass_utility_primitive(
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
 ) -> Option<SceneRenderingDeviceDrawPrimitive> {
-    if pass.role == SceneRenderPassKind::Particle {
+    if pass.draw_primitive == SceneRenderPassDrawPrimitive::ParticleBillboard {
         if pass_object_state.is_none() {
             return None;
         }
@@ -496,47 +481,20 @@ fn pass_utility_primitive(
             })
             .map(|_| SceneRenderingDeviceDrawPrimitive::ParticleBillboard);
     }
-    if !matches!(
-        pass.role,
-        SceneRenderPassKind::BaseMaterial
-            | SceneRenderPassKind::EffectMaterial
-            | SceneRenderPassKind::ColorBlendPassthrough
-            | SceneRenderPassKind::SceneComposite
-    ) {
-        return None;
-    }
     if pass.object.0 != INVALID_OBJECT_ID && pass_object_state.is_none() {
         return None;
     }
-    storage
-        .string(pass.shader_key)
-        .and_then(shader_utility_primitive)
-}
-
-fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDrawPrimitive> {
-    let key = shader_key.to_ascii_lowercase();
-    if matches!(
-        key.as_str(),
-        "we/flat-rounded-mask-composite"
-            | "we/flat-rounded-opacity-final"
-            | "we/flat-rounded-hsl-source"
-    ) {
-        return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
+    match pass.draw_primitive {
+        SceneRenderPassDrawPrimitive::FullscreenTriangle => {
+            Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
+        }
+        SceneRenderPassDrawPrimitive::ObjectUvSupportQuad => {
+            Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad)
+        }
+        SceneRenderPassDrawPrimitive::None
+        | SceneRenderPassDrawPrimitive::ObjectMesh
+        | SceneRenderPassDrawPrimitive::ParticleBillboard => None,
     }
-    (key.starts_with("effects/")
-        || key.starts_with("workshop/")
-        || key == "we/image-ripple-source"
-        || key.starts_with("we/effect-waterwaves-direct")
-        || key.starts_with("we/waterwaves-uv-")
-        || key == "minimalalpha"
-        || key.starts_with("minimalalpha__")
-        || key == "passthrough"
-        || key.starts_with("passthrough__")
-        || key.contains("composelayer")
-        || key.contains("objectcomposite")
-        || key.contains("utilitycomposite")
-        || key.contains("flattexture"))
-    .then_some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
 }
 
 fn utility_primitive_draw(

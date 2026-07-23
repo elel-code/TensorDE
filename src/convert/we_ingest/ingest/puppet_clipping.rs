@@ -4,9 +4,9 @@ use super::WeIrBuilder;
 use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture};
 use crate::convert::we_ingest::shader_key::canonical_scene_shader_key;
 use crate::engine::render_graph::{
-    ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassNode,
-    RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
-    UnsupportedGraphBoundary,
+    ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph,
+    RenderPassDrawPrimitive, RenderPassNode, RenderPassRole, RenderTargetRole, RenderTargetSpec,
+    TextureBindingRole, UnsupportedGraphBoundary,
 };
 use crate::engine::scene::abi::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
@@ -123,6 +123,7 @@ pub(super) fn apply_token_one_graph(
         passes.push(RenderPassNode {
             id: 0,
             role: RenderPassRole::MeshClippingMask,
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
             object_index: Some(object as usize),
             material_index: Some(mask_material as usize),
             pass_index: subdraw as u32,

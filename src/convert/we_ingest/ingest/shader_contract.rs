@@ -181,7 +181,8 @@ pub(super) fn declared_texture_slot_mask(
         "we/image-waterripple-modulate-final" => mask |= 0x07,
         "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
         "we/image-cloudmotion-final" => mask |= 0x05,
-        "we/framebuffer-water-quantized-final" => mask |= 0x03,
+        "we/framebuffer-water-quantized-water-opacity" => mask |= 0x01,
+        "we/framebuffer-water-quantized-shake-final" => mask |= 0x03,
         "we/puppet-opacity-final" => mask |= 0x03,
         "we/puppet-opacity-clipping-final" => mask |= 0x103,
         "we/puppet-iris-waterripple-final" => mask |= 0x0f,
@@ -230,7 +231,8 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
-        || key == "we/framebuffer-water-quantized-final"
+        || key == "we/framebuffer-water-quantized-water-opacity"
+        || key == "we/framebuffer-water-quantized-shake-final"
         || key == "we/puppet-opacity-final"
         || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
@@ -304,7 +306,8 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
-        || key == "we/framebuffer-water-quantized-final"
+        || key == "we/framebuffer-water-quantized-water-opacity"
+        || key == "we/framebuffer-water-quantized-shake-final"
         || key == "we/puppet-opacity-final"
         || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
@@ -373,7 +376,8 @@ fn is_foliage_ripple_shader(key: &str) -> bool {
 mod tests {
     use super::*;
     use crate::engine::render_graph::{
-        PassState, RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetRole,
+        PassState, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
+        RenderPassRole, RenderTargetRole,
     };
     use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
@@ -422,6 +426,7 @@ mod tests {
         let pass = |id, shader: &str| RenderPassNode {
             id,
             role: RenderPassRole::MeshClippedTarget,
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
             object_index: Some(0),
             material_index: None,
             pass_index: id,
@@ -471,7 +476,8 @@ mod tests {
     fn framebuffer_water_contracts_declare_every_texture_and_both_uniforms() {
         let prepass_shader =
             "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
-        let final_shader = "we/framebuffer-water-quantized-final";
+        let intermediate_shader = "we/framebuffer-water-quantized-water-opacity";
+        let final_shader = "we/framebuffer-water-quantized-shake-final";
         let material_pass =
             |material, shader_key: &str, texture_start, texture_count| WeIrMaterialPass {
                 material,
@@ -491,6 +497,7 @@ mod tests {
         let graph_pass = |id, material_index, shader: &str| RenderPassNode {
             id,
             role: RenderPassRole::EffectMaterial,
+            draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
             object_index: Some(0),
             material_index: Some(material_index),
             pass_index: id,
@@ -507,14 +514,16 @@ mod tests {
             activation_policy: Default::default(),
             passes: vec![
                 graph_pass(0, 0, prepass_shader),
-                graph_pass(1, 1, final_shader),
+                graph_pass(1, 1, intermediate_shader),
+                graph_pass(2, 2, final_shader),
             ],
             target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
         let material_passes = [
             material_pass(0, prepass_shader, 0, 4),
-            material_pass(1, final_shader, 4, 1),
+            material_pass(1, intermediate_shader, 4, 0),
+            material_pass(2, final_shader, 4, 1),
         ];
         let material_textures = [
             WeIrMaterialTexture {
@@ -553,6 +562,13 @@ mod tests {
         assert_eq!(prepass.texture_slot_mask, 0x3d);
         assert_eq!(prepass.resource_heap_count, 7);
         assert_eq!(prepass.sampler_heap_count, 5);
+        let intermediate = contracts
+            .iter()
+            .find(|contract| contract.shader_key == intermediate_shader)
+            .expect("quantized framebuffer-water intermediate contract");
+        assert_eq!(intermediate.texture_slot_mask, 0x01);
+        assert_eq!(intermediate.resource_heap_count, 3);
+        assert_eq!(intermediate.sampler_heap_count, 1);
         let final_program = contracts
             .iter()
             .find(|contract| contract.shader_key == final_shader)

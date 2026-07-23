@@ -8,11 +8,14 @@ use crate::convert::we_ingest::ir::{
 };
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    WeEffectPassContract, WeFinalEffectMaterial, WeFinalEffectPrepass,
+    RenderPassDrawPrimitive, WeEffectPassContract, WeFinalEffectIntermediate,
+    WeFinalEffectMaterial, WeFinalEffectPrepass,
 };
 use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
 use super::WeIrBuilder;
+
+mod framebuffer_water;
 
 pub(super) const IMAGE_WATERWAVES_FINAL_SHADER: &str = "we/image-waterwaves-final";
 pub(super) const IMAGE_WATERRIPPLE_FINAL_SHADER: &str = "we/image-waterripple-final";
@@ -26,13 +29,6 @@ pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-wa
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
 pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
-pub(super) const FRAMEBUFFER_WATER_QUANTIZED_FINAL_SHADER: &str =
-    "we/framebuffer-water-quantized-final";
-const FRAMEBUFFER_CAUSTICS_QUANTIZED_PREPASS_SHADER: &str =
-    "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
-const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_QUANTIZED_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
-const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_QUANTIZED_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
     ImageWaterWaves,
@@ -135,7 +131,13 @@ fn create_for_kind(
     }
     let (shader, textures, constants) =
         final_effect_program(builder, &source, effects, kind, final_scene_blend)?;
-    let prepass = framebuffer_caustics_prepass(builder, effects, kind)?;
+    let (prepass, intermediate, effect_stage_index, effect_stage_count) =
+        if kind == FinalEffectKind::FramebufferWater {
+            let (prepass, intermediate) = framebuffer_water::create_stages(builder, effects)?;
+            (Some(prepass), Some(intermediate), 3, 1)
+        } else {
+            (None, None, 0, effects.len())
+        };
     let material_index = push_material(
         builder,
         source.resource,
@@ -148,8 +150,28 @@ fn create_for_kind(
     Some(WeFinalEffectMaterial {
         material_index,
         shader: shader.to_owned(),
+        draw_primitive: final_effect_draw_primitive(kind),
+        effect_stage_index,
+        effect_stage_count,
         prepass,
+        intermediate,
     })
+}
+
+fn final_effect_draw_primitive(kind: FinalEffectKind) -> RenderPassDrawPrimitive {
+    match kind {
+        FinalEffectKind::FlatRoundedOpacity => RenderPassDrawPrimitive::ObjectUvSupportQuad,
+        FinalEffectKind::ImageWaterWaves
+        | FinalEffectKind::ImageWaterRipple
+        | FinalEffectKind::ImageScroll
+        | FinalEffectKind::ImageColorKeyScroll
+        | FinalEffectKind::ImageCloudMotion
+        | FinalEffectKind::PuppetOpacity
+        | FinalEffectKind::PuppetIrisWaterRipple
+        | FinalEffectKind::TechCircle
+        | FinalEffectKind::AudioBars
+        | FinalEffectKind::FramebufferWater => RenderPassDrawPrimitive::ObjectMesh,
+    }
 }
 
 fn final_effect_source_is_supported(
@@ -158,54 +180,10 @@ fn final_effect_source_is_supported(
     source_constants_are_empty: bool,
 ) -> bool {
     kind != FinalEffectKind::FramebufferWater
-        || (framebuffer_snapshot_available && source_constants_are_empty)
-}
-
-fn framebuffer_caustics_prepass(
-    builder: &mut WeIrBuilder,
-    effects: &[WeEffectPassContract],
-    kind: FinalEffectKind,
-) -> Option<Option<WeFinalEffectPrepass>> {
-    if kind != FinalEffectKind::FramebufferWater {
-        return Some(None);
-    }
-    let effect = effects.first()?;
-    let input = material_input(builder, effect.material_index?)?;
-    if [2, 3, 4, 5]
-        .into_iter()
-        .any(|slot| texture_at_slot(&input, slot).is_none())
-    {
-        return None;
-    }
-    let shader = framebuffer_caustics_prepass_shader(&input);
-    let material_index = push_material(
-        builder,
-        input.resource,
-        input.pass,
-        shader,
-        input.textures,
-        input.constants,
-        ScenePipelineBlend::Normal,
-    );
-    Some(Some(WeFinalEffectPrepass {
-        material_index,
-        shader: shader.to_owned(),
-        effect_stage_index: 0,
-    }))
-}
-
-fn framebuffer_caustics_prepass_shader(input: &MaterialInput) -> &'static str {
-    if input
-        .pass
-        .shader_key
-        .contains("__GILDER_PATTERN_GLOW_SHARED_1")
-    {
-        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_QUANTIZED_PREPASS_SHADER
-    } else if input.pass.shader_key.contains("__GILDER_CHROMATIC_ZERO_1") {
-        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_QUANTIZED_PREPASS_SHADER
-    } else {
-        FRAMEBUFFER_CAUSTICS_QUANTIZED_PREPASS_SHADER
-    }
+        || framebuffer_water::source_is_supported(
+            framebuffer_snapshot_available,
+            source_constants_are_empty,
+        )
 }
 
 fn final_effect_scene_blend_supported(kind: FinalEffectKind, scene_blend: SceneBlendMode) -> bool {
@@ -344,16 +322,7 @@ fn final_effect_program(
             ));
             AUDIO_BARS_FINAL_SHADER
         }
-        FinalEffectKind::FramebufferWater => {
-            for slot in [2, 3, 4, 5] {
-                texture_at_slot(&inputs[0], slot)?;
-            }
-            append_effect_constants(&mut constants, "waves", &inputs[1]);
-            append_effect_constants(&mut constants, "opacity", &inputs[2]);
-            append_effect_constants(&mut constants, "shake", &inputs[3]);
-            textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 1));
-            FRAMEBUFFER_WATER_QUANTIZED_FINAL_SHADER
-        }
+        FinalEffectKind::FramebufferWater => return framebuffer_water::final_program(&inputs),
     };
     Some((shader, textures, constants))
 }
@@ -391,7 +360,7 @@ fn final_effect_kind(
     }
     if is_composelayer_shader(base_shader)
         && effect_names.as_slice() == ["caustics", "waterwaves", "opacity", "shake"]
-        && framebuffer_water_chain_is_supported(effects)
+        && framebuffer_water::chain_is_supported(effects)
     {
         return Some(FinalEffectKind::FramebufferWater);
     }
@@ -494,66 +463,6 @@ fn audio_bars_is_supported(effect: &WeEffectPassContract) -> bool {
 
 fn skew_is_supported(effect: &WeEffectPassContract) -> bool {
     previous_only(effect, &[0]) && combo_value(effect, "REPEAT", 1) != 0
-}
-
-fn framebuffer_water_chain_is_supported(effects: &[WeEffectPassContract]) -> bool {
-    let [caustics, waves, opacity, shake] = effects else {
-        return false;
-    };
-    framebuffer_stage_is_replace(caustics)
-        && framebuffer_stage_is_replace(waves)
-        && framebuffer_stage_is_replace(opacity)
-        && framebuffer_stage_is_replace(shake)
-        && bindings_are_exact(caustics, &[0, 2, 3, 4, 5])
-        && bindings_are_exact(waves, &[0])
-        && bindings_are_exact(opacity, &[0])
-        && bindings_are_exact(shake, &[0, 1])
-        && combo_value(caustics, "BLENDMODE", -1) == 6
-        && combo_value(caustics, "MODE", 0) == 0
-        && combos_are_exactly_supported(caustics, &[("BLENDMODE", 6), ("MODE", 0)])
-        && waves.combos.is_empty()
-        && opacity.combos.is_empty()
-        && shake.combos.is_empty()
-}
-
-fn framebuffer_stage_is_replace(effect: &WeEffectPassContract) -> bool {
-    effect
-        .material_blending
-        .as_deref()
-        .is_none_or(|value| value == "normal")
-        && effect
-            .depthtest
-            .as_deref()
-            .is_none_or(|value| value == "disabled")
-        && effect
-            .depthwrite
-            .as_deref()
-            .is_none_or(|value| value == "disabled")
-        && effect
-            .cullmode
-            .as_deref()
-            .is_none_or(|value| value == "nocull")
-}
-
-fn bindings_are_exact(effect: &WeEffectPassContract, slots: &[u32]) -> bool {
-    effect.binds.len() == slots.len()
-        && slots.iter().all(|slot| {
-            effect.binds.get(slot).is_some_and(|source| {
-                if *slot == 0 {
-                    source == "previous"
-                } else {
-                    !source.is_empty() && !is_graph_resource(source)
-                }
-            })
-        })
-}
-
-fn combos_are_exactly_supported(effect: &WeEffectPassContract, supported: &[(&str, i64)]) -> bool {
-    effect.combos.iter().all(|(name, value)| {
-        supported.iter().any(|(supported_name, supported_value)| {
-            name == supported_name && value == supported_value
-        })
-    })
 }
 
 fn combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {
@@ -761,6 +670,31 @@ mod tests {
     }
 
     #[test]
+    fn final_effect_kind_carries_its_typed_draw_primitive() {
+        assert_eq!(
+            final_effect_draw_primitive(FinalEffectKind::FlatRoundedOpacity),
+            RenderPassDrawPrimitive::ObjectUvSupportQuad
+        );
+        for kind in [
+            FinalEffectKind::ImageWaterWaves,
+            FinalEffectKind::ImageWaterRipple,
+            FinalEffectKind::ImageScroll,
+            FinalEffectKind::ImageColorKeyScroll,
+            FinalEffectKind::ImageCloudMotion,
+            FinalEffectKind::PuppetOpacity,
+            FinalEffectKind::PuppetIrisWaterRipple,
+            FinalEffectKind::TechCircle,
+            FinalEffectKind::AudioBars,
+            FinalEffectKind::FramebufferWater,
+        ] {
+            assert_eq!(
+                final_effect_draw_primitive(kind),
+                RenderPassDrawPrimitive::ObjectMesh
+            );
+        }
+    }
+
+    #[test]
     fn singleton_water_effects_are_final_draw_candidates() {
         let waves = effect("effects/waterwaves__SLOTS_3", &[0, 1]);
         assert_eq!(
@@ -853,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_framebuffer_water_chain_is_a_two_stage_final_candidate() {
+    fn strict_framebuffer_water_chain_is_a_three_stage_final_candidate() {
         let effects = framebuffer_water_effects();
         assert_eq!(
             final_effect_kind("we/composelayer", &effects, false, false),

@@ -22,7 +22,8 @@ pub use execution::{
 };
 pub use graph::{RenderGraph, RenderGraphActivationPolicy, UnsupportedGraphBoundary};
 pub use pass::{
-    RenderPassEffectVisibility, RenderPassEffectVisibilityPolicy, RenderPassNode, RenderPassRole,
+    RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassEffectVisibilityPolicy,
+    RenderPassNode, RenderPassRole,
 };
 pub use resource::{
     RenderGraphBarrier, RenderGraphResourceAccess, RenderGraphResourceUsage, RenderGraphResourceUse,
@@ -35,10 +36,10 @@ pub use state::{
 };
 pub use target::{RenderTargetRole, RenderTargetSpec};
 pub use we_image::{
-    WeEffectPassContract, WeFinalEffectMaterial, WeFinalEffectPrepass, WeFoliageRippleMaterial,
-    WeFramebufferSnapshotContract, WeFramebufferSnapshotUsage, WeImageGraphContract,
-    WeRippleFlowMaterialIndices, WeWaterWavesDirectMaterial, we_effect_pass_node,
-    we_effect_passes_form_foliage_ripple_chain, we_effect_passes_form_ripple_flow_chain,
-    we_effect_passes_form_waterwaves_displacement_chain, we_image_graph,
-    we_image_graph_requires_generated_scene_snapshot,
+    WeEffectPassContract, WeFinalEffectIntermediate, WeFinalEffectMaterial, WeFinalEffectPrepass,
+    WeFoliageRippleMaterial, WeFramebufferSnapshotContract, WeFramebufferSnapshotUsage,
+    WeImageGraphContract, WeRippleFlowMaterialIndices, WeWaterWavesDirectMaterial,
+    we_effect_pass_node, we_effect_passes_form_foliage_ripple_chain,
+    we_effect_passes_form_ripple_flow_chain, we_effect_passes_form_waterwaves_displacement_chain,
+    we_image_graph, we_image_graph_requires_generated_scene_snapshot,
 };

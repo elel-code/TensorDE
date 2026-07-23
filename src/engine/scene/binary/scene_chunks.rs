@@ -609,6 +609,7 @@ pub(super) fn encode_render_graphs(
     for record in passes {
         put_u32(&mut out, record.id);
         put_u32(&mut out, record.role.to_u32());
+        put_u32(&mut out, record.draw_primitive.to_u32());
         put_u32(&mut out, record.object.0);
         put_u32(&mut out, record.material.0);
         put_u32(&mut out, record.pass_index);
@@ -686,6 +687,10 @@ pub(super) fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, Sce
         let role = SceneRenderPassKind::from_u32(role_raw).ok_or(
             SceneBinaryError::InvalidChunkValue("render pass role", role_raw),
         )?;
+        let draw_primitive_raw = decoder.u32()?;
+        let draw_primitive = SceneRenderPassDrawPrimitive::from_u32(draw_primitive_raw).ok_or(
+            SceneBinaryError::InvalidChunkValue("render pass draw primitive", draw_primitive_raw),
+        )?;
         let object = SceneObjectHandle(decoder.u32()?);
         let material = SceneMaterialHandle(decoder.u32()?);
         let pass_index = decoder.u32()?;
@@ -697,6 +702,7 @@ pub(super) fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, Sce
         passes.push(SceneRenderPassRecord {
             id,
             role,
+            draw_primitive,
             object,
             material,
             pass_index,

@@ -294,6 +294,7 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
             SceneRenderPassRecord {
                 id: 9,
                 role: SceneRenderPassKind::BaseMaterial,
+                draw_primitive: SceneRenderPassDrawPrimitive::ObjectMesh,
                 object: SceneObjectHandle(0),
                 material: SceneMaterialHandle(1),
                 pass_index: 0,
@@ -316,6 +317,7 @@ fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
             SceneRenderPassRecord {
                 id: 10,
                 role: SceneRenderPassKind::BaseMaterial,
+                draw_primitive: SceneRenderPassDrawPrimitive::ObjectMesh,
                 object: SceneObjectHandle(1),
                 material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                 pass_index: 0,
@@ -596,9 +598,9 @@ fn same_named_fbo_in_distinct_graphs_keeps_graph_scoped_identity() {
 }
 
 #[test]
-fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object_mesh() {
+fn rendering_device_graph_uses_explicit_fullscreen_primitive_without_shader_name_inference() {
     let document = SceneBinaryDocument {
-        strings: vec!["effects/opacity__SLOTS_1".to_owned(), "fbo_a".to_owned()],
+        strings: vec!["opaque-contract-key".to_owned(), "fbo_a".to_owned()],
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(INVALID_OBJECT_ID),
             activation_policy: SceneRenderGraphActivationPolicy::Always,
@@ -610,6 +612,7 @@ fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object
         render_passes: vec![SceneRenderPassRecord {
             id: 5,
             role: SceneRenderPassKind::EffectMaterial,
+            draw_primitive: SceneRenderPassDrawPrimitive::FullscreenTriangle,
             object: SceneObjectHandle(INVALID_OBJECT_ID),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,
@@ -651,19 +654,29 @@ fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object
 }
 
 #[test]
-fn direct_flat_rounded_mask_uses_object_uv_support_quad() {
+fn explicit_object_uv_support_quad_maps_to_rendering_device_geometry() {
+    let storage =
+        SceneStorage::from_document(SceneBinaryDocument::default()).expect("empty storage");
+    let mut pass = named_fbo_pass(5, 0, SceneStringId::NONE, 0, 0);
+    pass.draw_primitive = SceneRenderPassDrawPrimitive::ObjectUvSupportQuad;
+
     assert_eq!(
-        shader_utility_primitive("we/flat-rounded-mask-composite"),
+        pass_utility_primitive(&storage, &pass, None),
         Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad)
     );
 }
 
 #[test]
-fn aggregated_waterwaves_effect_run_uses_fullscreen_triangle() {
-    assert_eq!(
-        shader_utility_primitive("we/effect-waterwaves-direct__STAGES_6"),
-        Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
-    );
+fn shader_name_does_not_infer_a_draw_primitive() {
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["effects/opacity__SLOTS_1".to_owned()],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let mut pass = named_fbo_pass(5, 0, SceneStringId::NONE, 0, 0);
+    pass.shader_key = SceneStringId(0);
+
+    assert_eq!(pass_utility_primitive(&storage, &pass, None), None);
 }
 
 #[test]
@@ -765,6 +778,7 @@ fn object_effect_utility_retains_semantic_transform_and_authored_source_extent()
         render_passes: vec![SceneRenderPassRecord {
             id: 1,
             role: SceneRenderPassKind::EffectMaterial,
+            draw_primitive: SceneRenderPassDrawPrimitive::FullscreenTriangle,
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(0),
             pass_index: 0,
@@ -910,18 +924,19 @@ fn textureless_composite_layer_allocates_image_local_targets_at_authored_extent(
 }
 
 #[test]
-fn only_base_material_pass_draws_authored_object_mesh() {
-    let storage =
-        SceneStorage::from_document(SceneBinaryDocument::default()).expect("empty storage");
+fn only_explicit_object_mesh_primitive_draws_authored_geometry() {
     let mut pass = named_fbo_pass(5, 0, SceneStringId(1), 0, 0);
     pass.object = SceneObjectHandle(7);
-    assert!(!pass_draws_object_mesh(&storage, &pass));
+    assert!(!pass_draws_object_mesh(&pass));
 
-    pass.role = SceneRenderPassKind::ColorBlendPassthrough;
-    assert!(!pass_draws_object_mesh(&storage, &pass));
+    pass.draw_primitive = SceneRenderPassDrawPrimitive::FullscreenTriangle;
+    assert!(!pass_draws_object_mesh(&pass));
 
     pass.role = SceneRenderPassKind::BaseMaterial;
-    assert!(pass_draws_object_mesh(&storage, &pass));
+    assert!(!pass_draws_object_mesh(&pass));
+
+    pass.draw_primitive = SceneRenderPassDrawPrimitive::ObjectMesh;
+    assert!(pass_draws_object_mesh(&pass));
 }
 
 fn named_fbo_pass(
@@ -934,6 +949,7 @@ fn named_fbo_pass(
     SceneRenderPassRecord {
         id,
         role: SceneRenderPassKind::EffectMaterial,
+        draw_primitive: SceneRenderPassDrawPrimitive::None,
         object: SceneObjectHandle(INVALID_OBJECT_ID),
         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
         pass_index,

@@ -7,8 +7,9 @@
 use super::*;
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassEffectVisibility,
-    RenderPassNode, RenderPassRole, RenderTargetRole, TextureBindingRole,
+    CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassDrawPrimitive,
+    RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetRole,
+    TextureBindingRole,
 };
 use crate::engine::scene::ScenePipelineBlend;
 
@@ -103,6 +104,7 @@ impl WeIrBuilder {
             passes: vec![RenderPassNode {
                 id: 0,
                 role: RenderPassRole::Particle,
+                draw_primitive: RenderPassDrawPrimitive::ParticleBillboard,
                 object_index: Some(object as usize),
                 material_index: Some(material as usize),
                 pass_index: 0,

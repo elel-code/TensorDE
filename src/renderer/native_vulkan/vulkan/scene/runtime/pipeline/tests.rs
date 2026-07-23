@@ -807,6 +807,7 @@ fn render_pass(
     SceneRenderPassRecord {
         id,
         role: SceneRenderPassKind::EffectMaterial,
+        draw_primitive: crate::engine::scene::SceneRenderPassDrawPrimitive::FullscreenTriangle,
         object: crate::engine::scene::SceneObjectHandle(crate::engine::scene::INVALID_OBJECT_ID),
         material: crate::engine::scene::SceneMaterialHandle(
             crate::engine::scene::INVALID_MATERIAL_ID,

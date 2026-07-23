@@ -3,8 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassEffectVisibility, RenderPassNode, RenderPassRole,
-    RenderTargetRole, TextureBindingRole,
+    PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
+    RenderPassRole, RenderTargetRole, TextureBindingRole,
 };
 
 const RIPPLE_SOURCE_SHADER: &str = "we/image-ripple-source";
@@ -37,6 +37,7 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::EffectMaterial,
+        draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
         object_index: Some(contract.object_index),
         material_index: Some(materials.ripple_source),
         pass_index: ripple.pass_index,
@@ -59,6 +60,7 @@ pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeI
     graph.passes.push(RenderPassNode {
         id: 1,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
         object_index: Some(contract.object_index),
         material_index: Some(materials.flow_composite),
         pass_index: 1,

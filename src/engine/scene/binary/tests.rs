@@ -413,7 +413,7 @@ fn scene_binary_rejects_chunk_table_item_count_mismatch() {
 }
 
 #[test]
-fn scene_binary_round_trip_preserves_composite_blend() {
+fn scene_binary_round_trip_preserves_typed_draw_primitive_and_composite_blend() {
     let document = SceneBinaryDocument {
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(0),
@@ -426,6 +426,7 @@ fn scene_binary_round_trip_preserves_composite_blend() {
         render_passes: vec![SceneRenderPassRecord {
             id: 0,
             role: SceneRenderPassKind::SceneComposite,
+            draw_primitive: SceneRenderPassDrawPrimitive::ObjectMesh,
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,
@@ -456,6 +457,73 @@ fn scene_binary_round_trip_preserves_composite_blend() {
         decoded.render_passes[0].scene_blend,
         SceneCompositeBlend::Modulate
     );
+    assert_eq!(
+        decoded.render_passes[0].draw_primitive,
+        SceneRenderPassDrawPrimitive::ObjectMesh
+    );
+}
+
+#[test]
+fn scene_binary_rejects_unknown_render_pass_draw_primitive() {
+    let document = SceneBinaryDocument {
+        render_graphs: vec![SceneRenderGraphRecord {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
+            pass_start: 0,
+            pass_count: 1,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        render_passes: vec![SceneRenderPassRecord {
+            id: 0,
+            role: SceneRenderPassKind::EffectMaterial,
+            draw_primitive: SceneRenderPassDrawPrimitive::FullscreenTriangle,
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            pass_index: 0,
+            shader_key: SceneStringId::NONE,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            scene_blend: SceneCompositeBlend::Alpha,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            color_write_mask: SceneColorWriteMask::Rgba,
+            clear_target: false,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+    write_scene_binary(&document, &mut bytes).expect("write scene binary");
+
+    let chunk_count = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
+    let table_offset = u64::from_le_bytes(bytes[28..36].try_into().unwrap()) as usize;
+    let render_graph_offset = (0..chunk_count)
+        .find_map(|index| {
+            let entry = table_offset + index * CHUNK_ENTRY_LEN;
+            let kind = u32::from_le_bytes(bytes[entry..entry + 4].try_into().unwrap());
+            (kind == CHUNK_RENDER_GRAPH).then(|| {
+                u64::from_le_bytes(bytes[entry + 8..entry + 16].try_into().unwrap()) as usize
+            })
+        })
+        .expect("render graph chunk");
+    let first_pass_draw_primitive = render_graph_offset + 40;
+    bytes[first_pass_draw_primitive..first_pass_draw_primitive + 4]
+        .copy_from_slice(&u32::MAX.to_le_bytes());
+
+    assert!(matches!(
+        read_scene_binary_bytes(&bytes),
+        Err(SceneBinaryError::InvalidChunkValue(
+            "render pass draw primitive",
+            u32::MAX
+        ))
+    ));
 }
 
 #[test]
@@ -488,6 +556,7 @@ fn scene_binary_round_trip_preserves_effect_visibility_ownership() {
         render_passes: vec![SceneRenderPassRecord {
             id: 7,
             role: SceneRenderPassKind::SceneComposite,
+            draw_primitive: SceneRenderPassDrawPrimitive::FullscreenTriangle,
             object: SceneObjectHandle(3),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,

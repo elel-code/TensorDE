@@ -715,6 +715,7 @@ fn lower_render_graphs(
             passes.push(SceneRenderPassRecord {
                 id: pass.id,
                 role: lower_pass_role(pass.role),
+                draw_primitive: lower_pass_draw_primitive(pass.draw_primitive),
                 object: SceneObjectHandle(
                     pass.object_index
                         .map(|index| index as u32)

@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn quantized_framebuffer_water_catalog_exposes_both_typed_stages() {
+    fn quantized_framebuffer_water_catalog_exposes_three_typed_stages() {
         let prepass = native_vulkan_scene_shader_for_key(
             "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1",
         )
@@ -237,10 +237,48 @@ mod tests {
             .fragment_source
             .contains("texture(g_Texture4, shiftCoords).ba"));
 
-        let final_program = native_vulkan_scene_shader_for_key(
-            "we/framebuffer-water-quantized-final",
+        let intermediate = native_vulkan_scene_shader_for_key(
+            "we/framebuffer-water-quantized-water-opacity",
         )
-        .expect("quantized framebuffer-water final shader");
+        .expect("quantized framebuffer-water water-opacity shader");
+        assert_eq!(
+            intermediate.parameter_layout,
+            BuiltinSceneParameterLayout::FinalEffectProgram
+        );
+        assert_eq!(
+            intermediate.vertex_primitive,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        );
+        assert!(native_vulkan_scene_vertex_spirv_for_primitive(
+            intermediate,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        )
+        .is_none());
+        assert!(!intermediate.vertex_spirv.is_empty());
+        assert!(!intermediate.fragment_spirv.is_empty());
+        assert!(intermediate
+            .fragment_source
+            .contains("texture(g_CausticsPrepass, v_TexCoord + waterOffset(v_TexCoord))"));
+        assert!(intermediate
+            .fragment_source
+            .contains("if (u_Effect.g_StageEnabled.x <= 0.5) {\n        return vec2(0.0);"));
+        assert!(intermediate
+            .fragment_source
+            .contains("if (u_Effect.g_StageEnabled.y > 0.5) {\n        color.a *= u_Effect.g_WavesDirectionExponentOpacityUnused.z;"));
+        assert_eq!(
+            intermediate
+                .fragment_source
+                .matches("color = quantizeUnorm8(color);")
+                .count(),
+            1,
+            "water output must cross one explicit UNORM8 boundary before opacity"
+        );
+        assert!(!intermediate.fragment_source.contains("opacityTexel"));
+
+        let final_program = native_vulkan_scene_shader_for_key(
+            "we/framebuffer-water-quantized-shake-final",
+        )
+        .expect("quantized framebuffer-water shake shader");
         assert_eq!(
             final_program.parameter_layout,
             BuiltinSceneParameterLayout::FinalEffectProgram
@@ -256,24 +294,11 @@ mod tests {
             .contains("fract(time * 0.159155) * 6.283185"));
         assert!(final_program
             .fragment_source
-            .contains("if (u_Effect.g_StageEnabled.y <= 0.5) {\n        return vec2(0.0);"));
+            .contains("if (u_Effect.g_StageEnabled.x > 0.5) {"));
         assert!(final_program
             .fragment_source
-            .contains("if (u_Effect.g_StageEnabled.z > 0.5) {\n        color.a *= u_Effect.g_WavesDirectionExponentOpacityUnused.z;"));
-        assert!(final_program
-            .fragment_source
-            .contains("if (u_Effect.g_StageEnabled.w > 0.5) {"));
-        assert_eq!(
-            final_program
-                .fragment_source
-                .matches("color = quantizeUnorm8(color);")
-                .count(),
-            1,
-            "water output must cross one explicit UNORM8 boundary before opacity"
-        );
-        assert!(final_program
-            .fragment_source
-            .contains("return quantizeUnorm8(color);"));
+            .contains("o_Color = texture(g_OpacityTarget, shake_uv);"));
+        assert!(!final_program.fragment_source.contains("quantizeUnorm8"));
     }
 
     #[test]

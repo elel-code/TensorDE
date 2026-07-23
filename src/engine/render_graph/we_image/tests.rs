@@ -940,7 +940,11 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
             shader: "we/image-scroll-final".to_owned(),
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
+            effect_stage_index: 0,
+            effect_stage_count: 1,
             prepass: None,
+            intermediate: None,
         }),
         effect_passes: vec![WeEffectPassContract {
             object_index: 3,

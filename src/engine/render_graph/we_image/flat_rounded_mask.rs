@@ -3,8 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassEffectVisibility, RenderPassNode, RenderPassRole,
-    RenderTargetRole, TextureBindingRole,
+    PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
+    RenderPassRole, RenderTargetRole, TextureBindingRole,
 };
 
 const DIRECT_SHADER: &str = "we/flat-rounded-mask-composite";
@@ -43,6 +43,7 @@ pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImag
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectUvSupportQuad,
         object_index: Some(contract.object_index),
         material_index: effect.material_index,
         pass_index: effect.pass_index,
@@ -77,6 +78,7 @@ fn append_hsl_snapshot_composite(graph: &mut RenderGraph, contract: &WeImageGrap
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::CopyTarget,
+        draw_primitive: RenderPassDrawPrimitive::None,
         object_index: Some(contract.object_index),
         material_index: None,
         pass_index: 0,
@@ -96,6 +98,7 @@ fn append_hsl_snapshot_composite(graph: &mut RenderGraph, contract: &WeImageGrap
     graph.passes.push(RenderPassNode {
         id: 1,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectUvSupportQuad,
         object_index: Some(contract.object_index),
         material_index: effect.material_index,
         pass_index: effect.pass_index,

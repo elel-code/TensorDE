@@ -815,6 +815,8 @@ mod tests {
             render_passes: vec![SceneRenderPassRecord {
                 id: 0,
                 role: SceneRenderPassKind::SceneComposite,
+                draw_primitive:
+                    crate::engine::scene::SceneRenderPassDrawPrimitive::FullscreenTriangle,
                 object: SceneObjectHandle(INVALID_OBJECT_ID),
                 material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                 pass_index: 0,

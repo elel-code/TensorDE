@@ -27,6 +27,16 @@ pub enum RenderPassRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum RenderPassDrawPrimitive {
+    None,
+    ObjectMesh,
+    FullscreenTriangle,
+    ObjectUvSupportQuad,
+    ParticleBillboard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RenderPassEffectVisibilityPolicy {
     None,
     Passthrough,
@@ -86,6 +96,7 @@ impl RenderPassEffectVisibility {
 pub struct RenderPassNode {
     pub id: u32,
     pub role: RenderPassRole,
+    pub draw_primitive: RenderPassDrawPrimitive,
     pub object_index: Option<usize>,
     pub material_index: Option<usize>,
     pub pass_index: u32,

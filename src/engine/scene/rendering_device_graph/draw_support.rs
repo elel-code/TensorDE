@@ -166,6 +166,7 @@ mod tests {
         let target_pass = |id| SceneRenderPassRecord {
             id,
             role: SceneRenderPassKind::CopyTarget,
+            draw_primitive: SceneRenderPassDrawPrimitive::None,
             object: SceneObjectHandle(INVALID_OBJECT_ID),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,

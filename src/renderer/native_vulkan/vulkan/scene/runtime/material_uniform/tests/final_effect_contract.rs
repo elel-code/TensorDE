@@ -85,42 +85,19 @@ fn fused_rounded_opacity_visibility_falls_back_to_the_flat_base() {
 }
 
 #[test]
-fn framebuffer_water_uniform_preserves_stage_identity_extents_and_authored_parameters() {
-    let storage = storage_with_padded_mask(
-        "we/framebuffer-water-quantized-final",
-        128,
-        64,
-        100,
-        50,
+fn framebuffer_water_opacity_uniform_preserves_two_stage_identity_and_parameters() {
+    let storage = storage_with_constants(
+        "we/framebuffer-water-quantized-water-opacity",
+        &[
+            ("waves.speed", "2.0"),
+            ("waves.scale", "5.0"),
+            ("waves.strength", "0.25"),
+            ("waves.direction", "0.4"),
+            ("waves.exponent", "1.5"),
+            ("opacity.alpha", "0.7"),
+        ],
     );
-    let mut document = storage.document().clone();
-    document.project.logical_width = 1920;
-    document.project.logical_height = 1080;
-    for (name_text, value) in [
-        ("waves.speed", "2.0"),
-        ("waves.scale", "5.0"),
-        ("waves.strength", "0.25"),
-        ("waves.direction", "0.4"),
-        ("waves.exponent", "1.5"),
-        ("opacity.alpha", "0.7"),
-        ("shake.speed", "3.0"),
-        ("shake.strength", "0.2"),
-        ("shake.bounds", "[0.1,0.9]"),
-        ("shake.friction", "[2.0,4.0]"),
-    ] {
-        let name = SceneStringId(document.strings.len() as u32);
-        document.strings.push(name_text.to_owned());
-        let value_id = SceneStringId(document.strings.len() as u32);
-        document.strings.push(value.to_owned());
-        document.material_constants.push(SceneMaterialConstantRecord {
-            name,
-            value_json: value_id,
-        });
-    }
-    document.material_passes[0].constant_count = document.material_constants.len() as u32;
-    let storage = SceneStorage::from_document(document).expect("framebuffer water storage");
-    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 4, 0b1010);
-    draw.authored_source_extent = [640.0, 360.0];
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b10);
     draw.resolved_color = crate::engine::scene::SceneVec3 {
         x: 0.1,
         y: 0.2,
@@ -138,44 +115,127 @@ fn framebuffer_water_uniform_preserves_stage_identity_extents_and_authored_param
         (4, 0.4),
         (5, 1.5),
         (6, 0.7),
-        (8, 7.0),
-        (9, 3.0),
-        (10, 0.2),
-        (12, 0.1),
-        (13, 0.9),
-        (14, 2.0),
-        (15, 4.0),
-        (16, 640.0),
-        (17, 360.0),
-        (18, 1.0 / 640.0),
-        (19, 1.0 / 360.0),
-        (20, 128.0),
-        (21, 64.0),
-        (22, 100.0),
-        (23, 50.0),
-        (24, 0.0),
-        (25, 1.0),
-        (26, 0.0),
-        (27, 1.0),
+        (8, 0.0),
+        (9, 1.0),
     ] {
         assert_eq!(f32_from_payload(&payload, lane * 4), expected);
     }
 
-    for visibility_mask in 0_u32..16 {
+    for visibility_mask in 0_u32..4 {
         draw.resolved_effect_visibility_mask = visibility_mask;
         let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
-        for stage in 0..4 {
+        for stage in 0..2 {
             assert_eq!(
-                f32_from_payload(&payload, (24 + stage) * 4),
+                f32_from_payload(&payload, (8 + stage) * 4),
                 f32::from((visibility_mask & (1 << stage) != 0) as u8),
-                "visibility mask {visibility_mask:#06b} changed stage {stage} identity"
+                "visibility mask {visibility_mask:#04b} changed intermediate stage {stage}"
             );
         }
     }
+}
 
-    let mut fallback = draw_with_material_visibility(SceneMaterialHandle(0), 4, 0b1111);
-    fallback.authored_source_extent = [f32::NAN, 0.0];
-    let fallback_payload = pack_scene_material_uniforms(&storage, &[fallback], 0.0);
-    assert_eq!(f32_from_payload(&fallback_payload, 16 * 4), 1920.0);
-    assert_eq!(f32_from_payload(&fallback_payload, 17 * 4), 1080.0);
+#[test]
+fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
+    let storage = storage_with_padded_mask(
+        "we/framebuffer-water-quantized-shake-final",
+        128,
+        64,
+        100,
+        50,
+    );
+    let mut document = storage.document().clone();
+    for (name_text, value) in [
+        ("shake.speed", "3.0"),
+        ("shake.strength", "0.2"),
+        ("shake.bounds", "[0.1,0.9]"),
+        ("shake.friction", "[2.0,4.0]"),
+    ] {
+        let name = SceneStringId(document.strings.len() as u32);
+        document.strings.push(name_text.to_owned());
+        let value_id = SceneStringId(document.strings.len() as u32);
+        document.strings.push(value.to_owned());
+        document.material_constants.push(SceneMaterialConstantRecord {
+            name,
+            value_json: value_id,
+        });
+    }
+    document.material_passes[0].constant_count = document.material_constants.len() as u32;
+    let storage = SceneStorage::from_document(document).expect("framebuffer water storage");
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 1, 1);
+    draw.resolved_color = crate::engine::scene::SceneVec3 {
+        x: 0.1,
+        y: 0.2,
+        z: 0.3,
+    };
+    draw.resolved_alpha = 0.125;
+
+    let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+
+    for (lane, expected) in [
+        (0, 7.0),
+        (1, 3.0),
+        (2, 0.2),
+        (4, 0.1),
+        (5, 0.9),
+        (6, 2.0),
+        (7, 4.0),
+        (8, 128.0),
+        (9, 64.0),
+        (10, 100.0),
+        (11, 50.0),
+        (12, 1.0),
+    ] {
+        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
+    }
+
+    for visibility_mask in 0_u32..2 {
+        draw.resolved_effect_visibility_mask = visibility_mask;
+        let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+        assert_eq!(
+            f32_from_payload(&payload, 12 * 4),
+            f32::from((visibility_mask & 1 != 0) as u8),
+            "visibility mask {visibility_mask:#03b} changed shake identity"
+        );
+    }
+}
+
+#[test]
+fn framebuffer_water_stage_partition_preserves_all_sixteen_visibility_masks() {
+    let intermediate_storage = storage_with_constants(
+        "we/framebuffer-water-quantized-water-opacity",
+        &[],
+    );
+    let final_storage = storage_with_padded_mask(
+        "we/framebuffer-water-quantized-shake-final",
+        1,
+        1,
+        1,
+        1,
+    );
+    let mut intermediate = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0);
+    let mut final_draw = draw_with_material_visibility(SceneMaterialHandle(0), 1, 0);
+
+    for authored_mask in 0_u32..16 {
+        intermediate.resolved_effect_visibility_mask = (authored_mask >> 1) & 0b11;
+        final_draw.resolved_effect_visibility_mask = (authored_mask >> 3) & 1;
+        let intermediate_payload =
+            pack_scene_material_uniforms(&intermediate_storage, &[intermediate], 0.0);
+        let final_payload = pack_scene_material_uniforms(&final_storage, &[final_draw], 0.0);
+
+        assert_eq!(
+            f32_from_payload(&intermediate_payload, 8 * 4),
+            f32::from((authored_mask & 0b0010 != 0) as u8),
+            "authored visibility mask {authored_mask:#06b} changed water ownership"
+        );
+        assert_eq!(
+            f32_from_payload(&intermediate_payload, 9 * 4),
+            f32::from((authored_mask & 0b0100 != 0) as u8),
+            "authored visibility mask {authored_mask:#06b} changed opacity ownership"
+        );
+        assert_eq!(
+            f32_from_payload(&final_payload, 12 * 4),
+            f32::from((authored_mask & 0b1000 != 0) as u8),
+            "authored visibility mask {authored_mask:#06b} changed shake ownership"
+        );
+    }
 }

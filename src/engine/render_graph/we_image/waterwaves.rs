@@ -3,8 +3,8 @@
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, PipelineBlendMode, RenderGraph, RenderPassEffectVisibility, RenderPassNode,
-    RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
+    PassState, PipelineBlendMode, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility,
+    RenderPassNode, RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
 };
 
 const UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
@@ -91,6 +91,7 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
     graph.passes.push(RenderPassNode {
         id: pass_id,
         role: RenderPassRole::EffectMaterial,
+        draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
         object_index: Some(contract.object_index),
         material_index: contract.waterwaves_uv_field_material_index,
         pass_index: pass_id,
@@ -119,6 +120,7 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
     graph.passes.push(RenderPassNode {
         id: pass_id,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
         object_index: Some(contract.object_index),
         material_index: contract.base_material_index,
         pass_index: pass_id,
@@ -165,6 +167,7 @@ fn append_direct_composite(
         graph.passes.push(RenderPassNode {
             id: 0,
             role: RenderPassRole::BaseMaterial,
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
             object_index: Some(contract.object_index),
             material_index: Some(material.material_index),
             pass_index: 0,
@@ -184,6 +187,7 @@ fn append_direct_composite(
         graph.passes.push(RenderPassNode {
             id: 1,
             role: RenderPassRole::SceneComposite,
+            draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
             object_index: Some(contract.object_index),
             material_index: contract.base_material_index,
             pass_index: 1,
@@ -205,6 +209,7 @@ fn append_direct_composite(
     graph.passes.push(RenderPassNode {
         id: graph.passes.len().min(u32::MAX as usize) as u32,
         role: RenderPassRole::SceneComposite,
+        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
         object_index: Some(contract.object_index),
         material_index: Some(material.material_index),
         pass_index: 0,

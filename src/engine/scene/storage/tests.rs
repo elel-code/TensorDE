@@ -480,6 +480,7 @@ fn storage_rejects_effect_visibility_ownership_crossing_objects() {
         render_passes: vec![SceneRenderPassRecord {
             id: 0,
             role: SceneRenderPassKind::SceneComposite,
+            draw_primitive: SceneRenderPassDrawPrimitive::FullscreenTriangle,
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,

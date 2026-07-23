@@ -34,7 +34,7 @@ pub(super) fn pack_scene_draw_uniforms(
         let layout = draw_parameter_layout(storage, draw);
         let actual_shader = storage.string(draw.shader_key).unwrap_or_default();
         let mut values = if actual_shader.eq_ignore_ascii_case("we/objectcomposite")
-            || actual_shader.eq_ignore_ascii_case("we/framebuffer-water-quantized-final")
+            || actual_shader.eq_ignore_ascii_case("we/framebuffer-water-quantized-shake-final")
         {
             projected_object_uv_draw_values(storage, draw, output_extent)
         } else {
@@ -610,8 +610,8 @@ mod tests {
     }
 
     #[test]
-    fn quantized_framebuffer_water_final_uses_projected_object_uv_rows() {
-        assert_shader_uses_projected_object_uv("we/framebuffer-water-quantized-final");
+    fn quantized_framebuffer_water_shake_uses_projected_object_uv_rows() {
+        assert_shader_uses_projected_object_uv("we/framebuffer-water-quantized-shake-final");
     }
 
     #[test]

@@ -593,6 +593,7 @@ void main() {}
             render_passes: vec![SceneRenderPassRecord {
                 id: 0,
                 role: SceneRenderPassKind::BaseMaterial,
+                draw_primitive: crate::engine::scene::SceneRenderPassDrawPrimitive::ObjectMesh,
                 object: SceneObjectHandle(0),
                 material: SceneMaterialHandle(crate::engine::scene::INVALID_MATERIAL_ID),
                 pass_index: 0,

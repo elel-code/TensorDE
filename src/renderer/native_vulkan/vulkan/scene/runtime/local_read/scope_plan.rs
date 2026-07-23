@@ -791,6 +791,11 @@ mod tests {
             } else {
                 SceneRenderPassKind::EffectMaterial
             },
+            draw_primitive: if id == 0 {
+                crate::engine::scene::SceneRenderPassDrawPrimitive::ObjectMesh
+            } else {
+                crate::engine::scene::SceneRenderPassDrawPrimitive::FullscreenTriangle
+            },
             object: SceneObjectHandle(INVALID_OBJECT_ID),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: id,

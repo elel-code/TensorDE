@@ -618,6 +618,7 @@ fn render_pass_record(clear_target: bool) -> SceneRenderPassRecord {
     SceneRenderPassRecord {
         id: 0,
         role: SceneRenderPassKind::EffectMaterial,
+        draw_primitive: crate::engine::scene::SceneRenderPassDrawPrimitive::FullscreenTriangle,
         object: SceneObjectHandle(INVALID_OBJECT_ID),
         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
         pass_index: 0,
