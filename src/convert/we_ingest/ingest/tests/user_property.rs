@@ -110,6 +110,52 @@ fn visible_user_property_binding_rejects_wrong_schema_case_value_and_condition()
     }
 }
 
+#[test]
+fn media_session_containment_dominates_authored_user_visibility() {
+    let root = write_visible_user_binding_fixture(
+        "media-session-containment",
+        serde_json::json!({"type": "bool", "value": true}),
+        serde_json::json!({
+            "script": "export function mediaPlaybackChanged(event) { return event.state; }",
+            "user": "rain",
+            "value": true
+        }),
+    );
+    fs::write(
+        root.join("scene.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "objects": [{
+                "id": 7,
+                "visible": {
+                    "script": "export function mediaPlaybackChanged(event) { return event.state; }",
+                    "user": "rain",
+                    "value": true
+                }
+            }]
+        }))
+        .expect("media group scene JSON"),
+    )
+    .expect("media group scene");
+    let ir = ingest_wallpaper_engine_project(&root).expect("contained media group IR");
+
+    assert!(!ir.objects[0].visible);
+    assert!(ir.user_property_bindings.is_empty());
+    assert!(ir.unsupported.iter().any(|unsupported| {
+        unsupported.object == Some(0)
+            && unsupported.feature == "media-playback-controlled-group-awaits-session-state"
+            && unsupported.containment
+                == "media-dependent-group-hidden-while-no-session-is-connected"
+    }));
+
+    let document = crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir)
+        .expect("lower contained media group");
+    assert!(!document.objects[0].visible);
+    assert!(document.user_property_bindings.is_empty());
+    crate::engine::scene::SceneStorage::from_document(document)
+        .expect("validate contained media group storage");
+    let _ = fs::remove_dir_all(root);
+}
+
 fn write_visible_user_binding_fixture(name: &str, property: Value, visibility: Value) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "gilder-we-visible-user-binding-{name}-{}",

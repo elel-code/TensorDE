@@ -671,7 +671,10 @@ impl WeIrBuilder {
             object: handle,
             message,
         })?;
-        if let Some(binding) = user_property_binding {
+        // A media-controlled group is explicitly contained as hidden until the media-session
+        // subsystem can provide its runtime gate. Publishing its authored user-property binding
+        // would let that property bypass the containment and make the group visible again.
+        if !media_controlled_group_hidden && let Some(binding) = user_property_binding {
             self.user_property_bindings.push(binding);
         }
         self.objects.push(WeIrObject {
