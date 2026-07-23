@@ -29,11 +29,20 @@ pub(crate) struct HeapAllocation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameSubmission {
     pub(crate) target: NativeOutputTarget,
+    pub(crate) output_slot: u8,
     pub(crate) serial: u64,
     pub(crate) timeline_value: u64,
     pub(crate) scene: SceneSnapshot,
     pub(crate) damage: DamageSet,
     pub(crate) descriptors: HeapAllocation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DescriptorHeapLayout {
+    pub(crate) capacity: u64,
+    pub(crate) alignment: u64,
+    pub(crate) reserved_range: u64,
+    pub(crate) descriptor_size: u64,
 }
 
 #[derive(Debug)]
@@ -43,6 +52,7 @@ pub(crate) struct FrameScheduler {
     next_timeline_value: u64,
     device_lost: bool,
     descriptor_stride: u64,
+    descriptor_size: u64,
 }
 
 impl FrameScheduler {
@@ -66,6 +76,7 @@ impl FrameScheduler {
             device_lost: false,
             descriptor_stride: align_up(descriptor_size, descriptor_alignment)
                 .ok_or(FrameError::DescriptorSizeOverflow)?,
+            descriptor_size,
         })
     }
 
@@ -79,27 +90,54 @@ impl FrameScheduler {
         if target.format.plane_count == 0 {
             return Err(FrameError::InvalidOutputPlaneCount(target.output));
         }
-        self.outputs
-            .entry(target.output)
-            .and_modify(|state| {
-                if state.target != target {
-                    state.target = target;
-                    state.previous_scene = None;
+        if let Some(state) = self.outputs.get_mut(&target.output) {
+            if state.target != target {
+                if let Some(prepared) = state.prepared {
+                    return Err(FrameError::OutputBusy {
+                        output: target.output,
+                        waiting_for: prepared.timeline_value,
+                    });
                 }
-            })
-            .or_insert_with(|| OutputFrameState::new(target));
+                state.target = target;
+                state.previous_scene = None;
+                state.next_slot = 0;
+            }
+        } else {
+            self.outputs
+                .insert(target.output, OutputFrameState::new(target));
+        }
         Ok(())
     }
 
     pub(crate) fn unregister_output(&mut self, output: RenderOutputId) {
-        self.outputs.remove(&output);
+        if let Some(state) = self.outputs.remove(&output)
+            && let Some(prepared) = state.prepared
+        {
+            self.descriptors.cancel(prepared.descriptors);
+        }
     }
 
     pub(crate) fn output_count(&self) -> usize {
         self.outputs.len()
     }
 
-    pub(crate) fn submit(
+    pub(crate) fn next_output_slot(&self, output: RenderOutputId) -> Option<u8> {
+        self.outputs
+            .get(&output)
+            .filter(|state| !self.device_lost && state.prepared.is_none() && !state.in_flight)
+            .map(|state| state.next_slot)
+    }
+
+    pub(crate) const fn layout(&self) -> DescriptorHeapLayout {
+        DescriptorHeapLayout {
+            capacity: self.descriptors.capacity,
+            alignment: self.descriptors.alignment,
+            reserved_range: self.descriptors.first_usable_offset,
+            descriptor_size: self.descriptor_size,
+        }
+    }
+
+    pub(crate) fn prepare(
         &mut self,
         output: RenderOutputId,
         scene: SceneSnapshot,
@@ -112,6 +150,12 @@ impl FrameScheduler {
             .outputs
             .get_mut(&output)
             .ok_or(FrameError::UnknownOutput(output))?;
+        if let Some(prepared) = state.prepared {
+            return Err(FrameError::OutputBusy {
+                output,
+                waiting_for: prepared.timeline_value,
+            });
+        }
         if state.in_flight && completed_timeline < state.last_submitted_timeline {
             return Err(FrameError::OutputBusy {
                 output,
@@ -121,10 +165,12 @@ impl FrameScheduler {
         self.descriptors.reclaim(completed_timeline);
 
         let timeline_value = self.next_timeline_value;
-        self.next_timeline_value = self
+        let next_timeline_value = self
             .next_timeline_value
             .checked_add(1)
             .ok_or(FrameError::TimelineExhausted)?;
+        let serial = state.next_serial;
+        serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
         let descriptor_bytes = self.descriptor_stride.saturating_add(
             u64::try_from(scene.nodes().len())
                 .unwrap_or(u64::MAX)
@@ -134,23 +180,82 @@ impl FrameScheduler {
             .descriptors
             .allocate(descriptor_bytes, timeline_value)?;
         let damage = scene.damage_since(state.previous_scene.as_ref());
-        let serial = state.next_serial;
-        state.next_serial = state
-            .next_serial
-            .checked_add(1)
-            .ok_or(FrameError::SerialExhausted)?;
-        state.previous_scene = Some(scene.clone());
-        state.last_submitted_timeline = timeline_value;
-        state.in_flight = true;
+        let output_slot = state.next_slot;
+        self.next_timeline_value = next_timeline_value;
+        state.prepared = Some(PreparedFrameState {
+            timeline_value,
+            serial,
+            output_slot,
+            descriptors,
+        });
 
         Ok(FrameSubmission {
             target: state.target,
+            output_slot,
             serial,
             timeline_value,
             scene,
             damage,
             descriptors,
         })
+    }
+
+    /// Convenience path for callers that have no external submission stage.
+    /// The renderer uses `prepare`/`commit` so a Vulkan failure can abort safely.
+    #[cfg(test)]
+    pub(crate) fn submit(
+        &mut self,
+        output: RenderOutputId,
+        scene: SceneSnapshot,
+        completed_timeline: u64,
+    ) -> Result<FrameSubmission, FrameError> {
+        let frame = self.prepare(output, scene, completed_timeline)?;
+        if let Err(error) = self.commit(&frame) {
+            let _ = self.abort(&frame);
+            return Err(error);
+        }
+        Ok(frame)
+    }
+
+    pub(crate) fn commit(&mut self, frame: &FrameSubmission) -> Result<(), FrameError> {
+        let state = self
+            .outputs
+            .get_mut(&frame.target.output)
+            .ok_or(FrameError::UnknownOutput(frame.target.output))?;
+        let prepared = state
+            .prepared
+            .filter(|prepared| prepared.matches(frame))
+            .ok_or(FrameError::StalePreparedFrame {
+                output: frame.target.output,
+                timeline_value: frame.timeline_value,
+            })?;
+        state.prepared = None;
+        state.next_slot = (prepared.output_slot + 1) % OUTPUT_SLOT_COUNT;
+        state.next_serial = prepared
+            .serial
+            .checked_add(1)
+            .ok_or(FrameError::SerialExhausted)?;
+        state.previous_scene = Some(frame.scene.clone());
+        state.last_submitted_timeline = prepared.timeline_value;
+        state.in_flight = true;
+        Ok(())
+    }
+
+    pub(crate) fn abort(&mut self, frame: &FrameSubmission) -> Result<(), FrameError> {
+        let state = self
+            .outputs
+            .get_mut(&frame.target.output)
+            .ok_or(FrameError::UnknownOutput(frame.target.output))?;
+        let prepared = state
+            .prepared
+            .filter(|prepared| prepared.matches(frame))
+            .ok_or(FrameError::StalePreparedFrame {
+                output: frame.target.output,
+                timeline_value: frame.timeline_value,
+            })?;
+        state.prepared = None;
+        self.descriptors.cancel(prepared.descriptors);
+        Ok(())
     }
 
     pub(crate) fn retire_completed(&mut self, timeline_value: u64) {
@@ -174,6 +279,27 @@ struct OutputFrameState {
     next_serial: u64,
     last_submitted_timeline: u64,
     in_flight: bool,
+    next_slot: u8,
+    prepared: Option<PreparedFrameState>,
+}
+
+const OUTPUT_SLOT_COUNT: u8 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedFrameState {
+    timeline_value: u64,
+    serial: u64,
+    output_slot: u8,
+    descriptors: HeapAllocation,
+}
+
+impl PreparedFrameState {
+    fn matches(self, frame: &FrameSubmission) -> bool {
+        self.timeline_value == frame.timeline_value
+            && self.serial == frame.serial
+            && self.output_slot == frame.output_slot
+            && self.descriptors == frame.descriptors
+    }
 }
 
 impl OutputFrameState {
@@ -184,6 +310,8 @@ impl OutputFrameState {
             next_serial: 1,
             last_submitted_timeline: 0,
             in_flight: false,
+            next_slot: 0,
+            prepared: None,
         }
     }
 }
@@ -276,6 +404,20 @@ impl DescriptorHeap {
             self.cursor = self.first_usable_offset;
         }
     }
+
+    fn cancel(&mut self, allocation: HeapAllocation) {
+        let Some(index) = self
+            .active
+            .iter()
+            .position(|active| active.allocation == allocation)
+        else {
+            return;
+        };
+        self.active.remove(index);
+        if self.cursor == allocation.offset.saturating_add(allocation.size) {
+            self.cursor = allocation.offset;
+        }
+    }
 }
 
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
@@ -303,6 +445,11 @@ pub(crate) enum FrameError {
     OutputBusy {
         output: RenderOutputId,
         waiting_for: u64,
+    },
+    #[error("output {output:?} has no prepared frame at timeline {timeline_value}")]
+    StalePreparedFrame {
+        output: RenderOutputId,
+        timeline_value: u64,
     },
     #[error("output viewport {0:?} has zero width or height")]
     InvalidViewport(Rect),
@@ -498,6 +645,49 @@ mod tests {
     }
 
     #[test]
+    fn output_slots_cycle_with_the_native_triple_buffer_contract() {
+        let mut scheduler = FrameScheduler::new(16 * 1024, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        let first = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        assert_eq!(first.output_slot, 0);
+        scheduler.retire_completed(first.timeline_value);
+        let second = scheduler
+            .submit(OUTPUT, scene(2), first.timeline_value)
+            .unwrap();
+        assert_eq!(second.output_slot, 1);
+        scheduler.retire_completed(second.timeline_value);
+        let third = scheduler
+            .submit(OUTPUT, scene(3), second.timeline_value)
+            .unwrap();
+        assert_eq!(third.output_slot, 2);
+        scheduler.retire_completed(third.timeline_value);
+        let fourth = scheduler
+            .submit(OUTPUT, scene(4), third.timeline_value)
+            .unwrap();
+        assert_eq!(fourth.output_slot, 0);
+    }
+
+    #[test]
+    fn next_slot_is_hidden_while_gpu_work_is_in_flight() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        assert_eq!(scheduler.next_output_slot(OUTPUT), Some(0));
+
+        let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
+        assert_eq!(scheduler.next_output_slot(OUTPUT), None);
+        scheduler.retire_completed(frame.timeline_value);
+        assert_eq!(scheduler.next_output_slot(OUTPUT), Some(1));
+    }
+
+    #[test]
+    fn descriptor_heap_layout_exposes_raw_descriptor_size_and_aligned_start() {
+        let scheduler = FrameScheduler::new(4096, 64, 96, 48).unwrap();
+        assert_eq!(scheduler.layout().reserved_range, 128);
+        assert_eq!(scheduler.layout().descriptor_size, 48);
+        assert_eq!(scheduler.layout().capacity, 4096);
+    }
+
+    #[test]
     fn target_change_preserves_in_flight_lifetime_and_resets_damage_history() {
         let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
         scheduler.register_output(target(OUTPUT)).unwrap();
@@ -520,5 +710,39 @@ mod tests {
         assert_eq!(second.serial, 2);
         assert_eq!(second.target, resized);
         assert_eq!(second.damage.regions(), &[VIEWPORT]);
+    }
+
+    #[test]
+    fn aborted_prepare_releases_heap_and_preserves_output_sequence() {
+        let mut scheduler = FrameScheduler::new(128, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        let first = scheduler.prepare(OUTPUT, scene(1), 0).unwrap();
+
+        scheduler.abort(&first).unwrap();
+        let retry = scheduler.prepare(OUTPUT, scene(1), 0).unwrap();
+
+        assert_eq!(retry.serial, first.serial);
+        assert_eq!(retry.output_slot, first.output_slot);
+        assert_eq!(retry.descriptors, first.descriptors);
+        assert!(retry.timeline_value > first.timeline_value);
+        scheduler.commit(&retry).unwrap();
+    }
+
+    #[test]
+    fn prepared_frame_blocks_target_replacement_until_resolved() {
+        let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+        scheduler.register_output(target(OUTPUT)).unwrap();
+        let frame = scheduler.prepare(OUTPUT, scene(1), 0).unwrap();
+        let resized = NativeOutputTarget {
+            viewport: Rect::new(0, 0, 2560, 1440),
+            ..target(OUTPUT)
+        };
+
+        assert!(matches!(
+            scheduler.register_output(resized),
+            Err(FrameError::OutputBusy { .. })
+        ));
+        scheduler.abort(&frame).unwrap();
+        assert!(scheduler.register_output(resized).is_ok());
     }
 }

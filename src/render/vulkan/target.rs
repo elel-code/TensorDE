@@ -32,6 +32,13 @@ pub(crate) struct NativeOutputBuffer {
     pub(crate) dmabuf: Dmabuf,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct NativeOutputImageInfo {
+    pub(super) image: vk::Image,
+    pub(super) view_info: vk::ImageViewCreateInfo,
+    pub(super) foreign_owned: bool,
+}
+
 impl NativeOutputBuffer {
     pub(crate) const COUNT: usize = OUTPUT_IMAGE_COUNT;
 }
@@ -77,10 +84,28 @@ impl NativeTargetManager {
         Ok(self.buffers(target.output))
     }
 
-    pub(super) fn mark_submitted(&mut self, output: RenderOutputId, timeline_value: u64) {
+    pub(super) fn mark_submitted(&mut self, output: RenderOutputId, slot: u8, timeline_value: u64) {
         if let Some(target) = self.active.get_mut(&output) {
             target.last_use_timeline = target.last_use_timeline.max(timeline_value);
+            if let Some(image) = target.images.get_mut(usize::from(slot)) {
+                image.foreign_owned = true;
+            }
         }
+    }
+
+    pub(super) fn image_info(
+        &self,
+        output: RenderOutputId,
+        slot: u8,
+    ) -> Option<NativeOutputImageInfo> {
+        self.active
+            .get(&output)
+            .and_then(|target| target.images.get(usize::from(slot)))
+            .map(|image| NativeOutputImageInfo {
+                image: image.image,
+                view_info: image.view_info,
+                foreign_owned: image.foreign_owned,
+            })
     }
 
     pub(super) fn unregister(&mut self, output: RenderOutputId) {
@@ -169,6 +194,8 @@ struct NativeOutputImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
     view: vk::ImageView,
+    view_info: vk::ImageViewCreateInfo,
+    foreign_owned: bool,
     dmabuf: Dmabuf,
 }
 
@@ -294,6 +321,8 @@ impl NativeOutputImage {
             image,
             memory,
             view,
+            view_info: view_info.build(),
+            foreign_owned: false,
             dmabuf,
         })
     }

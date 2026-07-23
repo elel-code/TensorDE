@@ -34,10 +34,10 @@ styles resolve conservative visual bounds (including shadows and clipped output 
 merges adjacent regions, caps pathological fragmentation, and expands regions that feed a
 backdrop-blur dependency. Vulkan descriptor allocation consumes this compact scene data after ECS
 queries finish. `render/frame.rs` now owns per-output scene history, damage, descriptor-heap range
-allocation, and timeline retirement, and is connected to `RuntimeState` output lifecycle. The
-Vulkan executor submits an empty command buffer while native image/KMS submission is still being
-built, so this is an explicit synchronization boundary rather than a claim that pixels are already
-displayed.
+allocation, three native output slots, and timeline retirement, and is connected to `RuntimeState`
+output lifecycle. The Vulkan executor clears a native image, exports a binary `SYNC_FD`, and hands
+it to Smithay's atomic KMS path; scene sampling/draw pipelines are still a separate renderer
+milestone.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
@@ -85,12 +85,13 @@ own crates/modules.
 
 The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
 compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
-advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer, and
-pointer gestures. Preferred integer/fractional scale and transform follow the output selected by
-the authoritative layout placement. Decoration policy currently requires client-side decoration;
-server-side mode will only be exposed when decoration geometry and rendering share the scene
-snapshot. Presentation-time, alpha-modifier, and background-effect are likewise not advertised
-until the Vulkan frame path can honor their feedback and pixels.
+advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
+pointer gestures, and linux-dmabuf when the selected Vulkan device exposes a non-empty validated
+client-import format list. Preferred integer/fractional scale and transform follow the output
+selected by the authoritative layout placement. Decoration policy currently requires client-side
+decoration; server-side mode will only be exposed when decoration geometry and rendering share the
+scene snapshot. Presentation-time, alpha-modifier, and background-effect are likewise not
+advertised until the Vulkan frame path can honor their feedback and pixels.
 
 A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Smithay's
 `Space<Window>` and ECS when either the shell or surface destruction callback fires.
@@ -115,8 +116,8 @@ backend state. The adapter may use a custom `CrtcMapper` or drop down to `Connec
 changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
 
 For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exported
-dma-bufs. The tty backend imports those dma-bufs into GBM and owns the imported scanout objects;
-this is the handoff point for the future Smithay atomic framebuffer/page-flip path. Initial output
-resource construction is a startup gate: failure aborts backend preparation before readiness.
+dma-bufs. The tty backend imports those dma-bufs into GBM, creates Smithay framebuffers, and submits
+atomic/page-flip state with the renderer's `IN_FENCE_FD`; vblank advances the scanout state. Initial
+output resource construction is a startup gate: failure aborts backend preparation before readiness.
 Hotplug resource failures are isolated to the affected output and do not invalidate already-live
 outputs.

@@ -10,6 +10,12 @@ use smithay::{
 
 use super::state::RuntimeState;
 
+#[cfg(feature = "tty")]
+mod dmabuf;
+
+#[cfg(feature = "tty")]
+use dmabuf::DmabufProtocol;
+
 pub(crate) struct ProtocolGlobals {
     viewporter: ViewporterState,
     fractional_scale: FractionalScaleManagerState,
@@ -17,6 +23,8 @@ pub(crate) struct ProtocolGlobals {
     primary_selection: PrimarySelectionState,
     relative_pointer: RelativePointerManagerState,
     pointer_gestures: PointerGesturesState,
+    #[cfg(feature = "tty")]
+    dmabuf: DmabufProtocol,
 }
 
 impl ProtocolGlobals {
@@ -28,7 +36,24 @@ impl ProtocolGlobals {
             primary_selection: PrimarySelectionState::new::<RuntimeState>(display),
             relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
+            #[cfg(feature = "tty")]
+            dmabuf: DmabufProtocol::new(),
         }
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn install_dmabuf(
+        &mut self,
+        display: &DisplayHandle,
+        main_device: libc::dev_t,
+        formats: impl IntoIterator<Item = smithay::backend::allocator::Format>,
+    ) -> Result<bool, String> {
+        self.dmabuf.install(display, main_device, formats)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
+        &mut self.dmabuf.state
     }
 
     pub(crate) fn primary_selection(&mut self) -> &mut PrimarySelectionState {
@@ -51,6 +76,8 @@ impl ProtocolGlobals {
             primary_selection: true,
             relative_pointer: true,
             pointer_gestures: true,
+            #[cfg(feature = "tty")]
+            linux_dmabuf: self.dmabuf.advertised(),
         }
     }
 }
@@ -63,6 +90,8 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) primary_selection: bool,
     pub(crate) relative_pointer: bool,
     pub(crate) pointer_gestures: bool,
+    #[cfg(feature = "tty")]
+    pub(crate) linux_dmabuf: bool,
 }
 
 #[cfg(test)]
@@ -86,6 +115,8 @@ mod tests {
                 primary_selection: true,
                 relative_pointer: true,
                 pointer_gestures: true,
+                #[cfg(feature = "tty")]
+                linux_dmabuf: false,
             }
         );
     }

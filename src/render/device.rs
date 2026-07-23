@@ -130,6 +130,7 @@ pub struct DeviceCandidate {
     pub api_version: Version,
     pub descriptor_heap_supported: bool,
     pub descriptor_heap: DescriptorHeapProperties,
+    pub buffer_device_address_supported: bool,
     pub timeline_semaphore_supported: bool,
     pub graphics_queue_family: Option<u32>,
     pub drm: Option<DrmDeviceIdentity>,
@@ -142,6 +143,7 @@ pub struct DescriptorHeapProperties {
     pub resource_heap_alignment: u64,
     pub max_resource_heap_size: u64,
     pub min_resource_heap_reserved_range: u64,
+    pub buffer_descriptor_alignment: u64,
     pub image_descriptor_size: u64,
     pub image_descriptor_alignment: u64,
 }
@@ -149,6 +151,7 @@ pub struct DescriptorHeapProperties {
 impl DescriptorHeapProperties {
     pub const fn is_usable(self) -> bool {
         self.resource_heap_alignment.is_power_of_two()
+            && self.buffer_descriptor_alignment.is_power_of_two()
             && self.image_descriptor_alignment.is_power_of_two()
             && self.max_resource_heap_size
                 > self
@@ -205,12 +208,18 @@ impl DeviceSelector {
             return Err(DeviceSelectionError::MissingDescriptorHeap);
         }
         if !candidates.iter().any(|candidate| {
+            candidate.descriptor_heap_supported && candidate.buffer_device_address_supported
+        }) {
+            return Err(DeviceSelectionError::MissingBufferDeviceAddress);
+        }
+        if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported && candidate.timeline_semaphore_supported
         }) {
             return Err(DeviceSelectionError::MissingTimelineSemaphore);
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
                 && candidate.descriptor_heap.is_usable()
         }) {
@@ -218,6 +227,7 @@ impl DeviceSelector {
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
                 && candidate.api_version >= Version::V1_4_0
         }) {
@@ -225,6 +235,7 @@ impl DeviceSelector {
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
                 && candidate.api_version >= Version::V1_4_0
                 && candidate.graphics_queue_family.is_some()
@@ -233,6 +244,7 @@ impl DeviceSelector {
         }
         if !candidates.iter().any(|candidate| {
             candidate.descriptor_heap_supported
+                && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
                 && candidate.api_version >= Version::V1_4_0
                 && candidate.graphics_queue_family.is_some()
@@ -300,6 +312,7 @@ impl DeviceSelector {
         candidates
             .into_iter()
             .filter(|candidate| candidate.descriptor_heap_supported)
+            .filter(|candidate| candidate.buffer_device_address_supported)
             .filter(|candidate| candidate.timeline_semaphore_supported)
             .filter(|candidate| candidate.descriptor_heap.is_usable())
             .filter(|candidate| candidate.api_version >= Version::V1_4_0)
@@ -347,6 +360,7 @@ impl DeviceSelector {
 
 fn native_base(candidate: &DeviceCandidate) -> bool {
     candidate.descriptor_heap_supported
+        && candidate.buffer_device_address_supported
         && candidate.timeline_semaphore_supported
         && candidate.descriptor_heap.is_usable()
         && candidate.api_version >= Version::V1_4_0
@@ -363,6 +377,8 @@ pub enum DeviceSelectionError {
     MissingDescriptorHeap,
     #[error("no descriptor-heap Vulkan device supports timeline semaphores")]
     MissingTimelineSemaphore,
+    #[error("no descriptor-heap Vulkan device supports buffer device addresses")]
+    MissingBufferDeviceAddress,
     #[error("no descriptor-heap Vulkan device exposes usable resource-heap limits")]
     InvalidDescriptorHeapProperties,
     #[error("no descriptor-heap Vulkan device supports Vulkan 1.4")]
@@ -419,9 +435,11 @@ mod tests {
                 resource_heap_alignment: 32,
                 max_resource_heap_size: 16 * 1024 * 1024,
                 min_resource_heap_reserved_range: 0,
+                buffer_descriptor_alignment: 32,
                 image_descriptor_size: 32,
                 image_descriptor_alignment: 32,
             },
+            buffer_device_address_supported: true,
             timeline_semaphore_supported: true,
             graphics_queue_family: Some(0),
             drm: Some(DrmDeviceIdentity::new(
@@ -471,6 +489,17 @@ mod tests {
         assert!(matches!(
             DeviceSelector::new(GpuPreference::Any).select([&candidate]),
             Err(DeviceSelectionError::MissingTimelineSemaphore)
+        ));
+    }
+
+    #[test]
+    fn buffer_device_address_is_required_for_descriptor_heap_binding() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.buffer_device_address_supported = false;
+
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::MissingBufferDeviceAddress)
         ));
     }
 

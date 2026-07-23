@@ -7,7 +7,7 @@ use smithay::{
     backend::{
         allocator::{
             Format as DrmFormat,
-            gbm::{GbmBuffer, GbmBufferFlags, GbmDevice},
+            gbm::{GbmBufferFlags, GbmDevice},
         },
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod buffers;
+mod kms;
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
@@ -59,7 +60,7 @@ struct OpenDevice {
     scanner: DrmScanner,
     connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
     output_formats: BTreeMap<super::BackendOutputId, Vec<OutputFormat>>,
-    native_targets: BTreeMap<super::BackendOutputId, Vec<GbmBuffer>>,
+    native_targets: BTreeMap<super::BackendOutputId, kms::KmsOutput>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -325,12 +326,16 @@ impl TtyBackend {
         })?;
         let token = self
             .loop_handle
-            .insert_source(notifier, move |event, metadata, _| match event {
-                DrmEvent::VBlank(crtc) => {
-                    trace!(device_id, ?crtc, ?metadata, "DRM vblank");
-                }
-                DrmEvent::Error(error) => warn!(device_id, %error, "DRM event error"),
-            })
+            .insert_source(
+                notifier,
+                move |event, metadata, state: &mut RuntimeState| match event {
+                    DrmEvent::VBlank(crtc) => {
+                        trace!(device_id, ?crtc, ?metadata, "DRM vblank");
+                        state.dispatch_drm_vblank(device_id, crtc, *metadata);
+                    }
+                    DrmEvent::Error(error) => warn!(device_id, %error, "DRM event error"),
+                },
+            )
             .map_err(|error| BackendError::Source(error.to_string()))?;
 
         self.devices.insert(
@@ -631,4 +636,6 @@ pub(crate) enum BackendError {
     OutputFormats { output: String, message: String },
     #[error("failed to install native output buffers for {output}: {message}")]
     OutputBuffers { output: String, message: String },
+    #[error("failed to submit an atomic KMS frame for {output}: {message}")]
+    KmsFrame { output: String, message: String },
 }

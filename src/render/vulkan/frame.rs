@@ -1,5 +1,16 @@
+use std::os::fd::{FromRawFd, OwnedFd};
+
+use thiserror::Error;
+use vulkanalia::vk::KhrExternalSemaphoreFdExtensionDeviceCommands;
 use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, Handle, HasBuilder};
 use vulkanalia::{Device, vk};
+
+use crate::render::{DescriptorHeapLayout, FrameSubmission};
+
+use super::{
+    heap::{DescriptorHeapError, DescriptorHeapResource},
+    target::NativeOutputImageInfo,
+};
 
 const COMMAND_BUFFER_COUNT: usize = 3;
 
@@ -8,14 +19,24 @@ pub(super) struct VulkanFrameExecutor {
     command_buffers: [vk::CommandBuffer; COMMAND_BUFFER_COUNT],
     retire_values: [u64; COMMAND_BUFFER_COUNT],
     timeline: vk::Semaphore,
+    render_complete: [vk::Semaphore; COMMAND_BUFFER_COUNT],
+    heap: DescriptorHeapResource,
+    graphics_queue_family: u32,
 }
 
 impl VulkanFrameExecutor {
-    pub(super) fn new(device: &Device, graphics_queue_family: u32) -> Result<Self, vk::ErrorCode> {
+    pub(super) fn new(
+        instance: &vulkanalia::Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        graphics_queue_family: u32,
+        heap_layout: DescriptorHeapLayout,
+    ) -> Result<Self, VulkanFrameError> {
         let pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(graphics_queue_family);
-        let command_pool = unsafe { device.create_command_pool(&pool_info, None) }?;
+        let command_pool = unsafe { device.create_command_pool(&pool_info, None) }
+            .map_err(VulkanFrameError::Vulkan)?;
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -29,11 +50,13 @@ impl VulkanFrameExecutor {
                     device.free_command_buffers(command_pool, &buffers);
                     device.destroy_command_pool(command_pool, None);
                 }
-                return Err(vk::ErrorCode::INITIALIZATION_FAILED);
+                return Err(VulkanFrameError::Vulkan(
+                    vk::ErrorCode::INITIALIZATION_FAILED,
+                ));
             }
             Err(error) => {
                 unsafe { device.destroy_command_pool(command_pool, None) };
-                return Err(error);
+                return Err(VulkanFrameError::Vulkan(error));
             }
         };
         let mut timeline_info = vk::SemaphoreTypeCreateInfo::builder()
@@ -48,7 +71,44 @@ impl VulkanFrameExecutor {
                     device.free_command_buffers(command_pool, &command_buffers);
                     device.destroy_command_pool(command_pool, None);
                 }
-                return Err(error);
+                return Err(VulkanFrameError::Vulkan(error));
+            }
+        };
+        let mut render_complete = Vec::with_capacity(COMMAND_BUFFER_COUNT);
+        let mut export_info = vk::ExportSemaphoreCreateInfo::builder()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+            .build();
+        let export_semaphore_info = vk::SemaphoreCreateInfo::builder().push_next(&mut export_info);
+        for _ in 0..COMMAND_BUFFER_COUNT {
+            match unsafe { device.create_semaphore(&export_semaphore_info, None) } {
+                Ok(semaphore) => render_complete.push(semaphore),
+                Err(error) => {
+                    unsafe {
+                        for semaphore in render_complete {
+                            device.destroy_semaphore(semaphore, None);
+                        }
+                        device.destroy_semaphore(timeline, None);
+                        device.free_command_buffers(command_pool, &command_buffers);
+                        device.destroy_command_pool(command_pool, None);
+                    }
+                    return Err(VulkanFrameError::Vulkan(error));
+                }
+            }
+        }
+        let render_complete = [render_complete[0], render_complete[1], render_complete[2]];
+        let heap = match DescriptorHeapResource::new(instance, device, physical_device, heap_layout)
+        {
+            Ok(heap) => heap,
+            Err(source) => {
+                unsafe {
+                    device.destroy_semaphore(timeline, None);
+                    for semaphore in render_complete {
+                        device.destroy_semaphore(semaphore, None);
+                    }
+                    device.free_command_buffers(command_pool, &command_buffers);
+                    device.destroy_command_pool(command_pool, None);
+                }
+                return Err(VulkanFrameError::DescriptorHeap(source));
             }
         };
         Ok(Self {
@@ -56,6 +116,9 @@ impl VulkanFrameExecutor {
             command_buffers,
             retire_values: [0; COMMAND_BUFFER_COUNT],
             timeline,
+            render_complete,
+            heap,
+            graphics_queue_family,
         })
     }
 
@@ -67,9 +130,10 @@ impl VulkanFrameExecutor {
         &mut self,
         device: &Device,
         queue: vk::Queue,
-        timeline_value: u64,
+        frame: &FrameSubmission,
+        image: &NativeOutputImageInfo,
         completed_value: u64,
-    ) -> Result<(), VulkanFrameError> {
+    ) -> Result<OwnedFd, VulkanFrameError> {
         let Some((slot, command_buffer)) = self
             .command_buffers
             .iter()
@@ -86,6 +150,20 @@ impl VulkanFrameExecutor {
             device
                 .begin_command_buffer(*command_buffer, &begin)
                 .map_err(VulkanFrameError::Vulkan)?;
+        }
+        self.heap
+            .prepare_image_descriptor(device, frame.descriptors, &image.view_info)
+            .map_err(VulkanFrameError::DescriptorHeap)?;
+        unsafe {
+            self.heap
+                .record_copy_and_bind(device, *command_buffer, frame.descriptors);
+            record_output_clear(
+                device,
+                *command_buffer,
+                *image,
+                self.graphics_queue_family,
+                frame.serial,
+            );
             device
                 .end_command_buffer(*command_buffer)
                 .map_err(VulkanFrameError::Vulkan)?;
@@ -96,32 +174,133 @@ impl VulkanFrameExecutor {
             .build();
         let signal_info = vk::SemaphoreSubmitInfo::builder()
             .semaphore(self.timeline)
-            .value(timeline_value)
+            .value(frame.timeline_value)
             .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .build();
+        let render_complete_info = vk::SemaphoreSubmitInfo::builder()
+            .semaphore(self.render_complete[slot])
+            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .build();
+        let signal_infos = [signal_info, render_complete_info];
         let submit_info = vk::SubmitInfo2::builder()
             .command_buffer_infos(std::slice::from_ref(&command_info))
-            .signal_semaphore_infos(std::slice::from_ref(&signal_info));
+            .signal_semaphore_infos(&signal_infos);
         unsafe {
             device
                 .queue_submit2(queue, std::slice::from_ref(&submit_info), vk::Fence::null())
                 .map_err(VulkanFrameError::Vulkan)?;
         }
-        self.retire_values[slot] = timeline_value;
-        Ok(())
+        self.retire_values[slot] = frame.timeline_value;
+        let fd_info = vk::SemaphoreGetFdInfoKHR::builder()
+            .semaphore(self.render_complete[slot])
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        let raw_fd = unsafe { device.get_semaphore_fd_khr(&fd_info) }
+            .map_err(VulkanFrameError::ExportSyncFd)?;
+        let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        Ok(fd)
     }
 
     pub(super) unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
             device.destroy_semaphore(self.timeline, None);
+            for semaphore in self.render_complete {
+                device.destroy_semaphore(semaphore, None);
+            }
             device.free_command_buffers(self.command_pool, &self.command_buffers);
             device.destroy_command_pool(self.command_pool, None);
+            self.heap.destroy(device);
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+unsafe fn record_output_clear(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: NativeOutputImageInfo,
+    graphics_queue_family: u32,
+    serial: u64,
+) {
+    let subresource = vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build();
+    let (old_layout, src_queue_family, dst_queue_family) = if image.foreign_owned {
+        (
+            vk::ImageLayout::GENERAL,
+            vk::QUEUE_FAMILY_FOREIGN_EXT,
+            graphics_queue_family,
+        )
+    } else {
+        (
+            vk::ImageLayout::UNDEFINED,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+        )
+    };
+    let acquire = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::NONE)
+        .src_access_mask(vk::AccessFlags2::NONE)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .old_layout(old_layout)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(src_queue_family)
+        .dst_queue_family_index(dst_queue_family)
+        .image(image.image)
+        .subresource_range(subresource)
+        .build();
+    let acquire_dependency =
+        vk::DependencyInfo::builder().image_memory_barriers(std::slice::from_ref(&acquire));
+    unsafe { device.cmd_pipeline_barrier2(command_buffer, &acquire_dependency) };
+
+    let phase = (serial % 120) as f32 / 119.0;
+    let clear = vk::ClearColorValue {
+        float32: [0.025, 0.04 + phase * 0.08, 0.075 + phase * 0.04, 1.0],
+    };
+    unsafe {
+        device.cmd_clear_color_image(
+            command_buffer,
+            image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &clear,
+            std::slice::from_ref(&subresource),
+        )
+    };
+
+    let release = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .dst_stage_mask(vk::PipelineStageFlags2::NONE)
+        .dst_access_mask(vk::AccessFlags2::NONE)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_queue_family_index(graphics_queue_family)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+        .image(image.image)
+        .subresource_range(subresource)
+        .build();
+    let release_dependency =
+        vk::DependencyInfo::builder().image_memory_barriers(std::slice::from_ref(&release));
+    unsafe { device.cmd_pipeline_barrier2(command_buffer, &release_dependency) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub(super) enum VulkanFrameError {
+    #[error("no reusable command buffer is available")]
     NoCommandBuffer,
+    #[error("Vulkan command failed: {0:?}")]
     Vulkan(vk::ErrorCode),
+    #[error("descriptor heap operation failed: {0}")]
+    DescriptorHeap(DescriptorHeapError),
+    #[error("failed to export the frame completion SYNC_FD: {0:?}")]
+    ExportSyncFd(vk::ErrorCode),
+}
+
+impl VulkanFrameError {
+    pub(super) const fn was_submitted(self) -> bool {
+        matches!(self, Self::ExportSyncFd(_))
+    }
 }

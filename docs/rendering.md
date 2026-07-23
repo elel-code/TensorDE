@@ -9,6 +9,8 @@ An eligible physical device must provide all of the following before ranking:
 
 - Vulkan 1.4 and a graphics queue.
 - `VK_EXT_descriptor_heap`, including its feature bit.
+- Buffer device address support (the heap is bound as a device-address range; no descriptor-buffer
+  or descriptor-set fallback is permitted).
 - A usable resource heap: non-zero heap alignment, maximum size beyond the implementation's
   reserved range, and non-zero image descriptor size/alignment.
 - `VK_EXT_physical_device_drm` with a complete primary/render node pair.
@@ -76,32 +78,56 @@ entry is keyed by stable buffer identity plus format, modifier, dimensions, plan
 strides; an fd number is never an identity. Buffer reuse waits for the KMS release path before
 Vulkan writes the image again.
 
+## Client linux-dmabuf
+
+The `zwp_linux_dmabuf_v1` global is created only after the selected Vulkan device provides a
+non-empty client-import format list. Feedback is built from that device's explicit modifiers and
+render-node identity; it is not copied from a KMS-only list. The initial import contract is
+deliberately narrow and honest: explicit-modifier, single-plane RGB buffers whose fd memory type
+is accepted by the selected Vulkan device.
+
+For each `params` request Smithay validates the protocol shape, then Vulkan creates an explicit
+modifier image, intersects image and dma-buf fd memory-type masks, binds imported memory, and
+creates a view. Only a completed image/view import calls `ImportNotifier::successful`; malformed
+planes, implicit modifiers, unsupported formats, and Vulkan failures call `failed` instead. The
+image cache is keyed by Smithay's `Dmabuf` identity and retires resources after the renderer
+timeline, so a duplicated fd cannot alias a live buffer accidentally.
+
+Client images are now accepted by the protocol boundary. Scene sampling and draw-pipeline wiring
+are the next renderer step; until that is complete, the native output path remains the only path
+that can put pixels on a KMS plane.
+
 ## Frame Boundary Status
 
 `render/frame.rs` is the renderer-to-scene boundary. It owns a bounded resource descriptor heap
-allocator, retains the previous `SceneSnapshot` per output, computes damage, and keeps descriptor
-ranges live until the Vulkan timeline value retires them. `render/vulkan/frame.rs` uses three
-resettable command buffers and one timeline semaphore to exercise that lifetime contract. A lost
-device stops future frame scheduling instead of recycling GPU-visible ranges.
+allocator, retains the previous `SceneSnapshot` per output, computes damage, assigns one of three
+native output image slots, and keeps descriptor ranges live until the Vulkan timeline value retires.
+`render/vulkan/heap.rs` creates the actual device-addressable resource-heap buffer with
+`VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT`, a host-visible staging buffer, and the descriptor write
+path. `render/vulkan/frame.rs` writes the output image descriptor into staging, copies it into the
+device-local heap, binds it with `vkCmdBindResourceHeapEXT`, and submits through three resettable
+command buffers plus one timeline semaphore. A lost device stops future frame scheduling instead of
+recycling GPU-visible ranges.
 
 The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the
 reported image descriptor alignment, and adds the implementation's reserved range before capping
-the configured usable budget at `maxResourceHeapSize`. These are device properties, not a
-substitute for the eventual Vulkan heap binding and descriptor writes.
+the configured usable budget at `maxResourceHeapSize`. The Vulkan heap uses the same capacity and
+offset contract, so allocator ranges are now copied into the real heap rather than remaining a
+simulation.
 
-The current boundary deliberately submits an empty command buffer. Native output image allocation,
-modifier/plane export, and Smithay GBM import are connected, but descriptor writes, queue-family
-release, Smithay atomic KMS framebuffer/commit, and vblank completion are the next required layer.
-Until those handles and fences are connected, presentation-time, alpha-modifier, and
-background-effect globals remain unadvertised; allocated buffers and a timeline submission alone
-are not a displayed frame.
+The current command stream uploads descriptors, binds the resource heap, clears the selected native
+output image, and releases it to `VK_QUEUE_FAMILY_FOREIGN_EXT`. Scene draw pipelines still need to
+sample imported client images and emit real scene nodes; the clear is an intentional diagnostic
+frame, not a claim that the compositor already renders application content.
 
 ## Synchronization
 
 Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as
-`SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame signals an
-exportable binary semaphore, whose `SYNC_FD` becomes the atomic KMS `IN_FENCE_FD`. Smithay owns the
-commit and page-flip lifecycle and returns the release signal that permits image reuse.
+`SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame also signals
+an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty backend consumes it
+as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bounded repaint queue
+waits for a free output slot before rendering another frame, so a current scanout buffer is never
+reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
 
 Client acquire fences are imported as temporary binary semaphore payloads. Exporting or importing
 a sync file is an explicit API boundary, not a reason to wait on the CPU. A device without both

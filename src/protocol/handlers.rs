@@ -1,3 +1,8 @@
+#[cfg(feature = "tty")]
+use smithay::{
+    backend::allocator::dmabuf::Dmabuf,
+    wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     desktop::{
@@ -104,7 +109,14 @@ impl CompositorHandler for RuntimeState {
 }
 
 impl BufferHandler for RuntimeState {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
+        #[cfg(feature = "tty")]
+        if let Some(dmabuf) = _buffer.data::<Dmabuf>().cloned()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.release_client_dmabuf(&dmabuf);
+        }
+    }
 }
 
 impl ShmHandler for RuntimeState {
@@ -255,6 +267,37 @@ fn set_client_side_decoration(toplevel: &ToplevelSurface) {
 impl DataDeviceHandler for RuntimeState {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.data_device_state
+    }
+}
+
+#[cfg(feature = "tty")]
+impl DmabufHandler for RuntimeState {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        self.protocol_globals.dmabuf_state()
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            notifier.failed();
+            return;
+        };
+        match renderer.import_client_dmabuf(&dmabuf) {
+            Ok(()) => {
+                if let Err(error) = notifier.successful::<RuntimeState>() {
+                    renderer.release_client_dmabuf(&dmabuf);
+                    warn!(%error, "client disappeared while completing linux-dmabuf import");
+                }
+            }
+            Err(error) => {
+                warn!(%error, "client linux-dmabuf import failed");
+                notifier.failed();
+            }
+        }
     }
 }
 

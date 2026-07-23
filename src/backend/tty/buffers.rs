@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use smithay::backend::allocator::{Buffer, dmabuf::Dmabuf, gbm::GbmBufferFlags};
+use smithay::backend::allocator::{Buffer, dmabuf::Dmabuf};
 
 use crate::{
     backend::BackendOutputId,
     render::{NativeOutputBuffer, OutputFormat},
 };
 
-use super::{BackendError, TtyBackend};
+use super::{BackendError, TtyBackend, kms::KmsOutput};
 
 impl TtyBackend {
     pub(crate) fn install_output_buffers(
@@ -15,19 +15,45 @@ impl TtyBackend {
         output_id: BackendOutputId,
         buffers: Vec<NativeOutputBuffer>,
     ) -> Result<(), BackendError> {
-        let (output_name, expected_size, expected_format) = {
-            let descriptor = self
-                .outputs
-                .get(&output_id)
-                .ok_or(BackendError::UnknownOutput(output_id))?;
-            (
-                descriptor.name.clone(),
-                (
-                    descriptor.preferred_mode.size.w,
-                    descriptor.preferred_mode.size.h,
-                ),
-                descriptor.native_format,
-            )
+        let descriptor = self
+            .outputs
+            .get(&output_id)
+            .ok_or(BackendError::UnknownOutput(output_id))?
+            .clone();
+        let output_name = descriptor.name.clone();
+        let expected_size = (
+            descriptor.preferred_mode.size.w,
+            descriptor.preferred_mode.size.h,
+        );
+        let expected_format = descriptor.native_format;
+        let device_id = output_id.device_id as libc::dev_t;
+        let device = self
+            .devices
+            .get_mut(&device_id)
+            .ok_or(BackendError::UnknownDevice { device_id })?;
+        if device.native_targets.contains_key(&output_id) {
+            return Err(BackendError::OutputBuffers {
+                output: output_name,
+                message: "live KMS target replacement requires a completed modeset generation"
+                    .to_owned(),
+            });
+        }
+        let drm_mode = {
+            device
+                .scanner
+                .connectors()
+                .values()
+                .find(|connector| u32::from(connector.handle()) == output_id.connector_id)
+                .and_then(|connector| {
+                    connector.modes().iter().copied().find(|mode| {
+                        smithay::output::Mode::from(*mode) == descriptor.preferred_mode
+                    })
+                })
+                .ok_or_else(|| BackendError::OutputBuffers {
+                    output: descriptor.name.clone(),
+                    message: "preferred DRM mode disappeared before KMS surface creation"
+                        .to_owned(),
+                })?
         };
         if buffers.len() != NativeOutputBuffer::COUNT {
             return Err(BackendError::OutputBuffers {
@@ -39,11 +65,6 @@ impl TtyBackend {
                 ),
             });
         }
-        let device_id = output_id.device_id as libc::dev_t;
-        let device = self
-            .devices
-            .get_mut(&device_id)
-            .ok_or(BackendError::UnknownDevice { device_id })?;
         let mut imported = BTreeMap::new();
         for buffer in buffers {
             if usize::from(buffer.slot) >= NativeOutputBuffer::COUNT {
@@ -64,21 +85,20 @@ impl TtyBackend {
                     message,
                 },
             )?;
-            let gbm = buffer
-                .dmabuf
-                .import_to(
-                    &device.gbm,
-                    GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING,
-                )
-                .map_err(|error| BackendError::OutputBuffers {
-                    output: output_name.clone(),
-                    message: format!("GBM dma-buf import failed: {error}"),
-                })?;
-            imported.insert(buffer.slot, gbm);
+            imported.insert(buffer.slot, buffer);
         }
-        device
-            .native_targets
-            .insert(output_id, imported.into_values().collect());
+        let target = KmsOutput::new(
+            &mut device.drm,
+            &device.gbm,
+            &descriptor,
+            drm_mode,
+            imported.into_values().collect(),
+        )
+        .map_err(|error| BackendError::OutputBuffers {
+            output: descriptor.name.clone(),
+            message: error.to_string(),
+        })?;
+        device.native_targets.insert(output_id, target);
         Ok(())
     }
 
