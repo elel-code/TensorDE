@@ -17,7 +17,7 @@ fn final_scroll_visibility_neutralizes_motion_without_changing_repeat_data() {
         crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
     draw.resolved_effect_visibility_mask = 0;
 
-    let payload = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 3.0);
 
     assert_eq!(f32_from_payload(&payload, 5 * 4), 0.0);
     assert_eq!(f32_from_payload(&payload, 6 * 4), 0.0);
@@ -31,12 +31,12 @@ fn fused_eye_visibility_controls_iris_and_ripple_stages_independently() {
     let storage = storage_with_constants("we/puppet-iris-waterripple-final", &[]);
     let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
 
-    let iris_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    let iris_only = pack_test_scene_material_uniforms(&storage, &[draw], 3.0);
     assert_eq!(f32_from_payload(&iris_only, 36 * 4), 1.0);
     assert_eq!(f32_from_payload(&iris_only, 37 * 4), 0.0);
 
     draw.resolved_effect_visibility_mask = 0b10;
-    let ripple_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    let ripple_only = pack_test_scene_material_uniforms(&storage, &[draw], 3.0);
     assert_eq!(f32_from_payload(&ripple_only, 36 * 4), 0.0);
     assert_eq!(f32_from_payload(&ripple_only, 37 * 4), 1.0);
 }
@@ -54,13 +54,13 @@ fn fused_colorkey_scroll_visibility_preserves_each_stage_identity() {
     );
     let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
 
-    let colorkey_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    let colorkey_only = pack_test_scene_material_uniforms(&storage, &[draw], 3.0);
     assert_eq!(f32_from_payload(&colorkey_only, 7 * 4), 0.0);
     assert_eq!(f32_from_payload(&colorkey_only, 12 * 4), 0.25);
     assert_eq!(f32_from_payload(&colorkey_only, 19 * 4), 1.0);
 
     draw.resolved_effect_visibility_mask = 0b10;
-    let scroll_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
+    let scroll_only = pack_test_scene_material_uniforms(&storage, &[draw], 3.0);
     assert_eq!(f32_from_payload(&scroll_only, 7 * 4), 1.0);
     assert_eq!(f32_from_payload(&scroll_only, 12 * 4), 1.0);
     assert_eq!(f32_from_payload(&scroll_only, 19 * 4), 0.0);
@@ -74,12 +74,12 @@ fn fused_rounded_opacity_visibility_falls_back_to_the_flat_base() {
     );
     let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
 
-    let rounded_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+    let rounded_only = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
     assert_eq!(f32_from_payload(&rounded_only, 9 * 4), 1.0);
     assert_eq!(f32_from_payload(&rounded_only, 10 * 4), 1.0);
 
     draw.resolved_effect_visibility_mask = 0b10;
-    let opacity_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+    let opacity_only = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
     assert_eq!(f32_from_payload(&opacity_only, 9 * 4), 0.3);
     assert_eq!(f32_from_payload(&opacity_only, 10 * 4), 0.0);
 }
@@ -105,7 +105,7 @@ fn framebuffer_water_opacity_uniform_preserves_two_stage_identity_and_parameters
     };
     draw.resolved_alpha = 0.125;
 
-    let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 7.0);
 
     for (lane, expected) in [
         (0, 7.0),
@@ -123,7 +123,7 @@ fn framebuffer_water_opacity_uniform_preserves_two_stage_identity_and_parameters
 
     for visibility_mask in 0_u32..4 {
         draw.resolved_effect_visibility_mask = visibility_mask;
-        let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+        let payload = pack_test_scene_material_uniforms(&storage, &[draw], 7.0);
         for stage in 0..2 {
             assert_eq!(
                 f32_from_payload(&payload, (8 + stage) * 4),
@@ -169,7 +169,7 @@ fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
     };
     draw.resolved_alpha = 0.125;
 
-    let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 7.0);
 
     for (lane, expected) in [
         (0, 7.0),
@@ -190,7 +190,7 @@ fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
 
     for visibility_mask in 0_u32..2 {
         draw.resolved_effect_visibility_mask = visibility_mask;
-        let payload = pack_scene_material_uniforms(&storage, &[draw], 7.0);
+        let payload = pack_test_scene_material_uniforms(&storage, &[draw], 7.0);
         assert_eq!(
             f32_from_payload(&payload, 12 * 4),
             f32::from((visibility_mask & 1 != 0) as u8),
@@ -219,8 +219,8 @@ fn framebuffer_water_stage_partition_preserves_all_sixteen_visibility_masks() {
         intermediate.resolved_effect_visibility_mask = (authored_mask >> 1) & 0b11;
         final_draw.resolved_effect_visibility_mask = (authored_mask >> 3) & 1;
         let intermediate_payload =
-            pack_scene_material_uniforms(&intermediate_storage, &[intermediate], 0.0);
-        let final_payload = pack_scene_material_uniforms(&final_storage, &[final_draw], 0.0);
+            pack_test_scene_material_uniforms(&intermediate_storage, &[intermediate], 0.0);
+        let final_payload = pack_test_scene_material_uniforms(&final_storage, &[final_draw], 0.0);
 
         assert_eq!(
             f32_from_payload(&intermediate_payload, 8 * 4),

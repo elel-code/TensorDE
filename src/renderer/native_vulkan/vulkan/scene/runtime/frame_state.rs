@@ -364,6 +364,7 @@ pub(super) fn write_scene_frame_buffers(
             storage,
             &graph.mesh_draws,
             scene_time_seconds,
+            output_extent,
             events.audio_spectrum(),
             &semantic_frame.audio_band_material_values,
         );

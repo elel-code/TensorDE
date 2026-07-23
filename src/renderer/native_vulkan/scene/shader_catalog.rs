@@ -141,6 +141,94 @@ pub fn native_vulkan_scene_vertex_spirv_for_primitive(
 mod tests {
     use super::*;
 
+    const SPIRV_OP_NAME: u16 = 5;
+    const SPIRV_OP_VARIABLE: u16 = 59;
+    const SPIRV_OP_DECORATE: u16 = 71;
+    const SPIRV_STORAGE_INPUT: u32 = 1;
+    const SPIRV_STORAGE_UNIFORM: u32 = 2;
+    const SPIRV_STORAGE_OUTPUT: u32 = 3;
+    const SPIRV_DECORATION_LOCATION: u32 = 30;
+    const SPIRV_DECORATION_BINDING: u32 = 33;
+    const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
+
+    fn spirv_instructions(words: &[u32]) -> Vec<&[u32]> {
+        assert!(words.len() >= 5, "SPIR-V module must contain its header");
+        let mut instructions = Vec::new();
+        let mut cursor = 5;
+        while cursor < words.len() {
+            let word_count = (words[cursor] >> 16) as usize;
+            assert!(word_count > 0, "SPIR-V instruction cannot be empty");
+            let end = cursor
+                .checked_add(word_count)
+                .expect("SPIR-V instruction offset overflow");
+            assert!(end <= words.len(), "SPIR-V instruction exceeds module");
+            instructions.push(&words[cursor..end]);
+            cursor = end;
+        }
+        instructions
+    }
+
+    fn spirv_named_id(words: &[u32], expected_name: &str) -> u32 {
+        spirv_instructions(words)
+            .into_iter()
+            .find_map(|instruction| {
+                let opcode = (instruction[0] & 0xffff) as u16;
+                if opcode != SPIRV_OP_NAME || instruction.len() < 3 {
+                    return None;
+                }
+                let mut bytes = instruction[2..]
+                    .iter()
+                    .flat_map(|word| word.to_le_bytes())
+                    .collect::<Vec<_>>();
+                bytes.truncate(bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len()));
+                (bytes == expected_name.as_bytes()).then_some(instruction[1])
+            })
+            .unwrap_or_else(|| panic!("SPIR-V interface variable {expected_name:?} is missing"))
+    }
+
+    fn assert_spirv_variable(words: &[u32], name: &str, storage_class: u32) -> u32 {
+        let id = spirv_named_id(words, name);
+        assert!(
+            spirv_instructions(words).into_iter().any(|instruction| {
+                (instruction[0] & 0xffff) as u16 == SPIRV_OP_VARIABLE
+                    && instruction.len() >= 4
+                    && instruction[2] == id
+                    && instruction[3] == storage_class
+            }),
+            "SPIR-V variable {name:?} does not use storage class {storage_class}"
+        );
+        id
+    }
+
+    fn assert_spirv_decoration(words: &[u32], id: u32, decoration: u32, value: u32) {
+        assert!(
+            spirv_instructions(words).into_iter().any(|instruction| {
+                (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                    && instruction.len() >= 4
+                    && instruction[1] == id
+                    && instruction[2] == decoration
+                    && instruction[3] == value
+            }),
+            "SPIR-V id {id} is missing decoration {decoration}={value}"
+        );
+    }
+
+    fn assert_spirv_stage_interface(
+        words: &[u32],
+        name: &str,
+        storage_class: u32,
+        location: u32,
+    ) {
+        let id = assert_spirv_variable(words, name, storage_class);
+        assert_spirv_decoration(words, id, SPIRV_DECORATION_LOCATION, location);
+    }
+
+    fn assert_spirv_material_uniform(words: &[u32]) {
+        let id = assert_spirv_variable(words, "u_Effect", SPIRV_STORAGE_UNIFORM);
+        assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
+        assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, 3);
+    }
+
     #[test]
     fn shader_catalog_resolves_we_material_names_without_runtime_files() {
         let shader = native_vulkan_scene_shader_for_key("we/genericimage4")
@@ -195,6 +283,71 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn cloudmotion_hoists_affine_noise_uv_without_changing_stage_interfaces() {
+        let fullscreen_source = include_str!(concat!(
+            env!("OUT_DIR"),
+            "/scene_shader_catalog/effects_cloudmotion__SLOTS_5.vert.glsl"
+        ));
+        let object_mesh_source = include_str!(concat!(
+            env!("OUT_DIR"),
+            "/scene_shader_catalog/effects_cloudmotion__SLOTS_5__OBJECT_MESH.vert.glsl"
+        ));
+        for source in [fullscreen_source, object_mesh_source] {
+            assert!(source.contains(
+                "float aspect_scaled_x = u_Effect.g_ScaleScaleXAspectUnused.z * uv.x;"
+            ));
+            assert!(source.contains("* u_Effect.g_ScaleScaleXAspectUnused.x;"));
+            assert!(source.contains(
+                "scaled_uv.x * u_Effect.g_ScaleScaleXAspectUnused.y + time_offset"
+            ));
+            assert!(source.contains("v_NoiseTexCoord = vec2("));
+            assert!(!source.contains("max("));
+        }
+
+        for key in [
+            "effects/cloudmotion__SLOTS_1",
+            "effects/cloudmotion__SLOTS_5",
+        ] {
+            let shader = native_vulkan_scene_shader_for_key(key).expect("cloudmotion shader");
+            let object_mesh = native_vulkan_scene_vertex_spirv_for_primitive(
+                shader,
+                crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            )
+            .expect("cloudmotion object-mesh vertex shader");
+            for vertex in [shader.vertex_spirv, object_mesh] {
+                assert_spirv_stage_interface(
+                    vertex,
+                    "v_NoiseTexCoord",
+                    SPIRV_STORAGE_OUTPUT,
+                    1,
+                );
+                assert_spirv_material_uniform(vertex);
+            }
+            assert_spirv_stage_interface(
+                shader.fragment_spirv,
+                "v_NoiseTexCoord",
+                SPIRV_STORAGE_INPUT,
+                1,
+            );
+            assert_spirv_material_uniform(shader.fragment_spirv);
+            assert!(shader
+                .fragment_source
+                .contains("float noise = texture(g_Texture2, v_NoiseTexCoord).x * 2.0 - 1.0;")
+                || shader
+                    .fragment_source
+                    .contains("float noise = valueNoise(v_NoiseTexCoord) * 2.0 - 1.0;"));
+            assert!(shader
+                .fragment_source
+                .contains("float angle = u_Effect.g_TimeSpeedAmountDirection.w + 1.570796;"));
+            assert!(shader
+                .fragment_source
+                .contains("o_Color = texture(g_Texture0, v_TexCoord + offset);"));
+            assert!(!shader.fragment_source.contains("clamp("));
+            assert!(!shader.fragment_source.contains("noiseUv"));
+        }
     }
 
     #[test]

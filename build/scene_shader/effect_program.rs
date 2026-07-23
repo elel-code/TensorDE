@@ -19,6 +19,9 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/iris" {
         return iris_effect_vertex_source(texture_slot_mask);
     }
+    if shader == "effects/cloudmotion" {
+        return cloudmotion_effect_vertex_source();
+    }
     if shader == "effects/111" {
         return lightning_vertex_source();
     }
@@ -75,6 +78,9 @@ pub(crate) fn effect_object_mesh_vertex_source(
     if shader == "effects/iris" {
         return None;
     }
+    if shader == "effects/cloudmotion" {
+        return Some(cloudmotion_effect_object_mesh_vertex_source());
+    }
     if shader == "effects/111" {
         return Some(lightning_object_mesh_vertex_source());
     }
@@ -100,6 +106,79 @@ pub(crate) fn effect_object_mesh_vertex_source(
         return Some(object_local_effect_object_mesh_vertex_source());
     }
     Some(super::super::scene_mesh_vertex_source())
+}
+
+fn cloudmotion_effect_vertex_source() -> String {
+    r#"#version 450
+layout(set = 0, binding = 3) uniform CloudMotionUniform {
+    vec4 g_TimeSpeedAmountDirection;
+    vec4 g_ScaleScaleXAspectUnused;
+    vec4 g_Unused0;
+    vec4 g_Unused1;
+} u_Effect;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_NoiseTexCoord;
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0)
+    );
+    vec2 position = positions[gl_VertexIndex];
+    vec2 uv = position * 0.5 + 0.5;
+    float aspect_scaled_x = u_Effect.g_ScaleScaleXAspectUnused.z * uv.x;
+    vec2 scaled_uv = vec2(aspect_scaled_x, uv.y)
+        * u_Effect.g_ScaleScaleXAspectUnused.x;
+    float time_offset = u_Effect.g_TimeSpeedAmountDirection.x
+        * u_Effect.g_TimeSpeedAmountDirection.y;
+    v_TexCoord = uv;
+    v_NoiseTexCoord = vec2(
+        scaled_uv.x * u_Effect.g_ScaleScaleXAspectUnused.y + time_offset,
+        scaled_uv.y);
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn cloudmotion_effect_object_mesh_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(location = 2) in float a_Opacity;
+layout(location = 3) in uvec4 a_BlendIndices;
+layout(location = 4) in vec4 a_BlendWeights;
+layout(set = 0, binding = 2) uniform SceneDrawTransform {
+    vec4 g_ModelViewProjectionMatrix[4];
+} g_Draw;
+layout(set = 0, binding = 3) uniform CloudMotionUniform {
+    vec4 g_TimeSpeedAmountDirection;
+    vec4 g_ScaleScaleXAspectUnused;
+    vec4 g_Unused0;
+    vec4 g_Unused1;
+} u_Effect;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_NoiseTexCoord;
+void main() {
+    vec2 uv = a_TexCoord;
+    float aspect_scaled_x = u_Effect.g_ScaleScaleXAspectUnused.z * uv.x;
+    vec2 scaled_uv = vec2(aspect_scaled_x, uv.y)
+        * u_Effect.g_ScaleScaleXAspectUnused.x;
+    float time_offset = u_Effect.g_TimeSpeedAmountDirection.x
+        * u_Effect.g_TimeSpeedAmountDirection.y;
+    v_TexCoord = uv;
+    v_NoiseTexCoord = vec2(
+        scaled_uv.x * u_Effect.g_ScaleScaleXAspectUnused.y + time_offset,
+        scaled_uv.y);
+    vec4 local_position = vec4(a_Position.xy, 0.0, 1.0);
+    gl_Position = vec4(
+        dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));
+}
+"#
+    .to_owned()
 }
 
 fn object_uv_affine_effect_object_mesh_vertex_source() -> String {

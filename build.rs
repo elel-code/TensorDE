@@ -455,19 +455,20 @@ fn cloudmotion_effect_fragment_source(texture_slot_mask: u32) -> String {
         ""
     };
     let noise_sample = if texture_slot_mask & (1 << 2) != 0 {
-        "texture(g_Texture2, noiseUv).x"
+        "texture(g_Texture2, v_NoiseTexCoord).x"
     } else {
-        "valueNoise(noiseUv)"
+        "valueNoise(v_NoiseTexCoord)"
     };
     format!(
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in vec2 v_NoiseTexCoord;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 {noise_sampler}
 layout(set = 0, binding = 3) uniform CloudMotionUniform {{
     vec4 g_TimeSpeedAmountDirection;
-    vec4 g_ScaleScaleXUnused;
+    vec4 g_ScaleScaleXAspectUnused;
     vec4 g_Unused0;
     vec4 g_Unused1;
 }} u_Effect;
@@ -482,20 +483,11 @@ float valueNoise(vec2 p) {{
                mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0)), f.x), f.y);
 }}
 void main() {{
-    float time = u_Effect.g_TimeSpeedAmountDirection.x
-        * u_Effect.g_TimeSpeedAmountDirection.y;
-    vec2 noiseUv = v_TexCoord;
-    noiseUv.x *= max(u_Effect.g_ScaleScaleXUnused.z, 0.0001);
-    noiseUv *= max(u_Effect.g_ScaleScaleXUnused.x, 0.1);
-    noiseUv.x *= max(u_Effect.g_ScaleScaleXUnused.y, 0.1);
-    noiseUv.x += time;
     float noise = {noise_sample} * 2.0 - 1.0;
-    float angle = u_Effect.g_TimeSpeedAmountDirection.w + 1.5707963;
+    float angle = u_Effect.g_TimeSpeedAmountDirection.w + 1.570796;
     vec2 direction = vec2(cos(angle), sin(angle));
     vec2 offset = direction * noise * u_Effect.g_TimeSpeedAmountDirection.z;
-    o_Color = texture(
-        g_Texture0,
-        clamp(v_TexCoord + offset, vec2(0.001), vec2(0.999)));
+    o_Color = texture(g_Texture0, v_TexCoord + offset);
 }}
 "#
     )

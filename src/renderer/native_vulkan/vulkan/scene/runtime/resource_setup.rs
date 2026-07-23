@@ -135,6 +135,7 @@ pub(super) fn create_scene_gpu_resources(
             storage,
             &backend_plan.rendering_device_graph.mesh_draws,
             0.0,
+            [extent.width, extent.height],
         )
     });
     let dynamic_effect_uniforms = backend_plan

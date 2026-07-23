@@ -14,6 +14,7 @@ mod final_effect;
 mod oscilloscope;
 mod particle;
 mod shader_key;
+mod source_extent;
 mod value_writer;
 mod weather_effect;
 
@@ -22,6 +23,7 @@ use audio_usage::material_uses_audio_spectrum;
 pub(super) use audio_usage::scene_uses_audio_spectrum;
 use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
+use source_extent::draw_source_aspect_ratio;
 use value_writer::{parse_constant_values, set_vector};
 
 #[cfg(test)]
@@ -49,11 +51,13 @@ pub(super) fn pack_scene_material_uniforms(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
 ) -> Vec<u8> {
     pack_scene_material_uniforms_with_spectrum(
         storage,
         draws,
         scene_time_seconds,
+        output_extent,
         None,
     )
 }
@@ -62,12 +66,14 @@ fn pack_scene_material_uniforms_with_spectrum(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
     spectrum: Option<&[f32; 32]>,
 ) -> Vec<u8> {
     pack_scene_material_uniforms_with_frame_inputs(
         storage,
         draws,
         scene_time_seconds,
+        output_extent,
         spectrum,
         &[],
     )
@@ -77,6 +83,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
     spectrum: Option<&[f32; 32]>,
     audio_material_values: &[ResolvedAudioBandMaterialValue],
 ) -> Vec<u8> {
@@ -87,6 +94,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
             storage,
             draw,
             scene_time_seconds,
+            output_extent,
             spectrum,
             audio_material_values,
         ) {
@@ -100,6 +108,7 @@ fn material_uniform_values(
     storage: &SceneStorage,
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
     spectrum: Option<&[f32; 32]>,
     audio_material_values: &[ResolvedAudioBandMaterialValue],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
@@ -155,7 +164,7 @@ fn material_uniform_values(
             caustics_values(&parameters, storage, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::CloudMotion => {
-            cloudmotion_values(&parameters, storage, scene_time_seconds)
+            cloudmotion_values(&parameters, draw, scene_time_seconds, output_extent)
         }
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
@@ -532,8 +541,9 @@ fn caustics_values(
 
 fn cloudmotion_values(
     parameters: &MaterialParameters<'_>,
-    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0] = scene_time_seconds;
@@ -545,7 +555,7 @@ fn cloudmotion_values(
         &["ui_editor_properties_granularity_horizontal", "scalex"],
         0.5,
     );
-    values[6] = scene_logical_aspect_ratio(storage);
+    values[6] = draw_source_aspect_ratio(draw, output_extent);
     values
 }
 
