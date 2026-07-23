@@ -9,7 +9,9 @@
 
 use std::fmt;
 
-use crate::engine::scene::SceneTextureFormat;
+use crate::engine::scene::{
+    SceneTextureFormat, SceneTextureSamplerAddressMode, SceneTextureSamplerFilter,
+};
 
 mod alpha_coverage;
 pub(super) mod block_compression;
@@ -30,7 +32,9 @@ pub struct TexMetadata {
     pub texb_tag: String,
     pub runtime_format: u32,
     pub payload_format: u32,
-    pub sampler_flags: u32,
+    pub sampler_seed: u32,
+    pub sampler_filter: SceneTextureSamplerFilter,
+    pub sampler_address_mode: SceneTextureSamplerAddressMode,
     pub width: u32,
     pub height: u32,
     pub storage_width: u32,
@@ -52,6 +56,57 @@ pub struct TexUploadMip {
     pub height: u32,
     pub payload_offset: u64,
     pub payload_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TexSamplerContract {
+    pub filter: SceneTextureSamplerFilter,
+    pub address_mode: SceneTextureSamplerAddressMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TexSamplerResourceClass {
+    StaticFile,
+    GeneratedRebuild,
+}
+
+pub(super) fn generated_texture_sampler_contract(
+    sampler_seed: u32,
+) -> Result<TexSamplerContract, TexParseError> {
+    we_texture_sampler_contract(sampler_seed, TexSamplerResourceClass::GeneratedRebuild)
+}
+
+fn static_file_texture_sampler_contract(
+    sampler_seed: u32,
+) -> Result<TexSamplerContract, TexParseError> {
+    we_texture_sampler_contract(sampler_seed, TexSamplerResourceClass::StaticFile)
+}
+
+fn we_texture_sampler_contract(
+    sampler_seed: u32,
+    resource_class: TexSamplerResourceClass,
+) -> Result<TexSamplerContract, TexParseError> {
+    if sampler_seed & (1 << 27) != 0 {
+        return Err(TexParseError::UnsupportedComparisonSampler(sampler_seed));
+    }
+    let filter = if sampler_seed & 1 != 0 {
+        SceneTextureSamplerFilter::Point
+    } else if resource_class == TexSamplerResourceClass::GeneratedRebuild {
+        SceneTextureSamplerFilter::Linear
+    } else {
+        SceneTextureSamplerFilter::Anisotropic8
+    };
+    let address_mode = if sampler_seed & (1 << 26) != 0 {
+        SceneTextureSamplerAddressMode::ClampToTransparentBlackBorder
+    } else if sampler_seed & 2 != 0 {
+        SceneTextureSamplerAddressMode::ClampToEdge
+    } else {
+        SceneTextureSamplerAddressMode::Repeat
+    };
+    Ok(TexSamplerContract {
+        filter,
+        address_mode,
+    })
 }
 
 pub fn parse_tex_metadata(data: &[u8]) -> Result<TexMetadata, TexParseError> {
@@ -186,6 +241,7 @@ pub enum TexParseError {
     InvalidPayload(&'static str),
     UnsupportedCompression(u32),
     UnsupportedRuntimeFormat(u32),
+    UnsupportedComparisonSampler(u32),
     InvalidLevelSize {
         runtime_format: u32,
         width: u32,
@@ -214,6 +270,9 @@ impl fmt::Display for TexParseError {
             }
             Self::UnsupportedRuntimeFormat(value) => {
                 write!(f, "unsupported .tex runtime format {value}")
+            }
+            Self::UnsupportedComparisonSampler(seed) => {
+                write!(f, "unsupported .tex comparison sampler seed 0x{seed:08x}")
             }
             Self::InvalidLevelSize {
                 runtime_format,
@@ -249,7 +308,15 @@ mod tests {
 
         assert_eq!(upload.metadata.runtime_format, 8);
         assert_eq!(upload.metadata.payload_format, 2);
-        assert_eq!(upload.metadata.sampler_flags, 10);
+        assert_eq!(upload.metadata.sampler_seed, 10);
+        assert_eq!(
+            upload.metadata.sampler_filter,
+            SceneTextureSamplerFilter::Anisotropic8
+        );
+        assert_eq!(
+            upload.metadata.sampler_address_mode,
+            SceneTextureSamplerAddressMode::ClampToEdge
+        );
         assert_eq!(upload.metadata.mip_count, 1);
         assert_eq!(upload.mips[0].payload_len, 8);
         assert_eq!(upload.payload, pixels);
@@ -271,7 +338,63 @@ mod tests {
         let metadata = parse_tex_metadata(&bytes).expect("metadata");
 
         assert_eq!(metadata.mip_count, 2);
-        assert_eq!(metadata.sampler_flags, 2);
+        assert_eq!(metadata.sampler_seed, 2);
+        assert_eq!(
+            metadata.sampler_filter,
+            SceneTextureSamplerFilter::Anisotropic8
+        );
+        assert_eq!(
+            metadata.sampler_address_mode,
+            SceneTextureSamplerAddressMode::ClampToEdge
+        );
+    }
+
+    #[test]
+    fn single_mip_static_file_keeps_anisotropic_eight_sampler_semantics() {
+        let pixels = [0; 4 * 4 * 4];
+        let bytes = texb0004(0, 2, 4, 4, 1, &[(0, pixels.as_slice())]);
+
+        let metadata = parse_tex_metadata(&bytes).expect("single-mip static texture metadata");
+
+        assert_eq!(metadata.mip_count, 1);
+        assert_eq!(metadata.sampler_seed, 0xa);
+        assert_eq!(
+            metadata.sampler_filter,
+            SceneTextureSamplerFilter::Anisotropic8
+        );
+        assert_eq!(
+            metadata.sampler_address_mode,
+            SceneTextureSamplerAddressMode::ClampToEdge
+        );
+    }
+
+    #[test]
+    fn sampler_seed_and_resource_class_lower_to_typed_filter_and_address() {
+        assert_eq!(
+            static_file_texture_sampler_contract(0x1).unwrap(),
+            TexSamplerContract {
+                filter: SceneTextureSamplerFilter::Point,
+                address_mode: SceneTextureSamplerAddressMode::Repeat,
+            }
+        );
+        assert_eq!(
+            static_file_texture_sampler_contract(1 << 26).unwrap(),
+            TexSamplerContract {
+                filter: SceneTextureSamplerFilter::Anisotropic8,
+                address_mode: SceneTextureSamplerAddressMode::ClampToTransparentBlackBorder,
+            }
+        );
+        assert_eq!(
+            generated_texture_sampler_contract(0x2).unwrap(),
+            TexSamplerContract {
+                filter: SceneTextureSamplerFilter::Linear,
+                address_mode: SceneTextureSamplerAddressMode::ClampToEdge,
+            }
+        );
+        assert!(matches!(
+            static_file_texture_sampler_contract(1 << 27),
+            Err(TexParseError::UnsupportedComparisonSampler(0x0800_0000))
+        ));
     }
 
     #[test]

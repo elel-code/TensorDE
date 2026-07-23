@@ -418,7 +418,8 @@ pub struct SceneTextureRecord {
     pub format: SceneTextureFormat,
     pub source_runtime_format: u32,
     pub payload_format: u32,
-    pub sampler_flags: u32,
+    pub sampler_filter: SceneTextureSamplerFilter,
+    pub sampler_address_mode: SceneTextureSamplerAddressMode,
     pub width: u32,
     pub height: u32,
     pub storage_width: u32,
@@ -452,6 +453,60 @@ pub enum SceneTextureFormat {
     Bc4UnormBlock,
     Bc5UnormBlock,
     Bc7UnormBlock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneTextureSamplerFilter {
+    Point,
+    Linear,
+    Anisotropic8,
+}
+
+impl SceneTextureSamplerFilter {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Point => 0,
+            Self::Linear => 1,
+            Self::Anisotropic8 => 2,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Point),
+            1 => Some(Self::Linear),
+            2 => Some(Self::Anisotropic8),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneTextureSamplerAddressMode {
+    Repeat,
+    ClampToEdge,
+    ClampToTransparentBlackBorder,
+}
+
+impl SceneTextureSamplerAddressMode {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Repeat => 0,
+            Self::ClampToEdge => 1,
+            Self::ClampToTransparentBlackBorder => 2,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Repeat),
+            1 => Some(Self::ClampToEdge),
+            2 => Some(Self::ClampToTransparentBlackBorder),
+            _ => None,
+        }
+    }
 }
 
 impl SceneTextureFormat {

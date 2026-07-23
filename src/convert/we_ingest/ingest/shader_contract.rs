@@ -181,6 +181,7 @@ pub(super) fn declared_texture_slot_mask(
         "we/image-waterripple-modulate-final" => mask |= 0x07,
         "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
         "we/image-cloudmotion-final" => mask |= 0x05,
+        "we/framebuffer-water-quantized-final" => mask |= 0x03,
         "we/puppet-opacity-final" => mask |= 0x03,
         "we/puppet-opacity-clipping-final" => mask |= 0x103,
         "we/puppet-iris-waterripple-final" => mask |= 0x0f,
@@ -229,6 +230,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
+        || key == "we/framebuffer-water-quantized-final"
         || key == "we/puppet-opacity-final"
         || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
@@ -302,6 +304,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
+        || key == "we/framebuffer-water-quantized-final"
         || key == "we/puppet-opacity-final"
         || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
@@ -372,6 +375,7 @@ mod tests {
     use crate::engine::render_graph::{
         PassState, RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetRole,
     };
+    use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
     #[test]
     fn sparse_effect_slots_are_a_hex_mask_not_a_slot_count() {
@@ -461,5 +465,100 @@ mod tests {
         assert_eq!(iris.texture_slot_mask, 0x10f);
         assert_eq!(iris.resource_heap_count, 7);
         assert_eq!(iris.sampler_heap_count, 5);
+    }
+
+    #[test]
+    fn framebuffer_water_contracts_declare_every_texture_and_both_uniforms() {
+        let prepass_shader =
+            "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
+        let final_shader = "we/framebuffer-water-quantized-final";
+        let material_pass =
+            |material, shader_key: &str, texture_start, texture_count| WeIrMaterialPass {
+                material,
+                shader_key: shader_key.to_owned(),
+                target: String::new(),
+                texture_start,
+                texture_count,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: String::new(),
+                clear_target: false,
+            };
+        let graph_pass = |id, material_index, shader: &str| RenderPassNode {
+            id,
+            role: RenderPassRole::EffectMaterial,
+            object_index: Some(0),
+            material_index: Some(material_index),
+            pass_index: id,
+            shader: Some(shader.to_owned()),
+            target: RenderTargetRole::SceneColor,
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+            effect_visibility: RenderPassEffectVisibility::NONE,
+            state: PassState::default(),
+        };
+        let graph = RenderGraph {
+            activation_policy: Default::default(),
+            passes: vec![
+                graph_pass(0, 0, prepass_shader),
+                graph_pass(1, 1, final_shader),
+            ],
+            target_specs: Vec::new(),
+            unsupported: Vec::new(),
+        };
+        let material_passes = [
+            material_pass(0, prepass_shader, 0, 4),
+            material_pass(1, final_shader, 4, 1),
+        ];
+        let material_textures = [
+            WeIrMaterialTexture {
+                slot: 2,
+                resource: Some(2),
+                path: String::new(),
+            },
+            WeIrMaterialTexture {
+                slot: 3,
+                resource: Some(3),
+                path: String::new(),
+            },
+            WeIrMaterialTexture {
+                slot: 4,
+                resource: Some(4),
+                path: String::new(),
+            },
+            WeIrMaterialTexture {
+                slot: 5,
+                resource: Some(5),
+                path: String::new(),
+            },
+            WeIrMaterialTexture {
+                slot: 1,
+                resource: Some(1),
+                path: String::new(),
+            },
+        ];
+
+        let contracts =
+            build_shader_contract_records(&[graph], &material_passes, &material_textures, &[]);
+        let prepass = contracts
+            .iter()
+            .find(|contract| contract.shader_key == prepass_shader)
+            .expect("quantized caustics prepass contract");
+        assert_eq!(prepass.texture_slot_mask, 0x3d);
+        assert_eq!(prepass.resource_heap_count, 7);
+        assert_eq!(prepass.sampler_heap_count, 5);
+        let final_program = contracts
+            .iter()
+            .find(|contract| contract.shader_key == final_shader)
+            .expect("quantized framebuffer-water final contract");
+        assert_eq!(final_program.texture_slot_mask, 0x03);
+        assert_eq!(final_program.resource_heap_count, 4);
+        assert_eq!(final_program.sampler_heap_count, 2);
     }
 }

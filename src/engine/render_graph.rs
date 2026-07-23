@@ -35,7 +35,7 @@ pub use state::{
 };
 pub use target::{RenderTargetRole, RenderTargetSpec};
 pub use we_image::{
-    WeEffectPassContract, WeFinalEffectMaterial, WeFoliageRippleMaterial,
+    WeEffectPassContract, WeFinalEffectMaterial, WeFinalEffectPrepass, WeFoliageRippleMaterial,
     WeFramebufferSnapshotContract, WeFramebufferSnapshotUsage, WeImageGraphContract,
     WeRippleFlowMaterialIndices, WeWaterWavesDirectMaterial, we_effect_pass_node,
     we_effect_passes_form_foliage_ripple_chain, we_effect_passes_form_ripple_flow_chain,

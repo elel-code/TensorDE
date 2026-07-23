@@ -10,7 +10,8 @@ pub(super) fn encode_textures(textures: &[SceneTextureRecord]) -> Vec<u8> {
         put_u32(&mut out, record.format.to_u32());
         put_u32(&mut out, record.source_runtime_format);
         put_u32(&mut out, record.payload_format);
-        put_u32(&mut out, record.sampler_flags);
+        put_u32(&mut out, record.sampler_filter.to_u32());
+        put_u32(&mut out, record.sampler_address_mode.to_u32());
         put_u32(&mut out, record.width);
         put_u32(&mut out, record.height);
         put_u32(&mut out, record.storage_width);
@@ -37,7 +38,8 @@ pub(super) fn decode_textures(data: &[u8]) -> Result<Vec<SceneTextureRecord>, Sc
         let format_raw = decoder.u32()?;
         let source_runtime_format = decoder.u32()?;
         let payload_format = decoder.u32()?;
-        let sampler_flags = decoder.u32()?;
+        let sampler_filter_raw = decoder.u32()?;
+        let sampler_address_mode_raw = decoder.u32()?;
         let width = decoder.u32()?;
         let height = decoder.u32()?;
         let storage_width = decoder.u32()?;
@@ -59,7 +61,16 @@ pub(super) fn decode_textures(data: &[u8]) -> Result<Vec<SceneTextureRecord>, Sc
             )?,
             source_runtime_format,
             payload_format,
-            sampler_flags,
+            sampler_filter: SceneTextureSamplerFilter::from_u32(sampler_filter_raw).ok_or(
+                SceneBinaryError::InvalidChunkValue("texture sampler filter", sampler_filter_raw),
+            )?,
+            sampler_address_mode: SceneTextureSamplerAddressMode::from_u32(
+                sampler_address_mode_raw,
+            )
+            .ok_or(SceneBinaryError::InvalidChunkValue(
+                "texture sampler address mode",
+                sampler_address_mode_raw,
+            ))?,
             width,
             height,
             storage_width,
@@ -116,7 +127,8 @@ mod tests {
             format: SceneTextureFormat::Bc7UnormBlock,
             source_runtime_format: 0,
             payload_format: 2,
-            sampler_flags: 10,
+            sampler_filter: SceneTextureSamplerFilter::Anisotropic8,
+            sampler_address_mode: SceneTextureSamplerAddressMode::ClampToEdge,
             width: 8,
             height: 8,
             storage_width: 8,

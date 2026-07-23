@@ -53,6 +53,10 @@ pub(crate) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         key: "we/audio-bars-final",
         family: super::super::SceneShaderFamily::MeshFinalEffect,
     },
+    super::super::SceneShaderSpec {
+        key: "we/framebuffer-water-quantized-final",
+        family: super::super::SceneShaderFamily::MeshFinalEffect,
+    },
 ];
 
 pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
@@ -69,7 +73,8 @@ pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
         | "we/puppet-iris-waterripple-clipping-final"
         | "we/flat-rounded-opacity-final"
         | "we/tech-circle-final"
-        | "we/audio-bars-final" => "FinalEffectProgram",
+        | "we/audio-bars-final"
+        | "we/framebuffer-water-quantized-final" => "FinalEffectProgram",
         _ => "None",
     }
 }
@@ -93,6 +98,9 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_fragment_source(),
         "we/tech-circle-final" => final_tech_circle_fragment_source(),
         "we/audio-bars-final" => final_audio_bars_fragment_source(),
+        "we/framebuffer-water-quantized-final" => {
+            final_framebuffer_water_quantized_fragment_source()
+        }
         _ => panic!("unknown final effect shader {key:?}"),
     };
     let vertex = match key {
@@ -104,6 +112,7 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         }
         "we/flat-rounded-opacity-final" => flat_rounded_mask_support_vertex_source(),
         "we/audio-bars-final" => final_audio_bars_vertex_source(),
+        "we/framebuffer-water-quantized-final" => final_framebuffer_water_quantized_vertex_source(),
         _ => super::super::scene_mesh_vertex_source(),
     };
     (vertex, fragment)
@@ -126,6 +135,125 @@ fn final_clipping_fragment_source(source: String) -> String {
             "vec2 screen_uv = (v_ScreenPos.xy / v_ScreenPos.z) * 0.5 + 0.5;\n    float clip_factor = texture(g_FullAlphaMask, screen_uv).r;\n    color.a *= clip_factor * v_VertexAlpha;",
             1,
         )
+}
+
+fn final_framebuffer_water_quantized_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(set = 0, binding = 2) uniform FramebufferWaterDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+void main() {
+    v_TexCoord = a_TexCoord;
+    vec2 screen_uv = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
+    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn final_framebuffer_water_quantized_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_CausticsPrepass;
+layout(set = 0, binding = 1) uniform sampler2D g_ShakeFlow;
+layout(set = 0, binding = 3) uniform FinalFramebufferWaterQuantizedProgram {
+    vec4 g_WavesTimeSpeedScaleStrength;
+    vec4 g_WavesDirectionExponentOpacityUnused;
+    vec4 g_ShakeTimeSpeedStrengthUnused;
+    vec4 g_ShakeBoundsFriction;
+    vec4 g_IntermediateExtent;
+    vec4 g_FlowResolution;
+    vec4 g_StageEnabled;
+} u_Effect;
+vec4 quantizeUnorm8(vec4 value) {
+    return roundEven(clamp(value, 0.0, 1.0) * 255.0) / 255.0;
+}
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+float shapedSine(float phase, float exponent) {
+    float wave = sin(phase);
+    return pow(abs(wave), exponent) * sign(wave);
+}
+vec2 waterOffset(vec2 output_uv) {
+    if (u_Effect.g_StageEnabled.y <= 0.5) {
+        return vec2(0.0);
+    }
+    vec2 direction = rotateVec2(
+        vec2(0.0, 1.0), u_Effect.g_WavesDirectionExponentOpacityUnused.x);
+    float distance = u_Effect.g_WavesTimeSpeedScaleStrength.x
+        * u_Effect.g_WavesTimeSpeedScaleStrength.y
+        + dot(output_uv, direction) * u_Effect.g_WavesTimeSpeedScaleStrength.z;
+    float displacement = shapedSine(
+        distance, u_Effect.g_WavesDirectionExponentOpacityUnused.y);
+    float strength = u_Effect.g_WavesTimeSpeedScaleStrength.w;
+    return vec2(direction.y, -direction.x)
+        * displacement * strength * strength;
+}
+vec4 opacityTexel(ivec2 texel) {
+    ivec2 extent = ivec2(max(u_Effect.g_IntermediateExtent.xy, vec2(1.0)));
+    ivec2 clamped_texel = clamp(texel, ivec2(0), extent - ivec2(1));
+    vec2 output_uv = (vec2(clamped_texel) + vec2(0.5))
+        * u_Effect.g_IntermediateExtent.zw;
+    vec4 color = texture(g_CausticsPrepass, output_uv + waterOffset(output_uv));
+    color = quantizeUnorm8(color);
+    if (u_Effect.g_StageEnabled.z > 0.5) {
+        color.a *= u_Effect.g_WavesDirectionExponentOpacityUnused.z;
+    }
+    return quantizeUnorm8(color);
+}
+float shakeOffset() {
+    float time = u_Effect.g_ShakeTimeSpeedStrengthUnused.x
+        * u_Effect.g_ShakeTimeSpeedStrengthUnused.y;
+    float sine = sin(fract(time * 0.159155) * 6.283185) * 0.498 + 0.5;
+    float positive_half = step(0.0, cos(time));
+    float shaped = mix(
+        1.0 - pow(1.0 - sine, u_Effect.g_ShakeBoundsFriction.z),
+        pow(sine, u_Effect.g_ShakeBoundsFriction.w),
+        positive_half);
+    float bounded = clamp(
+        (shaped - u_Effect.g_ShakeBoundsFriction.x)
+            / (u_Effect.g_ShakeBoundsFriction.y - u_Effect.g_ShakeBoundsFriction.x),
+        0.0,
+        1.0);
+    return bounded * 2.0 - 1.0;
+}
+void main() {
+    vec2 shake_uv = v_TexCoord;
+    if (u_Effect.g_StageEnabled.w > 0.5) {
+        vec2 flow_uv = v_TexCoord * u_Effect.g_FlowResolution.zw
+            / u_Effect.g_FlowResolution.xy;
+        vec2 flow = (texture(g_ShakeFlow, flow_uv).rg - vec2(0.498)) * 2.0;
+        float strength = u_Effect.g_ShakeTimeSpeedStrengthUnused.z;
+        shake_uv += shakeOffset() * strength * strength * flow;
+    }
+
+    vec2 texel_position = shake_uv * u_Effect.g_IntermediateExtent.xy - vec2(0.5);
+    ivec2 texel0 = ivec2(floor(texel_position));
+    vec2 weight = fract(texel_position);
+    vec4 row0 = mix(
+        opacityTexel(texel0),
+        opacityTexel(texel0 + ivec2(1, 0)),
+        weight.x);
+    vec4 row1 = mix(
+        opacityTexel(texel0 + ivec2(0, 1)),
+        opacityTexel(texel0 + ivec2(1, 1)),
+        weight.x);
+    o_Color = mix(row0, row1, weight.y);
+}
+"#
+    .to_owned()
 }
 
 fn final_cloudmotion_fragment_source() -> String {

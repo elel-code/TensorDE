@@ -141,6 +141,14 @@ pub struct WeFoliageRippleMaterial {
 pub struct WeFinalEffectMaterial {
     pub material_index: usize,
     pub shader: String,
+    pub prepass: Option<WeFinalEffectPrepass>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeFinalEffectPrepass {
+    pub material_index: usize,
+    pub shader: String,
+    pub effect_stage_index: usize,
 }
 
 pub fn we_effect_passes_form_waterwaves_displacement_chain(
@@ -223,6 +231,60 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         return graph;
     }
     if let Some(final_effect) = &contract.final_effect_material {
+        if let Some(prepass) = &final_effect.prepass {
+            let snapshot = contract
+                .framebuffer_snapshot
+                .as_ref()
+                .expect("typed final-effect prepass requires a framebuffer snapshot");
+            let effect = contract
+                .effect_passes
+                .get(prepass.effect_stage_index)
+                .expect("typed final-effect prepass references a missing effect stage");
+            graph.passes.push(RenderPassNode {
+                id: 0,
+                role: RenderPassRole::CopyTarget,
+                object_index: Some(contract.object_index),
+                material_index: None,
+                pass_index: 0,
+                shader: None,
+                target: RenderTargetRole::FirstClassEffectTarget,
+                target_name: Some(snapshot.target_name.clone()),
+                target_extent: None,
+                target_format: Some("rgba_backbuffer".to_owned()),
+                bindings: vec![TextureBindingRole::GraphTarget {
+                    slot: snapshot.texture_slot,
+                    role: RenderTargetRole::SceneColor,
+                    name: None,
+                }],
+                effect_visibility: RenderPassEffectVisibility::NONE,
+                state: PassState::default(),
+            });
+            graph.passes.push(RenderPassNode {
+                id: 1,
+                role: RenderPassRole::EffectMaterial,
+                object_index: Some(contract.object_index),
+                material_index: Some(prepass.material_index),
+                pass_index: effect.pass_index,
+                shader: Some(prepass.shader.clone()),
+                target: RenderTargetRole::ImageLocalMain,
+                target_name: None,
+                target_extent: None,
+                target_format: Some("rgba8".to_owned()),
+                bindings: vec![TextureBindingRole::EffectTarget {
+                    slot: 0,
+                    name: snapshot.target_name.clone(),
+                }],
+                effect_visibility: single_effect_visibility(
+                    effect,
+                    RenderPassEffectVisibility::passthrough,
+                ),
+                state: PassState {
+                    pipeline_blend: PipelineBlendMode::Normal,
+                    scene_blend: SceneBlendMode::Normal,
+                    ..PassState::default()
+                },
+            });
+        }
         let effect_visibility = contiguous_material_stage_visibility(&contract.effect_passes)
             .expect("typed final effect requires contiguous effect bindings");
         let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
@@ -237,11 +299,24 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_name: None,
             target_extent: None,
             target_format: None,
-            bindings: Vec::new(),
+            bindings: final_effect
+                .prepass
+                .as_ref()
+                .map(|_| vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }])
+                .unwrap_or_default(),
             effect_visibility,
             state: PassState {
-                pipeline_blend: final_pipeline_blend,
+                pipeline_blend: if final_effect.prepass.is_some() {
+                    PipelineBlendMode::Translucent
+                } else {
+                    final_pipeline_blend
+                },
                 scene_blend: contract.final_scene_blend,
+                color_write_mask: if final_effect.prepass.is_some() {
+                    ColorWriteMask::Rgb
+                } else {
+                    ColorWriteMask::Rgba
+                },
                 ..PassState::default()
             },
         });

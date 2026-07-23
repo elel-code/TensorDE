@@ -25,9 +25,6 @@ pub(in crate::convert::we_ingest) fn transcode_texture_upload(
     for mip in &upload.mips {
         let source = mip_payload(&upload, mip)?;
         let blocks = match (upload.format, target_format) {
-            (SceneTextureFormat::Rgba8Unorm, SceneTextureFormat::Bc5UnormBlock) => {
-                compress_rgba_bc5(source, mip.width, mip.height)?
-            }
             (SceneTextureFormat::Rgba8Unorm, SceneTextureFormat::Bc7UnormBlock) => {
                 compress_bc7(source, mip.width, mip.height)?
             }
@@ -63,9 +60,6 @@ pub(in crate::convert::we_ingest) fn transcode_texture_upload(
 }
 
 fn target_format(path: &str, upload: &TexUpload) -> SceneTextureFormat {
-    if is_numeric_utility_texture(path) && upload.format == SceneTextureFormat::Rgba8Unorm {
-        return SceneTextureFormat::Bc5UnormBlock;
-    }
     if preserves_numeric_values(path, upload.metadata.payload_format) {
         return upload.format;
     }
@@ -119,26 +113,6 @@ fn compress_bc7(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexPa
         stride: padded_width * 4,
     };
     Ok(bc7::compress_blocks(&bc7::alpha_slow_settings(), &surface))
-}
-
-fn extract_rg8(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
-    let expected = width as usize * height as usize * 4;
-    if source.len() != expected {
-        return Err(TexParseError::BlockCompression(format!(
-            "{width}x{height} RGBA source has {} bytes, expected {expected}",
-            source.len()
-        )));
-    }
-    let mut rg = Vec::with_capacity(width as usize * height as usize * 2);
-    for pixel in source.chunks_exact(4) {
-        rg.extend_from_slice(&pixel[..2]);
-    }
-    Ok(rg)
-}
-
-fn compress_rgba_bc5(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
-    let rg = extract_rg8(source, width, height)?;
-    compress_bc5(&rg, width, height)
 }
 
 fn compress_bc4(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
@@ -227,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_effect_textures_use_semantic_formats() {
+    fn four_channel_numeric_effect_textures_preserve_all_authored_channels() {
         let phase = upload(SceneTextureFormat::Rgba8Unorm, 4 * 4 * 4);
         let displacement = upload(SceneTextureFormat::Rgba8Unorm, 4 * 4 * 4);
         assert_eq!(
@@ -238,8 +212,8 @@ mod tests {
         );
         let displacement =
             transcode_texture_upload("assets/materials/util/perlin_256.tex", displacement).unwrap();
-        assert_eq!(displacement.format, SceneTextureFormat::Bc5UnormBlock);
-        assert_eq!(displacement.payload.len(), 16);
+        assert_eq!(displacement.format, SceneTextureFormat::Rgba8Unorm);
+        assert_eq!(displacement.payload, vec![127; 4 * 4 * 4]);
     }
 
     fn upload(format: SceneTextureFormat, bytes: usize) -> TexUpload {
@@ -250,7 +224,9 @@ mod tests {
                 texb_tag: "TEXB0004".to_owned(),
                 runtime_format: 0,
                 payload_format: 0,
-                sampler_flags: 0,
+                sampler_seed: 0,
+                sampler_filter: crate::engine::scene::SceneTextureSamplerFilter::Anisotropic8,
+                sampler_address_mode: crate::engine::scene::SceneTextureSamplerAddressMode::Repeat,
                 width: 4,
                 height: 4,
                 storage_width: 4,

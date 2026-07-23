@@ -198,6 +198,85 @@ mod tests {
     }
 
     #[test]
+    fn quantized_framebuffer_water_catalog_exposes_both_typed_stages() {
+        let prepass = native_vulkan_scene_shader_for_key(
+            "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1",
+        )
+        .expect("quantized caustics prepass shader");
+        assert_eq!(prepass.parameter_layout, BuiltinSceneParameterLayout::Caustics);
+        assert_eq!(
+            prepass.vertex_primitive,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        );
+        assert!(native_vulkan_scene_vertex_spirv_for_primitive(
+            prepass,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        )
+        .is_none());
+        let prepass_vertex_source = include_str!(concat!(
+            env!("OUT_DIR"),
+            "/scene_shader_catalog/effects_caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1.vert.glsl"
+        ));
+        assert!(prepass_vertex_source.contains(
+            "dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(uv, 1.0))"
+        ));
+        assert!(prepass_vertex_source
+            .contains("layout(location = 0) out vec2 v_FramebufferCoord;"));
+        assert!(prepass_vertex_source.contains("v_EffectCoord = uv;"));
+        assert!(!prepass_vertex_source.contains(
+            "dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(uv, 1.0))"
+        ));
+        assert!(!prepass.fragment_spirv.is_empty());
+        assert!(prepass
+            .fragment_source
+            .contains("texture(g_Texture3, noiseCoords).ba"));
+        assert!(prepass
+            .fragment_source
+            .contains("texture(g_Texture3, noiseCoords2).rg"));
+        assert!(prepass
+            .fragment_source
+            .contains("texture(g_Texture4, shiftCoords).ba"));
+
+        let final_program = native_vulkan_scene_shader_for_key(
+            "we/framebuffer-water-quantized-final",
+        )
+        .expect("quantized framebuffer-water final shader");
+        assert_eq!(
+            final_program.parameter_layout,
+            BuiltinSceneParameterLayout::FinalEffectProgram
+        );
+        assert_eq!(
+            final_program.vertex_primitive,
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
+        );
+        assert!(!final_program.vertex_spirv.is_empty());
+        assert!(!final_program.fragment_spirv.is_empty());
+        assert!(final_program
+            .fragment_source
+            .contains("fract(time * 0.159155) * 6.283185"));
+        assert!(final_program
+            .fragment_source
+            .contains("if (u_Effect.g_StageEnabled.y <= 0.5) {\n        return vec2(0.0);"));
+        assert!(final_program
+            .fragment_source
+            .contains("if (u_Effect.g_StageEnabled.z > 0.5) {\n        color.a *= u_Effect.g_WavesDirectionExponentOpacityUnused.z;"));
+        assert!(final_program
+            .fragment_source
+            .contains("if (u_Effect.g_StageEnabled.w > 0.5) {"));
+        assert_eq!(
+            final_program
+                .fragment_source
+                .matches("color = quantizeUnorm8(color);")
+                .count(),
+            1,
+            "water output must cross one explicit UNORM8 boundary before opacity"
+        );
+        assert!(final_program
+            .fragment_source
+            .contains("return quantizeUnorm8(color);"));
+    }
+
+    #[test]
     fn passthrough_catalog_exposes_only_the_explicit_exact_pixel_variant() {
         let passthrough = native_vulkan_scene_shader_for_key("we/passthrough")
             .expect("passthrough shader");

@@ -33,7 +33,9 @@ pub(super) fn pack_scene_draw_uniforms(
     for draw in draws {
         let layout = draw_parameter_layout(storage, draw);
         let actual_shader = storage.string(draw.shader_key).unwrap_or_default();
-        let mut values = if actual_shader.eq_ignore_ascii_case("we/objectcomposite") {
+        let mut values = if actual_shader.eq_ignore_ascii_case("we/objectcomposite")
+            || actual_shader.eq_ignore_ascii_case("we/framebuffer-water-quantized-final")
+        {
             projected_object_uv_draw_values(storage, draw, output_extent)
         } else {
             match layout {
@@ -68,7 +70,7 @@ pub(super) fn pack_scene_draw_uniforms(
                 BuiltinSceneParameterLayout::Caustics
                     if material_shader_key(storage, draw.material).is_some_and(|key| {
                         key.to_ascii_lowercase()
-                            .contains("__gilder_framebuffer_overlay_1")
+                            .contains("__gilder_framebuffer_quantized_overlay_1")
                     }) =>
                 {
                     projected_object_uv_draw_values(storage, draw, output_extent)
@@ -595,6 +597,40 @@ mod tests {
         draw.clip_transform = [
             [0.1, 0.0, 0.0, 0.0],
             [0.0, -0.05, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let expected = projected_object_uv_draw_values(&storage, &draw, [100, 100]);
+
+        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [100, 100]);
+
+        for (lane, expected) in expected.into_iter().enumerate() {
+            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
+        }
+    }
+
+    #[test]
+    fn quantized_framebuffer_water_final_uses_projected_object_uv_rows() {
+        assert_shader_uses_projected_object_uv("we/framebuffer-water-quantized-final");
+    }
+
+    #[test]
+    fn quantized_caustics_prepass_uses_projected_object_uv_rows() {
+        assert_shader_uses_projected_object_uv(
+            "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1",
+        );
+    }
+
+    fn assert_shader_uses_projected_object_uv(shader: &str) {
+        let mut document = audio_bars_storage().document().clone();
+        document.strings[0] = shader.to_owned();
+        let storage = SceneStorage::from_document(document).expect("projected shader storage");
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.shader_key = SceneStringId(0);
+        draw.authored_source_extent = [20.0, 40.0];
+        draw.clip_transform = [
+            [0.1, 0.0, 0.0, 0.25],
+            [0.0, -0.05, 0.0, -0.125],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];

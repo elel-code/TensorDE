@@ -18,7 +18,7 @@ use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
     SceneResourceKind, SceneScriptSubscriptions, SceneScriptTarget, SceneTextureFormat,
-    SceneUserPropertyTarget, SceneVec3,
+    SceneTextureSamplerAddressMode, SceneTextureSamplerFilter, SceneUserPropertyTarget, SceneVec3,
 };
 
 mod particle;
@@ -156,7 +156,8 @@ pub struct WeIrTexture {
     pub format: SceneTextureFormat,
     pub source_runtime_format: u32,
     pub payload_format: u32,
-    pub sampler_flags: u32,
+    pub sampler_filter: SceneTextureSamplerFilter,
+    pub sampler_address_mode: SceneTextureSamplerAddressMode,
     pub width: u32,
     pub height: u32,
     pub storage_width: u32,

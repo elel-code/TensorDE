@@ -3,8 +3,12 @@ use crate::engine::scene::{
     SceneBinaryDocument, SceneCullMode, SceneDepthTest, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneMaterialRecord, SceneMaterialTextureRecord,
     ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive, SceneResourceId, SceneResourceKind,
-    SceneResourceRecord, SceneStringId, SceneTextureFormat,
+    SceneResourceRecord, SceneStringId, SceneTextureFormat, SceneTextureSamplerAddressMode,
+    SceneTextureSamplerFilter,
 };
+
+#[path = "tests/final_effect_contract.rs"]
+mod final_effect_contract;
 
 #[test]
 fn material_uniform_uses_default_when_draw_has_no_material() {
@@ -374,90 +378,6 @@ fn rounded_mask_visibility_lane_disables_the_authored_sdf_stage() {
     let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
 
     assert_eq!(f32_from_payload(&payload, 9 * 4), 0.0);
-}
-
-#[test]
-fn final_scroll_visibility_neutralizes_motion_without_changing_repeat_data() {
-    let storage = storage_with_constants(
-        "we/image-scroll-final",
-        &[
-            ("scroll.speedx", "0.4"),
-            ("scroll.speedy", "-0.25"),
-            ("scroll.repeat", "\"2 3\""),
-        ],
-    );
-    let mut draw = draw_with_material(SceneMaterialHandle(0));
-    draw.effect_binding_start = 9;
-    draw.effect_binding_count = 1;
-    draw.effect_visibility_policy =
-        crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages;
-    draw.resolved_effect_visibility_mask = 0;
-
-    let payload = pack_scene_material_uniforms(&storage, &[draw], 3.0);
-
-    assert_eq!(f32_from_payload(&payload, 5 * 4), 0.0);
-    assert_eq!(f32_from_payload(&payload, 6 * 4), 0.0);
-    assert_eq!(f32_from_payload(&payload, 7 * 4), 0.0);
-    assert_eq!(f32_from_payload(&payload, 8 * 4), 2.0);
-    assert_eq!(f32_from_payload(&payload, 9 * 4), 3.0);
-}
-
-#[test]
-fn fused_eye_visibility_controls_iris_and_ripple_stages_independently() {
-    let storage = storage_with_constants("we/puppet-iris-waterripple-final", &[]);
-    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
-
-    let iris_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
-    assert_eq!(f32_from_payload(&iris_only, 36 * 4), 1.0);
-    assert_eq!(f32_from_payload(&iris_only, 37 * 4), 0.0);
-
-    draw.resolved_effect_visibility_mask = 0b10;
-    let ripple_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
-    assert_eq!(f32_from_payload(&ripple_only, 36 * 4), 0.0);
-    assert_eq!(f32_from_payload(&ripple_only, 37 * 4), 1.0);
-}
-
-#[test]
-fn fused_colorkey_scroll_visibility_preserves_each_stage_identity() {
-    let storage = storage_with_constants(
-        "we/image-colorkey-scroll-final",
-        &[
-            ("colorkey.alpha", "0.25"),
-            ("colorkey.flatten", "1"),
-            ("scroll.speedx", "0.4"),
-            ("scroll.repeat", "[2,3]"),
-        ],
-    );
-    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
-
-    let colorkey_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
-    assert_eq!(f32_from_payload(&colorkey_only, 7 * 4), 0.0);
-    assert_eq!(f32_from_payload(&colorkey_only, 12 * 4), 0.25);
-    assert_eq!(f32_from_payload(&colorkey_only, 19 * 4), 1.0);
-
-    draw.resolved_effect_visibility_mask = 0b10;
-    let scroll_only = pack_scene_material_uniforms(&storage, &[draw], 3.0);
-    assert_eq!(f32_from_payload(&scroll_only, 7 * 4), 1.0);
-    assert_eq!(f32_from_payload(&scroll_only, 12 * 4), 1.0);
-    assert_eq!(f32_from_payload(&scroll_only, 19 * 4), 0.0);
-}
-
-#[test]
-fn fused_rounded_opacity_visibility_falls_back_to_the_flat_base() {
-    let storage = storage_with_constants(
-        "we/flat-rounded-opacity-final",
-        &[("opacity.alpha", "0.3")],
-    );
-    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
-
-    let rounded_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
-    assert_eq!(f32_from_payload(&rounded_only, 9 * 4), 1.0);
-    assert_eq!(f32_from_payload(&rounded_only, 10 * 4), 1.0);
-
-    draw.resolved_effect_visibility_mask = 0b10;
-    let opacity_only = pack_scene_material_uniforms(&storage, &[draw], 0.0);
-    assert_eq!(f32_from_payload(&opacity_only, 9 * 4), 0.3);
-    assert_eq!(f32_from_payload(&opacity_only, 10 * 4), 0.0);
 }
 
 #[test]
@@ -898,7 +818,8 @@ fn storage_with_padded_mask(
         format: SceneTextureFormat::Bc4UnormBlock,
         source_runtime_format: 9,
         payload_format: 0,
-        sampler_flags: 0,
+        sampler_filter: SceneTextureSamplerFilter::Anisotropic8,
+        sampler_address_mode: SceneTextureSamplerAddressMode::Repeat,
         width,
         height,
         storage_width,

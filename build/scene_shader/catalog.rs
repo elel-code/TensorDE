@@ -1,5 +1,10 @@
 use super::super::*;
 
+#[path = "catalog/key.rs"]
+mod key;
+
+use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SceneShaderSpec {
     pub(crate) key: &'static str,
@@ -91,11 +96,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1",
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1",
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -663,6 +672,7 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub vertex_spirv: &'static [u32],\n");
     generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
+    generated.push_str("    #[cfg(test)]\n    pub fragment_source: &'static str,\n");
     generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
@@ -692,6 +702,7 @@ pub(crate) fn build_scene_shader_catalog() {
         };
         let fragment_path =
             compile_scene_shader_stage(&shader_dir, spec.key, "frag", &fragment_source);
+        let fragment_source_path = fragment_path.with_extension("glsl");
         let input_attachment_fragment_source = super::input_attachment_fragment_source(matches!(
             spec.family,
             SceneShaderFamily::FlatPassthrough
@@ -711,6 +722,9 @@ pub(crate) fn build_scene_shader_catalog() {
         let fragment_path = fragment_path
             .to_str()
             .expect("built-in scene fragment shader path must be UTF-8");
+        let fragment_source_path = fragment_source_path
+            .to_str()
+            .expect("built-in scene fragment source path must be UTF-8");
         let local_read_shader = input_attachment_fragment_source
             .as_ref()
             .zip(input_attachment_fragment_path.as_ref())
@@ -731,10 +745,11 @@ pub(crate) fn build_scene_shader_catalog() {
         let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), local_read_shader: {local_read_shader}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key,
             vertex_path,
             fragment_path,
+            fragment_source_path,
         ));
     }
     generated.push_str("pub static BUILTIN_SCENE_SHADERS: &[BuiltinSceneShader] = &[\n");
@@ -981,19 +996,4 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
         );
     }
     spirv_path
-}
-
-fn effect_shader_name_for_key(key: &str) -> &str {
-    key.split("__").next().unwrap_or(key)
-}
-
-fn effect_texture_slot_mask_for_key(key: &str) -> u32 {
-    for part in key.split("__") {
-        if let Some(hex) = part.strip_prefix("SLOTS_") {
-            return u32::from_str_radix(hex, 16).unwrap_or_else(|err| {
-                panic!("invalid built-in scene shader SLOTS mask in {key}: {err}")
-            });
-        }
-    }
-    0
 }

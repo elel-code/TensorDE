@@ -41,8 +41,73 @@ pub(super) fn final_effect_program_values(
             ),
         ),
         "we/audio-bars-final" => final_audio_bars_values(parameters, storage, draw, spectrum),
+        "we/framebuffer-water-quantized-final" => final_framebuffer_water_quantized_values(
+            parameters,
+            storage,
+            draw,
+            scene_time_seconds,
+        ),
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
+}
+
+fn final_framebuffer_water_quantized_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = scene_time_seconds;
+    values[1] = parameters.scalar(&["waves.speed"], 5.0);
+    values[2] = parameters.scalar(&["waves.scale"], 200.0);
+    values[3] = parameters.scalar(&["waves.strength"], 0.1);
+    values[4] = parameters.scalar(&["waves.direction"], 0.0);
+    values[5] = parameters.scalar(&["waves.exponent"], 1.0);
+    values[6] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[8] = scene_time_seconds;
+    values[9] = parameters.scalar(&["shake.speed"], 1.0);
+    values[10] = parameters.scalar(&["shake.strength"], 0.1);
+    values[12..14].copy_from_slice(&[0.0, 1.0]);
+    values[14..16].copy_from_slice(&[1.0, 1.0]);
+    set_vector(
+        &mut values,
+        12,
+        &parameters.values(&["shake.bounds"]),
+        2,
+    );
+    set_vector(
+        &mut values,
+        14,
+        &parameters.values(&["shake.friction"]),
+        2,
+    );
+    values[16..20].copy_from_slice(&framebuffer_water_intermediate_extent(storage, draw));
+    values[20..24].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
+    for stage in 0..4 {
+        values[24 + stage] = bool_float(draw_effect_enabled(draw, stage));
+    }
+    values
+}
+
+fn framebuffer_water_intermediate_extent(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; 4] {
+    let [authored_width, authored_height] = draw.authored_source_extent;
+    let [width, height] = if authored_width.is_finite()
+        && authored_height.is_finite()
+        && authored_width > 0.0
+        && authored_height > 0.0
+    {
+        [authored_width, authored_height]
+    } else {
+        [
+            storage.project().logical_width.max(1) as f32,
+            storage.project().logical_height.max(1) as f32,
+        ]
+    };
+    [width, height, width.recip(), height.recip()]
 }
 
 fn final_cloudmotion_values(

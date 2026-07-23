@@ -13,8 +13,8 @@ use super::shimmer::shimmer_fragment_source;
 use super::swing::swing_fragment_source;
 
 pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
-    if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
-        return framebuffer_overlay_effect_vertex_source();
+    if key.contains("__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1") {
+        return framebuffer_quantized_overlay_effect_vertex_source();
     }
     if shader == "effects/iris" {
         return iris_effect_vertex_source(texture_slot_mask);
@@ -69,8 +69,8 @@ pub(crate) fn effect_object_mesh_vertex_source(
     shader: &str,
     _texture_slot_mask: u32,
 ) -> Option<String> {
-    if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
-        return Some(framebuffer_overlay_effect_object_mesh_vertex_source());
+    if key.contains("__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1") {
+        return None;
     }
     if shader == "effects/iris" {
         return None;
@@ -177,29 +177,6 @@ void main() {
     .to_owned()
 }
 
-fn framebuffer_overlay_effect_object_mesh_vertex_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 a_Position;
-layout(location = 1) in vec2 a_TexCoord;
-layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
-    vec4 g_ScreenUvToObjectUvRow0;
-    vec4 g_ScreenUvToObjectUvRow1;
-    vec4 g_ObjectUvToScreenUvRow0;
-    vec4 g_ObjectUvToScreenUvRow1;
-} u_Draw;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out vec2 v_FramebufferCoord;
-void main() {
-    v_TexCoord = a_TexCoord;
-    v_FramebufferCoord = vec2(
-        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
-        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
-    gl_Position = vec4(v_FramebufferCoord * 2.0 - 1.0, 0.0, 1.0);
-}
-"#
-    .to_owned()
-}
-
 fn object_local_effect_object_mesh_vertex_source() -> String {
     r#"#version 450
 layout(location = 0) in vec2 a_Position;
@@ -274,7 +251,7 @@ void main() {
     .to_owned()
 }
 
-fn framebuffer_overlay_effect_vertex_source() -> String {
+fn framebuffer_quantized_overlay_effect_vertex_source() -> String {
     r#"#version 450
 layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
     vec4 g_ScreenUvToObjectUvRow0;
@@ -282,17 +259,17 @@ layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
     vec4 g_ObjectUvToScreenUvRow0;
     vec4 g_ObjectUvToScreenUvRow1;
 } u_Draw;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out vec2 v_FramebufferCoord;
+layout(location = 0) out vec2 v_FramebufferCoord;
+layout(location = 1) out vec2 v_EffectCoord;
 void main() {
     vec2 positions[3] = vec2[](
         vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
     vec2 position = positions[gl_VertexIndex];
     vec2 uv = position * 0.5 + 0.5;
-    v_TexCoord = uv;
     v_FramebufferCoord = vec2(
         dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(uv, 1.0)),
         dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(uv, 1.0)));
+    v_EffectCoord = uv;
     gl_Position = vec4(position, 0.0, 1.0);
 }
 "#
@@ -376,8 +353,8 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     }
     if shader == "effects/caustics" {
         let chromatic_zero = key.contains("__GILDER_CHROMATIC_ZERO_1");
-        if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
-            return caustics_framebuffer_overlay_fragment_source(key, texture_slot_mask);
+        if key.contains("__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1") {
+            return caustics_framebuffer_quantized_overlay_fragment_source(key, texture_slot_mask);
         }
         return caustics_effect_fragment_source(
             texture_slot_mask,
@@ -457,7 +434,10 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     panic!("scene shader {key:?} has no typed fragment contract")
 }
 
-fn caustics_framebuffer_overlay_fragment_source(key: &str, texture_slot_mask: u32) -> String {
+fn caustics_framebuffer_quantized_overlay_fragment_source(
+    key: &str,
+    texture_slot_mask: u32,
+) -> String {
     caustics_effect_fragment_source(
         texture_slot_mask,
         key.contains("__GILDER_CHROMATIC_ZERO_1"),
@@ -465,12 +445,22 @@ fn caustics_framebuffer_overlay_fragment_source(key: &str, texture_slot_mask: u3
     )
         .replacen(
             "layout(location = 0) in vec2 v_TexCoord;",
-            "layout(location = 0) in vec2 v_TexCoord;\nlayout(location = 1) in vec2 v_FramebufferCoord;",
+            "layout(location = 0) in vec2 v_FramebufferCoord;\nlayout(location = 1) in vec2 v_EffectCoord;",
             1,
         )
         .replacen(
             "vec4 albedo = texture(g_Texture0, v_TexCoord);",
-            "vec4 albedo = texture(g_Texture0, v_FramebufferCoord);",
+            "vec4 albedo = quantizeUnorm8(texture(g_Texture0, v_FramebufferCoord));",
+            1,
+        )
+        .replacen(
+            "void main() {",
+            "vec4 quantizeUnorm8(vec4 value) {\n    return roundEven(clamp(value, 0.0, 1.0) * 255.0) / 255.0;\n}\nvoid main() {",
+            1,
+        )
+        .replacen(
+            "vec2 causticsCoords = v_TexCoord;",
+            "vec2 causticsCoords = v_EffectCoord;",
             1,
         )
 }

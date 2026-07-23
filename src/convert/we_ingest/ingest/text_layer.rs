@@ -17,7 +17,8 @@ use super::super::ir::{
     WeIrTextureMip, WeIrUnsupported,
 };
 use super::super::tex::{
-    TexMetadata, TexUpload, TexUploadMip, block_compression::transcode_texture_upload,
+    TexMetadata, TexParseError, TexUpload, TexUploadMip,
+    block_compression::transcode_texture_upload, generated_texture_sampler_contract,
     texture_alpha_coverage_rows,
 };
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
@@ -129,7 +130,10 @@ pub(super) fn ingest_text_layer(
         WeIrResourceSource::Builtin,
         Vec::new(),
     );
-    let upload = retained_glyph_upload(raster);
+    let upload = retained_glyph_upload(raster).map_err(|source| WeIngestError::Tex {
+        path: texture_path.clone(),
+        source,
+    })?;
     let alpha_coverage_rows = texture_alpha_coverage_rows(&upload);
     let upload =
         transcode_texture_upload(&texture_path, upload).map_err(|source| WeIngestError::Tex {
@@ -143,7 +147,8 @@ pub(super) fn ingest_text_layer(
         format: upload.format,
         source_runtime_format: upload.metadata.runtime_format,
         payload_format: upload.metadata.payload_format,
-        sampler_flags: upload.metadata.sampler_flags,
+        sampler_filter: upload.metadata.sampler_filter,
+        sampler_address_mode: upload.metadata.sampler_address_mode,
         width: upload.metadata.width,
         height: upload.metadata.height,
         storage_width: upload.metadata.storage_width,
@@ -250,15 +255,19 @@ fn apply_text_alignment_anchor(
     }
 }
 
-fn retained_glyph_upload(raster: WeTextLayerRaster) -> TexUpload {
-    TexUpload {
+fn retained_glyph_upload(raster: WeTextLayerRaster) -> Result<TexUpload, TexParseError> {
+    let sampler_seed = 2;
+    let sampler = generated_texture_sampler_contract(sampler_seed)?;
+    Ok(TexUpload {
         metadata: TexMetadata {
             texv_tag: "GILDER_TEXT".to_owned(),
             texi_tag: "RGBA8".to_owned(),
             texb_tag: "RETAINED_GLYPHS".to_owned(),
             runtime_format: 0,
             payload_format: 0,
-            sampler_flags: 2,
+            sampler_seed,
+            sampler_filter: sampler.filter,
+            sampler_address_mode: sampler.address_mode,
             width: raster.width,
             height: raster.height,
             storage_width: raster.width,
@@ -273,7 +282,7 @@ fn retained_glyph_upload(raster: WeTextLayerRaster) -> TexUpload {
             payload_len: raster.rgba.len() as u64,
         }],
         payload: raster.rgba,
-    }
+    })
 }
 
 pub(super) fn rasterize_text_layer(
@@ -560,6 +569,7 @@ fn color_byte(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::scene::{SceneTextureSamplerAddressMode, SceneTextureSamplerFilter};
 
     #[test]
     fn text_value_reads_bound_default() {
@@ -613,5 +623,24 @@ mod tests {
         let scalar = serde_json::json!({"padding": 0.25});
         assert_eq!(retained_text_padding(scalar.get("padding")), (0.25, 0.25));
         assert_eq!(retained_text_padding(None), (1.0, 1.0));
+    }
+
+    #[test]
+    fn retained_generated_glyph_texture_uses_linear_clamp_rebuild_sampler() {
+        let upload = retained_glyph_upload(WeTextLayerRaster {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+        })
+        .expect("generated glyph sampler contract");
+
+        assert_eq!(
+            upload.metadata.sampler_filter,
+            SceneTextureSamplerFilter::Linear
+        );
+        assert_eq!(
+            upload.metadata.sampler_address_mode,
+            SceneTextureSamplerAddressMode::ClampToEdge
+        );
     }
 }

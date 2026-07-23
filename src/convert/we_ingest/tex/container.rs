@@ -1,6 +1,6 @@
 //! WE TEXV/TEXI/TEXB container parsing.
 
-use super::{TexMetadata, TexParseError, is_image_payload};
+use super::{TexMetadata, TexParseError, is_image_payload, static_file_texture_sampler_contract};
 
 pub(super) struct TexContainer<'a> {
     pub metadata: TexMetadata,
@@ -32,7 +32,7 @@ pub(super) fn parse_tex_container(data: &[u8]) -> Result<TexContainer<'_>, TexPa
     let texb_tag = cursor.tag("TEXB")?;
     require_tag("TEXB", &texb_tag)?;
 
-    let (levels, sampler_flags) = match texb_tag.as_str() {
+    let (levels, sampler_seed) = match texb_tag.as_str() {
         "TEXB0001" => (parse_texb0001(&mut cursor)?, payload_format),
         "TEXB0002" | "TEXB0003" => (parse_legacy_levels(data, cursor.offset)?, payload_format),
         "TEXB0004" => parse_texb0004(&mut cursor, payload_format)?,
@@ -41,6 +41,7 @@ pub(super) fn parse_tex_container(data: &[u8]) -> Result<TexContainer<'_>, TexPa
     if levels.is_empty() {
         return Err(TexParseError::InvalidPayload("TEXB has no levels"));
     }
+    let sampler = static_file_texture_sampler_contract(sampler_seed)?;
     Ok(TexContainer {
         metadata: TexMetadata {
             texv_tag,
@@ -48,7 +49,9 @@ pub(super) fn parse_tex_container(data: &[u8]) -> Result<TexContainer<'_>, TexPa
             texb_tag,
             runtime_format,
             payload_format,
-            sampler_flags,
+            sampler_seed,
+            sampler_filter: sampler.filter,
+            sampler_address_mode: sampler.address_mode,
             width,
             height,
             storage_width,
@@ -102,8 +105,8 @@ fn parse_texb0004<'a>(
         }
         levels.push(parse_texb0004_level(cursor, width, height)?);
     }
-    let sampler_flags = payload_format | u32::from(level_count < 2) * 0x8;
-    Ok((levels, sampler_flags))
+    let sampler_seed = payload_format | u32::from(level_count < 2) * 0x8;
+    Ok((levels, sampler_seed))
 }
 
 fn parse_texb0004_level<'a>(

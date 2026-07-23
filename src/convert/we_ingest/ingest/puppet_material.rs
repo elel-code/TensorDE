@@ -120,7 +120,8 @@ impl WeIrBuilder {
                     texture.format = upload.format;
                     texture.source_runtime_format = upload.metadata.runtime_format;
                     texture.payload_format = upload.metadata.payload_format;
-                    texture.sampler_flags = upload.metadata.sampler_flags;
+                    texture.sampler_filter = upload.metadata.sampler_filter;
+                    texture.sampler_address_mode = upload.metadata.sampler_address_mode;
                     texture.width = upload.metadata.width;
                     texture.height = upload.metadata.height;
                     texture.storage_width = upload.metadata.storage_width;

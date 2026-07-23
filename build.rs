@@ -351,13 +351,13 @@ void main() {
     blendCoords += time * 0.003777;
     shiftCoords += time * 0.01;
 
-    vec4 shiftColor = texture(g_Texture4, shiftCoords) * 2.0 - 1.0;
-    vec4 noiseColor = texture(g_Texture3, noiseCoords) * 2.0 - 1.0;
-    vec4 noiseColor2 = texture(g_Texture3, noiseCoords2) * 2.0 - 1.0;
+    vec2 shiftOffset = texture(g_Texture4, shiftCoords).ba * 2.0 - 1.0;
+    vec2 noiseOffset = texture(g_Texture3, noiseCoords).ba * 2.0 - 1.0;
+    vec2 noiseOffset2 = texture(g_Texture3, noiseCoords2).rg * 2.0 - 1.0;
     float distortion = u_Effect.g_GlowDistortionChromaticBlur.y;
-    causticsCoords += noiseColor.xy * 0.025 * distortion;
-    causticsCoords += noiseColor2.xy * 0.025 * distortion;
-    causticsCoords += shiftColor.rg * distortion;
+    causticsCoords += noiseOffset * 0.025 * distortion;
+    causticsCoords += noiseOffset2 * 0.025 * distortion;
+    causticsCoords += shiftOffset * distortion;
 
     float chromatic = u_Effect.g_GlowDistortionChromaticBlur.z;
     vec2 leftCoords = causticsCoords - vec2(0.01 * chromatic, 0.0);

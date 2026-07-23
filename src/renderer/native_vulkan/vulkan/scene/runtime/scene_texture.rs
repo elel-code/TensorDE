@@ -11,7 +11,10 @@ use std::collections::BTreeSet;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-use crate::engine::scene::{SceneResourceId, SceneStorage, SceneTextureFormat};
+use crate::engine::scene::{
+    SceneResourceId, SceneStorage, SceneTextureFormat, SceneTextureSamplerAddressMode,
+    SceneTextureSamplerFilter,
+};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaImageMipUpload, NativeVulkanVulkanaliaRecordedImageUpload,
     native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
@@ -24,8 +27,8 @@ pub(in crate::renderer::native_vulkan) struct SceneTextureImageResource {
     pub resource: SceneResourceId,
     pub format: vk::Format,
     pub mip_levels: u32,
-    pub sampler_flags: u32,
-    pub max_sampler_anisotropy: f32,
+    pub sampler_filter: SceneTextureSamplerFilter,
+    pub sampler_address_mode: SceneTextureSamplerAddressMode,
     pub upload: NativeVulkanVulkanaliaRecordedImageUpload,
 }
 
@@ -80,6 +83,10 @@ fn create_scene_texture_image(
             resource.0
         )
     })?;
+    validate_scene_texture_sampler_support(
+        texture.sampler_filter,
+        device_max_sampler_anisotropy_x1,
+    )?;
     let format = scene_texture_vk_format(texture.format);
     let payload = storage.texture_payload(texture);
     let mips = storage
@@ -119,11 +126,8 @@ fn create_scene_texture_image(
         resource,
         format,
         mip_levels: texture.mip_count,
-        sampler_flags: texture.sampler_flags,
-        max_sampler_anisotropy: we_sampler_max_anisotropy(
-            texture.mip_count,
-            device_max_sampler_anisotropy_x1,
-        ),
+        sampler_filter: texture.sampler_filter,
+        sampler_address_mode: texture.sampler_address_mode,
         upload,
     })
 }
@@ -173,37 +177,67 @@ pub(in crate::renderer::native_vulkan) fn scene_texture_image_view_info(
 pub(in crate::renderer::native_vulkan) fn scene_texture_sampler_info(
     resource: &SceneTextureImageResource,
 ) -> vk::SamplerCreateInfo {
-    let address_mode = scene_texture_address_mode(resource.sampler_flags);
-    let anisotropy_enabled = resource.max_sampler_anisotropy > 1.0;
+    scene_texture_sampler_create_info(resource.sampler_filter, resource.sampler_address_mode)
+}
+
+fn scene_texture_sampler_create_info(
+    filter: SceneTextureSamplerFilter,
+    address_mode: SceneTextureSamplerAddressMode,
+) -> vk::SamplerCreateInfo {
+    let (mag_filter, min_filter, mipmap_mode, anisotropy_enabled, max_anisotropy) = match filter {
+        SceneTextureSamplerFilter::Point => (
+            vk::Filter::NEAREST,
+            vk::Filter::NEAREST,
+            vk::SamplerMipmapMode::NEAREST,
+            false,
+            1.0,
+        ),
+        SceneTextureSamplerFilter::Linear => (
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+            vk::SamplerMipmapMode::LINEAR,
+            false,
+            1.0,
+        ),
+        SceneTextureSamplerFilter::Anisotropic8 => (
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+            vk::SamplerMipmapMode::LINEAR,
+            true,
+            8.0,
+        ),
+    };
+    let address_mode = match address_mode {
+        SceneTextureSamplerAddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
+        SceneTextureSamplerAddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        SceneTextureSamplerAddressMode::ClampToTransparentBlackBorder => {
+            vk::SamplerAddressMode::CLAMP_TO_BORDER
+        }
+    };
     vk::SamplerCreateInfo::builder()
-        .mag_filter(vk::Filter::LINEAR)
-        .min_filter(vk::Filter::LINEAR)
-        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .mag_filter(mag_filter)
+        .min_filter(min_filter)
+        .mipmap_mode(mipmap_mode)
         .address_mode_u(address_mode)
         .address_mode_v(address_mode)
         .address_mode_w(address_mode)
+        .border_color(vk::BorderColor::FLOAT_TRANSPARENT_BLACK)
         .anisotropy_enable(anisotropy_enabled)
-        .max_anisotropy(resource.max_sampler_anisotropy)
-        .max_lod(resource.mip_levels.saturating_sub(1) as f32)
+        .max_anisotropy(max_anisotropy)
+        .max_lod(vk::LOD_CLAMP_NONE)
         .build()
 }
 
-fn we_sampler_max_anisotropy(mip_levels: u32, device_max_x1: u32) -> f32 {
-    if mip_levels < 2 {
-        1.0
-    } else {
-        device_max_x1.clamp(1, 8) as f32
+fn validate_scene_texture_sampler_support(
+    filter: SceneTextureSamplerFilter,
+    device_max_anisotropy_x1: u32,
+) -> Result<(), String> {
+    if filter == SceneTextureSamplerFilter::Anisotropic8 && device_max_anisotropy_x1 < 8 {
+        return Err(format!(
+            "Vulkan 2026 scene texture requires maxSamplerAnisotropy >= 8, device reports {device_max_anisotropy_x1}"
+        ));
     }
-}
-
-fn scene_texture_address_mode(sampler_flags: u32) -> vk::SamplerAddressMode {
-    // WE sampler helper 0x140099980 maps payload/config bit 1 to D3D address
-    // mode 3 (clamp); its absence maps to mode 1 (wrap).
-    if sampler_flags & 0x2 != 0 {
-        vk::SamplerAddressMode::CLAMP_TO_EDGE
-    } else {
-        vk::SamplerAddressMode::REPEAT
-    }
+    Ok(())
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_texture_memory_bytes(
@@ -269,29 +303,57 @@ mod tests {
     }
 
     #[test]
-    fn we_sampler_seed_bit_one_selects_clamp_instead_of_wrap() {
-        assert_eq!(
-            scene_texture_address_mode(0),
-            vk::SamplerAddressMode::REPEAT
+    fn typed_single_mip_file_sampler_keeps_anisotropic_eight() {
+        let sampler = scene_texture_sampler_create_info(
+            SceneTextureSamplerFilter::Anisotropic8,
+            SceneTextureSamplerAddressMode::ClampToEdge,
         );
-        assert_eq!(
-            scene_texture_address_mode(0x8),
-            vk::SamplerAddressMode::REPEAT
-        );
-        assert_eq!(
-            scene_texture_address_mode(0x2),
-            vk::SamplerAddressMode::CLAMP_TO_EDGE
-        );
-        assert_eq!(
-            scene_texture_address_mode(0xa),
-            vk::SamplerAddressMode::CLAMP_TO_EDGE
-        );
+
+        assert_eq!(sampler.mag_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.min_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
+        assert_eq!(sampler.address_mode_u, vk::SamplerAddressMode::CLAMP_TO_EDGE);
+        assert_eq!(sampler.anisotropy_enable, vk::TRUE);
+        assert_eq!(sampler.max_anisotropy, 8.0);
+        assert_eq!(sampler.max_lod, vk::LOD_CLAMP_NONE);
     }
 
     #[test]
-    fn we_file_texture_sampler_uses_eight_x_anisotropy_with_mips() {
-        assert_eq!(we_sampler_max_anisotropy(1, 16), 1.0);
-        assert_eq!(we_sampler_max_anisotropy(7, 16), 8.0);
-        assert_eq!(we_sampler_max_anisotropy(7, 4), 4.0);
+    fn typed_point_linear_and_border_sampler_states_map_exactly() {
+        let point = scene_texture_sampler_create_info(
+            SceneTextureSamplerFilter::Point,
+            SceneTextureSamplerAddressMode::Repeat,
+        );
+        assert_eq!(point.mag_filter, vk::Filter::NEAREST);
+        assert_eq!(point.min_filter, vk::Filter::NEAREST);
+        assert_eq!(point.mipmap_mode, vk::SamplerMipmapMode::NEAREST);
+        assert_eq!(point.anisotropy_enable, vk::FALSE);
+        assert_eq!(point.max_anisotropy, 1.0);
+
+        let linear_border = scene_texture_sampler_create_info(
+            SceneTextureSamplerFilter::Linear,
+            SceneTextureSamplerAddressMode::ClampToTransparentBlackBorder,
+        );
+        assert_eq!(linear_border.mag_filter, vk::Filter::LINEAR);
+        assert_eq!(linear_border.address_mode_u, vk::SamplerAddressMode::CLAMP_TO_BORDER);
+        assert_eq!(
+            linear_border.border_color,
+            vk::BorderColor::FLOAT_TRANSPARENT_BLACK
+        );
+        assert_eq!(linear_border.anisotropy_enable, vk::FALSE);
+    }
+
+    #[test]
+    fn anisotropic_eight_is_required_instead_of_silently_clamped() {
+        assert!(validate_scene_texture_sampler_support(
+            SceneTextureSamplerFilter::Anisotropic8,
+            8
+        )
+        .is_ok());
+        assert!(validate_scene_texture_sampler_support(
+            SceneTextureSamplerFilter::Anisotropic8,
+            7
+        )
+        .is_err());
     }
 }

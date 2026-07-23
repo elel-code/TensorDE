@@ -217,7 +217,8 @@ impl WeIrBuilder {
                         format: upload.format,
                         source_runtime_format: upload.metadata.runtime_format,
                         payload_format: upload.metadata.payload_format,
-                        sampler_flags: upload.metadata.sampler_flags,
+                        sampler_filter: upload.metadata.sampler_filter,
+                        sampler_address_mode: upload.metadata.sampler_address_mode,
                         width: upload.metadata.width,
                         height: upload.metadata.height,
                         storage_width: upload.metadata.storage_width,
@@ -447,6 +448,8 @@ impl WeIrBuilder {
         let preserve_authored_effect_target_boundary = effect_instances
             .iter()
             .any(|instance| !instance.runtime_visibility);
+        let framebuffer_snapshot_available =
+            utility_layer.is_some_and(|layer| layer.samples_scene_color());
         let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
         let waterwaves_displacement = (!preserve_authored_effect_target_boundary)
             .then(|| {
@@ -484,19 +487,27 @@ impl WeIrBuilder {
                 )
             })
             .flatten();
-        let final_effect = (!preserve_authored_effect_target_boundary
-            && !puppet_group_visual_required)
-            .then(|| {
-                final_effect::create(
-                    self,
-                    base_material_handle,
-                    &effect_passes,
-                    final_scene_blend,
-                    effects_in_authored_texture_space,
-                    object_is_puppet,
-                )
-            })
-            .flatten();
+        let final_effect = if puppet_group_visual_required {
+            None
+        } else if preserve_authored_effect_target_boundary {
+            final_effect::create_framebuffer_water(
+                self,
+                base_material_handle,
+                &effect_passes,
+                final_scene_blend,
+                framebuffer_snapshot_available,
+            )
+        } else {
+            final_effect::create(
+                self,
+                base_material_handle,
+                &effect_passes,
+                final_scene_blend,
+                effects_in_authored_texture_space,
+                object_is_puppet,
+                framebuffer_snapshot_available,
+            )
+        };
         let uses_whole_graph_effect_path = waterwaves_displacement.uv_field.is_some()
             || waterwaves_displacement.direct.is_some()
             || foliage_ripple.is_some()
