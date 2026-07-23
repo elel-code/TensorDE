@@ -318,10 +318,7 @@ fn graph_is_active(
         .find(|pass| pass.graph_index == graph_index)
         .map(|pass| pass.graph_activation_policy)
         .unwrap_or(crate::engine::scene::SceneRenderGraphActivationPolicy::Always);
-    if activation_policy == crate::engine::scene::SceneRenderGraphActivationPolicy::Always {
-        return true;
-    }
-    pass_nodes
+    let draw_visibility = pass_nodes
         .iter()
         .filter(|pass| pass.graph_index == graph_index)
         .flat_map(|pass| {
@@ -329,7 +326,22 @@ fn graph_is_active(
             let end = start.saturating_add(pass.mesh_draw_count as usize);
             draw_commands.get(start..end).into_iter().flatten()
         })
-        .any(|draw| draw.enabled)
+        .map(|draw| draw.enabled);
+    graph_activation_from_draw_visibility(activation_policy, draw_visibility)
+}
+
+fn graph_activation_from_draw_visibility(
+    activation_policy: crate::engine::scene::SceneRenderGraphActivationPolicy,
+    draw_visibility: impl IntoIterator<Item = bool>,
+) -> bool {
+    let mut has_draw = false;
+    let any_draw_visible = draw_visibility.into_iter().any(|visible| {
+        has_draw = true;
+        visible
+    });
+    any_draw_visible
+        || (!has_draw
+            && activation_policy == crate::engine::scene::SceneRenderGraphActivationPolicy::Always)
 }
 
 fn graph_requires_interleaved_target_execution(
@@ -909,16 +921,29 @@ mod tests {
     }
 
     #[test]
-    fn only_effect_gated_graphs_are_skipped_without_an_enabled_draw() {
-        let mut always = pass(4);
-        always.mesh_draw_count = 0;
-        assert!(graph_is_active(&[always], &[], 4));
+    fn object_visibility_gates_owned_graphs_without_dropping_drawless_always_graphs() {
+        use crate::engine::scene::SceneRenderGraphActivationPolicy::{
+            Always, AnyEffectVisible,
+        };
 
-        let mut effect_gated = pass(5);
-        effect_gated.graph_activation_policy =
-            crate::engine::scene::SceneRenderGraphActivationPolicy::AnyEffectVisible;
-        effect_gated.mesh_draw_count = 0;
-        assert!(!graph_is_active(&[effect_gated], &[], 5));
+        assert!(graph_activation_from_draw_visibility(Always, []));
+        assert!(!graph_activation_from_draw_visibility(Always, [false]));
+        assert!(graph_activation_from_draw_visibility(
+            Always,
+            [false, true]
+        ));
+        assert!(!graph_activation_from_draw_visibility(
+            AnyEffectVisible,
+            []
+        ));
+        assert!(!graph_activation_from_draw_visibility(
+            AnyEffectVisible,
+            [false]
+        ));
+        assert!(graph_activation_from_draw_visibility(
+            AnyEffectVisible,
+            [true]
+        ));
     }
 
     fn pass(graph_index: u32) -> SceneRenderingDevicePassNode {
