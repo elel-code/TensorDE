@@ -81,7 +81,7 @@ pub(super) fn build_shader_contract_records(
             binding_texture_slot(binding)
                 .filter(|slot| *slot < 32)
                 .map_or(mask, |slot| mask | (1 << slot))
-        }) | graph_shader_texture_slot_mask(&shader_key);
+        }) | declared_texture_slot_mask(&shader_key, &[]);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
             shader_key,
@@ -136,10 +136,6 @@ fn binding_texture_slot(binding: &TextureBindingRole) -> Option<u32> {
         | TextureBindingRole::SystemUniform
         | TextureBindingRole::PassConstant { .. } => None,
     }
-}
-
-fn graph_shader_texture_slot_mask(shader_key: &str) -> u32 {
-    u32::from(is_foliage_ripple_shader(shader_key)) * 0x0b
 }
 
 pub(super) fn declared_texture_slot_mask(
@@ -373,6 +369,9 @@ fn is_foliage_ripple_shader(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::render_graph::{
+        PassState, RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetRole,
+    };
 
     #[test]
     fn sparse_effect_slots_are_a_hex_mask_not_a_slot_count() {
@@ -400,5 +399,67 @@ mod tests {
             shader_uniform_buffer_count("effects/foliagesway__SLOTS_1", true),
             2
         );
+    }
+
+    #[test]
+    fn generated_clipping_final_programs_declare_every_sampled_slot() {
+        assert_eq!(
+            declared_texture_slot_mask("we/puppet-opacity-clipping-final", &[]),
+            0x103
+        );
+        assert_eq!(
+            declared_texture_slot_mask("we/puppet-iris-waterripple-clipping-final", &[]),
+            0x10f
+        );
+    }
+
+    #[test]
+    fn graph_generated_clipping_contracts_inherit_the_final_program_interface() {
+        let pass = |id, shader: &str| RenderPassNode {
+            id,
+            role: RenderPassRole::MeshClippedTarget,
+            object_index: Some(0),
+            material_index: None,
+            pass_index: id,
+            shader: Some(shader.to_owned()),
+            target: RenderTargetRole::SceneColor,
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: vec![
+                TextureBindingRole::SourceTexture,
+                TextureBindingRole::EffectTarget {
+                    slot: 8,
+                    name: "_rt_FullAlphaMask".to_owned(),
+                },
+            ],
+            effect_visibility: RenderPassEffectVisibility::NONE,
+            state: PassState::default(),
+        };
+        let graphs = [RenderGraph {
+            activation_policy: Default::default(),
+            passes: vec![
+                pass(0, "we/puppet-opacity-clipping-final"),
+                pass(1, "we/puppet-iris-waterripple-clipping-final"),
+            ],
+            target_specs: Vec::new(),
+            unsupported: Vec::new(),
+        }];
+
+        let contracts = build_shader_contract_records(&graphs, &[], &[], &[]);
+        let opacity = contracts
+            .iter()
+            .find(|contract| contract.shader_key == "we/puppet-opacity-clipping-final")
+            .expect("graph-generated opacity clipping contract");
+        assert_eq!(opacity.texture_slot_mask, 0x103);
+        assert_eq!(opacity.resource_heap_count, 5);
+        assert_eq!(opacity.sampler_heap_count, 3);
+        let iris = contracts
+            .iter()
+            .find(|contract| contract.shader_key == "we/puppet-iris-waterripple-clipping-final")
+            .expect("graph-generated iris/waterripple clipping contract");
+        assert_eq!(iris.texture_slot_mask, 0x10f);
+        assert_eq!(iris.resource_heap_count, 7);
+        assert_eq!(iris.sampler_heap_count, 5);
     }
 }

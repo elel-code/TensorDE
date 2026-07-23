@@ -709,9 +709,17 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
             WeIrMeshClippingSliceRole::VisibleRemainder,
         ]
     );
-    assert!(ir.shader_contracts.iter().any(|contract| {
-        contract.shader_key == "we/genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1"
-    }));
+    let clipping_contract = ir
+        .shader_contracts
+        .iter()
+        .find(|contract| {
+            contract.shader_key
+                == "we/genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1"
+        })
+        .expect("generated clipping-target shader contract");
+    assert_eq!(clipping_contract.texture_slot_mask, 0x101);
+    assert_eq!(clipping_contract.resource_heap_count, 4);
+    assert_eq!(clipping_contract.sampler_heap_count, 2);
 
     fs::write(
         root.join("materials/clipped.json"),
