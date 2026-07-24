@@ -5,7 +5,27 @@ use crate::convert::we_ingest::ir::{
     WeIrMesh, WeIrMeshClippingSlice, WeIrMeshClippingSliceRole, WeIrMeshClippingSubdraw,
     WeIrMeshSourceRecord, WeIrMeshVertex, WeIrUnsupported,
 };
-use crate::convert::we_ingest::mdl::{MdlMeshEntry, mdl_entry_vertex_bounds};
+use crate::convert::we_ingest::mdl::{MdlClippingSubdraw, MdlMeshEntry, mdl_entry_vertex_bounds};
+
+/// WE emits clipping subdraws ordered by min(target_source_ordinal) ascending
+/// (stable on original file index for ties). Store and emit in that order so
+/// mesh_clipping_subdraws, pass_index, and packed index slices match the WE
+/// D3D11 subdraw emission order under alpha blend.
+fn clipping_subdraw_emit_order(subdraws: &[MdlClippingSubdraw]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..subdraws.len()).collect();
+    order.sort_by_key(|&index| {
+        (
+            subdraws[index]
+                .target_source_ordinals
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(u32::MAX),
+            index,
+        )
+    });
+    order
+}
 
 impl WeIrBuilder {
     pub(super) fn add_mdl_meshes(
@@ -99,7 +119,8 @@ impl WeIrBuilder {
                             index_count: record.index_count,
                         }),
                 );
-            for (subdraw_index, subdraw) in entry.clipping_subdraws.iter().enumerate() {
+            for &file_index in clipping_subdraw_emit_order(&entry.clipping_subdraws).iter() {
+                let subdraw = &entry.clipping_subdraws[file_index];
                 let target_source_start = self.mesh_clipping_source_ordinals.len() as u32;
                 self.mesh_clipping_source_ordinals
                     .extend(subdraw.target_source_ordinals.iter().copied());
@@ -114,7 +135,7 @@ impl WeIrBuilder {
                     mask: subdraw.mask_resource.clone(),
                     mask_resource: clipping_mask_resources
                         .get(entry_index)
-                        .and_then(|resources| resources.get(subdraw_index))
+                        .and_then(|resources| resources.get(file_index))
                         .copied()
                         .flatten(),
                     raw_flags: subdraw.raw_flags,
@@ -155,17 +176,21 @@ impl WeIrBuilder {
             entry,
             &visible_prefix,
         );
-        for (subdraw, record) in entry.clipping_subdraws.iter().enumerate() {
+        for (emit_index, &file_index) in clipping_subdraw_emit_order(&entry.clipping_subdraws)
+            .iter()
+            .enumerate()
+        {
+            let record = &entry.clipping_subdraws[file_index];
             self.push_mdl_clipping_slice(
                 mesh,
-                subdraw as u32,
+                emit_index as u32,
                 WeIrMeshClippingSliceRole::MaskProducer,
                 entry,
                 &record.mask_source_ordinals,
             );
             self.push_mdl_clipping_slice(
                 mesh,
-                subdraw as u32,
+                emit_index as u32,
                 WeIrMeshClippingSliceRole::ClippedTarget,
                 entry,
                 &record.target_source_ordinals,
@@ -213,5 +238,45 @@ impl WeIrBuilder {
                 index_count,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipping_subdraw_emit_order;
+    use crate::convert::we_ingest::mdl::MdlClippingSubdraw;
+
+    fn subdraw(targets: &[u32]) -> MdlClippingSubdraw {
+        MdlClippingSubdraw {
+            source_qword: 0,
+            mask_resource: String::new(),
+            raw_flags: 0,
+            target_source_ordinals: targets.to_vec(),
+            mask_source_ordinals: vec![0],
+        }
+    }
+
+    #[test]
+    fn clipping_subdraw_emit_order_matches_we_min_target_ordinal_sort() {
+        // File order mirrors the eye mesh packing that previously produced
+        // Gilder [2622,1875,2073,1335]; WE order is min-ordinal sort.
+        let subdraws = vec![
+            subdraw(&[21, 24, 26, 42, 43]), // file 0 -> ic family 2622
+            subdraw(&[12, 15, 18]),         // file 1 -> 1875
+            subdraw(&[10]),                 // file 2 -> 2073
+            subdraw(&[11]),                 // file 3 -> 1335
+        ];
+        assert_eq!(
+            clipping_subdraw_emit_order(&subdraws),
+            vec![2, 3, 1, 0],
+            "WE clipped-target order is min(target_source_ordinal) ascending"
+        );
+    }
+
+    #[test]
+    fn clipping_subdraw_emit_order_is_stable_on_equal_min_ordinal() {
+        // Both mins are 5; original file indices break the tie.
+        let subdraws = vec![subdraw(&[5, 9]), subdraw(&[5, 8]), subdraw(&[7])];
+        assert_eq!(clipping_subdraw_emit_order(&subdraws), vec![0, 1, 2]);
     }
 }
