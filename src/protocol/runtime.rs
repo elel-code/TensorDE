@@ -16,13 +16,9 @@ use crate::{
 use super::state::{RuntimeState, WaylandClientState};
 use crate::render::VulkanRenderer;
 
-#[cfg(feature = "xwayland")]
-use smithay::reexports::wayland_server::Client;
 use smithay::wayland::socket::ListeningSocketSource;
-#[cfg(feature = "xwayland")]
-use smithay::xwayland::{XWayland, XWaylandEvent};
-#[cfg(feature = "xwayland")]
-use tracing::info;
+
+mod xwayland;
 
 pub struct WaylandRuntime {
     event_loop: EventLoop<'static, RuntimeState>,
@@ -32,7 +28,7 @@ pub struct WaylandRuntime {
     prepared: bool,
     xwayland_display: Option<OsString>,
     #[cfg(feature = "xwayland")]
-    xwayland_client: Option<Client>,
+    xwayland_client: Option<smithay::reexports::wayland_server::Client>,
 }
 
 impl WaylandRuntime {
@@ -157,47 +153,6 @@ impl WaylandRuntime {
         ipc.register(&self.event_loop.handle(), handler)
             .map_err(|error| ProtocolError::IpcSource(error.to_string()))?;
         self.run()
-    }
-
-    #[cfg(feature = "xwayland")]
-    fn start_xwayland(&mut self) -> Result<(), ProtocolError> {
-        if self.xwayland_client.is_some() {
-            return Ok(());
-        }
-
-        let display = self
-            .display
-            .as_ref()
-            .ok_or(ProtocolError::DisplayConsumed)?;
-        let (xwayland, client) = XWayland::spawn(
-            &display.handle(),
-            None,
-            std::iter::empty::<(&str, &str)>(),
-            std::iter::empty::<&str>(),
-            true,
-            std::process::Stdio::null(),
-            std::process::Stdio::null(),
-            |_| {},
-        )
-        .map_err(ProtocolError::XWayland)?;
-        let display_number = xwayland.display_number();
-        self.event_loop
-            .handle()
-            .insert_source(xwayland, |event, _, _| match event {
-                XWaylandEvent::Ready { display_number, .. } => {
-                    info!(display_number, "XWayland is ready")
-                }
-                XWaylandEvent::Error => warn!("XWayland exited before becoming ready"),
-            })
-            .map_err(|error| ProtocolError::XWaylandSource(error.to_string()))?;
-        self.xwayland_display = Some(OsString::from(format!(":{display_number}")));
-        self.xwayland_client = Some(client);
-        Ok(())
-    }
-
-    #[cfg(not(feature = "xwayland"))]
-    fn start_xwayland(&mut self) -> Result<(), ProtocolError> {
-        Err(ProtocolError::XWaylandDisabled)
     }
 }
 

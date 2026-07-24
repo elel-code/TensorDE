@@ -8,6 +8,8 @@ mod surfaces;
 mod sync;
 #[cfg(feature = "tty")]
 mod tree;
+#[cfg(feature = "xwayland")]
+mod xwayland;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -34,6 +36,8 @@ use smithay::{
         shm::ShmState,
     },
 };
+#[cfg(feature = "xwayland")]
+use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
 use tracing::warn;
 
 use crate::{
@@ -76,6 +80,8 @@ pub(crate) struct RuntimeState {
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) data_device_state: DataDeviceState,
     pub(crate) protocol_globals: ProtocolGlobals,
+    #[cfg(feature = "xwayland")]
+    pub(crate) xwayland_shell_state: XWaylandShellState,
     pub(crate) seat: Seat<Self>,
     pub(crate) space: Space<Window>,
     pub(crate) popups: PopupManager,
@@ -105,6 +111,10 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
     surface_views: HashMap<ObjectId, ViewId>,
+    #[cfg(feature = "xwayland")]
+    pub(crate) xwm: Option<X11Wm>,
+    #[cfg(feature = "xwayland")]
+    xwayland_windows: HashMap<u32, xwayland::XWaylandWindowLifecycle>,
     next_view_id: u64,
 }
 
@@ -116,6 +126,8 @@ impl RuntimeState {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle);
+        #[cfg(feature = "xwayland")]
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "tensor");
 
@@ -128,6 +140,8 @@ impl RuntimeState {
             seat_state,
             data_device_state,
             protocol_globals,
+            #[cfg(feature = "xwayland")]
+            xwayland_shell_state,
             seat,
             space: Space::default(),
             popups: PopupManager::default(),
@@ -157,6 +171,10 @@ impl RuntimeState {
             #[cfg(feature = "tty")]
             input_devices: HashMap::new(),
             surface_views: HashMap::new(),
+            #[cfg(feature = "xwayland")]
+            xwm: None,
+            #[cfg(feature = "xwayland")]
+            xwayland_windows: HashMap::new(),
             next_view_id: 1,
         }
     }
@@ -338,19 +356,19 @@ impl RuntimeState {
                 let surface = window.wl_surface()?;
                 let view_id = self.view_for_surface(&surface)?;
                 let geometry = self.world.geometry(view_id)?;
-                Some((window.clone(), window.toplevel().cloned(), geometry))
+                Some((window.clone(), geometry))
             })
             .collect::<Vec<_>>();
 
-        for (window, _, geometry) in &windows {
+        for (window, geometry) in &windows {
             self.space
                 .relocate_element(window, (geometry.x, geometry.y));
         }
         self.space.refresh();
 
-        for (window, toplevel, geometry) in windows {
+        for (window, geometry) in windows {
             self.update_window_surface_state(&window);
-            if let Some(toplevel) = toplevel {
+            if let Some(toplevel) = window.toplevel().cloned() {
                 let size = (
                     i32::try_from(geometry.width).unwrap_or(i32::MAX),
                     i32::try_from(geometry.height).unwrap_or(i32::MAX),
@@ -366,6 +384,10 @@ impl RuntimeState {
                     state.bounds = Some(bounds);
                 });
                 toplevel.send_pending_configure();
+            }
+            #[cfg(feature = "xwayland")]
+            if let Some(x11) = window.x11_surface() {
+                xwayland::configure_x11_window(x11, geometry);
             }
         }
         #[cfg(feature = "tty")]

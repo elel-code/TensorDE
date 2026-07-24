@@ -108,8 +108,15 @@ XWayland is a rootless compatibility server for individual applications, never a
 backend. Tensor ships only a Wayland session entry and rejects an inherited X11-only session. Niri's
 current integration obtains its clean scaling boundary by letting `xwayland-satellite` expose X11
 windows as ordinary Wayland surfaces. Tensor's direct Smithay XWayland/XWM path follows the same
-architectural invariant: once mapped, an X11 window must enter the ordinary surface, scene, and
-logical-to-physical output path rather than a parallel X11 renderer or coordinate model.
+architectural invariant: on XWayland readiness, Tensor starts an XWM and uses the
+`xwayland-shell` association to place each normal mapped X11 window into the ordinary Smithay
+`Window`, ECS view, surface tree, scene, and logical-to-physical output path. X11 configure
+requests are hints; layout remains authoritative and sends its existing logical rectangle back to
+XWayland. Tensor never derives a second X11 coordinate space from an output scale.
+
+Override-redirect X11 windows are deliberately not promoted to independent tiled views yet. They
+need popup/parent semantics, not a fallback path that would accept arbitrary global X11 placement.
+Their absence is an explicit feature gap until that unified popup ownership model is implemented.
 
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their

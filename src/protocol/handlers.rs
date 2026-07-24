@@ -1,5 +1,7 @@
 #[cfg(feature = "tty")]
 use std::cell::RefCell;
+#[cfg(feature = "xwayland")]
+mod xwayland;
 #[cfg(feature = "tty")]
 use smithay::wayland::drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 #[cfg(feature = "tty")]
@@ -57,6 +59,9 @@ use smithay::{
 };
 use tracing::warn;
 
+#[cfg(feature = "xwayland")]
+use smithay::xwayland::XWaylandClientData;
+
 #[cfg(feature = "tty")]
 use super::state::ExplicitSyncPoints;
 use super::state::{RuntimeState, WaylandClientState, xdg_size_constraints};
@@ -67,6 +72,10 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        #[cfg(feature = "xwayland")]
+        if let Some(state) = client.get_data::<XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client
             .get_data::<WaylandClientState>()
             .expect("all Tensor Wayland clients carry compositor state")

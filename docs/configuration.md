@@ -84,7 +84,10 @@ identifies a user-manager launch. Without that feature, `auto` resolves to the d
 `enabled` fails startup. Explicit configuration never manufactures unavailable integration.
 
 `xwayland` defaults to `true`. It starts the rootless XWayland process and calloop source when the
-compositor enters its event loop. This is not an X11 backend: Tensor rejects primary X11 sessions.
+compositor enters its event loop, then attaches Smithay's XWM after XWayland reports readiness.
+Normal rootless X11 windows enter the same Wayland surface, ECS, and Vulkan scene path as native
+clients. This is not an X11 backend: Tensor rejects primary X11 sessions, keeps layout coordinates
+authoritative, and does not provide an X11 session entry.
 
 Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
 only for `--session` startup. Tensor first prepares the runtime, installs `WAYLAND_DISPLAY`,

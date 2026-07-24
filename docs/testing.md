@@ -15,7 +15,7 @@ the reference projects are never linked into the build and their fixtures are no
 | Reference behavior | Tensor contract | Current tests |
 | --- | --- | --- |
 | Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
-| Niri XWayland fractional scaling | rootless X11 surfaces reuse integer client-buffer scale, fractional output conversion, and the linear surface sampler without a parallel X11 coordinate path | `protocol::runtime`, `protocol::state`, `render::frame::plan`, `render::vulkan::pipeline` |
+| Niri XWayland fractional scaling | rootless X11 surfaces reuse integer client-buffer scale, fractional output conversion, and the linear surface sampler without a parallel X11 coordinate path | `protocol::runtime`, `protocol::handlers::xwayland`, `protocol::state::xwayland`, `render::frame::plan`, `render::vulkan::pipeline` |
 | Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
 | Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
 | Niri/Nourish presentation lifecycle | frame callbacks follow accepted KMS commits while feedback follows the exact output/timeline flip; failures discard it and resume never reuses uncertain slots | `protocol::runtime`, `protocol::state::presentation`, `backend::tty::kms` |
@@ -60,6 +60,11 @@ selection result, never a silently skipped compatibility path.
 - XWayland scaling tests keep rootless X11 buffers on the ordinary surface path: integer client
   buffer scale, `N/120` output geometry, outward damage coverage, and linear final sampling are one
   contract. X11 provenance must not enable a nearest-neighbor default or a second coordinate model.
+- XWayland lifecycle tests cover the two-signal mapped-window association gate, logical configure
+  conversion, and teardown before Smithay removes the X11-to-Wayland association. Runtime wiring
+  creates the XWM after XWayland readiness; hardware execution remains a TTY smoke test.
+  Override-redirect X11 windows remain an explicit popup-model gap rather than becoming standalone
+  views with a parallel X11 coordinate path.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.
