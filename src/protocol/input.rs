@@ -1,20 +1,26 @@
 use smithay::{
     backend::{
         input::{
-            Device, DeviceCapability, Event as InputEventTrait, InputEvent, KeyboardKeyEvent,
-            PointerButtonEvent, PointerMotionEvent,
+            ButtonState, Device, DeviceCapability, Event as InputEventTrait, InputEvent,
+            KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent,
         },
         libinput::LibinputInputBackend,
     },
+    desktop::WindowSurfaceType,
     input::{
         keyboard::FilterResult,
         pointer::{ButtonEvent, MotionEvent},
     },
-    utils::SERIAL_COUNTER,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Point, SERIAL_COUNTER},
+    wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
 
-use super::state::{InputDeviceCapabilities, RuntimeState};
+use super::{
+    focus::KeyboardFocusTarget,
+    state::{InputDeviceCapabilities, RuntimeState},
+};
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
@@ -101,11 +107,13 @@ impl RuntimeState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let location = pointer.current_location() + event.delta();
+        let focus = self.pointer_focus_under(location);
         pointer.motion(
             self,
-            None,
+            focus,
             &MotionEvent {
-                location: pointer.current_location() + event.delta(),
+                location,
                 serial: SERIAL_COUNTER.next_serial(),
                 time: event.time_msec(),
             },
@@ -120,10 +128,14 @@ impl RuntimeState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let serial = SERIAL_COUNTER.next_serial();
+        if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
+            self.focus_window_at(pointer.current_location(), serial);
+        }
         pointer.button(
             self,
             &ButtonEvent {
-                serial: SERIAL_COUNTER.next_serial(),
+                serial,
                 time: event.time_msec(),
                 button: event.button_code(),
                 state: event.state(),
@@ -155,5 +167,79 @@ impl RuntimeState {
             }
         }
         pointer.axis(self, frame);
+    }
+
+    /// Resolve pointer input in compositor logical coordinates. XWayland
+    /// surfaces remain ordinary Wayland pointer targets; their X11 focus is
+    /// handled separately when a root window is activated.
+    fn pointer_focus_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let (window, window_location) = self.space.element_under(location)?;
+        window
+            .surface_under(location - window_location.to_f64(), WindowSurfaceType::ALL)
+            .map(|(surface, surface_location)| {
+                (surface, (surface_location + window_location).to_f64())
+            })
+    }
+
+    /// Focus the toplevel/root rather than a subsurface or popup. This keeps
+    /// client popup lifetimes stable and lets X11 windows run their ICCCM
+    /// focus handshake through `X11Surface`.
+    fn focus_window_at(&mut self, location: Point<f64, Logical>, serial: smithay::utils::Serial) {
+        let Some((window, _)) = self
+            .space
+            .element_under(location)
+            .map(|(window, location)| (window.clone(), location))
+        else {
+            return;
+        };
+        self.focus_mapped_window(window, serial);
+    }
+
+    pub(crate) fn focus_mapped_window(
+        &mut self,
+        window: smithay::desktop::Window,
+        serial: smithay::utils::Serial,
+    ) {
+        let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
+            return;
+        };
+        let Some(view_id) = self.view_for_surface(&surface) else {
+            return;
+        };
+        let keyboard = self.seat.get_keyboard();
+        if keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
+        {
+            return;
+        }
+
+        #[cfg(feature = "xwayland")]
+        let focus = window
+            .x11_surface()
+            .cloned()
+            .map(KeyboardFocusTarget::from)
+            .unwrap_or_else(|| KeyboardFocusTarget::from(surface));
+        #[cfg(not(feature = "xwayland"))]
+        let focus = KeyboardFocusTarget::from(surface);
+
+        self.space.raise_element(&window, true);
+        #[cfg(feature = "xwayland")]
+        if let KeyboardFocusTarget::X11(x11) = &focus
+            && let Some(xwm) = self.xwm.as_mut()
+            && let Err(error) = xwm.raise_window(x11.as_ref())
+        {
+            warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
+        }
+        if let Err(error) = self.world.focus_view(view_id) {
+            warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
+        }
+        self.reflow_default_workspace();
+        if let Some(keyboard) = keyboard {
+            keyboard.set_focus(self, Some(focus), serial);
+        }
     }
 }

@@ -64,7 +64,10 @@ use smithay::xwayland::XWaylandClientData;
 
 #[cfg(feature = "tty")]
 use super::state::ExplicitSyncPoints;
-use super::state::{RuntimeState, WaylandClientState, xdg_size_constraints};
+use super::{
+    focus::KeyboardFocusTarget,
+    state::{RuntimeState, WaylandClientState, xdg_size_constraints},
+};
 
 impl CompositorHandler for RuntimeState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -278,7 +281,7 @@ impl XdgShellHandler for RuntimeState {
         if self.view_for_surface(&root).is_none() {
             return;
         }
-        let Ok(mut grab) = self.popups.grab_popup(root, popup, &seat, serial) else {
+        let Ok(mut grab) = self.popups.grab_popup(root.into(), popup, &seat, serial) else {
             return;
         };
 
@@ -311,7 +314,7 @@ impl XdgShellHandler for RuntimeState {
 }
 
 impl SeatHandler for RuntimeState {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = KeyboardFocusTarget;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -319,8 +322,10 @@ impl SeatHandler for RuntimeState {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
+        let client = focused
+            .and_then(WaylandFocus::wl_surface)
+            .and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_primary_focus(&self.display_handle, seat, client.clone());
         set_data_device_focus(&self.display_handle, seat, client);
     }

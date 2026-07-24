@@ -24,6 +24,7 @@ use smithay::{
         backend::{ClientData, ClientId, DisconnectReason, ObjectId},
         protocol::wl_surface::WlSurface,
     },
+    utils::SERIAL_COUNTER,
     wayland::{
         compositor::{
             CompositorClientState, CompositorState, get_parent, send_surface_state, with_states,
@@ -246,6 +247,7 @@ impl RuntimeState {
     }
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
+        self.clear_keyboard_focus_for_surface(surface);
         let window = self
             .space
             .elements()
@@ -277,6 +279,18 @@ impl RuntimeState {
         }
         self.reflow_default_workspace();
         Some(view_id)
+    }
+
+    fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        if keyboard
+            .current_focus()
+            .is_some_and(|focused| focused.targets_surface(surface))
+        {
+            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        }
     }
 
     pub(crate) fn view_for_surface(&self, surface: &WlSurface) -> Option<ViewId> {

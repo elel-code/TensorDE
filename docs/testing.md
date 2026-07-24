@@ -65,6 +65,10 @@ selection result, never a silently skipped compatibility path.
   creates the XWM after XWayland readiness; hardware execution remains a TTY smoke test.
   Override-redirect X11 windows remain an explicit popup-model gap rather than becoming standalone
   views with a parallel X11 coordinate path.
+- Input lifecycle coverage verifies that activating a mapped root updates the ECS focus and the
+  Smithay keyboard target, then clears it when the root is destroyed. X11 activation routes through
+  the `X11Surface` keyboard target so its ICCCM focus handshake is retained without changing the
+  Wayland logical pointer-coordinate path.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.

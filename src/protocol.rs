@@ -1,3 +1,4 @@
+mod focus;
 mod globals;
 mod handlers;
 #[cfg(feature = "tty")]

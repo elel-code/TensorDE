@@ -114,6 +114,12 @@ architectural invariant: on XWayland readiness, Tensor starts an XWM and uses th
 requests are hints; layout remains authoritative and sends its existing logical rectangle back to
 XWayland. Tensor never derives a second X11 coordinate space from an output scale.
 
+Pointer hit-testing stays on the associated Wayland surface tree, including ordinary popup input
+regions. Keyboard activation deliberately targets `X11Surface` for an X11 root window so Smithay
+performs the ICCCM input-focus / `WM_TAKE_FOCUS` handshake; it targets the native root surface for
+Wayland clients. Either route updates the same ECS focus, stacking, and layout reflow state, and a
+destroyed root clears keyboard focus before its surface association disappears.
+
 Override-redirect X11 windows are deliberately not promoted to independent tiled views yet. They
 need popup/parent semantics, not a fallback path that would accept arbitrary global X11 placement.
 Their absence is an explicit feature gap until that unified popup ownership model is implemented.
