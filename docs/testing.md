@@ -66,17 +66,25 @@ uv run scripts/tty.py --ghostty --duration 30
 ```
 
 Do not add `--no-xwayland`: the default configuration starts rootless XWayland
-as part of this session. Once Tensor creates its `tensor-*` socket, the
-launcher starts a new Ghostty with `GDK_BACKEND=wayland`, `WAYLAND_DISPLAY` set
-to that socket, and `DISPLAY` removed. This is therefore a native Wayland
-rendering and input test, not an X11-client test. The log should contain both
-`XWayland rootless XWM is ready` and `starting native Ghostty`; the terminal
-must appear and accept input before the bounded launch restores the previous
-session.
+as part of this session. The launcher waits until Tensor reports that it has
+entered its compositor event loop, then starts a new Ghostty with
+`WAYLAND_DISPLAY` set to Tensor's socket. Ghostty retains its normal backend
+selection; Tensor does not set `GDK_BACKEND`. The launcher's parent process is
+not part of the new session, so it removes the host session's stale `DISPLAY`,
+just as Tensor's `ProcessLauncher` clears managed session values before
+installing Tensor's published environment. `--gtk-single-instance=false` only
+ensures that an existing host Ghostty cannot receive the request over D-Bus;
+it does not select a client backend.
+
+This is a native Wayland rendering and input test, not an X11-client test. The
+log should contain `Tensor entered its compositor event loop; client launch
+gate opened` and `starting Ghostty with its normal backend selection`; the
+terminal must appear and accept input before the bounded launch restores the
+previous session. Ghostty's own stdout and stderr are retained in the same log
+for diagnosis.
 
 An X11-only application is still required to exercise XWayland client mapping
-and rendering itself. Ghostty is deliberately forced onto the native Wayland
-path so a host X11 display cannot make this test pass accidentally.
+and rendering itself.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
 - Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
