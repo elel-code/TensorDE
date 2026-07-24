@@ -187,12 +187,7 @@ fn material_uniform_values(
             weather_effect::raindrop_values(&parameters, storage, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::RoundedMask => {
-            rounded_mask_values(
-                &parameters,
-                draw.resolved_color,
-                draw.resolved_alpha,
-                draw_effect_enabled(draw, 0),
-            )
+            rounded_mask_values(&parameters, draw, draw_effect_enabled(draw, 0))
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
@@ -418,8 +413,7 @@ fn audio_bars_values(
 
 fn rounded_mask_values(
     parameters: &MaterialParameters<'_>,
-    resolved_color: crate::engine::scene::SceneVec3,
-    resolved_alpha: f32,
+    draw: &SceneRenderingDeviceMeshDraw,
     effect_visible: bool,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
@@ -432,11 +426,12 @@ fn rounded_mask_values(
     values[7] = parameters.scalar(&["ui_editor_properties_opacity"], 1.0);
     values[8] = parameters.scalar(&["Border width", "BorderWidth"], 0.025);
     values[9] = bool_float(effect_visible);
+    values[10..12].copy_from_slice(&draw.authored_source_extent);
     values[12..16].copy_from_slice(&[
-        resolved_color.x,
-        resolved_color.y,
-        resolved_color.z,
-        resolved_alpha,
+        draw.resolved_color.x,
+        draw.resolved_color.y,
+        draw.resolved_color.z,
+        draw.resolved_alpha,
     ]);
     values
 }

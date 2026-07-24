@@ -556,6 +556,30 @@ mod tests {
     }
 
     #[test]
+    fn rounded_hsl_catalog_declares_exact_fragment_coordinate_snapshot_fetch() {
+        let shader = native_vulkan_scene_shader_for_key("we/flat-rounded-hsl-source")
+            .expect("rounded HSL source shader");
+
+        assert_eq!(shader.fragment_coordinate_fetch_slot_mask, 1);
+        assert!(shader.fragment_source.contains("texelFetch("));
+        assert!(shader.fragment_source.contains("g_SceneSnapshot, ivec2(gl_FragCoord.xy)"));
+        assert!(shader.fragment_source.contains("ivec2(gl_FragCoord.xy)"));
+        assert!(shader.fragment_source.contains("roundEven(clamp(value, 0.0, 1.0) * 255.0)"));
+        assert_eq!(shader.fragment_source.matches("roundedTargetTexel(").count(), 5);
+        assert!(shader.fragment_source.contains("object_uv * vec2(source_extent) - 0.5"));
+        assert!(shader.fragment_source.contains("destination.a * source.a"));
+        // WE Color = source H/S + destination L (common_blending BlendColor), not setLum.
+        assert!(shader.fragment_source.contains("blendColor(destination.rgb, source.rgb)"));
+        assert!(shader.fragment_source.contains("rgbToHsl("));
+        assert!(shader.fragment_source.contains("hslToRgb("));
+        assert!(!shader.fragment_source.contains("setBlendLum"));
+        assert!(native_vulkan_scene_shader_catalog()
+            .iter()
+            .filter(|shader| shader.key != "we/flat-rounded-hsl-source")
+            .all(|shader| shader.fragment_coordinate_fetch_slot_mask == 0));
+    }
+
+    #[test]
     fn effect_target_waterwaves_identity_is_not_emitted_for_mesh_composites() {
         let effect = native_vulkan_scene_shader_for_key(
             "we/effect-waterwaves-direct__STAGES_6",

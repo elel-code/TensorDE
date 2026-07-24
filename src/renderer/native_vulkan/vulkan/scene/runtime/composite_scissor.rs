@@ -17,7 +17,9 @@ use super::draw_recording::{SceneGpuDrawCommand, SceneGpuScissor};
 use super::draw_uniform::{
     object_projected_pixel_extent, object_uv_to_screen_affine, object_uv_to_screen_linear,
 };
-use super::flat_rounded_mask_coverage::flat_rounded_mask_uv_bounds;
+use super::flat_rounded_mask_coverage::{
+    FlatRoundedMaskUvBounds, flat_rounded_effect_enabled, flat_rounded_mask_uv_bounds,
+};
 use super::material_uniform::material_parameter_values;
 use super::scene_viewport::scene_cover_clip_transform;
 
@@ -256,7 +258,7 @@ pub(super) fn update_scene_composite_scissors(
                 });
         let has_flat_rounded_composite = graph_passes
             .iter()
-            .any(|pass| pass_shader_is(storage, pass, "we/flat-rounded-mask-composite"));
+            .any(|pass| pass_shader(storage, pass).is_some_and(flat_rounded_support_quad_shader));
         if consumer_cull_enabled && !has_object_composite && !has_flat_rounded_composite {
             graph_pass_start = graph_pass_end;
             continue;
@@ -304,7 +306,7 @@ pub(super) fn update_scene_composite_scissors(
                 coverage_is_bounded = false;
                 continue;
             };
-            if shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite") {
+            if flat_rounded_support_quad_shader(shader) {
                 let scissors = draws
                     .iter()
                     .map(|draw| {
@@ -392,6 +394,13 @@ fn pass_shader_is(
     expected: &str,
 ) -> bool {
     pass_shader(storage, pass).is_some_and(|shader| shader == expected)
+}
+
+fn flat_rounded_support_quad_shader(shader: &str) -> bool {
+    matches!(
+        shader,
+        "we/flat-rounded-mask-composite" | "we/flat-rounded-hsl-source"
+    )
 }
 
 fn object_mesh_pixel_bounds_from_payload(
@@ -705,8 +714,24 @@ fn flat_rounded_mask_pixel_bounds(
         .copied()
         .unwrap_or(0.5);
     let object_pixel_extent = object_projected_pixel_extent(storage, draw, output_extent)?;
-    let uv_bounds =
-        flat_rounded_mask_uv_bounds(size, softness, object_pixel_extent, output_extent)?;
+    let sampled_source_extent = storage
+        .string(draw.shader_key)
+        .is_some_and(|shader| shader == "we/flat-rounded-hsl-source")
+        .then_some(draw.authored_source_extent);
+    let uv_bounds = if flat_rounded_effect_enabled(draw) {
+        flat_rounded_mask_uv_bounds(
+            size,
+            softness,
+            object_pixel_extent,
+            output_extent,
+            sampled_source_extent,
+        )?
+    } else {
+        FlatRoundedMaskUvBounds {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+        }
+    };
     let affine = object_uv_to_screen_affine(storage, draw, output_extent)?;
     let mut bounds = None::<PixelBounds>;
     for uv in [
@@ -863,5 +888,13 @@ mod tests {
             &pass,
             "we/flat-rounded-mask-composite"
         ));
+    }
+
+    #[test]
+    fn rounded_hsl_source_uses_the_same_conservative_support_quad_bounds() {
+        assert!(flat_rounded_support_quad_shader(
+            "we/flat-rounded-hsl-source"
+        ));
+        assert!(!flat_rounded_support_quad_shader("we/passthrough"));
     }
 }

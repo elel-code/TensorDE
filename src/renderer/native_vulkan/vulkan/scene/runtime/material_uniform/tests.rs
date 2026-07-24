@@ -443,10 +443,13 @@ fn rounded_mask_visibility_lane_disables_the_authored_sdf_stage() {
     draw.effect_visibility_policy =
         crate::engine::scene::SceneRenderEffectVisibilityPolicy::FlatRoundedMask;
     draw.resolved_effect_visibility_mask = 0;
+    draw.authored_source_extent = [550.0, 3300.0];
 
     let payload = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
 
     assert_eq!(f32_from_payload(&payload, 9 * 4), 0.0);
+    assert_eq!(f32_from_payload(&payload, 10 * 4), 550.0);
+    assert_eq!(f32_from_payload(&payload, 11 * 4), 3300.0);
 }
 
 #[test]

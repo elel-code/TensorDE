@@ -148,6 +148,7 @@ pub(super) fn record_copy_command(
     command: SceneEffectTargetCommand,
     resources: &[SceneEffectTargetImageResource],
     references: &[LogicalEffectTargetReference],
+    draw_commands: &[SceneGpuDrawCommand],
 ) -> Result<(), String> {
     let source = command
         .source
@@ -164,6 +165,8 @@ pub(super) fn record_copy_command(
             scene_color_image,
             scene_color_extent,
             target,
+            command.scene_color_copy_coverage,
+            draw_commands,
         ),
     }
 }
@@ -246,7 +249,21 @@ pub(super) fn record_scene_color_copy(
     scene_color_image: vk::Image,
     scene_color_extent: vk::Extent2D,
     target: &SceneEffectTargetImageResource,
+    coverage: SceneColorCopyCoverage,
+    draw_commands: &[SceneGpuDrawCommand],
 ) -> Result<(), String> {
+    let Some(copy_region) = scene_color_copy_region(
+        scene_color_extent,
+        vk::Extent2D {
+            width: target.plan.width,
+            height: target.plan.height,
+        },
+        coverage,
+        draw_commands,
+    )?
+    else {
+        return Ok(());
+    };
     record_effect_target_barrier(
         device,
         command_buffer,
@@ -269,15 +286,6 @@ pub(super) fn record_scene_color_copy(
         vk::AccessFlags2::SHADER_SAMPLED_READ,
         vk::AccessFlags2::TRANSFER_WRITE,
     );
-    let copy_region = vk::ImageCopy::builder()
-        .src_subresource(color_subresource_layers())
-        .dst_subresource(color_subresource_layers())
-        .extent(vk::Extent3D {
-            width: scene_color_extent.width.min(target.plan.width).max(1),
-            height: scene_color_extent.height.min(target.plan.height).max(1),
-            depth: 1,
-        })
-        .build();
     unsafe {
         device.cmd_copy_image(
             command_buffer,

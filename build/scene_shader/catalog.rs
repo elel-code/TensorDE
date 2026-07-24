@@ -656,7 +656,6 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
 ];
-
 pub(crate) fn build_scene_shader_catalog() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let shader_dir = out_dir.join("scene_shader_catalog");
@@ -673,7 +672,7 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
     generated.push_str("    #[cfg(test)]\n    pub fragment_source: &'static str,\n");
-    generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n");
+    generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n    pub fragment_coordinate_fetch_slot_mask: u32,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
     let mut entries = String::new();
@@ -744,8 +743,10 @@ pub(crate) fn build_scene_shader_catalog() {
         );
         let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
+        let fragment_coordinate_fetch_slot_mask =
+            u32::from(spec.key == "we/flat-rounded-hsl-source");
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key,
             vertex_path,
             fragment_path,

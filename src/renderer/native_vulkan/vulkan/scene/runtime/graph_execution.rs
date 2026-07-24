@@ -6,7 +6,6 @@
 //! References:
 //! - `docs/gilder-scene-engine-architecture.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
-
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
@@ -35,7 +34,6 @@ pub(super) fn scene_graph_execution_order(
     }
     order
 }
-
 pub(super) fn record_scene_graphs_to_swapchain(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -219,6 +217,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 &scene.effect_targets,
                 &scene.local_read_scopes,
                 scene.local_read_limits,
+                &scene.draw_commands,
                 &mut record_effect_draws,
                 &mut record_effect_command_timing,
             )?;
@@ -514,6 +513,7 @@ fn record_interleaved_target_graph(
                 &scene.effect_targets,
                 &scene.local_read_scopes,
                 scene.local_read_limits,
+                &scene.draw_commands,
                 &mut effect_target_state,
                 &mut record_draws,
                 &mut record_effect_command_timing,
@@ -539,6 +539,7 @@ fn record_interleaved_target_graph(
             &scene.effect_targets,
             &scene.local_read_scopes,
             scene.local_read_limits,
+            &scene.draw_commands,
             &mut effect_target_state,
             &mut record_draws,
             &mut record_effect_command_timing,

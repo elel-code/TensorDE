@@ -16,7 +16,9 @@ use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
 
-use super::flat_rounded_mask_coverage::{FlatRoundedMaskUvBounds, flat_rounded_mask_uv_bounds};
+use super::flat_rounded_mask_coverage::{
+    FlatRoundedMaskUvBounds, flat_rounded_effect_enabled, flat_rounded_mask_uv_bounds,
+};
 use super::material_uniform::{draw_parameter_layout, material_parameter_values};
 use super::scene_viewport::scene_cover_clip_transform;
 
@@ -246,8 +248,25 @@ fn rounded_mask_support_quad_draw_values(
         .first()
         .copied()
         .unwrap_or(0.5);
-    let uv_bounds = flat_rounded_mask_uv_bounds(size, softness, object_pixel_extent, output_extent)
-        .unwrap_or_else(|| full_target_object_uv_bounds(projected_affine));
+    let sampled_source_extent = storage
+        .string(draw.shader_key)
+        .is_some_and(|shader| shader == "we/flat-rounded-hsl-source")
+        .then_some(draw.authored_source_extent);
+    let uv_bounds = if flat_rounded_effect_enabled(draw) {
+        flat_rounded_mask_uv_bounds(
+            size,
+            softness,
+            object_pixel_extent,
+            output_extent,
+            sampled_source_extent,
+        )
+    } else {
+        Some(FlatRoundedMaskUvBounds {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+        })
+    }
+    .unwrap_or_else(|| full_target_object_uv_bounds(projected_affine));
     let mut values = [0.0; SCENE_DRAW_UNIFORM_FLOATS];
     values[0..3].copy_from_slice(&projected_affine[8..11]);
     values[4..7].copy_from_slice(&projected_affine[12..15]);

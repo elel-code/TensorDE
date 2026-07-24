@@ -553,6 +553,7 @@ fn interleaved_execution_state_keeps_authored_reference_swaps_between_slices() {
         clear_before_draw: false,
         fully_overwrites_target: false,
         direct_scene_color_snapshot: false,
+        scene_color_copy_coverage: SceneColorCopyCoverage::FullTarget,
         batch_physical_slot: None,
         batch_atlas_tile: None,
     };

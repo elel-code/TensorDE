@@ -24,10 +24,19 @@ mod image_commands;
 mod execution_state;
 mod local_read_scope;
 mod local_read_usage;
+mod scene_color_copy;
 
 pub(in crate::renderer::native_vulkan) use execution_state::SceneEffectTargetExecutionState;
 use image_commands::*;
 use local_read_scope::*;
+use scene_color_copy::{
+    SceneColorCopyCoverage, scene_color_copy_coverage, scene_color_copy_region,
+};
+pub(in crate::renderer::native_vulkan) use scene_color_copy::{
+    graph_copies_scene_color, graph_requires_effect_target_execution,
+    graph_uses_direct_scene_color_snapshot,
+};
+use super::draw_recording::SceneGpuDrawCommand;
 use super::local_read::{SceneLocalReadDeviceLimits, SceneLocalReadScopePlan};
 pub(in crate::renderer::native_vulkan) use local_read_usage::{
     apply_scene_effect_target_input_attachment_usage,
@@ -78,6 +87,7 @@ pub(in crate::renderer::native_vulkan) struct SceneEffectTargetCommand {
     clear_before_draw: bool,
     fully_overwrites_target: bool,
     direct_scene_color_snapshot: bool,
+    scene_color_copy_coverage: SceneColorCopyCoverage,
     batch_physical_slot: Option<u32>,
     batch_atlas_tile: Option<u32>,
 }
@@ -290,7 +300,8 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
     graph
         .pass_nodes
         .iter()
-        .filter_map(|pass| {
+        .enumerate()
+        .filter_map(|(pass_node_index, pass)| {
             let target = LogicalEffectTargetKey::from_pass_target(pass)?;
             let batch_atlas_tile =
                 graph.effect_batch_atlas_tile(pass.graph_index, pass.target, pass.target_name);
@@ -306,6 +317,13 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
             match pass.role {
                 SceneRenderPassKind::CopyTarget => {
                     let source = command_source_key(storage, pass);
+                    let scene_color_copy_coverage = if source
+                        == Some(SceneEffectTargetCommandSource::SceneColor)
+                    {
+                        scene_color_copy_coverage(storage, graph, pass_node_index, target)
+                    } else {
+                        SceneColorCopyCoverage::FullTarget
+                    };
                     Some(SceneEffectTargetCommand {
                         kind: SceneEffectTargetCommandKind::Copy,
                         pass_record_index: pass.pass_record_index,
@@ -323,6 +341,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                                 pass.target,
                                 pass.target_name,
                             ),
+                        scene_color_copy_coverage,
                         batch_physical_slot: None,
                         batch_atlas_tile: None,
                     })
@@ -337,6 +356,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                     clear_before_draw: false,
                     fully_overwrites_target: false,
                     direct_scene_color_snapshot: false,
+                    scene_color_copy_coverage: SceneColorCopyCoverage::FullTarget,
                     batch_physical_slot: None,
                     batch_atlas_tile: None,
                 }),
@@ -358,6 +378,7 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
                             .clear_target,
                     fully_overwrites_target: pass_fully_overwrites_target(storage, graph, pass),
                     direct_scene_color_snapshot: false,
+                    scene_color_copy_coverage: SceneColorCopyCoverage::FullTarget,
                     batch_physical_slot,
                     batch_atlas_tile,
                 }),
@@ -392,35 +413,6 @@ fn pass_fully_overwrites_target(
             pass_record.pipeline_blend,
             ScenePipelineBlend::Normal | ScenePipelineBlend::Disabled
         )
-}
-
-pub(in crate::renderer::native_vulkan) fn graph_copies_scene_color(
-    commands: &[SceneEffectTargetCommand],
-    graph_index: u32,
-) -> bool {
-    commands.iter().any(|command| {
-        command.target.graph_index == graph_index
-            && command.kind == SceneEffectTargetCommandKind::Copy
-            && command.source == Some(SceneEffectTargetCommandSource::SceneColor)
-    })
-}
-
-pub(in crate::renderer::native_vulkan) fn graph_requires_effect_target_execution(
-    commands: &[SceneEffectTargetCommand],
-    graph_index: u32,
-) -> bool {
-    commands.iter().any(|command| {
-        command.target.graph_index == graph_index && command.batch_atlas_tile.is_none()
-    })
-}
-
-pub(in crate::renderer::native_vulkan) fn graph_uses_direct_scene_color_snapshot(
-    commands: &[SceneEffectTargetCommand],
-    graph_index: u32,
-) -> bool {
-    commands.iter().any(|command| {
-        command.target.graph_index == graph_index && command.direct_scene_color_snapshot
-    })
 }
 
 pub(in crate::renderer::native_vulkan) fn effect_batch_instance_count(
@@ -662,6 +654,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     resources: &[SceneEffectTargetImageResource],
     local_read_scopes: &[SceneLocalReadScopePlan],
     local_read_limits: SceneLocalReadDeviceLimits,
+    draw_commands: &[SceneGpuDrawCommand],
     mut record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
@@ -681,6 +674,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
         resources,
         local_read_scopes,
         local_read_limits,
+        draw_commands,
         &mut state,
         &mut record_draws,
         &mut record_command_timing,
@@ -699,6 +693,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     resources: &[SceneEffectTargetImageResource],
     local_read_scopes: &[SceneLocalReadScopePlan],
     local_read_limits: SceneLocalReadDeviceLimits,
+    draw_commands: &[SceneGpuDrawCommand],
     state: &mut SceneEffectTargetExecutionState,
     mut record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
@@ -809,6 +804,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
                         *command,
                         resources,
                         &references,
+                        draw_commands,
                     )?;
                     let resource = resource_for_key(resources, &references, command.target)?;
                     mark_target_initialized(
@@ -888,6 +884,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass_with_s
     resources: &[SceneEffectTargetImageResource],
     local_read_scopes: &[SceneLocalReadScopePlan],
     local_read_limits: SceneLocalReadDeviceLimits,
+    draw_commands: &[SceneGpuDrawCommand],
     state: &mut SceneEffectTargetExecutionState,
     record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
     mut record_command_timing: impl FnMut(usize, bool),
@@ -905,6 +902,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass_with_s
         resources,
         local_read_scopes,
         local_read_limits,
+        draw_commands,
         state,
         record_draws,
         |_, _| {},
