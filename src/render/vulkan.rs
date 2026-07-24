@@ -136,6 +136,7 @@ impl VulkanRenderer {
                 max_embedded_samplers = device.candidate.descriptor_heap.max_descriptor_heap_embedded_samplers,
                 buffer_device_address = device.candidate.buffer_device_address_supported,
                 timeline_semaphore = device.candidate.timeline_semaphore_supported,
+                maintenance5 = device.candidate.maintenance5_supported,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
                 native_output_formats = device.candidate.native_output_format_count,
                 "Vulkan physical device probed"
@@ -249,6 +250,7 @@ impl VulkanRenderer {
             max_push_data_size = selected_info.descriptor_heap.max_push_data_size,
             max_embedded_samplers = selected_info.descriptor_heap.max_descriptor_heap_embedded_samplers,
             buffer_device_address = true,
+            maintenance5 = true,
             dma_buf = selected_info.interop.dma_buf_memory,
             drm_format_modifier = selected_info.interop.drm_format_modifier,
             foreign_queue_family = selected_info.interop.foreign_queue_family,
@@ -707,10 +709,14 @@ fn create_device(
         .buffer_device_address(true)
         .timeline_semaphore(true)
         .build();
+    let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::builder()
+        .maintenance5(true)
+        .build();
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queues)
         .enabled_extension_names(&extensions)
         .push_next(&mut vulkan12)
+        .push_next(&mut vulkan14)
         .push_next(&mut descriptor_heap);
     unsafe { instance.create_device(physical_device, &info, None) }
         .map_err(RendererError::CreateDevice)

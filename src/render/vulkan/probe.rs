@@ -20,6 +20,7 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
     let mut candidates = Vec::with_capacity(physical_devices.len());
     for (ordinal, handle) in physical_devices.into_iter().enumerate() {
         let properties = unsafe { instance.get_physical_device_properties(handle) };
+        let api_version = Version::from(properties.api_version);
         let extensions = unsafe { instance.enumerate_device_extension_properties(handle, None) }
             .map_err(RendererError::EnumerateExtensions)?;
         let has_heap_extension = extensions
@@ -34,6 +35,8 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
         };
         let buffer_device_address_supported = buffer_device_address_feature(instance, handle);
         let timeline_semaphore_supported = timeline_semaphore_feature(instance, handle);
+        let maintenance5_supported =
+            api_version >= Version::V1_4_0 && maintenance5_feature(instance, handle);
         let has_drm_extension = extensions.iter().any(|extension| {
             extension.extension_name == vk::EXT_PHYSICAL_DEVICE_DRM_EXTENSION.name
         });
@@ -52,7 +55,8 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
             && descriptor_heap.is_usable()
             && buffer_device_address_supported
             && timeline_semaphore_supported
-            && Version::from(properties.api_version) >= Version::V1_4_0
+            && maintenance5_supported
+            && api_version >= Version::V1_4_0
             && graphics_queue_family.is_some()
             && drm.and_then(DrmDeviceIdentity::node_pair).is_some()
             && interop.is_complete()
@@ -71,11 +75,12 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
                 ordinal,
                 name: properties.device_name.to_string_lossy().into_owned(),
                 device_type: properties.device_type,
-                api_version: properties.api_version.into(),
+                api_version,
                 descriptor_heap_supported,
                 descriptor_heap,
                 buffer_device_address_supported,
                 timeline_semaphore_supported,
+                maintenance5_supported,
                 graphics_queue_family,
                 drm,
                 interop,
@@ -305,4 +310,11 @@ fn timeline_semaphore_feature(instance: &Instance, device: vk::PhysicalDevice) -
     let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut vulkan12);
     unsafe { instance.get_physical_device_features2(device, &mut features) };
     vulkan12.timeline_semaphore != 0
+}
+
+fn maintenance5_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {
+    let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::default();
+    let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut vulkan14);
+    unsafe { instance.get_physical_device_features2(device, &mut features) };
+    vulkan14.maintenance5 != 0
 }

@@ -13,6 +13,13 @@ layout(push_constant, std430) uniform DrawData {
     vec4 uv_axis_y_viewport;
 } draw;
 
+// The GLSL default gl_PerVertex block also declares ClipDistance and
+// CullDistance. Tensor does not require those optional Vulkan features, so
+// expose only the builtin this fullscreen primitive writes.
+out gl_PerVertex {
+    vec4 gl_Position;
+};
+
 void main() {
     const vec2 positions[6] = vec2[](
         vec2(0.0, 0.0),
