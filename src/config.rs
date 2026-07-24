@@ -11,11 +11,15 @@ use thiserror::Error;
 use crate::{
     layout::{LayoutKind, LayoutLength, LayoutOptions},
     render::{GpuPreference, ParseGpuPreferenceError},
+    scene::SceneAppearance,
     service::{ParseSystemdModeError, SystemdMode},
     xwayland::XWaylandConfig,
 };
 
+mod appearance;
 mod scale;
+pub use appearance::AppearanceConfigError;
+use appearance::AppearanceFileConfig;
 use scale::ScaleValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +29,8 @@ pub struct Config {
     pub ipc_socket: PathBuf,
     pub gpu_preference: GpuPreference,
     pub render_device: Option<PathBuf>,
-    pub output_scales: BTreeMap<String, OutputScale>,
+    pub output_rules: BTreeMap<String, OutputRule>,
+    pub appearance: SceneAppearance,
     pub systemd: SystemdMode,
     pub xwayland: XWaylandConfig,
     pub startup_commands: Vec<StartupCommand>,
@@ -34,6 +39,38 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartupCommand {
     pub argv: Vec<String>,
+}
+
+/// Per-connector policy resolved at the configuration boundary.
+///
+/// The DRM backend remains responsible for discovering the supported mode
+/// list. This value only expresses the user's stable intent, so a hotplug or
+/// a new EDID never leaks parser-specific state into the output policy.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OutputRule {
+    pub scale: Option<OutputScale>,
+    pub mode: Option<OutputMode>,
+}
+
+/// A DRM mode requested by its visible dimensions and optional exact refresh.
+/// Refresh is stored in millihertz, the same unit Smithay exposes on
+/// [`smithay::output::Mode`], which prevents a floating-point comparison at
+/// the configuration-to-DRM boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputMode {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_millihertz: Option<u32>,
+}
+
+impl OutputMode {
+    pub const fn new(width: u32, height: u32, refresh_millihertz: Option<u32>) -> Self {
+        Self {
+            width,
+            height,
+            refresh_millihertz,
+        }
+    }
 }
 
 impl Config {
@@ -114,7 +151,12 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let render_device = parsed.render_device.map(PathBuf::from);
-        let output_scales = resolve_output_scales(parsed.outputs)?;
+        let output_rules = resolve_output_rules(parsed.outputs)?;
+        let appearance = parsed
+            .appearance
+            .map(AppearanceFileConfig::resolve)
+            .transpose()?
+            .unwrap_or_default();
         let systemd = parsed
             .systemd
             .as_deref()
@@ -143,7 +185,8 @@ impl Config {
             ipc_socket,
             gpu_preference,
             render_device,
-            output_scales,
+            output_rules,
+            appearance,
             systemd,
             xwayland: XWaylandConfig::new(xwayland),
             startup_commands,
@@ -161,7 +204,8 @@ impl Default for Config {
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
             gpu_preference: GpuPreference::default(),
             render_device: None,
-            output_scales: BTreeMap::new(),
+            output_rules: BTreeMap::new(),
+            appearance: SceneAppearance::default(),
             systemd: SystemdMode::default(),
             xwayland: XWaylandConfig::default(),
             startup_commands: Vec::new(),
@@ -181,6 +225,8 @@ struct FileConfig {
     render_device: Option<String>,
     #[knus(children(name = "output"))]
     outputs: Vec<OutputFileConfig>,
+    #[knus(child)]
+    appearance: Option<AppearanceFileConfig>,
     #[knus(child, unwrap(argument))]
     systemd: Option<String>,
     #[knus(child, unwrap(argument))]
@@ -195,28 +241,107 @@ struct OutputFileConfig {
     name: String,
     #[knus(child, unwrap(argument))]
     scale: Option<ScaleValue>,
+    #[knus(child, unwrap(argument))]
+    mode: Option<String>,
 }
 
-fn resolve_output_scales(
+fn resolve_output_rules(
     outputs: Vec<OutputFileConfig>,
-) -> Result<BTreeMap<String, OutputScale>, ConfigError> {
-    let mut scales = BTreeMap::new();
+) -> Result<BTreeMap<String, OutputRule>, ConfigError> {
+    let mut rules = BTreeMap::new();
     for output in outputs {
-        let Some(value) = output.scale else {
-            continue;
-        };
-        let scale =
-            OutputScale::from_f64(value.get()).ok_or_else(|| ConfigError::InvalidOutputScale {
+        let scale = output
+            .scale
+            .map(|value| {
+                OutputScale::from_f64(value.get()).ok_or_else(|| ConfigError::InvalidOutputScale {
+                    output: output.name.clone(),
+                    message: "must be finite and between 0.1 and 10".to_owned(),
+                })
+            })
+            .transpose()?;
+        let mode = output
+            .mode
+            .as_deref()
+            .map(parse_output_mode)
+            .transpose()
+            .map_err(|message| ConfigError::InvalidOutputMode {
                 output: output.name.clone(),
-                message: "must be finite and between 0.1 and 10".to_owned(),
+                mode: output.mode.clone().expect("a parsed mode string exists"),
+                message,
             })?;
-        if scales.insert(output.name.clone(), scale).is_some() {
+        if rules
+            .insert(output.name.clone(), OutputRule { scale, mode })
+            .is_some()
+        {
             return Err(ConfigError::DuplicateOutput {
                 output: output.name,
             });
         }
     }
-    Ok(scales)
+    Ok(rules)
+}
+
+fn parse_output_mode(value: &str) -> Result<OutputMode, String> {
+    let (resolution, refresh) = match value.split_once('@') {
+        Some((resolution, refresh)) if !refresh.contains('@') => (resolution, Some(refresh)),
+        Some(_) => return Err("contains more than one `@` separator".to_owned()),
+        None => (value, None),
+    };
+    let (width, height) = resolution
+        .split_once('x')
+        .filter(|(_, height)| !height.contains('x'))
+        .ok_or_else(|| {
+            "must use the form `<width>x<height>` or `<width>x<height>@<Hz>`".to_owned()
+        })?;
+    let width = parse_mode_dimension(width, "width")?;
+    let height = parse_mode_dimension(height, "height")?;
+    let refresh_millihertz = refresh.map(parse_refresh_millihertz).transpose()?;
+    Ok(OutputMode::new(width, height, refresh_millihertz))
+}
+
+fn parse_mode_dimension(value: &str, name: &str) -> Result<u32, String> {
+    let dimension = value
+        .parse::<u32>()
+        .map_err(|_| format!("{name} must be a positive unsigned integer"))?;
+    (dimension > 0)
+        .then_some(dimension)
+        .ok_or_else(|| format!("{name} must be greater than zero"))
+}
+
+fn parse_refresh_millihertz(value: &str) -> Result<u32, String> {
+    let (whole, fraction) = match value.split_once('.') {
+        Some((whole, fraction)) if !fraction.contains('.') => (whole, Some(fraction)),
+        Some(_) => return Err("refresh rate has more than one decimal point".to_owned()),
+        None => (value, None),
+    };
+    let whole = whole
+        .parse::<u32>()
+        .map_err(|_| "refresh rate must be a positive decimal number".to_owned())?;
+    let fraction = match fraction {
+        None => 0,
+        Some("") => {
+            return Err("refresh rate must contain digits after the decimal point".to_owned());
+        }
+        Some(value) if value.len() > 3 || !value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            return Err("refresh rate accepts at most three decimal places".to_owned());
+        }
+        Some(value) => value
+            .parse::<u32>()
+            .expect("a validated decimal fraction parses")
+            .checked_mul(10_u32.pow(u32::try_from(3 - value.len()).unwrap_or(0)))
+            .expect("a three-digit refresh fraction fits u32"),
+    };
+    let millihertz = whole
+        .checked_mul(1_000)
+        .and_then(|whole| whole.checked_add(fraction))
+        .ok_or_else(|| "refresh rate is too large".to_owned())?;
+    if millihertz == 0 {
+        return Err("refresh rate must be greater than zero".to_owned());
+    }
+    if millihertz > i32::MAX as u32 {
+        return Err("refresh rate exceeds the DRM millihertz range".to_owned());
+    }
+    Ok(millihertz)
 }
 
 #[derive(Debug, knus::Decode)]
@@ -325,8 +450,14 @@ pub enum ConfigError {
     },
     #[error("invalid scale for output {output}: {message}")]
     InvalidOutputScale { output: String, message: String },
-    #[error("output {output} has more than one scale rule")]
+    #[error("output {output} has more than one rule")]
     DuplicateOutput { output: String },
+    #[error("invalid mode {mode:?} for output {output}: {message}")]
+    InvalidOutputMode {
+        output: String,
+        mode: String,
+        message: String,
+    },
     #[error("failed to read config {path}: {source}")]
     Read {
         path: PathBuf,
@@ -342,6 +473,8 @@ pub enum ConfigError {
     UnknownSystemd(#[from] ParseSystemdModeError),
     #[error(transparent)]
     XWayland(#[from] crate::xwayland::XWaylandConfigError),
+    #[error(transparent)]
+    Appearance(#[from] AppearanceConfigError),
 }
 
 #[cfg(test)]
@@ -399,13 +532,39 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_quantizes_per_output_fractional_scale() {
-        let config =
-            Config::from_kdl(Path::new("test.kdl"), "output \"eDP-1\" {\n  scale 1.31\n}").unwrap();
+    fn parses_per_output_rules() {
+        let config = Config::from_kdl(
+            Path::new("test.kdl"),
+            "output \"eDP-1\" {\n  scale 1.31\n  mode \"2560x1600@239.760\"\n}",
+        )
+        .unwrap();
 
         assert_eq!(
-            config.output_scales["eDP-1"],
-            OutputScale::from_units(157).unwrap()
+            config.output_rules["eDP-1"],
+            OutputRule {
+                scale: Some(OutputScale::from_units(157).unwrap()),
+                mode: Some(OutputMode::new(2560, 1600, Some(239_760))),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_scene_appearance_policy() {
+        let config = Config::from_kdl(
+            Path::new("test.kdl"),
+            "appearance {\n  focus-ring {\n    enabled true\n    width 6\n    color \"#2e70ffff\"\n  }\n}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.appearance,
+            SceneAppearance {
+                focus_ring: crate::scene::FocusRingStyle {
+                    enabled: true,
+                    width: 6,
+                    color: crate::scene::LinearRgba16::new(0x2e2e, 0x7070, u16::MAX, u16::MAX,),
+                },
+            }
         );
     }
 
@@ -414,8 +573,22 @@ mod tests {
         let config =
             Config::from_kdl(Path::new("test.kdl"), "output \"eDP-1\" {\n  scale 2\n}").unwrap();
         assert_eq!(
-            config.output_scales["eDP-1"],
-            OutputScale::from_units(240).unwrap()
+            config.output_rules["eDP-1"].scale,
+            Some(OutputScale::from_units(240).unwrap())
+        );
+    }
+
+    #[test]
+    fn accepts_resolution_only_output_mode() {
+        let config = Config::from_kdl(
+            Path::new("test.kdl"),
+            "output \"eDP-1\" {\n  mode \"1920x1200\"\n}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.output_rules["eDP-1"].mode,
+            Some(OutputMode::new(1920, 1200, None))
         );
     }
 
@@ -432,6 +605,17 @@ mod tests {
             ),
             Err(ConfigError::DuplicateOutput { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_malformed_output_modes() {
+        for mode in ["2560", "0x1600", "2560x1600@0", "2560x1600@239.7601"] {
+            let config = format!("output \"DP-1\" {{\n  mode \"{mode}\"\n}}");
+            assert!(matches!(
+                Config::from_kdl(Path::new("test.kdl"), &config),
+                Err(ConfigError::InvalidOutputMode { .. })
+            ));
+        }
     }
 
     #[test]

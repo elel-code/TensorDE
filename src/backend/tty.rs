@@ -125,7 +125,7 @@ impl TtyBackend {
             primary_node,
             render_node,
             devices: HashMap::new(),
-            output_policy: OutputPolicy::new(config.output_scales.clone()),
+            output_policy: OutputPolicy::new(config.output_rules.clone()),
             renderer_formats: config.renderer_formats.clone(),
             outputs: OutputPlan::new(),
             pending_outputs: Vec::new(),
@@ -569,17 +569,26 @@ fn describe_connector(
         .modes()
         .iter()
         .copied()
+        .filter(|mode| {
+            !mode
+                .flags()
+                .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
+        })
         .map(Mode::from)
         .collect::<Vec<_>>();
     let preferred_mode = connector
         .modes()
         .iter()
-        .position(|mode| {
+        .copied()
+        .find(|mode| {
             mode.mode_type()
                 .contains(smithay::reexports::drm::control::ModeTypeFlags::PREFERRED)
+                && !mode
+                    .flags()
+                    .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
         })
-        .or_else(|| (!modes.is_empty()).then_some(0))
-        .map(|index| modes[index]);
+        .map(Mode::from)
+        .or_else(|| modes.first().copied());
     let physical_size = connector.size().unwrap_or((0, 0));
     ConnectorSnapshot {
         id: super::BackendOutputId {

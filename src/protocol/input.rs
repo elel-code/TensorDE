@@ -383,6 +383,7 @@ impl RuntimeState {
         if let Err(error) = self.world.focus_view(view_id) {
             warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
         }
+        self.publish_window_activation(&window);
         self.raise_view_family_in_space(view_id, &window);
         #[cfg(feature = "xwayland")]
         self.raise_x11_popups_for_root(&surface);
@@ -395,6 +396,28 @@ impl RuntimeState {
         }
         if let Some(keyboard) = keyboard {
             keyboard.set_focus(self, Some(focus), serial);
+        }
+    }
+
+    /// Keep the three focus contracts in lockstep: ECS owns the selected
+    /// view, Smithay's seat owns keyboard delivery, and xdg-toplevel clients
+    /// observe `Activated`. In particular, terminals such as Ghostty use the
+    /// latter to decide whether their text cursor should blink.
+    ///
+    /// Initial xdg configure publication remains in the commit handler. A
+    /// toplevel that has not made its first commit only receives this pending
+    /// state there, as required by xdg-shell's initial-configure ordering.
+    fn publish_window_activation(&mut self, focused_window: &smithay::desktop::Window) {
+        let windows = self.space.elements().cloned().collect::<Vec<_>>();
+        for window in windows {
+            if !window.set_activated(window == *focused_window) {
+                continue;
+            }
+            if let Some(toplevel) = window.toplevel()
+                && toplevel.is_initial_configure_sent()
+            {
+                toplevel.send_pending_configure();
+            }
         }
     }
 
@@ -590,8 +613,11 @@ mod tests {
     #[test]
     fn relative_pointer_crosses_neighboring_outputs_but_not_a_gap() {
         let display = Display::<RuntimeState>::new().unwrap();
-        let mut state =
-            RuntimeState::new(display.handle(), LayoutEngine::new(LayoutKind::Scrolling1D));
+        let mut state = RuntimeState::with_appearance(
+            display.handle(),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            crate::scene::SceneAppearance::default(),
+        );
         map_output(&mut state, "left", (0, 0), (100, 100));
         map_output(&mut state, "right", (200, 0), (100, 100));
 

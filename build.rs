@@ -5,6 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders/client.frag");
     println!("cargo:rerun-if-changed=shaders/cursor.vert");
     println!("cargo:rerun-if-changed=shaders/cursor.frag");
+    println!("cargo:rerun-if-changed=shaders/solid.vert");
+    println!("cargo:rerun-if-changed=shaders/solid.frag");
 
     if env::var_os("CARGO_FEATURE_TTY").is_none() {
         return;
@@ -16,6 +18,8 @@ fn main() {
         ("shaders/client.frag", "frag", "tensor_client.frag.spv"),
         ("shaders/cursor.vert", "vert", "tensor_cursor.vert.spv"),
         ("shaders/cursor.frag", "frag", "tensor_cursor.frag.spv"),
+        ("shaders/solid.vert", "vert", "tensor_solid.vert.spv"),
+        ("shaders/solid.frag", "frag", "tensor_solid.frag.spv"),
     ] {
         let destination = out_dir.join(output);
         let result = Command::new("glslangValidator")

@@ -2,8 +2,12 @@ use std::collections::BTreeMap;
 
 use smithay::output::{Mode, Subpixel};
 use tensor_util::{OutputScale, Size};
+use tracing::warn;
 
-use crate::render::OutputFormat;
+use crate::{
+    config::{OutputMode, OutputRule},
+    render::OutputFormat,
+};
 
 mod scale;
 use scale::guess_monitor_scale;
@@ -35,7 +39,10 @@ pub(crate) struct OutputDescriptor {
     pub(crate) physical_size: (i32, i32),
     pub(crate) subpixel: Subpixel,
     pub(crate) modes: Vec<Mode>,
-    pub(crate) preferred_mode: Mode,
+    /// The selected mode, rather than the connector's raw DRM `PREFERRED`
+    /// flag. The policy may choose a higher refresh at the same native
+    /// resolution or honor a KDL output rule.
+    pub(crate) mode: Mode,
     pub(crate) crtc: u32,
     pub(crate) native_format: OutputFormat,
     pub(crate) scale: OutputScale,
@@ -58,12 +65,12 @@ pub(crate) type OutputPlan = BTreeMap<BackendOutputId, OutputDescriptor>;
 
 #[derive(Debug, Default)]
 pub(crate) struct OutputPolicy {
-    configured_scales: BTreeMap<String, OutputScale>,
+    configured_rules: BTreeMap<String, OutputRule>,
 }
 
 impl OutputPolicy {
-    pub(crate) fn new(configured_scales: BTreeMap<String, OutputScale>) -> Self {
-        Self { configured_scales }
+    pub(crate) fn new(configured_rules: BTreeMap<String, OutputRule>) -> Self {
+        Self { configured_rules }
     }
 
     pub(crate) fn plan<'a>(
@@ -81,15 +88,15 @@ impl OutputPolicy {
         if connector.state != ConnectorState::Connected {
             return None;
         }
-        let preferred_mode = connector.preferred_mode?;
+        let mode = self.select_mode(connector)?;
         let resolution = Size::new(
-            u32::try_from(preferred_mode.size.w).ok()?,
-            u32::try_from(preferred_mode.size.h).ok()?,
+            u32::try_from(mode.size.w).ok()?,
+            u32::try_from(mode.size.h).ok()?,
         );
         let scale = self
-            .configured_scales
+            .configured_rules
             .get(&connector.name)
-            .copied()
+            .and_then(|rule| rule.scale)
             .unwrap_or_else(|| guess_monitor_scale(connector.physical_size, resolution));
         Some(OutputDescriptor {
             id: connector.id,
@@ -97,12 +104,66 @@ impl OutputPolicy {
             physical_size: connector.physical_size,
             subpixel: connector.subpixel,
             modes: connector.modes.clone(),
-            preferred_mode,
+            mode,
             crtc: connector.mapped_crtc?,
             native_format: connector.native_format?,
             scale,
         })
     }
+
+    /// Mode policy intentionally uses a connector's preferred resolution as
+    /// the automatic target, but never lets a stale 60 Hz `PREFERRED` bit
+    /// hide a higher native refresh. Many high-refresh monitors advertise
+    /// exactly that combination in their EDID. A KDL rule can select another
+    /// supported resolution and, when its refresh is omitted, gets the same
+    /// highest-refresh behavior.
+    fn select_mode(&self, connector: &ConnectorSnapshot) -> Option<Mode> {
+        let native_preferred = connector.preferred_mode?;
+        if let Some(requested) = self
+            .configured_rules
+            .get(&connector.name)
+            .and_then(|rule| rule.mode)
+        {
+            if let Some(mode) = select_requested_mode(&connector.modes, requested) {
+                return Some(mode);
+            }
+            warn!(
+                output = connector.name.as_str(),
+                width = requested.width,
+                height = requested.height,
+                refresh_millihertz = ?requested.refresh_millihertz,
+                "configured output mode is unavailable; falling back to the native mode policy"
+            );
+        }
+        highest_refresh_at_size(&connector.modes, native_preferred.size).or(Some(native_preferred))
+    }
+}
+
+fn select_requested_mode(modes: &[Mode], requested: OutputMode) -> Option<Mode> {
+    let width = i32::try_from(requested.width).ok()?;
+    let height = i32::try_from(requested.height).ok()?;
+    let requested_size = (width, height).into();
+    let mut matching_size = modes
+        .iter()
+        .copied()
+        .filter(|mode| mode.size == requested_size);
+    match requested.refresh_millihertz {
+        Some(refresh) => i32::try_from(refresh)
+            .ok()
+            .and_then(|refresh| matching_size.find(|mode| mode.refresh == refresh)),
+        None => matching_size.max_by_key(|mode| mode.refresh),
+    }
+}
+
+fn highest_refresh_at_size(
+    modes: &[Mode],
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+) -> Option<Mode> {
+    modes
+        .iter()
+        .copied()
+        .filter(|mode| mode.size == size)
+        .max_by_key(|mode| mode.refresh)
 }
 
 pub(crate) fn diff_output_plans(
@@ -164,6 +225,13 @@ mod tests {
             preferred_mode: mode,
             mapped_crtc,
             native_format: Some(native_format(9)),
+        }
+    }
+
+    fn mode(width: i32, height: i32, refresh: i32) -> Mode {
+        Mode {
+            size: (width, height).into(),
+            refresh,
         }
     }
 
@@ -246,13 +314,107 @@ mod tests {
     fn configured_scale_overrides_the_monitor_heuristic() {
         let connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
         let policy = OutputPolicy::new(
-            [(connector.name.clone(), OutputScale::from_f64(1.25).unwrap())]
-                .into_iter()
-                .collect(),
+            [(
+                connector.name.clone(),
+                OutputRule {
+                    scale: Some(OutputScale::from_f64(1.25).unwrap()),
+                    mode: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         assert_eq!(
             policy.plan([&connector])[&connector.id].scale,
             OutputScale::from_f64(1.25).unwrap()
+        );
+    }
+
+    #[test]
+    fn automatic_mode_keeps_native_resolution_and_uses_highest_refresh() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
+        connector.modes = vec![
+            mode(2560, 1600, 60_000),
+            mode(2560, 1600, 120_000),
+            mode(2560, 1600, 240_000),
+            mode(1920, 1200, 360_000),
+        ];
+        connector.preferred_mode = Some(mode(2560, 1600, 60_000));
+
+        assert_eq!(
+            OutputPolicy::default().plan([&connector])[&connector.id].mode,
+            mode(2560, 1600, 240_000)
+        );
+    }
+
+    #[test]
+    fn configured_resolution_uses_its_highest_supported_refresh() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
+        connector.modes = vec![
+            mode(2560, 1600, 60_000),
+            mode(1920, 1200, 120_000),
+            mode(1920, 1200, 144_000),
+        ];
+        let policy = OutputPolicy::new(
+            [(
+                connector.name.clone(),
+                OutputRule {
+                    scale: None,
+                    mode: Some(OutputMode::new(1920, 1200, None)),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        assert_eq!(
+            policy.plan([&connector])[&connector.id].mode,
+            mode(1920, 1200, 144_000)
+        );
+    }
+
+    #[test]
+    fn configured_exact_refresh_wins_over_higher_refresh_modes() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
+        connector.modes = vec![mode(2560, 1600, 144_000), mode(2560, 1600, 240_000)];
+        let policy = OutputPolicy::new(
+            [(
+                connector.name.clone(),
+                OutputRule {
+                    scale: None,
+                    mode: Some(OutputMode::new(2560, 1600, Some(144_000))),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        assert_eq!(
+            policy.plan([&connector])[&connector.id].mode,
+            mode(2560, 1600, 144_000)
+        );
+    }
+
+    #[test]
+    fn unavailable_configured_mode_falls_back_to_native_highest_refresh() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
+        connector.modes = vec![mode(2560, 1600, 60_000), mode(2560, 1600, 180_000)];
+        connector.preferred_mode = Some(mode(2560, 1600, 60_000));
+        let policy = OutputPolicy::new(
+            [(
+                connector.name.clone(),
+                OutputRule {
+                    scale: None,
+                    mode: Some(OutputMode::new(3840, 2160, Some(120_000))),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        assert_eq!(
+            policy.plan([&connector])[&connector.id].mode,
+            mode(2560, 1600, 180_000)
         );
     }
 }

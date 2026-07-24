@@ -352,6 +352,9 @@ impl RuntimeState {
             device_id = descriptor.id.device_id,
             connector_id = descriptor.id.connector_id,
             crtc = descriptor.crtc,
+            mode_width = descriptor.mode.size.w,
+            mode_height = descriptor.mode.size.h,
+            refresh_millihertz = descriptor.mode.refresh,
             scale = descriptor.scale.as_f64(),
             "Smithay output connected"
         );
@@ -368,9 +371,9 @@ impl RuntimeState {
         for mode in &descriptor.modes {
             output.add_mode(*mode);
         }
-        output.set_preferred(descriptor.preferred_mode);
+        output.set_preferred(descriptor.mode);
         output.change_current_state(
-            Some(descriptor.preferred_mode),
+            Some(descriptor.mode),
             None,
             Some(smithay::output::Scale::Fractional(
                 descriptor.scale.as_f64(),
@@ -398,6 +401,9 @@ impl RuntimeState {
             device_id = descriptor.id.device_id,
             connector_id = descriptor.id.connector_id,
             crtc = descriptor.crtc,
+            mode_width = descriptor.mode.size.w,
+            mode_height = descriptor.mode.size.h,
+            refresh_millihertz = descriptor.mode.refresh,
             scale = descriptor.scale.as_f64(),
             "Smithay output modes changed"
         );
@@ -430,9 +436,9 @@ impl RuntimeState {
         for mode in &descriptor.modes {
             managed.output.add_mode(*mode);
         }
-        managed.output.set_preferred(descriptor.preferred_mode);
+        managed.output.set_preferred(descriptor.mode);
         managed.output.change_current_state(
-            Some(descriptor.preferred_mode),
+            Some(descriptor.mode),
             None,
             Some(smithay::output::Scale::Fractional(
                 descriptor.scale.as_f64(),
@@ -532,8 +538,8 @@ fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
         viewport: Rect::new(
             0,
             0,
-            u32::try_from(descriptor.preferred_mode.size.w).unwrap_or(0),
-            u32::try_from(descriptor.preferred_mode.size.h).unwrap_or(0),
+            u32::try_from(descriptor.mode.size.w).unwrap_or(0),
+            u32::try_from(descriptor.mode.size.h).unwrap_or(0),
         ),
         format: descriptor.native_format,
         scale: descriptor.scale,

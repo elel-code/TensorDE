@@ -15,6 +15,7 @@ use super::super::{import::ClientImageInfo, target::NativeOutputImageInfo};
 
 pub(super) const DRAW_PUSH_DATA_SIZE: u64 = mem::size_of::<DrawPushData>() as u64;
 pub(super) const CURSOR_PUSH_DATA_SIZE: u64 = mem::size_of::<CursorPushData>() as u64;
+pub(super) const SOLID_PUSH_DATA_SIZE: u64 = mem::size_of::<SolidPushData>() as u64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +35,13 @@ struct CursorPushData {
     destination: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct SolidPushData {
+    destination: [f32; 4],
+    color: [f32; 4],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedDraw {
     push: DrawPushData,
@@ -43,6 +51,12 @@ pub(super) struct PreparedDraw {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedCursorDraw {
     push: CursorPushData,
+    scissor: vk::Rect2D,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PreparedSolidDraw {
+    push: SolidPushData,
     scissor: vk::Rect2D,
 }
 
@@ -151,6 +165,42 @@ pub(super) fn prepare_cursor_draw(
     }))
 }
 
+pub(super) fn prepare_solid_draws(
+    frame: &FrameSubmission,
+) -> Result<Vec<PreparedSolidDraw>, FrameRecordError> {
+    let viewport = validate_viewport(frame.target.viewport)?;
+    Ok(frame
+        .draw_plan
+        .solids()
+        .iter()
+        .map(|solid| PreparedSolidDraw {
+            push: SolidPushData {
+                destination: destination_to_ndc(solid.destination, viewport),
+                color: linear_rgba(solid.color),
+            },
+            scissor: vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: solid.clip.x,
+                    y: solid.clip.y,
+                },
+                extent: vk::Extent2D {
+                    width: solid.clip.width,
+                    height: solid.clip.height,
+                },
+            },
+        })
+        .collect())
+}
+
+fn linear_rgba(color: crate::scene::LinearRgba16) -> [f32; 4] {
+    [
+        f32::from(color.red) / f32::from(u16::MAX),
+        f32::from(color.green) / f32::from(u16::MAX),
+        f32::from(color.blue) / f32::from(u16::MAX),
+        f32::from(color.alpha) / f32::from(u16::MAX),
+    ]
+}
+
 fn validate_viewport(viewport: Rect) -> Result<Rect, FrameRecordError> {
     if viewport.width == 0 || viewport.height == 0 {
         return Err(FrameRecordError::InvalidViewport);
@@ -210,9 +260,11 @@ pub(super) struct SceneRecord<'a> {
     pub(super) output: NativeOutputImageInfo,
     pub(super) clients: &'a [ClientImageInfo],
     pub(super) client_pipeline: Option<vk::Pipeline>,
+    pub(super) solid_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
     pub(super) cursor_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
     pub(super) graphics_queue_family: u32,
     pub(super) draws: &'a [PreparedDraw],
+    pub(super) solids: &'a [PreparedSolidDraw],
     pub(super) cursor: Option<PreparedCursorDraw>,
 }
 
@@ -226,9 +278,11 @@ pub(super) unsafe fn record_scene(
         output,
         clients,
         client_pipeline,
+        solid_pipeline,
         cursor_pipeline,
         graphics_queue_family,
         draws,
+        solids,
         cursor,
     } = scene;
     let subresource = color_subresource();
@@ -293,6 +347,30 @@ pub(super) unsafe fn record_scene(
             unsafe {
                 device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
                 device.cmd_push_data_ext(command_buffer, &push);
+                device.cmd_draw(command_buffer, 6, 1, 0, 0);
+            }
+        }
+    }
+    if let Some((pipeline, layout)) = solid_pipeline {
+        unsafe {
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        }
+        for solid in solids {
+            let push_bytes = unsafe {
+                slice::from_raw_parts(
+                    (&solid.push as *const SolidPushData).cast::<u8>(),
+                    mem::size_of::<SolidPushData>(),
+                )
+            };
+            unsafe {
+                device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&solid.scissor));
+                device.cmd_push_constants(
+                    command_buffer,
+                    layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_bytes,
+                );
                 device.cmd_draw(command_buffer, 6, 1, 0, 0);
             }
         }
@@ -573,5 +651,13 @@ mod tests {
         assert_eq!(barrier.old_layout, vk::ImageLayout::GENERAL);
         assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
         assert_eq!(barrier.dst_queue_family_index, 7);
+    }
+
+    #[test]
+    fn focus_outline_colors_remain_linear_through_push_conversion() {
+        assert_eq!(
+            linear_rgba(crate::scene::LinearRgba16::new(0, u16::MAX, 32_768, 16_384)),
+            [0.0, 1.0, 32_768.0 / 65_535.0, 16_384.0 / 65_535.0]
+        );
     }
 }

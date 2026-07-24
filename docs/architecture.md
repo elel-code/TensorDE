@@ -53,6 +53,15 @@ partial rendering remain later gates. Explicit clients use Smithay's
 `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
 sync-file fds and stable `SurfaceId` values reach Vulkanalia.
 
+Compositor-owned appearance crosses the configuration boundary as a small value-only `SceneAppearance`
+object. ECS extraction resolves an active view's configured `FocusRingStyle` into a `FocusOutline`;
+the frame planner expands that outline outside client geometry, rounds it to physical output pixels,
+clips each edge, and renders it with the descriptor-free solid pipeline after client content and
+before the software cursor. This follows the useful parts of Niri's focus-ring policy, Hyprland's
+separate active-window decoration state, and Nourish's independently clipped edge geometry without
+copying their renderer ownership models. It is not a descriptor-set fallback: sampled client images
+continue to use `VK_EXT_descriptor_heap` exclusively.
+
 Output scale is a shared value primitive, represented exactly in the `N/120` units of
 `wp_fractional_scale_v1`. DRM mode dimensions and Vulkan native targets remain physical pixels;
 Smithay output geometry, ECS layout, XDG configure sizes, hit testing, and relative-pointer
@@ -174,11 +183,20 @@ device-local snapshot, including connected connectors that do not yet have a mod
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
 `OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
-The plan also carries the preferred native fourcc, explicit modifier, plane count, and resolved
-output scale. Explicit KDL connector rules win; otherwise the Niri/Mutter DPI heuristic chooses a
-representable quarter step. A format or scale change is therefore an output change rather than
-hidden backend state. The adapter may use a custom `CrtcMapper` or drop down to `ConnectorScanner`
-without changing the protocol or renderer boundaries. DRM handles do not enter ECS or the renderer.
+The plan also carries the selected progressive DRM mode, native fourcc, explicit modifier, plane
+count, and resolved output scale. Explicit KDL connector rules win; otherwise the policy preserves
+the connector's native/preferred resolution and picks its highest available refresh, avoiding stale
+60 Hz EDID `PREFERRED` flags on high-refresh panels. A format, mode, or scale change is therefore an
+output change rather than hidden backend state. The adapter may use a custom `CrtcMapper` or drop
+down to `ConnectorScanner` without changing the protocol or renderer boundaries. DRM handles do not
+enter ECS or the renderer.
+
+Focused state is one contract across ECS, protocol, and rendering: a `Focused` ECS component
+extracts a value-only focus outline into the scene, the selected Smithay window receives
+`xdg_toplevel::State::Activated` (or the corresponding XWayland activation), and the seat owns the
+keyboard focus. The Vulkan path draws the outline with a descriptor-free solid primitive after
+sampled client content and before the cursor; this is compositor-owned geometry, not a descriptor-set
+fallback for client or output resources.
 
 For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exported
 dma-bufs. The tty backend imports those dma-bufs into GBM, creates Smithay framebuffers, and submits

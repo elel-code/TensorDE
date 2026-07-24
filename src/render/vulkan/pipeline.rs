@@ -8,6 +8,8 @@ use vulkanalia::{Device, vk};
 
 mod cursor;
 pub(super) use cursor::{CursorPipeline, CursorPipelineError};
+mod solid;
+pub(super) use solid::{SolidPipeline, SolidPipelineError};
 
 const VERTEX_SHADER: &[u32] =
     vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_client.vert.spv"));

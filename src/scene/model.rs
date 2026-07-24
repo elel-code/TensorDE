@@ -41,6 +41,33 @@ pub struct LinearRgba16 {
     pub alpha: u16,
 }
 
+/// A compositor-owned ring around the active view. It is scene data rather
+/// than a client decoration, so focus remains visible for both native Wayland
+/// and rootless XWayland surfaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FocusOutline {
+    pub width: u32,
+    pub color: LinearRgba16,
+}
+
+impl FocusOutline {
+    /// Tensor's default active-view treatment: a high-contrast blue ring
+    /// outside the client geometry, preserving every client pixel. The
+    /// configurable global policy lives in [`super::FocusRingStyle`].
+    pub const DEFAULT: Self = Self {
+        width: 4,
+        color: LinearRgba16::new(0x7f7f, 0xc8c8, u16::MAX, u16::MAX),
+    };
+
+    pub const fn visible(self) -> bool {
+        self.width > 0 && self.color.alpha > 0
+    }
+
+    pub fn bounds(self, geometry: Rect) -> Option<Rect> {
+        self.visible().then(|| geometry.inflated(self.width))
+    }
+}
+
 impl LinearRgba16 {
     pub const fn new(red: u16, green: u16, blue: u16, alpha: u16) -> Self {
         Self {
@@ -111,6 +138,7 @@ pub struct SceneNode {
     pub stacking_order: u64,
     pub placement: LayoutPlacement,
     pub effects: EffectStyle,
+    pub focus_outline: Option<FocusOutline>,
     content: ContentSpan,
 }
 
@@ -126,12 +154,18 @@ impl SceneNode {
             stacking_order,
             placement,
             effects: effects.resolved_for(placement.geometry),
+            focus_outline: None,
             content: ContentSpan::default(),
         }
     }
 
     pub(crate) fn with_content(mut self, content: ContentSpan) -> Self {
         self.content = content;
+        self
+    }
+
+    pub(crate) fn with_focus_outline(mut self, focus_outline: Option<FocusOutline>) -> Self {
+        self.focus_outline = focus_outline.filter(|outline| outline.visible());
         self
     }
 
@@ -142,6 +176,12 @@ impl SceneNode {
         let mut bounds = self.placement.geometry;
         if let Some(shadow) = self.effects.shadow.and_then(|shadow| shadow.bounds(bounds)) {
             bounds = bounds.union(shadow);
+        }
+        if let Some(outline) = self
+            .focus_outline
+            .and_then(|outline| outline.bounds(self.placement.geometry))
+        {
+            bounds = bounds.union(outline);
         }
         bounds.intersection(viewport)
     }

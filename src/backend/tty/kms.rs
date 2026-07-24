@@ -173,10 +173,7 @@ impl KmsOutput {
             id: descriptor.id,
             name: descriptor.name.clone(),
             surface,
-            size: (
-                descriptor.preferred_mode.size.w,
-                descriptor.preferred_mode.size.h,
-            ),
+            size: (descriptor.mode.size.w, descriptor.mode.size.h),
             slots,
             scanout: ScanoutState::default(),
         };

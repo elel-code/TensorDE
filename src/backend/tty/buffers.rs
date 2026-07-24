@@ -21,10 +21,7 @@ impl TtyBackend {
             .ok_or(BackendError::UnknownOutput(output_id))?
             .clone();
         let output_name = descriptor.name.clone();
-        let expected_size = (
-            descriptor.preferred_mode.size.w,
-            descriptor.preferred_mode.size.h,
-        );
+        let expected_size = (descriptor.mode.size.w, descriptor.mode.size.h);
         let expected_format = descriptor.native_format;
         let device_id = output_id.device_id as libc::dev_t;
         let device = self
@@ -45,14 +42,15 @@ impl TtyBackend {
                 .values()
                 .find(|connector| u32::from(connector.handle()) == output_id.connector_id)
                 .and_then(|connector| {
-                    connector.modes().iter().copied().find(|mode| {
-                        smithay::output::Mode::from(*mode) == descriptor.preferred_mode
-                    })
+                    connector
+                        .modes()
+                        .iter()
+                        .copied()
+                        .find(|mode| smithay::output::Mode::from(*mode) == descriptor.mode)
                 })
                 .ok_or_else(|| BackendError::OutputBuffers {
                     output: descriptor.name.clone(),
-                    message: "preferred DRM mode disappeared before KMS surface creation"
-                        .to_owned(),
+                    message: "selected DRM mode disappeared before KMS surface creation".to_owned(),
                 })?
         };
         if buffers.len() != NativeOutputBuffer::COUNT {

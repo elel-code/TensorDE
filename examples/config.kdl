@@ -13,5 +13,18 @@ gpu "discrete"
 systemd "auto"
 // XWayland serves individual X11 applications; Tensor never provides an X11 session.
 xwayland true
+// Compositor-owned focus feedback, drawn outside client geometry.
+appearance {
+    focus-ring {
+        enabled true
+        width 4
+        color "#7fc8ff"
+    }
+}
+// By default Tensor chooses the highest progressive refresh at the panel's native resolution.
+// output "HDMI-A-1" {
+//     mode "2560x1600@239.760"
+//     scale 1.25
+// }
 // Arguments are passed directly; shell syntax and expansion are not interpreted.
 // spawn-at-startup "waybar"

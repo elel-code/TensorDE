@@ -13,14 +13,17 @@ use crate::render::{DescriptorHeapLayout, FrameSubmission};
 use super::{
     heap::{DescriptorHeapError, DescriptorHeapResource, SamplerHeapLayout},
     import::ClientImageInfo,
-    pipeline::{ClientImagePipeline, ClientPipelineError, CursorPipeline, CursorPipelineError},
+    pipeline::{
+        ClientImagePipeline, ClientPipelineError, CursorPipeline, CursorPipelineError,
+        SolidPipeline, SolidPipelineError,
+    },
     target::NativeOutputImageInfo,
 };
 
 pub(super) use super::heap::sampler_heap_layout;
 
 mod record;
-use record::{SceneRecord, prepare_cursor_draw, prepare_draws, record_scene};
+use record::{SceneRecord, prepare_cursor_draw, prepare_draws, prepare_solid_draws, record_scene};
 
 const COMMAND_BUFFER_COUNT: usize = 3;
 
@@ -42,6 +45,7 @@ pub(super) struct VulkanFrameExecutor {
     graphics_queue_family: u32,
     pipelines: HashMap<vk::Format, ClientImagePipeline>,
     cursor_pipelines: HashMap<vk::Format, CursorPipeline>,
+    solid_pipelines: HashMap<vk::Format, SolidPipeline>,
 }
 
 impl VulkanFrameExecutor {
@@ -56,6 +60,7 @@ impl VulkanFrameExecutor {
     ) -> Result<Self, VulkanFrameError> {
         debug_assert_eq!(record::DRAW_PUSH_DATA_SIZE, 64);
         debug_assert_eq!(record::CURSOR_PUSH_DATA_SIZE, 16);
+        debug_assert_eq!(record::SOLID_PUSH_DATA_SIZE, 32);
         let pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(graphics_queue_family);
@@ -150,12 +155,17 @@ impl VulkanFrameExecutor {
             graphics_queue_family,
             pipelines: HashMap::new(),
             cursor_pipelines: HashMap::new(),
+            solid_pipelines: HashMap::new(),
         };
         if let Err(error) = executor.pipeline_for(device, bootstrap_pipeline_format) {
             unsafe { executor.destroy(device) };
             return Err(error);
         }
         if let Err(error) = executor.cursor_pipeline_for(device, bootstrap_pipeline_format) {
+            unsafe { executor.destroy(device) };
+            return Err(error);
+        }
+        if let Err(error) = executor.solid_pipeline_for(device, bootstrap_pipeline_format) {
             unsafe { executor.destroy(device) };
             return Err(error);
         }
@@ -217,6 +227,8 @@ impl VulkanFrameExecutor {
         .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let cursor = prepare_cursor_draw(frame)
             .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
+        let solids = prepare_solid_draws(frame)
+            .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let client_pipeline = if draws.is_empty() {
             None
         } else {
@@ -227,6 +239,12 @@ impl VulkanFrameExecutor {
             Some((pipeline.handle(), pipeline.layout()))
         } else {
             None
+        };
+        let solid_pipeline = if solids.is_empty() {
+            None
+        } else {
+            let pipeline = self.solid_pipeline_for(device, image.view_info.format)?;
+            Some((pipeline.handle(), pipeline.layout()))
         };
         let begin = vk::CommandBufferBeginInfo::builder();
         unsafe {
@@ -248,9 +266,11 @@ impl VulkanFrameExecutor {
                     output: *image,
                     clients: client_images,
                     client_pipeline,
+                    solid_pipeline,
                     cursor_pipeline,
                     graphics_queue_family: self.graphics_queue_family,
                     draws: &draws,
+                    solids: &solids,
                     cursor,
                 },
             );
@@ -306,6 +326,9 @@ impl VulkanFrameExecutor {
             for (_, pipeline) in std::mem::take(&mut self.cursor_pipelines) {
                 pipeline.destroy(device);
             }
+            for (_, pipeline) in std::mem::take(&mut self.solid_pipelines) {
+                pipeline.destroy(device);
+            }
             device.destroy_semaphore(self.timeline, None);
             for semaphore in self.render_complete {
                 device.destroy_semaphore(semaphore, None);
@@ -352,6 +375,21 @@ impl VulkanFrameExecutor {
             }
         }
     }
+
+    fn solid_pipeline_for(
+        &mut self,
+        device: &Device,
+        format: vk::Format,
+    ) -> Result<&SolidPipeline, VulkanFrameError> {
+        match self.solid_pipelines.entry(format) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let pipeline =
+                    SolidPipeline::new(device, format).map_err(VulkanFrameError::SolidPipeline)?;
+                Ok(entry.insert(pipeline))
+            }
+        }
+    }
 }
 
 fn acquire_wait_info(semaphore: vk::Semaphore) -> vk::SemaphoreSubmitInfo {
@@ -375,6 +413,8 @@ pub(super) enum VulkanFrameError {
     Pipeline(ClientPipelineError),
     #[error("cursor pipeline creation failed: {0}")]
     CursorPipeline(CursorPipelineError),
+    #[error("solid pipeline creation failed: {0}")]
+    SolidPipeline(SolidPipelineError),
     #[error("frame expected {expected} client image descriptors, got {found}")]
     DescriptorImageCountMismatch { expected: u32, found: usize },
     #[error("failed to export the frame completion SYNC_FD: {0:?}")]

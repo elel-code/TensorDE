@@ -142,7 +142,11 @@ mod tests {
     #[test]
     fn long_lived_globals_are_owned_as_one_capability_set() {
         let display = Display::<RuntimeState>::new().unwrap();
-        let state = RuntimeState::new(display.handle(), LayoutEngine::new(LayoutKind::Scrolling1D));
+        let state = RuntimeState::with_appearance(
+            display.handle(),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            crate::scene::SceneAppearance::default(),
+        );
 
         assert_eq!(
             state.protocol_globals.capabilities(),

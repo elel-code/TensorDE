@@ -9,11 +9,12 @@ use super::components::{
 };
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
-use crate::scene::{EffectStyle, SceneNode, SceneSnapshot, SurfaceContent};
+use crate::scene::{EffectStyle, SceneAppearance, SceneNode, SceneSnapshot, SurfaceContent};
 use tensor_util::Size;
 
 pub struct CompositorWorld {
     world: World,
+    appearance: SceneAppearance,
     view_entities: HashMap<ViewId, bevy_ecs::entity::Entity>,
     layout_states: HashMap<WorkspaceId, LayoutState>,
     layout_snapshots: HashMap<WorkspaceId, LayoutSnapshot>,
@@ -31,13 +32,35 @@ struct WorkspaceView {
 
 impl CompositorWorld {
     pub fn new() -> Self {
+        Self::with_appearance(SceneAppearance::default())
+    }
+
+    /// Create an ECS world with compositor appearance kept outside per-view
+    /// components. Style changes therefore never leak renderer or
+    /// configuration ownership into protocol entities.
+    pub fn with_appearance(appearance: SceneAppearance) -> Self {
         Self {
             world: World::new(),
+            appearance,
             view_entities: HashMap::new(),
             layout_states: HashMap::new(),
             layout_snapshots: HashMap::new(),
             next_stacking_order: 1,
         }
+    }
+
+    /// Replace the extracted scene style. Configuration reload can use this
+    /// without changing stable view identities or their protocol state.
+    pub fn set_appearance(&mut self, appearance: SceneAppearance) -> bool {
+        if self.appearance == appearance {
+            return false;
+        }
+        self.appearance = appearance;
+        true
+    }
+
+    pub const fn appearance(&self) -> SceneAppearance {
+        self.appearance
     }
 
     pub fn spawn_view(
@@ -493,6 +516,12 @@ impl CompositorWorld {
                 .get::<ViewEffects>(entity)
                 .expect("every view has effect state")
                 .0;
+            let focus_outline = self
+                .world
+                .get::<Focused>(entity)
+                .is_some()
+                .then(|| self.appearance.focus_ring.outline())
+                .flatten();
             let content = self
                 .world
                 .get::<ViewContent>(entity)
@@ -502,7 +531,9 @@ impl CompositorWorld {
             let span = crate::scene::ContentSpan::new(start, content.surfaces.len())
                 .expect("compositor scene content table exhausted");
             nodes.push(
-                SceneNode::new(view_id, stacking_order, placement, effects).with_content(span),
+                SceneNode::new(view_id, stacking_order, placement, effects)
+                    .with_focus_outline(focus_outline)
+                    .with_content(span),
             );
         }
         Some(SceneSnapshot::with_content(

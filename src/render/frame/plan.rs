@@ -5,7 +5,10 @@ use tensor_util::Rect;
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
     render::CursorOverlay,
-    scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceLayer, SurfaceTransform},
+    scene::{
+        ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceLayer,
+        SurfaceTransform,
+    },
 };
 
 use super::{FrameError, NativeOutputTarget};
@@ -18,6 +21,7 @@ use super::{FrameError, NativeOutputTarget};
 pub(crate) struct FrameDrawPlan {
     images: Vec<SurfaceBufferId>,
     draws: Vec<SurfaceDraw>,
+    solids: Vec<SolidDraw>,
     cursor: Option<CursorDraw>,
 }
 
@@ -42,6 +46,16 @@ pub(crate) struct CursorDraw {
     pub(crate) clip: Rect,
 }
 
+/// A compositor-owned untextured quad. These draw after client content and
+/// before the cursor, keeping focus feedback visible without allocating a
+/// sampled-image descriptor or adding a descriptor-set compatibility path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SolidDraw {
+    pub(crate) destination: Rect,
+    pub(crate) clip: Rect,
+    pub(crate) color: LinearRgba16,
+}
+
 impl FrameDrawPlan {
     #[cfg(test)]
     pub(crate) fn build(
@@ -59,6 +73,7 @@ impl FrameDrawPlan {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
         let mut draws = Vec::new();
+        let mut solids = Vec::new();
         let output_viewport = Rect::new(0, 0, scene.viewport.width, scene.viewport.height);
 
         for node in scene.draw_order() {
@@ -119,11 +134,21 @@ impl FrameDrawPlan {
                     transform: content.transform,
                 });
             }
+            if let Some(outline) = node.focus_outline {
+                append_focus_outline(
+                    &mut solids,
+                    outline,
+                    node.placement.geometry,
+                    scene.viewport,
+                    target,
+                );
+            }
         }
 
         Ok(Self {
             images,
             draws,
+            solids,
             cursor: cursor.map(|overlay| CursorDraw {
                 destination: overlay.destination,
                 clip: overlay.clip,
@@ -139,8 +164,47 @@ impl FrameDrawPlan {
         &self.draws
     }
 
+    pub(crate) fn solids(&self) -> &[SolidDraw] {
+        &self.solids
+    }
+
     pub(crate) const fn cursor(&self) -> Option<CursorDraw> {
         self.cursor
+    }
+}
+
+fn append_focus_outline(
+    solids: &mut Vec<SolidDraw>,
+    outline: FocusOutline,
+    geometry: Rect,
+    scene_viewport: Rect,
+    target: NativeOutputTarget,
+) {
+    if !outline.visible() || geometry.width == 0 || geometry.height == 0 {
+        return;
+    }
+    let logical = geometry.translated(-scene_viewport.x, -scene_viewport.y);
+    let geometry = target.scale.physical_rect_round(logical);
+    let width = target.scale.physical_length_round(outline.width).max(1);
+    let outer = geometry.inflated(width);
+    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+    let right = outer.right().saturating_sub(width_i32);
+    let bottom = outer.bottom().saturating_sub(width_i32);
+    let rectangles = [
+        Rect::new(outer.x, outer.y, outer.width, width),
+        Rect::new(outer.x, bottom, outer.width, width),
+        Rect::new(outer.x, geometry.y, width, geometry.height),
+        Rect::new(right, geometry.y, width, geometry.height),
+    ];
+    for destination in rectangles {
+        let Some(clip) = destination.intersection(target.viewport) else {
+            continue;
+        };
+        solids.push(SolidDraw {
+            destination,
+            clip,
+            color: outline.color,
+        });
     }
 }
 
@@ -327,5 +391,50 @@ mod tests {
         let draw = plan.draws()[0];
         assert_eq!(draw.destination, Rect::new(1, 3, 4, 5));
         assert_eq!(draw.clip, Rect::new(1, 2, 4, 6));
+    }
+
+    #[test]
+    fn focused_view_emits_an_output_clipped_outer_highlight() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(10, 10, 20, 10),
+            visible: Some(Rect::new(10, 10, 20, 10)),
+        };
+        let scene = SceneSnapshot::new(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, placement, EffectStyle::default())
+                    .with_focus_outline(Some(FocusOutline::DEFAULT)),
+            ],
+        );
+
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
+
+        assert_eq!(
+            plan.solids(),
+            [
+                SolidDraw {
+                    destination: Rect::new(6, 6, 28, 4),
+                    clip: Rect::new(6, 6, 28, 4),
+                    color: FocusOutline::DEFAULT.color,
+                },
+                SolidDraw {
+                    destination: Rect::new(6, 20, 28, 4),
+                    clip: Rect::new(6, 20, 28, 4),
+                    color: FocusOutline::DEFAULT.color,
+                },
+                SolidDraw {
+                    destination: Rect::new(6, 10, 4, 10),
+                    clip: Rect::new(6, 10, 4, 10),
+                    color: FocusOutline::DEFAULT.color,
+                },
+                SolidDraw {
+                    destination: Rect::new(30, 10, 4, 10),
+                    clip: Rect::new(30, 10, 4, 10),
+                    color: FocusOutline::DEFAULT.color,
+                },
+            ]
+        );
     }
 }

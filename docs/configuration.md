@@ -27,12 +27,23 @@ gpu "discrete"
 # render-device "/dev/dri/renderD128"
 systemd "auto"
 xwayland true
+appearance {
+    # A compositor-owned outer ring: it does not consume client geometry.
+    focus-ring {
+        enabled true
+        width 4
+        color "#7fc8ff"
+    }
+}
 spawn-at-startup "waybar"
 spawn-at-startup "foot" "--server"
 output "eDP-1" {
     # Explicit values are quantized to the exact N/120 representation used by
     # wp_fractional_scale_v1. If omitted, Tensor selects a DPI-based quarter step.
     scale 1.25
+    # Optional. A mode without @refresh chooses the highest supported refresh
+    # for this resolution; @refresh must match the connector mode exactly.
+    # mode "2560x1600@239.760"
 }
 ```
 
@@ -58,6 +69,24 @@ Each `output` node matches the connector name reported by DRM. Its optional `sca
 `wp_fractional_scale_v1`. An output without a rule uses the Niri/Mutter-style DPI heuristic and a
 quarter-step scale. Smithay exposes the resulting fractional value to clients, while `wl_output`
 continues to receive the required rounded-up integer scale.
+
+An optional `mode` uses `<width>x<height>` or `<width>x<height>@<refresh>`, where refresh has at
+most three decimal places and is compared in exact millihertz. With a configured resolution but no
+refresh, Tensor selects its highest supported progressive refresh; with an exact refresh, it selects
+only that connector mode. With no `mode` rule, Tensor keeps the DRM-preferred/native resolution but
+still selects its highest supported progressive refresh. This deliberately avoids the common EDID
+case where a high-refresh monitor marks only its 60 Hz timing as `PREFERRED`. An unavailable rule is
+logged and falls back to that native high-refresh policy rather than selecting an arbitrary mode.
+
+The focused view receives the standard `xdg_toplevel` `Activated` state and a compositor-rendered
+outer focus ring. The ring is scene data, not a client-side decoration, so it remains visible for
+native Wayland and rootless XWayland applications without covering client pixels. `appearance`
+currently owns the global `focus-ring`: `enabled` defaults to `true`, `width` defaults to four
+logical pixels, and `color` defaults to `#7fc8ff`. Colors accept `#RRGGBB` or `#RRGGBBAA`; a zero
+width or transparent color also produces no ring. The ring is rounded and clipped in physical
+output coordinates at frame extraction, matching the same fractional-scale rules as client content.
+The value-only appearance object is the future theming boundary rather than a renderer-specific
+decoration API.
 
 Scrolling layout follows the same core invariants as Niri without copying its renderer: every view
 has min/max size constraints and an optional width override; each workspace owns an independent

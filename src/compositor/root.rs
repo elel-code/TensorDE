@@ -38,13 +38,16 @@ impl Compositor {
             ipc_socket,
             gpu_preference,
             render_device,
-            output_scales,
+            output_rules,
+            appearance,
             systemd,
             xwayland,
             startup_commands,
         } = config;
-        let mut protocol =
-            WaylandRuntime::new(LayoutEngine::with_options(initial_layout, layout_options))?;
+        let mut protocol = WaylandRuntime::with_appearance(
+            LayoutEngine::with_options(initial_layout, layout_options),
+            appearance,
+        )?;
         let requested_drm_node = render_device
             .as_deref()
             .map(DrmNodeId::from_path)
@@ -56,7 +59,7 @@ impl Compositor {
         let backend_config = BackendConfig {
             drm_node: renderer.selected().render_node,
             renderer_formats: renderer.selected().formats.clone(),
-            output_scales,
+            output_rules,
         };
         protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;

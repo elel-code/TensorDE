@@ -11,13 +11,17 @@ use crate::{
     backend::BackendConfig,
     ipc::{IpcReply, IpcServer, Request},
     layout::LayoutEngine,
+    render::VulkanRenderer,
+    scene::SceneAppearance,
 };
 
 use super::state::{RuntimeState, WaylandClientState};
-use crate::render::VulkanRenderer;
-
 use smithay::wayland::socket::ListeningSocketSource;
 
+#[cfg(all(test, feature = "tty"))]
+mod focus_tests;
+#[cfg(test)]
+mod socket_tests;
 mod xwayland;
 
 pub struct WaylandRuntime {
@@ -33,13 +37,17 @@ pub struct WaylandRuntime {
 }
 
 impl WaylandRuntime {
-    pub fn new(layout: LayoutEngine) -> Result<Self, ProtocolError> {
+    /// Construct the runtime with value-only compositor appearance.
+    pub fn with_appearance(
+        layout: LayoutEngine,
+        appearance: SceneAppearance,
+    ) -> Result<Self, ProtocolError> {
         let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
         crate::signals::install(&event_loop.handle(), event_loop.get_signal())
             .map_err(ProtocolError::SignalSource)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
         let display_handle = display.handle();
-        let state = RuntimeState::new(display_handle, layout);
+        let state = RuntimeState::with_appearance(display_handle, layout, appearance);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
         let socket_name = socket.socket_name().to_os_string();
         Ok(Self {
@@ -417,20 +425,12 @@ mod tests {
     }
 
     #[test]
-    fn socket_name_survives_event_source_registration() {
-        let mut runtime =
-            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
-        let socket_name = runtime.socket_name().to_os_string();
-
-        runtime.prepare(false).unwrap();
-
-        assert_eq!(runtime.socket_name(), socket_name);
-    }
-
-    #[test]
     fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
-        let mut runtime =
-            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
+        let mut runtime = WaylandRuntime::with_appearance(
+            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
+        )
+        .unwrap();
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
         let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
         runtime.prepare(false).unwrap();
@@ -491,8 +491,11 @@ mod tests {
 
     #[test]
     fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
-        let mut runtime =
-            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
+        let mut runtime = WaylandRuntime::with_appearance(
+            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
+        )
+        .unwrap();
         install_test_output(&mut runtime);
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
         let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());

@@ -45,6 +45,7 @@ use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
     render::VulkanRenderer,
+    scene::SceneAppearance,
 };
 use tensor_util::Size;
 
@@ -128,7 +129,11 @@ pub(crate) struct RuntimeState {
 }
 
 impl RuntimeState {
-    pub(crate) fn new(display_handle: DisplayHandle, layout: LayoutEngine) -> Self {
+    pub(crate) fn with_appearance(
+        display_handle: DisplayHandle,
+        layout: LayoutEngine,
+        appearance: SceneAppearance,
+    ) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, []);
@@ -154,7 +159,7 @@ impl RuntimeState {
             seat,
             space: Space::default(),
             popups: PopupManager::default(),
-            world: CompositorWorld::new(),
+            world: CompositorWorld::with_appearance(appearance),
             layout,
             renderer: None,
             #[cfg(feature = "tty")]
@@ -606,7 +611,7 @@ mod tests {
             physical_size: (600, 340),
             subpixel: Subpixel::HorizontalRgb,
             modes: vec![mode],
-            preferred_mode: mode,
+            mode,
             crtc: connector_id,
             native_format: crate::render::OutputFormat {
                 format: DrmFormat {
@@ -644,9 +649,10 @@ mod tests {
     #[test]
     fn output_events_keep_smithay_space_stable_across_hotplug() {
         let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::new(
+        let mut state = RuntimeState::with_appearance(
             display.handle(),
             LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
         );
 
         state
@@ -677,9 +683,10 @@ mod tests {
     #[test]
     fn fractional_output_scale_controls_logical_reflow() {
         let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::new(
+        let mut state = RuntimeState::with_appearance(
             display.handle(),
             LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
         );
         let mut first = descriptor(1, "DP-1", 1920);
         first.scale = tensor_util::OutputScale::from_f64(1.25).unwrap();

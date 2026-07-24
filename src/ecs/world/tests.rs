@@ -60,10 +60,49 @@ fn restoring_existing_focus_keeps_the_cached_scene_renderable() {
     // wl_keyboard.enter, not a new ECS scene mutation.
     world.focus_view(view(1)).unwrap();
 
-    let scene = world.extract_scene(workspace(1));
-    assert!(
-        scene.is_some(),
-        "restoring focus must not drop the frame scene"
+    let scene = world
+        .extract_scene(workspace(1))
+        .expect("restoring focus must not drop the frame scene");
+    assert_eq!(
+        scene.nodes()[0].focus_outline,
+        Some(crate::scene::FocusOutline::DEFAULT)
+    );
+}
+
+#[test]
+fn scene_appearance_controls_the_focused_view_ring_without_touching_view_state() {
+    let appearance = crate::scene::SceneAppearance {
+        focus_ring: crate::scene::FocusRingStyle {
+            enabled: true,
+            width: 7,
+            color: crate::scene::LinearRgba16::new(0x1111, 0x2222, 0x3333, u16::MAX),
+        },
+    };
+    let mut world = CompositorWorld::with_appearance(appearance);
+    world.spawn_view(view(1), workspace(1)).unwrap();
+    world.focus_view(view(1)).unwrap();
+    world.arrange_workspace(
+        workspace(1),
+        LayoutEngine::new(LayoutKind::Scrolling1D),
+        Rect::new(0, 0, 100, 80),
+    );
+
+    let scene = world.extract_scene(workspace(1)).unwrap();
+    assert_eq!(
+        scene.nodes()[0].focus_outline,
+        appearance.focus_ring.outline()
+    );
+
+    assert!(world.set_appearance(crate::scene::SceneAppearance {
+        focus_ring: crate::scene::FocusRingStyle {
+            enabled: false,
+            ..appearance.focus_ring
+        },
+    }));
+    assert!(!world.set_appearance(world.appearance()));
+    assert_eq!(
+        world.extract_scene(workspace(1)).unwrap().nodes()[0].focus_outline,
+        None
     );
 }
 
