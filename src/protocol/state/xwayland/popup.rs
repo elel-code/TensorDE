@@ -448,14 +448,6 @@ impl RuntimeState {
         None
     }
 
-    fn managed_x11_window(&self, window_id: u32) -> Option<X11Surface> {
-        self.space
-            .elements()
-            .filter_map(Window::x11_surface)
-            .find(|surface| surface.window_id() == window_id)
-            .cloned()
-    }
-
     fn mapped_window_for_surface_id(&self, surface: &ObjectId) -> Option<Window> {
         self.space
             .elements()

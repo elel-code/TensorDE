@@ -118,6 +118,8 @@ pub(crate) struct RuntimeState {
     xwayland_windows: HashMap<u32, xwayland::XWaylandWindowLifecycle>,
     #[cfg(feature = "xwayland")]
     xwayland_popups: xwayland::XWaylandPopupRegistry,
+    #[cfg(feature = "xwayland")]
+    xwayland_transients: xwayland::XWaylandTransientRegistry,
     next_view_id: u64,
 }
 
@@ -180,6 +182,8 @@ impl RuntimeState {
             xwayland_windows: HashMap::new(),
             #[cfg(feature = "xwayland")]
             xwayland_popups: xwayland::XWaylandPopupRegistry::default(),
+            #[cfg(feature = "xwayland")]
+            xwayland_transients: xwayland::XWaylandTransientRegistry::default(),
             next_view_id: 1,
         }
     }
@@ -251,7 +255,16 @@ impl RuntimeState {
     }
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
+        let view_id = self.view_for_surface(surface)?;
         self.clear_keyboard_focus_for_surface(surface);
+        #[cfg(feature = "xwayland")]
+        if !self.detach_x11_transient_views_for_owner(view_id) {
+            warn!(
+                view_id = view_id.get(),
+                "refused to tear down a view with unresolved attachments"
+            );
+            return None;
+        }
         #[cfg(feature = "xwayland")]
         self.detach_x11_popups_for_owner(&surface.id());
         let window = self
@@ -263,7 +276,11 @@ impl RuntimeState {
             self.space.unmap_elem(&window);
         }
 
-        let view_id = self.surface_views.remove(&surface.id())?;
+        let removed_view_id = self.surface_views.remove(&surface.id())?;
+        debug_assert_eq!(
+            removed_view_id, view_id,
+            "surface view index changed during teardown"
+        );
         #[cfg(feature = "tty")]
         self.discard_deferred_view_sync(&surface.id());
         #[cfg(feature = "tty")]

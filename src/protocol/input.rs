@@ -240,7 +240,10 @@ impl RuntimeState {
         #[cfg(not(feature = "xwayland"))]
         let focus = KeyboardFocusTarget::from(surface);
 
-        self.space.raise_element(&window, true);
+        if let Err(error) = self.world.focus_view(view_id) {
+            warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
+        }
+        self.raise_view_family_in_space(view_id, &window);
         #[cfg(feature = "xwayland")]
         self.raise_x11_popups_for_root(&surface);
         #[cfg(feature = "xwayland")]
@@ -250,12 +253,64 @@ impl RuntimeState {
         {
             warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
         }
-        if let Err(error) = self.world.focus_view(view_id) {
-            warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
-        }
         self.reflow_default_workspace();
         if let Some(keyboard) = keyboard {
             keyboard.set_focus(self, Some(focus), serial);
         }
+    }
+
+    /// Keep Smithay's input-space stacking aligned with the ECS scene when a
+    /// focused dialog is attached to a tiled owner. Rendering order is still
+    /// value-only ECS state; this only ensures pointer hit-testing sees the
+    /// same family above unrelated views.
+    fn raise_view_family_in_space(
+        &mut self,
+        focused: crate::ecs::ViewId,
+        focused_window: &smithay::desktop::Window,
+    ) {
+        let Some(root) = self.world.tiled_ancestor(focused) else {
+            self.space.raise_element(focused_window, true);
+            return;
+        };
+        let mut family = self.view_attachment_family(root);
+        if focused != root {
+            let focused_subtree = self.view_attachment_family(focused);
+            family.retain(|view_id| !focused_subtree.contains(view_id));
+            family.extend(focused_subtree);
+        }
+        for view_id in family {
+            let window = (view_id == focused)
+                .then(|| focused_window.clone())
+                .or_else(|| self.mapped_window_for_view(view_id));
+            if let Some(window) = window {
+                self.space.raise_element(&window, view_id == focused);
+            }
+        }
+    }
+
+    fn view_attachment_family(&self, root: crate::ecs::ViewId) -> Vec<crate::ecs::ViewId> {
+        let mut family = vec![root];
+        let mut index = 0;
+        while let Some(owner) = family.get(index).copied() {
+            family.extend(self.world.attached_children(owner));
+            index += 1;
+        }
+        family
+    }
+
+    fn mapped_window_for_view(
+        &self,
+        view_id: crate::ecs::ViewId,
+    ) -> Option<smithay::desktop::Window> {
+        self.space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .as_deref()
+                    .and_then(|surface| self.view_for_surface(surface))
+                    == Some(view_id)
+            })
+            .cloned()
     }
 }

@@ -90,7 +90,10 @@ clients. This is not an X11 backend: Tensor rejects primary X11 sessions, keeps 
 authoritative, and does not provide an X11 session entry. Override-redirect X11 menus and tooltips
 are accepted only after XWM mapping, xwayland-shell association, and a managed `WM_TRANSIENT_FOR`
 ancestor are all known; they render as popup content of that root view rather than independent
-layout views.
+layout views. Normal X11 `WM_TRANSIENT_FOR` dialogs instead retain their own ECS/input/render node
+while attaching to their immediate managed owner: their requested logical size is constrained and
+centered over that owner, and X11 position requests are ignored. An unresolved owner keeps the
+dialog outside the scene rather than creating a global X11 placement fallback.
 
 Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
 only for `--session` startup. Tensor first prepares the runtime, installs `WAYLAND_DISPLAY`,

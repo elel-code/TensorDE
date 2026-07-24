@@ -67,6 +67,10 @@ selection result, never a silently skipped compatibility path.
   `WM_TRANSIENT_FOR` ancestor, relative logical offsets, and X11 stacking. It verifies that such
   windows add no ECS view or independent X11 coordinate path, and that owner or popup teardown
   detaches their Smithay/input/render state safely.
+- Normal X11 `WM_TRANSIENT_FOR` dialog coverage verifies the separate attached-view model: dialogs
+  do not consume tiled placements, retain independent scene/input/synchronization state, inherit
+  focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
+  cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
 - Input lifecycle coverage verifies that activating a mapped root updates the ECS focus and the
   Smithay keyboard target, then clears it when the root is destroyed. X11 activation routes through
   the `X11Surface` keyboard target so its ICCCM focus handshake is retained without changing the

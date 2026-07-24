@@ -128,6 +128,14 @@ input/output space and flattened into the root view's scene content. Its stackin
 ownership, frame callbacks, and presentation feedback therefore remain attached to the root view.
 An unowned popup is rejected instead of creating a fallback global X11 placement path.
 
+Normal X11 `WM_TRANSIENT_FOR` dialogs keep independent ECS view IDs, surface trees, input targets,
+and renderer synchronization, but use the same parent contract. They are excluded from primary
+tiling and derive a constrained, centered logical rectangle from their immediate managed owner.
+Client size requests update that preferred size; X11 position requests never become layout
+authority. Nested dialog ownership is explicit, owner teardown removes dependent views first, and
+an unresolved transient remains outside the scene until an owner is managed rather than falling
+back to a global X11 position.
+
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
 own crates/modules.

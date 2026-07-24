@@ -1,4 +1,5 @@
 mod popup;
+mod transient;
 
 use smithay::{
     desktop::Window,
@@ -8,12 +9,16 @@ use smithay::{
 };
 use tracing::warn;
 
-use crate::{ecs::ViewId, layout::SizeConstraints};
+use crate::{
+    ecs::{ViewId, ViewPlacement},
+    layout::SizeConstraints,
+};
 use tensor_util::Rect;
 
 use super::{DEFAULT_WORKSPACE, RuntimeState, xdg_size_constraints};
 
 pub(super) use popup::XWaylandPopupRegistry;
+pub(super) use transient::XWaylandTransientRegistry;
 
 /// The two independent signals needed before an X11 window can become a
 /// rootless Wayland view. Smithay can report them in either order.
@@ -34,11 +39,19 @@ impl XWaylandWindowLifecycle {
     }
 
     fn should_register(self) -> bool {
-        self.map_requested && self.surface_associated && !self.registered
+        self.protocol_ready() && !self.registered
+    }
+
+    fn protocol_ready(self) -> bool {
+        self.map_requested && self.surface_associated
     }
 
     fn mark_registered(&mut self) {
         self.registered = true;
+    }
+
+    fn mark_unregistered(&mut self) {
+        self.registered = false;
     }
 
     fn take_registered(&mut self) -> bool {
@@ -72,9 +85,31 @@ impl RuntimeState {
     /// Wayland `Window`/ECS/scene pipeline. X11's global coordinates are never
     /// used as a layout authority.
     pub(crate) fn register_x11_window(&mut self, x11: X11Surface) -> Option<ViewId> {
+        self.register_x11_window_with_placement(x11, None)
+    }
+
+    /// Register an X11 view with its final placement before its first
+    /// configure. This prevents transient dialogs from briefly entering the
+    /// tiled layout while XWayland lifecycle events are reconciled.
+    pub(super) fn register_x11_window_with_placement(
+        &mut self,
+        x11: X11Surface,
+        placement: Option<ViewPlacement>,
+    ) -> Option<ViewId> {
         let surface = x11.wl_surface()?;
         if let Some(view_id) = self.view_for_surface(&surface) {
-            if self.update_x11_constraints(&surface, &x11) {
+            let placement_changed = if let Some(placement) = placement {
+                match self.world.set_view_placement(view_id, placement) {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        warn!(%error, window = x11.window_id(), "failed to update XWayland view placement");
+                        return None;
+                    }
+                }
+            } else {
+                false
+            };
+            if self.update_x11_constraints(&surface, &x11) || placement_changed {
                 self.reflow_default_workspace();
             }
             return Some(view_id);
@@ -94,6 +129,13 @@ impl RuntimeState {
         self.world
             .spawn_view(view_id, DEFAULT_WORKSPACE)
             .expect("monotonic view IDs must be unique");
+        if let Some(placement) = placement
+            && let Err(error) = self.world.set_view_placement(view_id, placement)
+        {
+            warn!(%error, window = x11.window_id(), "failed to place rootless XWayland view");
+            let _ = self.world.remove_view(view_id);
+            return None;
+        }
         self.surface_views.insert(surface.id(), view_id);
         self.space
             .map_element(Window::new_x11_window(x11.clone()), (0, 0), false);
@@ -113,6 +155,7 @@ impl RuntimeState {
 
     pub(crate) fn x11_window_gone(&mut self, x11: &X11Surface) -> Option<ViewId> {
         let window_id: u32 = x11.window_id();
+        self.xwayland_transients.remove(window_id);
         let registered = self
             .xwayland_windows
             .remove(&window_id)
@@ -128,22 +171,24 @@ impl RuntimeState {
         update: impl FnOnce(&mut XWaylandWindowLifecycle),
     ) -> Option<ViewId> {
         let window_id: u32 = x11.window_id();
-        let should_register = {
+        let protocol_ready = {
             let lifecycle = self.xwayland_windows.entry(window_id).or_default();
             update(lifecycle);
-            lifecycle.should_register()
+            lifecycle.protocol_ready()
         };
-        if !should_register {
+        if !protocol_ready {
             return None;
         }
 
-        let view_id = self.register_x11_window(x11);
-        if view_id.is_some()
-            && let Some(lifecycle) = self.xwayland_windows.get_mut(&window_id)
-        {
-            lifecycle.mark_registered();
+        if x11.is_transient_for().is_some() {
+            self.xwayland_transients.observe(x11.clone());
+            self.reconcile_x11_transients();
+        } else {
+            self.restore_x11_tiled_window(x11.clone());
+            self.reconcile_x11_transients();
         }
-        view_id
+        x11.wl_surface()
+            .and_then(|surface| self.view_for_surface(&surface))
     }
 
     fn unregister_x11_window(&mut self, x11: &X11Surface) -> Option<ViewId> {
@@ -153,6 +198,14 @@ impl RuntimeState {
 
     fn update_x11_constraints(&mut self, surface: &WlSurface, x11: &X11Surface) -> bool {
         self.update_toplevel_constraints(surface, x11_size_constraints(x11))
+    }
+
+    pub(super) fn managed_x11_window(&self, window_id: u32) -> Option<X11Surface> {
+        self.space
+            .elements()
+            .filter_map(Window::x11_surface)
+            .find(|surface| surface.window_id() == window_id)
+            .cloned()
     }
 }
 

@@ -389,3 +389,38 @@ fn attachment_invariants_reject_cycles_cross_workspace_and_orphaned_removal() {
         Err(ViewLifecycleError::AttachedViewCannotMove(view(2)))
     );
 }
+
+#[test]
+fn moving_a_tiled_owner_moves_its_attached_dialog_family() {
+    let first = workspace(1);
+    let second = workspace(2);
+    let mut world = CompositorWorld::new();
+    world.spawn_view(view(1), first).unwrap();
+    world.spawn_view(view(2), first).unwrap();
+    world.spawn_view(view(3), second).unwrap();
+    world
+        .set_view_placement(
+            view(2),
+            ViewPlacement::Attached {
+                owner: view(1),
+                preferred_size: Size::new(40, 30),
+            },
+        )
+        .unwrap();
+    world.focus_view(view(2)).unwrap();
+
+    world.move_view(view(1), second).unwrap();
+
+    assert_eq!(world.view_count(first), 0);
+    assert_eq!(world.view_count(second), 3);
+    assert_eq!(world.focused_view(first), None);
+    assert_eq!(world.focused_view(second), Some(view(2)));
+    world.arrange_workspace(
+        second,
+        LayoutEngine::new(LayoutKind::Spatial2D),
+        Rect::new(0, 0, 300, 200),
+    );
+    assert!(world.geometry(view(1)).is_some());
+    assert!(world.geometry(view(2)).is_some());
+    assert_eq!(world.tiled_ancestor(view(2)), Some(view(1)));
+}

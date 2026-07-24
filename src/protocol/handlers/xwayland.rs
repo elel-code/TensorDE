@@ -46,6 +46,7 @@ impl XwmHandler for RuntimeState {
     }
 
     fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.x11_window_new(window.clone());
         debug!(window = window.window_id(), "new rootless XWayland window");
     }
 
@@ -110,11 +111,14 @@ impl XwmHandler for RuntimeState {
         window: X11Surface,
         _x: Option<i32>,
         _y: Option<i32>,
-        _width: Option<u32>,
-        _height: Option<u32>,
+        width: Option<u32>,
+        height: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
         if window.is_override_redirect() {
+            return;
+        }
+        if self.x11_transient_configure_requested(&window, width, height) {
             return;
         }
         // X11 coordinates are client requests, never layout authority. A
@@ -147,8 +151,15 @@ impl XwmHandler for RuntimeState {
     }
 
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
-        if window.is_override_redirect() && property == WmWindowProperty::TransientFor {
-            self.x11_popup_transient_for_changed(window);
+        match property {
+            WmWindowProperty::TransientFor if window.is_override_redirect() => {
+                self.x11_popup_transient_for_changed(window);
+            }
+            WmWindowProperty::TransientFor => self.x11_transient_for_changed(window),
+            WmWindowProperty::NormalHints if !window.is_override_redirect() => {
+                self.x11_normal_hints_changed(window);
+            }
+            _ => {}
         }
     }
 
