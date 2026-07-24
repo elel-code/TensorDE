@@ -4,15 +4,21 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import os
 from pathlib import Path
+import shlex
+import signal
 import subprocess
 import sys
-from datetime import datetime
+import threading
+from typing import BinaryIO
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG = ROOT / "artifacts" / "logs" / "tensor-tty.log"
+DEFAULT_SMOKE_DURATION_SECONDS = 20.0
+SHUTDOWN_GRACE_SECONDS = 5.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,12 +45,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="run the safe startup capability check instead of entering the TTY event loop",
     )
+    lifetime = parser.add_mutually_exclusive_group()
+    lifetime.add_argument(
+        "--duration",
+        type=float,
+        default=DEFAULT_SMOKE_DURATION_SECONDS,
+        help=(
+            "stop a hardware smoke test after this many seconds "
+            f"(default: {DEFAULT_SMOKE_DURATION_SECONDS:g})"
+        ),
+    )
+    lifetime.add_argument(
+        "--forever",
+        action="store_true",
+        help="keep the compositor running until it is stopped manually",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the resolved command without launching it",
+        help="print the resolved command without building or launching it",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.duration <= 0:
+        parser.error("--duration must be greater than zero")
+    return args
 
 
 def virtual_terminal() -> str | None:
@@ -56,7 +80,7 @@ def virtual_terminal() -> str | None:
 
 
 def command_for(args: argparse.Namespace) -> list[str]:
-    command = ["cargo", "run", "--bin", "tensor-compositor", "--"]
+    command = [str(ROOT / "target" / "debug" / "tensor-compositor")]
     if args.config is not None:
         command.extend(["--config", str(args.config)])
     command.append("--check" if args.check else "--session")
@@ -77,11 +101,45 @@ def log_path_for(path: Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-def launch(command: list[str], environment: dict[str, str], log_path: Path) -> int:
+def smoke_duration_for(args: argparse.Namespace) -> float | None:
+    if args.check or args.forever:
+        return None
+    return args.duration
+
+
+def build_compositor() -> int:
+    print("Building Tensor compositor...")
+    return subprocess.run(
+        ["cargo", "build", "--bin", "tensor-compositor"], cwd=ROOT, check=False
+    ).returncode
+
+
+def emit(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
+    with output_lock:
+        log.write(chunk)
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+
+
+def note(log: BinaryIO, output_lock: threading.Lock, message: str) -> None:
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    emit(log, output_lock, f"[tensor-tty {timestamp}] {message}\n".encode())
+
+
+def launch(
+    command: list[str],
+    environment: dict[str, str],
+    log_path: Path,
+    duration: float | None,
+) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    completed = threading.Event()
+    shutdown_requested = threading.Event()
+    output_lock = threading.Lock()
+
     with log_path.open("ab", buffering=0) as log:
         started = datetime.now().astimezone().isoformat(timespec="seconds")
-        header = f"\n=== Tensor TTY run {started} ===\n$ {' '.join(command)}\n"
+        header = f"\n=== Tensor TTY run {started} ===\n$ {shlex.join(command)}\n"
         log.write(header.encode())
         process = subprocess.Popen(
             command,
@@ -91,20 +149,74 @@ def launch(command: list[str], environment: dict[str, str], log_path: Path) -> i
             stderr=subprocess.STDOUT,
         )
         assert process.stdout is not None
-        while True:
+
+        def request_shutdown(reason: str) -> None:
+            if completed.is_set() or shutdown_requested.is_set():
+                return
+            shutdown_requested.set()
+            if process.poll() is not None:
+                return
+            note(log, output_lock, f"{reason}; sending SIGTERM to Tensor")
             try:
-                chunk = os.read(process.stdout.fileno(), 64 * 1024)
-            except KeyboardInterrupt:
-                # The terminal also delivers SIGINT to the compositor's process
-                # group. Keep draining while it shuts down so the final
-                # diagnostics are persisted instead of risking a full pipe.
-                continue
-            if not chunk:
-                break
-            log.write(chunk)
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
-        return process.wait()
+                process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                return
+
+            def force_shutdown() -> None:
+                if completed.wait(SHUTDOWN_GRACE_SECONDS) or process.poll() is not None:
+                    return
+                note(
+                    log,
+                    output_lock,
+                    "Tensor did not exit after SIGTERM; sending SIGKILL",
+                )
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+            threading.Thread(target=force_shutdown, daemon=True).start()
+
+        watchdog: threading.Thread | None = None
+        if duration is not None:
+
+            def stop_after_smoke_duration() -> None:
+                if not completed.wait(duration):
+                    request_shutdown(
+                        f"bounded smoke duration ({duration:g} seconds) elapsed"
+                    )
+
+            watchdog = threading.Thread(target=stop_after_smoke_duration, daemon=True)
+            watchdog.start()
+
+        try:
+            while True:
+                try:
+                    chunk = os.read(process.stdout.fileno(), 64 * 1024)
+                except KeyboardInterrupt:
+                    request_shutdown("interrupt received")
+                    continue
+                if not chunk:
+                    if process.poll() is None:
+                        request_shutdown("Tensor closed its output while still running")
+                    break
+                emit(log, output_lock, chunk)
+            return process.wait()
+        except KeyboardInterrupt:
+            request_shutdown("interrupt received")
+            return process.wait()
+        finally:
+            if process.poll() is None:
+                request_shutdown("TTY launcher is stopping")
+                try:
+                    process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    note(log, output_lock, "forcing Tensor shutdown during launcher cleanup")
+                    process.kill()
+                    process.wait()
+            completed.set()
+            if watchdog is not None:
+                watchdog.join()
 
 
 def main() -> int:
@@ -118,17 +230,27 @@ def main() -> int:
     command = command_for(args)
     environment = environment_for(args)
     log_path = log_path_for(args.log)
+    duration = smoke_duration_for(args)
     if args.dry_run:
         print(f"cwd: {ROOT}")
-        print("command:", " ".join(command))
+        print("command:", shlex.join(command))
         print(f"log: {log_path}")
+        if args.check:
+            print("mode: startup capability check")
+        elif duration is None:
+            print("mode: persistent session")
+        else:
+            print(f"mode: bounded {duration:g}-second hardware smoke test")
         for name in ("RUST_LOG", "TENSOR_RENDER_DEVICE", "TENSOR_XWAYLAND"):
             if name in environment:
                 print(f"{name}={environment[name]}")
         return 0
 
+    build_status = build_compositor()
+    if build_status != 0:
+        return build_status
     print(f"Tensor log: {log_path}")
-    return launch(command, environment, log_path)
+    return launch(command, environment, log_path, duration)
 
 
 if __name__ == "__main__":

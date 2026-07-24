@@ -10,6 +10,7 @@ mod protocol;
 mod render;
 pub mod scene;
 pub mod service;
+mod signals;
 pub mod spawn;
 pub mod startup;
 mod xwayland;

@@ -49,14 +49,18 @@ cargo run -- --config examples/config.kdl --check
 ```
 
 For a direct DRM/KMS smoke test, switch to a Linux virtual terminal, log in as
-the normal desktop user, and run `uv run scripts/tty.py`. The launcher keeps
-automatic GPU selection intact, starts `tensor-compositor --session`, and
-refuses to enter the KMS event loop from a terminal emulator. Use
-`--render-device /dev/dri/renderD*` only to pin a hybrid-GPU test, and
-`--no-xwayland` to isolate the native Wayland path. `--check` remains safe to
-run from an ordinary terminal. Every launch appends its terminal output to
-`artifacts/logs/tensor-tty.log`, so a TTY smoke-test result can be inspected
-after returning to the development session.
+the normal desktop user, and run `uv run scripts/tty.py`. The launcher builds
+the compositor, keeps automatic GPU selection intact, and starts the compiled
+`tensor-compositor --session` binary. Hardware smoke tests stop after 20
+seconds by default: they request orderly shutdown with `SIGTERM`, then force
+shutdown only after a grace period. Use `--forever` only for an intentional
+persistent session; `Ctrl`+`Alt`+`F1` through `F12` are always compositor-owned
+VT recovery keys. The launcher refuses to enter the KMS event loop from a
+terminal emulator. Use `--render-device /dev/dri/renderD*` only to pin a
+hybrid-GPU test, and `--no-xwayland` to isolate the native Wayland path.
+`--check` remains safe to run from an ordinary terminal. Every launch appends
+its terminal output to `artifacts/logs/tensor-tty.log`, so a TTY smoke-test
+result can be inspected after returning to the development session.
 
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires

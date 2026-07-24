@@ -1,14 +1,14 @@
 use smithay::{
     backend::{
         input::{
-            ButtonState, Device, DeviceCapability, Event as InputEventTrait, InputEvent,
+            ButtonState, Device, DeviceCapability, Event as InputEventTrait, InputEvent, KeyState,
             KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent,
         },
         libinput::LibinputInputBackend,
     },
     desktop::WindowSurfaceType,
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, keysyms},
         pointer::{ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -90,14 +90,35 @@ impl RuntimeState {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
+        let key_state = event.state();
         keyboard.input::<(), _>(
             self,
             event.key_code(),
             event.state(),
             SERIAL_COUNTER.next_serial(),
             event.time_msec(),
-            |_, _, _| FilterResult::Forward,
+            move |state, _, handle| {
+                let Some(vt) = virtual_terminal_for_keysym(handle.modified_sym().raw()) else {
+                    return FilterResult::Forward;
+                };
+
+                if key_state == KeyState::Pressed {
+                    state.request_virtual_terminal(vt);
+                }
+                // A VT switch can prevent a key release from reaching us. Keep
+                // both sides compositor-owned so a client never sees a lone
+                // release for this non-inhibitable recovery action.
+                FilterResult::Intercept(())
+            },
         );
+    }
+
+    fn request_virtual_terminal(&mut self, vt: i32) {
+        let Some(backend) = self.backend.as_mut() else {
+            warn!(vt, "ignored virtual terminal request without a tty backend");
+            return;
+        };
+        backend.change_vt(vt);
     }
 
     fn forward_pointer_motion(
@@ -312,5 +333,34 @@ impl RuntimeState {
                     == Some(view_id)
             })
             .cloned()
+    }
+}
+
+fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
+    (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
+        .contains(&keysym)
+        .then(|| (keysym - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::input::keyboard::keysyms;
+
+    use super::virtual_terminal_for_keysym;
+
+    #[test]
+    fn virtual_terminal_recovery_keys_are_complete_and_bounded() {
+        for vt in 1..=12 {
+            let keysym = keysyms::KEY_XF86Switch_VT_1 + (vt - 1);
+            assert_eq!(virtual_terminal_for_keysym(keysym), Some(vt as i32));
+        }
+        assert_eq!(
+            virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_1 - 1),
+            None
+        );
+        assert_eq!(
+            virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_12 + 1),
+            None
+        );
     }
 }

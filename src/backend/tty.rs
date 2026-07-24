@@ -220,6 +220,14 @@ impl TtyBackend {
             .map(|device| device.drm.device_fd().clone())
     }
 
+    /// Request a libseat-mediated VT change. Smithay retains all DRM and
+    /// session lifecycle ownership around the resulting pause/activation.
+    pub(crate) fn change_vt(&mut self, vt: i32) {
+        if let Err(error) = self.session.change_vt(vt) {
+            warn!(%error, vt, "failed to switch virtual terminal through libseat");
+        }
+    }
+
     pub(crate) fn handle_udev_event(&mut self, event: UdevEvent) {
         match event {
             UdevEvent::Added { device_id, path } => {

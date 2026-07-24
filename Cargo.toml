@@ -26,6 +26,7 @@ xwayland = ["smithay/xwayland"]
 
 [dependencies]
 bevy_ecs = { version = "0.19", default-features = false, features = ["std", "multi_threaded"] }
+calloop = { version = "0.14", features = ["signals"] }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 knus = "3"

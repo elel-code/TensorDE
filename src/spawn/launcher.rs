@@ -281,6 +281,9 @@ fn prepare_double_fork(command: &mut Command, pipes: &ForkPipes) {
 
     unsafe {
         command.pre_exec(move || {
+            // Tensor consumes termination signals through signalfd; applications
+            // must retain their normal signal delivery after exec.
+            crate::signals::unblock_all_for_child()?;
             close_fd(pid_read);
             if let Some(fd) = gate_write {
                 close_fd(fd);
@@ -506,6 +509,45 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(path.exists());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_spawn_restores_child_signal_delivery() {
+        struct ResetSignalMask;
+
+        impl Drop for ResetSignalMask {
+            fn drop(&mut self) {
+                crate::signals::unblock_all_for_child().unwrap();
+            }
+        }
+
+        crate::signals::block_early().unwrap();
+        let _reset_signal_mask = ResetSignalMask;
+        let path = PathBuf::from(format!(
+            "target/tensor-spawn-signals-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let mut command = Command::new("cat");
+        command
+            .arg("/proc/self/status")
+            .stdout(Stdio::from(File::create(&path).unwrap()));
+
+        ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false)
+            .spawn_command(command)
+            .unwrap();
+
+        let mut status = String::new();
+        for _ in 0..100 {
+            status = fs::read_to_string(&path).unwrap();
+            if status.contains("SigBlk:\t0000000000000000") {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(status.contains("SigBlk:\t0000000000000000"));
         fs::remove_file(path).unwrap();
     }
 

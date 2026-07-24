@@ -10,6 +10,7 @@ use crate::{compositor::Compositor, config::Config, xwayland};
 
 pub fn run() -> Result<(), StartupError> {
     let cli = Cli::parse();
+    crate::signals::block_early().map_err(StartupError::SignalMask)?;
     let config_path = Config::resolve_path(cli.config);
     let config = Config::load_with_environment(&config_path)?;
     initialize_logging()?;
@@ -86,6 +87,8 @@ fn initialize_logging() -> Result<(), StartupError> {
 
 #[derive(Debug, Error)]
 pub enum StartupError {
+    #[error("failed to block compositor termination signals: {0}")]
+    SignalMask(io::Error),
     #[error("failed to initialize logging: {0}")]
     Logging(String),
     #[error(transparent)]
