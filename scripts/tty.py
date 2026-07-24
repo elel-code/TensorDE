@@ -55,6 +55,14 @@ def parse_args() -> argparse.Namespace:
             "it requires real buffer import, KMS presentation, and release before succeeding"
         ),
     )
+    parser.add_argument(
+        "--ghostty",
+        action="store_true",
+        help=(
+            "start a fresh native-Wayland Ghostty after Tensor publishes its socket; "
+            "it forces GDK_BACKEND=wayland and clears DISPLAY"
+        ),
+    )
     lifetime = parser.add_mutually_exclusive_group()
     lifetime.add_argument(
         "--duration",
@@ -78,10 +86,12 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration <= 0:
         parser.error("--duration must be greater than zero")
-    if args.check and args.dmabuf_smoke:
-        parser.error("--dmabuf-smoke requires a real TTY compositor session, not --check")
+    if args.check and (args.dmabuf_smoke or args.ghostty):
+        parser.error("--dmabuf-smoke and --ghostty require a real TTY compositor session")
     if args.forever and args.dmabuf_smoke:
         parser.error("--dmabuf-smoke has its own bounded health loop and cannot use --forever")
+    if args.dmabuf_smoke and args.ghostty:
+        parser.error("run --dmabuf-smoke and --ghostty as separate focused tests")
     return args
 
 
@@ -148,10 +158,10 @@ def tensor_sockets(runtime_dir: Path) -> set[Path]:
     return sockets
 
 
-def runtime_dir_for_smoke() -> Path:
+def runtime_dir_for_client() -> Path:
     value = os.environ.get("XDG_RUNTIME_DIR")
     if not value:
-        raise SystemExit("--dmabuf-smoke requires XDG_RUNTIME_DIR")
+        raise SystemExit("TTY client tests require XDG_RUNTIME_DIR")
     return Path(value)
 
 
@@ -165,6 +175,24 @@ def smoke_command(socket: Path, duration: float | None) -> list[str]:
         timeout = max(1, int(duration - 2))
         command.extend(["--timeout", str(timeout)])
     return command
+
+
+def ghostty_command() -> list[str]:
+    # Avoid an existing Ghostty instance from handling this request through
+    # the host desktop.  The process we launch must connect to Tensor itself.
+    return ["ghostty", "--gtk-single-instance=false"]
+
+
+def native_wayland_environment(
+    environment: dict[str, str], socket: Path
+) -> dict[str, str]:
+    client_environment = environment.copy()
+    client_environment["WAYLAND_DISPLAY"] = socket.name
+    client_environment["XDG_CURRENT_DESKTOP"] = "tensor"
+    client_environment["XDG_SESSION_TYPE"] = "wayland"
+    client_environment["GDK_BACKEND"] = "wayland"
+    client_environment.pop("DISPLAY", None)
+    return client_environment
 
 
 def emit(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
@@ -185,12 +213,13 @@ def launch(
     log_path: Path,
     duration: float | None,
     dmabuf_smoke: bool,
+    ghostty: bool,
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     completed = threading.Event()
     shutdown_requested = threading.Event()
     output_lock = threading.Lock()
-    runtime_dir = runtime_dir_for_smoke() if dmabuf_smoke else None
+    runtime_dir = runtime_dir_for_client() if dmabuf_smoke or ghostty else None
     known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else set()
 
     with log_path.open("ab", buffering=0) as log:
@@ -209,6 +238,9 @@ def launch(
         selector.register(process.stdout, selectors.EVENT_READ, "tensor")
         smoke_process: subprocess.Popen[bytes] | None = None
         smoke_status: int | None = None
+        ghostty_process: subprocess.Popen[bytes] | None = None
+        ghostty_status: int | None = None
+        ghostty_failed = False
         tensor_output_open = True
 
         def start_smoke_client() -> None:
@@ -235,6 +267,54 @@ def launch(
             assert smoke_process.stdout is not None
             selector.register(smoke_process.stdout, selectors.EVENT_READ, "dmabuf-smoke")
 
+        def start_ghostty() -> None:
+            nonlocal ghostty_process, ghostty_status, ghostty_failed
+            if (
+                not ghostty
+                or ghostty_process is not None
+                or ghostty_status is not None
+                or runtime_dir is None
+            ):
+                return
+            candidates = sorted(tensor_sockets(runtime_dir) - known_sockets)
+            if not candidates:
+                return
+            socket = candidates[0]
+            client_command = ghostty_command()
+            note(
+                log,
+                output_lock,
+                f"Wayland socket {socket.name} is ready; starting native Ghostty: "
+                f"{shlex.join(client_command)}",
+            )
+            try:
+                ghostty_process = subprocess.Popen(
+                    client_command,
+                    cwd=ROOT,
+                    env=native_wayland_environment(environment, socket),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as error:
+                ghostty_status = 127
+                ghostty_failed = True
+                note(log, output_lock, f"failed to start Ghostty: {error}")
+                request_shutdown("Ghostty could not start")
+                return
+
+        def observe_ghostty_exit() -> None:
+            nonlocal ghostty_status, ghostty_failed
+            if ghostty_process is None or ghostty_status is not None:
+                return
+            status = ghostty_process.poll()
+            if status is None:
+                return
+            ghostty_status = status
+            note(log, output_lock, f"native Ghostty exited with status {status}")
+            if not shutdown_requested.is_set():
+                ghostty_failed = status != 0
+                request_shutdown("native Ghostty closed")
+
         def stop_smoke_client(reason: str) -> None:
             if smoke_process is None or smoke_process.poll() is not None:
                 return
@@ -244,11 +324,21 @@ def launch(
             except ProcessLookupError:
                 return
 
+        def stop_ghostty(reason: str) -> None:
+            if ghostty_process is None or ghostty_process.poll() is not None:
+                return
+            note(log, output_lock, f"{reason}; sending SIGTERM to Ghostty")
+            try:
+                ghostty_process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                return
+
         def request_shutdown(reason: str) -> None:
             if completed.is_set() or shutdown_requested.is_set():
                 return
             shutdown_requested.set()
             stop_smoke_client(reason)
+            stop_ghostty(reason)
             if process.poll() is not None:
                 return
             note(log, output_lock, f"{reason}; sending SIGTERM to Tensor")
@@ -274,6 +364,11 @@ def launch(
                         smoke_process.kill()
                     except ProcessLookupError:
                         pass
+                if ghostty_process is not None and ghostty_process.poll() is None:
+                    try:
+                        ghostty_process.kill()
+                    except ProcessLookupError:
+                        pass
 
             threading.Thread(target=force_shutdown, daemon=True).start()
 
@@ -293,6 +388,8 @@ def launch(
             while tensor_output_open:
                 try:
                     start_smoke_client()
+                    start_ghostty()
+                    observe_ghostty_exit()
                     events = selector.select(timeout=0.1)
                 except KeyboardInterrupt:
                     request_shutdown("interrupt received")
@@ -312,23 +409,33 @@ def launch(
                         if process.poll() is None:
                             request_shutdown("Tensor closed its output while still running")
                         continue
-                    assert smoke_process is not None
-                    smoke_status = smoke_process.wait()
-                    note(
-                        log,
-                        output_lock,
-                        f"dma-buf smoke client exited with status {smoke_status}",
-                    )
-                    if smoke_status == 0:
-                        request_shutdown("dma-buf smoke client completed successfully")
-                    else:
-                        request_shutdown("dma-buf smoke client failed")
+                    if key.data == "dmabuf-smoke":
+                        assert smoke_process is not None
+                        smoke_status = smoke_process.wait()
+                        note(
+                            log,
+                            output_lock,
+                            f"dma-buf smoke client exited with status {smoke_status}",
+                        )
+                        if smoke_status == 0:
+                            request_shutdown("dma-buf smoke client completed successfully")
+                        else:
+                            request_shutdown("dma-buf smoke client failed")
+                        continue
+                    raise AssertionError(f"unexpected TTY client stream {key.data!r}")
                 if not tensor_output_open and dmabuf_smoke and smoke_process is None:
                     smoke_status = 1
                     note(
                         log,
                         output_lock,
                         "Tensor exited before creating a new tensor-* Wayland socket for dma-buf smoke",
+                    )
+                if not tensor_output_open and ghostty and ghostty_process is None:
+                    ghostty_failed = True
+                    note(
+                        log,
+                        output_lock,
+                        "Tensor exited before creating a new tensor-* Wayland socket for Ghostty",
                     )
             compositor_status = process.wait()
             if dmabuf_smoke:
@@ -338,6 +445,8 @@ def launch(
                     smoke_status = smoke_process.wait()
                 if smoke_status != 0:
                     return smoke_status
+            if ghostty and (ghostty_process is None or ghostty_failed):
+                return ghostty_status if ghostty_status is not None else 1
             return compositor_status
         except KeyboardInterrupt:
             request_shutdown("interrupt received")
@@ -360,6 +469,14 @@ def launch(
                     note(log, output_lock, "forcing dma-buf smoke client shutdown")
                     smoke_process.kill()
                     smoke_process.wait()
+            if ghostty_process is not None and ghostty_process.poll() is None:
+                stop_ghostty("TTY launcher is stopping")
+                try:
+                    ghostty_process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    note(log, output_lock, "forcing Ghostty shutdown")
+                    ghostty_process.kill()
+                    ghostty_process.wait()
             completed.set()
             if watchdog is not None:
                 watchdog.join()
@@ -392,6 +509,11 @@ def main() -> int:
                 "health gate: wait for a new tensor-* socket, then require native "
                 "linux-dmabuf import, KMS presentation, and wl_buffer release"
             )
+        if args.ghostty:
+            print(
+                "client: wait for a new tensor-* socket, then start Ghostty with a forced "
+                "native Wayland environment"
+            )
         for name in ("RUST_LOG", "TENSOR_RENDER_DEVICE", "TENSOR_XWAYLAND"):
             if name in environment:
                 print(f"{name}={environment[name]}")
@@ -401,7 +523,7 @@ def main() -> int:
     if build_status != 0:
         return build_status
     print(f"Tensor log: {log_path}")
-    return launch(command, environment, log_path, duration, args.dmabuf_smoke)
+    return launch(command, environment, log_path, duration, args.dmabuf_smoke, args.ghostty)
 
 
 if __name__ == "__main__":

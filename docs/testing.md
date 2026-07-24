@@ -57,6 +57,27 @@ and release of an older `wl_buffer`. The launcher writes both process streams
 to `artifacts/logs/tensor-tty.log` and returns the smoke client's failure
 status, so the log remains available after the VT restores the prior session.
 
+## Ghostty native-client smoke
+
+From a Linux virtual terminal, run:
+
+```sh
+uv run scripts/tty.py --ghostty --duration 30
+```
+
+Do not add `--no-xwayland`: the default configuration starts rootless XWayland
+as part of this session. Once Tensor creates its `tensor-*` socket, the
+launcher starts a new Ghostty with `GDK_BACKEND=wayland`, `WAYLAND_DISPLAY` set
+to that socket, and `DISPLAY` removed. This is therefore a native Wayland
+rendering and input test, not an X11-client test. The log should contain both
+`XWayland rootless XWM is ready` and `starting native Ghostty`; the terminal
+must appear and accept input before the bounded launch restores the previous
+session.
+
+An X11-only application is still required to exercise XWayland client mapping
+and rendering itself. Ghostty is deliberately forced onto the native Wayland
+path so a host X11 display cannot make this test pass accidentally.
+
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
 - Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
   frame/full damage, old/new movement damage, popup bounds outside layout tiles, region coalescing,

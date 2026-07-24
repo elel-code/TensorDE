@@ -69,6 +69,14 @@ after explicit-modifier dma-buf import, XDG configure, frame callbacks,
 `wp_presentation` completion, and release of an older `wl_buffer`; it has no
 SHM or implicit-modifier fallback.
 
+For the first interactive client test, leave XWayland enabled (the default) and
+run `uv run scripts/tty.py --ghostty --duration 30` from a virtual terminal.
+The launcher waits for Tensor's Wayland socket, then starts a fresh Ghostty
+with `GDK_BACKEND=wayland` and no `DISPLAY`, so the terminal is conclusively a
+native Wayland client while rootless XWayland starts alongside it. The bounded
+run returns to the prior session automatically; use `--forever` only after the
+first visual check succeeds.
+
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 the complete native renderer gate.
