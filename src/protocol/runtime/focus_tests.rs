@@ -184,7 +184,7 @@ fn focused_toplevel_is_activated_and_receives_late_keyboard_enter() {
         },
     );
     runtime.state.reconcile_seat_capabilities();
-    runtime.state.display_handle.flush_clients().unwrap();
+    runtime.state.flush_wayland_clients();
 
     assert_eq!(
         dispatch_until(&mut runtime, &event_rx),

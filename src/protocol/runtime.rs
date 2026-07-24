@@ -155,7 +155,7 @@ impl WaylandRuntime {
             return Err(ProtocolError::RuntimeNotPrepared);
         }
         self.event_loop
-            .run(None, &mut self.state, |_| {})
+            .run(None, &mut self.state, RuntimeState::flush_wayland_clients)
             .map_err(ProtocolError::Run)
     }
 

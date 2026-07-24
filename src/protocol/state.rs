@@ -224,6 +224,19 @@ impl RuntimeState {
         self.renderer.as_ref()
     }
 
+    /// Flush protocol events produced by non-Wayland event sources.
+    ///
+    /// Input, KMS, timers, and session events can enqueue client-visible
+    /// state without making the Wayland display readable. The event-loop
+    /// tail invokes this after every dispatch cycle so keyboard focus, keys,
+    /// and frame callbacks are not stranded until a client happens to send
+    /// another request.
+    pub(crate) fn flush_wayland_clients(&mut self) {
+        if let Err(error) = self.display_handle.flush_clients() {
+            warn!(%error, "failed to flush pending Wayland client events");
+        }
+    }
+
     #[cfg(feature = "tty")]
     pub(crate) fn install_backend(&mut self, backend: TtyBackend) {
         assert!(
