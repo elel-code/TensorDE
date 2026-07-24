@@ -6,8 +6,10 @@ use thiserror::Error;
 
 use crate::scene::{DamageSet, SceneSnapshot};
 
-use super::format::OutputFormat;
+use super::{CursorOverlay, format::OutputFormat};
 
+#[cfg(test)]
+mod cursor_tests;
 mod heap;
 mod plan;
 use heap::DescriptorHeap;
@@ -40,6 +42,7 @@ pub(crate) struct FrameSubmission {
     pub(crate) serial: u64,
     pub(crate) timeline_value: u64,
     pub(crate) scene: SceneSnapshot,
+    pub(crate) cursor: Option<CursorOverlay>,
     pub(crate) damage: DamageSet,
     pub(crate) descriptors: HeapAllocation,
     pub(crate) client_image_descriptors: u32,
@@ -111,6 +114,7 @@ impl FrameScheduler {
                 }
                 state.target = target;
                 state.previous_scene = None;
+                state.previous_cursor = None;
                 state.next_slot = 0;
             }
         } else {
@@ -165,10 +169,24 @@ impl FrameScheduler {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare(
         &mut self,
         output: RenderOutputId,
         scene: SceneSnapshot,
+        completed_timeline: u64,
+    ) -> Result<FrameSubmission, FrameError> {
+        self.prepare_with_cursor(output, scene, None, completed_timeline)
+    }
+
+    /// Prepare a frame with a compositor-owned output overlay. Client scene
+    /// state remains in ECS; input-driven overlays enter only here after the
+    /// protocol boundary has converted them to physical output coordinates.
+    pub(crate) fn prepare_with_cursor(
+        &mut self,
+        output: RenderOutputId,
+        scene: SceneSnapshot,
+        cursor: Option<CursorOverlay>,
         completed_timeline: u64,
     ) -> Result<FrameSubmission, FrameError> {
         if self.device_lost {
@@ -199,7 +217,7 @@ impl FrameScheduler {
             .ok_or(FrameError::TimelineExhausted)?;
         let serial = state.next_serial;
         serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
-        let draw_plan = FrameDrawPlan::build(&scene, state.target)?;
+        let draw_plan = FrameDrawPlan::build_with_cursor(&scene, state.target, cursor)?;
         let client_image_descriptors = u32::try_from(draw_plan.images().len())
             .map_err(|_| FrameError::DescriptorSizeOverflow)?;
         let descriptor_count = 1u64
@@ -212,9 +230,14 @@ impl FrameScheduler {
         let descriptors = self
             .descriptors
             .allocate(descriptor_bytes, timeline_value)?;
-        let damage = scene
+        let mut damage = scene
             .damage_since(state.previous_scene.as_ref())
             .to_physical(scene.viewport, state.target.viewport, state.target.scale);
+        if state.previous_cursor != cursor {
+            for overlay in [state.previous_cursor, cursor].into_iter().flatten() {
+                damage.add_region(overlay.clip, state.target.viewport);
+            }
+        }
         let output_slot = state.next_slot;
         self.next_timeline_value = next_timeline_value;
         state.prepared = Some(PreparedFrameState {
@@ -230,6 +253,7 @@ impl FrameScheduler {
             serial,
             timeline_value,
             scene,
+            cursor,
             damage,
             descriptors,
             client_image_descriptors,
@@ -273,6 +297,7 @@ impl FrameScheduler {
             .checked_add(1)
             .ok_or(FrameError::SerialExhausted)?;
         state.previous_scene = Some(frame.scene.clone());
+        state.previous_cursor = frame.cursor;
         state.last_submitted_timeline = prepared.timeline_value;
         state.in_flight = true;
         Ok(())
@@ -313,6 +338,7 @@ impl FrameScheduler {
 struct OutputFrameState {
     target: NativeOutputTarget,
     previous_scene: Option<SceneSnapshot>,
+    previous_cursor: Option<CursorOverlay>,
     next_serial: u64,
     last_submitted_timeline: u64,
     in_flight: bool,
@@ -344,6 +370,7 @@ impl OutputFrameState {
         Self {
             target,
             previous_scene: None,
+            previous_cursor: None,
             next_serial: 1,
             last_submitted_timeline: 0,
             in_flight: false,

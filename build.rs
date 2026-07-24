@@ -3,6 +3,8 @@ use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=shaders/client.vert");
     println!("cargo:rerun-if-changed=shaders/client.frag");
+    println!("cargo:rerun-if-changed=shaders/cursor.vert");
+    println!("cargo:rerun-if-changed=shaders/cursor.frag");
 
     if env::var_os("CARGO_FEATURE_TTY").is_none() {
         return;
@@ -12,6 +14,8 @@ fn main() {
     for (source, stage, output) in [
         ("shaders/client.vert", "vert", "tensor_client.vert.spv"),
         ("shaders/client.frag", "frag", "tensor_client.frag.spv"),
+        ("shaders/cursor.vert", "vert", "tensor_cursor.vert.spv"),
+        ("shaders/cursor.frag", "frag", "tensor_cursor.frag.spv"),
     ] {
         let destination = out_dir.join(output);
         let result = Command::new("glslangValidator")

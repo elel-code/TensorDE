@@ -345,7 +345,14 @@ impl SeatHandler for RuntimeState {
         set_data_device_focus(&self.display_handle, seat, client);
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        #[cfg(feature = "tty")]
+        if self.cursor.set_image(image) {
+            self.submit_default_workspace_frame();
+        }
+        #[cfg(not(feature = "tty"))]
+        let _ = image;
+    }
 }
 
 impl SelectionHandler for RuntimeState {

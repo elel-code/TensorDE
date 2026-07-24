@@ -48,6 +48,8 @@ use crate::{
 };
 use tensor_util::Size;
 
+#[cfg(feature = "tty")]
+use super::cursor::CursorState;
 use super::globals::ProtocolGlobals;
 #[cfg(feature = "tty")]
 use presentation::PendingPresentations;
@@ -111,6 +113,8 @@ pub(crate) struct RuntimeState {
     pub(crate) backend: Option<TtyBackend>,
     #[cfg(feature = "tty")]
     pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
+    #[cfg(feature = "tty")]
+    pub(crate) cursor: CursorState,
     surface_views: HashMap<ObjectId, ViewId>,
     #[cfg(feature = "xwayland")]
     pub(crate) xwm: Option<X11Wm>,
@@ -175,6 +179,8 @@ impl RuntimeState {
             backend: None,
             #[cfg(feature = "tty")]
             input_devices: HashMap::new(),
+            #[cfg(feature = "tty")]
+            cursor: CursorState::default(),
             surface_views: HashMap::new(),
             #[cfg(feature = "xwayland")]
             xwm: None,

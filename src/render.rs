@@ -1,3 +1,5 @@
+#[cfg(feature = "tty")]
+mod cursor;
 mod device;
 mod format;
 #[cfg(feature = "tty")]
@@ -6,6 +8,8 @@ mod interop;
 mod target;
 mod vulkan;
 
+#[cfg(feature = "tty")]
+pub(crate) use cursor::CursorOverlay;
 pub use device::{
     DescriptorHeapProperties, DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity,
     DrmNodeError, DrmNodeId, GpuPreference, ParseGpuPreferenceError,

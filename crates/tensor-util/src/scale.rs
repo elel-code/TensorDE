@@ -43,6 +43,18 @@ impl OutputScale {
         u32::try_from(rounded).unwrap_or(u32::MAX)
     }
 
+    /// Round one fractional logical coordinate onto the physical-pixel grid.
+    /// Unlike rectangle mapping this accepts pointer positions, whose logical
+    /// values naturally carry a fractional component.
+    pub fn physical_coordinate_round(self, logical: f64) -> Option<i32> {
+        let physical = logical * f64::from(self.0) / f64::from(Self::DENOMINATOR);
+        physical.is_finite().then(|| {
+            physical
+                .round()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+        })
+    }
+
     pub fn logical_size_ceil(self, physical: Size) -> Size {
         Size::new(
             self.logical_length_ceil(physical.width),
@@ -168,6 +180,14 @@ mod tests {
         let right = scale.physical_rect_round(Rect::new(1, 0, 1, 10));
         assert_eq!(left.right(), right.x);
         assert_eq!(right.right(), 3);
+    }
+
+    #[test]
+    fn fractional_pointer_coordinates_round_once_at_the_physical_boundary() {
+        let scale = OutputScale::from_f64(1.25).unwrap();
+        assert_eq!(scale.physical_coordinate_round(10.4), Some(13));
+        assert_eq!(scale.physical_coordinate_round(-0.4), Some(-1));
+        assert_eq!(scale.physical_coordinate_round(f64::NAN), None);
     }
 
     #[test]

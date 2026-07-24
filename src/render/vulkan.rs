@@ -15,12 +15,12 @@ use vulkanalia::{
     prelude::v1_4::*,
 };
 
+#[cfg(feature = "tty")]
+use super::{CursorOverlay, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
 use super::{
     DescriptorHeapProperties, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId,
     NativeInteropCapabilities, RendererTarget, VulkanFormatCapability,
 };
-#[cfg(feature = "tty")]
-use super::{FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
 #[cfg(feature = "tty")]
 use crate::ecs::SurfaceBufferId;
 
@@ -479,11 +479,12 @@ impl VulkanRenderer {
         &mut self,
         output: RenderOutputId,
         scene: crate::scene::SceneSnapshot,
+        cursor: Option<CursorOverlay>,
     ) -> Result<FrameSubmission, RendererError> {
         let completed = self.refresh_completed()?;
         let frame = self
             .frames
-            .prepare(output, scene, completed)
+            .prepare_with_cursor(output, scene, cursor, completed)
             .map_err(|error| RendererError::Frame(error.to_string()))?;
         let client_ids = frame.draw_plan.images().to_vec();
         debug!(

@@ -6,6 +6,9 @@ use thiserror::Error;
 use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
 use vulkanalia::{Device, vk};
 
+mod cursor;
+pub(super) use cursor::{CursorPipeline, CursorPipelineError};
+
 const VERTEX_SHADER: &[u32] =
     vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_client.vert.spv"));
 const FRAGMENT_SHADER: &[u32] =

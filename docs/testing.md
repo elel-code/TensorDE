@@ -83,6 +83,12 @@ terminal must appear and accept input before the bounded launch restores the
 previous session. Ghostty's own stdout and stderr are retained in the same log
 for diagnosis.
 
+The compositor-owned arrow must be visible as soon as libinput publishes a
+pointer capability, including when that device appears after the first output
+frame. Moving it must erase the previous arrow location as well as draw the new
+one; named and client cursor-image requests currently retain this visible vector
+fallback until cursor raster upload is implemented.
+
 An X11-only application is still required to exercise XWayland client mapping
 and rendering itself.
 
@@ -121,9 +127,11 @@ and rendering itself.
   focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
   cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
 - Input lifecycle coverage verifies that mapping selects an ECS root before an input device exists,
-  then a late keyboard capability restores the Smithay keyboard target and teardown clears it. X11
-  activation routes through the `X11Surface` keyboard target so its ICCCM focus handshake is
-  retained without changing the Wayland logical pointer-coordinate path.
+  then a late keyboard capability restores the Smithay keyboard target and teardown clears it. A
+  late pointer capability schedules its first software-cursor frame; its removal schedules an
+  overlay-free frame, and cursor motion damages the old and new physical bounds while drawing above
+  client content. X11 activation routes through the `X11Surface` keyboard target so its ICCCM focus
+  handshake is retained without changing the Wayland logical pointer-coordinate path.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.

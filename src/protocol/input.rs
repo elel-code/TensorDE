@@ -78,8 +78,15 @@ impl RuntimeState {
 
         if pointer_count > 0 && self.seat.get_pointer().is_none() {
             self.seat.add_pointer();
+            // A pointer can be discovered after the first output frame. Draw
+            // the default software cursor immediately instead of waiting for
+            // the user's first motion event to make it visible.
+            self.submit_default_workspace_frame();
         } else if pointer_count == 0 && self.seat.get_pointer().is_some() {
             self.seat.remove_pointer();
+            // The next frame has no overlay, which damages the previous
+            // cursor bounds and clears the last visible arrow.
+            self.submit_default_workspace_frame();
         }
 
         debug!(
@@ -145,6 +152,9 @@ impl RuntimeState {
             },
         );
         pointer.frame(self);
+        // The cursor is a compositor-owned overlay, so pointer motion must
+        // request a presentation even when no client surface changed.
+        self.submit_default_workspace_frame();
     }
 
     fn forward_pointer_button(

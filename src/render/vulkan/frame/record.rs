@@ -14,6 +14,7 @@ use crate::render::{FrameSubmission, frame::HeapAllocation};
 use super::super::{import::ClientImageInfo, target::NativeOutputImageInfo};
 
 pub(super) const DRAW_PUSH_DATA_SIZE: u64 = mem::size_of::<DrawPushData>() as u64;
+pub(super) const CURSOR_PUSH_DATA_SIZE: u64 = mem::size_of::<CursorPushData>() as u64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -27,9 +28,21 @@ struct DrawPushData {
     uv_axis_y_surface_size: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CursorPushData {
+    destination: [f32; 4],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedDraw {
     push: DrawPushData,
+    scissor: vk::Rect2D,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PreparedCursorDraw {
+    push: CursorPushData,
     scissor: vk::Rect2D,
 }
 
@@ -56,10 +69,7 @@ pub(super) fn prepare_draws(
             stride: descriptor_stride,
         });
     }
-    let viewport = frame.target.viewport;
-    if viewport.width == 0 || viewport.height == 0 {
-        return Err(FrameRecordError::InvalidViewport);
-    }
+    let viewport = validate_viewport(frame.target.viewport)?;
 
     frame
         .draw_plan
@@ -117,6 +127,37 @@ pub(super) fn prepare_draws(
         .collect()
 }
 
+pub(super) fn prepare_cursor_draw(
+    frame: &FrameSubmission,
+) -> Result<Option<PreparedCursorDraw>, FrameRecordError> {
+    let Some(cursor) = frame.draw_plan.cursor() else {
+        return Ok(None);
+    };
+    let viewport = validate_viewport(frame.target.viewport)?;
+    Ok(Some(PreparedCursorDraw {
+        push: CursorPushData {
+            destination: destination_to_ndc(cursor.destination, viewport),
+        },
+        scissor: vk::Rect2D {
+            offset: vk::Offset2D {
+                x: cursor.clip.x,
+                y: cursor.clip.y,
+            },
+            extent: vk::Extent2D {
+                width: cursor.clip.width,
+                height: cursor.clip.height,
+            },
+        },
+    }))
+}
+
+fn validate_viewport(viewport: Rect) -> Result<Rect, FrameRecordError> {
+    if viewport.width == 0 || viewport.height == 0 {
+        return Err(FrameRecordError::InvalidViewport);
+    }
+    Ok(viewport)
+}
+
 /// Convert Tensor's top-left physical rectangle convention into the Vulkan
 /// NDC convention used with the positive-height native output viewport.
 ///
@@ -168,9 +209,11 @@ pub(super) struct SceneRecord<'a> {
     pub(super) frame: &'a FrameSubmission,
     pub(super) output: NativeOutputImageInfo,
     pub(super) clients: &'a [ClientImageInfo],
-    pub(super) pipeline: Option<vk::Pipeline>,
+    pub(super) client_pipeline: Option<vk::Pipeline>,
+    pub(super) cursor_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
     pub(super) graphics_queue_family: u32,
     pub(super) draws: &'a [PreparedDraw],
+    pub(super) cursor: Option<PreparedCursorDraw>,
 }
 
 pub(super) unsafe fn record_scene(
@@ -182,9 +225,11 @@ pub(super) unsafe fn record_scene(
         frame,
         output,
         clients,
-        pipeline,
+        client_pipeline,
+        cursor_pipeline,
         graphics_queue_family,
         draws,
+        cursor,
     } = scene;
     let subresource = color_subresource();
     let mut acquires = Vec::with_capacity(1 + clients.len());
@@ -223,19 +268,19 @@ pub(super) unsafe fn record_scene(
         .color_attachments(slice::from_ref(&color_attachment));
     unsafe { device.cmd_begin_rendering(command_buffer, &rendering) };
 
-    if let Some(pipeline) = pipeline {
-        let viewport = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: frame.target.viewport.width as f32,
-            height: frame.target.viewport.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
+    let viewport = vk::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: frame.target.viewport.width as f32,
+        height: frame.target.viewport.height as f32,
+        min_depth: 0.0,
+        max_depth: 1.0,
+    };
+    unsafe { device.cmd_set_viewport(command_buffer, 0, slice::from_ref(&viewport)) };
+    if let Some(pipeline) = client_pipeline {
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            device.cmd_set_viewport(command_buffer, 0, slice::from_ref(&viewport));
-        }
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline)
+        };
         for draw in draws {
             let push_bytes = unsafe {
                 slice::from_raw_parts(
@@ -250,6 +295,26 @@ pub(super) unsafe fn record_scene(
                 device.cmd_push_data_ext(command_buffer, &push);
                 device.cmd_draw(command_buffer, 6, 1, 0, 0);
             }
+        }
+    }
+    if let (Some((pipeline, layout)), Some(cursor)) = (cursor_pipeline, cursor) {
+        let push_bytes = unsafe {
+            slice::from_raw_parts(
+                (&cursor.push as *const CursorPushData).cast::<u8>(),
+                mem::size_of::<CursorPushData>(),
+            )
+        };
+        unsafe {
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&cursor.scissor));
+            device.cmd_push_constants(
+                command_buffer,
+                layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_bytes,
+            );
+            device.cmd_draw(command_buffer, 6, 1, 0, 0);
         }
     }
     unsafe { device.cmd_end_rendering(command_buffer) };

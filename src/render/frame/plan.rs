@@ -4,6 +4,7 @@ use tensor_util::Rect;
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
+    render::CursorOverlay,
     scene::{ContentRevision, EffectStyle, SceneSnapshot, SurfaceLayer, SurfaceTransform},
 };
 
@@ -17,6 +18,7 @@ use super::{FrameError, NativeOutputTarget};
 pub(crate) struct FrameDrawPlan {
     images: Vec<SurfaceBufferId>,
     draws: Vec<SurfaceDraw>,
+    cursor: Option<CursorDraw>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,10 +33,28 @@ pub(crate) struct SurfaceDraw {
     pub(crate) transform: SurfaceTransform,
 }
 
+/// A vector cursor draws after every client surface and therefore needs no
+/// sampled-image descriptor. Its rectangle is already output-local physical
+/// geometry, keeping pointer coordinates out of the Vulkan boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CursorDraw {
+    pub(crate) destination: Rect,
+    pub(crate) clip: Rect,
+}
+
 impl FrameDrawPlan {
+    #[cfg(test)]
     pub(crate) fn build(
         scene: &SceneSnapshot,
         target: NativeOutputTarget,
+    ) -> Result<Self, FrameError> {
+        Self::build_with_cursor(scene, target, None)
+    }
+
+    pub(crate) fn build_with_cursor(
+        scene: &SceneSnapshot,
+        target: NativeOutputTarget,
+        cursor: Option<CursorOverlay>,
     ) -> Result<Self, FrameError> {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
@@ -101,7 +121,14 @@ impl FrameDrawPlan {
             }
         }
 
-        Ok(Self { images, draws })
+        Ok(Self {
+            images,
+            draws,
+            cursor: cursor.map(|overlay| CursorDraw {
+                destination: overlay.destination,
+                clip: overlay.clip,
+            }),
+        })
     }
 
     pub(crate) fn images(&self) -> &[SurfaceBufferId] {
@@ -110,6 +137,10 @@ impl FrameDrawPlan {
 
     pub(crate) fn draws(&self) -> &[SurfaceDraw] {
         &self.draws
+    }
+
+    pub(crate) const fn cursor(&self) -> Option<CursorDraw> {
+        self.cursor
     }
 }
 

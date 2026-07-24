@@ -177,13 +177,22 @@ the configured usable budget at `maxResourceHeapSize`. The Vulkan heap uses the 
 offset contract, so allocator ranges are now copied into the real heap rather than remaining a
 simulation.
 
+Pointer visibility is a compositor overlay, not client-scene state. Smithay's
+`CursorImageStatus` and any client cursor surface stay in the protocol owner; at frame submission
+they become a value-only, output-local physical `CursorOverlay`. The current visible fallback is a
+small vector arrow, including for a named or client-provided cursor image until cursor-raster
+upload is added. It draws after all client content, is clipped to the native target, and damages
+both its old and new physical bounds on motion. Its pipeline has no sampled resources and uses only
+a 16-byte vertex push constant with a zero-set layout; it is not a descriptor-set rendering path.
+
 The current command stream is deliberately limited to:
 
 1. upload native/client image descriptors and bind the resource and sampler heaps;
 2. acquire the selected output and imported client images from `VK_QUEUE_FAMILY_FOREIGN_EXT`;
 3. run dynamic rendering and draw sampled client rectangles with transform, opacity, clip, and
    corner-radius data;
-4. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
+4. draw the compositor-owned vector cursor over client content when the pointer is visible;
+5. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
 complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, and damage-driven partial

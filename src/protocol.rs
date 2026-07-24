@@ -1,3 +1,5 @@
+#[cfg(feature = "tty")]
+mod cursor;
 mod focus;
 mod globals;
 mod handlers;

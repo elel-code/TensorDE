@@ -27,6 +27,15 @@ impl DamageSet {
         &self.regions
     }
 
+    /// Add a region already expressed in the damage set's coordinate space.
+    /// Renderer-owned overlays use this after scene damage has crossed the
+    /// logical-to-physical boundary.
+    #[cfg(feature = "tty")]
+    pub(crate) fn add_region(&mut self, region: Rect, viewport: Rect) {
+        self.add(region, viewport);
+        self.sort();
+    }
+
     #[cfg(any(feature = "tty", test))]
     pub(crate) fn to_physical(
         &self,

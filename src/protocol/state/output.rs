@@ -35,6 +35,22 @@ impl RuntimeState {
         else {
             return;
         };
+        let target = self
+            .outputs
+            .get(&output_id)
+            .map(|managed| renderer_target(&managed.descriptor))
+            .expect("selected output must retain its renderer target");
+        let pointer_location = self
+            .seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location());
+        let cursor = match (pointer_location, self.space.output_geometry(&output)) {
+            (Some(pointer), Some(geometry)) => {
+                self.cursor
+                    .overlay_for_output(pointer, geometry, target.scale, target.viewport)
+            }
+            _ => None,
+        };
         if let Some(renderer) = self.renderer.as_mut()
             && let Err(error) = renderer.refresh_completed()
         {
@@ -42,10 +58,7 @@ impl RuntimeState {
             warn!(%error, "renderer completion poll failed before output slot selection");
             return;
         }
-        let render_output = RenderOutputId {
-            device_id: output_id.device_id,
-            connector_id: output_id.connector_id,
-        };
+        let render_output = target.output;
         let Some(mut next_slot) = self
             .renderer
             .as_ref()
@@ -85,7 +98,7 @@ impl RuntimeState {
         let Some(result) = self
             .renderer
             .as_mut()
-            .map(|renderer| renderer.submit_scene(render_output, scene))
+            .map(|renderer| renderer.submit_scene(render_output, scene, cursor))
         else {
             drop(captured_presentation);
             return;
