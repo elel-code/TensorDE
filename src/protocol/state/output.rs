@@ -54,7 +54,7 @@ impl RuntimeState {
         if let Some(renderer) = self.renderer.as_mut()
             && let Err(error) = renderer.refresh_completed()
         {
-            self.repaint_pending.insert(output_id);
+            self.defer_output_repaint(output_id);
             warn!(%error, "renderer completion poll failed before output slot selection");
             return;
         }
@@ -64,7 +64,7 @@ impl RuntimeState {
             .as_ref()
             .and_then(|renderer| renderer.next_output_slot(render_output))
         else {
-            self.repaint_pending.insert(output_id);
+            self.defer_output_repaint(output_id);
             return;
         };
         let mut selected_slot = None;
@@ -89,7 +89,7 @@ impl RuntimeState {
             }
         }
         let Some(_selected_slot) = selected_slot else {
-            self.repaint_pending.insert(output_id);
+            self.defer_output_repaint(output_id);
             return;
         };
         // Drain feedback only after all retry gates passed. The local owner
@@ -129,7 +129,7 @@ impl RuntimeState {
                         timeline = frame.timeline_value,
                         "renderer frame has no Smithay atomic KMS backend"
                     );
-                    self.repaint_pending.insert(output_id);
+                    self.defer_output_repaint(output_id);
                     return;
                 };
                 if let Err(error) = backend.submit_output_frame(
@@ -145,7 +145,7 @@ impl RuntimeState {
                         %error,
                         "renderer frame could not enter atomic KMS"
                     );
-                    self.repaint_pending.insert(output_id);
+                    self.defer_output_repaint(output_id);
                     return;
                 }
                 // Atomic KMS has latched ownership of the submitted client
@@ -160,6 +160,7 @@ impl RuntimeState {
                     output_slot = frame.output_slot,
                     serial = frame.serial,
                     timeline = frame.timeline_value,
+                    cursor = ?frame.cursor,
                     damage_regions = frame.damage.regions().len(),
                     descriptor_offset = frame.descriptors.offset,
                     descriptor_bytes = frame.descriptors.size,
@@ -176,15 +177,24 @@ impl RuntimeState {
             }
             Err(error) => {
                 drop(captured_presentation);
-                self.repaint_pending.insert(output_id);
                 warn!(
                     output_device = output_id.device_id,
                     output_connector = output_id.connector_id,
                     %error,
                     "renderer frame boundary failed"
                 );
+                self.defer_output_repaint(output_id);
             }
         }
+    }
+
+    /// Keep an input-driven redraw live when the previous submission still
+    /// owns the only scheduler slot. Page-flip completion handles the normal
+    /// KMS case; this additionally polls the Vulkan timeline when a pointer
+    /// event arrives after that page flip but before GPU retirement.
+    fn defer_output_repaint(&mut self, output: BackendOutputId) {
+        self.repaint_pending.insert(output);
+        self.schedule_renderer_retry_if_needed();
     }
 
     #[cfg(feature = "tty")]

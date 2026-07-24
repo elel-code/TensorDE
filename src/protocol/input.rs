@@ -1,8 +1,8 @@
 use smithay::{
     backend::{
         input::{
-            ButtonState, Device, DeviceCapability, Event as InputEventTrait, InputEvent, KeyState,
-            KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent,
+            AbsolutePositionEvent, ButtonState, Device, DeviceCapability, Event as InputEventTrait,
+            InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent,
         },
         libinput::LibinputInputBackend,
     },
@@ -12,7 +12,7 @@ use smithay::{
         pointer::{ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
@@ -40,6 +40,9 @@ impl RuntimeState {
             }
             InputEvent::Keyboard { event } => self.forward_keyboard(event),
             InputEvent::PointerMotion { event } => self.forward_pointer_motion(event),
+            InputEvent::PointerMotionAbsolute { event } => {
+                self.forward_pointer_motion_absolute(event)
+            }
             InputEvent::PointerButton { event } => self.forward_pointer_button(event),
             InputEvent::PointerAxis { event } => self.forward_pointer_axis(event),
             _ => {}
@@ -140,7 +143,40 @@ impl RuntimeState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let location = pointer.current_location() + event.delta();
+        let location = self.relative_pointer_location(pointer.current_location(), event.delta());
+        let Some(location) = location else {
+            return;
+        };
+        self.forward_pointer_location(location, event.time_msec());
+    }
+
+    /// Follow the same absolute-coordinate conversion used by Niri: libinput
+    /// maps the device into the compositor's logical output bounds, then the
+    /// seat receives the resulting global location and a redraw is queued.
+    fn forward_pointer_motion_absolute(
+        &mut self,
+        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::PointerMotionAbsoluteEvent,
+    ) {
+        let Some(bounds) = self.pointer_coordinate_space() else {
+            return;
+        };
+        let current = self
+            .seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location())
+            .unwrap_or_else(|| center_pointer_location(bounds));
+        let location = event.position_transformed(bounds.size) + bounds.loc.to_f64();
+        let location = replace_non_finite_pointer_location(location, current);
+        self.forward_pointer_location(
+            constrain_pointer_location(location, bounds),
+            event.time_msec(),
+        );
+    }
+
+    fn forward_pointer_location(&mut self, location: Point<f64, Logical>, time: u32) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
         let focus = self.pointer_focus_under(location);
         pointer.motion(
             self,
@@ -148,13 +184,66 @@ impl RuntimeState {
             &MotionEvent {
                 location,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time,
             },
         );
         pointer.frame(self);
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed.
         self.submit_default_workspace_frame();
+    }
+
+    /// Match Niri's relative-pointer behavior: movement can cross directly
+    /// into a neighboring output, but motion through a gap is clipped to the
+    /// current output. This keeps a compositor-owned cursor renderable on a
+    /// real output at all times.
+    fn relative_pointer_location(
+        &self,
+        previous: Point<f64, Logical>,
+        delta: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        let proposed = previous + sanitize_relative_pointer_delta(delta);
+        if self.space.output_under(proposed).next().is_some() {
+            return Some(proposed);
+        }
+        if let Some(output) = self.space.output_under(previous).next()
+            && let Some(bounds) = self.space.output_geometry(output)
+        {
+            return Some(constrain_pointer_location(proposed, bounds));
+        }
+        self.initial_pointer_location()
+    }
+
+    /// A reset seat or an output-layout change can leave the pointer outside
+    /// every live output. Niri restores it to an actual output rather than a
+    /// bounding-box gap. Tensor picks the top-left output deterministically so
+    /// hotplug order cannot influence the next pointer event.
+    fn initial_pointer_location(&self) -> Option<Point<f64, Logical>> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .filter(|geometry| geometry.size.w > 0 && geometry.size.h > 0)
+            .min_by_key(|geometry| {
+                (
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    geometry.size.w,
+                    geometry.size.h,
+                )
+            })
+            .map(center_pointer_location)
+    }
+
+    /// Absolute devices are described in one compositor-wide coordinate
+    /// rectangle. This is the union of every mapped Smithay output, so tablet
+    /// and remote-pointer events do not depend on HashMap iteration order or
+    /// an independently selected renderer device.
+    fn pointer_coordinate_space(&self) -> Option<Rectangle<i32, Logical>> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .filter(|geometry| geometry.size.w > 0 && geometry.size.h > 0)
+            .reduce(Rectangle::merge)
     }
 
     fn forward_pointer_button(
@@ -365,6 +454,66 @@ impl RuntimeState {
     }
 }
 
+fn constrain_pointer_location(
+    location: Point<f64, Logical>,
+    bounds: Rectangle<i32, Logical>,
+) -> Point<f64, Logical> {
+    let min_x = f64::from(bounds.loc.x);
+    let min_y = f64::from(bounds.loc.y);
+    let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));
+    let max_y = min_y + f64::from(bounds.size.h.saturating_sub(1));
+    (
+        constrain_pointer_coordinate(location.x, min_x, max_x),
+        constrain_pointer_coordinate(location.y, min_y, max_y),
+    )
+        .into()
+}
+
+fn center_pointer_location(bounds: Rectangle<i32, Logical>) -> Point<f64, Logical> {
+    let min_x = f64::from(bounds.loc.x);
+    let min_y = f64::from(bounds.loc.y);
+    let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));
+    let max_y = min_y + f64::from(bounds.size.h.saturating_sub(1));
+    ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0).into()
+}
+
+fn sanitize_relative_pointer_delta(delta: Point<f64, Logical>) -> Point<f64, Logical> {
+    (
+        if delta.x.is_finite() { delta.x } else { 0.0 },
+        if delta.y.is_finite() { delta.y } else { 0.0 },
+    )
+        .into()
+}
+
+fn replace_non_finite_pointer_location(
+    location: Point<f64, Logical>,
+    fallback: Point<f64, Logical>,
+) -> Point<f64, Logical> {
+    (
+        if location.x.is_finite() {
+            location.x
+        } else {
+            fallback.x
+        },
+        if location.y.is_finite() {
+            location.y
+        } else {
+            fallback.y
+        },
+    )
+        .into()
+}
+
+fn constrain_pointer_coordinate(value: f64, min: f64, max: f64) -> f64 {
+    if value.is_nan() || value == f64::NEG_INFINITY {
+        min
+    } else if value == f64::INFINITY {
+        max
+    } else {
+        value.clamp(min, max)
+    }
+}
+
 fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
     (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
         .contains(&keysym)
@@ -373,9 +522,18 @@ fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use smithay::input::keyboard::keysyms;
+    use smithay::{
+        input::keyboard::keysyms,
+        output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
+        reexports::wayland_server::Display,
+        utils::{Logical, Point, Rectangle},
+    };
 
-    use super::virtual_terminal_for_keysym;
+    use super::{
+        RuntimeState, constrain_pointer_location, replace_non_finite_pointer_location,
+        sanitize_relative_pointer_delta, virtual_terminal_for_keysym,
+    };
+    use crate::layout::{LayoutEngine, LayoutKind};
 
     #[test]
     fn virtual_terminal_recovery_keys_are_complete_and_bounded() {
@@ -391,5 +549,84 @@ mod tests {
             virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_12 + 1),
             None
         );
+    }
+
+    #[test]
+    fn pointer_location_stays_inside_the_logical_output_edges() {
+        let bounds = Rectangle::<i32, Logical>::new((-20, 40).into(), (100, 80).into());
+
+        assert_eq!(
+            constrain_pointer_location((-120.0, 999.0).into(), bounds),
+            Point::from((-20.0, 119.0))
+        );
+    }
+
+    #[test]
+    fn pointer_location_handles_non_finite_input_without_protocol_escape() {
+        let bounds = Rectangle::<i32, Logical>::new((10, 20).into(), (4, 6).into());
+
+        assert_eq!(
+            constrain_pointer_location((f64::INFINITY, f64::NAN).into(), bounds),
+            Point::from((13.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn relative_pointer_delta_ignores_non_finite_axes() {
+        assert_eq!(
+            sanitize_relative_pointer_delta((f64::NAN, f64::INFINITY).into()),
+            Point::from((0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn absolute_pointer_location_retains_valid_axes_when_one_axis_is_invalid() {
+        assert_eq!(
+            replace_non_finite_pointer_location((f64::NAN, 95.0).into(), Point::from((30.0, 40.0)),),
+            Point::from((30.0, 95.0))
+        );
+    }
+
+    #[test]
+    fn relative_pointer_crosses_neighboring_outputs_but_not_a_gap() {
+        let display = Display::<RuntimeState>::new().unwrap();
+        let mut state =
+            RuntimeState::new(display.handle(), LayoutEngine::new(LayoutKind::Scrolling1D));
+        map_output(&mut state, "left", (0, 0), (100, 100));
+        map_output(&mut state, "right", (200, 0), (100, 100));
+
+        assert_eq!(
+            state.relative_pointer_location((90.0, 40.0).into(), (30.0, 0.0).into()),
+            Some(Point::from((99.0, 40.0))),
+            "a gap is clipped to the output that already contains the pointer"
+        );
+        assert_eq!(
+            state.relative_pointer_location((90.0, 40.0).into(), (120.0, 0.0).into()),
+            Some(Point::from((210.0, 40.0))),
+            "a direct crossing remains possible"
+        );
+    }
+
+    fn map_output(state: &mut RuntimeState, name: &str, location: (i32, i32), size: (i32, i32)) {
+        let output = Output::new(
+            name.to_owned(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::HorizontalRgb,
+                make: "Tensor test".to_owned(),
+                model: name.to_owned(),
+                serial_number: name.to_owned(),
+            },
+        );
+        output.change_current_state(
+            Some(Mode {
+                size: size.into(),
+                refresh: 60_000,
+            }),
+            None,
+            Some(Scale::Integer(1)),
+            Some(location.into()),
+        );
+        state.space.map_output(&output, location);
     }
 }

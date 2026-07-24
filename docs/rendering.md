@@ -185,6 +185,13 @@ upload is added. It draws after all client content, is clipped to the native tar
 both its old and new physical bounds on motion. Its pipeline has no sampled resources and uses only
 a 16-byte vertex push constant with a zero-set layout; it is not a descriptor-set rendering path.
 
+This is a deliberately distilled contract from the local Niri, Hyprland, and Nourish references:
+Niri establishes pointer-as-topmost-render-element and output-aware relative motion; Hyprland
+establishes old/new software-cursor damage and rejects invalid input coordinates; Nourish
+establishes an explicit logical-to-output-physical cursor boundary. Tensor keeps the resulting
+state and geometry value-only at the renderer boundary, without adopting any reference project's
+renderer or KMS ownership model.
+
 The current command stream is deliberately limited to:
 
 1. upload native/client image descriptors and bind the resource and sampler heaps;
@@ -217,6 +224,10 @@ an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty 
 as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bounded repaint queue
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
+An input-driven compositor overlay repaint remains pending when its only blocked gate is a Vulkan
+timeline submission that has not retired yet. A low-frequency one-shot calloop timer then polls
+completion until it can submit; KMS-owned slot waits remain driven by the next page flip, so Tensor
+does not spin or treat an old page flip as retirement of new GPU work.
 After VT/session resume, Smithay refreshes each DRM surface while Tensor quarantines the previously
 current and pending slots. A calloop idle repaint runs only after already-ready DRM events drain; the
 first new page flip releases the quarantine. If the old Vulkan submission is still completing, a
