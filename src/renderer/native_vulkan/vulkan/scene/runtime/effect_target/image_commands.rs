@@ -425,12 +425,18 @@ pub(super) fn scaled_extent(extent: vk::Extent2D, target: &SceneImageTargetRecor
     )
 }
 
+/// Scale one axis by `divisor_milli / 1000` with **integer floor** division.
+///
+/// Wallpaper Engine source targets store
+/// `max(2, full_extent / scale_divisor)` (`source_target_factory_0x1400d2a20`),
+/// where `/` is unsigned integer division. Gilder encodes the same scale as
+/// milli (`scale * 1000`), so this must be `floor(value * 1000 / milli)`, not
+/// `div_ceil`. Odd surfaces (e.g. 2199 with half-scale 2000) otherwise become
+/// 1100 instead of WE's 1099.
 pub(super) fn divided_axis(value: u32, divisor_milli: u32) -> u32 {
     let numerator = (value.max(1) as u64).saturating_mul(1000);
-    (numerator
-        .div_ceil(divisor_milli.max(1) as u64)
-        .min(u32::MAX as u64) as u32)
-        .max(2)
+    let divisor = divisor_milli.max(1) as u64;
+    ((numerator / divisor).min(u32::MAX as u64) as u32).max(2)
 }
 
 pub(super) fn record_effect_target_barrier(

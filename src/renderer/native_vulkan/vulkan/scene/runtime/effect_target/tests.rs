@@ -319,6 +319,12 @@ fn effect_target_image_plan_rejects_incompatible_manual_aliases() {
     assert!(error.contains("aliases incompatible images"));
     assert_eq!(divided_axis(1920, 4_000), 480);
     assert_eq!(divided_axis(1080, 4_000), 270);
+    // Half-scale integer floor matches WE `full / scale_divisor` (not div_ceil).
+    assert_eq!(divided_axis(3856, 2_000), 1928);
+    assert_eq!(divided_axis(2199, 2_000), 1099);
+    assert_eq!(divided_axis(3840, 2_000), 1920);
+    assert_eq!(divided_axis(2160, 2_000), 1080);
+    assert_eq!(divided_axis(1, 2_000), 2);
     assert_eq!(
         target_format("r16f", vk::Format::B8G8R8A8_UNORM).expect("r16f"),
         vk::Format::R16_SFLOAT
