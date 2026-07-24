@@ -63,8 +63,10 @@ selection result, never a silently skipped compatibility path.
 - XWayland lifecycle tests cover the two-signal mapped-window association gate, logical configure
   conversion, and teardown before Smithay removes the X11-to-Wayland association. Runtime wiring
   creates the XWM after XWayland readiness; hardware execution remains a TTY smoke test.
-  Override-redirect X11 windows remain an explicit popup-model gap rather than becoming standalone
-  views with a parallel X11 coordinate path.
+  Override-redirect coverage additionally requires map and association state, a managed
+  `WM_TRANSIENT_FOR` ancestor, relative logical offsets, and X11 stacking. It verifies that such
+  windows add no ECS view or independent X11 coordinate path, and that owner or popup teardown
+  detaches their Smithay/input/render state safely.
 - Input lifecycle coverage verifies that activating a mapped root updates the ECS focus and the
   Smithay keyboard target, then clears it when the root is destroyed. X11 activation routes through
   the `X11Surface` keyboard target so its ICCCM focus handshake is retained without changing the

@@ -120,9 +120,13 @@ performs the ICCCM input-focus / `WM_TAKE_FOCUS` handshake; it targets the nativ
 Wayland clients. Either route updates the same ECS focus, stacking, and layout reflow state, and a
 destroyed root clears keyboard focus before its surface association disappears.
 
-Override-redirect X11 windows are deliberately not promoted to independent tiled views yet. They
-need popup/parent semantics, not a fallback path that would accept arbitrary global X11 placement.
-Their absence is an explicit feature gap until that unified popup ownership model is implemented.
+Override-redirect X11 windows use popup/parent semantics rather than becoming independent tiled
+views. Tensor admits one only after its map state and `xwayland-shell` association are both known
+and its `WM_TRANSIENT_FOR` chain resolves to a managed X11 root. The popup's configured X11
+location becomes an offset relative to that root's configured rectangle; it is mapped in Smithay's
+input/output space and flattened into the root view's scene content. Its stacking, explicit-sync
+ownership, frame callbacks, and presentation feedback therefore remain attached to the root view.
+An unowned popup is rejected instead of creating a fallback global X11 placement path.
 
 Modules use `foo.rs` plus `foo/*.rs`; `mod.rs` is prohibited. Shared dependency-light primitives
 belong in `crates/tensor-util`, while protocol, renderer, and compositor-specific types stay in their
