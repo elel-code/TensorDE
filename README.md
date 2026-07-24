@@ -62,6 +62,13 @@ hybrid-GPU test, and `--no-xwayland` to isolate the native Wayland path.
 its terminal output to `artifacts/logs/tensor-tty.log`, so a TTY smoke-test
 result can be inspected after returning to the development session.
 
+For the native presentation gate, use `uv run scripts/tty.py --dmabuf-smoke`.
+After Tensor creates its socket, the launcher runs a GBM client on the exact
+render node advertised by Tensor's linux-dmabuf feedback. It succeeds only
+after explicit-modifier dma-buf import, XDG configure, frame callbacks,
+`wp_presentation` completion, and release of an older `wl_buffer`; it has no
+SHM or implicit-modifier fallback.
+
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 the complete native renderer gate.

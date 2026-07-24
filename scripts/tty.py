@@ -7,8 +7,10 @@ import argparse
 from datetime import datetime
 import os
 from pathlib import Path
+import selectors
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -45,6 +47,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="run the safe startup capability check instead of entering the TTY event loop",
     )
+    parser.add_argument(
+        "--dmabuf-smoke",
+        action="store_true",
+        help=(
+            "launch Tensor's GBM linux-dmabuf client after the Wayland socket is ready; "
+            "it requires real buffer import, KMS presentation, and release before succeeding"
+        ),
+    )
     lifetime = parser.add_mutually_exclusive_group()
     lifetime.add_argument(
         "--duration",
@@ -68,6 +78,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration <= 0:
         parser.error("--duration must be greater than zero")
+    if args.check and args.dmabuf_smoke:
+        parser.error("--dmabuf-smoke requires a real TTY compositor session, not --check")
+    if args.forever and args.dmabuf_smoke:
+        parser.error("--dmabuf-smoke has its own bounded health loop and cannot use --forever")
     return args
 
 
@@ -107,11 +121,50 @@ def smoke_duration_for(args: argparse.Namespace) -> float | None:
     return args.duration
 
 
-def build_compositor() -> int:
-    print("Building Tensor compositor...")
+def build_binaries(dmabuf_smoke: bool) -> int:
+    command = ["cargo", "build", "--bin", "tensor-compositor"]
+    if dmabuf_smoke:
+        command.extend(["--bin", "tensor-dmabuf-smoke"])
+    print("Building Tensor binaries...")
     return subprocess.run(
-        ["cargo", "build", "--bin", "tensor-compositor"], cwd=ROOT, check=False
+        command, cwd=ROOT, check=False
     ).returncode
+
+
+def tensor_sockets(runtime_dir: Path) -> set[Path]:
+    try:
+        entries = runtime_dir.iterdir()
+    except OSError:
+        return set()
+    sockets = set()
+    for entry in entries:
+        if not entry.name.startswith("tensor-"):
+            continue
+        try:
+            if stat.S_ISSOCK(entry.stat().st_mode):
+                sockets.add(entry)
+        except OSError:
+            continue
+    return sockets
+
+
+def runtime_dir_for_smoke() -> Path:
+    value = os.environ.get("XDG_RUNTIME_DIR")
+    if not value:
+        raise SystemExit("--dmabuf-smoke requires XDG_RUNTIME_DIR")
+    return Path(value)
+
+
+def smoke_command(socket: Path, duration: float | None) -> list[str]:
+    command = [
+        str(ROOT / "target" / "debug" / "tensor-dmabuf-smoke"),
+        "--socket",
+        socket.name,
+    ]
+    if duration is not None:
+        timeout = max(1, int(duration - 2))
+        command.extend(["--timeout", str(timeout)])
+    return command
 
 
 def emit(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
@@ -131,11 +184,14 @@ def launch(
     environment: dict[str, str],
     log_path: Path,
     duration: float | None,
+    dmabuf_smoke: bool,
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     completed = threading.Event()
     shutdown_requested = threading.Event()
     output_lock = threading.Lock()
+    runtime_dir = runtime_dir_for_smoke() if dmabuf_smoke else None
+    known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else set()
 
     with log_path.open("ab", buffering=0) as log:
         started = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -149,11 +205,50 @@ def launch(
             stderr=subprocess.STDOUT,
         )
         assert process.stdout is not None
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, "tensor")
+        smoke_process: subprocess.Popen[bytes] | None = None
+        smoke_status: int | None = None
+        tensor_output_open = True
+
+        def start_smoke_client() -> None:
+            nonlocal smoke_process
+            if smoke_process is not None or runtime_dir is None:
+                return
+            candidates = sorted(tensor_sockets(runtime_dir) - known_sockets)
+            if not candidates:
+                return
+            client_command = smoke_command(candidates[0], duration)
+            note(
+                log,
+                output_lock,
+                f"Wayland socket {candidates[0].name} is ready; starting dma-buf smoke client: "
+                f"{shlex.join(client_command)}",
+            )
+            smoke_process = subprocess.Popen(
+                client_command,
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            assert smoke_process.stdout is not None
+            selector.register(smoke_process.stdout, selectors.EVENT_READ, "dmabuf-smoke")
+
+        def stop_smoke_client(reason: str) -> None:
+            if smoke_process is None or smoke_process.poll() is not None:
+                return
+            note(log, output_lock, f"{reason}; sending SIGTERM to dma-buf smoke client")
+            try:
+                smoke_process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                return
 
         def request_shutdown(reason: str) -> None:
             if completed.is_set() or shutdown_requested.is_set():
                 return
             shutdown_requested.set()
+            stop_smoke_client(reason)
             if process.poll() is not None:
                 return
             note(log, output_lock, f"{reason}; sending SIGTERM to Tensor")
@@ -174,6 +269,11 @@ def launch(
                     process.kill()
                 except ProcessLookupError:
                     pass
+                if smoke_process is not None and smoke_process.poll() is None:
+                    try:
+                        smoke_process.kill()
+                    except ProcessLookupError:
+                        pass
 
             threading.Thread(target=force_shutdown, daemon=True).start()
 
@@ -190,22 +290,60 @@ def launch(
             watchdog.start()
 
         try:
-            while True:
+            while tensor_output_open:
                 try:
-                    chunk = os.read(process.stdout.fileno(), 64 * 1024)
+                    start_smoke_client()
+                    events = selector.select(timeout=0.1)
                 except KeyboardInterrupt:
                     request_shutdown("interrupt received")
                     continue
-                if not chunk:
-                    if process.poll() is None:
-                        request_shutdown("Tensor closed its output while still running")
-                    break
-                emit(log, output_lock, chunk)
-            return process.wait()
+                for key, _ in events:
+                    stream = key.fileobj
+                    try:
+                        chunk = os.read(stream.fileno(), 64 * 1024)
+                    except BlockingIOError:
+                        continue
+                    if chunk:
+                        emit(log, output_lock, chunk)
+                        continue
+                    selector.unregister(stream)
+                    if key.data == "tensor":
+                        tensor_output_open = False
+                        if process.poll() is None:
+                            request_shutdown("Tensor closed its output while still running")
+                        continue
+                    assert smoke_process is not None
+                    smoke_status = smoke_process.wait()
+                    note(
+                        log,
+                        output_lock,
+                        f"dma-buf smoke client exited with status {smoke_status}",
+                    )
+                    if smoke_status == 0:
+                        request_shutdown("dma-buf smoke client completed successfully")
+                    else:
+                        request_shutdown("dma-buf smoke client failed")
+                if not tensor_output_open and dmabuf_smoke and smoke_process is None:
+                    smoke_status = 1
+                    note(
+                        log,
+                        output_lock,
+                        "Tensor exited before creating a new tensor-* Wayland socket for dma-buf smoke",
+                    )
+            compositor_status = process.wait()
+            if dmabuf_smoke:
+                if smoke_process is None:
+                    return 1
+                if smoke_status is None:
+                    smoke_status = smoke_process.wait()
+                if smoke_status != 0:
+                    return smoke_status
+            return compositor_status
         except KeyboardInterrupt:
             request_shutdown("interrupt received")
             return process.wait()
         finally:
+            selector.close()
             if process.poll() is None:
                 request_shutdown("TTY launcher is stopping")
                 try:
@@ -214,6 +352,14 @@ def launch(
                     note(log, output_lock, "forcing Tensor shutdown during launcher cleanup")
                     process.kill()
                     process.wait()
+            if smoke_process is not None and smoke_process.poll() is None:
+                stop_smoke_client("TTY launcher is stopping")
+                try:
+                    smoke_process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    note(log, output_lock, "forcing dma-buf smoke client shutdown")
+                    smoke_process.kill()
+                    smoke_process.wait()
             completed.set()
             if watchdog is not None:
                 watchdog.join()
@@ -241,16 +387,21 @@ def main() -> int:
             print("mode: persistent session")
         else:
             print(f"mode: bounded {duration:g}-second hardware smoke test")
+        if args.dmabuf_smoke:
+            print(
+                "health gate: wait for a new tensor-* socket, then require native "
+                "linux-dmabuf import, KMS presentation, and wl_buffer release"
+            )
         for name in ("RUST_LOG", "TENSOR_RENDER_DEVICE", "TENSOR_XWAYLAND"):
             if name in environment:
                 print(f"{name}={environment[name]}")
         return 0
 
-    build_status = build_compositor()
+    build_status = build_binaries(args.dmabuf_smoke)
     if build_status != 0:
         return build_status
     print(f"Tensor log: {log_path}")
-    return launch(command, environment, log_path, duration)
+    return launch(command, environment, log_path, duration, args.dmabuf_smoke)
 
 
 if __name__ == "__main__":

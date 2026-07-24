@@ -37,6 +37,26 @@ Hardware-dependent tests remain split into a deterministic state-machine layer a
 smoke layer. A missing Vulkan descriptor heap or a missing native dma-buf capability is a reported
 selection result, never a silently skipped compatibility path.
 
+## Native dma-buf presentation gate
+
+From a Linux virtual terminal owned by the normal desktop user, run:
+
+```sh
+uv run scripts/tty.py --dmabuf-smoke
+```
+
+The launcher waits for the new Tensor socket and then starts
+`tensor-dmabuf-smoke`. The client consumes Tensor's linux-dmabuf v4 default
+feedback, resolves its advertised main device to the matching `renderD*` node,
+and allocates only explicit-modifier GBM buffers on that node. It has no SHM,
+implicit-modifier, or alternate-GPU fallback.
+
+Success requires all of the following for the same native surface: accepted
+dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
+and release of an older `wl_buffer`. The launcher writes both process streams
+to `artifacts/logs/tensor-tty.log` and returns the smoke client's failure
+status, so the log remains available after the VT restores the prior session.
+
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
 - Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
   frame/full damage, old/new movement damage, popup bounds outside layout tiles, region coalescing,
