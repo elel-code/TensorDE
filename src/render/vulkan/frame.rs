@@ -51,6 +51,7 @@ impl VulkanFrameExecutor {
         graphics_queue_family: u32,
         heap_layout: DescriptorHeapLayout,
         sampler_heap_layout: SamplerHeapLayout,
+        bootstrap_pipeline_format: vk::Format,
     ) -> Result<Self, VulkanFrameError> {
         debug_assert_eq!(record::DRAW_PUSH_DATA_SIZE, 64);
         let pool_info = vk::CommandPoolCreateInfo::builder()
@@ -137,7 +138,7 @@ impl VulkanFrameExecutor {
                 return Err(VulkanFrameError::DescriptorHeap(source));
             }
         };
-        Ok(Self {
+        let mut executor = Self {
             command_pool,
             command_buffers,
             retire_values: [0; COMMAND_BUFFER_COUNT],
@@ -146,7 +147,12 @@ impl VulkanFrameExecutor {
             heap,
             graphics_queue_family,
             pipelines: HashMap::new(),
-        })
+        };
+        if let Err(error) = executor.pipeline_for(device, bootstrap_pipeline_format) {
+            unsafe { executor.destroy(device) };
+            return Err(error);
+        }
+        Ok(executor)
     }
 
     pub(super) fn completed(&self, device: &Device) -> Result<u64, vk::ErrorCode> {

@@ -9,8 +9,11 @@ An eligible physical device must provide all of the following before ranking:
 
 - Vulkan 1.4 and a graphics queue.
 - `VK_EXT_descriptor_heap`, including its feature bit.
+- Dynamic rendering, enabled from the Vulkan 1.3 feature chain for Tensor's
+  render-pass-free client-image pipeline.
 - Vulkan 1.4's `maintenance5` feature, which is a required descriptor-heap dependency and is
-  enabled in the device feature chain.
+  enabled in the device feature chain. When its promoted `VK_KHR_maintenance5` name is also
+  advertised, Tensor enables that name too, matching the descriptor-heap extension dependency.
 - Buffer device address support (the heap is bound as a device-address range; no descriptor-buffer
   or descriptor-set fallback is permitted).
 - A usable resource heap: non-zero heap alignment, maximum size beyond the implementation's

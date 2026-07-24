@@ -33,6 +33,9 @@ pub enum RendererError {
     #[error("failed to create Vulkan frame resources: {0:?}")]
     #[cfg(feature = "tty")]
     CreateFrameResources(String),
+    #[error("the selected Vulkan device rejected Tensor's client SPIR-V modules: {0}")]
+    #[cfg(feature = "tty")]
+    ValidateClientShaders(String),
     #[error("failed to create a native Vulkan output target: {0}")]
     #[cfg(feature = "tty")]
     NativeTarget(String),

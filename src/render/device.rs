@@ -132,6 +132,7 @@ pub struct DeviceCandidate {
     pub descriptor_heap: DescriptorHeapProperties,
     pub buffer_device_address_supported: bool,
     pub timeline_semaphore_supported: bool,
+    pub dynamic_rendering_supported: bool,
     pub maintenance5_supported: bool,
     pub graphics_queue_family: Option<u32>,
     pub drm: Option<DrmDeviceIdentity>,
@@ -271,6 +272,16 @@ impl DeviceSelector {
         }) {
             return Err(DeviceSelectionError::VulkanTooOld);
         }
+        if !candidates.iter().any(|candidate| {
+            candidate.descriptor_heap_supported
+                && candidate.buffer_device_address_supported
+                && candidate.timeline_semaphore_supported
+                && candidate.descriptor_heap.is_usable()
+                && candidate.api_version >= Version::V1_4_0
+                && candidate.dynamic_rendering_supported
+        }) {
+            return Err(DeviceSelectionError::MissingDynamicRendering);
+        }
         if !candidates
             .iter()
             .any(|candidate| descriptor_heap_core(candidate))
@@ -395,6 +406,7 @@ fn descriptor_heap_core(candidate: &DeviceCandidate) -> bool {
     candidate.descriptor_heap_supported
         && candidate.buffer_device_address_supported
         && candidate.timeline_semaphore_supported
+        && candidate.dynamic_rendering_supported
         && candidate.maintenance5_supported
         && candidate.descriptor_heap.is_usable()
         && candidate.api_version >= Version::V1_4_0
@@ -423,6 +435,8 @@ pub enum DeviceSelectionError {
     VulkanTooOld,
     #[error("no Vulkan 1.4 descriptor-heap device supports maintenance5")]
     MissingMaintenance5,
+    #[error("no Vulkan 1.4 descriptor-heap device supports dynamic rendering")]
+    MissingDynamicRendering,
     #[error("no Vulkan 1.4 descriptor-heap device exposes a graphics queue")]
     MissingGraphicsQueue,
     #[error("configured DRM node {0} does not identify a Vulkan physical device")]
@@ -489,6 +503,7 @@ mod tests {
             },
             buffer_device_address_supported: true,
             timeline_semaphore_supported: true,
+            dynamic_rendering_supported: true,
             maintenance5_supported: true,
             graphics_queue_family: Some(0),
             drm: Some(DrmDeviceIdentity::new(
@@ -560,6 +575,17 @@ mod tests {
         assert!(matches!(
             DeviceSelector::new(GpuPreference::Any).select([&candidate]),
             Err(DeviceSelectionError::MissingMaintenance5)
+        ));
+    }
+
+    #[test]
+    fn dynamic_rendering_is_required_for_client_image_pipelines() {
+        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        candidate.dynamic_rendering_supported = false;
+
+        assert!(matches!(
+            DeviceSelector::new(GpuPreference::Any).select([&candidate]),
+            Err(DeviceSelectionError::MissingDynamicRendering)
         ));
     }
 

@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use std::slice;
+use std::{mem, slice};
 
 use thiserror::Error;
 use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
@@ -33,6 +33,19 @@ pub(super) struct ClientImagePipeline {
     pipeline: vk::Pipeline,
 }
 
+/// Validate the exact SPIR-V modules used by the client-image pipeline while
+/// the renderer is still in its startup gate.  This turns a driver or shader
+/// compatibility failure into a clean startup error instead of discovering it
+/// after a client has committed its first buffer.
+pub(super) fn validate_shader_modules(device: &Device) -> Result<(), ClientPipelineError> {
+    let (vertex_module, fragment_module) = create_shader_modules(device)?;
+    unsafe {
+        device.destroy_shader_module(fragment_module, None);
+        device.destroy_shader_module(vertex_module, None);
+    }
+    Ok(())
+}
+
 impl ClientImagePipeline {
     pub(super) fn new(
         device: &Device,
@@ -45,21 +58,7 @@ impl ClientImagePipeline {
         let resource_heap_base = u32::try_from(resource_heap_base)
             .map_err(|_| ClientPipelineError::HeapOffsetTooLarge(resource_heap_base))?;
 
-        let vertex_info = vk::ShaderModuleCreateInfo::builder()
-            .code(VERTEX_SHADER)
-            .build();
-        let vertex_module = unsafe { device.create_shader_module(&vertex_info, None) }
-            .map_err(ClientPipelineError::CreateVertexModule)?;
-        let fragment_info = vk::ShaderModuleCreateInfo::builder()
-            .code(FRAGMENT_SHADER)
-            .build();
-        let fragment_module = match unsafe { device.create_shader_module(&fragment_info, None) } {
-            Ok(module) => module,
-            Err(error) => {
-                unsafe { device.destroy_shader_module(vertex_module, None) };
-                return Err(ClientPipelineError::CreateFragmentModule(error));
-            }
-        };
+        let (vertex_module, fragment_module) = create_shader_modules(device)?;
 
         let sampler = surface_sampler_info();
         let source = vk::DescriptorMappingSourcePushIndexEXT::builder()
@@ -186,6 +185,29 @@ impl ClientImagePipeline {
     }
 }
 
+fn create_shader_modules(
+    device: &Device,
+) -> Result<(vk::ShaderModule, vk::ShaderModule), ClientPipelineError> {
+    let vertex_info = shader_module_info(VERTEX_SHADER);
+    let vertex_module = unsafe { device.create_shader_module(&vertex_info, None) }
+        .map_err(ClientPipelineError::CreateVertexModule)?;
+    let fragment_info = shader_module_info(FRAGMENT_SHADER);
+    match unsafe { device.create_shader_module(&fragment_info, None) } {
+        Ok(fragment_module) => Ok((vertex_module, fragment_module)),
+        Err(error) => {
+            unsafe { device.destroy_shader_module(vertex_module, None) };
+            Err(ClientPipelineError::CreateFragmentModule(error))
+        }
+    }
+}
+
+fn shader_module_info(code: &[u32]) -> vk::ShaderModuleCreateInfo {
+    vk::ShaderModuleCreateInfo::builder()
+        .code_size(mem::size_of_val(code))
+        .code(code)
+        .build()
+}
+
 #[derive(Debug, Error)]
 pub(super) enum ClientPipelineError {
     #[error("descriptor stride {0} does not fit descriptor-heap mapping fields")]
@@ -225,5 +247,16 @@ mod tests {
             sampler.address_mode_w,
             vk::SamplerAddressMode::CLAMP_TO_EDGE
         );
+    }
+
+    #[test]
+    fn shader_module_info_carries_the_complete_spirv_byte_length() {
+        let vertex = shader_module_info(VERTEX_SHADER);
+        let fragment = shader_module_info(FRAGMENT_SHADER);
+
+        assert_eq!(vertex.code_size, mem::size_of_val(VERTEX_SHADER));
+        assert_eq!(fragment.code_size, mem::size_of_val(FRAGMENT_SHADER));
+        assert!(!vertex.code.is_null());
+        assert!(!fragment.code.is_null());
     }
 }

@@ -136,7 +136,9 @@ impl VulkanRenderer {
                 max_embedded_samplers = device.candidate.descriptor_heap.max_descriptor_heap_embedded_samplers,
                 buffer_device_address = device.candidate.buffer_device_address_supported,
                 timeline_semaphore = device.candidate.timeline_semaphore_supported,
+                dynamic_rendering = device.candidate.dynamic_rendering_supported,
                 maintenance5 = device.candidate.maintenance5_supported,
+                maintenance5_extension = device.maintenance5_extension_available,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
                 native_output_formats = device.candidate.native_output_format_count,
                 "Vulkan physical device probed"
@@ -178,6 +180,18 @@ impl VulkanRenderer {
         #[cfg(feature = "tty")]
         let sampler_heap_layout = frame::sampler_heap_layout(selected.candidate.descriptor_heap)
             .map_err(|error| RendererError::Frame(error.to_string()))?;
+        #[cfg(feature = "tty")]
+        let bootstrap_pipeline_format = selected
+            .formats
+            .iter()
+            .copied()
+            .find(|format| format.supports_output_export())
+            .and_then(|format| vulkan_format_for_fourcc(format.format.code))
+            .ok_or_else(|| {
+                RendererError::Frame(
+                    "the selected device has no exportable format for the client pipeline".into(),
+                )
+            })?;
         let graphics_queue_family = selected
             .candidate
             .graphics_queue_family
@@ -190,7 +204,17 @@ impl VulkanRenderer {
         #[cfg(feature = "tty")]
         let native_targets = target::NativeTargetManager::new(render_node)
             .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
-        let device = create_device(&instance.instance, selected.handle, graphics_queue_family)?;
+        let device = create_device(
+            &instance.instance,
+            selected.handle,
+            graphics_queue_family,
+            selected.maintenance5_extension_available,
+        )?;
+        #[cfg(feature = "tty")]
+        if let Err(source) = pipeline::validate_shader_modules(&device) {
+            unsafe { device.destroy_device(None) };
+            return Err(RendererError::ValidateClientShaders(source.to_string()));
+        }
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
         #[cfg(feature = "tty")]
         let frame_executor = match frame::VulkanFrameExecutor::new(
@@ -200,6 +224,7 @@ impl VulkanRenderer {
             graphics_queue_family,
             frame_heap_layout,
             sampler_heap_layout,
+            bootstrap_pipeline_format,
         ) {
             Ok(executor) => executor,
             Err(source) => {
@@ -250,6 +275,7 @@ impl VulkanRenderer {
             max_push_data_size = selected_info.descriptor_heap.max_push_data_size,
             max_embedded_samplers = selected_info.descriptor_heap.max_descriptor_heap_embedded_samplers,
             buffer_device_address = true,
+            dynamic_rendering = true,
             maintenance5 = true,
             dma_buf = selected_info.interop.dma_buf_memory,
             drm_format_modifier = selected_info.interop.drm_format_modifier,
@@ -676,13 +702,14 @@ fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     graphics_queue_family: u32,
+    maintenance5_extension_available: bool,
 ) -> Result<Device, RendererError> {
     let priorities = [1.0];
     let queue = vk::DeviceQueueCreateInfo::builder()
         .queue_family_index(graphics_queue_family)
         .queue_priorities(&priorities);
     let queues = [queue];
-    let extensions = [
+    let mut extensions = vec![
         vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name.as_cstr().as_ptr(),
         vk::KHR_EXTERNAL_MEMORY_FD_EXTENSION.name.as_cstr().as_ptr(),
         vk::EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION
@@ -702,12 +729,18 @@ fn create_device(
             .as_cstr()
             .as_ptr(),
     ];
+    if maintenance5_extension_available {
+        extensions.push(vk::KHR_MAINTENANCE5_EXTENSION.name.as_cstr().as_ptr());
+    }
     let mut descriptor_heap = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
         .descriptor_heap(true)
         .build();
     let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::builder()
         .buffer_device_address(true)
         .timeline_semaphore(true)
+        .build();
+    let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::builder()
+        .dynamic_rendering(true)
         .build();
     let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::builder()
         .maintenance5(true)
@@ -716,6 +749,7 @@ fn create_device(
         .queue_create_infos(&queues)
         .enabled_extension_names(&extensions)
         .push_next(&mut vulkan12)
+        .push_next(&mut vulkan13)
         .push_next(&mut vulkan14)
         .push_next(&mut descriptor_heap);
     unsafe { instance.create_device(physical_device, &info, None) }

@@ -6,8 +6,8 @@ The startup sequence is a set of ordered gates:
 2. Resolve, parse, and validate the complete KDL configuration.
 3. Initialize logging and diagnostics.
 4. Create calloop, the Smithay display, and the Wayland listening socket.
-5. Create Vulkan and reject devices without `VK_EXT_descriptor_heap` or a usable exportable native
-   format/modifier.
+5. Create Vulkan, validate the client-image SPIR-V and descriptor-heap pipeline, and reject
+   devices without `VK_EXT_descriptor_heap` or a usable exportable native format/modifier.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
 8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, libinput,

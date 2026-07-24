@@ -12,6 +12,11 @@ pub(super) struct ProbedDevice {
     pub(super) handle: vk::PhysicalDevice,
     pub(super) candidate: DeviceCandidate,
     pub(super) formats: Vec<VulkanFormatCapability>,
+    /// `VK_KHR_maintenance5` is promoted in Vulkan 1.4, so the core feature
+    /// is sufficient for eligibility.  When a driver also advertises the KHR
+    /// name, enable it explicitly for `VK_EXT_descriptor_heap`, whose declared
+    /// dependency still names the KHR extension.
+    pub(super) maintenance5_extension_available: bool,
 }
 
 pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, RendererError> {
@@ -26,6 +31,9 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
         let has_heap_extension = extensions
             .iter()
             .any(|extension| extension.extension_name == vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name);
+        let maintenance5_extension_available = extensions
+            .iter()
+            .any(|extension| extension.extension_name == vk::KHR_MAINTENANCE5_EXTENSION.name);
         let descriptor_heap_supported =
             has_heap_extension && descriptor_heap_feature(instance, handle);
         let descriptor_heap = if has_heap_extension {
@@ -35,6 +43,7 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
         };
         let buffer_device_address_supported = buffer_device_address_feature(instance, handle);
         let timeline_semaphore_supported = timeline_semaphore_feature(instance, handle);
+        let dynamic_rendering_supported = dynamic_rendering_feature(instance, handle);
         let maintenance5_supported =
             api_version >= Version::V1_4_0 && maintenance5_feature(instance, handle);
         let has_drm_extension = extensions.iter().any(|extension| {
@@ -55,6 +64,7 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
             && descriptor_heap.is_usable()
             && buffer_device_address_supported
             && timeline_semaphore_supported
+            && dynamic_rendering_supported
             && maintenance5_supported
             && api_version >= Version::V1_4_0
             && graphics_queue_family.is_some()
@@ -80,6 +90,7 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
                 descriptor_heap,
                 buffer_device_address_supported,
                 timeline_semaphore_supported,
+                dynamic_rendering_supported,
                 maintenance5_supported,
                 graphics_queue_family,
                 drm,
@@ -87,6 +98,7 @@ pub(super) fn probe_devices(instance: &Instance) -> Result<Vec<ProbedDevice>, Re
                 native_output_format_count,
             },
             formats,
+            maintenance5_extension_available,
         });
     }
     Ok(candidates)
@@ -310,6 +322,13 @@ fn timeline_semaphore_feature(instance: &Instance, device: vk::PhysicalDevice) -
     let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut vulkan12);
     unsafe { instance.get_physical_device_features2(device, &mut features) };
     vulkan12.timeline_semaphore != 0
+}
+
+fn dynamic_rendering_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {
+    let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut vulkan13);
+    unsafe { instance.get_physical_device_features2(device, &mut features) };
+    vulkan13.dynamic_rendering != 0
 }
 
 fn maintenance5_feature(instance: &Instance, device: vk::PhysicalDevice) -> bool {
