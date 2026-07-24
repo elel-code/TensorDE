@@ -57,6 +57,10 @@ dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
 and release of an older `wl_buffer`. The launcher writes both process streams
 to `artifacts/logs/tensor-tty.log` and returns the smoke client's failure
 status, so the log remains available after the VT restores the prior session.
+Each `tty.py` invocation also supplies a unique private IPC endpoint through
+`TENSOR_IPC_SOCKET`. This prevents a suspended desktop compositor or a stale
+socket from blocking the TTY smoke run; it does not weaken IPC's rule that an
+ordinary compositor startup never removes an existing control socket.
 
 ## Ghostty native-client smoke
 

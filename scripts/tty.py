@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 import os
 from pathlib import Path
+import secrets
 import selectors
 import shlex
 import signal
@@ -115,11 +116,38 @@ def command_for(args: argparse.Namespace) -> list[str]:
 def environment_for(args: argparse.Namespace) -> dict[str, str]:
     environment = os.environ.copy()
     environment.setdefault("RUST_LOG", "tensor_compositor=debug")
+    # A TTY smoke run must not collide with a suspended desktop compositor or
+    # a previous interrupted smoke run that used the configured IPC endpoint.
+    # Keep this separate from the `tensor-N` Wayland sockets that the launcher
+    # discovers for test clients below.
+    environment["TENSOR_IPC_SOCKET"] = str(tty_ipc_socket_path())
     if args.render_device is not None:
         environment["TENSOR_RENDER_DEVICE"] = str(args.render_device)
     if args.no_xwayland:
         environment["TENSOR_XWAYLAND"] = "off"
     return environment
+
+
+def tty_ipc_socket_path() -> Path:
+    """Return a unique, short IPC path without perturbing Wayland discovery.
+
+    IPC deliberately refuses to unlink an existing configured path: it might
+    belong to a live compositor. TTY runs instead get a private endpoint. The
+    leading dot also prevents ``tensor_sockets()`` from mistaking this control
+    socket for Tensor's newly-created ``tensor-N`` Wayland socket.
+    """
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    for _ in range(16):
+        name = f".tensor-tty-ipc-{os.getpid()}-{secrets.token_hex(6)}.sock"
+        candidate = runtime_dir / name
+        # sockaddr_un paths have a small platform-dependent limit. Falling
+        # back to /tmp preserves the isolation guarantee for unusual runtime
+        # directory layouts rather than letting bind fail later and opaquely.
+        if len(os.fsencode(candidate)) >= 100:
+            candidate = Path("/tmp") / name
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("could not allocate an isolated Tensor TTY IPC path")
 
 
 def log_path_for(path: Path) -> Path:
@@ -262,6 +290,7 @@ def launch(
             f"$ {shlex.join(command)}\n"
             f"clients: dmabuf-smoke={dmabuf_smoke} ghostty={ghostty} "
             f"duration={duration if duration is not None else 'forever'}\n"
+            f"ipc-socket: {environment['TENSOR_IPC_SOCKET']}\n"
         )
         log.write(header.encode())
         process = subprocess.Popen(
@@ -585,7 +614,12 @@ def main() -> int:
                 "client: wait for Tensor to enter its event loop, then start a fresh Ghostty "
                 "with normal backend selection on Tensor's session endpoint"
             )
-        for name in ("RUST_LOG", "TENSOR_RENDER_DEVICE", "TENSOR_XWAYLAND"):
+        for name in (
+            "RUST_LOG",
+            "TENSOR_IPC_SOCKET",
+            "TENSOR_RENDER_DEVICE",
+            "TENSOR_XWAYLAND",
+        ):
             if name in environment:
                 print(f"{name}={environment[name]}")
         return 0
