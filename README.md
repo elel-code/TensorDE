@@ -48,6 +48,14 @@ TENSOR_LAYOUT=spatial-2d cargo run -- --check
 cargo run -- --config examples/config.kdl --check
 ```
 
+For a direct DRM/KMS smoke test, switch to a Linux virtual terminal, log in as
+the normal desktop user, and run `uv run scripts/tty.py`. The launcher keeps
+automatic GPU selection intact, starts `tensor-compositor --session`, and
+refuses to enter the KMS event loop from a terminal emulator. Use
+`--render-device /dev/dri/renderD*` only to pin a hybrid-GPU test, and
+`--no-xwayland` to isolate the native Wayland path. `--check` remains safe to
+run from an ordinary terminal.
+
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 the complete native renderer gate.
