@@ -54,7 +54,9 @@ automatic GPU selection intact, starts `tensor-compositor --session`, and
 refuses to enter the KMS event loop from a terminal emulator. Use
 `--render-device /dev/dri/renderD*` only to pin a hybrid-GPU test, and
 `--no-xwayland` to isolate the native Wayland path. `--check` remains safe to
-run from an ordinary terminal.
+run from an ordinary terminal. Every launch appends its terminal output to
+`artifacts/logs/tensor-tty.log`, so a TTY smoke-test result can be inspected
+after returning to the development session.
 
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
