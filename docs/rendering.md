@@ -116,6 +116,11 @@ into ECS as `ViewContent`. No `WlSurface`, popup handle, or renderer state enter
 ECS. Synchronized child commits and their explicit sync points remain pending
 until the non-synchronized ancestor applies the complete transaction.
 
+Rootless XWayland override-redirect surfaces follow the same value-only handoff
+only after they resolve through a managed `WM_TRANSIENT_FOR` ancestor. Their
+X11 coordinates produce a logical offset from that root; they do not create an
+independent X11 layout coordinate system or ECS view.
+
 The scene builds a per-frame draw plan that deduplicates image descriptor slots
 while preserving the flattened surface order. View content is intersected with
 the layout-visible tile and output; popup content is intersected only with the

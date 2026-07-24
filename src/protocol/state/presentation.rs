@@ -6,7 +6,10 @@ use std::{
 
 use smithay::{
     backend::drm::{DrmEventMetadata, DrmEventTime},
-    desktop::utils::OutputPresentationFeedback,
+    desktop::utils::{
+        OutputPresentationFeedback, send_frames_surface_tree,
+        take_presentation_feedback_surface_tree,
+    },
     output::Output,
     reexports::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
@@ -197,6 +200,15 @@ impl RuntimeState {
                 window.take_presentation_feedback(&mut feedback, primary_output, |_, _| {
                     wp_presentation_feedback::Kind::empty()
                 });
+                #[cfg(feature = "xwayland")]
+                for popup in self.x11_popup_surfaces_for_root(&root) {
+                    take_presentation_feedback_surface_tree(
+                        &popup,
+                        &mut feedback,
+                        primary_output,
+                        |_, _| wp_presentation_feedback::Kind::empty(),
+                    );
+                }
             }
         }
         CapturedPresentation {
@@ -250,6 +262,10 @@ impl RuntimeState {
                 .is_some_and(|view_id| submitted_views.contains(&view_id))
             {
                 window.send_frame(output, time, None, primary_output);
+                #[cfg(feature = "xwayland")]
+                for popup in self.x11_popup_surfaces_for_root(&root) {
+                    send_frames_surface_tree(&popup, output, time, None, primary_output);
+                }
             }
         }
     }

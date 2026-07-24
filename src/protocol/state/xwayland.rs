@@ -1,3 +1,5 @@
+mod popup;
+
 use smithay::{
     desktop::Window,
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
@@ -10,6 +12,8 @@ use crate::{ecs::ViewId, layout::SizeConstraints};
 use tensor_util::Rect;
 
 use super::{DEFAULT_WORKSPACE, RuntimeState, xdg_size_constraints};
+
+pub(super) use popup::XWaylandPopupRegistry;
 
 /// The two independent signals needed before an X11 window can become a
 /// rootless Wayland view. Smithay can report them in either order.
@@ -95,6 +99,7 @@ impl RuntimeState {
             .map_element(Window::new_x11_window(x11.clone()), (0, 0), false);
         self.update_x11_constraints(&surface, &x11);
         self.reflow_default_workspace();
+        self.reconcile_x11_popups();
         Some(view_id)
     }
 

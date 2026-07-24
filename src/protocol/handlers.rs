@@ -189,9 +189,20 @@ impl CompositorHandler for RuntimeState {
         #[cfg(feature = "tty")]
         {
             self.discard_deferred_surface_sync(surface);
+            #[cfg(feature = "xwayland")]
+            let x11_popup_owner = self.x11_popup_surface_destroyed(surface);
             if self.view_for_surface(surface).is_some() {
                 self.unregister_toplevel(surface);
-            } else if let Some(root) = self.owning_view_root(surface) {
+            } else if let Some(root) = {
+                #[cfg(feature = "xwayland")]
+                {
+                    x11_popup_owner.or_else(|| self.owning_view_root(surface))
+                }
+                #[cfg(not(feature = "xwayland"))]
+                {
+                    self.owning_view_root(surface)
+                }
+            } {
                 if let Some(window) = self
                     .space
                     .elements()
@@ -212,7 +223,11 @@ impl CompositorHandler for RuntimeState {
             self.flush_client_releases();
         }
         #[cfg(not(feature = "tty"))]
-        self.unregister_toplevel(surface);
+        {
+            #[cfg(feature = "xwayland")]
+            let _ = self.x11_popup_surface_destroyed(surface);
+            self.unregister_toplevel(surface);
+        }
     }
 }
 

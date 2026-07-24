@@ -93,6 +93,10 @@ impl RuntimeState {
         {
             return Some(root);
         }
+        #[cfg(feature = "xwayland")]
+        if let Some(root) = self.x11_popup_owner_for_surface(&tree_root) {
+            return Some(root);
+        }
 
         let root_id = self.surface_buffers.view_root_for_surface(&surface.id())?;
         self.mapped_root_by_id(root_id)
@@ -139,6 +143,11 @@ impl RuntimeState {
                 SurfaceLayer::Popup,
                 &mut commits,
             );
+        }
+
+        #[cfg(feature = "xwayland")]
+        for (popup, base) in self.x11_popup_surface_trees_for_root(root) {
+            collect_surface_tree(&popup, base, SurfaceLayer::Popup, &mut commits);
         }
 
         let Some(update) = self.surface_buffers.update_view_tree(&root.id(), commits) else {

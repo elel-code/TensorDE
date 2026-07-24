@@ -116,6 +116,8 @@ pub(crate) struct RuntimeState {
     pub(crate) xwm: Option<X11Wm>,
     #[cfg(feature = "xwayland")]
     xwayland_windows: HashMap<u32, xwayland::XWaylandWindowLifecycle>,
+    #[cfg(feature = "xwayland")]
+    xwayland_popups: xwayland::XWaylandPopupRegistry,
     next_view_id: u64,
 }
 
@@ -176,6 +178,8 @@ impl RuntimeState {
             xwm: None,
             #[cfg(feature = "xwayland")]
             xwayland_windows: HashMap::new(),
+            #[cfg(feature = "xwayland")]
+            xwayland_popups: xwayland::XWaylandPopupRegistry::default(),
             next_view_id: 1,
         }
     }
@@ -248,6 +252,8 @@ impl RuntimeState {
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
         self.clear_keyboard_focus_for_surface(surface);
+        #[cfg(feature = "xwayland")]
+        self.detach_x11_popups_for_owner(&surface.id());
         let window = self
             .space
             .elements()
@@ -378,6 +384,8 @@ impl RuntimeState {
             self.space
                 .relocate_element(window, (geometry.x, geometry.y));
         }
+        #[cfg(feature = "xwayland")]
+        self.relocate_x11_popups();
         self.space.refresh();
 
         for (window, geometry) in windows {
@@ -404,6 +412,8 @@ impl RuntimeState {
                 xwayland::configure_x11_window(x11, geometry);
             }
         }
+        #[cfg(feature = "xwayland")]
+        self.update_x11_popup_surface_states();
         #[cfg(feature = "tty")]
         self.submit_default_workspace_frame();
         true

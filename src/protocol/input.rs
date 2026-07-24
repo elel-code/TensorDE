@@ -195,7 +195,21 @@ impl RuntimeState {
         else {
             return;
         };
-        self.focus_mapped_window(window, serial);
+        let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
+            return;
+        };
+        let Some(root) = self.owning_view_root(&surface) else {
+            return;
+        };
+        let Some(root_window) = self
+            .space
+            .elements()
+            .find(|candidate| candidate.wl_surface().as_deref() == Some(&root))
+            .cloned()
+        else {
+            return;
+        };
+        self.focus_mapped_window(root_window, serial);
     }
 
     pub(crate) fn focus_mapped_window(
@@ -222,11 +236,13 @@ impl RuntimeState {
             .x11_surface()
             .cloned()
             .map(KeyboardFocusTarget::from)
-            .unwrap_or_else(|| KeyboardFocusTarget::from(surface));
+            .unwrap_or_else(|| KeyboardFocusTarget::from(surface.clone()));
         #[cfg(not(feature = "xwayland"))]
         let focus = KeyboardFocusTarget::from(surface);
 
         self.space.raise_element(&window, true);
+        #[cfg(feature = "xwayland")]
+        self.raise_x11_popups_for_root(&surface);
         #[cfg(feature = "xwayland")]
         if let KeyboardFocusTarget::X11(x11) = &focus
             && let Some(xwm) = self.xwm.as_mut()
