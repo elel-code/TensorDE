@@ -2,6 +2,7 @@
 
 use std::{mem, slice};
 
+use tensor_util::Rect;
 use thiserror::Error;
 use vulkanalia::vk::{
     DeviceV1_0, DeviceV1_3, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder,
@@ -23,7 +24,7 @@ struct DrawPushData {
     padding: f32,
     destination: [f32; 4],
     uv_origin_axis_x: [f32; 4],
-    uv_axis_y_viewport: [f32; 4],
+    uv_axis_y_surface_size: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,23 +88,18 @@ pub(super) fn prepare_draws(
                         .physical_length_round(draw.effects.corner_radius),
                     opacity: draw.effects.opacity.as_f32(),
                     padding: 0.0,
-                    destination: [
-                        draw.destination.x as f32,
-                        draw.destination.y as f32,
-                        draw.destination.width as f32,
-                        draw.destination.height as f32,
-                    ],
+                    destination: destination_to_ndc(draw.destination, viewport),
                     uv_origin_axis_x: [
                         f32::from(uv.origin.0),
                         f32::from(uv.origin.1),
                         f32::from(uv.axis_x.0),
                         f32::from(uv.axis_x.1),
                     ],
-                    uv_axis_y_viewport: [
+                    uv_axis_y_surface_size: [
                         f32::from(uv.axis_y.0),
                         f32::from(uv.axis_y.1),
-                        viewport.width as f32,
-                        viewport.height as f32,
+                        draw.destination.width as f32,
+                        draw.destination.height as f32,
                     ],
                 },
                 scissor: vk::Rect2D {
@@ -119,6 +115,24 @@ pub(super) fn prepare_draws(
             })
         })
         .collect()
+}
+
+/// Convert Tensor's top-left physical rectangle convention into the Vulkan
+/// NDC convention used with the positive-height native output viewport.
+///
+/// The fragment shader still needs the physical dimensions for rounded-corner
+/// coverage, so those travel separately in the final two push-constant words.
+fn destination_to_ndc(destination: Rect, viewport: Rect) -> [f32; 4] {
+    let width = viewport.width as f32;
+    let height = viewport.height as f32;
+    let x = (i64::from(destination.x) - i64::from(viewport.x)) as f32;
+    let y = (i64::from(destination.y) - i64::from(viewport.y)) as f32;
+    [
+        x / width * 2.0 - 1.0,
+        y / height * 2.0 - 1.0,
+        destination.width as f32 / width * 2.0,
+        destination.height as f32 / height * 2.0,
+    ]
 }
 
 fn descriptor_index(
@@ -427,6 +441,18 @@ mod tests {
             )
             .unwrap(),
             7
+        );
+    }
+
+    #[test]
+    fn top_left_physical_rect_maps_to_the_top_left_of_vulkan_ndc() {
+        assert_eq!(
+            destination_to_ndc(Rect::new(100, 200, 50, 25), Rect::new(100, 200, 100, 50)),
+            [-1.0, -1.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            destination_to_ndc(Rect::new(150, 225, 50, 25), Rect::new(100, 200, 100, 50)),
+            [0.0, 0.0, 1.0, 1.0]
         );
     }
 

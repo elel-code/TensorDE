@@ -10,7 +10,7 @@ layout(push_constant, std430) uniform DrawData {
     float padding;
     vec4 destination;
     vec4 uv_origin_axis_x;
-    vec4 uv_axis_y_viewport;
+    vec4 uv_axis_y_surface_size;
 } draw;
 
 // The GLSL default gl_PerVertex block also declares ClipDistance and
@@ -30,15 +30,12 @@ void main() {
         vec2(0.0, 1.0)
     );
     vec2 local = positions[gl_VertexIndex];
+    // Tensor converts its top-left physical surface coordinates to Vulkan NDC
+    // before recording the draw. Keep this shader free of a second Y flip.
     vec2 position = draw.destination.xy + local * draw.destination.zw;
-    gl_Position = vec4(
-        position.x / draw.uv_axis_y_viewport.z * 2.0 - 1.0,
-        1.0 - position.y / draw.uv_axis_y_viewport.w * 2.0,
-        0.0,
-        1.0
-    );
+    gl_Position = vec4(position, 0.0, 1.0);
     v_local = local;
     v_tex_coord = draw.uv_origin_axis_x.xy
         + local.x * draw.uv_origin_axis_x.zw
-        + local.y * draw.uv_axis_y_viewport.xy;
+        + local.y * draw.uv_axis_y_surface_size.xy;
 }
