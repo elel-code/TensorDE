@@ -142,21 +142,43 @@ def build_binaries(dmabuf_smoke: bool) -> int:
     ).returncode
 
 
-def tensor_sockets(runtime_dir: Path) -> set[Path]:
+def tensor_sockets(runtime_dir: Path) -> dict[Path, tuple[int, int, int]]:
+    """Return live Tensor sockets keyed by their filesystem identity.
+
+    A previous compositor can leave ``tensor-0`` behind until teardown races
+    with the next launch.  The new compositor may legitimately reuse that
+    pathname, so callers must distinguish the replacement inode from the old
+    socket instead of comparing paths alone.
+    """
     try:
         entries = runtime_dir.iterdir()
     except OSError:
-        return set()
-    sockets = set()
+        return {}
+    sockets = {}
     for entry in entries:
         if not entry.name.startswith("tensor-"):
             continue
         try:
-            if stat.S_ISSOCK(entry.stat().st_mode):
-                sockets.add(entry)
+            metadata = entry.stat()
+            if stat.S_ISSOCK(metadata.st_mode):
+                sockets[entry] = (metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns)
         except OSError:
             continue
     return sockets
+
+
+def new_tensor_socket(
+    runtime_dir: Path, known_sockets: dict[Path, tuple[int, int, int]]
+) -> Path | None:
+    current = tensor_sockets(runtime_dir)
+    return next(
+        (
+            path
+            for path in sorted(current)
+            if known_sockets.get(path) != current[path]
+        ),
+        None,
+    )
 
 
 def runtime_dir_for_client() -> Path:
@@ -278,14 +300,14 @@ def launch(
             nonlocal smoke_process
             if smoke_process is not None or runtime_dir is None or not event_loop_ready:
                 return
-            candidates = sorted(tensor_sockets(runtime_dir) - known_sockets)
-            if not candidates:
+            socket = new_tensor_socket(runtime_dir, known_sockets)
+            if socket is None:
                 return
-            client_command = smoke_command(candidates[0], duration)
+            client_command = smoke_command(socket, duration)
             note(
                 log,
                 output_lock,
-                f"Tensor is ready on Wayland socket {candidates[0].name}; "
+                f"Tensor is ready on Wayland socket {socket.name}; "
                 f"starting dma-buf smoke client: "
                 f"{shlex.join(client_command)}",
             )
@@ -309,10 +331,9 @@ def launch(
                 or not event_loop_ready
             ):
                 return
-            candidates = sorted(tensor_sockets(runtime_dir) - known_sockets)
-            if not candidates:
+            socket = new_tensor_socket(runtime_dir, known_sockets)
+            if socket is None:
                 return
-            socket = candidates[0]
             client_command = ghostty_command()
             note(
                 log,
