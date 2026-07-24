@@ -45,6 +45,29 @@ fn focused_view_drives_workspace_local_scrolling_state() {
 }
 
 #[test]
+fn restoring_existing_focus_keeps_the_cached_scene_renderable() {
+    let mut world = CompositorWorld::new();
+    world.spawn_view(view(1), workspace(1)).unwrap();
+    world.focus_view(view(1)).unwrap();
+    world.arrange_workspace(
+        workspace(1),
+        LayoutEngine::new(LayoutKind::Scrolling1D),
+        Rect::new(0, 0, 100, 80),
+    );
+
+    // `RuntimeState::restore_keyboard_focus` reaches this path when libinput
+    // publishes a keyboard after an already-mapped application. It needs a
+    // wl_keyboard.enter, not a new ECS scene mutation.
+    world.focus_view(view(1)).unwrap();
+
+    let scene = world.extract_scene(workspace(1));
+    assert!(
+        scene.is_some(),
+        "restoring focus must not drop the frame scene"
+    );
+}
+
+#[test]
 fn per_view_constraints_flow_into_layout_geometry() {
     use crate::layout::{LayoutLength, SizeConstraints};
 
