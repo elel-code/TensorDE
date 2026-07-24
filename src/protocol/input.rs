@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 
 use super::{
     focus::KeyboardFocusTarget,
-    state::{InputDeviceCapabilities, RuntimeState},
+    state::{DEFAULT_WORKSPACE, InputDeviceCapabilities, RuntimeState},
 };
 
 impl RuntimeState {
@@ -46,7 +46,11 @@ impl RuntimeState {
         }
     }
 
-    fn reconcile_seat_capabilities(&mut self) {
+    /// Publish the aggregate libinput capabilities on the single Wayland
+    /// seat. A keyboard can arrive after an application has mapped, so a
+    /// successful keyboard creation must also restore the compositor-selected
+    /// focus to the new Smithay keyboard handle.
+    pub(crate) fn reconcile_seat_capabilities(&mut self) {
         let keyboard_count = self
             .input_devices
             .values()
@@ -64,8 +68,9 @@ impl RuntimeState {
             .count();
 
         if keyboard_count > 0 && self.seat.get_keyboard().is_none() {
-            if let Err(error) = self.seat.add_keyboard(Default::default(), 200, 25) {
-                warn!(%error, "failed to publish keyboard capability");
+            match self.seat.add_keyboard(Default::default(), 200, 25) {
+                Ok(_) => self.restore_keyboard_focus(),
+                Err(error) => warn!(%error, "failed to publish keyboard capability"),
             }
         } else if keyboard_count == 0 && self.seat.get_keyboard().is_some() {
             self.seat.remove_keyboard();
@@ -231,6 +236,21 @@ impl RuntimeState {
             return;
         };
         self.focus_mapped_window(root_window, serial);
+        self.reflow_default_workspace();
+    }
+
+    /// Reapply the ECS-selected root when a keyboard capability becomes
+    /// available after its window mapped. The focus method intentionally does
+    /// not reflow here: the window already has its configure, and only a
+    /// `wl_keyboard.enter` is missing.
+    fn restore_keyboard_focus(&mut self) {
+        let Some(view_id) = self.world.focused_view(DEFAULT_WORKSPACE) else {
+            return;
+        };
+        let Some(window) = self.mapped_window_for_view(view_id) else {
+            return;
+        };
+        self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
     }
 
     pub(crate) fn focus_mapped_window(
@@ -274,7 +294,6 @@ impl RuntimeState {
         {
             warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
         }
-        self.reflow_default_workspace();
         if let Some(keyboard) = keyboard {
             keyboard.set_focus(self, Some(focus), serial);
         }

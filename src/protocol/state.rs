@@ -249,8 +249,13 @@ impl RuntimeState {
             .expect("monotonic view IDs must be unique");
         self.surface_views
             .insert(surface.wl_surface().id(), view_id);
-        self.space
-            .map_element(Window::new_wayland_window(surface), (0, 0), false);
+        let window = Window::new_wayland_window(surface);
+        self.space.map_element(window.clone(), (0, 0), false);
+        // Keep the initial focus decision separate from layout/configure
+        // publication. XDG requires its first configure to be sent from the
+        // initial surface commit, which the compositor handler performs.
+        #[cfg(feature = "tty")]
+        self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
         Some(view_id)
     }
 

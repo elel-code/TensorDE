@@ -676,18 +676,23 @@ mod tests {
         );
 
         #[cfg(feature = "tty")]
-        let keyboard = runtime
-            .state
-            .seat
-            .add_keyboard(Default::default(), 200, 25)
-            .expect("test seat accepts a keyboard");
-        #[cfg(feature = "tty")]
         {
             let focused_view = view_id.expect("mapped test window has an ECS view");
-            runtime
-                .state
-                .focus_mapped_window(window.clone(), smithay::utils::SERIAL_COUNTER.next_serial());
             assert!(runtime.state.world.is_focused(focused_view));
+            assert!(runtime.state.seat.get_keyboard().is_none());
+            runtime.state.input_devices.insert(
+                "test-keyboard".to_owned(),
+                super::super::state::InputDeviceCapabilities {
+                    keyboard: true,
+                    ..Default::default()
+                },
+            );
+            runtime.state.reconcile_seat_capabilities();
+            let keyboard = runtime
+                .state
+                .seat
+                .get_keyboard()
+                .expect("test keyboard capability is published");
             assert!(keyboard.current_focus().is_some());
         }
 
@@ -737,7 +742,13 @@ mod tests {
         }
         assert_eq!(runtime.state.view_count(), 0);
         #[cfg(feature = "tty")]
-        assert!(keyboard.current_focus().is_none());
+        assert!(
+            runtime
+                .state
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.current_focus().is_none())
+        );
         client.join().unwrap();
     }
 

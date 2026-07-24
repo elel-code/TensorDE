@@ -120,10 +120,10 @@ and rendering itself.
   do not consume tiled placements, retain independent scene/input/synchronization state, inherit
   focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
   cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
-- Input lifecycle coverage verifies that activating a mapped root updates the ECS focus and the
-  Smithay keyboard target, then clears it when the root is destroyed. X11 activation routes through
-  the `X11Surface` keyboard target so its ICCCM focus handshake is retained without changing the
-  Wayland logical pointer-coordinate path.
+- Input lifecycle coverage verifies that mapping selects an ECS root before an input device exists,
+  then a late keyboard capability restores the Smithay keyboard target and teardown clears it. X11
+  activation routes through the `X11Surface` keyboard target so its ICCCM focus handshake is
+  retained without changing the Wayland logical pointer-coordinate path.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.
