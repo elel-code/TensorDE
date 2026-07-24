@@ -1,8 +1,14 @@
 //! Conservative sparse scissors for transparent image-waterwaves composites.
+//!
+//! Scene-color composites use projected object UV → surface scissors. Multipass
+//! `image-local-*` sources/fields instead use authored-texture UV identity on the
+//! local target extent (`gl_Position = vec4(a_TexCoord * 2 - 1, ...)`), so
+//! coverage must never reuse surface affine there.
 
 use crate::engine::scene::{
-    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceGraphPlan, SceneStorage,
+    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneRenderTargetKind,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
+    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneStorage,
 };
 
 use super::draw_recording::SceneGpuScissor;
@@ -14,6 +20,7 @@ const WATERWAVES_DISPLACEMENT_SHADERS: &[&str] = &[
     "we/image-waterwaves-direct",
     "we/image-waterwaves-multiply-direct",
     "we/puppet-waterwaves-direct",
+    "we/effect-waterwaves-direct",
 ];
 const SPARSE_COMPOSITE_SHADERS: &[&str] = &[
     "we/image-waterwaves-composite",
@@ -21,8 +28,21 @@ const SPARSE_COMPOSITE_SHADERS: &[&str] = &[
     "we/image-waterwaves-direct",
     "we/image-waterwaves-multiply-direct",
 ];
+/// Source assembly on local RT: UV covers the full target, so sparse coverage is
+/// identity-mapped in authored-texture domain.
+const LOCAL_SPARSE_SOURCE_SHADERS: &[&str] = &[
+    "we/image-effect-source",
+    "we/puppet-effect-source",
+];
+/// Field / multipass waterwaves stages that write a local RT while sampling the
+/// sparse source. Fullscreen triangles are eligible only on local targets.
+const LOCAL_SPARSE_FIELD_SHADERS: &[&str] = &[
+    "we/effect-waterwaves-direct",
+    "we/waterwaves-uv-field",
+];
 const MAX_WATERWAVES_STAGES: usize = 9;
 const WATERWAVES_FILTER_GUARD_CELLS: usize = 2;
+const LOCAL_IDENTITY_AFFINE: [[f32; 3]; 2] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
 pub(super) fn scene_alpha_coverage_scissors(
     storage: &SceneStorage,
@@ -47,10 +67,26 @@ pub(super) fn scene_alpha_coverage_scissors(
         let Some(shader) = storage.string(pass_record.shader_key) else {
             continue;
         };
-        if !matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS) {
+        let local_target = pass_is_local_effect_target(pass.target);
+        let sparse_kind = sparse_coverage_kind(shader, local_target);
+        let Some(sparse_kind) = sparse_kind else {
             continue;
-        }
-        let displacement = graph_waterwaves_displacement_cells(storage, graph, pass.graph_index);
+        };
+        let displacement = match sparse_kind {
+            SparseCoverageKind::LocalSource => [WATERWAVES_FILTER_GUARD_CELLS; 2],
+            SparseCoverageKind::LocalField | SparseCoverageKind::SceneComposite => {
+                graph_waterwaves_displacement_cells(storage, graph, pass.graph_index)
+            }
+        };
+        let coverage_extent = match sparse_kind {
+            SparseCoverageKind::LocalSource | SparseCoverageKind::LocalField => {
+                local_coverage_extent(graph, pass)
+            }
+            SparseCoverageKind::SceneComposite => Some(output_extent),
+        };
+        let Some(coverage_extent) = coverage_extent else {
+            continue;
+        };
         let start = pass.mesh_draw_start as usize;
         let end = start.saturating_add(pass.mesh_draw_count as usize);
         for (draw_index, draw) in graph
@@ -60,12 +96,10 @@ pub(super) fn scene_alpha_coverage_scissors(
             .iter()
             .enumerate()
         {
-            if draw.primitive != SceneRenderingDeviceDrawPrimitive::ObjectMesh
-                || draw.skinning_palette_count != 0
-            {
+            if !draw_accepts_sparse_coverage(draw, sparse_kind) {
                 continue;
             }
-            let Some(texture) = source_texture(storage, draw.material) else {
+            let Some(texture) = source_texture_for_sparse_draw(storage, graph, pass, draw) else {
                 continue;
             };
             let coverage = dilate_coverage(
@@ -76,21 +110,32 @@ pub(super) fn scene_alpha_coverage_scissors(
             if coverage.iter().all(|row| *row == u32::MAX) {
                 continue;
             }
-            let Some(affine) = object_uv_to_screen_affine(storage, draw, output_extent) else {
-                continue;
+            let affine = match sparse_kind {
+                SparseCoverageKind::LocalSource | SparseCoverageKind::LocalField => {
+                    LOCAL_IDENTITY_AFFINE
+                }
+                SparseCoverageKind::SceneComposite => {
+                    let Some(affine) = object_uv_to_screen_affine(storage, draw, coverage_extent)
+                    else {
+                        continue;
+                    };
+                    if !axis_aligned(affine) {
+                        continue;
+                    }
+                    affine
+                }
             };
-            if !axis_aligned(affine) {
-                continue;
-            }
-            let scissors = coverage_scissors(coverage, affine, output_extent);
+            let scissors = coverage_scissors(coverage, affine, coverage_extent);
             if std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_DEBUG")
                 .ok()
                 .is_some_and(|value| value == pass.graph_index.to_string())
             {
                 eprintln!(
-                    "gilder-alpha-coverage: graph={} draw={} texture={} path={:?} size={}x{} storage={}x{} displacement={:?} affine={:?} coverage={:08x?} scissors={} pixels={} overlaps={}",
+                    "gilder-alpha-coverage: graph={} draw={} kind={:?} target={:?} texture={} path={:?} size={}x{} storage={}x{} coverage_extent={:?} displacement={:?} affine={:?} coverage={:08x?} scissors={} pixels={} overlaps={}",
                     pass.graph_index,
                     start + draw_index,
+                    sparse_kind,
+                    pass.target,
                     texture.resource.0,
                     storage
                         .resource(texture.resource)
@@ -99,6 +144,7 @@ pub(super) fn scene_alpha_coverage_scissors(
                     texture.height,
                     texture.storage_width,
                     texture.storage_height,
+                    coverage_extent,
                     displacement,
                     affine,
                     coverage,
@@ -114,6 +160,127 @@ pub(super) fn scene_alpha_coverage_scissors(
         }
     }
     draw_scissors
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SparseCoverageKind {
+    /// Scene-color waterwaves composite / direct mesh path.
+    SceneComposite,
+    /// Local RT source assembly (`image-effect-source` family).
+    LocalSource,
+    /// Local RT field / multipass waterwaves write.
+    LocalField,
+}
+
+fn sparse_coverage_kind(shader: &str, local_target: bool) -> Option<SparseCoverageKind> {
+    if local_target {
+        if matches_shader_or_stage_variant(shader, LOCAL_SPARSE_SOURCE_SHADERS)
+            || LOCAL_SPARSE_SOURCE_SHADERS
+                .iter()
+                .any(|base| shader.eq_ignore_ascii_case(base))
+        {
+            return Some(SparseCoverageKind::LocalSource);
+        }
+        if matches_shader_or_stage_variant(shader, LOCAL_SPARSE_FIELD_SHADERS) {
+            return Some(SparseCoverageKind::LocalField);
+        }
+        return None;
+    }
+    matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS)
+        .then_some(SparseCoverageKind::SceneComposite)
+}
+
+fn pass_is_local_effect_target(target: SceneRenderTargetKind) -> bool {
+    matches!(
+        target,
+        SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
+    )
+}
+
+fn local_coverage_extent(
+    graph: &SceneRenderingDeviceGraphPlan,
+    pass: &SceneRenderingDevicePassNode,
+) -> Option<[u32; 2]> {
+    if let Some(allocation) = graph.target_allocations.iter().find(|allocation| {
+        allocation.graph_index == pass.graph_index
+            && allocation.target == pass.target
+            && allocation.target_name == pass.target_name
+            && allocation.width != 0
+            && allocation.height != 0
+    }) {
+        return Some([allocation.width, allocation.height]);
+    }
+    let start = pass.mesh_draw_start as usize;
+    let end = start.saturating_add(pass.mesh_draw_count as usize);
+    graph
+        .mesh_draws
+        .get(start..end)
+        .into_iter()
+        .flatten()
+        .find_map(|draw| {
+            let width = draw.authored_source_extent[0].round();
+            let height = draw.authored_source_extent[1].round();
+            (width.is_finite()
+                && height.is_finite()
+                && width >= 1.0
+                && height >= 1.0
+                && width <= u32::MAX as f32
+                && height <= u32::MAX as f32)
+                .then_some([width as u32, height as u32])
+        })
+}
+
+fn draw_accepts_sparse_coverage(
+    draw: &SceneRenderingDeviceMeshDraw,
+    kind: SparseCoverageKind,
+) -> bool {
+    if draw.skinning_palette_count != 0 {
+        return false;
+    }
+    match kind {
+        SparseCoverageKind::SceneComposite | SparseCoverageKind::LocalSource => {
+            draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+        }
+        SparseCoverageKind::LocalField => matches!(
+            draw.primitive,
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        ),
+    }
+}
+
+fn source_texture_for_sparse_draw<'a>(
+    storage: &'a SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    pass: &SceneRenderingDevicePassNode,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> Option<&'a crate::engine::scene::SceneTextureRecord> {
+    if let Some(texture) = source_texture(storage, draw.material) {
+        return Some(texture);
+    }
+    // Fullscreen field stages often bind only previous-target / mask slots; reuse
+    // the graph's object-mesh source material (image-effect-source) coverage.
+    graph
+        .pass_nodes
+        .iter()
+        .filter(|candidate| {
+            candidate.graph_index == pass.graph_index
+                && candidate.mesh_draw_count != 0
+                && matches!(
+                    candidate.target,
+                    SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
+                )
+        })
+        .flat_map(|candidate| {
+            let start = candidate.mesh_draw_start as usize;
+            let end = start.saturating_add(candidate.mesh_draw_count as usize);
+            graph.mesh_draws.get(start..end).into_iter().flatten()
+        })
+        .find(|candidate| {
+            candidate.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                && candidate.skinning_palette_count == 0
+        })
+        .and_then(|candidate| source_texture(storage, candidate.material))
 }
 
 fn source_texture<'a>(
@@ -387,6 +554,67 @@ mod tests {
         assert!(!matches_shader_or_stage_variant(
             "we/image-waterwaves-direct__UNKNOWN_7",
             SPARSE_COMPOSITE_SHADERS,
+        ));
+    }
+
+    #[test]
+    fn local_target_sparse_kinds_are_separated_from_scene_composite() {
+        assert_eq!(
+            sparse_coverage_kind("we/image-effect-source", true),
+            Some(SparseCoverageKind::LocalSource)
+        );
+        assert_eq!(
+            sparse_coverage_kind("we/effect-waterwaves-direct__STAGES_2", true),
+            Some(SparseCoverageKind::LocalField)
+        );
+        assert_eq!(
+            sparse_coverage_kind("we/image-waterwaves-direct__STAGES_2", false),
+            Some(SparseCoverageKind::SceneComposite)
+        );
+        // Scene-color multipass composite stays on the surface path only.
+        assert_eq!(
+            sparse_coverage_kind("we/image-effect-composite", false),
+            None
+        );
+        assert_eq!(
+            sparse_coverage_kind("we/image-effect-source", false),
+            None
+        );
+        // Must not apply surface composite scissors on local targets.
+        assert_eq!(
+            sparse_coverage_kind("we/image-waterwaves-direct__STAGES_2", true),
+            None
+        );
+    }
+
+    #[test]
+    fn local_identity_coverage_uses_target_extent_not_surface() {
+        let mut rows = [0u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE];
+        // Cover the full UV domain so scissors become the whole local target.
+        rows.fill(u32::MAX);
+        let local = [2318u32, 1794u32];
+        let scissors = coverage_scissors(rows, LOCAL_IDENTITY_AFFINE, local);
+        assert_eq!(scissors.len(), 1);
+        assert_eq!(scissors[0].offset, [0, 0]);
+        assert_eq!(scissors[0].extent, local);
+
+        // Sparse run still maps into local pixel space, not 4K surface space.
+        rows.fill(0);
+        rows[0] = 0b1;
+        let sparse = coverage_scissors(rows, LOCAL_IDENTITY_AFFINE, local);
+        assert_eq!(sparse.len(), 1);
+        assert_eq!(sparse[0].offset, [0, 0]);
+        assert!(sparse[0].extent[0] < local[0]);
+        assert!(sparse[0].extent[1] < local[1]);
+        assert!(sparse[0].extent[0] > 0);
+        assert!(sparse[0].extent[1] > 0);
+    }
+
+    #[test]
+    fn displacement_list_includes_multipass_effect_waterwaves_direct() {
+        assert!(matches_shader_or_stage_variant(
+            "we/effect-waterwaves-direct__STAGES_2",
+            WATERWAVES_DISPLACEMENT_SHADERS,
         ));
     }
 }
