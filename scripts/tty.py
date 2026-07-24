@@ -253,11 +253,16 @@ def launch(
     shutdown_requested = threading.Event()
     output_lock = threading.Lock()
     runtime_dir = runtime_dir_for_client() if dmabuf_smoke or ghostty else None
-    known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else set()
+    known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else {}
 
     with log_path.open("ab", buffering=0) as log:
         started = datetime.now().astimezone().isoformat(timespec="seconds")
-        header = f"\n=== Tensor TTY run {started} ===\n$ {shlex.join(command)}\n"
+        header = (
+            f"\n=== Tensor TTY run {started} ===\n"
+            f"$ {shlex.join(command)}\n"
+            f"clients: dmabuf-smoke={dmabuf_smoke} ghostty={ghostty} "
+            f"duration={duration if duration is not None else 'forever'}\n"
+        )
         log.write(header.encode())
         process = subprocess.Popen(
             command,
@@ -298,7 +303,12 @@ def launch(
 
         def start_smoke_client() -> None:
             nonlocal smoke_process
-            if smoke_process is not None or runtime_dir is None or not event_loop_ready:
+            if (
+                not dmabuf_smoke
+                or smoke_process is not None
+                or runtime_dir is None
+                or not event_loop_ready
+            ):
                 return
             socket = new_tensor_socket(runtime_dir, known_sockets)
             if socket is None:
