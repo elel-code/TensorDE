@@ -161,12 +161,8 @@ impl Compositor {
     pub(crate) fn publish_session_environment(
         &mut self,
     ) -> Result<Vec<EnvironmentValue>, CompositorError> {
-        let wayland = self
-            .protocol
-            .socket_name()
-            .ok_or(CompositorError::MissingWaylandSocket)?;
         let environment = session_environment(
-            wayland.to_os_string(),
+            self.protocol.socket_name().to_os_string(),
             OsString::from(self.ipc.path()),
             self.protocol.xwayland_display(),
         );
@@ -255,8 +251,6 @@ pub enum CompositorError {
     Renderer(#[from] RendererError),
     #[error(transparent)]
     DrmNode(#[from] DrmNodeError),
-    #[error("Smithay did not provide a Wayland socket name")]
-    MissingWaylandSocket,
 }
 
 #[cfg(test)]

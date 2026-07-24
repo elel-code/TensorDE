@@ -25,6 +25,7 @@ pub struct WaylandRuntime {
     display: Option<Display<RuntimeState>>,
     state: RuntimeState,
     socket: Option<ListeningSocketSource>,
+    socket_name: OsString,
     prepared: bool,
     xwayland_display: Option<OsString>,
     #[cfg(feature = "xwayland")]
@@ -38,11 +39,13 @@ impl WaylandRuntime {
         let display_handle = display.handle();
         let state = RuntimeState::new(display_handle, layout);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
+        let socket_name = socket.socket_name().to_os_string();
         Ok(Self {
             event_loop,
             display: Some(display),
             state,
             socket: Some(socket),
+            socket_name,
             prepared: false,
             xwayland_display: None,
             #[cfg(feature = "xwayland")]
@@ -55,8 +58,8 @@ impl WaylandRuntime {
         "smithay/calloop"
     }
 
-    pub fn socket_name(&self) -> Option<&std::ffi::OsStr> {
-        self.socket.as_ref().map(ListeningSocketSource::socket_name)
+    pub fn socket_name(&self) -> &std::ffi::OsStr {
+        &self.socket_name
     }
 
     pub fn stop_signal(&self) -> LoopSignal {
@@ -410,11 +413,22 @@ mod tests {
     }
 
     #[test]
+    fn socket_name_survives_event_source_registration() {
+        let mut runtime =
+            WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
+        let socket_name = runtime.socket_name().to_os_string();
+
+        runtime.prepare(false).unwrap();
+
+        assert_eq!(runtime.socket_name(), socket_name);
+    }
+
+    #[test]
     fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
         let mut runtime =
             WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
-        let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name().unwrap());
+        let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
         runtime.prepare(false).unwrap();
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -477,7 +491,7 @@ mod tests {
             WaylandRuntime::new(LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D)).unwrap();
         install_test_output(&mut runtime);
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
-        let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name().unwrap());
+        let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
         runtime.prepare(false).unwrap();
 
         let (event_tx, event_rx) = mpsc::channel();
