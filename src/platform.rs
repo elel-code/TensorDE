@@ -18,8 +18,8 @@ use wayland_client_runtime::{
     BlurRegion, BlurState, CursorIcon as RuntimeCursorIcon, DecorationPreference, DialogAttributes,
     DndAction as RuntimeDndAction, DndActions as RuntimeDndActions, DndEvent,
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
-    LogicalPosition, LogicalSize, MimePayload, PointerEventKind, Runtime, RuntimeError,
-    RuntimeOptions, SurfaceEvent, SurfaceHandle, SurfaceId,
+    LogicalPosition, LogicalSize, MimePayload, PointerAxisValue, PointerEventKind, Runtime,
+    RuntimeError, RuntimeOptions, SurfaceEvent, SurfaceHandle, SurfaceId,
     TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,
     TextInputContentPurpose as RuntimeTextInputContentPurpose,
@@ -647,6 +647,32 @@ fn runtime_cursor_icon(icon: CursorIcon) -> RuntimeCursorIcon {
     }
 }
 
+/// Map a framed Wayland pointer axis into Fika scroll vocabulary.
+///
+/// Prefer `axis_value120` / discrete logical steps (high-resolution wheels). Fall
+/// back to continuous compositor coordinates scaled into physical pixels
+/// (touchpads and continuous devices). Sign matches the historical continuous
+/// path: UI consumers negate again to obtain content scroll direction.
+fn map_pointer_axis_to_scroll_delta(
+    horizontal: PointerAxisValue,
+    vertical: PointerAxisValue,
+    scale_factor: f64,
+) -> MouseScrollDelta {
+    let scale_factor = normalize_wayland_scale_factor(scale_factor);
+    let horizontal_steps = horizontal.logical_steps();
+    let vertical_steps = vertical.logical_steps();
+    if horizontal_steps.is_some() || vertical_steps.is_some() {
+        return MouseScrollDelta::LineDelta {
+            x: -horizontal_steps.unwrap_or(0.0),
+            y: -vertical_steps.unwrap_or(0.0),
+        };
+    }
+    MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+        -horizontal.continuous * scale_factor,
+        -vertical.continuous * scale_factor,
+    ))
+}
+
 fn linux_button(button: u32) -> ButtonSource {
     let button = match button {
         0x110 => MouseButton::Left,
@@ -798,6 +824,53 @@ mod scaling_tests {
         assert_eq!(
             physical_to_logical_rounded(PhysicalSize::new(1202, 962), 1.5),
             LogicalSize::new(801, 641)
+        );
+    }
+
+    #[test]
+    fn pointer_axis_prefers_value120_steps_over_continuous_pixels() {
+        let horizontal = PointerAxisValue::default();
+        let vertical = PointerAxisValue {
+            continuous: 12.0,
+            value120: 30,
+            discrete: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            map_pointer_axis_to_scroll_delta(horizontal, vertical, 1.25),
+            MouseScrollDelta::LineDelta {
+                x: 0.0,
+                y: -0.25,
+            }
+        );
+    }
+
+    #[test]
+    fn pointer_axis_falls_back_to_scaled_continuous_pixels() {
+        let horizontal = PointerAxisValue {
+            continuous: -2.0,
+            ..Default::default()
+        };
+        let vertical = PointerAxisValue {
+            continuous: 4.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            map_pointer_axis_to_scroll_delta(horizontal, vertical, 1.5),
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, -6.0))
+        );
+    }
+
+    #[test]
+    fn pointer_axis_uses_deprecated_discrete_when_value120_is_absent() {
+        let vertical = PointerAxisValue {
+            discrete: -2,
+            continuous: 8.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            map_pointer_axis_to_scroll_delta(PointerAxisValue::default(), vertical, 2.0),
+            MouseScrollDelta::LineDelta { x: 0.0, y: 2.0 }
         );
     }
 }

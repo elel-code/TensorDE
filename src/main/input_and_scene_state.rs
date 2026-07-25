@@ -233,9 +233,15 @@ impl FikaWgpuApp {
         }
     }
 }
-fn scroll_delta_y(delta: MouseScrollDelta, _scale_factor: f32) -> f32 {
+fn scroll_delta_y(delta: MouseScrollDelta, scale_factor: f32) -> f32 {
     match delta {
+        // Platform already scaled continuous axes into physical pixels and
+        // applied the Wayland sign flip; negate once more for content scroll.
         MouseScrollDelta::PixelDelta(position) => -position.y as f32,
+        // Logical wheel steps: one notch ≈ SCROLL_LINE_PX at scale 1.0.
+        MouseScrollDelta::LineDelta { y, .. } => {
+            -y as f32 * SCROLL_LINE_PX * scale_factor.max(f32::EPSILON)
+        }
     }
 }
 #[derive(Clone, Copy, Debug)]

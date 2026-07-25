@@ -186,10 +186,7 @@ impl EventLoop {
                         vertical,
                         ..
                     } => WindowEvent::MouseWheel {
-                        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(
-                            -horizontal.continuous * scale,
-                            -vertical.continuous * scale,
-                        )),
+                        delta: map_pointer_axis_to_scroll_delta(horizontal, vertical, scale),
                     },
                 };
                 app.window_event(&self.active, window.id(), event);

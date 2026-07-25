@@ -57,7 +57,11 @@ impl ButtonSource {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MouseScrollDelta {
+    /// Continuous / finger-style delta in physical pixels (already scaled).
     PixelDelta(PhysicalPosition<f64>),
+    /// Wheel-style logical steps from `axis_value120` (preferred) or discrete.
+    /// Sign matches [`Self::PixelDelta`]: negate again in UI to get content delta.
+    LineDelta { x: f64, y: f64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
