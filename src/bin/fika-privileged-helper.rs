@@ -24,12 +24,7 @@ fn main() {
         }
     };
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to initialize privileged helper runtime");
-
-    if let Err(err) = runtime.block_on(run_dbus_service(bus)) {
+    if let Err(err) = async_io::block_on(run_dbus_service(bus)) {
         eprintln!("{err}");
         std::process::exit(1);
     }

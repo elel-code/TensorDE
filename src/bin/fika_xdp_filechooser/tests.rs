@@ -707,27 +707,27 @@ fn chooser_failure_message_includes_exit_status_and_stderr() {
 #[test]
 fn chooser_process_keeps_kill_on_drop_as_lifecycle_fallback() {
     let command = chooser_command(PathBuf::from("/bin/true"), vec!["--chooser".to_string()]);
-    assert!(command.get_kill_on_drop());
+    assert!(chooser_command_kills_on_drop(&command));
 }
 
-#[tokio::test]
-async fn chooser_process_is_explicitly_terminated_for_request_close() {
+#[test]
+fn chooser_process_is_explicitly_terminated_for_request_close() {
     let process = ChooserProcess::spawn(chooser_command(
         PathBuf::from("/bin/sleep"),
         vec!["30".into()],
     ))
     .unwrap();
-    let ChooserProcess {
-        output_task,
-        terminate_tx,
-    } = process;
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        terminate_chooser_process(output_task, terminate_tx),
-    )
-    .await
-    .expect("chooser termination should not wait for the full sleep")
+    let output = futures_lite::future::block_on(async {
+        use futures_lite::future::FutureExt;
+        process
+            .terminate_for_test()
+            .or(async {
+                async_io::Timer::after(std::time::Duration::from_secs(2)).await;
+                Err("chooser termination timed out waiting for process exit".to_string())
+            })
+            .await
+    })
     .expect("chooser termination should return process output");
 
     assert!(!output.status.success());

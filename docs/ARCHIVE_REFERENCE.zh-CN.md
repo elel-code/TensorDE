@@ -37,7 +37,7 @@
   - 添加 Fika 自有右键动作 ID：`fika.builtin.ark.compress-tar-gz`、`fika.builtin.ark.compress-zip`、`fika.builtin.ark.compress`、`fika.builtin.ark.extract-here`、`fika.builtin.ark.extract-and-trash` 和 `fika.builtin.ark.extract-to`。
   - 对本地文件/目录条目选择显示根级 `Compress` 子菜单；单个归档除外，以匹配 Ark 的 Dolphin 插件。
   - 对本地归档选择显示根级 `Extract` 子菜单，并支持多选；解压动作只作用于被选中的归档项。
-  - `Extract and trash archive` 由 Fika 内部执行：用 `tokio::process` 等待
+  - `Extract and trash archive` 由 Fika 内部执行：用 `async_process::Command` 等待
     Ark，再用 `file_ops::trash_paths_async` 将原归档移动到 Trash。
   - 不对 Trash 或纯网络 URI 目标暴露 Ark 本地动作。
   - 当已发现的 service menu 提供相同可见标签和子菜单时去重，避免重复归档动作。

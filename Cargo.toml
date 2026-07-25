@@ -14,9 +14,14 @@ resolver = "3"
 name = "fika_core"
 
 [dependencies]
+async-channel = "2"
+async-io = "2"
+async-lock = "3"
+async-process = "2"
 bytemuck = { version = "1", features = ["derive"] }
 compio = { version = "0.19", default-features = false, features = ["fs", "io", "io-uring", "macros", "runtime"] }
 cosmic-text = "0.19"
+futures-channel = "0.3"
 futures-lite = "2"
 gio = "0.22"
 image = "0.25"
@@ -25,10 +30,13 @@ notify = "8"
 pollster = "1"
 resvg = "0.47"
 tiny-skia = "0.12"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 usvg = "0.47"
 wayland-client-runtime = { path = "crates/wayland-client-runtime" }
 wgpu = "30"
 xkeysym = "0.2"
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-zbus_polkit = { version = "5", default-features = false, features = ["tokio"] }
+# zbus 5 default executor is async-io; avoid the optional tokio feature so the
+# main runtime path can stay Compio-first without a second reactor island.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+# zbus_polkit has no standalone async-io feature; its default enables zbus/async-io
+# (and blocking-api). Avoid the optional `tokio` feature so polkit stays on async-io.
+zbus_polkit = "5"

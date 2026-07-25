@@ -1,6 +1,7 @@
-use super::bus::{BusController, BusKind, with_bus_tokio_context};
+use super::bus::{BusController, BusKind};
 use super::file_ops;
 use super::network::is_network_path;
+use async_io::Timer;
 use futures_lite::StreamExt;
 use std::env;
 use std::fs;
@@ -9,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
 use zbus::names::BusName;
@@ -290,70 +291,64 @@ async fn call_dbus_command(
     connection: &Connection,
 ) -> Result<String, String> {
     command.validate_local_paths()?;
-    with_bus_tokio_context(async move {
-        let proxy = PrivilegedProxy::new(connection)
-            .await
-            .map_err(|err| format!("cannot create privileged helper proxy: {err}"))?;
+    let proxy = PrivilegedProxy::new(connection)
+        .await
+        .map_err(|err| format!("cannot create privileged helper proxy: {err}"))?;
 
-        match command {
-            PrivilegedCommand::CreateFolder { parent, name } => proxy
-                .create_folder(&parent.display().to_string(), name)
-                .await
-                .map_err(|err| err.to_string()),
-            PrivilegedCommand::CreateFile { parent, name } => proxy
-                .create_file(&parent.display().to_string(), name)
-                .await
-                .map_err(|err| err.to_string()),
-            PrivilegedCommand::Rename { path, new_name } => proxy
-                .rename(&path.display().to_string(), new_name)
-                .await
-                .map_err(|err| err.to_string()),
-            PrivilegedCommand::Trash { paths } => proxy
-                .trash(
-                    paths
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect(),
-                )
-                .await
-                .map_err(|err| err.to_string()),
-            PrivilegedCommand::Transfer {
+    match command {
+        PrivilegedCommand::CreateFolder { parent, name } => proxy
+            .create_folder(&parent.display().to_string(), name)
+            .await
+            .map_err(|err| err.to_string()),
+        PrivilegedCommand::CreateFile { parent, name } => proxy
+            .create_file(&parent.display().to_string(), name)
+            .await
+            .map_err(|err| err.to_string()),
+        PrivilegedCommand::Rename { path, new_name } => proxy
+            .rename(&path.display().to_string(), new_name)
+            .await
+            .map_err(|err| err.to_string()),
+        PrivilegedCommand::Trash { paths } => proxy
+            .trash(
+                paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            )
+            .await
+            .map_err(|err| err.to_string()),
+        PrivilegedCommand::Transfer {
+            operation,
+            source,
+            target_dir,
+        } => proxy
+            .transfer(
                 operation,
-                source,
-                target_dir,
-            } => proxy
-                .transfer(
-                    operation,
-                    &source.display().to_string(),
-                    &target_dir.display().to_string(),
-                )
-                .await
-                .map_err(|err| err.to_string()),
-        }
-    })
-    .await
+                &source.display().to_string(),
+                &target_dir.display().to_string(),
+            )
+            .await
+            .map_err(|err| err.to_string()),
+    }
 }
 
 async fn wait_for_service() -> Result<(), String> {
-    with_bus_tokio_context(async move {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
-        let service_name: BusName<'_> = SERVICE_NAME
-            .try_into()
-            .map_err(|err| format!("invalid privileged helper bus name: {err}"))?;
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                return Err("timed out waiting for privileged D-Bus helper".to_string());
-            }
-            if let Ok(connection) = privileged_bus_connection(BusKind::Session).await
-                && let Ok(dbus) = DBusProxy::new(&connection).await
-                && dbus.get_name_owner(service_name.clone()).await.is_ok()
-            {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+    let deadline = Instant::now() + Duration::from_secs(75);
+    let service_name: BusName<'_> = SERVICE_NAME
+        .try_into()
+        .map_err(|err| format!("invalid privileged helper bus name: {err}"))?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for privileged D-Bus helper".to_string());
         }
-    })
-    .await
+        if let Ok(connection) = privileged_bus_connection(BusKind::Session).await
+            && let Ok(dbus) = DBusProxy::new(&connection).await
+            && dbus.get_name_owner(service_name.clone()).await.is_ok()
+        {
+            return Ok(());
+        }
+        Timer::after(Duration::from_millis(250)).await;
+    }
 }
 
 async fn privileged_bus_connection(kind: BusKind) -> Result<Connection, String> {
@@ -436,7 +431,7 @@ pub async fn run_dbus_service(bus: HelperBus) -> Result<(), String> {
         .map_err(|err| format!("cannot build privileged helper D-Bus service: {err}"))?;
 
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(5)).await;
         service_monitor.expire_stale_external_edits();
         if service_monitor.can_exit() {
             let (idle_for, active_edits) = service_monitor.exit_state();

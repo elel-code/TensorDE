@@ -53,7 +53,7 @@ external archive tool when the user invokes archive actions.
   - Shows a root `Extract` submenu for local archive selections, including
     multi-selection; extraction actions operate only on selected archive items.
   - Runs `Extract and trash archive` internally: Fika waits for Ark with
-    `tokio::process`, then moves the original archive(s) to Trash with
+    `async_process::Command`, then moves the original archive(s) to Trash with
     `file_ops::trash_paths_async`.
   - Does not expose Ark local actions for Trash or pure network URI targets.
   - De-duplicates by visible label and submenu when a discovered service menu

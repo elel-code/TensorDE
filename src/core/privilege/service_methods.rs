@@ -218,18 +218,10 @@ fn sync_external_edit(edit: &mut ExternalEdit) -> Result<PathBuf, String> {
 fn wait_for_user_unit_to_finish(unit: &str, session_bus_address: Option<&str>) {
     let unit = unit.to_string();
     let session_bus_address = session_bus_address.map(str::to_string);
-    match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime.block_on(wait_for_user_unit_to_finish_async(
-            &unit,
-            session_bus_address.as_deref(),
-        )),
-        Err(err) => eprintln!(
-            "[fika privileged helper] cannot initialize Tokio unit watcher for {unit}: {err}"
-        ),
-    }
+    async_io::block_on(wait_for_user_unit_to_finish_async(
+        &unit,
+        session_bus_address.as_deref(),
+    ));
 }
 
 async fn wait_for_user_unit_to_finish_async(unit: &str, session_bus_address: Option<&str>) {
@@ -309,7 +301,7 @@ async fn wait_for_user_unit_to_finish_by_poll(unit: &str, session_bus_address: O
             Ok(Some(_)) => {}
             Err(err) => eprintln!("[fika privileged helper] cannot query unit {unit}: {err}"),
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        async_io::Timer::after(Duration::from_secs(2)).await;
     }
 }
 

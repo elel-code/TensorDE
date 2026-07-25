@@ -11,9 +11,7 @@ use crate::shell::drag_preview_layout::{
     SingleDragPreviewLayout, pane_single_drag_preview_layout, place_single_drag_preview_layout,
 };
 use crate::shell::metrics::{PLACES_ICON_SIZE, PLACES_ROW_HEIGHT, PLACES_SIDEBAR_WIDTH};
-use crate::{
-    ShellInternalDragSource, ShellScene, TEXT_FONT_SIZE, TEXT_LINE_HEIGHT,
-};
+use crate::{ShellInternalDragSource, ShellScene, TEXT_FONT_SIZE, TEXT_LINE_HEIGHT};
 
 impl ShellScene {
     fn drag_preview_text_width(&self, label: &str) -> f32 {

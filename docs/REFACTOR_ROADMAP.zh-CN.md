@@ -392,6 +392,31 @@ operation dispatcher。
 - operation runtime 管理 task id、controller、status 文案和 cancellation。
 - Empty Trash 等性能敏感路径保留 compio 优先实现。
 
+### 6b. Compio-first Runtime Migration（进行中）
+
+目标：把 async runtime 收敛到 Compio + async-io，去掉 Tokio 双 runtime。
+
+已完成：
+- `OperationRuntime` 改为纯 Compio 调度线程，任务提交/完成桥接使用
+  `async-channel` + `futures-channel::oneshot`，不再持有 Tokio multi-thread runtime，
+  也不再 `tokio_handle.enter()`。
+- `zbus` / `zbus_polkit` 切到 **async-io**（zbus 5 默认路径），不再启用 `tokio` feature。
+- `BusController` 去掉 `with_bus_tokio_context`；timeout / backoff 使用 `async_io::Timer`。
+- privilege helper、XDP filechooser backend 入口改为 `async_io::block_on`。
+- Ark extract-and-trash、XDP chooser 子进程改为 `async_process`。
+- 直接依赖中已移除 `tokio`。
+
+后续：
+- 继续把 UI 侧 operation submit / completion 收敛到 dispatcher（见第 6 节）。
+- 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
+  Tokio 作为第二 runtime。
+- 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
+
+完成标准：
+- `Cargo.toml` 无直接 `tokio` 依赖；`cargo tree -i tokio` 仅允许传递依赖（若有）。
+- D-Bus / 文件操作 / helper binaries 可在 Compio 或 async-io executor 上运行。
+- 回归：`cargo test`、`scripts/check-rust-file-lines.sh`。
+
 ### 7. Test Fixture Builder
 
 目标：减少测试直接构造 `ShellScene` 字段导致的迁移成本。
@@ -410,13 +435,14 @@ operation dispatcher。
 1. Command / Action 层后续：把 pointer move / drag route 继续收敛到 snapshot +
    planner，并开始把 effect 返回值统一成 action outcome。
 2. Async operation dispatcher：优先承接 trash / paste / drop / create / rename 等文件
-   操作，把 completion 也映射为 action outcome。
+   操作，把 completion 也映射为 action outcome；runtime 已是 Compio-first（见 6b）。
 3. Animation registry：将 delete/reflow/hover 等 timeline 挂到 outcome 的 Queue /
    Present 调度后面。
 4. Render surface / frame pipeline。
 5. ShellScene hit testing 模块化。
 6. Test fixture builder 穿插进行。
 7. Render dirty / damage 后续收敛穿插进行。
+8. Runtime 后续：可选把 process/time 再收紧到 compio feature；保持无直接 Tokio 依赖。
 
 ## 每步提交前验证
 

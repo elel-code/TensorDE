@@ -385,8 +385,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn ark_dnd_extract_executor_validates_destination_before_bus_connection() {
+    #[test]
+    fn ark_dnd_extract_executor_validates_destination_before_bus_connection() {
         let controller = BusController::new(BusConfig {
             retry_attempts: 1,
             retry_backoff: Duration::ZERO,
@@ -398,9 +398,12 @@ mod tests {
             remote_path: "/Ark/DndExtract".to_string(),
         };
 
-        let error = execute_ark_dnd_extract_with_bus(&controller, &payload, Path::new("relative"))
-            .await
-            .unwrap_err();
+        let error = futures_lite::future::block_on(execute_ark_dnd_extract_with_bus(
+            &controller,
+            &payload,
+            Path::new("relative"),
+        ))
+        .unwrap_err();
 
         assert!(matches!(
             error,

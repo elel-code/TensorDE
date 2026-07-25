@@ -29,8 +29,8 @@ use crate::{
     IncomingDndTransfer, ItemPixmapLayout, OutgoingDndTransfer, ShellInternalDragPreviewSource,
     ShellViewMode, ViewRect, decode_file_clipboard_text, entry_path_for_thumbnail,
     folder_preview_role_draw_rect, icon_emblem_kinds_for_path, icon_emblem_rects,
-    normalized_scale_factor, path_uri_from_path, rasterize_icon, thumbnail_request_may_have_preview,
-    view_point_from_physical_position,
+    normalized_scale_factor, path_uri_from_path, rasterize_icon,
+    thumbnail_request_may_have_preview, view_point_from_physical_position,
 };
 
 const ACCEPTED_DND_ACTIONS: [DndAction; 3] = [DndAction::Ask, DndAction::Move, DndAction::Copy];

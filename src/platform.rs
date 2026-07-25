@@ -768,10 +768,7 @@ mod scaling_tests {
         assert_eq!(physical_key(47), PhysicalKey::Code(KeyCode::KeyV));
         assert_eq!(physical_key(45), PhysicalKey::Code(KeyCode::KeyX));
         // X11-style keycodes (evdev + 8) must not silently remap onto neighbors.
-        assert!(matches!(
-            physical_key(54),
-            PhysicalKey::Unidentified(_)
-        ));
+        assert!(matches!(physical_key(54), PhysicalKey::Unidentified(_)));
     }
 
     #[test]

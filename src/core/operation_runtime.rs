@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use async_channel::Sender;
+use futures_channel::oneshot;
+
 use super::file_ops::TransferProgress;
 use super::operations::Operation;
-use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
-use tokio::sync::{mpsc, oneshot};
 
 type CompioFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 type CompioTask = Box<dyn FnOnce() -> CompioFuture + Send + 'static>;
@@ -19,7 +20,6 @@ pub struct OperationId(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationRuntimeError {
-    RuntimeInit(String),
     CompioThreadStart(String),
     Stopped,
     ResultDropped,
@@ -30,7 +30,6 @@ pub enum OperationRuntimeError {
 impl fmt::Display for OperationRuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RuntimeInit(err) => write!(f, "failed to create operation runtime: {err}"),
             Self::CompioThreadStart(err) => {
                 write!(f, "failed to start operation Compio thread: {err}")
             }
@@ -132,32 +131,28 @@ pub struct OperationSubmission<T> {
     pub result_rx: oneshot::Receiver<T>,
 }
 
+/// Compio-only async operation dispatcher.
+///
+/// File I/O and long-running tasks run on a dedicated Compio thread. Completion
+/// is bridged with runtime-agnostic channels so callers do not need Tokio.
 pub struct OperationRuntime {
-    compio_tx: mpsc::Sender<CompioTask>,
-    _tokio_runtime: TokioRuntime,
+    compio_tx: Sender<CompioTask>,
     next_operation_id: AtomicU64,
     operations: Mutex<BTreeMap<OperationId, OperationHandle>>,
 }
 
 impl OperationRuntime {
     fn new() -> Result<Self, OperationRuntimeError> {
-        let tokio_runtime = TokioRuntimeBuilder::new_multi_thread()
-            .enable_all()
-            .thread_name("fika-operation-tokio")
-            .build()
-            .map_err(|err| OperationRuntimeError::RuntimeInit(err.to_string()))?;
-        let tokio_handle = tokio_runtime.handle().clone();
-        let (compio_tx, mut compio_rx) = mpsc::channel::<CompioTask>(1);
+        let (compio_tx, compio_rx) = async_channel::bounded::<CompioTask>(1);
 
         std::thread::Builder::new()
             .name("fika-operation-compio".to_string())
             .spawn(move || {
-                let _tokio = tokio_handle.enter();
                 let Ok(runtime) = compio::runtime::RuntimeBuilder::new().build() else {
                     return;
                 };
                 runtime.block_on(async move {
-                    while let Some(task) = compio_rx.recv().await {
+                    while let Ok(task) = compio_rx.recv().await {
                         compio::runtime::spawn(task()).detach();
                     }
                 });
@@ -166,7 +161,6 @@ impl OperationRuntime {
 
         Ok(Self {
             compio_tx,
-            _tokio_runtime: tokio_runtime,
             next_operation_id: AtomicU64::new(1),
             operations: Mutex::new(BTreeMap::new()),
         })
