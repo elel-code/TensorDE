@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     io,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::process::CommandExt,
     process::{Child, Command, ExitStatus, Stdio},
 };
@@ -9,6 +9,10 @@ use std::{
 #[cfg(feature = "systemd")]
 use std::thread;
 
+use smithay::reexports::rustix::{
+    io::{read, retry_on_intr, write},
+    pipe::{PipeFlags, pipe_with},
+};
 use thiserror::Error;
 
 #[cfg(feature = "systemd")]
@@ -274,36 +278,47 @@ struct ForkPids {
 
 #[allow(unsafe_code)]
 fn prepare_double_fork(command: &mut Command, pipes: &ForkPipes) {
-    let pid_read = pipes.pid_read.as_raw_fd();
-    let pid_write = pipes.pid_write.as_raw_fd();
-    let gate_read = pipes.gate_read.as_ref().map(AsRawFd::as_raw_fd);
-    let gate_write = pipes.gate_write.as_ref().map(AsRawFd::as_raw_fd);
+    // The descriptors are duplicated by Command's initial fork. Turn the
+    // child-side descriptors back into OwnedFd values inside pre_exec so
+    // rustix can perform the PID and gate transfers without more raw reads or
+    // writes. Taking each raw value prevents an accidental second owner if
+    // Command ever retries the closure after a setup error.
+    let mut pid_read = Some(pipes.pid_read.as_raw_fd());
+    let mut pid_write = Some(pipes.pid_write.as_raw_fd());
+    let mut gate_read = pipes.gate_read.as_ref().map(AsRawFd::as_raw_fd);
+    let mut gate_write = pipes.gate_write.as_ref().map(AsRawFd::as_raw_fd);
 
     unsafe {
         command.pre_exec(move || {
             // Tensor consumes termination signals through signalfd; applications
             // must retain their normal signal delivery after exec.
             crate::signals::unblock_all_for_child()?;
-            close_fd(pid_read);
-            if let Some(fd) = gate_write {
+            if let Some(fd) = pid_read.take() {
                 close_fd(fd);
             }
+            if let Some(fd) = gate_write.take() {
+                close_fd(fd);
+            }
+            let pid_write = pid_write.take().map(|fd| OwnedFd::from_raw_fd(fd));
+            let gate_read = gate_read.take().map(|fd| OwnedFd::from_raw_fd(fd));
 
             let intermediate_pid = libc::getpid();
             match libc::fork() {
                 -1 => Err(io::Error::last_os_error()),
                 0 => {
-                    close_fd(pid_write);
-                    if let Some(fd) = gate_read {
+                    drop(pid_write);
+                    if let Some(fd) = gate_read.as_ref() {
                         wait_for_release(fd)?;
                     }
                     Ok(())
                 }
                 client_pid => {
                     let message = encode_pids(intermediate_pid, client_pid)?;
-                    write_all(pid_write, &message)?;
-                    close_fd(pid_write);
-                    if let Some(fd) = gate_read {
+                    if let Some(fd) = pid_write.as_ref() {
+                        write_all(fd, &message)?;
+                    }
+                    drop(pid_write);
+                    if let Some(fd) = gate_read.as_ref() {
                         wait_for_release(fd)?;
                     }
                     libc::_exit(0)
@@ -326,7 +341,7 @@ fn encode_pids(intermediate: libc::pid_t, client: libc::pid_t) -> io::Result<[u8
 
 fn read_pids(fd: &OwnedFd) -> Result<ForkPids, SpawnError> {
     let mut message = [0; 8];
-    read_all(fd.as_raw_fd(), &mut message).map_err(SpawnError::PidTransfer)?;
+    read_all(fd, &mut message).map_err(SpawnError::PidTransfer)?;
     Ok(ForkPids {
         #[cfg(feature = "systemd")]
         intermediate: u32::from_ne_bytes(message[..4].try_into().unwrap()),
@@ -344,13 +359,8 @@ fn clone_io_error(error: &SpawnError) -> SpawnError {
     }
 }
 
-#[allow(unsafe_code)]
 fn pipe_cloexec() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [-1; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+    pipe_with(PipeFlags::CLOEXEC).map_err(io::Error::from)
 }
 
 #[allow(unsafe_code)]
@@ -369,67 +379,40 @@ fn terminate_blocked_client(pid: u32) {
     }
 }
 
-#[allow(unsafe_code)]
-fn write_all(fd: RawFd, mut buffer: &[u8]) -> io::Result<()> {
-    while !buffer.is_empty() {
-        let written = unsafe { libc::write(fd, buffer.as_ptr().cast(), buffer.len()) };
-        if written == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if written == 0 {
+fn write_all(fd: impl AsFd, buffer: &[u8]) -> io::Result<()> {
+    let mut written = 0;
+    while written != buffer.len() {
+        let count = retry_on_intr(|| write(&fd, &buffer[written..])).map_err(io::Error::from)?;
+        if count == 0 {
             return Err(io::Error::new(io::ErrorKind::WriteZero, "PID pipe closed"));
         }
-        buffer = &buffer[written as usize..];
+        written += count;
     }
     Ok(())
 }
 
-#[allow(unsafe_code)]
-fn read_all(fd: RawFd, mut buffer: &mut [u8]) -> io::Result<()> {
-    while !buffer.is_empty() {
-        let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        if read == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if read == 0 {
+fn read_all(fd: impl AsFd, buffer: &mut [u8]) -> io::Result<()> {
+    let mut start = 0;
+    while start != buffer.len() {
+        let count = retry_on_intr(|| read(&fd, &mut buffer[start..])).map_err(io::Error::from)?;
+        if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "PID pipe closed before sending both PIDs",
             ));
         }
-        let (_, remaining) = std::mem::take(&mut buffer).split_at_mut(read as usize);
-        buffer = remaining;
+        start += count;
     }
     Ok(())
 }
 
-fn wait_for_release(fd: RawFd) -> io::Result<()> {
+fn wait_for_release(fd: impl AsFd) -> io::Result<()> {
     let mut byte = [0];
     loop {
-        match read_all_or_eof(fd, &mut byte) {
-            Ok(0) => return Ok(()),
-            Ok(_) => continue,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+        let count = retry_on_intr(|| read(&fd, &mut byte)).map_err(io::Error::from)?;
+        if count == 0 {
+            return Ok(());
         }
-    }
-}
-
-#[allow(unsafe_code)]
-fn read_all_or_eof(fd: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
-    let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-    if read == -1 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(read as usize)
     }
 }
 

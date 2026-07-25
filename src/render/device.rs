@@ -8,6 +8,8 @@ use std::{
 use thiserror::Error;
 use vulkanalia::{Version, vk};
 
+use smithay::reexports::rustix::fs::{major, minor};
+
 use super::NativeInteropCapabilities;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,7 +67,7 @@ impl DrmNodeId {
             return Err(DrmNodeError::NotCharacterDevice(path.to_owned()));
         }
         let device = metadata.rdev();
-        Ok(Self::new(libc::major(device), libc::minor(device)))
+        Ok(Self::new(major(device), minor(device)))
     }
 
     pub const fn major(self) -> u32 {
