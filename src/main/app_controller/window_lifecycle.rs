@@ -23,6 +23,7 @@ impl FikaWgpuApp {
             active_task_base_details: HashMap::new(),
             next_task_id: 1,
             modifiers: Modifiers::default(),
+            pinch_zoom: None,
             incoming_dnd_transfer: None,
             outgoing_dnd_transfer: None,
             outgoing_dnd_start_failed: false,

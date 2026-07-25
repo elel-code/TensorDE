@@ -150,9 +150,11 @@ impl EventLoop {
             Event::Surface(event) => self.dispatch_surface_event(app, event),
             Event::LayerSurface(_) | Event::Output(_) => Ok(()),
             Event::Activation(_) => Ok(()),
-            Event::PointerConstraint(_)
-            | Event::RelativePointer(_)
-            | Event::PointerGesture(_) => Ok(()),
+            Event::PointerConstraint(_) | Event::RelativePointer(_) => Ok(()),
+            Event::PointerGesture(event) => {
+                self.dispatch_pointer_gesture_event(app, event);
+                Ok(())
+            }
             Event::TextInput(event) => {
                 self.dispatch_text_input_event(app, event);
                 Ok(())
@@ -437,6 +439,31 @@ impl EventLoop {
         {
             eprintln!("[fika-wayland] finish DnD offer failed: {error}");
         }
+    }
+
+    fn dispatch_pointer_gesture_event<A: ApplicationHandler>(
+        &self,
+        app: &mut A,
+        event: PointerGestureEvent,
+    ) {
+        // Only pinch is consumed today (icon/view zoom). Swipe/hold stay unused.
+        let PointerGestureEvent::Pinch(pinch) = event else {
+            return;
+        };
+        let surface = pinch.surface();
+        let Some(window) = self.window(surface) else {
+            return;
+        };
+        let gesture = match pinch {
+            PointerPinchEvent::Begin { .. } => PinchGesture::Begin,
+            PointerPinchEvent::Update { scale, .. } => PinchGesture::Update { scale },
+            PointerPinchEvent::End { cancelled, .. } => PinchGesture::End { cancelled },
+        };
+        app.window_event(
+            &self.active,
+            window.id(),
+            WindowEvent::PinchGesture(gesture),
+        );
     }
 
     fn dispatch_surface_event<A: ApplicationHandler>(

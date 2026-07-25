@@ -18,8 +18,9 @@ use wayland_client_runtime::{
     BlurRegion, BlurState, CursorIcon as RuntimeCursorIcon, DecorationPreference, DialogAttributes,
     DndAction as RuntimeDndAction, DndActions as RuntimeDndActions, DndEvent,
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
-    LogicalPosition, LogicalSize, MimePayload, PointerAxisValue, PointerEventKind, Runtime,
-    RuntimeError, RuntimeOptions, SurfaceEvent, SurfaceHandle, SurfaceId,
+    LogicalPosition, LogicalSize, MimePayload, PointerAxisValue, PointerEventKind,
+    PointerGestureEvent, PointerPinchEvent, Runtime, RuntimeError, RuntimeOptions, SurfaceEvent,
+    SurfaceHandle, SurfaceId,
     TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,
     TextInputContentPurpose as RuntimeTextInputContentPurpose,
@@ -388,6 +389,18 @@ impl ActiveEventLoop {
             let id = self.runtime.borrow_mut().create_toplevel(toplevel)?;
             if self.primary_surface.get().is_none() {
                 self.primary_surface.set(Some(id));
+            }
+            // Subscribe main toplevels to touchpad gestures (pinch → zoom).
+            // Unsupported compositors leave the surface at zero gesture overhead.
+            match self
+                .runtime
+                .borrow_mut()
+                .set_pointer_gestures_enabled(id, true)
+            {
+                Ok(()) | Err(RuntimeError::Unsupported(_)) => {}
+                Err(error) => {
+                    eprintln!("[fika-wayland] pointer-gestures enable failed: {error}");
+                }
             }
             id
         };

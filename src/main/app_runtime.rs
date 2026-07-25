@@ -11,6 +11,8 @@ struct FikaWgpuApp {
     active_task_base_details: HashMap<ShellTaskId, String>,
     next_task_id: ShellTaskId,
     modifiers: Modifiers,
+    /// Active touchpad pinch session for icon/view zoom (main window).
+    pinch_zoom: Option<PinchZoomTracker>,
     incoming_dnd_transfer: Option<IncomingDndTransfer>,
     outgoing_dnd_transfer: Option<OutgoingDndTransfer>,
     outgoing_dnd_start_failed: bool,
@@ -389,6 +391,9 @@ impl ApplicationHandler for FikaWgpuApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_main_mouse_wheel(delta);
+            }
+            WindowEvent::PinchGesture(gesture) => {
+                self.handle_main_pinch_gesture(gesture);
             }
             WindowEvent::RedrawRequested => {
                 let force_log = self.pending_redraw_frames > 0;

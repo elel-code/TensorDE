@@ -64,6 +64,15 @@ pub enum MouseScrollDelta {
     LineDelta { x: f64, y: f64 },
 }
 
+/// Touchpad pinch gesture phases for icon/view zoom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PinchGesture {
+    Begin,
+    /// Absolute scale relative to finger spacing at [`Self::Begin`].
+    Update { scale: f64 },
+    End { cancelled: bool },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Modifiers {
     control: bool,
@@ -422,6 +431,11 @@ pub enum WindowEvent {
     MouseWheel {
         delta: MouseScrollDelta,
     },
+    /// Touchpad pinch from `zwp_pointer_gestures_v1` (main window only).
+    ///
+    /// `Update.scale` is absolute relative to finger spacing at [`PinchGesture::Begin`]
+    /// (protocol scale, typically starting near 1.0).
+    PinchGesture(PinchGesture),
     RedrawRequested,
     DragEntered {
         id: DataTransferId,

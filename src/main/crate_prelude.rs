@@ -112,6 +112,7 @@ fn window_event_label(event: &WindowEvent) -> &'static str {
         WindowEvent::PointerMoved { .. } => "PointerMoved",
         WindowEvent::PointerLeft { .. } => "PointerLeft",
         WindowEvent::MouseWheel { .. } => "MouseWheel",
+        WindowEvent::PinchGesture(_) => "PinchGesture",
         WindowEvent::PointerButton { .. } => "PointerButton",
         WindowEvent::ScaleFactorChanged { .. } => "ScaleFactorChanged",
         WindowEvent::RedrawRequested => "RedrawRequested",
