@@ -251,10 +251,12 @@ use shell::toolbar::{
 use shell::transfer::{
     ShellAsyncMoveToTrashCompletion, ShellAsyncTaskResult, ShellAsyncTransferCompletion,
     ShellAsyncTransferSource, ShellAsyncTrashViewCompletion, ShellPasteResult,
-    ShellTransferExecution, async_transfer_task_detail, async_transfer_task_label,
-    transfer_paths_async_with_controller_and_privilege, transfer_paths_with_privilege,
-    transfer_runtime_failure, trash_paths_async_with_privilege,
+    ShellTransferExecution, async_transfer_task_detail, async_transfer_task_label, paste_text_async,
+    transfer_paths_async_with_controller_and_privilege, transfer_runtime_failure,
+    trash_paths_async_with_privilege,
 };
+#[cfg(test)]
+use shell::transfer::transfer_paths_with_privilege;
 use shell::trash_conflict::{ShellTrashConflictDialog, TrashConflictDialogClick};
 use shell::ui_chrome::{
     PlaceIconPaint, push_fallback_file_icon, push_location_bar_icon, push_place_icon,

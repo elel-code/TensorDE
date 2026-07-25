@@ -35,33 +35,34 @@ impl FikaWgpuApp {
         privileged: bool,
         text: String,
     ) -> bool {
-        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+        if self.renderer.is_none() {
             return false;
+        }
+        let target_dir = if use_context {
+            self.scene
+                .context_target_paste_directory()
+                .or_else(|| self.scene.active_pane_paste_directory())
+        } else {
+            self.scene.active_pane_paste_directory()
         };
+        let Some((_target_pane, target_dir)) = target_dir else {
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Paste failed",
+                "No paste target pane",
+                privileged,
+            ));
+            return true;
+        };
+        if is_network_path(&target_dir) {
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Paste failed",
+                "Remote paste target is not available yet",
+                privileged,
+            ));
+            return true;
+        }
+
         if let Some(payload) = decode_file_clipboard_text(&text) {
-            let target_dir = if use_context {
-                self.scene
-                    .context_target_paste_directory()
-                    .or_else(|| self.scene.active_pane_paste_directory())
-            } else {
-                self.scene.active_pane_paste_directory()
-            };
-            let Some((_target_pane, target_dir)) = target_dir else {
-                self.scene.record_task_status(ShellTaskStatus::failed(
-                    "Paste failed",
-                    "No paste target pane",
-                    privileged,
-                ));
-                return true;
-            };
-            if is_network_path(&target_dir) {
-                self.scene.record_task_status(ShellTaskStatus::failed(
-                    "Paste failed",
-                    "Remote paste target is not available yet",
-                    privileged,
-                ));
-                return true;
-            }
             if payload.paths.iter().any(|path| is_network_path(path)) {
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Paste failed",
@@ -93,31 +94,16 @@ impl FikaWgpuApp {
             ));
             return true;
         }
-        let paste_result = if use_context {
-            self.scene
-                .paste_clipboard_text_from_context(&text, size, false)
-        } else {
-            self.scene
-                .paste_clipboard_text_into_active_pane(&text, size, false)
-        };
-        match paste_result {
-            Ok(result) if result.changed() => {
-                if result.clear_clipboard && result.failure_count == 0 {
-                    self.queue_clipboard_clear("paste-text");
-                }
-                true
-            }
-            Ok(_) => true,
-            Err(error) => {
-                fika_log!("[fika-wgpu] paste-error {error}");
-                self.scene.record_task_status(ShellTaskStatus::failed(
-                    "Paste failed",
-                    error,
-                    false,
-                ));
-                true
-            }
+        if text.trim().is_empty() {
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Paste failed",
+                "clipboard is empty",
+                false,
+            ));
+            return true;
         }
+        self.start_async_paste_text(target_dir, text);
+        true
     }
 
     pub(crate) fn perform_drop_operation_request(

@@ -520,76 +520,157 @@ impl FikaWgpuApp {
         clear_clipboard: bool,
         privileged: bool,
     ) {
-        let task_id = self.next_task_id();
         let controller = OperationController::new();
-        self.active_task_controllers
-            .insert(task_id, controller.clone());
-        let base_detail = async_transfer_task_detail(&target_dir, paths.len(), clear_clipboard);
+        let task_id = self.begin_async_transfer_task(
+            source,
+            &target_dir,
+            mode,
+            paths.len(),
+            clear_clipboard,
+            privileged,
+            controller.clone(),
+        );
+        let work_target = target_dir.clone();
+        if let Err(error) = self.spawn_async_transfer_completion(
+            task_id,
+            source,
+            target_dir.clone(),
+            move || async move {
+                transfer_paths_async_with_controller_and_privilege(
+                    work_target,
+                    mode,
+                    paths,
+                    label,
+                    clear_clipboard,
+                    controller,
+                    privileged,
+                )
+                .await
+            },
+        ) {
+            self.fail_async_transfer_spawn(
+                task_id,
+                source,
+                target_dir,
+                mode,
+                label,
+                clear_clipboard,
+                privileged,
+                error,
+            );
+        }
+    }
+
+    fn start_async_paste_text(&mut self, target_dir: PathBuf, text: String) {
+        let controller = OperationController::new();
+        let task_id = self.begin_async_transfer_task(
+            ShellAsyncTransferSource::Paste,
+            &target_dir,
+            FileTransferMode::Copy,
+            1,
+            false,
+            false,
+            controller,
+        );
+        let work_target = target_dir.clone();
+        if let Err(error) = self.spawn_async_transfer_completion(
+            task_id,
+            ShellAsyncTransferSource::Paste,
+            target_dir.clone(),
+            move || async move { paste_text_async(work_target, text).await },
+        ) {
+            self.fail_async_transfer_spawn(
+                task_id,
+                ShellAsyncTransferSource::Paste,
+                target_dir,
+                FileTransferMode::Copy,
+                "Paste",
+                false,
+                false,
+                error,
+            );
+        }
+    }
+
+    fn begin_async_transfer_task(
+        &mut self,
+        source: ShellAsyncTransferSource,
+        target_dir: &Path,
+        mode: FileTransferMode,
+        item_count: usize,
+        clear_clipboard: bool,
+        privileged: bool,
+        controller: OperationController,
+    ) -> ShellTaskId {
+        let task_id = self.next_task_id();
+        self.active_task_controllers.insert(task_id, controller);
+        let base_detail = async_transfer_task_detail(target_dir, item_count, clear_clipboard);
         self.active_task_base_details
             .insert(task_id, base_detail.clone());
         self.scene.record_async_transfer_started(
             task_id,
             source,
             mode,
-            paths.len(),
+            item_count,
             base_detail,
             privileged,
         );
+        task_id
+    }
+
+    fn spawn_async_transfer_completion<F, Fut>(
+        &self,
+        task_id: ShellTaskId,
+        source: ShellAsyncTransferSource,
+        target_dir: PathBuf,
+        task: F,
+    ) -> Result<(), OperationRuntimeError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ShellTransferExecution> + 'static,
+    {
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
-        let target_dir_for_error = target_dir.clone();
-        if let Err(error) = spawn_operation_task_with_completion(
-            {
-                let controller = controller.clone();
-                let target_dir = target_dir.clone();
-                let paths = paths.clone();
-                move || async move {
-                    transfer_paths_async_with_controller_and_privilege(
+        spawn_operation_task_with_completion(task, move |transfer| {
+            if tx
+                .send(ShellAsyncTaskResult::Transfer(
+                    ShellAsyncTransferCompletion {
+                        task_id,
+                        source,
                         target_dir,
-                        mode,
-                        paths,
-                        label,
-                        clear_clipboard,
-                        controller,
-                        privileged,
-                    )
-                    .await
-                }
+                        transfer,
+                    },
+                ))
+                .is_ok()
+            {
+                proxy.wake_up();
+            }
+        })
+    }
+
+    fn fail_async_transfer_spawn(
+        &mut self,
+        task_id: ShellTaskId,
+        source: ShellAsyncTransferSource,
+        target_dir: PathBuf,
+        mode: FileTransferMode,
+        label: &'static str,
+        clear_clipboard: bool,
+        privileged: bool,
+        error: impl std::fmt::Display,
+    ) {
+        let mut transfer =
+            transfer_runtime_failure(target_dir.clone(), mode, label, clear_clipboard, error);
+        transfer.privileged = privileged;
+        let _ = self.async_task_tx.send(ShellAsyncTaskResult::Transfer(
+            ShellAsyncTransferCompletion {
+                task_id,
+                source,
+                target_dir,
+                transfer,
             },
-            move |transfer| {
-                if tx
-                    .send(ShellAsyncTaskResult::Transfer(
-                        ShellAsyncTransferCompletion {
-                            task_id,
-                            source,
-                            target_dir,
-                            transfer,
-                        },
-                    ))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
-            },
-        ) {
-            let mut transfer = transfer_runtime_failure(
-                target_dir_for_error.clone(),
-                mode,
-                label,
-                clear_clipboard,
-                error,
-            );
-            transfer.privileged = privileged;
-            let _ = self.async_task_tx.send(ShellAsyncTaskResult::Transfer(
-                ShellAsyncTransferCompletion {
-                    task_id,
-                    source,
-                    target_dir: target_dir_for_error,
-                    transfer,
-                },
-            ));
-            self.event_loop_proxy.wake_up();
-        }
+        ));
+        self.event_loop_proxy.wake_up();
     }
 
     fn start_async_move_to_trash(

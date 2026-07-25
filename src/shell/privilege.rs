@@ -32,6 +32,7 @@ pub(crate) async fn run_privileged_command(
         .map_err(|error| format!("administrator operation failed: {error}"))
 }
 
+#[cfg(test)]
 pub(crate) fn run_privileged_command_sync(
     command: PrivilegedCommand,
 ) -> Result<ShellPrivilegeOutcome, String> {

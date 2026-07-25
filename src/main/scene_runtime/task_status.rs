@@ -322,6 +322,8 @@ impl ShellScene {
             .map(|state| (pane, state.path.clone()))
     }
 
+    // Production paste path is async via FikaWgpuApp::finish_paste_from_clipboard_text.
+    #[cfg(test)]
     fn paste_clipboard_text_from_context(
         &mut self,
         clipboard_text: &str,
@@ -335,6 +337,7 @@ impl ShellScene {
         self.paste_clipboard_text_to_pane(target_pane, target_dir, clipboard_text, size, privileged)
     }
 
+    #[cfg(test)]
     fn paste_clipboard_text_into_active_pane(
         &mut self,
         clipboard_text: &str,
@@ -347,6 +350,7 @@ impl ShellScene {
         self.paste_clipboard_text_to_pane(target_pane, target_dir, clipboard_text, size, privileged)
     }
 
+    #[cfg(test)]
     fn paste_clipboard_text_to_pane(
         &mut self,
         _target_pane: ShellPaneId,

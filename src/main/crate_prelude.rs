@@ -18,7 +18,9 @@ use cosmic_text::{
     Stretch, Style, SwashCache, Weight, Wrap, fontdb,
 };
 #[cfg(test)]
-use fika_core::{PrivilegedCommand, ServiceMenuPriority, trash_view_operation_result};
+use fika_core::{
+    PrivilegedCommand, ServiceMenuPriority, paste_text_result, trash_view_operation_result,
+};
 use fika_core::{
     AppSettings, CompactLayout, CompactLayoutOptions, DeviceInfo, DevicePlaceOperation,
     DevicePlaceOperationResult, Entry, FileClipboardRole, FileTransferMode, Generation,
@@ -31,7 +33,7 @@ use fika_core::{
     format_modified_secs, format_size, generate_thumbnail_with_external_thumbnailer_registry,
     home_dir, is_network_path, load_app_settings, load_place_order, load_user_places,
     mime_magic_resolution_required, network_parent_path, network_path_display_name,
-    network_path_from_uri, network_root_path, paste_text_result, path_uri_from_path,
+    network_path_from_uri, network_root_path, OperationRuntimeError, path_uri_from_path,
     place_order_path_for_user_places_path, read_entries_sync, read_gio_devices,
     read_network_entry_batches_sync_cancellable, resolve_location_input, save_app_settings,
     save_place_order, save_user_places, spawn_operation_task_with_completion,

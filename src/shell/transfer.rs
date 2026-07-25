@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use fika_core::{
     DevicePlaceOperationResult, Entry, FileTransferMode, OperationController, PrivilegedCommand,
-    TransferTaskResult, TransferUndoItem, TrashViewOperationResult, file_ops, push_unique_path,
+    TransferTaskResult, TransferUndoItem, TrashViewOperationResult, file_ops,
+    paste_text_result_async, push_unique_path,
 };
 
 use crate::CopyLocationRequest;
@@ -12,9 +13,10 @@ use crate::shell::context_menu::ShellContextMenuAction;
 use crate::shell::create_rename::{CreateEntryRequest, RenameEntryRequest};
 use crate::shell::metrics::WGPU_SHELL_PANE_ID;
 use crate::shell::pane::ShellPaneId;
+#[cfg(test)]
+use crate::shell::privilege::run_privileged_command_sync;
 use crate::shell::privilege::{
-    ShellPrivilegeOutcome, run_privileged_command, run_privileged_command_sync,
-    should_attempt_privileged_operation,
+    ShellPrivilegeOutcome, run_privileged_command, should_attempt_privileged_operation,
 };
 use crate::shell::tasks::ShellTaskId;
 
@@ -147,6 +149,8 @@ pub(crate) enum ShellAsyncTaskResult {
     Device(ShellAsyncDeviceCompletion),
 }
 
+// Sync helper retained for scene-side tests; production uses the async path.
+#[cfg(test)]
 pub(crate) fn transfer_paths_with_privilege(
     target_dir: PathBuf,
     mode: FileTransferMode,
@@ -385,6 +389,23 @@ pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
         administrator_available,
         first_error,
         cancelled,
+    }
+}
+
+/// Paste plain clipboard text as a new `Pasted Text*.txt` file.
+pub(crate) async fn paste_text_async(target_dir: PathBuf, text: String) -> ShellTransferExecution {
+    let result = paste_text_result_async(WGPU_SHELL_PANE_ID, target_dir, text).await;
+    let first_error = if result.failure_count > 0 {
+        Some("cannot write pasted text file".to_string())
+    } else {
+        None
+    };
+    ShellTransferExecution {
+        result,
+        privileged: false,
+        administrator_available: false,
+        first_error,
+        cancelled: false,
     }
 }
 
