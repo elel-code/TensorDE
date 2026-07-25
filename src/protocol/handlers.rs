@@ -1,5 +1,6 @@
 #[cfg(feature = "tty")]
 use std::cell::RefCell;
+mod protocols;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 #[cfg(feature = "tty")]
@@ -356,6 +357,14 @@ impl XdgShellHandler for RuntimeState {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.unregister_toplevel(surface.wl_surface());
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        self.refresh_foreign_toplevel_metadata(&surface);
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.refresh_foreign_toplevel_metadata(&surface);
     }
 }
 

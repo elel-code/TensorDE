@@ -116,10 +116,12 @@ and rendering itself.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
-- Protocol-global tests bind viewporter, fractional-scale, xdg-decoration, primary selection,
-  relative pointer, pointer gestures, presentation-time, cursor-shape, xdg-activation, idle-notify,
-  and wlr-layer-shell capability flags from a real display. They assert preferred-scale (including
-  `150/120`), decoration configure, monotonic clock, and discarded-feedback events, including
+- Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
+  pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
+  text-input, input-method, virtual-keyboard, session-lock, security-context,
+  foreign-toplevel-list, xdg-foreign, system-bell, pointer-warp, content-type, alpha-modifier,
+  toplevel-icon/tag, and wlr-layer-shell). They assert preferred-scale (including `150/120`),
+  decoration configure, monotonic clock, and discarded-feedback events, including
   protocol-correct child-object destruction order. Layer draw-order helpers assert Overlay sits
   above Top and Bottom in the value-only scene merge.
 - XWayland scaling tests keep rootless X11 buffers on the ordinary surface path: integer client

@@ -2,16 +2,35 @@ use smithay::{
     reexports::{calloop::LoopHandle, wayland_server::DisplayHandle},
     utils::{ClockSource, Monotonic},
     wayland::{
+        alpha_modifier::AlphaModifierState,
+        background_effect::BackgroundEffectState,
+        content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
+        foreign_toplevel_list::ForeignToplevelListState,
         fractional_scale::FractionalScaleManagerState,
+        idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
+        input_method::InputMethodManagerState,
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
+        pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
+        pointer_warp::PointerWarpManager,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
+        security_context::SecurityContextState,
         selection::primary_selection::PrimarySelectionState,
+        session_lock::SessionLockManagerState,
         shell::{wlr_layer::WlrLayerShellState, xdg::decoration::XdgDecorationState},
+        single_pixel_buffer::SinglePixelBufferState,
+        tablet_manager::TabletManagerState,
+        text_input::TextInputManagerState,
         viewporter::ViewporterState,
+        virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::XdgActivationState,
+        xdg_foreign::XdgForeignState,
+        xdg_system_bell::XdgSystemBellState,
+        xdg_toplevel_icon::XdgToplevelIconManager,
+        xdg_toplevel_tag::XdgToplevelTagManager,
     },
 };
 
@@ -34,11 +53,30 @@ pub(crate) struct ProtocolGlobals {
     primary_selection: PrimarySelectionState,
     relative_pointer: RelativePointerManagerState,
     pointer_gestures: PointerGesturesState,
+    pointer_constraints: PointerConstraintsState,
     presentation: PresentationState,
     cursor_shape: CursorShapeManagerState,
     activation: XdgActivationState,
     idle_notifier: IdleNotifierState<RuntimeState>,
+    idle_inhibit: IdleInhibitManagerState,
     layer_shell: WlrLayerShellState,
+    single_pixel_buffer: SinglePixelBufferState,
+    keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState,
+    tablet: TabletManagerState,
+    text_input: TextInputManagerState,
+    input_method: InputMethodManagerState,
+    virtual_keyboard: VirtualKeyboardManagerState,
+    session_lock: SessionLockManagerState,
+    security_context: SecurityContextState,
+    foreign_toplevel_list: ForeignToplevelListState,
+    xdg_foreign: XdgForeignState,
+    system_bell: XdgSystemBellState,
+    pointer_warp: PointerWarpManager,
+    content_type: ContentTypeState,
+    alpha_modifier: AlphaModifierState,
+    background_effect: BackgroundEffectState,
+    toplevel_icon: XdgToplevelIconManager,
+    toplevel_tag: XdgToplevelTagManager,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -50,6 +88,7 @@ impl ProtocolGlobals {
         display: &DisplayHandle,
         loop_handle: &LoopHandle<'static, RuntimeState>,
     ) -> Self {
+        let _ = loop_handle;
         Self {
             viewporter: ViewporterState::new::<RuntimeState>(display),
             fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
@@ -57,11 +96,38 @@ impl ProtocolGlobals {
             primary_selection: PrimarySelectionState::new::<RuntimeState>(display),
             relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
+            pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
             presentation: PresentationState::new::<RuntimeState>(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeManagerState::new::<RuntimeState>(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
             idle_notifier: IdleNotifierState::new(display, loop_handle.clone()),
+            idle_inhibit: IdleInhibitManagerState::new::<RuntimeState>(display),
             layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
+            single_pixel_buffer: SinglePixelBufferState::new::<RuntimeState>(display),
+            keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<RuntimeState>(display),
+            tablet: TabletManagerState::new::<RuntimeState>(display),
+            text_input: TextInputManagerState::new::<RuntimeState>(display),
+            // Privileged input-method / virtual-keyboard: unrestricted clients only.
+            input_method: InputMethodManagerState::new::<RuntimeState, _>(display, |_| true),
+            virtual_keyboard: VirtualKeyboardManagerState::new::<RuntimeState, _>(display, |_| {
+                true
+            }),
+            session_lock: SessionLockManagerState::new::<RuntimeState, _>(display, |_| true),
+            // Sandboxed clients must not re-bind security-context.
+            security_context: SecurityContextState::new::<RuntimeState, _>(display, |client| {
+                client
+                    .get_data::<crate::protocol::state::WaylandClientState>()
+                    .is_some_and(|data| !data.from_security_context)
+            }),
+            foreign_toplevel_list: ForeignToplevelListState::new::<RuntimeState>(display),
+            xdg_foreign: XdgForeignState::new::<RuntimeState>(display),
+            system_bell: XdgSystemBellState::new::<RuntimeState>(display),
+            pointer_warp: PointerWarpManager::new::<RuntimeState>(display),
+            content_type: ContentTypeState::new::<RuntimeState>(display),
+            alpha_modifier: AlphaModifierState::new::<RuntimeState>(display),
+            background_effect: BackgroundEffectState::new::<RuntimeState>(display),
+            toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
+            toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -116,6 +182,22 @@ impl ProtocolGlobals {
         &mut self.layer_shell
     }
 
+    pub(crate) fn keyboard_shortcuts_inhibit(&mut self) -> &mut KeyboardShortcutsInhibitState {
+        &mut self.keyboard_shortcuts_inhibit
+    }
+
+    pub(crate) fn foreign_toplevel_list(&mut self) -> &mut ForeignToplevelListState {
+        &mut self.foreign_toplevel_list
+    }
+
+    pub(crate) fn session_lock(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock
+    }
+
+    pub(crate) fn xdg_foreign(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign
+    }
+
     pub(crate) fn capabilities(&self) -> ProtocolCapabilities {
         let _global_owners = (
             &self.viewporter,
@@ -124,11 +206,30 @@ impl ProtocolGlobals {
             &self.primary_selection,
             &self.relative_pointer,
             &self.pointer_gestures,
+            &self.pointer_constraints,
             &self.presentation,
             &self.cursor_shape,
             &self.activation,
             &self.idle_notifier,
+            &self.idle_inhibit,
             &self.layer_shell,
+            &self.single_pixel_buffer,
+            &self.keyboard_shortcuts_inhibit,
+            &self.tablet,
+            &self.text_input,
+            &self.input_method,
+            &self.virtual_keyboard,
+            &self.session_lock,
+            &self.security_context,
+            &self.foreign_toplevel_list,
+            &self.xdg_foreign,
+            &self.system_bell,
+            &self.pointer_warp,
+            &self.content_type,
+            &self.alpha_modifier,
+            &self.background_effect,
+            &self.toplevel_icon,
+            &self.toplevel_tag,
         );
         ProtocolCapabilities {
             viewporter: true,
@@ -137,11 +238,30 @@ impl ProtocolGlobals {
             primary_selection: true,
             relative_pointer: true,
             pointer_gestures: true,
+            pointer_constraints: true,
             presentation_time: true,
             cursor_shape: true,
             xdg_activation: true,
             idle_notify: true,
+            idle_inhibit: true,
             layer_shell: true,
+            single_pixel_buffer: true,
+            keyboard_shortcuts_inhibit: true,
+            tablet: true,
+            text_input: true,
+            input_method: true,
+            virtual_keyboard: true,
+            session_lock: true,
+            security_context: true,
+            foreign_toplevel_list: true,
+            xdg_foreign: true,
+            system_bell: true,
+            pointer_warp: true,
+            content_type: true,
+            alpha_modifier: true,
+            background_effect: true,
+            toplevel_icon: true,
+            toplevel_tag: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -160,11 +280,30 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) primary_selection: bool,
     pub(crate) relative_pointer: bool,
     pub(crate) pointer_gestures: bool,
+    pub(crate) pointer_constraints: bool,
     pub(crate) presentation_time: bool,
     pub(crate) cursor_shape: bool,
     pub(crate) xdg_activation: bool,
     pub(crate) idle_notify: bool,
+    pub(crate) idle_inhibit: bool,
     pub(crate) layer_shell: bool,
+    pub(crate) single_pixel_buffer: bool,
+    pub(crate) keyboard_shortcuts_inhibit: bool,
+    pub(crate) tablet: bool,
+    pub(crate) text_input: bool,
+    pub(crate) input_method: bool,
+    pub(crate) virtual_keyboard: bool,
+    pub(crate) session_lock: bool,
+    pub(crate) security_context: bool,
+    pub(crate) foreign_toplevel_list: bool,
+    pub(crate) xdg_foreign: bool,
+    pub(crate) system_bell: bool,
+    pub(crate) pointer_warp: bool,
+    pub(crate) content_type: bool,
+    pub(crate) alpha_modifier: bool,
+    pub(crate) background_effect: bool,
+    pub(crate) toplevel_icon: bool,
+    pub(crate) toplevel_tag: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -200,11 +339,30 @@ mod tests {
                 primary_selection: true,
                 relative_pointer: true,
                 pointer_gestures: true,
+                pointer_constraints: true,
                 presentation_time: true,
                 cursor_shape: true,
                 xdg_activation: true,
                 idle_notify: true,
+                idle_inhibit: true,
                 layer_shell: true,
+                single_pixel_buffer: true,
+                keyboard_shortcuts_inhibit: true,
+                tablet: true,
+                text_input: true,
+                input_method: true,
+                virtual_keyboard: true,
+                session_lock: true,
+                security_context: true,
+                foreign_toplevel_list: true,
+                xdg_foreign: true,
+                system_bell: true,
+                pointer_warp: true,
+                content_type: true,
+                alpha_modifier: true,
+                background_effect: true,
+                toplevel_icon: true,
+                toplevel_tag: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

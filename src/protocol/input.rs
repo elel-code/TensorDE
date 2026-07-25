@@ -23,6 +23,32 @@ use super::{
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        // Session lock captures the seat: only VT recovery remains compositor-owned.
+        if self.session_is_locked() {
+            if let InputEvent::Keyboard { event } = &event {
+                let key_state = event.state();
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.input::<(), _>(
+                        self,
+                        event.key_code(),
+                        event.state(),
+                        SERIAL_COUNTER.next_serial(),
+                        event.time_msec(),
+                        move |state, _, handle| {
+                            let Some(vt) = virtual_terminal_for_keysym(handle.modified_sym().raw())
+                            else {
+                                return FilterResult::Intercept(());
+                            };
+                            if key_state == KeyState::Pressed {
+                                state.request_virtual_terminal(vt);
+                            }
+                            FilterResult::Intercept(())
+                        },
+                    );
+                }
+            }
+            return;
+        }
         let activity = matches!(
             event,
             InputEvent::Keyboard { .. }
@@ -212,6 +238,7 @@ impl RuntimeState {
             },
         );
         pointer.frame(self);
+        self.maybe_activate_pointer_constraint();
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target
         // only the head under the pointer so dual high-refresh outputs do not
@@ -264,7 +291,7 @@ impl RuntimeState {
     /// rectangle. This is the union of every mapped Smithay output, so tablet
     /// and remote-pointer events do not depend on HashMap iteration order or
     /// an independently selected renderer device.
-    fn pointer_coordinate_space(&self) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn pointer_coordinate_space(&self) -> Option<Rectangle<i32, Logical>> {
         self.space
             .outputs()
             .filter_map(|output| self.space.output_geometry(output))
@@ -506,7 +533,7 @@ impl RuntimeState {
     }
 }
 
-fn constrain_pointer_location(
+pub(crate) fn constrain_pointer_location(
     location: Point<f64, Logical>,
     bounds: Rectangle<i32, Logical>,
 ) -> Point<f64, Logical> {

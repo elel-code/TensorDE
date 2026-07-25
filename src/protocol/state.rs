@@ -7,6 +7,7 @@ mod output_helpers;
 mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
+mod protocol_side;
 #[cfg(feature = "tty")]
 mod surfaces;
 #[cfg(feature = "tty")]
@@ -15,6 +16,8 @@ mod sync;
 mod tree;
 #[cfg(feature = "xwayland")]
 mod xwayland;
+
+pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -93,6 +96,7 @@ pub(crate) struct RuntimeState {
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) data_device_state: DataDeviceState,
     pub(crate) protocol_globals: ProtocolGlobals,
+    pub(crate) protocol_side: ProtocolSideState,
     #[cfg(feature = "xwayland")]
     pub(crate) xwayland_shell_state: XWaylandShellState,
     pub(crate) seat: Seat<Self>,
@@ -176,6 +180,7 @@ impl RuntimeState {
             seat_state,
             data_device_state,
             protocol_globals,
+            protocol_side: ProtocolSideState::default(),
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
             seat,
@@ -321,6 +326,9 @@ impl RuntimeState {
             .insert(surface.wl_surface().id(), view_id);
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window.clone(), (0, 0), false);
+        if let Some(toplevel) = window.toplevel() {
+            self.publish_foreign_toplevel_from_surface(toplevel.wl_surface());
+        }
         // Keep the initial focus decision separate from layout/configure
         // publication. XDG requires its first configure to be sent from the
         // initial surface commit, which the compositor handler performs.
@@ -331,6 +339,7 @@ impl RuntimeState {
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
         let view_id = self.view_for_surface(surface)?;
+        self.close_foreign_toplevel(surface);
         #[cfg(feature = "xwayland")]
         if !self.detach_x11_transient_views_for_owner(view_id) {
             warn!(
@@ -766,6 +775,8 @@ pub(crate) struct InputDeviceCapabilities {
 #[derive(Debug, Default)]
 pub(crate) struct WaylandClientState {
     pub(crate) compositor_state: CompositorClientState,
+    /// True when the client connected through a `wp_security_context` socket.
+    pub(crate) from_security_context: bool,
 }
 
 impl ClientData for WaylandClientState {
