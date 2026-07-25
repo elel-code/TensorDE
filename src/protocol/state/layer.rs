@@ -11,7 +11,7 @@ use std::{
 
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
+    desktop::{LayerSurface, PopupManager, WindowSurfaceType, layer_map_for_output},
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
@@ -43,6 +43,12 @@ impl RuntimeState {
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) {
             root = parent;
+        }
+        // xdg popups parent through protocol state, not wl_subsurface.
+        if let Some(popup) = self.popups.find_popup(&root)
+            && let Ok(popup_root) = smithay::desktop::find_popup_root_surface(&popup)
+        {
+            root = popup_root;
         }
         let Some(output) = self.layer_output_for_surface(&root) else {
             return false;
@@ -213,7 +219,23 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     fn update_layer_surface_content(&mut self, root: &WlSurface) -> bool {
         let mut commits = Vec::new();
+        // Layer trees use Popup clipping so exclusive panels and their xdg
+        // popups may extend to the full output, not a tile clip.
         collect_surface_tree(root, (0, 0), SurfaceLayer::Popup, &mut commits);
+        let mut popups = PopupManager::popups_for_surface(root).collect::<Vec<_>>();
+        popups.reverse();
+        for (popup, offset) in popups {
+            let popup_geometry = popup.geometry();
+            collect_surface_tree(
+                popup.wl_surface(),
+                (
+                    offset.x.saturating_sub(popup_geometry.loc.x),
+                    offset.y.saturating_sub(popup_geometry.loc.y),
+                ),
+                SurfaceLayer::Popup,
+                &mut commits,
+            );
+        }
         let Some(update) = self.surface_buffers.update_view_tree(&root.id(), commits) else {
             warn!("layer surface identity space is exhausted");
             return false;
@@ -226,6 +248,33 @@ impl RuntimeState {
         self.release_client_buffers(update.released_buffers);
         self.flush_client_releases();
         update.changed
+    }
+
+    /// Whether `surface` is a mapped layer-shell root (not a popup child).
+    #[cfg(feature = "tty")]
+    pub(crate) fn is_layer_root(&self, surface: &WlSurface) -> bool {
+        self.layer_output_for_surface(surface).is_some()
+    }
+
+    /// True when an exclusive or on-demand top/overlay layer should block
+    /// ordinary window popup grabs (menus under a focused panel).
+    #[cfg(feature = "tty")]
+    pub(crate) fn layer_blocks_window_popup_grabs(&self) -> bool {
+        for output in self.space.outputs() {
+            let map = layer_map_for_output(output);
+            for band in [WlrLayer::Overlay, WlrLayer::Top] {
+                if map.layers_on(band).any(|layer| {
+                    let interactive = matches!(
+                        layer.cached_state().keyboard_interactivity,
+                        KeyboardInteractivity::Exclusive
+                    ) || self.layer_shell_on_demand_focus.as_ref() == Some(layer);
+                    interactive && layer.alive() && surface_has_buffer(layer.wl_surface())
+                }) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[cfg(feature = "tty")]

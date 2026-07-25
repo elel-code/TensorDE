@@ -19,7 +19,7 @@ use smithay::{
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     desktop::{
-        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy,
+        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
         find_popup_root_surface,
     },
     input::{
@@ -279,7 +279,9 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        if let Err(error) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+        let popup = PopupKind::Xdg(surface);
+        self.unconstrain_popup(&popup);
+        if let Err(error) = self.popups.track_popup(popup) {
             warn!(%error, "failed to track xdg popup");
         }
     }
@@ -294,6 +296,7 @@ impl XdgShellHandler for RuntimeState {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
         });
+        self.unconstrain_popup(&PopupKind::Xdg(surface.clone()));
         surface.send_repositioned(token);
         if surface.is_initial_configure_sent()
             && let Err(error) = surface.send_configure()
@@ -310,7 +313,18 @@ impl XdgShellHandler for RuntimeState {
         let Ok(root) = find_popup_root_surface(&popup) else {
             return;
         };
-        if self.view_for_surface(&root).is_none() {
+        let is_view = self.view_for_surface(&root).is_some();
+        #[cfg(feature = "tty")]
+        let is_layer = self.is_layer_root(&root);
+        #[cfg(not(feature = "tty"))]
+        let is_layer = false;
+        if !is_view && !is_layer {
+            let _ = PopupManager::dismiss_popup(&root, &popup);
+            return;
+        }
+        #[cfg(feature = "tty")]
+        if is_view && self.layer_blocks_window_popup_grabs() {
+            let _ = PopupManager::dismiss_popup(&root, &popup);
             return;
         }
         let Ok(mut grab) = self.popups.grab_popup(root.into(), popup, &seat, serial) else {
@@ -459,7 +473,10 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
             })
             .flatten();
         if let Some(window) = window {
+            #[cfg(feature = "tty")]
             let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
+            #[cfg(not(feature = "tty"))]
+            let _ = window;
         }
         self.protocol_globals.activation().remove_token(&token);
         #[cfg(feature = "tty")]
@@ -553,6 +570,18 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
         {
             let _ = self.reflow_default_workspace_layout();
             self.request_redraw_all();
+        }
+    }
+
+    fn new_popup(
+        &mut self,
+        _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
+        popup: PopupSurface,
+    ) {
+        let kind = PopupKind::Xdg(popup);
+        self.unconstrain_popup(&kind);
+        if let Err(error) = self.popups.track_popup(kind) {
+            warn!(%error, "failed to track layer-shell xdg popup");
         }
     }
 }

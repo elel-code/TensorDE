@@ -4,6 +4,7 @@ mod layer;
 mod output;
 #[cfg(feature = "tty")]
 mod output_helpers;
+mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
 #[cfg(feature = "tty")]

@@ -190,7 +190,10 @@ zones, sends pending configures, and merges mapped layer content into the output
 scene nodes (outside the ECS view graph). Workspace layout uses the non-exclusive zone so panels
 reserve space. Pointer hit-testing prefers Overlay/Top layers, then windows, then Bottom/Background.
 Keyboard focus prefers exclusive Overlay/Top, then the last on-demand layer (click or new map), then
-exclusive Bottom/Background only when the workspace has no views. The linux-drm-syncobj global is
+exclusive Bottom/Background only when the workspace has no views. xdg popups unconstrain against the
+output (or non-exclusive zone for Background/Bottom parents); layer-shell roots may grab, while
+window popup grabs are dismissed when an interactive Overlay/Top layer holds focus. Layer content
+trees include their xdg popup children in the value-only scene merge. The linux-drm-syncobj global is
 added only after Smithay opens the
 Vulkan-selected primary device and verifies syncobj eventfd support. Compositor-owned launches
 (IPC `spawn` and `spawn_at_startup`) mint external `xdg-activation` tokens and export them as
