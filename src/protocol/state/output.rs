@@ -38,6 +38,11 @@ impl RuntimeState {
         *state = state.queue();
     }
 
+    #[cfg(feature = "tty")]
+    fn set_redraw_state(&mut self, output: BackendOutputId, state: OutputRedrawState) {
+        self.redraw_states.insert(output, state);
+    }
+
     /// Force a first frame for every output, even if a sibling is mid-flip.
     ///
     /// Mirrors Nourish's `force_redraw` / Hyprland's `AQ_SCHEDULE_NEW_MONITOR`:
@@ -46,7 +51,7 @@ impl RuntimeState {
     fn force_redraw_all(&mut self) {
         let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
         for output in outputs {
-            self.redraw_states.insert(output, OutputRedrawState::Queued);
+            self.set_redraw_state(output, OutputRedrawState::Queued);
         }
         self.redraw_queued_outputs();
     }
@@ -82,8 +87,7 @@ impl RuntimeState {
         let output = managed.output.clone();
         let target = renderer_target(&managed.descriptor);
         let Some(geometry) = self.space.output_geometry(&output) else {
-            self.redraw_states
-                .insert(output_id, OutputRedrawState::Idle);
+            self.set_redraw_state(output_id, OutputRedrawState::Idle);
             return;
         };
         let logical = Rect::new(
@@ -93,8 +97,7 @@ impl RuntimeState {
             u32::try_from(geometry.size.h).unwrap_or(0),
         );
         if logical.width == 0 || logical.height == 0 {
-            self.redraw_states
-                .insert(output_id, OutputRedrawState::Idle);
+            self.set_redraw_state(output_id, OutputRedrawState::Idle);
             return;
         }
 
@@ -173,8 +176,7 @@ impl RuntimeState {
             .map(|renderer| renderer.submit_scene(render_output, scene, cursor))
         else {
             drop(captured_presentation);
-            self.redraw_states
-                .insert(output_id, OutputRedrawState::Idle);
+            self.set_redraw_state(output_id, OutputRedrawState::Idle);
             return;
         };
         match result {
@@ -193,8 +195,7 @@ impl RuntimeState {
                         timeline = frame.timeline_value,
                         "renderer submitted a native frame without a KMS SYNC_FD"
                     );
-                    self.redraw_states
-                        .insert(output_id, OutputRedrawState::Idle);
+                    self.set_redraw_state(output_id, OutputRedrawState::Idle);
                     return;
                 };
                 let Some(backend) = self.backend.as_mut() else {
@@ -229,7 +230,7 @@ impl RuntimeState {
                 // presentation feedback remains pending until vblank.
                 self.send_submitted_frame_callbacks(&output, &captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
-                self.redraw_states.insert(
+                self.set_redraw_state(
                     output_id,
                     OutputRedrawState::WaitingForVBlank {
                         redraw_needed: false,
@@ -327,12 +328,10 @@ impl RuntimeState {
             Some(OutputRedrawState::Idle) | None => false,
         };
         if redraw_needed {
-            self.redraw_states
-                .insert(presentation.output, OutputRedrawState::Queued);
+            self.set_redraw_state(presentation.output, OutputRedrawState::Queued);
             self.submit_output_frame(presentation.output);
         } else {
-            self.redraw_states
-                .insert(presentation.output, OutputRedrawState::Idle);
+            self.set_redraw_state(presentation.output, OutputRedrawState::Idle);
         }
         self.schedule_renderer_retry_if_needed();
     }
@@ -495,8 +494,7 @@ impl RuntimeState {
                 descriptor,
             },
         );
-        self.redraw_states
-            .insert(output_id, OutputRedrawState::Queued);
+        self.set_redraw_state(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();
         Ok(())
     }
@@ -555,8 +553,7 @@ impl RuntimeState {
         let output_id = descriptor.id;
         managed.descriptor = descriptor;
         // Mode replacement ends any in-flight flip; force a fresh first frame.
-        self.redraw_states
-            .insert(output_id, OutputRedrawState::Queued);
+        self.set_redraw_state(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();
         Ok(())
     }
@@ -637,8 +634,9 @@ impl RuntimeState {
         }
         // Arrange the default workspace against the primary output, then force
         // every CRTC (including secondaries with no workspace content) through
-        // a first frame so each page-flip ring starts.
-        self.reflow_default_workspace();
+        // a first frame so each page-flip ring starts. Layout-only reflow avoids
+        // the extra single-path submit that reflow_default_workspace would do.
+        self.reflow_default_workspace_layout();
         self.force_redraw_all();
     }
 }

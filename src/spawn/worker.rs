@@ -18,7 +18,8 @@ use tracing::warn;
 
 use super::{ProcessLauncher, SpawnError, SpawnedProcess};
 
-const MAX_PENDING_LAUNCHES: usize = 64;
+/// Bound for both the worker request queue and the calloop outcome channel.
+pub const MAX_PENDING_LAUNCHES: usize = 64;
 
 /// A fully resolved command that is safe to move off the compositor thread.
 #[derive(Clone, Debug)]

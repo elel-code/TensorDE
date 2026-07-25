@@ -230,9 +230,7 @@ fn focus_ring_draw(
         .scale
         .physical_rect_round(logical_inner.inflated(outline.width))
         .union(inner.inflated(minimum_width));
-    let Some(clip) = outer.intersection(target.viewport) else {
-        return None;
-    };
+    let clip = outer.intersection(target.viewport)?;
     let inner_radius = target
         .scale
         .physical_length_round(corner_radius)

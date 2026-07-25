@@ -15,12 +15,12 @@ use crate::{
         Response, ResultBody, StateSnapshot,
     },
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
-    protocol::{ProtocolError, WaylandRuntime},
+    protocol::{ProtocolError, RuntimeState, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
     spawn::{
         LaunchOutcome, LaunchRequest, LaunchSubmitError, LaunchSubmitter, LaunchWorker,
-        LaunchWorkerError, ProcessLauncher,
+        LaunchWorkerError, MAX_PENDING_LAUNCHES, ProcessLauncher,
     },
     startup::SessionAutostartPermit,
     xwayland::XWaylandConfig,
@@ -72,7 +72,7 @@ impl Compositor {
         };
         protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;
-        let (launch_outcome_sender, launch_outcomes) = sync_channel(64);
+        let (launch_outcome_sender, launch_outcomes) = sync_channel(MAX_PENDING_LAUNCHES);
         Ok(Self {
             protocol,
             ipc,
@@ -230,13 +230,7 @@ impl Compositor {
         // IPC spawn and optional late autostart share one worker. Create it
         // before calloop takes ownership so the submit handle can be cloned
         // into the IPC callback without holding Smithay objects.
-        let launch_submitter = match self.ensure_launch_worker() {
-            Ok(worker) => worker.submitter(),
-            Err(error) => {
-                warn!(%error, "could not start the asynchronous launch worker");
-                return Err(CompositorError::LaunchWorker(error));
-            }
-        };
+        let launch_submitter = self.ensure_launch_worker()?.submitter();
         let Self {
             mut protocol,
             ipc,
@@ -249,7 +243,10 @@ impl Compositor {
             systemd,
             xwayland,
         } = self;
-        let runtime_owners = (
+        // Keep non-loop owners alive for the whole run without naming them in
+        // the IPC closures. launch_outcomes moves into calloop; the worker and
+        // outcome sender stay here until the loop returns.
+        let _runtime_owners = (
             launcher,
             launch_outcome_sender,
             launch_worker,
@@ -261,24 +258,7 @@ impl Compositor {
         protocol.run_with_ipc_and_channel(
             &ipc,
             launch_outcomes,
-            |event, _| match event {
-                ChannelEvent::Msg(outcome) => match outcome.result() {
-                    Ok(process) => info!(
-                        request_id = outcome.id(),
-                        program = ?outcome.program(),
-                        pid = process.pid(),
-                        strategy = process.strategy().name(),
-                        "application launch completed"
-                    ),
-                    Err(error) => warn!(
-                        request_id = outcome.id(),
-                        program = ?outcome.program(),
-                        %error,
-                        "application launch failed"
-                    ),
-                },
-                ChannelEvent::Closed => warn!("asynchronous launch worker disconnected"),
-            },
+            handle_launch_outcome,
             move |request, state| {
                 let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
                 let reply = handle_ipc_request(
@@ -294,8 +274,28 @@ impl Compositor {
                 reply
             },
         )?;
-        drop(runtime_owners);
         Ok(())
+    }
+}
+
+fn handle_launch_outcome(event: ChannelEvent<LaunchOutcome>, _: &mut RuntimeState) {
+    match event {
+        ChannelEvent::Msg(outcome) => match outcome.result() {
+            Ok(process) => info!(
+                request_id = outcome.id(),
+                program = ?outcome.program(),
+                pid = process.pid(),
+                strategy = process.strategy().name(),
+                "application launch completed"
+            ),
+            Err(error) => warn!(
+                request_id = outcome.id(),
+                program = ?outcome.program(),
+                %error,
+                "application launch failed"
+            ),
+        },
+        ChannelEvent::Closed => warn!("asynchronous launch worker disconnected"),
     }
 }
 

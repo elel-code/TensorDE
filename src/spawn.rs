@@ -7,5 +7,5 @@ mod scope;
 pub use launcher::{ProcessLauncher, SpawnError, SpawnStrategy, SpawnedProcess};
 pub use worker::{
     LaunchOutcome, LaunchRequest, LaunchSubmitError, LaunchSubmitter, LaunchWorker,
-    LaunchWorkerError,
+    LaunchWorkerError, MAX_PENDING_LAUNCHES,
 };

@@ -435,6 +435,19 @@ impl RuntimeState {
     }
 
     pub(crate) fn reflow_default_workspace(&mut self) -> bool {
+        if !self.reflow_default_workspace_layout() {
+            return false;
+        }
+        #[cfg(feature = "tty")]
+        self.submit_default_workspace_frame();
+        true
+    }
+
+    /// Relayout and reconfigure clients without submitting a frame.
+    ///
+    /// Callers that already force a multi-output redraw (for example
+    /// `reflow_outputs`) use this to avoid a duplicate queue/drain cycle.
+    pub(crate) fn reflow_default_workspace_layout(&mut self) -> bool {
         let Some(area) = self.default_workspace_area() else {
             return false;
         };
@@ -486,8 +499,6 @@ impl RuntimeState {
         }
         #[cfg(feature = "xwayland")]
         self.update_x11_popup_surface_states();
-        #[cfg(feature = "tty")]
-        self.submit_default_workspace_frame();
         true
     }
 
