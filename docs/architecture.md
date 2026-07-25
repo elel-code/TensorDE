@@ -183,9 +183,11 @@ own crates/modules.
 The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
 compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
-pointer gestures, presentation-time v2, and linux-dmabuf when the selected Vulkan device exposes a
-non-empty validated client-import format list. The linux-drm-syncobj global is added only after
-Smithay opens the
+pointer gestures, presentation-time v2, cursor-shape, xdg-activation, idle-notify, wlr-layer-shell,
+and linux-dmabuf when the selected Vulkan device exposes a non-empty validated client-import format
+list. Layer surfaces map through Smithay's per-output `LayerMap` and trigger output-local redraws;
+full stacking/focus integration with the ECS scene remains iterative. The linux-drm-syncobj global
+is added only after Smithay opens the
 Vulkan-selected primary device and verifies syncobj eventfd support. Acquire points become temporary
 binary Vulkan semaphore payloads; release points receive the latest GPU-read completion fence only
 when their surface attachment retires. Preferred integer/fractional scale and transform follow the output

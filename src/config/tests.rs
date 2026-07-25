@@ -198,6 +198,50 @@ fn rejects_invalid_and_duplicate_output_scales() {
 }
 
 #[test]
+fn parses_environment_cursor_and_debug_tables() {
+    let config = parse(
+        r#"
+        [environment]
+        clear = ["GTK_IM_MODULE"]
+        set = { EDITOR = "hx", BROWSER = "firefox" }
+
+        [cursor]
+        size = 32
+        hide_when_typing = true
+
+        [debug]
+        frame_stats = true
+        force_full_redraw = true
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(config.environment.clear, vec!["GTK_IM_MODULE".to_owned()]);
+    assert_eq!(
+        config.environment.set.get("EDITOR").map(String::as_str),
+        Some("hx")
+    );
+    assert_eq!(
+        config.environment.set.get("BROWSER").map(String::as_str),
+        Some("firefox")
+    );
+    assert_eq!(
+        config.cursor,
+        CursorConfig {
+            size: 32,
+            hide_when_typing: true,
+        }
+    );
+    assert_eq!(
+        config.debug,
+        DebugConfig {
+            frame_stats: true,
+            force_full_redraw: true,
+        }
+    );
+}
+
+#[test]
 fn rejects_malformed_output_modes() {
     for mode in ["2560", "0x1600", "2560x1600@0", "2560x1600@239.7601"] {
         let config = format!(

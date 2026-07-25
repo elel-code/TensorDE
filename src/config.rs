@@ -33,6 +33,9 @@ pub struct Config {
     pub systemd: SystemdMode,
     pub xwayland: XWaylandConfig,
     pub startup_commands: Vec<StartupCommand>,
+    pub environment: EnvironmentConfig,
+    pub cursor: CursorConfig,
+    pub debug: DebugConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +195,9 @@ impl Default for Config {
             systemd: SystemdMode::default(),
             xwayland: XWaylandConfig::default(),
             startup_commands: Vec::new(),
+            environment: EnvironmentConfig::default(),
+            cursor: CursorConfig::default(),
+            debug: DebugConfig::default(),
         }
     }
 }
@@ -212,6 +218,12 @@ struct FileConfig {
     xwayland: Option<bool>,
     #[serde(default)]
     spawn_at_startup: Vec<Vec<String>>,
+    #[serde(default)]
+    environment: Option<EnvironmentFileConfig>,
+    #[serde(default)]
+    cursor: Option<CursorFileConfig>,
+    #[serde(default)]
+    debug: Option<DebugFileConfig>,
 }
 
 impl FileConfig {
@@ -271,6 +283,15 @@ impl FileConfig {
             systemd,
             xwayland: XWaylandConfig::new(xwayland),
             startup_commands,
+            environment: self
+                .environment
+                .map(EnvironmentFileConfig::resolve)
+                .unwrap_or_default(),
+            cursor: self
+                .cursor
+                .map(CursorFileConfig::resolve)
+                .unwrap_or_default(),
+            debug: self.debug.map(DebugFileConfig::resolve).unwrap_or_default(),
         })
     }
 }
@@ -485,6 +506,84 @@ fn resolve_layout_length(
             option,
             message: "requires a proportion or fixed field".to_owned(),
         }),
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnvironmentConfig {
+    pub clear: Vec<String>,
+    pub set: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorConfig {
+    pub size: u32,
+    pub hide_when_typing: bool,
+}
+
+impl Default for CursorConfig {
+    fn default() -> Self {
+        Self {
+            size: 24,
+            hide_when_typing: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DebugConfig {
+    pub frame_stats: bool,
+    pub force_full_redraw: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentFileConfig {
+    #[serde(default)]
+    clear: Vec<String>,
+    #[serde(default)]
+    set: BTreeMap<String, String>,
+}
+
+impl EnvironmentFileConfig {
+    fn resolve(self) -> EnvironmentConfig {
+        EnvironmentConfig {
+            clear: self.clear,
+            set: self.set,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorFileConfig {
+    size: Option<u32>,
+    hide_when_typing: Option<bool>,
+}
+
+impl CursorFileConfig {
+    fn resolve(self) -> CursorConfig {
+        let defaults = CursorConfig::default();
+        CursorConfig {
+            size: self.size.unwrap_or(defaults.size).max(1),
+            hide_when_typing: self.hide_when_typing.unwrap_or(defaults.hide_when_typing),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DebugFileConfig {
+    frame_stats: Option<bool>,
+    force_full_redraw: Option<bool>,
+}
+
+impl DebugFileConfig {
+    fn resolve(self) -> DebugConfig {
+        DebugConfig {
+            frame_stats: self.frame_stats.unwrap_or(false),
+            force_full_redraw: self.force_full_redraw.unwrap_or(false),
+        }
     }
 }
 

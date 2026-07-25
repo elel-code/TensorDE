@@ -59,9 +59,7 @@ pub fn run() -> Result<(), StartupError> {
         // Hyprland-style second phase: the loop has returned; announce stop and
         // drain diagnostics before process teardown drops the log worker.
         #[cfg(feature = "systemd")]
-        if systemd_active
-            && let Err(error) = crate::service::notify_stopping()
-        {
+        if systemd_active && let Err(error) = crate::service::notify_stopping() {
             warn!(%error, "failed to notify systemd that the compositor is stopping");
         }
         match &run_result {

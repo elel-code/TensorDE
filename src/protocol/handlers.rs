@@ -418,6 +418,110 @@ impl DataDeviceHandler for RuntimeState {
     }
 }
 
+impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
+    fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
+        self.protocol_globals.activation()
+    }
+
+    fn request_activation(
+        &mut self,
+        token: smithay::wayland::xdg_activation::XdgActivationToken,
+        token_data: smithay::wayland::xdg_activation::XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        let _ = token_data;
+        // Accept activation requests that still have a mapped view. Token age
+        // filtering can be tightened once spawn tokens are issued here.
+        let window = self
+            .view_for_surface(&surface)
+            .is_some()
+            .then(|| {
+                self.space
+                    .elements()
+                    .find(|window| window.wl_surface().as_deref() == Some(&surface))
+                    .cloned()
+            })
+            .flatten();
+        if let Some(window) = window {
+            let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
+        self.protocol_globals.activation().remove_token(&token);
+        #[cfg(feature = "tty")]
+        self.request_redraw_workspace();
+    }
+}
+
+// wp_cursor_shape_v1 can bind tablet tools; Smithay requires the handler even
+// when Tensor does not yet advertise a tablet seat global.
+impl smithay::wayland::tablet_manager::TabletSeatHandler for RuntimeState {}
+
+impl smithay::wayland::idle_notify::IdleNotifierHandler for RuntimeState {
+    fn idle_notifier_state(
+        &mut self,
+    ) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
+        self.protocol_globals.idle_notifier()
+    }
+}
+
+impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
+    fn shell_state(&mut self) -> &mut smithay::wayland::shell::wlr_layer::WlrLayerShellState {
+        self.protocol_globals.layer_shell()
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: smithay::wayland::shell::wlr_layer::LayerSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _layer: smithay::wayland::shell::wlr_layer::Layer,
+        namespace: String,
+    ) {
+        use smithay::desktop::{LayerSurface as DesktopLayerSurface, layer_map_for_output};
+
+        let output = output
+            .as_ref()
+            .and_then(|resource| {
+                self.space
+                    .outputs()
+                    .find(|candidate| candidate.owns(resource))
+                    .cloned()
+            })
+            .or_else(|| self.space.outputs().next().cloned());
+        let Some(output) = output else {
+            warn!(%namespace, "layer surface created without a mapped output");
+            surface.send_close();
+            return;
+        };
+        {
+            let mut map = layer_map_for_output(&output);
+            if let Err(error) = map.map_layer(&DesktopLayerSurface::new(surface, namespace)) {
+                warn!(%error, "failed to map layer surface");
+            } else {
+                map.arrange();
+            }
+        }
+        #[cfg(feature = "tty")]
+        self.request_redraw_all();
+    }
+
+    fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
+        use smithay::desktop::layer_map_for_output;
+
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
+            let mut map = layer_map_for_output(&output);
+            let layer = map
+                .layers()
+                .find(|layer| layer.layer_surface() == &surface)
+                .cloned();
+            if let Some(layer) = layer {
+                map.unmap_layer(&layer);
+                map.arrange();
+            }
+        }
+        #[cfg(feature = "tty")]
+        self.request_redraw_all();
+    }
+}
+
 #[cfg(feature = "tty")]
 impl DrmSyncobjHandler for RuntimeState {
     fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {

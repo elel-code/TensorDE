@@ -117,9 +117,9 @@ and rendering itself.
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
 - Protocol-global tests bind viewporter, fractional-scale, xdg-decoration, primary selection,
-  relative pointer, pointer gestures, and presentation-time from a real client. They assert
-  preferred-scale (including `150/120`), decoration configure, monotonic clock, and
-  discarded-feedback events, including
+  relative pointer, pointer gestures, presentation-time, cursor-shape, xdg-activation, idle-notify,
+  and wlr-layer-shell capability flags from a real display. They assert preferred-scale (including
+  `150/120`), decoration configure, monotonic clock, and discarded-feedback events, including
   protocol-correct child-object destruction order.
 - XWayland scaling tests keep rootless X11 buffers on the ordinary surface path: integer client
   buffer scale, `N/120` output geometry, outward damage coverage, and linear final sampling are one

@@ -21,10 +21,13 @@ use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState},
     output::Scale,
-    reexports::wayland_server::{
-        DisplayHandle, Resource,
-        backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-        protocol::wl_surface::WlSurface,
+    reexports::{
+        calloop::LoopHandle,
+        wayland_server::{
+            DisplayHandle, Resource,
+            backend::{ClientData, ClientId, DisconnectReason, ObjectId},
+            protocol::wl_surface::WlSurface,
+        },
     },
     wayland::{
         compositor::{
@@ -120,6 +123,12 @@ pub(crate) struct RuntimeState {
     pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
+    /// When true, every redraw path fans out to all CRTCs (debug only).
+    #[cfg(feature = "tty")]
+    force_full_redraw: bool,
+    /// Emit per-submit timing at info level when enabled by config.
+    #[cfg(feature = "tty")]
+    frame_stats: bool,
     surface_views: HashMap<ObjectId, ViewId>,
     #[cfg(feature = "xwayland")]
     pub(crate) xwm: Option<X11Wm>,
@@ -135,6 +144,7 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn with_appearance(
         display_handle: DisplayHandle,
+        loop_handle: LoopHandle<'static, Self>,
         layout: LayoutEngine,
         appearance: SceneAppearance,
     ) -> Self {
@@ -143,7 +153,7 @@ impl RuntimeState {
         let shm_state = ShmState::new::<Self>(&display_handle, []);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
-        let protocol_globals = ProtocolGlobals::new(&display_handle);
+        let protocol_globals = ProtocolGlobals::new(&display_handle, &loop_handle);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
@@ -190,6 +200,10 @@ impl RuntimeState {
             input_devices: HashMap::new(),
             #[cfg(feature = "tty")]
             cursor: CursorState::default(),
+            #[cfg(feature = "tty")]
+            force_full_redraw: false,
+            #[cfg(feature = "tty")]
+            frame_stats: false,
             surface_views: HashMap::new(),
             #[cfg(feature = "xwayland")]
             xwm: None,
@@ -200,6 +214,24 @@ impl RuntimeState {
             #[cfg(feature = "xwayland")]
             xwayland_transients: xwayland::XWaylandTransientRegistry::default(),
             next_view_id: 1,
+        }
+    }
+
+    /// Apply value-only cursor and debug policy from the configuration boundary.
+    pub(crate) fn apply_runtime_policy(
+        &mut self,
+        cursor: crate::config::CursorConfig,
+        debug: crate::config::DebugConfig,
+    ) {
+        #[cfg(feature = "tty")]
+        {
+            self.cursor.configure(cursor.size, cursor.hide_when_typing);
+            self.force_full_redraw = debug.force_full_redraw;
+            self.frame_stats = debug.frame_stats;
+        }
+        #[cfg(not(feature = "tty"))]
+        {
+            let _ = (cursor, debug);
         }
     }
 
@@ -576,6 +608,58 @@ impl RuntimeState {
 
     pub(crate) fn view_count(&mut self) -> usize {
         self.world.view_count(DEFAULT_WORKSPACE)
+    }
+
+    /// Value-only compositor snapshot for the IPC control surface.
+    pub(crate) fn ipc_state_snapshot(&mut self) -> crate::ipc::StateSnapshot {
+        crate::ipc::StateSnapshot {
+            layout: self.layout.kind(),
+            view_count: self.world.view_count(DEFAULT_WORKSPACE),
+            output_count: self.output_count(),
+            focused_view: self
+                .world
+                .focused_view(DEFAULT_WORKSPACE)
+                .map(|view| view.get()),
+        }
+    }
+
+    /// Value-only output topology for the IPC control surface.
+    pub(crate) fn ipc_output_snapshots(&self) -> Vec<crate::ipc::OutputSnapshot> {
+        let primary = self.default_workspace_area();
+        let mut outputs = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                let geometry = self.space.output_geometry(output)?;
+                let mode = output.current_mode()?;
+                let scale = output.current_scale().fractional_scale();
+                let logical = tensor_util::Rect::new(
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    u32::try_from(geometry.size.w).unwrap_or(0),
+                    u32::try_from(geometry.size.h).unwrap_or(0),
+                );
+                Some(crate::ipc::OutputSnapshot {
+                    name: output.name(),
+                    x: geometry.loc.x,
+                    y: geometry.loc.y,
+                    width: geometry.size.w,
+                    height: geometry.size.h,
+                    scale,
+                    mode_width: mode.size.w,
+                    mode_height: mode.size.h,
+                    refresh_millihertz: mode.refresh,
+                    primary: primary == Some(logical),
+                })
+            })
+            .collect::<Vec<_>>();
+        outputs.sort_by(|left, right| {
+            left.x
+                .cmp(&right.x)
+                .then(left.y.cmp(&right.y))
+                .then(left.name.cmp(&right.name))
+        });
+        outputs
     }
 
     pub(crate) fn output_count(&self) -> usize {

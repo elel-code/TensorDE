@@ -24,6 +24,17 @@ use super::{
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        let activity = matches!(
+            event,
+            InputEvent::Keyboard { .. }
+                | InputEvent::PointerMotion { .. }
+                | InputEvent::PointerMotionAbsolute { .. }
+                | InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::TouchDown { .. }
+                | InputEvent::TouchMotion { .. }
+                | InputEvent::TouchUp { .. }
+        );
         match event {
             InputEvent::DeviceAdded { device } => {
                 let capabilities = InputDeviceCapabilities {
@@ -46,6 +57,11 @@ impl RuntimeState {
             InputEvent::PointerButton { event } => self.forward_pointer_button(event),
             InputEvent::PointerAxis { event } => self.forward_pointer_axis(event),
             _ => {}
+        }
+        if activity {
+            self.protocol_globals
+                .idle_notifier()
+                .notify_activity(&self.seat);
         }
     }
 
@@ -106,6 +122,14 @@ impl RuntimeState {
             return;
         };
         let key_state = event.state();
+        if key_state == KeyState::Pressed && self.cursor.note_keyboard_activity() {
+            // Typing hid the software cursor; repaint the pointer head.
+            if let Some(pointer) = self.seat.get_pointer() {
+                self.request_redraw_at(pointer.current_location());
+            } else {
+                self.request_redraw_all();
+            }
+        }
         keyboard.input::<(), _>(
             self,
             event.key_code(),
@@ -177,6 +201,7 @@ impl RuntimeState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let _ = self.cursor.note_pointer_activity();
         let focus = self.pointer_focus_under(location);
         pointer.motion(
             self,
@@ -577,6 +602,7 @@ fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use smithay::reexports::calloop::EventLoop;
     use smithay::{
         input::keyboard::keysyms,
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
@@ -647,6 +673,7 @@ mod tests {
         let display = Display::<RuntimeState>::new().unwrap();
         let mut state = RuntimeState::with_appearance(
             display.handle(),
+            EventLoop::<RuntimeState>::try_new().unwrap().handle(),
             LayoutEngine::new(LayoutKind::Scrolling1D),
             crate::scene::SceneAppearance::default(),
         );

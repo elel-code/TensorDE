@@ -26,6 +26,9 @@ impl RuntimeState {
     /// Redraw only outputs that carry the default workspace viewport.
     #[cfg(feature = "tty")]
     pub(crate) fn request_redraw_workspace(&mut self) {
+        if self.force_full_redraw {
+            return self.request_redraw_all();
+        }
         let targets = self.workspace_output_ids();
         if targets.is_empty() {
             return;
@@ -42,6 +45,9 @@ impl RuntimeState {
         &mut self,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
+        if self.force_full_redraw {
+            return self.request_redraw_all();
+        }
         let Some(output_id) = self.output_id_under(location) else {
             return;
         };
@@ -142,6 +148,7 @@ impl RuntimeState {
         ) {
             return;
         }
+        let frame_started = self.frame_stats.then(std::time::Instant::now);
         let Some(managed) = self.outputs.get(&output_id) else {
             self.redraw_states.remove(&output_id);
             return;
@@ -313,6 +320,14 @@ impl RuntimeState {
                         redraw_needed: false,
                     },
                 );
+                if let Some(started) = frame_started {
+                    info!(
+                        output_device = output_id.device_id,
+                        output_connector = output_id.connector_id,
+                        elapsed_us = started.elapsed().as_micros() as u64,
+                        "frame submit"
+                    );
+                }
                 debug!(
                     output_device = output_id.device_id,
                     output_connector = output_id.connector_id,

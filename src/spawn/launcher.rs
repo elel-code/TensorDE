@@ -59,6 +59,8 @@ pub struct ProcessLauncher {
     mode: SystemdMode,
     systemd_detected: bool,
     environment: Vec<(OsString, OsString)>,
+    /// Names stripped from the child environment before the managed set is applied.
+    environment_clear: Vec<OsString>,
     environment_managed: bool,
 }
 
@@ -72,6 +74,7 @@ impl ProcessLauncher {
             mode,
             systemd_detected: detected,
             environment: Vec::new(),
+            environment_clear: Vec::new(),
             environment_managed: false,
         }
     }
@@ -96,6 +99,16 @@ impl ProcessLauncher {
             .into_iter()
             .map(|(name, value)| (name.into(), value.into()))
             .collect();
+        self.environment_managed = true;
+    }
+
+    /// Names to remove from the inherited process environment for launched children.
+    pub fn set_environment_clear<I, S>(&mut self, names: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        self.environment_clear = names.into_iter().map(Into::into).collect();
         self.environment_managed = true;
     }
 
@@ -133,6 +146,9 @@ impl ProcessLauncher {
     pub fn spawn_command(&self, mut command: Command) -> Result<SpawnedProcess, SpawnError> {
         if self.environment_managed {
             for name in SESSION_ENVIRONMENT_NAMES {
+                command.env_remove(name);
+            }
+            for name in &self.environment_clear {
                 command.env_remove(name);
             }
         }

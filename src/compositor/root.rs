@@ -8,11 +8,10 @@ use tracing::{info, warn};
 
 use crate::{
     backend::BackendConfig,
-    config::{Config, StartupCommand},
-    ecs::{CompositorWorld, WorkspaceId},
+    config::{Config, EnvironmentConfig, StartupCommand},
     ipc::{
         Command as IpcCommand, IPC_PROTOCOL_VERSION, IpcError, IpcReply, IpcServer, Request,
-        Response, ResultBody, StateSnapshot,
+        Response, ResultBody,
     },
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
     protocol::{ProtocolError, RuntimeState, WaylandRuntime},
@@ -35,6 +34,7 @@ pub struct Compositor {
     launch_outcomes: CalloopChannel<LaunchOutcome>,
     launch_worker: Option<LaunchWorker>,
     startup_commands: Vec<StartupCommand>,
+    environment: EnvironmentConfig,
     systemd: SystemdMode,
     xwayland: XWaylandConfig,
 }
@@ -52,11 +52,15 @@ impl Compositor {
             systemd,
             xwayland,
             startup_commands,
+            environment,
+            cursor,
+            debug,
         } = config;
         let mut protocol = WaylandRuntime::with_appearance(
             LayoutEngine::with_options(initial_layout, layout_options),
             appearance,
         )?;
+        protocol.state_mut().apply_runtime_policy(cursor, debug);
         let requested_drm_node = render_device
             .as_deref()
             .map(DrmNodeId::from_path)
@@ -82,6 +86,7 @@ impl Compositor {
             launch_outcomes,
             launch_worker: None,
             startup_commands,
+            environment,
             systemd,
             xwayland,
         })
@@ -211,11 +216,14 @@ impl Compositor {
     pub(crate) fn publish_session_environment(
         &mut self,
     ) -> Result<Vec<EnvironmentValue>, CompositorError> {
-        let environment = session_environment(
+        let mut environment = session_environment(
             self.protocol.socket_name().to_os_string(),
             OsString::from(self.ipc.path()),
             self.protocol.xwayland_display(),
         );
+        apply_user_environment(&mut environment, &self.environment);
+        self.launcher
+            .set_environment_clear(self.environment.clear.iter().cloned());
         self.launcher.set_environment(environment.clone());
         Ok(environment)
     }
@@ -240,6 +248,7 @@ impl Compositor {
             launch_outcomes,
             launch_worker,
             startup_commands,
+            environment,
             systemd,
             xwayland,
         } = self;
@@ -251,6 +260,7 @@ impl Compositor {
             launch_outcome_sender,
             launch_worker,
             startup_commands,
+            environment,
             systemd,
             xwayland,
         );
@@ -261,13 +271,7 @@ impl Compositor {
             handle_launch_outcome,
             move |request, state| {
                 let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
-                let reply = handle_ipc_request(
-                    request,
-                    &mut state.layout,
-                    &mut state.world,
-                    &stop_signal,
-                    &launch_submitter,
-                );
+                let reply = handle_ipc_request(request, state, &stop_signal, &launch_submitter);
                 if reflow {
                     state.reflow_default_workspace();
                 }
@@ -275,6 +279,46 @@ impl Compositor {
             },
         )?;
         Ok(())
+    }
+}
+
+/// Merge user `[environment]` policy into the session publication snapshot.
+///
+/// Session-owned names (`WAYLAND_DISPLAY`, …) always win over user `set` values
+/// so a misconfigured file cannot break the compositor boundary. `clear` only
+/// removes non-session keys that a later `set` might reintroduce; session keys
+/// are never cleared here because they were just written by `session_environment`.
+fn apply_user_environment(environment: &mut Vec<EnvironmentValue>, policy: &EnvironmentConfig) {
+    use std::collections::BTreeSet;
+
+    let session_names: BTreeSet<OsString> = crate::service::SESSION_ENVIRONMENT_NAMES
+        .iter()
+        .map(|name| OsString::from(*name))
+        .collect();
+    for name in &policy.clear {
+        let key = OsString::from(name);
+        if session_names.contains(&key) {
+            continue;
+        }
+        environment.retain(|(existing, _)| existing != &key);
+    }
+    for (name, value) in &policy.set {
+        let key = OsString::from(name);
+        if session_names.contains(&key) {
+            warn!(
+                name,
+                "ignoring [environment].set for a session-owned variable"
+            );
+            continue;
+        }
+        if let Some(entry) = environment
+            .iter_mut()
+            .find(|(existing, _)| existing == &key)
+        {
+            entry.1 = OsString::from(value);
+        } else {
+            environment.push((key, OsString::from(value)));
+        }
     }
 }
 
@@ -301,8 +345,7 @@ fn handle_launch_outcome(event: ChannelEvent<LaunchOutcome>, _: &mut RuntimeStat
 
 fn handle_ipc_request(
     request: Request,
-    layout: &mut LayoutEngine,
-    world: &mut CompositorWorld,
+    state: &mut RuntimeState,
     stop_signal: &smithay::reexports::calloop::LoopSignal,
     launch_submitter: &LaunchSubmitter,
 ) -> IpcReply {
@@ -320,13 +363,11 @@ fn handle_ipc_request(
 
     let result = match request.command {
         IpcCommand::Ping => ResultBody::Pong,
-        IpcCommand::GetState => ResultBody::State(StateSnapshot {
-            layout: layout.kind(),
-            view_count: world.view_count(WorkspaceId::new(0)),
-        }),
+        IpcCommand::GetState => ResultBody::State(state.ipc_state_snapshot()),
+        IpcCommand::GetOutputs => ResultBody::Outputs(state.ipc_output_snapshots()),
         IpcCommand::SetLayout { layout: kind } => {
-            *layout = LayoutEngine::with_options(kind, layout.options());
-            world.reset_layout_states();
+            state.layout = LayoutEngine::with_options(kind, state.layout.options());
+            state.world.reset_layout_states();
             ResultBody::Accepted
         }
         IpcCommand::Spawn { argv } => match queue_spawn(request_id, argv, launch_submitter) {
@@ -400,11 +441,25 @@ pub enum CompositorError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ecs::ViewId, layout::LayoutKind};
-    use smithay::reexports::calloop::EventLoop;
+    use crate::{
+        ecs::{ViewId, WorkspaceId},
+        layout::LayoutKind,
+        scene::SceneAppearance,
+    };
+    use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
     fn stop_signal() -> smithay::reexports::calloop::LoopSignal {
         EventLoop::<()>::try_new().unwrap().get_signal()
+    }
+
+    fn runtime_state() -> RuntimeState {
+        let display = Display::<RuntimeState>::new().unwrap();
+        RuntimeState::with_appearance(
+            display.handle(),
+            EventLoop::<RuntimeState>::try_new().unwrap().handle(),
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
+        )
     }
 
     fn live_worker() -> (
@@ -423,15 +478,13 @@ mod tests {
 
     #[test]
     fn ipc_rejects_unknown_protocol_versions() {
-        let mut world = CompositorWorld::new();
-        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let mut state = runtime_state();
         let mut request = Request::new(11, IpcCommand::Ping);
         request.version = IPC_PROTOCOL_VERSION + 1;
         let (worker, _) = live_worker();
         let submitter = worker.submitter();
 
-        let response =
-            handle_ipc_request(request, &mut layout, &mut world, &stop_signal(), &submitter);
+        let response = handle_ipc_request(request, &mut state, &stop_signal(), &submitter);
 
         assert_eq!(response.response.request_id, 11);
         assert!(matches!(response.response.result, ResultBody::Error(_)));
@@ -440,15 +493,16 @@ mod tests {
 
     #[test]
     fn ipc_layout_change_is_visible_in_state() {
-        let mut world = CompositorWorld::new();
-        world
+        let mut state = runtime_state();
+        state
+            .world
             .spawn_view(ViewId::new(1), WorkspaceId::new(0))
             .unwrap();
         let options = crate::layout::LayoutOptions {
             gap: 17,
             ..Default::default()
         };
-        let mut layout = LayoutEngine::with_options(LayoutKind::Scrolling1D, options);
+        state.layout = LayoutEngine::with_options(LayoutKind::Scrolling1D, options);
         let (worker, _) = live_worker();
         let submitter = worker.submitter();
 
@@ -459,40 +513,88 @@ mod tests {
                     layout: LayoutKind::Spatial2D,
                 },
             ),
-            &mut layout,
-            &mut world,
+            &mut state,
             &stop_signal(),
             &submitter,
         );
         assert!(matches!(changed.response.result, ResultBody::Accepted));
 
-        let state = handle_ipc_request(
+        let reply = handle_ipc_request(
             Request::new(13, IpcCommand::GetState),
-            &mut layout,
-            &mut world,
+            &mut state,
             &stop_signal(),
             &submitter,
         );
-        let ResultBody::State(state) = state.response.result else {
+        let ResultBody::State(snapshot) = reply.response.result else {
             panic!("expected IPC state response");
         };
-        assert_eq!(state.layout, LayoutKind::Spatial2D);
-        assert_eq!(state.view_count, 1);
-        assert_eq!(layout.options(), options);
+        assert_eq!(snapshot.layout, LayoutKind::Spatial2D);
+        assert_eq!(snapshot.view_count, 1);
+        assert_eq!(snapshot.output_count, 0);
+        assert_eq!(snapshot.focused_view, None);
+        assert_eq!(state.layout.options(), options);
         drop(worker);
     }
 
     #[test]
+    fn ipc_get_outputs_returns_empty_without_heads() {
+        let mut state = runtime_state();
+        let (worker, _) = live_worker();
+        let submitter = worker.submitter();
+
+        let reply = handle_ipc_request(
+            Request::new(16, IpcCommand::GetOutputs),
+            &mut state,
+            &stop_signal(),
+            &submitter,
+        );
+        let ResultBody::Outputs(outputs) = reply.response.result else {
+            panic!("expected IPC outputs response");
+        };
+        assert!(outputs.is_empty());
+        drop(worker);
+    }
+
+    #[test]
+    fn user_environment_cannot_override_session_names() {
+        let mut environment = session_environment("wayland-1", "/tmp/tensor.sock", None);
+        apply_user_environment(
+            &mut environment,
+            &EnvironmentConfig {
+                clear: vec!["WAYLAND_DISPLAY".to_owned(), "EDITOR".to_owned()],
+                set: [
+                    ("WAYLAND_DISPLAY".to_owned(), "evil".to_owned()),
+                    ("EDITOR".to_owned(), "hx".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "WAYLAND_DISPLAY")
+                .map(|(_, value)| value.as_os_str()),
+            Some(std::ffi::OsStr::new("wayland-1"))
+        );
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "EDITOR")
+                .map(|(_, value)| value.as_os_str()),
+            Some(std::ffi::OsStr::new("hx"))
+        );
+    }
+
+    #[test]
     fn ipc_spawn_rejects_empty_argv() {
-        let mut world = CompositorWorld::new();
-        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let mut state = runtime_state();
         let (worker, _) = live_worker();
         let submitter = worker.submitter();
 
         let response = handle_ipc_request(
             Request::new(14, IpcCommand::Spawn { argv: Vec::new() }),
-            &mut layout,
-            &mut world,
+            &mut state,
             &stop_signal(),
             &submitter,
         );
@@ -508,8 +610,7 @@ mod tests {
     fn ipc_spawn_queues_on_a_live_worker() {
         use std::time::Duration;
 
-        let mut world = CompositorWorld::new();
-        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let mut state = runtime_state();
         let (worker, receiver) = live_worker();
         let submitter = worker.submitter();
         let program = format!("tensor-missing-ipc-spawn-{}", std::process::id());
@@ -521,8 +622,7 @@ mod tests {
                     argv: vec![program.clone()],
                 },
             ),
-            &mut layout,
-            &mut world,
+            &mut state,
             &stop_signal(),
             &submitter,
         );

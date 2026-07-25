@@ -51,7 +51,8 @@ impl WaylandRuntime {
             .map_err(ProtocolError::SignalSource)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
         let display_handle = display.handle();
-        let state = RuntimeState::with_appearance(display_handle, layout, appearance);
+        let state =
+            RuntimeState::with_appearance(display_handle, event_loop.handle(), layout, appearance);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
         let socket_name = socket.socket_name().to_os_string();
         Ok(Self {

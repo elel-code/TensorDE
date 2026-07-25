@@ -29,6 +29,7 @@ struct Cli {
 enum CliCommand {
     Ping,
     GetState,
+    GetOutputs,
     SetLayout {
         layout: LayoutKind,
     },
@@ -46,6 +47,7 @@ impl From<CliCommand> for Command {
         match command {
             CliCommand::Ping => Self::Ping,
             CliCommand::GetState => Self::GetState,
+            CliCommand::GetOutputs => Self::GetOutputs,
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
             CliCommand::Spawn { argv } => Self::Spawn { argv },
             CliCommand::Quit => Self::Quit,

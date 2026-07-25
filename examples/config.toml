@@ -36,3 +36,15 @@ color = "#7fc8ff"
 
 # Arguments are passed directly; shell syntax and expansion are not interpreted.
 # spawn_at_startup = [["waybar"]]
+
+# [environment]
+# clear = ["GTK_IM_MODULE"]
+# set = { EDITOR = "hx" }
+
+# [cursor]
+# size = 24
+# hide_when_typing = false
+
+# [debug]
+# frame_stats = false
+# force_full_redraw = false

@@ -11,24 +11,54 @@ use crate::render::CursorOverlay;
 /// value-only `CursorOverlay` it needs for the current output frame.
 pub(crate) struct CursorState {
     image: CursorImageStatus,
+    logical_size: u32,
+    hide_when_typing: bool,
+    hidden_for_typing: bool,
 }
 
 impl Default for CursorState {
     fn default() -> Self {
         Self {
             image: CursorImageStatus::default_named(),
+            logical_size: 24,
+            hide_when_typing: false,
+            hidden_for_typing: false,
         }
     }
 }
 
 impl CursorState {
-    const SOFTWARE_ARROW_LOGICAL_SIZE: u32 = 24;
+    pub(crate) fn configure(&mut self, size: u32, hide_when_typing: bool) {
+        self.logical_size = size.max(1);
+        self.hide_when_typing = hide_when_typing;
+        if !hide_when_typing {
+            self.hidden_for_typing = false;
+        }
+    }
 
     pub(crate) fn set_image(&mut self, image: CursorImageStatus) -> bool {
         if self.image == image {
             return false;
         }
         self.image = image;
+        true
+    }
+
+    /// Hide the software cursor after a keyboard press when configured.
+    pub(crate) fn note_keyboard_activity(&mut self) -> bool {
+        if !self.hide_when_typing || self.hidden_for_typing {
+            return false;
+        }
+        self.hidden_for_typing = true;
+        true
+    }
+
+    /// Reveal the cursor again after pointer motion.
+    pub(crate) fn note_pointer_activity(&mut self) -> bool {
+        if !self.hidden_for_typing {
+            return false;
+        }
+        self.hidden_for_typing = false;
         true
     }
 
@@ -44,7 +74,7 @@ impl CursorState {
         viewport: Rect,
     ) -> Option<CursorOverlay> {
         self.normalize_surface_liveness();
-        if matches!(&self.image, CursorImageStatus::Hidden) {
+        if self.hidden_for_typing || matches!(&self.image, CursorImageStatus::Hidden) {
             return None;
         }
         let local_x = pointer.x - f64::from(output.loc.x);
@@ -60,9 +90,7 @@ impl CursorState {
         }
         let x = scale.physical_coordinate_round(local_x)?;
         let y = scale.physical_coordinate_round(local_y)?;
-        let size = scale
-            .physical_length_round(Self::SOFTWARE_ARROW_LOGICAL_SIZE)
-            .max(1);
+        let size = scale.physical_length_round(self.logical_size).max(1);
         CursorOverlay::new(Rect::new(x, y, size, size), viewport)
     }
 

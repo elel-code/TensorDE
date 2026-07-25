@@ -41,6 +41,20 @@ color = "#7fc8ff"
 
 spawn_at_startup = [["waybar"], ["foot", "--server"]]
 
+[environment]
+# Names removed from child process environments before session publication.
+clear = ["GTK_IM_MODULE"]
+# Extra variables for launched clients. Session-owned names are ignored.
+set = { EDITOR = "hx" }
+
+[cursor]
+size = 24
+hide_when_typing = false
+
+[debug]
+frame_stats = false
+force_full_redraw = false
+
 [[outputs]]
 name = "eDP-1"
 # Explicit values are quantized to the exact N/120 representation used by
@@ -140,6 +154,19 @@ layout views. Normal X11 `WM_TRANSIENT_FOR` dialogs instead retain their own ECS
 while attaching to their immediate managed owner: their requested logical size is constrained and
 centered over that owner, and X11 position requests are ignored. An unresolved owner keeps the
 dialog outside the scene rather than creating a global X11 placement fallback.
+
+`[environment]` extends the session publication snapshot applied to launched children. `clear` removes
+matching names from the inherited process environment before the managed set is written. `set` adds
+or replaces user variables. Session-owned names (`WAYLAND_DISPLAY`, `DISPLAY`, `XDG_CURRENT_DESKTOP`,
+`XDG_SESSION_TYPE`, `TENSOR_IPC_SOCKET`) cannot be cleared or overridden from this table; Tensor keeps
+the compositor-published values authoritative.
+
+`[cursor]` controls the software fallback cursor. `size` is the logical size in pixels (default `24`).
+`hide_when_typing` hides that overlay after a key press until the next pointer motion.
+
+`[debug]` is for development only. `frame_stats` logs per-output submit latency at info level.
+`force_full_redraw` disables output-local redraw targeting so every CRTC is resubmitted on each
+workspace or pointer damage path; use it only when isolating scheduling bugs.
 
 Each `spawn_at_startup` entry is an argv array: one executable followed by zero or more arguments.
 Entries run only for `--session` startup. Tensor first prepares the runtime, installs

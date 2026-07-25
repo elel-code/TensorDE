@@ -46,6 +46,7 @@ impl Response {
 pub enum Command {
     Ping,
     GetState,
+    GetOutputs,
     SetLayout {
         layout: LayoutKind,
     },
@@ -71,6 +72,7 @@ pub struct Response {
 pub enum ResultBody {
     Pong,
     State(StateSnapshot),
+    Outputs(Vec<OutputSnapshot>),
     Accepted,
     Error(IpcErrorBody),
 }
@@ -79,6 +81,23 @@ pub enum ResultBody {
 pub struct StateSnapshot {
     pub layout: LayoutKind,
     pub view_count: usize,
+    pub output_count: usize,
+    pub focused_view: Option<u64>,
+}
+
+/// Value-only output topology for control clients.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OutputSnapshot {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub scale: f64,
+    pub mode_width: i32,
+    pub mode_height: i32,
+    pub refresh_millihertz: i32,
+    pub primary: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

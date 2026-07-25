@@ -8,7 +8,15 @@ that server instance.
 The server is registered in the Smithay calloop. Each client has bounded frame decoding, a bounded
 response queue, and a separate non-blocking response writer, so a slow IPC peer cannot stall
 Wayland dispatch or grow compositor memory without limit.
-`tensor-msg` exposes `ping`, `get-state`, `set-layout`, `spawn`, and `quit` using the same codec.
+`tensor-msg` exposes `ping`, `get-state`, `get-outputs`, `set-layout`, `spawn`, and `quit` using the
+same codec.
+
+`get-state` returns a value-only snapshot: active layout kind, view count on the default workspace,
+mapped output count, and the focused view id when one exists.
+
+`get-outputs` returns the current output topology as sorted value-only records (name, logical
+geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace
+viewport). Clients never receive Smithay `Output` objects.
 
 `spawn` accepts a direct argv array (one program and optional arguments). The compositor queues the
 command on the asynchronous launch worker and returns `accepted` as soon as the request is enqueued;
