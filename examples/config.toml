@@ -26,6 +26,13 @@ color = "#7fc8ff"
 # name = "HDMI-A-1"
 # mode = "2560x1600@239.760"
 # scale = 1.25
+# position = { x = 0, y = 0 }
+# max_refresh_millihertz = 120000
+# enabled = true
+#
+# [[outputs]]
+# name = "eDP-1"
+# enabled = false
 
 # Arguments are passed directly; shell syntax and expansion are not interpreted.
 # spawn_at_startup = [["waybar"]]

@@ -520,7 +520,7 @@ impl RuntimeState {
         };
         #[cfg(feature = "tty")]
         if self.update_surface_content(&root) {
-            self.submit_default_workspace_frame();
+            self.request_redraw_workspace();
         }
         #[cfg(not(feature = "tty"))]
         let _ = root;

@@ -46,6 +46,8 @@ pub(crate) struct OutputDescriptor {
     pub(crate) crtc: u32,
     pub(crate) native_format: OutputFormat,
     pub(crate) scale: OutputScale,
+    /// Optional configured logical origin. `None` means automatic placement.
+    pub(crate) position: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -88,14 +90,16 @@ impl OutputPolicy {
         if connector.state != ConnectorState::Connected {
             return None;
         }
+        let rule = self.configured_rules.get(&connector.name);
+        if rule.is_some_and(|rule| !rule.enabled) {
+            return None;
+        }
         let mode = self.select_mode(connector)?;
         let resolution = Size::new(
             u32::try_from(mode.size.w).ok()?,
             u32::try_from(mode.size.h).ok()?,
         );
-        let scale = self
-            .configured_rules
-            .get(&connector.name)
+        let scale = rule
             .and_then(|rule| rule.scale)
             .unwrap_or_else(|| guess_monitor_scale(connector.physical_size, resolution));
         Some(OutputDescriptor {
@@ -108,6 +112,7 @@ impl OutputPolicy {
             crtc: connector.mapped_crtc?,
             native_format: connector.native_format?,
             scale,
+            position: rule.and_then(|rule| rule.position),
         })
     }
 
@@ -135,7 +140,16 @@ impl OutputPolicy {
                 "configured output mode is unavailable; falling back to the native mode policy"
             );
         }
-        highest_refresh_at_size(&connector.modes, native_preferred.size).or(Some(native_preferred))
+        let selected = highest_refresh_at_size(&connector.modes, native_preferred.size, None)
+            .or(Some(native_preferred));
+        let Some(cap) = self
+            .configured_rules
+            .get(&connector.name)
+            .and_then(|rule| rule.max_refresh_millihertz)
+        else {
+            return selected;
+        };
+        highest_refresh_at_size(&connector.modes, native_preferred.size, Some(cap)).or(selected)
     }
 }
 
@@ -158,11 +172,14 @@ fn select_requested_mode(modes: &[Mode], requested: OutputMode) -> Option<Mode> 
 fn highest_refresh_at_size(
     modes: &[Mode],
     size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    max_refresh_millihertz: Option<u32>,
 ) -> Option<Mode> {
+    let max_refresh = max_refresh_millihertz.and_then(|value| i32::try_from(value).ok());
     modes
         .iter()
         .copied()
         .filter(|mode| mode.size == size)
+        .filter(|mode| max_refresh.is_none_or(|cap| mode.refresh <= cap))
         .max_by_key(|mode| mode.refresh)
 }
 
@@ -319,6 +336,9 @@ mod tests {
                 OutputRule {
                     scale: Some(OutputScale::from_f64(1.25).unwrap()),
                     mode: None,
+                    position: None,
+                    enabled: true,
+                    max_refresh_millihertz: None,
                 },
             )]
             .into_iter()
@@ -361,6 +381,9 @@ mod tests {
                 OutputRule {
                     scale: None,
                     mode: Some(OutputMode::new(1920, 1200, None)),
+                    position: None,
+                    enabled: true,
+                    max_refresh_millihertz: None,
                 },
             )]
             .into_iter()
@@ -383,6 +406,9 @@ mod tests {
                 OutputRule {
                     scale: None,
                     mode: Some(OutputMode::new(2560, 1600, Some(144_000))),
+                    position: None,
+                    enabled: true,
+                    max_refresh_millihertz: None,
                 },
             )]
             .into_iter()
@@ -406,6 +432,9 @@ mod tests {
                 OutputRule {
                     scale: None,
                     mode: Some(OutputMode::new(3840, 2160, Some(120_000))),
+                    position: None,
+                    enabled: true,
+                    max_refresh_millihertz: None,
                 },
             )]
             .into_iter()

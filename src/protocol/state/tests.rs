@@ -30,6 +30,7 @@ fn descriptor(connector_id: u32, name: &str, width: i32) -> OutputDescriptor {
             plane_count: 1,
         },
         scale: tensor_util::OutputScale::ONE,
+        position: None,
     }
 }
 
@@ -177,4 +178,108 @@ fn secondary_output_scene_is_blank_with_its_own_viewport() {
         tensor_util::Rect::new(1920, 0, 1280, 1080)
     );
     assert!(secondary.nodes().is_empty());
+}
+
+#[test]
+fn workspace_redraw_targets_only_the_primary_output() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 1280)),
+        ])
+        .unwrap();
+
+    let primary = BackendOutputId {
+        device_id: 1,
+        connector_id: 1,
+    };
+    let secondary = BackendOutputId {
+        device_id: 1,
+        connector_id: 2,
+    };
+    // Simulate a settled dual-head session: both heads idle after first frame.
+    state.redraw_states.insert(primary, OutputRedrawState::Idle);
+    state
+        .redraw_states
+        .insert(secondary, OutputRedrawState::Idle);
+
+    state.request_redraw_workspace();
+
+    assert_eq!(
+        state.redraw_states.get(&primary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+    assert_eq!(
+        state.redraw_states.get(&secondary).copied(),
+        Some(OutputRedrawState::Idle)
+    );
+}
+
+#[test]
+fn pointer_redraw_targets_only_the_output_under_the_cursor() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 1280)),
+        ])
+        .unwrap();
+
+    let primary = BackendOutputId {
+        device_id: 1,
+        connector_id: 1,
+    };
+    let secondary = BackendOutputId {
+        device_id: 1,
+        connector_id: 2,
+    };
+    state.redraw_states.insert(primary, OutputRedrawState::Idle);
+    state
+        .redraw_states
+        .insert(secondary, OutputRedrawState::Idle);
+
+    // Secondary head is laid out at x=1920 after reflow.
+    state.request_redraw_at((2000.0, 10.0).into());
+
+    assert_eq!(
+        state.redraw_states.get(&primary).copied(),
+        Some(OutputRedrawState::Idle)
+    );
+    assert_eq!(
+        state.redraw_states.get(&secondary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+}
+
+#[test]
+fn queue_marks_idle_and_waiting_outputs_dirty() {
+    assert_eq!(OutputRedrawState::Idle.queue(), OutputRedrawState::Queued);
+    assert_eq!(OutputRedrawState::Queued.queue(), OutputRedrawState::Queued);
+    assert_eq!(
+        OutputRedrawState::WaitingForVBlank {
+            redraw_needed: false
+        }
+        .queue(),
+        OutputRedrawState::WaitingForVBlank {
+            redraw_needed: true
+        }
+    );
+    assert!(
+        OutputRedrawState::WaitingForVBlank {
+            redraw_needed: true
+        }
+        .queue()
+        .needs_gpu_retry()
+    );
 }

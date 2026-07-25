@@ -616,6 +616,9 @@ struct ManagedOutput {
     output: smithay::output::Output,
     global: smithay::reexports::wayland_server::backend::GlobalId,
     descriptor: OutputDescriptor,
+    /// True after at least one frame was accepted by atomic KMS. Used to skip
+    /// empty secondary scanouts once the CRTC has a live page-flip ring.
+    has_presented: bool,
 }
 
 /// Per-output redraw lifecycle, modeled on Niri's `RedrawState`.

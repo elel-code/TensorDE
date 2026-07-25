@@ -82,6 +82,16 @@ still selects its highest supported progressive refresh. This deliberately avoid
 case where a high-refresh monitor marks only its 60 Hz timing as `PREFERRED`. An unavailable rule is
 logged and falls back to that native high-refresh policy rather than selecting an arbitrary mode.
 
+Optional `position = { x = …, y = … }` places the output in logical compositor space (Niri-style:
+configured positions are applied first; automatic placement packs remaining heads left-to-right and
+rejects overlapping configured origins). `enabled = false` keeps the connector discovered but out of
+the scanout plan. `max_refresh_millihertz` caps automatic refresh selection without overriding an
+exact `@refresh` mode when that mode exists.
+
+Redraw scheduling is output-local: workspace content and pointer motion target only the affected
+head so dual high-refresh layouts do not resubmit every CRTC on each commit. Empty secondary heads
+skip GPU work after their first page flip has armed the CRTC.
+
 The focused view receives the standard `xdg_toplevel` `Activated` state and a compositor-rendered
 outer focus ring. The ring is scene data, not a client-side decoration, so it remains visible for
 native Wayland and rootless XWayland applications without covering client pixels. `appearance`

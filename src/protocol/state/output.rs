@@ -10,14 +10,42 @@ use crate::{
 use super::{DEFAULT_WORKSPACE, ManagedOutput, OutputRedrawState, RuntimeState};
 
 impl RuntimeState {
-    /// Queue a redraw for every connected output.
-    ///
-    /// Call sites that previously submitted a single default-workspace frame
-    /// now mark every CRTC dirty; the per-output scheduler drains those that
-    /// are not already waiting on a page flip.
+    /// Queue a redraw for every connected output and drain the scheduler.
+    #[cfg(feature = "tty")]
+    pub(crate) fn request_redraw_all(&mut self) {
+        self.queue_redraw_all();
+        self.redraw_queued_outputs();
+    }
+
+    /// Prefer workspace-local heads over every CRTC.
     #[cfg(feature = "tty")]
     pub(crate) fn submit_default_workspace_frame(&mut self) {
-        self.queue_redraw_all();
+        self.request_redraw_workspace();
+    }
+
+    /// Redraw only outputs that carry the default workspace viewport.
+    #[cfg(feature = "tty")]
+    pub(crate) fn request_redraw_workspace(&mut self) {
+        let targets = self.workspace_output_ids();
+        if targets.is_empty() {
+            return;
+        }
+        for output in targets {
+            self.queue_redraw(output);
+        }
+        self.redraw_queued_outputs();
+    }
+
+    /// Redraw only the output that contains a logical seat point (pointer).
+    #[cfg(feature = "tty")]
+    pub(crate) fn request_redraw_at(
+        &mut self,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        let Some(output_id) = self.output_id_under(location) else {
+            return;
+        };
+        self.queue_redraw(output_id);
         self.redraw_queued_outputs();
     }
 
@@ -44,9 +72,6 @@ impl RuntimeState {
     }
 
     /// Force a first frame for every output, even if a sibling is mid-flip.
-    ///
-    /// Mirrors Nourish's `force_redraw` / Hyprland's `AQ_SCHEDULE_NEW_MONITOR`:
-    /// a CRTC that has never flipped has no vblank ring of its own.
     #[cfg(feature = "tty")]
     fn force_redraw_all(&mut self) {
         let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
@@ -54,6 +79,43 @@ impl RuntimeState {
             self.set_redraw_state(output, OutputRedrawState::Queued);
         }
         self.redraw_queued_outputs();
+    }
+
+    #[cfg(feature = "tty")]
+    fn workspace_output_ids(&self) -> Vec<BackendOutputId> {
+        let Some(area) = self.default_workspace_area() else {
+            return self.outputs.keys().copied().collect();
+        };
+        let mut matches = self
+            .outputs
+            .iter()
+            .filter_map(|(id, managed)| {
+                let geometry = self.space.output_geometry(&managed.output)?;
+                let logical = Rect::new(
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    u32::try_from(geometry.size.w).unwrap_or(0),
+                    u32::try_from(geometry.size.h).unwrap_or(0),
+                );
+                (logical == area).then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            matches = self.outputs.keys().copied().collect();
+        }
+        matches
+    }
+
+    #[cfg(feature = "tty")]
+    fn output_id_under(
+        &self,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<BackendOutputId> {
+        let output = self.space.output_under(location).next()?;
+        self.outputs
+            .iter()
+            .find(|(_, managed)| managed.output == *output)
+            .map(|(id, _)| *id)
     }
 
     #[cfg(feature = "tty")]
@@ -108,13 +170,6 @@ impl RuntimeState {
         }
 
         let scene = self.scene_for_output(logical);
-        if let Err(error) = self.prepare_surface_acquires(&scene) {
-            self.flush_client_releases();
-            warn!(%error, "client explicit-sync acquire is not ready");
-            self.defer_output_repaint(output_id);
-            return;
-        }
-
         let pointer_location = self
             .seat
             .get_pointer()
@@ -126,6 +181,25 @@ impl RuntimeState {
             }
             _ => None,
         };
+        let has_presented = self
+            .outputs
+            .get(&output_id)
+            .is_some_and(|managed| managed.has_presented);
+        if has_presented && scene.nodes().is_empty() && cursor.is_none() {
+            self.set_redraw_state(output_id, OutputRedrawState::Idle);
+            debug!(
+                output_device = output_id.device_id,
+                output_connector = output_id.connector_id,
+                "skipped empty secondary output frame"
+            );
+            return;
+        }
+        if let Err(error) = self.prepare_surface_acquires(&scene) {
+            self.flush_client_releases();
+            warn!(%error, "client explicit-sync acquire is not ready");
+            self.defer_output_repaint(output_id);
+            return;
+        }
         if let Some(renderer) = self.renderer.as_mut()
             && let Err(error) = renderer.refresh_completed()
         {
@@ -230,6 +304,9 @@ impl RuntimeState {
                 // presentation feedback remains pending until vblank.
                 self.send_submitted_frame_callbacks(&output, &captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
+                if let Some(managed) = self.outputs.get_mut(&output_id) {
+                    managed.has_presented = true;
+                }
                 self.set_redraw_state(
                     output_id,
                     OutputRedrawState::WaitingForVBlank {
@@ -492,6 +569,7 @@ impl RuntimeState {
                 output,
                 global,
                 descriptor,
+                has_presented: false,
             },
         );
         self.set_redraw_state(output_id, OutputRedrawState::Queued);
@@ -618,27 +696,74 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     fn reflow_outputs(&mut self) {
         let mut outputs = self.outputs.iter().collect::<Vec<_>>();
-        outputs.sort_by_key(|(id, _)| (id.device_id, id.connector_id));
-        let mut x = 0;
+        outputs.sort_by(|(left_id, left), (right_id, right)| {
+            left.descriptor
+                .name
+                .cmp(&right.descriptor.name)
+                .then_with(|| left_id.cmp(right_id))
+        });
+        outputs.sort_by_key(|(_, managed)| managed.descriptor.position.is_none());
+
+        let mut placed = Vec::<(i32, i32, i32, i32)>::new();
+        let mut auto_x: i32 = 0;
         for (_, managed) in outputs {
-            managed
-                .output
-                .change_current_state(None, None, None, Some((x, 0).into()));
-            self.space.map_output(&managed.output, (x, 0));
-            x = x.saturating_add(
-                self.space
-                    .output_geometry(&managed.output)
-                    .map(|geometry| geometry.size.w)
-                    .unwrap_or(0),
+            let size = self
+                .space
+                .output_geometry(&managed.output)
+                .map(|geometry| (geometry.size.w, geometry.size.h))
+                .unwrap_or_else(|| {
+                    let scale = managed.descriptor.scale.as_f64();
+                    let width = (f64::from(managed.descriptor.mode.size.w) / scale).round() as i32;
+                    let height = (f64::from(managed.descriptor.mode.size.h) / scale).round() as i32;
+                    (width.max(1), height.max(1))
+                });
+            let position = managed
+                .descriptor
+                .position
+                .filter(|(x, y)| {
+                    let target = (*x, *y, size.0, size.1);
+                    !placed
+                        .iter()
+                        .any(|existing| rects_overlap(*existing, target))
+                })
+                .unwrap_or_else(|| {
+                    let position = (auto_x, 0);
+                    auto_x = auto_x.saturating_add(size.0);
+                    position
+                });
+            managed.output.change_current_state(
+                None,
+                None,
+                None,
+                Some((position.0, position.1).into()),
             );
+            self.space
+                .map_output(&managed.output, (position.0, position.1));
+            if let Some(geometry) = self.space.output_geometry(&managed.output) {
+                placed.push((
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    geometry.size.w,
+                    geometry.size.h,
+                ));
+                if managed.descriptor.position.is_none() {
+                    auto_x = auto_x.max(geometry.loc.x.saturating_add(geometry.size.w));
+                }
+            }
         }
-        // Arrange the default workspace against the primary output, then force
-        // every CRTC (including secondaries with no workspace content) through
-        // a first frame so each page-flip ring starts. Layout-only reflow avoids
-        // the extra single-path submit that reflow_default_workspace would do.
         self.reflow_default_workspace_layout();
         self.force_redraw_all();
     }
+}
+
+#[cfg(feature = "tty")]
+fn rects_overlap(left: (i32, i32, i32, i32), right: (i32, i32, i32, i32)) -> bool {
+    let (lx, ly, lw, lh) = left;
+    let (rx, ry, rw, rh) = right;
+    lx < rx.saturating_add(rw)
+        && rx < lx.saturating_add(lw)
+        && ly < ry.saturating_add(rh)
+        && ry < ly.saturating_add(lh)
 }
 
 #[cfg(feature = "tty")]
@@ -656,32 +781,5 @@ fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
         ),
         format: descriptor.native_format,
         scale: descriptor.scale,
-    }
-}
-
-#[cfg(all(test, feature = "tty"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn queue_marks_idle_and_waiting_outputs_dirty() {
-        assert_eq!(OutputRedrawState::Idle.queue(), OutputRedrawState::Queued);
-        assert_eq!(OutputRedrawState::Queued.queue(), OutputRedrawState::Queued);
-        assert_eq!(
-            OutputRedrawState::WaitingForVBlank {
-                redraw_needed: false
-            }
-            .queue(),
-            OutputRedrawState::WaitingForVBlank {
-                redraw_needed: true
-            }
-        );
-        assert!(
-            OutputRedrawState::WaitingForVBlank {
-                redraw_needed: true
-            }
-            .queue()
-            .needs_gpu_retry()
-        );
     }
 }

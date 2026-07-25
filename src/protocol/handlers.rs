@@ -179,7 +179,7 @@ impl CompositorHandler for RuntimeState {
                 .is_some_and(|view_id| self.pending_content_repaints.remove(&view_id));
         #[cfg(feature = "tty")]
         if (content_changed || deferred_repaint) && !reflowed {
-            self.submit_default_workspace_frame();
+            self.request_redraw_workspace();
         }
 
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
@@ -224,7 +224,7 @@ impl CompositorHandler for RuntimeState {
                     .view_for_surface(&root)
                     .is_some_and(|view_id| self.pending_content_repaints.remove(&view_id));
                 if changed || deferred_repaint {
-                    self.submit_default_workspace_frame();
+                    self.request_redraw_workspace();
                 }
             }
             self.popups.cleanup();
@@ -356,7 +356,11 @@ impl SeatHandler for RuntimeState {
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         #[cfg(feature = "tty")]
         if self.cursor.set_image(image) {
-            self.submit_default_workspace_frame();
+            if let Some(pointer) = self.seat.get_pointer() {
+                self.request_redraw_at(pointer.current_location());
+            } else {
+                self.request_redraw_workspace();
+            }
         }
         #[cfg(not(feature = "tty"))]
         let _ = image;
