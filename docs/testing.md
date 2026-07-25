@@ -54,9 +54,12 @@ implicit-modifier, or alternate-GPU fallback.
 
 Success requires all of the following for the same native surface: accepted
 dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
-and release of an older `wl_buffer`. The launcher writes both process streams
-to `artifacts/logs/tensor-tty.log` and returns the smoke client's failure
-status, so the log remains available after the VT restores the prior session.
+and release of an older `wl_buffer`. Tensor itself writes its tracing stream
+to `artifacts/logs/tensor-tty.log` through a direct asynchronous file sink; the
+launcher only tails new records for readiness and keeps control/client
+diagnostics in `artifacts/logs/tensor-tty.launcher.log`. It returns the smoke
+client's failure status, and neither logging path echoes compositor output onto
+the graphics TTY, avoiding terminal-output backpressure during shutdown.
 Each `tty.py` invocation also supplies a unique private IPC endpoint through
 `TENSOR_IPC_SOCKET`. This prevents a suspended desktop compositor or a stale
 socket from blocking the TTY smoke run; it does not weaken IPC's rule that an
@@ -82,11 +85,11 @@ ensures that an existing host Ghostty cannot receive the request over D-Bus;
 it does not select a client backend.
 
 This is a native Wayland rendering and input test, not an X11-client test. The
-log should contain `Tensor entered its compositor event loop; client launch
-gate opened` and `starting Ghostty with its normal backend selection`; the
-terminal must appear and accept input before the bounded launch restores the
-previous session. Ghostty's own stdout and stderr are retained in the same log
-for diagnosis.
+Tensor log should contain `entering compositor event loop`; the launcher log
+should contain `client launch gate opened` and `starting Ghostty with its
+normal backend selection`. The terminal must appear and accept input before
+the bounded launch restores the previous session. Ghostty's stdout and stderr
+are retained in the launcher log for diagnosis.
 
 The compositor-owned arrow must be visible as soon as libinput publishes a
 pointer capability, including when that device appears after the first output

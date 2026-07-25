@@ -9,6 +9,19 @@ Tensor is a Rust Wayland compositor built around four ownership domains:
    synchronization. It returns dma-bufs and fences to Smithay instead of owning KMS state.
 4. IPC and portal adapters translate external requests into validated ECS commands.
 
+## Async execution
+
+Smithay/calloop is the compositor event loop and retains ownership of Wayland, input, session,
+DRM/KMS, and presentation state. That ownership boundary does not prohibit asynchronous work.
+Tensor-owned local I/O services should use Compio, taking its io_uring path on supported Linux
+hosts, and communicate with `RuntimeState` through bounded value-only messages. They do not own
+Smithay objects or DRM/KMS file descriptors. Native dependencies keep their appropriate async
+APIs; Tensor must not force D-Bus or another dependency onto a blocking API solely to avoid an
+executor. Compio is introduced only with a concrete local-I/O service, not as a marker dependency.
+
+Tensor intentionally has no general-purpose network control plane: its compositor control
+protocol is local Unix IPC.
+
 Lua is intentionally not a compositor-core dependency and is not a second
 configuration language. The KDL/knus boundary remains authoritative for
 startup, device, layout, IPC, and session policy. If scripting is added later,

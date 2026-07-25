@@ -8,6 +8,12 @@ APIs for their own sake.
 
 - Smithay `master` owns the Wayland protocol, input, session, calloop, DRM/KMS, GBM, connector,
   CRTC, page-flip, and scanout lifecycle.
+- Smithay/calloop remains the compositor event loop and owns Wayland, input, session, DRM/KMS,
+  and presentation state; this does not prohibit asynchronous work. Tensor-owned local async I/O
+  should prefer Compio and its io_uring path on supported Linux hosts. Async workers exchange
+  bounded, value-only messages with the compositor and never own Smithay objects or DRM/KMS file
+  descriptors. Do not force native dependencies such as zbus onto blocking APIs merely to avoid
+  async, and do not add an unused runtime as a marker dependency.
 - Vulkanalia is the renderer binding. The renderer requires Vulkan `VK_EXT_descriptor_heap` and
   models it as a first-class `DescriptorHeap`. Descriptor sets are not a backend and must not be
   added as a compatibility path. Native devices also require external dma-buf memory, explicit DRM

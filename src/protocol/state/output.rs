@@ -1,5 +1,5 @@
 use tensor_util::Rect;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
@@ -154,7 +154,7 @@ impl RuntimeState {
                 self.send_submitted_frame_callbacks(&output, &captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
                 self.repaint_pending.remove(&output_id);
-                info!(
+                debug!(
                     output_device = output_id.device_id,
                     output_connector = output_id.connector_id,
                     output_slot = frame.output_slot,
@@ -211,7 +211,7 @@ impl RuntimeState {
         let Some(presentation) = presentation else {
             return;
         };
-        info!(
+        debug!(
             output_device = presentation.output.device_id,
             output_connector = presentation.output.connector_id,
             output_slot = presentation.slot,

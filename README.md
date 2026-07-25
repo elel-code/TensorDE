@@ -58,9 +58,14 @@ persistent session; `Ctrl`+`Alt`+`F1` through `F12` are always compositor-owned
 VT recovery keys. The launcher refuses to enter the KMS event loop from a
 terminal emulator. Use `--render-device /dev/dri/renderD*` only to pin a
 hybrid-GPU test, and `--no-xwayland` to isolate the native Wayland path.
-`--check` remains safe to run from an ordinary terminal. Every launch appends
-its terminal output to `artifacts/logs/tensor-tty.log`, so a TTY smoke-test
-result can be inspected after returning to the development session.
+`--check` remains safe to run from an ordinary terminal. In a TTY launch,
+Tensor itself appends tracing records to `artifacts/logs/tensor-tty.log` through
+its asynchronous file sink; the launcher only watches that file for readiness
+and never relays compositor output through a terminal pipe. Its small control
+and client diagnostic log is kept separately in
+`artifacts/logs/tensor-tty.launcher.log`, so a smoke-test result can be
+inspected after returning to the development session without terminal-output
+backpressure stalling shutdown.
 
 For the native presentation gate, use `uv run scripts/tty.py --dmabuf-smoke`.
 After Tensor creates its socket, the launcher runs a GBM client on the exact

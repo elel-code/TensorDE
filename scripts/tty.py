@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG = ROOT / "artifacts" / "logs" / "tensor-tty.log"
 DEFAULT_SMOKE_DURATION_SECONDS = 20.0
 SHUTDOWN_GRACE_SECONDS = 5.0
+KILL_GRACE_SECONDS = 2.0
 EVENT_LOOP_READY_MARKER = b"entering compositor event loop"
 
 
@@ -115,7 +116,10 @@ def command_for(args: argparse.Namespace) -> list[str]:
 
 def environment_for(args: argparse.Namespace) -> dict[str, str]:
     environment = os.environ.copy()
-    environment.setdefault("RUST_LOG", "tensor_compositor=debug")
+    # A graphical VT is not a usable live log console. Keep the default quiet
+    # enough for interactive smoke runs; callers can still opt into a focused
+    # `RUST_LOG` filter and inspect the complete file after the session exits.
+    environment.setdefault("RUST_LOG", "tensor_compositor=info")
     # A TTY smoke run must not collide with a suspended desktop compositor or
     # a previous interrupted smoke run that used the configured IPC endpoint.
     # Keep this separate from the `tensor-N` Wayland sockets that the launcher
@@ -152,6 +156,15 @@ def tty_ipc_socket_path() -> Path:
 
 def log_path_for(path: Path) -> Path:
     return path if path.is_absolute() else ROOT / path
+
+
+def launcher_log_path_for(tensor_log_path: Path) -> Path:
+    """Keep launcher/client diagnostics separate from Tensor-owned tracing."""
+    if tensor_log_path.suffix:
+        name = f"{tensor_log_path.stem}.launcher{tensor_log_path.suffix}"
+    else:
+        name = f"{tensor_log_path.name}.launcher.log"
+    return tensor_log_path.with_name(name)
 
 
 def smoke_duration_for(args: argparse.Namespace) -> float | None:
@@ -256,34 +269,64 @@ def session_client_environment(
     return client_environment
 
 
-def emit(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
+def write_launcher_log(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
     with output_lock:
         log.write(chunk)
-        sys.stdout.buffer.write(chunk)
-        sys.stdout.buffer.flush()
 
 
 def note(log: BinaryIO, output_lock: threading.Lock, message: str) -> None:
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    emit(log, output_lock, f"[tensor-tty {timestamp}] {message}\n".encode())
+    write_launcher_log(log, output_lock, f"[tensor-tty {timestamp}] {message}\n".encode())
+
+
+def send_signal(process: subprocess.Popen[bytes] | None, signal_number: int) -> bool:
+    """Best-effort signal delivery without making shutdown depend on logging."""
+    if process is None or process.poll() is not None:
+        return False
+    try:
+        process.send_signal(signal_number)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def wait_for_exit(process: subprocess.Popen[bytes], timeout: float) -> int | None:
+    """Reap a child only for a bounded period.
+
+    A wedged graphics driver can leave a process in uninterruptible kernel
+    sleep, including after SIGKILL. A TTY recovery tool must report that state
+    rather than turn an already unusable virtual terminal into an infinite
+    wait.
+    """
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def launch(
     command: list[str],
     environment: dict[str, str],
-    log_path: Path,
+    tensor_log_path: Path,
     duration: float | None,
     dmabuf_smoke: bool,
     ghostty: bool,
 ) -> int:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    launcher_log_path = launcher_log_path_for(tensor_log_path)
+    launcher_log_path.parent.mkdir(parents=True, exist_ok=True)
     completed = threading.Event()
     shutdown_requested = threading.Event()
+    force_kill_sent = threading.Event()
+    shutdown_unresponsive = threading.Event()
     output_lock = threading.Lock()
     runtime_dir = runtime_dir_for_client() if dmabuf_smoke or ghostty else None
     known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else {}
+    try:
+        tensor_log_offset = tensor_log_path.stat().st_size
+    except FileNotFoundError:
+        tensor_log_offset = 0
 
-    with log_path.open("ab", buffering=0) as log:
+    with launcher_log_path.open("ab", buffering=0) as log:
         started = datetime.now().astimezone().isoformat(timespec="seconds")
         header = (
             f"\n=== Tensor TTY run {started} ===\n"
@@ -291,6 +334,7 @@ def launch(
             f"clients: dmabuf-smoke={dmabuf_smoke} ghostty={ghostty} "
             f"duration={duration if duration is not None else 'forever'}\n"
             f"ipc-socket: {environment['TENSOR_IPC_SOCKET']}\n"
+            f"compositor-log: {tensor_log_path}\n"
         )
         log.write(header.encode())
         process = subprocess.Popen(
@@ -308,13 +352,24 @@ def launch(
         ghostty_process: subprocess.Popen[bytes] | None = None
         ghostty_status: int | None = None
         ghostty_failed = False
-        tensor_output_open = True
         tensor_log_tail = b""
         event_loop_ready = False
 
-        def observe_tensor_output(chunk: bytes) -> None:
-            nonlocal tensor_log_tail, event_loop_ready
+        def observe_tensor_log() -> None:
+            nonlocal event_loop_ready, tensor_log_offset, tensor_log_tail
             if event_loop_ready:
+                return
+            try:
+                with tensor_log_path.open("rb") as tensor_log:
+                    tensor_log.seek(0, os.SEEK_END)
+                    if tensor_log.tell() < tensor_log_offset:
+                        tensor_log_offset = 0
+                    tensor_log.seek(tensor_log_offset)
+                    chunk = tensor_log.read(64 * 1024)
+                    tensor_log_offset = tensor_log.tell()
+            except FileNotFoundError:
+                return
+            if not chunk:
                 return
             combined = tensor_log_tail + chunk
             if EVENT_LOOP_READY_MARKER in combined:
@@ -325,8 +380,8 @@ def launch(
                     "Tensor entered its compositor event loop; client launch gate opened",
                 )
                 return
-            # A tracing line can be split between pipe reads. Preserve only
-            # the suffix that could still become the readiness marker.
+            # A direct file append can split a tracing line between polls.
+            # Preserve only the suffix that could still become the marker.
             keep = max(0, len(EVENT_LOOP_READY_MARKER) - 1)
             tensor_log_tail = combined[-keep:] if keep else b""
 
@@ -337,6 +392,7 @@ def launch(
                 or smoke_process is not None
                 or runtime_dir is None
                 or not event_loop_ready
+                or shutdown_requested.is_set()
             ):
                 return
             socket = new_tensor_socket(runtime_dir, known_sockets)
@@ -368,6 +424,7 @@ def launch(
                 or ghostty_status is not None
                 or runtime_dir is None
                 or not event_loop_ready
+                or shutdown_requested.is_set()
             ):
                 return
             socket = new_tensor_socket(runtime_dir, known_sockets)
@@ -412,61 +469,51 @@ def launch(
                 request_shutdown("native Ghostty closed")
 
         def stop_smoke_client(reason: str) -> None:
-            if smoke_process is None or smoke_process.poll() is not None:
+            if not send_signal(smoke_process, signal.SIGTERM):
                 return
-            note(log, output_lock, f"{reason}; sending SIGTERM to dma-buf smoke client")
-            try:
-                smoke_process.send_signal(signal.SIGTERM)
-            except ProcessLookupError:
-                return
+            note(log, output_lock, f"{reason}; sent SIGTERM to dma-buf smoke client")
 
         def stop_ghostty(reason: str) -> None:
-            if ghostty_process is None or ghostty_process.poll() is not None:
+            if not send_signal(ghostty_process, signal.SIGTERM):
                 return
-            note(log, output_lock, f"{reason}; sending SIGTERM to Ghostty")
-            try:
-                ghostty_process.send_signal(signal.SIGTERM)
-            except ProcessLookupError:
-                return
+            note(log, output_lock, f"{reason}; sent SIGTERM to Ghostty")
 
         def request_shutdown(reason: str) -> None:
             if completed.is_set() or shutdown_requested.is_set():
                 return
             shutdown_requested.set()
-            stop_smoke_client(reason)
-            stop_ghostty(reason)
-            if process.poll() is not None:
-                return
-            note(log, output_lock, f"{reason}; sending SIGTERM to Tensor")
-            try:
-                process.send_signal(signal.SIGTERM)
-            except ProcessLookupError:
-                return
+            smoke_stopped = send_signal(smoke_process, signal.SIGTERM)
+            ghostty_stopped = send_signal(ghostty_process, signal.SIGTERM)
+            tensor_stopped = send_signal(process, signal.SIGTERM)
 
             def force_shutdown() -> None:
                 if completed.wait(SHUTDOWN_GRACE_SECONDS) or process.poll() is not None:
                     return
+                if not send_signal(process, signal.SIGKILL):
+                    return
+                force_kill_sent.set()
+                send_signal(smoke_process, signal.SIGKILL)
+                send_signal(ghostty_process, signal.SIGKILL)
+                if completed.wait(KILL_GRACE_SECONDS) or process.poll() is not None:
+                    note(log, output_lock, "Tensor did not exit after SIGTERM; sent SIGKILL")
+                    return
+                shutdown_unresponsive.set()
                 note(
                     log,
                     output_lock,
-                    "Tensor did not exit after SIGTERM; sending SIGKILL",
+                    "Tensor remained alive after SIGKILL; launcher will stop waiting so the VT can recover",
                 )
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                if smoke_process is not None and smoke_process.poll() is None:
-                    try:
-                        smoke_process.kill()
-                    except ProcessLookupError:
-                        pass
-                if ghostty_process is not None and ghostty_process.poll() is None:
-                    try:
-                        ghostty_process.kill()
-                    except ProcessLookupError:
-                        pass
 
-            threading.Thread(target=force_shutdown, daemon=True).start()
+            if tensor_stopped:
+                threading.Thread(target=force_shutdown, daemon=True).start()
+            # Every control action has already happened before any file I/O.
+            # This remains true even if a storage failure blocks logging.
+            if smoke_stopped:
+                note(log, output_lock, f"{reason}; sent SIGTERM to dma-buf smoke client")
+            if ghostty_stopped:
+                note(log, output_lock, f"{reason}; sent SIGTERM to Ghostty")
+            if tensor_stopped:
+                note(log, output_lock, f"{reason}; sent SIGTERM to Tensor")
 
         watchdog: threading.Thread | None = None
         if duration is not None:
@@ -481,8 +528,11 @@ def launch(
             watchdog.start()
 
         try:
-            while tensor_output_open:
+            while process.poll() is None:
+                if shutdown_unresponsive.is_set():
+                    break
                 try:
+                    observe_tensor_log()
                     start_smoke_client()
                     start_ghostty()
                     observe_ghostty_exit()
@@ -497,19 +547,21 @@ def launch(
                     except BlockingIOError:
                         continue
                     if chunk:
-                        emit(log, output_lock, chunk)
-                        if key.data == "tensor":
-                            observe_tensor_output(chunk)
+                        write_launcher_log(log, output_lock, chunk)
                         continue
                     selector.unregister(stream)
                     if key.data == "tensor":
-                        tensor_output_open = False
-                        if process.poll() is None:
-                            request_shutdown("Tensor closed its output while still running")
                         continue
                     if key.data == "dmabuf-smoke":
                         assert smoke_process is not None
-                        smoke_status = smoke_process.wait()
+                        smoke_status = wait_for_exit(smoke_process, KILL_GRACE_SECONDS)
+                        if smoke_status is None:
+                            smoke_status = 1
+                            note(
+                                log,
+                                output_lock,
+                                "dma-buf smoke client closed output but did not exit promptly",
+                            )
                         note(
                             log,
                             output_lock,
@@ -523,26 +575,40 @@ def launch(
                     if key.data == "ghostty":
                         continue
                     raise AssertionError(f"unexpected TTY client stream {key.data!r}")
-                if not tensor_output_open and dmabuf_smoke and smoke_process is None:
-                    smoke_status = 1
-                    note(
-                        log,
-                        output_lock,
-                        "Tensor exited before opening the dma-buf smoke launch gate",
-                    )
-                if not tensor_output_open and ghostty and ghostty_process is None:
-                    ghostty_failed = True
-                    note(
-                        log,
-                        output_lock,
-                        "Tensor exited before opening the Ghostty launch gate",
-                    )
-            compositor_status = process.wait()
+            if shutdown_unresponsive.is_set():
+                return 1
+            observe_tensor_log()
+            if dmabuf_smoke and smoke_process is None:
+                smoke_status = 1
+                note(
+                    log,
+                    output_lock,
+                    "Tensor exited before opening the dma-buf smoke launch gate",
+                )
+            if ghostty and ghostty_process is None:
+                ghostty_failed = True
+                note(
+                    log,
+                    output_lock,
+                    "Tensor exited before opening the Ghostty launch gate",
+                )
+            compositor_status = process.poll()
+            if compositor_status is None:
+                compositor_status = wait_for_exit(process, SHUTDOWN_GRACE_SECONDS)
+            if compositor_status is None:
+                note(
+                    log,
+                    output_lock,
+                    "Tensor did not exit within the bounded launcher wait",
+                )
+                return 1
             if dmabuf_smoke:
                 if smoke_process is None:
                     return 1
                 if smoke_status is None:
-                    smoke_status = smoke_process.wait()
+                    smoke_status = wait_for_exit(smoke_process, SHUTDOWN_GRACE_SECONDS)
+                if smoke_status is None:
+                    return 1
                 if smoke_status != 0:
                     return smoke_status
             if ghostty and (ghostty_process is None or ghostty_failed):
@@ -550,33 +616,41 @@ def launch(
             return compositor_status
         except KeyboardInterrupt:
             request_shutdown("interrupt received")
-            return process.wait()
+            compositor_status = wait_for_exit(
+                process, SHUTDOWN_GRACE_SECONDS + KILL_GRACE_SECONDS
+            )
+            return compositor_status if compositor_status is not None else 1
         finally:
             selector.close()
             if process.poll() is None:
-                request_shutdown("TTY launcher is stopping")
-                try:
-                    process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    note(log, output_lock, "forcing Tensor shutdown during launcher cleanup")
-                    process.kill()
-                    process.wait()
+                if not force_kill_sent.is_set():
+                    request_shutdown("TTY launcher is stopping")
+                if not shutdown_unresponsive.is_set():
+                    if wait_for_exit(process, SHUTDOWN_GRACE_SECONDS) is None:
+                        if send_signal(process, signal.SIGKILL):
+                            force_kill_sent.set()
+                        if wait_for_exit(process, KILL_GRACE_SECONDS) is None:
+                            shutdown_unresponsive.set()
+                if shutdown_unresponsive.is_set():
+                    note(
+                        log,
+                        output_lock,
+                        "Tensor could not be reaped after SIGKILL; inspect its PID and GPU kernel logs",
+                    )
             if smoke_process is not None and smoke_process.poll() is None:
                 stop_smoke_client("TTY launcher is stopping")
-                try:
-                    smoke_process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    note(log, output_lock, "forcing dma-buf smoke client shutdown")
-                    smoke_process.kill()
-                    smoke_process.wait()
+                if wait_for_exit(smoke_process, SHUTDOWN_GRACE_SECONDS) is None:
+                    if send_signal(smoke_process, signal.SIGKILL):
+                        note(log, output_lock, "sent SIGKILL to dma-buf smoke client")
+                    if wait_for_exit(smoke_process, KILL_GRACE_SECONDS) is None:
+                        note(log, output_lock, "dma-buf smoke client remained alive after SIGKILL")
             if ghostty_process is not None and ghostty_process.poll() is None:
                 stop_ghostty("TTY launcher is stopping")
-                try:
-                    ghostty_process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    note(log, output_lock, "forcing Ghostty shutdown")
-                    ghostty_process.kill()
-                    ghostty_process.wait()
+                if wait_for_exit(ghostty_process, SHUTDOWN_GRACE_SECONDS) is None:
+                    if send_signal(ghostty_process, signal.SIGKILL):
+                        note(log, output_lock, "sent SIGKILL to Ghostty")
+                    if wait_for_exit(ghostty_process, KILL_GRACE_SECONDS) is None:
+                        note(log, output_lock, "Ghostty remained alive after SIGKILL")
             completed.set()
             if watchdog is not None:
                 watchdog.join()
@@ -590,9 +664,13 @@ def main() -> int:
             "switch to a virtual terminal first"
         )
 
+    log_path = log_path_for(args.log)
     command = command_for(args)
     environment = environment_for(args)
-    log_path = log_path_for(args.log)
+    # Tensor itself owns its tracing file. The launcher only watches appended
+    # readiness records and keeps its small control/client diagnostic log
+    # separate, so compositor logging has no parent-pipe backpressure path.
+    environment["TENSOR_LOG_FILE"] = str(log_path)
     duration = smoke_duration_for(args)
     if args.dry_run:
         print(f"cwd: {ROOT}")
@@ -617,6 +695,7 @@ def main() -> int:
         for name in (
             "RUST_LOG",
             "TENSOR_IPC_SOCKET",
+            "TENSOR_LOG_FILE",
             "TENSOR_RENDER_DEVICE",
             "TENSOR_XWAYLAND",
         ):
@@ -628,6 +707,7 @@ def main() -> int:
     if build_status != 0:
         return build_status
     print(f"Tensor log: {log_path}")
+    print(f"Launcher log: {launcher_log_path_for(log_path)}")
     return launch(command, environment, log_path, duration, args.dmabuf_smoke, args.ghostty)
 
 
