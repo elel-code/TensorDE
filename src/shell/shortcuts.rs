@@ -173,6 +173,60 @@ impl PinchZoomTracker {
     }
 }
 
+/// Minimum finger count for swipe → history navigation (2-finger is scroll).
+pub(crate) const SWIPE_NAV_MIN_FINGERS: u32 = 3;
+
+/// Minimum absolute horizontal travel (logical surface units) to commit navigation.
+pub(crate) const SWIPE_NAV_DISTANCE: f64 = 96.0;
+
+/// Accumulates a multi-finger swipe and resolves back/forward on end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SwipeNavigationTracker {
+    fingers: u32,
+    total_dx: f64,
+    total_dy: f64,
+}
+
+impl SwipeNavigationTracker {
+    pub(crate) fn begin(fingers: u32) -> Self {
+        Self {
+            fingers,
+            total_dx: 0.0,
+            total_dy: 0.0,
+        }
+    }
+
+    pub(crate) fn update(&mut self, delta_x: f64, delta_y: f64) {
+        if delta_x.is_finite() {
+            self.total_dx += delta_x;
+        }
+        if delta_y.is_finite() {
+            self.total_dy += delta_y;
+        }
+    }
+
+    /// Resolve navigation when the gesture ends.
+    ///
+    /// Browser-style: swipe right (positive dx) → Back, swipe left → Forward.
+    /// Requires enough horizontal travel, horizontal dominance, and ≥3 fingers.
+    pub(crate) fn finish(self, cancelled: bool) -> Option<PathNavigationAction> {
+        if cancelled || self.fingers < SWIPE_NAV_MIN_FINGERS {
+            return None;
+        }
+        if self.total_dx.abs() < SWIPE_NAV_DISTANCE {
+            return None;
+        }
+        if self.total_dx.abs() <= self.total_dy.abs() {
+            return None;
+        }
+        if self.total_dx > 0.0 {
+            Some(PathNavigationAction::Back)
+        } else {
+            Some(PathNavigationAction::Forward)
+        }
+    }
+}
+
 #[cfg(test)]
 mod pinch_zoom_tests {
     use super::*;
@@ -211,6 +265,60 @@ mod pinch_zoom_tests {
             tracker.update(PINCH_ZOOM_STEP_RATIO.powi(3)),
             vec![ZoomAction::In, ZoomAction::In, ZoomAction::In]
         );
+    }
+}
+
+#[cfg(test)]
+mod swipe_nav_tests {
+    use super::*;
+
+    #[test]
+    fn three_finger_swipe_right_goes_back() {
+        let mut tracker = SwipeNavigationTracker::begin(3);
+        tracker.update(50.0, 5.0);
+        tracker.update(60.0, -2.0);
+        assert_eq!(
+            tracker.finish(false),
+            Some(PathNavigationAction::Back)
+        );
+    }
+
+    #[test]
+    fn three_finger_swipe_left_goes_forward() {
+        let mut tracker = SwipeNavigationTracker::begin(3);
+        tracker.update(-120.0, 10.0);
+        assert_eq!(
+            tracker.finish(false),
+            Some(PathNavigationAction::Forward)
+        );
+    }
+
+    #[test]
+    fn two_finger_swipe_is_ignored() {
+        let mut tracker = SwipeNavigationTracker::begin(2);
+        tracker.update(200.0, 0.0);
+        assert_eq!(tracker.finish(false), None);
+    }
+
+    #[test]
+    fn vertical_dominant_swipe_is_ignored() {
+        let mut tracker = SwipeNavigationTracker::begin(3);
+        tracker.update(50.0, 200.0);
+        assert_eq!(tracker.finish(false), None);
+    }
+
+    #[test]
+    fn cancelled_swipe_is_ignored() {
+        let mut tracker = SwipeNavigationTracker::begin(3);
+        tracker.update(200.0, 0.0);
+        assert_eq!(tracker.finish(true), None);
+    }
+
+    #[test]
+    fn short_horizontal_swipe_is_ignored() {
+        let mut tracker = SwipeNavigationTracker::begin(3);
+        tracker.update(40.0, 0.0);
+        assert_eq!(tracker.finish(false), None);
     }
 }
 

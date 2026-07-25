@@ -13,6 +13,8 @@ struct FikaWgpuApp {
     modifiers: Modifiers,
     /// Active touchpad pinch session for icon/view zoom (main window).
     pinch_zoom: Option<PinchZoomTracker>,
+    /// Active multi-finger swipe session for history navigation (main window).
+    swipe_nav: Option<SwipeNavigationTracker>,
     incoming_dnd_transfer: Option<IncomingDndTransfer>,
     outgoing_dnd_transfer: Option<OutgoingDndTransfer>,
     outgoing_dnd_start_failed: bool,
@@ -394,6 +396,9 @@ impl ApplicationHandler for FikaWgpuApp {
             }
             WindowEvent::PinchGesture(gesture) => {
                 self.handle_main_pinch_gesture(gesture);
+            }
+            WindowEvent::SwipeGesture(gesture) => {
+                self.handle_main_swipe_gesture(event_loop, gesture);
             }
             WindowEvent::RedrawRequested => {
                 let force_log = self.pending_redraw_frames > 0;

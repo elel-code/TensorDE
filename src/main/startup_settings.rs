@@ -208,8 +208,9 @@ use shell::settings::{
 };
 use shell::shortcuts::{
     CreateCommand, FilterCommand, LocationCommand, OpenWithCommand, PathNavigationAction,
-    PinchZoomTracker, RenameCommand, SelectionCommand, ZoomAction, create_command_for_key_event,
-    escape_requested_for_key_event, open_with_command_for_key_event, rename_command_for_key_event,
+    PinchZoomTracker, RenameCommand, SelectionCommand, SwipeNavigationTracker, ZoomAction,
+    create_command_for_key_event, escape_requested_for_key_event, open_with_command_for_key_event,
+    rename_command_for_key_event,
 };
 #[cfg(test)]
 use shell::shortcuts::{

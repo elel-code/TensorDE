@@ -447,13 +447,15 @@ operation dispatcher。
   continuous 回退 `PixelDelta`；主窗口滚动同时消费横向轴（水平布局 / 触控板）。
 - 触控板 pinch：主 toplevel 订阅 `zwp_pointer_gestures_v1`，`PinchGesture` →
   阈值步进的 icon zoom（与 Ctrl+滚轮同源）。
+- 触控板三指横向 swipe：`SwipeGesture` 累计位移，结束时 Back/Forward
+  （≥3 指、水平主导、阈值距离；与鼠标侧键 / 工具栏导航同源）。
 
 后续：
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
 - scene 测试 sync helper 可继续与生产 async 路径收敛。
-- swipe / hold / constraints 仍未接（文件管理器优先级低）。
+- hold / constraints / relative pointer 仍未接（文件管理器优先级低）。
 
 ### 6c. wayland-client-runtime 文件拆分（进行中）
 

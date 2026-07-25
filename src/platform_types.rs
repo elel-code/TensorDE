@@ -73,6 +73,15 @@ pub enum PinchGesture {
     End { cancelled: bool },
 }
 
+/// Touchpad swipe gesture phases (history navigation when multi-finger).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SwipeGesture {
+    Begin { fingers: u32 },
+    /// Surface-coordinate delta since the previous update (logical coords).
+    Update { delta_x: f64, delta_y: f64 },
+    End { cancelled: bool },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Modifiers {
     control: bool,
@@ -436,6 +445,8 @@ pub enum WindowEvent {
     /// `Update.scale` is absolute relative to finger spacing at [`PinchGesture::Begin`]
     /// (protocol scale, typically starting near 1.0).
     PinchGesture(PinchGesture),
+    /// Touchpad swipe from `zwp_pointer_gestures_v1` (main window only).
+    SwipeGesture(SwipeGesture),
     RedrawRequested,
     DragEntered {
         id: DataTransferId,

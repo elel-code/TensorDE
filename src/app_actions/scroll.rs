@@ -1,7 +1,9 @@
-use crate::platform::{MouseScrollDelta, PinchGesture};
+use crate::platform::{ActiveEventLoop, MouseScrollDelta, PinchGesture, SwipeGesture};
 
 use super::outcome::ShellActionOutcome;
-use crate::shell::shortcuts::{PinchZoomTracker, zoom_action_for_scroll_delta};
+use crate::shell::shortcuts::{
+    PinchZoomTracker, SwipeNavigationTracker, zoom_action_for_scroll_delta,
+};
 use crate::{FikaWgpuApp, SCROLL_REDRAW_FRAMES, ZOOM_REDRAW_FRAMES, scroll_delta_xy};
 
 impl FikaWgpuApp {
@@ -59,6 +61,33 @@ impl FikaWgpuApp {
             }
             PinchGesture::End { .. } => {
                 self.pinch_zoom = None;
+            }
+        }
+    }
+
+    pub(crate) fn handle_main_swipe_gesture(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        gesture: SwipeGesture,
+    ) {
+        match gesture {
+            SwipeGesture::Begin { fingers } => {
+                self.swipe_nav = Some(SwipeNavigationTracker::begin(fingers));
+            }
+            SwipeGesture::Update { delta_x, delta_y } => {
+                // Missed begin: track motion but keep fingers=0 so finish cannot navigate.
+                let tracker = self
+                    .swipe_nav
+                    .get_or_insert_with(|| SwipeNavigationTracker::begin(0));
+                tracker.update(delta_x, delta_y);
+            }
+            SwipeGesture::End { cancelled } => {
+                let Some(tracker) = self.swipe_nav.take() else {
+                    return;
+                };
+                if let Some(action) = tracker.finish(cancelled) {
+                    self.perform_path_navigation(event_loop, action);
+                }
             }
         }
     }

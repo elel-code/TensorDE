@@ -446,24 +446,47 @@ impl EventLoop {
         app: &mut A,
         event: PointerGestureEvent,
     ) {
-        // Only pinch is consumed today (icon/view zoom). Swipe/hold stay unused.
-        let PointerGestureEvent::Pinch(pinch) = event else {
-            return;
-        };
-        let surface = pinch.surface();
-        let Some(window) = self.window(surface) else {
-            return;
-        };
-        let gesture = match pinch {
-            PointerPinchEvent::Begin { .. } => PinchGesture::Begin,
-            PointerPinchEvent::Update { scale, .. } => PinchGesture::Update { scale },
-            PointerPinchEvent::End { cancelled, .. } => PinchGesture::End { cancelled },
-        };
-        app.window_event(
-            &self.active,
-            window.id(),
-            WindowEvent::PinchGesture(gesture),
-        );
+        // Hold is unused. Pinch → zoom; multi-finger swipe → history navigation.
+        match event {
+            PointerGestureEvent::Pinch(pinch) => {
+                let surface = pinch.surface();
+                let Some(window) = self.window(surface) else {
+                    return;
+                };
+                let gesture = match pinch {
+                    PointerPinchEvent::Begin { .. } => PinchGesture::Begin,
+                    PointerPinchEvent::Update { scale, .. } => PinchGesture::Update { scale },
+                    PointerPinchEvent::End { cancelled, .. } => PinchGesture::End { cancelled },
+                };
+                app.window_event(
+                    &self.active,
+                    window.id(),
+                    WindowEvent::PinchGesture(gesture),
+                );
+            }
+            PointerGestureEvent::Swipe(swipe) => {
+                let surface = swipe.surface();
+                let Some(window) = self.window(surface) else {
+                    return;
+                };
+                let gesture = match swipe {
+                    PointerSwipeEvent::Begin { fingers, .. } => SwipeGesture::Begin { fingers },
+                    PointerSwipeEvent::Update {
+                        delta: (dx, dy), ..
+                    } => SwipeGesture::Update {
+                        delta_x: dx,
+                        delta_y: dy,
+                    },
+                    PointerSwipeEvent::End { cancelled, .. } => SwipeGesture::End { cancelled },
+                };
+                app.window_event(
+                    &self.active,
+                    window.id(),
+                    WindowEvent::SwipeGesture(gesture),
+                );
+            }
+            PointerGestureEvent::Hold(_) => {}
+        }
     }
 
     fn dispatch_surface_event<A: ApplicationHandler>(

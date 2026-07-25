@@ -24,6 +24,7 @@ impl FikaWgpuApp {
             next_task_id: 1,
             modifiers: Modifiers::default(),
             pinch_zoom: None,
+            swipe_nav: None,
             incoming_dnd_transfer: None,
             outgoing_dnd_transfer: None,
             outgoing_dnd_start_failed: false,
