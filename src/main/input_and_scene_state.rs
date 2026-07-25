@@ -233,16 +233,22 @@ impl FikaWgpuApp {
         }
     }
 }
-fn scroll_delta_y(delta: MouseScrollDelta, scale_factor: f32) -> f32 {
+/// Content-space scroll deltas `(dx, dy)` from a platform wheel event.
+///
+/// Platform already applied the Wayland sign flip for continuous axes; negate
+/// once more so positive dy scrolls content down (thumb moves down).
+fn scroll_delta_xy(delta: MouseScrollDelta, scale_factor: f32) -> (f32, f32) {
     match delta {
-        // Platform already scaled continuous axes into physical pixels and
-        // applied the Wayland sign flip; negate once more for content scroll.
-        MouseScrollDelta::PixelDelta(position) => -position.y as f32,
-        // Logical wheel steps: one notch ≈ SCROLL_LINE_PX at scale 1.0.
-        MouseScrollDelta::LineDelta { y, .. } => {
-            -y as f32 * SCROLL_LINE_PX * scale_factor.max(f32::EPSILON)
+        MouseScrollDelta::PixelDelta(position) => (-position.x as f32, -position.y as f32),
+        MouseScrollDelta::LineDelta { x, y } => {
+            let line = SCROLL_LINE_PX * scale_factor.max(f32::EPSILON);
+            (-x as f32 * line, -y as f32 * line)
         }
     }
+}
+
+fn scroll_delta_y(delta: MouseScrollDelta, scale_factor: f32) -> f32 {
+    scroll_delta_xy(delta, scale_factor).1
 }
 #[derive(Clone, Copy, Debug)]
 struct PaneClick {

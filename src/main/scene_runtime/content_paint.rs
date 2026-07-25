@@ -260,6 +260,16 @@ impl ShellScene {
     }
 
     fn scroll_by(&mut self, delta_y: f32, size: PhysicalSize<u32>) -> bool {
+        self.scroll_by_delta(0.0, delta_y, size)
+    }
+
+    /// Scroll under the pointer using both wheel axes.
+    ///
+    /// Places only consume vertical motion. Content panes project the dominant
+    /// wheel component onto their single scrollbar axis so vertical mice still
+    /// drive horizontal compact/details layouts, and touchpad horizontal
+    /// swipes drive horizontal scroll when that is the active axis.
+    fn scroll_by_delta(&mut self, delta_x: f32, delta_y: f32, size: PhysicalSize<u32>) -> bool {
         if self
             .pointer
             .is_some_and(|point| self.places_panel_rect(size).contains(point))
@@ -273,7 +283,7 @@ impl ShellScene {
             .unwrap_or(ShellPaneId::SLOT_0);
         let old_active = self.active_pane();
         self.active_pane = self.normalized_pane_id(pane);
-        let scrolled = self.scroll_pane_by(pane, delta_y, size);
+        let scrolled = self.scroll_pane_by_delta(pane, delta_x, delta_y, size);
         let hover_changed = self.refresh_hover(size);
         scrolled || hover_changed || old_active != self.active_pane()
     }
@@ -289,7 +299,13 @@ impl ShellScene {
             .map(|geometry| geometry.kind)
     }
 
-    fn scroll_pane_by(&mut self, kind: ShellPaneId, delta_y: f32, size: PhysicalSize<u32>) -> bool {
+    fn scroll_pane_by_delta(
+        &mut self,
+        kind: ShellPaneId,
+        delta_x: f32,
+        delta_y: f32,
+        size: PhysicalSize<u32>,
+    ) -> bool {
         let Some(axis) = self.pane_content_scrollbar_axis(kind) else {
             return false;
         };
@@ -297,11 +313,30 @@ impl ShellScene {
             return false;
         };
         let (old_x, old_y) = self.pane_scroll_offset(kind).unwrap_or((0.0, 0.0));
+        // Map 2D wheel onto the pane's single scroll axis: prefer the matching
+        // component, fall back to the other so mouse wheels still work on
+        // horizontal layouts and trackpads still work on vertical ones.
+        let delta = match axis {
+            ContentScrollbarAxis::Horizontal => {
+                if delta_x.abs() > f32::EPSILON {
+                    delta_x
+                } else {
+                    delta_y
+                }
+            }
+            ContentScrollbarAxis::Vertical => {
+                if delta_y.abs() > f32::EPSILON {
+                    delta_y
+                } else {
+                    delta_x
+                }
+            }
+        };
         match axis {
             ContentScrollbarAxis::Horizontal => {
                 self.set_pane_scroll_offset(
                     kind,
-                    (old_x + delta_y).clamp(0.0, metrics.max_scroll_x),
+                    (old_x + delta).clamp(0.0, metrics.max_scroll_x),
                     0.0,
                 );
             }
@@ -309,7 +344,7 @@ impl ShellScene {
                 self.set_pane_scroll_offset(
                     kind,
                     0.0,
-                    (old_y + delta_y).clamp(0.0, metrics.max_scroll_y),
+                    (old_y + delta).clamp(0.0, metrics.max_scroll_y),
                 );
             }
         }
