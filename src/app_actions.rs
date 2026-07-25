@@ -17,7 +17,7 @@ mod view;
 
 use crate::platform::ActiveEventLoop;
 
-use self::outcome::ShellActionOutcome;
+pub(crate) use self::outcome::ShellActionOutcome;
 use crate::shell::action::{
     ContextMenuActionDispatch, ContextMenuCommandDispatch, FileKeyboardCommandDispatch,
     context_menu_command_dispatch, file_keyboard_command_dispatch,

@@ -159,7 +159,10 @@ impl FikaWgpuApp {
             }
         }
         if changed {
-            self.present_scene_change(event_loop, "async-task");
+            self.apply_action_outcome(
+                event_loop,
+                crate::app_actions::ShellActionOutcome::Present("async-task"),
+            );
         }
     }
 

@@ -82,35 +82,51 @@ impl FikaWgpuApp {
             ShellSettingsAction::ToggleHiddenFiles => {
                 let changed = self.toggle_user_hidden_visibility(size);
                 if changed {
-                    self.present_scene_change(event_loop, "settings-toggle-hidden");
+                    self.apply_action_outcome(
+                        event_loop,
+                        crate::app_actions::ShellActionOutcome::Present(
+                            "settings-toggle-hidden",
+                        ),
+                    );
                 }
                 changed
             }
             ShellSettingsAction::TogglePlaces => {
                 let changed = self.toggle_user_places_visibility(size);
                 if changed {
-                    self.request_main_redraw();
+                    self.apply_window_action_outcome(
+                        crate::app_actions::ShellActionOutcome::Redraw,
+                    );
                 }
                 changed
             }
             ShellSettingsAction::ToggleDarkMode => {
                 let changed = self.toggle_user_dark_mode();
                 if changed {
-                    self.present_scene_change(event_loop, "settings-toggle-dark-mode");
+                    self.apply_action_outcome(
+                        event_loop,
+                        crate::app_actions::ShellActionOutcome::Present(
+                            "settings-toggle-dark-mode",
+                        ),
+                    );
                 }
                 changed
             }
             ShellSettingsAction::ToggleBackgroundBlur => {
                 let changed = self.toggle_user_background_blur();
                 if changed {
-                    self.request_main_redraw();
+                    self.apply_window_action_outcome(
+                        crate::app_actions::ShellActionOutcome::Redraw,
+                    );
                 }
                 changed
             }
             ShellSettingsAction::SetBackgroundOpacity(percent) => {
                 let changed = self.set_user_background_opacity_percent(percent);
                 if changed {
-                    self.request_main_redraw();
+                    self.apply_window_action_outcome(
+                        crate::app_actions::ShellActionOutcome::Redraw,
+                    );
                 }
                 changed
             }

@@ -439,6 +439,10 @@ operation dispatcher。
   包装已删除。
 - `async_operations` 拆为 `lifecycle.rs`（drain/progress/cancel/register）+
   `submit.rs`（request 路由与 spawn），多 `impl` 块组合。
+- async drain / directory-watch / settings toggle 的 present·redraw 经
+  `ShellActionOutcome` + `apply_action_outcome` 统一调度；`ShellActionOutcome`
+  从 `app_actions` re-export。
+- `drag.rs` free helper 抽到 `drag/outgoing_preview.rs`，主文件降至门禁以下。
 
 后续：
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
