@@ -26,6 +26,13 @@ session values first. `Compositor` requires the permit to launch configured comm
 function call cannot accidentally bypass the ordering. Check mode and non-session mode never issue
 a permit.
 
+Logging starts after configuration validation and before any calloop, renderer, or protocol state.
+Every tracing destination uses the same bounded asynchronous path: callers format at most an 8 KiB
+record and try to enqueue it, while a dedicated Compio drain thread owns the selected file or
+`stderr`. `TENSOR_LOG_FILE` selects a compositor log file; without it, the drain writes to
+`stderr`, which systemd captures as journal output. The queue is deliberately lossy under a burst
+and records a later drop notice rather than ever blocking frame, input, or protocol dispatch.
+
 Client commands use the same resolved systemd policy after startup. `ProcessLauncher` performs a
 double-fork without a shell. In an active systemd scope it waits for the transient-unit job before
 releasing the client, and it terminates the still-blocked child if `systemd "enabled"` cannot create

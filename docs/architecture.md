@@ -19,6 +19,14 @@ Smithay objects or DRM/KMS file descriptors. Native dependencies keep their appr
 APIs; Tensor must not force D-Bus or another dependency onto a blocking API solely to avoid an
 executor. Compio is introduced only with a concrete local-I/O service, not as a marker dependency.
 
+Diagnostics are the first such service. Tracing formats a record on its caller, caps it at 8 KiB,
+then performs a non-blocking enqueue into an 8,192-record fan-in queue. One Compio drain thread
+owns either the selected `TENSOR_LOG_FILE` or `stderr` (and therefore the systemd journal in a
+service). It uses io_uring where available and Compio's polling fallback otherwise. Queue
+saturation is intentionally lossy, but the drain emits a later dropped-record notice; this is
+preferable to allowing logging to delay input, page-flip, or frame submission. The worker has no
+Smithay, Vulkan, DRM/KMS, or ECS ownership.
+
 Tensor intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.
 

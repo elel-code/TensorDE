@@ -55,8 +55,8 @@ implicit-modifier, or alternate-GPU fallback.
 Success requires all of the following for the same native surface: accepted
 dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
 and release of an older `wl_buffer`. Tensor itself writes its tracing stream
-to `artifacts/logs/tensor-tty.log` through a direct asynchronous file sink; the
-launcher only tails new records for readiness and keeps control/client
+to `artifacts/logs/tensor-tty.log` through its bounded Compio asynchronous
+drain; the launcher only tails new records for readiness and keeps control/client
 diagnostics in `artifacts/logs/tensor-tty.launcher.log`. It returns the smoke
 client's failure status, and neither logging path echoes compositor output onto
 the graphics TTY, avoiding terminal-output backpressure during shutdown.

@@ -60,7 +60,7 @@ terminal emulator. Use `--render-device /dev/dri/renderD*` only to pin a
 hybrid-GPU test, and `--no-xwayland` to isolate the native Wayland path.
 `--check` remains safe to run from an ordinary terminal. In a TTY launch,
 Tensor itself appends tracing records to `artifacts/logs/tensor-tty.log` through
-its asynchronous file sink; the launcher only watches that file for readiness
+its bounded Compio asynchronous drain; the launcher only watches that file for readiness
 and never relays compositor output through a terminal pipe. Its small control
 and client diagnostic log is kept separately in
 `artifacts/logs/tensor-tty.launcher.log`, so a smoke-test result can be

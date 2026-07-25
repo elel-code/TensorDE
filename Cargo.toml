@@ -31,6 +31,7 @@ bevy_ecs = { version = "0.19", default-features = false, features = ["std", "mul
 calloop = { version = "0.14", features = ["signals"] }
 calloop-wayland-source = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"] }
+compio = { version = "0.19", default-features = false, features = ["runtime", "io-uring", "polling", "fs"] }
 gbm = { version = "0.18", optional = true }
 libc = "0.2"
 knus = "3"
@@ -42,7 +43,6 @@ serde_json = "1"
 tensor-util = { path = "crates/tensor-util" }
 thiserror = "2"
 tracing = "0.1"
-tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 wayland-client = "0.31"
