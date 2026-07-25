@@ -185,10 +185,14 @@ compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and pop
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
 pointer gestures, presentation-time v2, cursor-shape, xdg-activation, idle-notify, wlr-layer-shell,
 and linux-dmabuf when the selected Vulkan device exposes a non-empty validated client-import format
-list. Layer surfaces map through Smithay's per-output `LayerMap` and trigger output-local redraws;
-full stacking/focus integration with the ECS scene remains iterative. The linux-drm-syncobj global
-is added only after Smithay opens the
-Vulkan-selected primary device and verifies syncobj eventfd support. Acquire points become temporary
+list. Layer surfaces map through Smithay's per-output `LayerMap`. On commit, Tensor arranges exclusive
+zones, sends pending configures, and merges mapped layer content into the output frame as value-only
+scene nodes (outside the ECS view graph). Workspace layout uses the non-exclusive zone so panels
+reserve space. Keyboard/focus policy for exclusive layer grabs remains iterative. The
+linux-drm-syncobj global is added only after Smithay opens the
+Vulkan-selected primary device and verifies syncobj eventfd support. Compositor-owned launches
+(IPC `spawn` and `spawn_at_startup`) mint external `xdg-activation` tokens and export them as
+`XDG_ACTIVATION_TOKEN` / `DESKTOP_STARTUP_ID` on the child environment. Acquire points become temporary
 binary Vulkan semaphore payloads; release points receive the latest GPU-read completion fence only
 when their surface attachment retires. Preferred integer/fractional scale and transform follow the output
 selected by the authoritative layout placement. Decoration policy currently requires client-side

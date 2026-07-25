@@ -3,11 +3,14 @@ use tracing::{debug, info, warn};
 
 use crate::{
     backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
-    render::{NativeOutputBuffer, NativeOutputTarget, RenderOutputId},
+    render::{NativeOutputBuffer, RenderOutputId},
     scene::SceneSnapshot,
 };
 
-use super::{DEFAULT_WORKSPACE, ManagedOutput, OutputRedrawState, RuntimeState};
+use super::{
+    DEFAULT_WORKSPACE, ManagedOutput, OutputRedrawState, RuntimeState,
+    output_helpers::{rects_overlap, renderer_target},
+};
 
 impl RuntimeState {
     /// Queue a redraw for every connected output and drain the scheduler.
@@ -176,7 +179,7 @@ impl RuntimeState {
             return;
         }
 
-        let scene = self.scene_for_output(logical);
+        let scene = self.scene_for_output(&output, logical);
         let pointer_location = self
             .seat
             .get_pointer()
@@ -362,16 +365,26 @@ impl RuntimeState {
         }
     }
 
-    /// Workspace content lives on the default output; other CRTCs get a blank
-    /// scene with their own logical viewport so each still starts a vblank ring.
+    /// Full-output scene with layer-shell surfaces for this head.
     #[cfg(feature = "tty")]
-    pub(super) fn scene_for_output(&mut self, logical: Rect) -> SceneSnapshot {
-        if let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE)
-            && scene.viewport == logical
-        {
-            return scene;
-        }
-        SceneSnapshot::new(DEFAULT_WORKSPACE, logical, Vec::new())
+    pub(super) fn scene_for_output(
+        &mut self,
+        output: &smithay::output::Output,
+        logical: Rect,
+    ) -> SceneSnapshot {
+        let base = match self.world.extract_scene(DEFAULT_WORKSPACE) {
+            Some(scene) if scene.viewport == logical => scene,
+            Some(scene) if scene.viewport.intersection(logical).is_some() => {
+                SceneSnapshot::with_content(
+                    scene.workspace_id,
+                    logical,
+                    scene.nodes().to_vec(),
+                    scene.contents().to_vec(),
+                )
+            }
+            _ => SceneSnapshot::new(DEFAULT_WORKSPACE, logical, Vec::new()),
+        };
+        self.merge_layer_surfaces(base, output, logical)
     }
 
     /// Keep an input-driven redraw live when the previous submission still
@@ -768,33 +781,5 @@ impl RuntimeState {
         }
         self.reflow_default_workspace_layout();
         self.force_redraw_all();
-    }
-}
-
-#[cfg(feature = "tty")]
-fn rects_overlap(left: (i32, i32, i32, i32), right: (i32, i32, i32, i32)) -> bool {
-    let (lx, ly, lw, lh) = left;
-    let (rx, ry, rw, rh) = right;
-    lx < rx.saturating_add(rw)
-        && rx < lx.saturating_add(lw)
-        && ly < ry.saturating_add(rh)
-        && ry < ly.saturating_add(lh)
-}
-
-#[cfg(feature = "tty")]
-fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
-    NativeOutputTarget {
-        output: RenderOutputId {
-            device_id: descriptor.id.device_id,
-            connector_id: descriptor.id.connector_id,
-        },
-        viewport: Rect::new(
-            0,
-            0,
-            u32::try_from(descriptor.mode.size.w).unwrap_or(0),
-            u32::try_from(descriptor.mode.size.h).unwrap_or(0),
-        ),
-        format: descriptor.native_format,
-        scale: descriptor.scale,
     }
 }

@@ -182,7 +182,7 @@ impl RuntimeState {
     }
 }
 
-fn collect_surface_tree(
+pub(super) fn collect_surface_tree(
     root: &WlSurface,
     base: (i32, i32),
     layer: SurfaceLayer,

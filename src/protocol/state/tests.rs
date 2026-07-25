@@ -174,8 +174,23 @@ fn secondary_output_scene_is_blank_with_its_own_viewport() {
         ])
         .unwrap();
 
-    let primary = state.scene_for_output(tensor_util::Rect::new(0, 0, 1920, 1080));
-    let secondary = state.scene_for_output(tensor_util::Rect::new(1920, 0, 1280, 1080));
+    let primary_output = state
+        .space
+        .outputs()
+        .find(|output| output.name() == "DP-1")
+        .cloned()
+        .unwrap();
+    let secondary_output = state
+        .space
+        .outputs()
+        .find(|output| output.name() == "DP-2")
+        .cloned()
+        .unwrap();
+    let primary = state.scene_for_output(&primary_output, tensor_util::Rect::new(0, 0, 1920, 1080));
+    let secondary = state.scene_for_output(
+        &secondary_output,
+        tensor_util::Rect::new(1920, 0, 1280, 1080),
+    );
     assert_eq!(primary.viewport, tensor_util::Rect::new(0, 0, 1920, 1080));
     assert_eq!(
         secondary.viewport,

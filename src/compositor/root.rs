@@ -172,26 +172,29 @@ impl Compositor {
                 Some((
                     index,
                     program.clone(),
-                    LaunchRequest::new(
-                        index as u64,
-                        program.as_str(),
-                        args.iter().map(String::as_str),
-                    ),
+                    args.iter().cloned().collect::<Vec<_>>(),
                 ))
             })
             .collect::<Vec<_>>();
         if requests.is_empty() {
             return;
         }
-        let worker = match self.ensure_launch_worker() {
-            Ok(worker) => worker,
+        let submitter = match self.ensure_launch_worker() {
+            Ok(worker) => worker.submitter(),
             Err(error) => {
                 warn!(%error, "could not start the asynchronous launch worker");
                 return;
             }
         };
-        for (index, program, request) in requests {
-            match worker.submit(request) {
+        for (index, program, args) in requests {
+            let token = self.protocol.state_mut().issue_spawn_activation_token();
+            let request = LaunchRequest::new(
+                index as u64,
+                program.as_str(),
+                args.iter().map(String::as_str),
+            )
+            .with_activation_token(token);
+            match submitter.submit(request) {
                 Ok(()) => info!(request_id = index, program, "startup command queued"),
                 Err(error) => {
                     warn!(request_id = index, program, %error, "startup command rejected")
@@ -370,12 +373,14 @@ fn handle_ipc_request(
             state.world.reset_layout_states();
             ResultBody::Accepted
         }
-        IpcCommand::Spawn { argv } => match queue_spawn(request_id, argv, launch_submitter) {
-            Ok(()) => ResultBody::Accepted,
-            Err((code, message)) => {
-                return IpcReply::new(Response::error(request_id, code, message));
+        IpcCommand::Spawn { argv } => {
+            match queue_spawn(request_id, argv, launch_submitter, state) {
+                Ok(()) => ResultBody::Accepted,
+                Err((code, message)) => {
+                    return IpcReply::new(Response::error(request_id, code, message));
+                }
             }
-        },
+        }
         IpcCommand::Quit => {
             return IpcReply::stop_after_flush(
                 Response::new(request_id, ResultBody::Accepted),
@@ -390,6 +395,7 @@ fn queue_spawn(
     request_id: u64,
     argv: Vec<String>,
     launch_submitter: &LaunchSubmitter,
+    state: &mut RuntimeState,
 ) -> Result<(), (&'static str, String)> {
     let Some((program, args)) = argv.split_first() else {
         return Err((
@@ -403,11 +409,13 @@ fn queue_spawn(
             "spawn program must not be empty".to_owned(),
         ));
     }
+    let token = state.issue_spawn_activation_token();
     let request = LaunchRequest::new(
         request_id,
         program.as_str(),
         args.iter().map(String::as_str),
-    );
+    )
+    .with_activation_token(token);
     match launch_submitter.submit(request) {
         Ok(()) => {
             info!(request_id, program, "IPC spawn queued");
@@ -553,6 +561,20 @@ mod tests {
         };
         assert!(outputs.is_empty());
         drop(worker);
+    }
+
+    #[test]
+    fn spawn_issues_a_nonempty_activation_token() {
+        let mut state = runtime_state();
+        let token = state.issue_spawn_activation_token();
+        assert!(!token.is_empty());
+        assert_eq!(
+            LaunchRequest::new(1, "true", std::iter::empty::<&str>())
+                .with_activation_token(token.clone())
+                .activation_token()
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(token)
+        );
     }
 
     #[test]

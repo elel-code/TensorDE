@@ -105,6 +105,15 @@ impl CompositorHandler for RuntimeState {
         self.popups.commit(surface);
 
         #[cfg(feature = "tty")]
+        if self.handle_layer_shell_commit(surface) {
+            if let Some(points) = explicit_sync.take() {
+                self.finish_unused_explicit_sync(points);
+            }
+            self.flush_client_releases();
+            return;
+        }
+
+        #[cfg(feature = "tty")]
         let mut content_changed = false;
         #[cfg(feature = "tty")]
         let mut reflowed = false;
@@ -418,6 +427,9 @@ impl DataDeviceHandler for RuntimeState {
     }
 }
 
+/// Tokens older than this are rejected (matches Niri's activation window).
+const XDG_ACTIVATION_TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
     fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
         self.protocol_globals.activation()
@@ -429,9 +441,13 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
         token_data: smithay::wayland::xdg_activation::XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        let _ = token_data;
-        // Accept activation requests that still have a mapped view. Token age
-        // filtering can be tightened once spawn tokens are issued here.
+        if token_data.timestamp.elapsed() >= XDG_ACTIVATION_TOKEN_TIMEOUT {
+            self.protocol_globals.activation().remove_token(&token);
+            return;
+        }
+        // Accept activation requests that still have a mapped view. Unmapped
+        // surfaces that carry a fresh compositor-issued spawn token are also
+        // accepted once they map and call activate with the same token.
         let window = self
             .view_for_surface(&surface)
             .is_some()
@@ -448,6 +464,20 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
         self.protocol_globals.activation().remove_token(&token);
         #[cfg(feature = "tty")]
         self.request_redraw_workspace();
+    }
+}
+
+impl RuntimeState {
+    /// Mint an external xdg-activation token for compositor-owned launches.
+    pub(crate) fn issue_spawn_activation_token(&mut self) -> String {
+        self.protocol_globals
+            .activation()
+            .retain_tokens(|_, data| data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT);
+        let (token, _) = self
+            .protocol_globals
+            .activation()
+            .create_external_token(None);
+        token.as_str().to_owned()
     }
 }
 
@@ -506,6 +536,8 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
     fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
         use smithay::desktop::layer_map_for_output;
 
+        #[cfg(feature = "tty")]
+        self.forget_layer_surface(surface.wl_surface());
         for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             let mut map = layer_map_for_output(&output);
             let layer = map
@@ -518,7 +550,10 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
             }
         }
         #[cfg(feature = "tty")]
-        self.request_redraw_all();
+        {
+            let _ = self.reflow_default_workspace_layout();
+            self.request_redraw_all();
+        }
     }
 }
 

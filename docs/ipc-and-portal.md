@@ -20,9 +20,11 @@ viewport). Clients never receive Smithay `Output` objects.
 
 `spawn` accepts a direct argv array (one program and optional arguments). The compositor queues the
 command on the asynchronous launch worker and returns `accepted` as soon as the request is enqueued;
-process creation and optional systemd scope setup complete off the calloop thread. Empty argv is
-rejected with `invalid_argument`. A saturated launch queue returns `queue_full`. Tensor never
-invokes a shell for this path.
+process creation and optional systemd scope setup complete off the calloop thread. Each launch mints
+an external `xdg-activation` token and exports it as `XDG_ACTIVATION_TOKEN` (and
+`DESKTOP_STARTUP_ID` for legacy clients) on the child environment. Empty argv is rejected with
+`invalid_argument`. A saturated launch queue returns `queue_full`. Tensor never invokes a shell for
+this path.
 
 Connection handling verifies peer credentials before dispatch. Requests are validated and dispatched
 on the compositor event-loop thread; they do not receive direct access to ECS, Smithay, or Vulkan

@@ -143,7 +143,36 @@ impl ProcessLauncher {
         self.spawn_command(command)
     }
 
-    pub fn spawn_command(&self, mut command: Command) -> Result<SpawnedProcess, SpawnError> {
+    /// Spawn with a compositor-minted `XDG_ACTIVATION_TOKEN`.
+    pub fn spawn_with_activation<I, S, T>(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: I,
+        activation_token: T,
+    ) -> Result<SpawnedProcess, SpawnError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+        T: AsRef<OsStr>,
+    {
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        self.spawn_command_with_activation(command, Some(activation_token.as_ref()))
+    }
+
+    pub fn spawn_command(&self, command: Command) -> Result<SpawnedProcess, SpawnError> {
+        self.spawn_command_with_activation(command, None::<&OsStr>)
+    }
+
+    fn spawn_command_with_activation(
+        &self,
+        mut command: Command,
+        activation_token: Option<&OsStr>,
+    ) -> Result<SpawnedProcess, SpawnError> {
         if self.environment_managed {
             for name in SESSION_ENVIRONMENT_NAMES {
                 command.env_remove(name);
@@ -155,6 +184,12 @@ impl ProcessLauncher {
         command
             .env_remove("NOTIFY_SOCKET")
             .envs(self.environment.iter().map(|(name, value)| (name, value)));
+        // Apply after the managed session set so launch tokens always win.
+        if let Some(token) = activation_token {
+            command
+                .env("XDG_ACTIVATION_TOKEN", token)
+                .env("DESKTOP_STARTUP_ID", token);
+        }
         match self.strategy() {
             SpawnStrategy::Direct => launch_direct(command),
             SpawnStrategy::SystemdScope => self.launch_scoped(command),

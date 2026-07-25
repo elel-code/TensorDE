@@ -1,5 +1,9 @@
 #[cfg(feature = "tty")]
+mod layer;
+#[cfg(feature = "tty")]
 mod output;
+#[cfg(feature = "tty")]
+mod output_helpers;
 #[cfg(feature = "tty")]
 mod presentation;
 #[cfg(feature = "tty")]
@@ -586,16 +590,17 @@ impl RuntimeState {
             .outputs()
             .filter_map(|output| {
                 let geometry = self.space.output_geometry(output)?;
-                let width = u32::try_from(geometry.size.w).ok()?;
-                let height = u32::try_from(geometry.size.h).ok()?;
-                (width > 0 && height > 0).then(|| {
-                    (
-                        geometry.loc.x,
-                        geometry.loc.y,
-                        output.name(),
-                        tensor_util::Rect::new(geometry.loc.x, geometry.loc.y, width, height),
-                    )
-                })
+                #[cfg(feature = "tty")]
+                let area = self.exclusive_workspace_area(output, geometry)?;
+                #[cfg(not(feature = "tty"))]
+                let area = {
+                    let width = u32::try_from(geometry.size.w).ok()?;
+                    let height = u32::try_from(geometry.size.h).ok()?;
+                    (width > 0 && height > 0).then(|| {
+                        tensor_util::Rect::new(geometry.loc.x, geometry.loc.y, width, height)
+                    })?
+                };
+                Some((geometry.loc.x, geometry.loc.y, output.name(), area))
             })
             .min_by(|left, right| {
                 left.0

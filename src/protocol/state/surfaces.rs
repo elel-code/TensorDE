@@ -267,6 +267,17 @@ where
         })
     }
 
+    /// Flat surface-content table for a previously registered view tree root.
+    pub(super) fn view_tree_contents(&self, root: &K) -> Vec<SurfaceContent> {
+        let Some(members) = self.view_members.get(root) else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter_map(|surface| self.current_content(surface))
+            .collect()
+    }
+
     pub(super) fn surface_id(&self, surface: &K) -> Option<SurfaceId> {
         self.surfaces.get(surface).map(|state| state.id)
     }

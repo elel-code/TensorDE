@@ -27,6 +27,8 @@ pub struct LaunchRequest {
     id: u64,
     program: OsString,
     args: Vec<OsString>,
+    /// Optional `XDG_ACTIVATION_TOKEN` string minted by the compositor.
+    activation_token: Option<OsString>,
 }
 
 impl LaunchRequest {
@@ -39,7 +41,13 @@ impl LaunchRequest {
             id,
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            activation_token: None,
         }
+    }
+
+    pub fn with_activation_token(mut self, token: impl Into<OsString>) -> Self {
+        self.activation_token = Some(token.into());
+        self
     }
 
     pub const fn id(&self) -> u64 {
@@ -48,6 +56,10 @@ impl LaunchRequest {
 
     pub fn program(&self) -> &OsStr {
         &self.program
+    }
+
+    pub fn activation_token(&self) -> Option<&OsStr> {
+        self.activation_token.as_deref()
     }
 }
 
@@ -133,8 +145,20 @@ fn run(
     outcomes: CalloopSender<LaunchOutcome>,
 ) {
     while let Ok(request) = requests.recv() {
-        let LaunchRequest { id, program, args } = request;
-        let result = launcher.spawn(program.as_os_str(), args.iter().map(OsString::as_os_str));
+        let LaunchRequest {
+            id,
+            program,
+            args,
+            activation_token,
+        } = request;
+        let result = match activation_token {
+            Some(token) => launcher.spawn_with_activation(
+                program.as_os_str(),
+                args.iter().map(OsString::as_os_str),
+                token,
+            ),
+            None => launcher.spawn(program.as_os_str(), args.iter().map(OsString::as_os_str)),
+        };
         let outcome = LaunchOutcome {
             id,
             program,
