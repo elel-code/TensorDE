@@ -9,6 +9,17 @@ impl FikaWgpuApp {
             .context_target_pane()
             .unwrap_or_else(|| self.scene.active_pane());
         let (operation, paths) = self.scene.context_target_trash_view_operation(action)?;
+        self.start_async_trash_view_operation_with(action, operation, paths, pane_to_reload);
+        Ok(())
+    }
+
+    fn start_async_trash_view_operation_with(
+        &mut self,
+        action: ShellContextMenuAction,
+        operation: TrashViewOperation,
+        paths: Vec<PathBuf>,
+        pane_to_reload: ShellPaneId,
+    ) {
         let task_id = self.next_task_id();
         self.active_task_controllers
             .insert(task_id, OperationController::new());
@@ -54,7 +65,6 @@ impl FikaWgpuApp {
             ));
             self.event_loop_proxy.wake_up();
         }
-        Ok(())
     }
 
     fn create_dialog_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {

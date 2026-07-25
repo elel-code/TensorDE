@@ -507,6 +507,11 @@ impl ShellScene {
         self.create_dialog = None;
         self.rename_dialog = None;
         self.rubber_band = None;
+        if let Some(pane) = completion.clear_selection_pane
+            && let Some(selection) = self.pane_selection_mut(pane)
+        {
+            selection.clear();
+        }
         if let Some(affected_dir) = self
             .pane_state(completion.pane_to_reload)
             .map(|state| state.path.clone())

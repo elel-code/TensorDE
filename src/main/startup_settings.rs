@@ -157,6 +157,7 @@ use shell::prewarm::{
     text_label_prewarm_mode_for_frame, text_label_prewarm_mode_for_scene_prewarm,
     text_label_raster_miss_budget_for_mode, visible_exact_icon_roles_enabled_for_frame,
 };
+#[cfg(test)]
 use shell::privilege::{run_privileged_command_sync, should_attempt_privileged_operation};
 #[cfg(test)]
 use shell::properties::geometry::properties_overlay_rect;

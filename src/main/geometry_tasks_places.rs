@@ -400,6 +400,7 @@ fn file_clipboard_role_as_str(role: FileClipboardRole) -> &'static str {
         FileClipboardRole::Cut => "cut",
     }
 }
+#[cfg(test)]
 fn trash_paths_with_privilege(
     paths: &[PathBuf],
     privileged: bool,

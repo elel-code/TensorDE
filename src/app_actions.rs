@@ -200,7 +200,7 @@ impl FikaWgpuApp {
         event_loop: &ActiveEventLoop,
         command: FileKeyboardCommand,
     ) {
-        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+        let Some(_size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
         match file_keyboard_command_dispatch(command) {
@@ -227,24 +227,7 @@ impl FikaWgpuApp {
                     self.apply_window_action_outcome(ShellActionOutcome::Redraw);
                 }
             }
-            FileKeyboardCommandDispatch::Delete => match self.scene.delete_active_selection(size) {
-                Ok(true) => {
-                    self.apply_action_outcome(
-                        event_loop,
-                        ShellActionOutcome::Present("delete-selection"),
-                    );
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    fika_log!("[fika-wgpu] delete-error {error}");
-                    self.scene.record_task_status(ShellTaskStatus::failed(
-                        "Move to Trash failed",
-                        error,
-                        false,
-                    ));
-                    self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-                }
-            },
+            FileKeyboardCommandDispatch::Delete => self.delete_active_selection(event_loop),
         }
     }
 }

@@ -598,6 +598,16 @@ impl FikaWgpuApp {
         pane_to_reload: ShellPaneId,
         privileged: bool,
     ) {
+        self.start_async_move_to_trash_with_options(paths, pane_to_reload, privileged, None);
+    }
+
+    fn start_async_move_to_trash_with_options(
+        &mut self,
+        paths: Vec<PathBuf>,
+        pane_to_reload: ShellPaneId,
+        privileged: bool,
+        clear_selection_pane: Option<ShellPaneId>,
+    ) {
         let task_id = self.next_task_id();
         self.active_task_controllers
             .insert(task_id, OperationController::new());
@@ -616,6 +626,7 @@ impl FikaWgpuApp {
                         ShellAsyncMoveToTrashCompletion {
                             task_id,
                             pane_to_reload,
+                            clear_selection_pane,
                             paths,
                             privileged,
                             result,

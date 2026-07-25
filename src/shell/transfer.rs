@@ -440,6 +440,8 @@ pub(crate) async fn trash_paths_async_with_privilege(
 pub(crate) struct ShellAsyncMoveToTrashCompletion {
     pub(crate) task_id: ShellTaskId,
     pub(crate) pane_to_reload: ShellPaneId,
+    /// When set, clear this pane's selection after a successful trash.
+    pub(crate) clear_selection_pane: Option<ShellPaneId>,
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) privileged: bool,
     pub(crate) result: crate::ShellTrashResult,

@@ -4,46 +4,26 @@ use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;
 use crate::shell::context_menu::ShellContextMenuAction;
 use crate::shell::tasks::ShellTaskStatus;
-use fika_core::is_network_path;
+use fika_core::{TrashViewOperation, file_ops, is_network_path};
 
 impl FikaWgpuApp {
     pub(crate) fn perform_trash_view_context_action(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         action: ShellContextMenuAction,
     ) {
-        if action == ShellContextMenuAction::EmptyTrash {
-            match self.start_async_trash_view_operation(action) {
-                Ok(()) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
-                Err(error) => {
-                    fika_log!(
-                        "[fika-wgpu] trash-view-error action={} {error}",
-                        action.as_str()
-                    );
-                    self.scene.record_task_status(ShellTaskStatus::failed(
-                        "Empty Trash failed",
-                        error,
-                        false,
-                    ));
-                    self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-                }
-            }
-            return;
-        }
-
-        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
-            return;
-        };
-        match self.scene.perform_trash_view_context_action(action, size) {
-            Ok(result) if result.success_count > 0 => {
-                self.apply_action_outcome(event_loop, ShellActionOutcome::Present(action.as_str()));
-            }
-            Ok(_) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
+        match self.start_async_trash_view_operation(action) {
+            Ok(()) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
                 fika_log!(
                     "[fika-wgpu] trash-view-error action={} {error}",
                     action.as_str()
                 );
+                self.scene.record_task_status(ShellTaskStatus::failed(
+                    format!("{} failed", action.label()),
+                    error,
+                    false,
+                ));
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             }
         }
@@ -93,22 +73,76 @@ impl FikaWgpuApp {
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
-    pub(crate) fn replace_trash_restore_conflicts(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+    pub(crate) fn delete_active_selection(&mut self, _event_loop: &ActiveEventLoop) {
+        let pane = self.scene.active_pane();
+        let paths = match self.scene.active_selection_item_paths() {
+            Ok(Some(paths)) => paths,
+            Ok(None) => return,
+            Err(error) => {
+                fika_log!("[fika-wgpu] delete-error {error}");
+                self.scene.record_task_status(ShellTaskStatus::failed(
+                    "Move to Trash failed",
+                    error,
+                    false,
+                ));
+                self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+                return;
+            }
+        };
+
+        if paths
+            .iter()
+            .all(|path| file_ops::is_in_trash_files_dir(path))
+        {
+            self.start_async_trash_view_operation_with(
+                ShellContextMenuAction::DeletePermanently,
+                TrashViewOperation::DeletePermanently,
+                paths,
+                pane,
+            );
+            self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+            return;
+        }
+        if paths.iter().any(|path| is_network_path(path)) {
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Move to Trash failed",
+                "remote trash is not available yet",
+                false,
+            ));
+            self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+            return;
+        }
+
+        self.start_async_move_to_trash_with_options(paths, pane, false, Some(pane));
+        self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+    }
+
+    pub(crate) fn replace_trash_restore_conflicts(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(dialog) = self.scene.trash_conflict_dialog.take() else {
+            fika_log!("[fika-wgpu] trash-conflict-error no Trash restore conflicts to replace");
+            self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             return;
         };
-        match self.scene.replace_trash_restore_conflicts(size) {
-            Ok(result) if result.success_count > 0 => {
-                self.apply_action_outcome(
-                    event_loop,
-                    ShellActionOutcome::Present("replace-trash-conflicts"),
-                );
-            }
-            Ok(_) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
-            Err(error) => {
-                fika_log!("[fika-wgpu] trash-conflict-error {error}");
-                self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-            }
+        let paths = dialog
+            .conflicts
+            .into_iter()
+            .map(|conflict| conflict.trash_path)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            fika_log!("[fika-wgpu] trash-conflict-error no Trash restore conflicts to replace");
+            self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+            return;
         }
+        let pane_to_reload = self.scene.active_pane();
+        self.scene.trash_changes = self.scene.trash_changes.saturating_add(1);
+        self.start_async_trash_view_operation_with(
+            ShellContextMenuAction::RestoreFromTrash,
+            TrashViewOperation::Restore {
+                conflict_policy: file_ops::TrashRestoreConflictPolicy::Replace,
+            },
+            paths,
+            pane_to_reload,
+        );
+        self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 }

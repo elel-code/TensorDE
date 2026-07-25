@@ -67,6 +67,8 @@ impl ShellScene {
         changed
     }
 
+    // Production delete path is async via FikaWgpuApp::delete_active_selection.
+    #[cfg(test)]
     fn delete_active_selection(&mut self, size: PhysicalSize<u32>) -> Result<bool, String> {
         let pane = self.active_pane();
         let affected_dir = self.pane_state(pane).map(|state| state.path.clone());
@@ -203,6 +205,8 @@ impl ShellScene {
         }
     }
 
+    // Production trash-view path is async via FikaWgpuApp::perform_trash_view_context_action.
+    #[cfg(test)]
     fn perform_trash_view_context_action(
         &mut self,
         action: ShellContextMenuAction,
@@ -217,6 +221,8 @@ impl ShellScene {
         Ok(result)
     }
 
+    // Production conflict replace path is async via FikaWgpuApp::replace_trash_restore_conflicts.
+    #[cfg(test)]
     fn replace_trash_restore_conflicts(
         &mut self,
         size: PhysicalSize<u32>,
@@ -244,6 +250,7 @@ impl ShellScene {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn apply_trash_view_result(
         &mut self,
         action: &str,
