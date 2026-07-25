@@ -85,8 +85,11 @@ currently owns the global `focus-ring`: `enabled` defaults to `true`, `width` de
 logical pixels, and `color` defaults to `#7fc8ff`. Colors accept `#RRGGBB` or `#RRGGBBAA`; a zero
 width or transparent color also produces no ring. The ring is rounded and clipped in physical
 output coordinates at frame extraction, matching the same fractional-scale rules as client content.
-The value-only appearance object is the future theming boundary rather than a renderer-specific
-decoration API.
+Its inner radius follows the focused view's corner radius and its outer radius expands by the ring
+width, so rounded clients never receive a rectangular focus artifact. The value-only appearance
+object is the future theming boundary rather than a renderer-specific decoration API. Rendering keeps
+the ring behind that view's client tree (including popups) and behind any later stacked view, while
+the software cursor remains above all of them.
 
 Scrolling layout follows the same core invariants as Niri without copying its renderer: every view
 has min/max size constraints and an optional width override; each workspace owns an independent

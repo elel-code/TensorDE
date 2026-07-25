@@ -55,12 +55,14 @@ sync-file fds and stable `SurfaceId` values reach Vulkanalia.
 
 Compositor-owned appearance crosses the configuration boundary as a small value-only `SceneAppearance`
 object. ECS extraction resolves an active view's configured `FocusRingStyle` into a `FocusOutline`;
-the frame planner expands that outline outside client geometry, rounds it to physical output pixels,
-clips each edge, and renders it with the descriptor-free solid pipeline after client content and
-before the software cursor. This follows the useful parts of Niri's focus-ring policy, Hyprland's
-separate active-window decoration state, and Nourish's independently clipped edge geometry without
-copying their renderer ownership models. It is not a descriptor-set fallback: sampled client images
-continue to use `VK_EXT_descriptor_heap` exclusively.
+the frame planner maps its inner and outer edges independently onto the physical output grid, then
+the descriptor-free focus-ring pipeline cuts the rounded inner rectangle out of the rounded outer
+rectangle in one SDF draw. The inner radius is the view corner radius; the outer radius adds the
+ring width. It is clipped at the output edge and the frame plan emits it before that view's client
+tree, including popups; later scene nodes cover earlier nodes, and the software cursor remains last.
+This follows Niri's front-to-back element contract, Hyprland's active-window border semantics, and
+Nourish's single focused-surface ownership without copying their renderer ownership models. It is not
+a descriptor-set fallback: sampled client images continue to use `VK_EXT_descriptor_heap` exclusively.
 
 Output scale is a shared value primitive, represented exactly in the `N/120` units of
 `wp_fractional_scale_v1`. DRM mode dimensions and Vulkan native targets remain physical pixels;
@@ -194,9 +196,12 @@ enter ECS or the renderer.
 Focused state is one contract across ECS, protocol, and rendering: a `Focused` ECS component
 extracts a value-only focus outline into the scene, the selected Smithay window receives
 `xdg_toplevel::State::Activated` (or the corresponding XWayland activation), and the seat owns the
-keyboard focus. The Vulkan path draws the outline with a descriptor-free solid primitive after
-sampled client content and before the cursor; this is compositor-owned geometry, not a descriptor-set
-fallback for client or output resources.
+keyboard focus. A true active-view transition raises the same attachment family in ECS and Smithay,
+updates activation, then delivers seat focus; a later seat-focus repair does not alter stacking or
+emit a duplicate scene transition. Smithay suppresses equal keyboard targets, so a repair does not
+emit redundant `wl_keyboard.enter`/`leave` events. The Vulkan path preserves each view's order as
+ring, client tree, then later stacked nodes, with the cursor last; this is compositor-owned geometry,
+not a descriptor-set fallback for client or output resources.
 
 For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exported
 dma-bufs. The tty backend imports those dma-bufs into GBM, creates Smithay framebuffers, and submits

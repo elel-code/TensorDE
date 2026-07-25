@@ -9,13 +9,16 @@ use vulkanalia::vk::{
 };
 use vulkanalia::{Device, vk};
 
-use crate::render::{FrameSubmission, frame::HeapAllocation};
+use crate::render::{
+    FrameSubmission,
+    frame::{HeapAllocation, SceneDrawCommand},
+};
 
 use super::super::{import::ClientImageInfo, target::NativeOutputImageInfo};
 
 pub(super) const DRAW_PUSH_DATA_SIZE: u64 = mem::size_of::<DrawPushData>() as u64;
 pub(super) const CURSOR_PUSH_DATA_SIZE: u64 = mem::size_of::<CursorPushData>() as u64;
-pub(super) const SOLID_PUSH_DATA_SIZE: u64 = mem::size_of::<SolidPushData>() as u64;
+pub(super) const FOCUS_RING_PUSH_DATA_SIZE: u64 = mem::size_of::<FocusRingPushData>() as u64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -37,9 +40,11 @@ struct CursorPushData {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct SolidPushData {
+struct FocusRingPushData {
     destination: [f32; 4],
     color: [f32; 4],
+    inner_rect: [f32; 4],
+    shape: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,9 +60,18 @@ pub(super) struct PreparedCursorDraw {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct PreparedSolidDraw {
-    push: SolidPushData,
+pub(super) struct PreparedFocusRingDraw {
+    push: FocusRingPushData,
     scissor: vk::Rect2D,
+}
+
+/// Pipeline-ready scene command. Keeping this sequence separate from resource
+/// preparation lets client descriptors remain batched while Vulkan records the
+/// exact scene stack supplied by ECS extraction.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PreparedSceneDraw {
+    Client(PreparedDraw),
+    FocusRing(PreparedFocusRingDraw),
 }
 
 pub(super) fn prepare_draws(
@@ -165,31 +179,78 @@ pub(super) fn prepare_cursor_draw(
     }))
 }
 
-pub(super) fn prepare_solid_draws(
+pub(super) fn prepare_focus_ring_draws(
     frame: &FrameSubmission,
-) -> Result<Vec<PreparedSolidDraw>, FrameRecordError> {
+) -> Result<Vec<PreparedFocusRingDraw>, FrameRecordError> {
     let viewport = validate_viewport(frame.target.viewport)?;
-    Ok(frame
+    frame
         .draw_plan
-        .solids()
+        .focus_rings()
         .iter()
-        .map(|solid| PreparedSolidDraw {
-            push: SolidPushData {
-                destination: destination_to_ndc(solid.destination, viewport),
-                color: linear_rgba(solid.color),
-            },
-            scissor: vk::Rect2D {
-                offset: vk::Offset2D {
-                    x: solid.clip.x,
-                    y: solid.clip.y,
+        .map(|ring| {
+            if !ring.destination.contains_rect(ring.inner) {
+                return Err(FrameRecordError::InvalidFocusRingGeometry);
+            }
+            let inner_x = ring.inner.x.saturating_sub(ring.destination.x);
+            let inner_y = ring.inner.y.saturating_sub(ring.destination.y);
+            Ok(PreparedFocusRingDraw {
+                push: FocusRingPushData {
+                    destination: destination_to_ndc(ring.destination, viewport),
+                    color: linear_rgba(ring.color),
+                    inner_rect: [
+                        inner_x as f32,
+                        inner_y as f32,
+                        ring.inner.width as f32,
+                        ring.inner.height as f32,
+                    ],
+                    shape: [
+                        ring.outer_radius as f32,
+                        ring.inner_radius as f32,
+                        ring.destination.width as f32,
+                        ring.destination.height as f32,
+                    ],
                 },
-                extent: vk::Extent2D {
-                    width: solid.clip.width,
-                    height: solid.clip.height,
+                scissor: vk::Rect2D {
+                    offset: vk::Offset2D {
+                        x: ring.clip.x,
+                        y: ring.clip.y,
+                    },
+                    extent: vk::Extent2D {
+                        width: ring.clip.width,
+                        height: ring.clip.height,
+                    },
                 },
-            },
+            })
         })
-        .collect())
+        .collect()
+}
+
+pub(super) fn prepare_scene_draws(
+    commands: &[SceneDrawCommand],
+    draws: &[PreparedDraw],
+    focus_rings: &[PreparedFocusRingDraw],
+) -> Result<Vec<PreparedSceneDraw>, FrameRecordError> {
+    commands
+        .iter()
+        .map(|command| match *command {
+            SceneDrawCommand::Client(index) => draws
+                .get(index)
+                .copied()
+                .map(PreparedSceneDraw::Client)
+                .ok_or(FrameRecordError::MissingSceneDraw {
+                    kind: "client",
+                    index,
+                }),
+            SceneDrawCommand::FocusRing(index) => focus_rings
+                .get(index)
+                .copied()
+                .map(PreparedSceneDraw::FocusRing)
+                .ok_or(FrameRecordError::MissingSceneDraw {
+                    kind: "focus-ring",
+                    index,
+                }),
+        })
+        .collect()
 }
 
 fn linear_rgba(color: crate::scene::LinearRgba16) -> [f32; 4] {
@@ -260,11 +321,10 @@ pub(super) struct SceneRecord<'a> {
     pub(super) output: NativeOutputImageInfo,
     pub(super) clients: &'a [ClientImageInfo],
     pub(super) client_pipeline: Option<vk::Pipeline>,
-    pub(super) solid_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
+    pub(super) focus_ring_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
     pub(super) cursor_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
     pub(super) graphics_queue_family: u32,
-    pub(super) draws: &'a [PreparedDraw],
-    pub(super) solids: &'a [PreparedSolidDraw],
+    pub(super) scene_draws: &'a [PreparedSceneDraw],
     pub(super) cursor: Option<PreparedCursorDraw>,
 }
 
@@ -278,11 +338,10 @@ pub(super) unsafe fn record_scene(
         output,
         clients,
         client_pipeline,
-        solid_pipeline,
+        focus_ring_pipeline,
         cursor_pipeline,
         graphics_queue_family,
-        draws,
-        solids,
+        scene_draws,
         cursor,
     } = scene;
     let subresource = color_subresource();
@@ -331,47 +390,73 @@ pub(super) unsafe fn record_scene(
         max_depth: 1.0,
     };
     unsafe { device.cmd_set_viewport(command_buffer, 0, slice::from_ref(&viewport)) };
-    if let Some(pipeline) = client_pipeline {
-        unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline)
-        };
-        for draw in draws {
-            let push_bytes = unsafe {
-                slice::from_raw_parts(
-                    (&draw.push as *const DrawPushData).cast::<u8>(),
-                    mem::size_of::<DrawPushData>(),
-                )
-            };
-            let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
-            let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
-            unsafe {
-                device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
-                device.cmd_push_data_ext(command_buffer, &push);
-                device.cmd_draw(command_buffer, 6, 1, 0, 0);
-            }
-        }
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum BoundScenePipeline {
+        Client,
+        FocusRing,
     }
-    if let Some((pipeline, layout)) = solid_pipeline {
-        unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        }
-        for solid in solids {
-            let push_bytes = unsafe {
-                slice::from_raw_parts(
-                    (&solid.push as *const SolidPushData).cast::<u8>(),
-                    mem::size_of::<SolidPushData>(),
-                )
-            };
-            unsafe {
-                device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&solid.scissor));
-                device.cmd_push_constants(
-                    command_buffer,
-                    layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    push_bytes,
-                );
-                device.cmd_draw(command_buffer, 6, 1, 0, 0);
+    let mut bound_pipeline = None;
+    for draw in scene_draws {
+        match draw {
+            PreparedSceneDraw::Client(draw) => {
+                let Some(pipeline) = client_pipeline else {
+                    continue;
+                };
+                if bound_pipeline != Some(BoundScenePipeline::Client) {
+                    unsafe {
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline,
+                        );
+                    }
+                    bound_pipeline = Some(BoundScenePipeline::Client);
+                }
+                let push_bytes = unsafe {
+                    slice::from_raw_parts(
+                        (&draw.push as *const DrawPushData).cast::<u8>(),
+                        mem::size_of::<DrawPushData>(),
+                    )
+                };
+                let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
+                let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
+                unsafe {
+                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
+                    device.cmd_push_data_ext(command_buffer, &push);
+                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
+                }
+            }
+            PreparedSceneDraw::FocusRing(ring) => {
+                let Some((pipeline, layout)) = focus_ring_pipeline else {
+                    continue;
+                };
+                if bound_pipeline != Some(BoundScenePipeline::FocusRing) {
+                    unsafe {
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline,
+                        );
+                    }
+                    bound_pipeline = Some(BoundScenePipeline::FocusRing);
+                }
+                let push_bytes = unsafe {
+                    slice::from_raw_parts(
+                        (&ring.push as *const FocusRingPushData).cast::<u8>(),
+                        mem::size_of::<FocusRingPushData>(),
+                    )
+                };
+                unsafe {
+                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&ring.scissor));
+                    device.cmd_push_constants(
+                        command_buffer,
+                        layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        push_bytes,
+                    );
+                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
+                }
             }
         }
     }
@@ -553,111 +638,11 @@ pub(super) enum FrameRecordError {
     },
     #[error("frame viewport must be non-empty")]
     InvalidViewport,
+    #[error("focus-ring inner geometry must be contained by its outer geometry")]
+    InvalidFocusRingGeometry,
+    #[error("scene command references missing {kind} draw {index}")]
+    MissingSceneDraw { kind: &'static str, index: usize },
 }
 
 #[cfg(test)]
-mod tests {
-    use vulkanalia::vk::Handle;
-
-    use super::*;
-
-    fn client_image(first: bool) -> ClientImageInfo {
-        ClientImageInfo {
-            image: vk::Image::null(),
-            view_info: vk::ImageViewCreateInfo::default(),
-            foreign_owned: true,
-            needs_initial_acquire: first,
-        }
-    }
-
-    #[test]
-    fn descriptor_push_index_includes_the_frame_heap_offset() {
-        assert_eq!(
-            descriptor_index(
-                HeapAllocation {
-                    offset: 256,
-                    size: 256,
-                },
-                32,
-                128,
-                3,
-            )
-            .unwrap(),
-            7
-        );
-    }
-
-    #[test]
-    fn top_left_physical_rect_maps_to_the_top_left_of_vulkan_ndc() {
-        assert_eq!(
-            destination_to_ndc(Rect::new(100, 200, 50, 25), Rect::new(100, 200, 100, 50)),
-            [-1.0, -1.0, 1.0, 1.0]
-        );
-        assert_eq!(
-            destination_to_ndc(Rect::new(150, 225, 50, 25), Rect::new(100, 200, 100, 50)),
-            [0.0, 0.0, 1.0, 1.0]
-        );
-    }
-
-    #[test]
-    fn descriptor_push_index_rejects_out_of_slice_draws() {
-        assert!(matches!(
-            descriptor_index(
-                HeapAllocation {
-                    offset: 256,
-                    size: 64,
-                },
-                32,
-                128,
-                2,
-            ),
-            Err(FrameRecordError::DescriptorOutsideAllocation { .. })
-        ));
-    }
-
-    #[test]
-    fn draw_push_data_stays_within_the_descriptor_heap_push_budget() {
-        assert_eq!(DRAW_PUSH_DATA_SIZE, 64);
-    }
-
-    #[test]
-    fn descriptor_push_index_is_relative_to_a_non_stride_aligned_reserved_range() {
-        assert_eq!(
-            descriptor_index(
-                HeapAllocation {
-                    offset: 192,
-                    size: 256,
-                },
-                128,
-                64,
-                1,
-            )
-            .unwrap(),
-            2
-        );
-    }
-
-    #[test]
-    fn first_foreign_client_acquire_preserves_imported_contents() {
-        let barrier = client_acquire(client_image(true), color_subresource(), 7);
-        assert_eq!(barrier.old_layout, vk::ImageLayout::UNDEFINED);
-        assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
-        assert_eq!(barrier.dst_queue_family_index, 7);
-    }
-
-    #[test]
-    fn reused_foreign_client_acquire_uses_released_layout() {
-        let barrier = client_acquire(client_image(false), color_subresource(), 7);
-        assert_eq!(barrier.old_layout, vk::ImageLayout::GENERAL);
-        assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
-        assert_eq!(barrier.dst_queue_family_index, 7);
-    }
-
-    #[test]
-    fn focus_outline_colors_remain_linear_through_push_conversion() {
-        assert_eq!(
-            linear_rgba(crate::scene::LinearRgba16::new(0, u16::MAX, 32_768, 16_384)),
-            [0.0, 1.0, 32_768.0 / 65_535.0, 16_384.0 / 65_535.0]
-        );
-    }
-}
+mod tests;

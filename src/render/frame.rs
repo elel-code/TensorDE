@@ -14,6 +14,7 @@ mod heap;
 mod plan;
 use heap::DescriptorHeap;
 use plan::FrameDrawPlan;
+pub(crate) use plan::SceneDrawCommand;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RenderOutputId {

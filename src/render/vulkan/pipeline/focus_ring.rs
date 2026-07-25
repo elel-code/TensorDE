@@ -7,28 +7,31 @@ use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
 use vulkanalia::{Device, vk};
 
 const VERTEX_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_solid.vert.spv"));
+    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_focus_ring.vert.spv"));
 const FRAGMENT_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_solid.frag.spv"));
+    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_focus_ring.frag.spv"));
 
-/// Descriptor-free pipeline for compositor-owned solid geometry such as the
-/// active-view focus ring. It does not form a descriptor-set fallback: client
-/// and output image sampling still exclusively uses `VK_EXT_descriptor_heap`.
-pub(crate) struct SolidPipeline {
+/// Descriptor-free pipeline for the compositor-owned active-view ring.
+///
+/// It only consumes value push constants, including the exact inner and outer
+/// physical rectangles. Client images remain exclusively on the
+/// `VK_EXT_descriptor_heap` path; this zero-set pipeline is not a
+/// descriptor-set compatibility backend.
+pub(crate) struct FocusRingPipeline {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
 }
 
-impl SolidPipeline {
+impl FocusRingPipeline {
     pub(crate) fn new(
         device: &Device,
         target_format: vk::Format,
-    ) -> Result<Self, SolidPipelineError> {
+    ) -> Result<Self, FocusRingPipelineError> {
         let (vertex_module, fragment_module) = create_shader_modules(device)?;
         let ranges = [vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(32)
+            .size(64)
             .build()];
         let layout_info = vk::PipelineLayoutCreateInfo::builder().push_constant_ranges(&ranges);
         let layout = match unsafe { device.create_pipeline_layout(&layout_info, None) } {
@@ -38,7 +41,7 @@ impl SolidPipeline {
                     device.destroy_shader_module(fragment_module, None);
                     device.destroy_shader_module(vertex_module, None);
                 }
-                return Err(SolidPipelineError::CreateLayout(error));
+                return Err(FocusRingPipelineError::CreateLayout(error));
             }
         };
 
@@ -75,9 +78,12 @@ impl SolidPipeline {
         let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
             .rasterization_samples(vk::SampleCountFlags::_1)
             .build();
+        // The fragment shader emits premultiplied ring color so the SDF's
+        // subpixel coverage remains correct for alpha-bearing configured
+        // colors.
         let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
             .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
@@ -127,12 +133,12 @@ impl SolidPipeline {
             Ok(result) => result,
             Err(error) => {
                 unsafe { device.destroy_pipeline_layout(layout, None) };
-                return Err(SolidPipelineError::CreatePipeline(error));
+                return Err(FocusRingPipelineError::CreatePipeline(error));
             }
         };
         let Some(pipeline) = pipelines.first().copied() else {
             unsafe { device.destroy_pipeline_layout(layout, None) };
-            return Err(SolidPipelineError::NoPipeline);
+            return Err(FocusRingPipelineError::NoPipeline);
         };
         Ok(Self { pipeline, layout })
     }
@@ -155,16 +161,16 @@ impl SolidPipeline {
 
 fn create_shader_modules(
     device: &Device,
-) -> Result<(vk::ShaderModule, vk::ShaderModule), SolidPipelineError> {
+) -> Result<(vk::ShaderModule, vk::ShaderModule), FocusRingPipelineError> {
     let vertex_info = shader_module_info(VERTEX_SHADER);
     let vertex_module = unsafe { device.create_shader_module(&vertex_info, None) }
-        .map_err(SolidPipelineError::CreateVertexModule)?;
+        .map_err(FocusRingPipelineError::CreateVertexModule)?;
     let fragment_info = shader_module_info(FRAGMENT_SHADER);
     match unsafe { device.create_shader_module(&fragment_info, None) } {
         Ok(fragment_module) => Ok((vertex_module, fragment_module)),
         Err(error) => {
             unsafe { device.destroy_shader_module(vertex_module, None) };
-            Err(SolidPipelineError::CreateFragmentModule(error))
+            Err(FocusRingPipelineError::CreateFragmentModule(error))
         }
     }
 }
@@ -177,16 +183,16 @@ fn shader_module_info(code: &[u32]) -> vk::ShaderModuleCreateInfo {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum SolidPipelineError {
-    #[error("failed to create the solid vertex shader module: {0:?}")]
+pub(crate) enum FocusRingPipelineError {
+    #[error("failed to create the focus-ring vertex shader module: {0:?}")]
     CreateVertexModule(vk::ErrorCode),
-    #[error("failed to create the solid fragment shader module: {0:?}")]
+    #[error("failed to create the focus-ring fragment shader module: {0:?}")]
     CreateFragmentModule(vk::ErrorCode),
-    #[error("failed to create the solid push-constant layout: {0:?}")]
+    #[error("failed to create the focus-ring push-constant layout: {0:?}")]
     CreateLayout(vk::ErrorCode),
-    #[error("failed to create the solid graphics pipeline: {0:?}")]
+    #[error("failed to create the focus-ring graphics pipeline: {0:?}")]
     CreatePipeline(vk::ErrorCode),
-    #[error("Vulkan returned no solid graphics pipeline")]
+    #[error("Vulkan returned no focus-ring graphics pipeline")]
     NoPipeline,
 }
 
@@ -195,7 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn solid_shader_modules_have_complete_word_lengths() {
+    fn focus_ring_shader_modules_have_complete_word_lengths() {
         assert_eq!(
             shader_module_info(VERTEX_SHADER).code_size,
             mem::size_of_val(VERTEX_SHADER)

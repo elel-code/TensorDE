@@ -98,7 +98,8 @@ An X11-only application is still required to exercise XWayland client mapping
 and rendering itself.
 
 - Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
-- Scene tests cover stable node ordering, independent draw order, effect-bound expansion, first
+- Scene tests cover stable node ordering, independent draw order, effect-bound expansion, rounded
+  focus-ring inner/outer physical geometry (including fractional scale and output clipping), first
   frame/full damage, old/new movement damage, popup bounds outside layout tiles, region coalescing,
   and blur dependency propagation.
 - Scrolling tests cover focus visibility, persistent workspace offsets, oversized columns, and
@@ -132,11 +133,16 @@ and rendering itself.
   focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
   cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
 - Input lifecycle coverage verifies that mapping selects an ECS root before an input device exists,
-  then a late keyboard capability restores the Smithay keyboard target and teardown clears it. A
-  late pointer capability schedules its first software-cursor frame; its removal schedules an
-  overlay-free frame, and cursor motion damages the old and new physical bounds while drawing above
-  client content. X11 activation routes through the `X11Surface` keyboard target so its ICCCM focus
-  handshake is retained without changing the Wayland logical pointer-coordinate path.
+  then a late keyboard capability restores the Smithay keyboard target only after the initial XDG
+  configure. Focus transitions deactivate the old toplevel, activate and raise the new attachment
+  family, and closing the active view restores a live successor without an empty-focus gap. A late
+  pointer capability schedules its first software-cursor frame; its removal schedules an overlay-free
+  frame, and cursor motion damages the old and new physical bounds while drawing above client content.
+  X11 activation routes through the `X11Surface` keyboard target so its ICCCM focus handshake is
+  retained without changing the Wayland logical pointer-coordinate path.
+- Focus-ring frame-plan and Vulkan-record tests verify the same back-to-front contract as Niri's
+  element list: a focused view's rounded ring precedes its client content and popup tree, and later
+  stacking entries cover the complete earlier view. The cursor remains a final compositor overlay.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.

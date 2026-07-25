@@ -21,8 +21,21 @@ use super::{FrameError, NativeOutputTarget};
 pub(crate) struct FrameDrawPlan {
     images: Vec<SurfaceBufferId>,
     draws: Vec<SurfaceDraw>,
-    solids: Vec<SolidDraw>,
+    focus_rings: Vec<FocusRingDraw>,
+    scene_draws: Vec<SceneDrawCommand>,
     cursor: Option<CursorDraw>,
+}
+
+/// One compositor scene command in back-to-front order.
+///
+/// The payloads live in their specialized arrays so descriptor preparation can
+/// remain batch-oriented. The command stream is the authoritative ordering
+/// boundary: a view's focus ring is emitted before that view's client tree,
+/// including popups, and later scene nodes naturally cover earlier nodes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SceneDrawCommand {
+    Client(usize),
+    FocusRing(usize),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,14 +59,20 @@ pub(crate) struct CursorDraw {
     pub(crate) clip: Rect,
 }
 
-/// A compositor-owned untextured quad. These draw after client content and
-/// before the cursor, keeping focus feedback visible without allocating a
-/// sampled-image descriptor or adding a descriptor-set compatibility path.
+/// A compositor-owned rounded outline around one active view.
+///
+/// Both rectangles use output-local physical coordinates. Keeping the inner
+/// geometry explicitly avoids independent width rounding at fractional scale:
+/// the shader can cut the exact client-shaped hole out of the outer rounded
+/// rectangle. The draw needs no sampled-image descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SolidDraw {
+pub(crate) struct FocusRingDraw {
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
+    pub(crate) inner: Rect,
     pub(crate) color: LinearRgba16,
+    pub(crate) outer_radius: u32,
+    pub(crate) inner_radius: u32,
 }
 
 impl FrameDrawPlan {
@@ -73,12 +92,28 @@ impl FrameDrawPlan {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
         let mut draws = Vec::new();
-        let mut solids = Vec::new();
+        let mut focus_rings = Vec::new();
+        let mut scene_draws = Vec::new();
         let output_viewport = Rect::new(0, 0, scene.viewport.width, scene.viewport.height);
 
         for node in scene.draw_order() {
             if scene.visual_bounds(node).is_none() {
                 continue;
+            }
+            if let Some(outline) = node.focus_outline
+                && let Some(ring) = focus_ring_draw(
+                    outline,
+                    node.placement.geometry,
+                    node.effects.corner_radius,
+                    scene.viewport,
+                    target,
+                )
+            {
+                let index = focus_rings.len();
+                focus_rings.push(ring);
+                // Niri's tile stream places the ring behind its client tree:
+                // client content and popups must cover it where they overlap.
+                scene_draws.push(SceneDrawCommand::FocusRing(index));
             }
             let view_clip = node
                 .placement
@@ -133,22 +168,15 @@ impl FrameDrawPlan {
                     effects: node.effects,
                     transform: content.transform,
                 });
-            }
-            if let Some(outline) = node.focus_outline {
-                append_focus_outline(
-                    &mut solids,
-                    outline,
-                    node.placement.geometry,
-                    scene.viewport,
-                    target,
-                );
+                scene_draws.push(SceneDrawCommand::Client(draws.len() - 1));
             }
         }
 
         Ok(Self {
             images,
             draws,
-            solids,
+            focus_rings,
+            scene_draws,
             cursor: cursor.map(|overlay| CursorDraw {
                 destination: overlay.destination,
                 clip: overlay.clip,
@@ -164,8 +192,12 @@ impl FrameDrawPlan {
         &self.draws
     }
 
-    pub(crate) fn solids(&self) -> &[SolidDraw] {
-        &self.solids
+    pub(crate) fn focus_rings(&self) -> &[FocusRingDraw] {
+        &self.focus_rings
+    }
+
+    pub(crate) fn scene_draws(&self) -> &[SceneDrawCommand] {
+        &self.scene_draws
     }
 
     pub(crate) const fn cursor(&self) -> Option<CursorDraw> {
@@ -173,39 +205,49 @@ impl FrameDrawPlan {
     }
 }
 
-fn append_focus_outline(
-    solids: &mut Vec<SolidDraw>,
+fn focus_ring_draw(
     outline: FocusOutline,
     geometry: Rect,
+    corner_radius: u32,
     scene_viewport: Rect,
     target: NativeOutputTarget,
-) {
+) -> Option<FocusRingDraw> {
     if !outline.visible() || geometry.width == 0 || geometry.height == 0 {
-        return;
+        return None;
     }
-    let logical = geometry.translated(-scene_viewport.x, -scene_viewport.y);
-    let geometry = target.scale.physical_rect_round(logical);
-    let width = target.scale.physical_length_round(outline.width).max(1);
-    let outer = geometry.inflated(width);
-    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
-    let right = outer.right().saturating_sub(width_i32);
-    let bottom = outer.bottom().saturating_sub(width_i32);
-    let rectangles = [
-        Rect::new(outer.x, outer.y, outer.width, width),
-        Rect::new(outer.x, bottom, outer.width, width),
-        Rect::new(outer.x, geometry.y, width, geometry.height),
-        Rect::new(right, geometry.y, width, geometry.height),
-    ];
-    for destination in rectangles {
-        let Some(clip) = destination.intersection(target.viewport) else {
-            continue;
-        };
-        solids.push(SolidDraw {
-            destination,
-            clip,
-            color: outline.color,
-        });
+    let logical_inner = geometry.translated(-scene_viewport.x, -scene_viewport.y);
+    let inner = target.scale.physical_rect_round(logical_inner);
+    if inner.width == 0 || inner.height == 0 {
+        return None;
     }
+
+    // Map the expanded logical rectangle by edges first, then guarantee at
+    // least one physical pixel on every side. This is the same physical-grid
+    // concern as Niri's focus-ring rounding: independent logical-length
+    // rounding can otherwise erase a one-logical-pixel ring below scale 1.
+    let minimum_width = target.scale.physical_length_round(outline.width).max(1);
+    let outer = target
+        .scale
+        .physical_rect_round(logical_inner.inflated(outline.width))
+        .union(inner.inflated(minimum_width));
+    let Some(clip) = outer.intersection(target.viewport) else {
+        return None;
+    };
+    let inner_radius = target
+        .scale
+        .physical_length_round(corner_radius)
+        .min(inner.width.min(inner.height) / 2);
+    let outer_radius = inner_radius
+        .saturating_add(minimum_width)
+        .min(outer.width.min(outer.height) / 2);
+    Some(FocusRingDraw {
+        destination: outer,
+        clip,
+        inner,
+        color: outline.color,
+        outer_radius,
+        inner_radius,
+    })
 }
 
 #[cfg(test)]
@@ -394,11 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn focused_view_emits_an_output_clipped_outer_highlight() {
+    fn focused_view_emits_one_output_clipped_rounded_ring() {
         let viewport = Rect::new(0, 0, 100, 80);
         let placement = LayoutPlacement {
-            geometry: Rect::new(10, 10, 20, 10),
-            visible: Some(Rect::new(10, 10, 20, 10)),
+            geometry: Rect::new(0, 0, 20, 10),
+            visible: Some(Rect::new(0, 0, 20, 10)),
         };
         let scene = SceneSnapshot::new(
             WorkspaceId::new(1),
@@ -412,29 +454,142 @@ mod tests {
         let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
 
         assert_eq!(
-            plan.solids(),
+            plan.focus_rings(),
+            [FocusRingDraw {
+                destination: Rect::new(-4, -4, 28, 18),
+                clip: Rect::new(0, 0, 24, 14),
+                inner: Rect::new(0, 0, 20, 10),
+                color: FocusOutline::DEFAULT.color,
+                outer_radius: 4,
+                inner_radius: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn focus_ring_uses_shared_fractional_edges_and_the_view_corner_radius() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let placement = LayoutPlacement {
+            geometry: Rect::new(1, 2, 4, 4),
+            visible: Some(Rect::new(1, 2, 4, 4)),
+        };
+        let outline = FocusOutline {
+            width: 1,
+            color: FocusOutline::DEFAULT.color,
+        };
+        let scene = SceneSnapshot::new(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(
+                    ViewId::new(1),
+                    1,
+                    placement,
+                    EffectStyle {
+                        corner_radius: 2,
+                        ..EffectStyle::default()
+                    },
+                )
+                .with_focus_outline(Some(outline)),
+            ],
+        );
+
+        let plan = FrameDrawPlan::build(
+            &scene,
+            target(viewport, OutputScale::from_f64(1.25).unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.focus_rings(),
+            [FocusRingDraw {
+                destination: Rect::new(0, 1, 8, 8),
+                clip: Rect::new(0, 1, 8, 8),
+                inner: Rect::new(1, 3, 5, 5),
+                color: FocusOutline::DEFAULT.color,
+                outer_radius: 3,
+                inner_radius: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn scene_order_keeps_the_ring_below_its_client_tree_and_later_views() {
+        let viewport = Rect::new(0, 0, 120, 80);
+        let lower = LayoutPlacement {
+            geometry: Rect::new(16, 12, 40, 30),
+            visible: Some(Rect::new(16, 12, 40, 30)),
+        };
+        let upper = LayoutPlacement {
+            geometry: Rect::new(20, 16, 40, 30),
+            visible: Some(Rect::new(20, 16, 40, 30)),
+        };
+        let contents = vec![
+            SurfaceContent {
+                surface_id: SurfaceId::new(1),
+                buffer_id: SurfaceBufferId::new(1),
+                revision: ContentRevision::new(1),
+                layer: SurfaceLayer::View,
+                buffer_size: Size::new(40, 30),
+                local_geometry: Rect::new(0, 0, 40, 30),
+                buffer_scale: 1,
+                transform: SurfaceTransform::Normal,
+            },
+            // This popup overlaps the lower view's ring. It must be emitted
+            // after the ring just like Niri's window popup tree.
+            SurfaceContent {
+                surface_id: SurfaceId::new(2),
+                buffer_id: SurfaceBufferId::new(2),
+                revision: ContentRevision::new(1),
+                layer: SurfaceLayer::Popup,
+                buffer_size: Size::new(18, 12),
+                local_geometry: Rect::new(34, -2, 18, 12),
+                buffer_scale: 1,
+                transform: SurfaceTransform::Normal,
+            },
+            SurfaceContent {
+                surface_id: SurfaceId::new(3),
+                buffer_id: SurfaceBufferId::new(3),
+                revision: ContentRevision::new(1),
+                layer: SurfaceLayer::View,
+                buffer_size: Size::new(40, 30),
+                local_geometry: Rect::new(0, 0, 40, 30),
+                buffer_scale: 1,
+                transform: SurfaceTransform::Normal,
+            },
+        ];
+        let lower_span = crate::scene::ContentSpan::new(0, 2).unwrap();
+        let upper_span = crate::scene::ContentSpan::new(2, 1).unwrap();
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, lower, EffectStyle::default())
+                    .with_focus_outline(Some(FocusOutline::DEFAULT))
+                    .with_content(lower_span),
+                SceneNode::new(ViewId::new(2), 2, upper, EffectStyle::default())
+                    .with_content(upper_span),
+            ],
+            contents,
+        );
+
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
+
+        assert_eq!(
+            plan.scene_draws(),
             [
-                SolidDraw {
-                    destination: Rect::new(6, 6, 28, 4),
-                    clip: Rect::new(6, 6, 28, 4),
-                    color: FocusOutline::DEFAULT.color,
-                },
-                SolidDraw {
-                    destination: Rect::new(6, 20, 28, 4),
-                    clip: Rect::new(6, 20, 28, 4),
-                    color: FocusOutline::DEFAULT.color,
-                },
-                SolidDraw {
-                    destination: Rect::new(6, 10, 4, 10),
-                    clip: Rect::new(6, 10, 4, 10),
-                    color: FocusOutline::DEFAULT.color,
-                },
-                SolidDraw {
-                    destination: Rect::new(30, 10, 4, 10),
-                    clip: Rect::new(30, 10, 4, 10),
-                    color: FocusOutline::DEFAULT.color,
-                },
+                SceneDrawCommand::FocusRing(0),
+                SceneDrawCommand::Client(0),
+                SceneDrawCommand::Client(1),
+                SceneDrawCommand::Client(2),
             ]
+        );
+        assert_eq!(
+            plan.draws()
+                .iter()
+                .map(|draw| draw.surface_id)
+                .collect::<Vec<_>>(),
+            [SurfaceId::new(1), SurfaceId::new(2), SurfaceId::new(3)]
         );
     }
 }

@@ -1,11 +1,13 @@
 #version 450
 
-layout(location = 0) out vec4 v_color;
+layout(location = 0) out vec2 v_pixel;
 
-layout(push_constant, std430) uniform SolidData {
+layout(push_constant, std430) uniform FocusRingData {
     vec4 destination;
     vec4 color;
-} solid;
+    vec4 inner_rect;
+    vec4 shape;
+} ring;
 
 out gl_PerVertex {
     vec4 gl_Position;
@@ -21,7 +23,7 @@ void main() {
         vec2(0.0, 1.0)
     );
     vec2 local = positions[gl_VertexIndex];
-    vec2 position = solid.destination.xy + local * solid.destination.zw;
+    vec2 position = ring.destination.xy + local * ring.destination.zw;
     gl_Position = vec4(position, 0.0, 1.0);
-    v_color = solid.color;
+    v_pixel = local * ring.shape.zw;
 }
