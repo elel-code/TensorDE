@@ -4,8 +4,10 @@ use smithay::{
     wayland::{
         alpha_modifier::AlphaModifierState,
         background_effect::BackgroundEffectState,
+        commit_timing::CommitTimingManagerState,
         content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
+        fifo::FifoManagerState,
         foreign_toplevel_list::ForeignToplevelListState,
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
@@ -31,6 +33,7 @@ use smithay::{
         xdg_system_bell::XdgSystemBellState,
         xdg_toplevel_icon::XdgToplevelIconManager,
         xdg_toplevel_tag::XdgToplevelTagManager,
+        xwayland_keyboard_grab::XWaylandKeyboardGrabState,
     },
 };
 
@@ -77,6 +80,9 @@ pub(crate) struct ProtocolGlobals {
     background_effect: BackgroundEffectState,
     toplevel_icon: XdgToplevelIconManager,
     toplevel_tag: XdgToplevelTagManager,
+    fifo: FifoManagerState,
+    commit_timing: CommitTimingManagerState,
+    xwayland_keyboard_grab: XWaylandKeyboardGrabState,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -128,6 +134,9 @@ impl ProtocolGlobals {
             background_effect: BackgroundEffectState::new::<RuntimeState>(display),
             toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
             toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
+            fifo: FifoManagerState::new::<RuntimeState>(display),
+            commit_timing: CommitTimingManagerState::new::<RuntimeState>(display),
+            xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -230,6 +239,9 @@ impl ProtocolGlobals {
             &self.background_effect,
             &self.toplevel_icon,
             &self.toplevel_tag,
+            &self.fifo,
+            &self.commit_timing,
+            &self.xwayland_keyboard_grab,
         );
         ProtocolCapabilities {
             viewporter: true,
@@ -262,6 +274,9 @@ impl ProtocolGlobals {
             background_effect: true,
             toplevel_icon: true,
             toplevel_tag: true,
+            fifo: true,
+            commit_timing: true,
+            xwayland_keyboard_grab: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -304,6 +319,9 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) background_effect: bool,
     pub(crate) toplevel_icon: bool,
     pub(crate) toplevel_tag: bool,
+    pub(crate) fifo: bool,
+    pub(crate) commit_timing: bool,
+    pub(crate) xwayland_keyboard_grab: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -363,6 +381,9 @@ mod tests {
                 background_effect: true,
                 toplevel_icon: true,
                 toplevel_tag: true,
+                fifo: true,
+                commit_timing: true,
+                xwayland_keyboard_grab: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

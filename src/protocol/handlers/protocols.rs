@@ -428,3 +428,33 @@ impl smithay::wayland::xdg_toplevel_tag::XdgToplevelTagHandler for RuntimeState 
 // Blur regions live on surface cached state until the Vulkan frame path
 // samples them; advertising the global matches Niri-class clients.
 impl smithay::wayland::background_effect::ExtBackgroundEffectHandler for RuntimeState {}
+
+impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for RuntimeState {
+    fn keyboard_focus_for_xsurface(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<crate::protocol::focus::KeyboardFocusTarget> {
+        #[cfg(feature = "xwayland")]
+        {
+            use smithay::desktop::Window;
+            use smithay::wayland::seat::WaylandFocus;
+            self.space
+                .elements()
+                .find(|window| window.wl_surface().as_deref() == Some(surface))
+                .and_then(Window::x11_surface)
+                .cloned()
+                .map(crate::protocol::focus::KeyboardFocusTarget::from)
+                .or_else(|| {
+                    Some(crate::protocol::focus::KeyboardFocusTarget::from(
+                        surface.clone(),
+                    ))
+                })
+        }
+        #[cfg(not(feature = "xwayland"))]
+        {
+            Some(crate::protocol::focus::KeyboardFocusTarget::from(
+                surface.clone(),
+            ))
+        }
+    }
+}

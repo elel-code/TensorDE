@@ -187,9 +187,9 @@ pointer gestures, pointer-constraints, presentation-time v2, cursor-shape, xdg-a
 idle-notify, idle-inhibit, wlr-layer-shell, single-pixel-buffer, keyboard-shortcuts-inhibit,
 tablet-v2, text-input-v3, input-method-v2, virtual-keyboard-v1, ext-session-lock-v1,
 wp-security-context-v1, ext-foreign-toplevel-list-v1, xdg-foreign, xdg-system-bell, pointer-warp,
-content-type, alpha-modifier, background-effect, xdg-toplevel-icon, xdg-toplevel-tag, and
-linux-dmabuf when the selected Vulkan device exposes a non-empty validated client-import format
-list. Layer surfaces map through Smithay's per-output `LayerMap`. On commit, Tensor arranges exclusive
+content-type, alpha-modifier, background-effect, xdg-toplevel-icon, xdg-toplevel-tag, fifo,
+commit-timing, xwayland-keyboard-grab, and linux-dmabuf when the selected Vulkan device exposes a
+non-empty validated client-import format list. Layer surfaces map through Smithay's per-output `LayerMap`. On commit, Tensor arranges exclusive
 zones, sends pending configures, and merges mapped layer content into the output frame as value-only
 scene nodes (outside the ECS view graph). Workspace layout uses the non-exclusive zone so panels
 reserve space. Pointer hit-testing prefers Overlay/Top layers, then windows, then Bottom/Background.
