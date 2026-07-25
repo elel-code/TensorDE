@@ -384,7 +384,12 @@ impl RuntimeState {
             }
             _ => SceneSnapshot::new(DEFAULT_WORKSPACE, logical, Vec::new()),
         };
-        self.merge_layer_surfaces(base, output, logical)
+        let with_layers = self.merge_layer_surfaces(base, output, logical);
+        if self.session_is_locked() {
+            self.merge_session_lock_surfaces(with_layers, output, logical)
+        } else {
+            with_layers
+        }
     }
 
     /// Keep an input-driven redraw live when the previous submission still

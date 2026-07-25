@@ -26,7 +26,7 @@ use smithay::{
         xdg_system_bell::XdgSystemBellHandler,
     },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::protocol::state::{ObjectKey, RuntimeState, SessionLockState};
 
@@ -350,22 +350,52 @@ impl SecurityContextHandler for RuntimeState {
             app_id = ?context.app_id,
             "security context listener ready"
         );
-        let _ = (source, context);
+        use std::sync::Arc;
+
+        use crate::protocol::state::WaylandClientState;
+        if let Err(error) = self
+            .loop_handle
+            .insert_source(source, move |stream, _, state| {
+                let client_data = WaylandClientState {
+                    from_security_context: true,
+                    ..Default::default()
+                };
+                if let Err(error) = state
+                    .display_handle
+                    .insert_client(stream, Arc::new(client_data))
+                {
+                    warn!(%error, ?context, "failed to insert sandboxed Wayland client");
+                }
+            })
+        {
+            warn!(%error, "failed to register security-context listener");
+        }
     }
 }
 
 impl InputMethodHandler for RuntimeState {
     fn new_popup(&mut self, surface: ImPopupSurface) {
-        debug!("input-method popup created");
-        let _ = surface;
+        use smithay::desktop::PopupKind;
+        if let Err(error) = self.popups.track_popup(PopupKind::InputMethod(surface)) {
+            warn!(%error, "failed to track input-method popup");
+        }
+        #[cfg(feature = "tty")]
+        self.request_redraw_workspace();
     }
 
     fn dismiss_popup(&mut self, surface: ImPopupSurface) {
-        let _ = surface;
+        use smithay::desktop::{PopupKind, PopupManager};
+        let parent = surface.get_parent().map(|parent| parent.surface.clone());
+        if let Some(parent) = parent {
+            let _ = PopupManager::dismiss_popup(&parent, &PopupKind::InputMethod(surface));
+        }
+        #[cfg(feature = "tty")]
+        self.request_redraw_workspace();
     }
 
-    fn popup_repositioned(&mut self, surface: ImPopupSurface) {
-        let _ = surface;
+    fn popup_repositioned(&mut self, _surface: ImPopupSurface) {
+        #[cfg(feature = "tty")]
+        self.request_redraw_workspace();
     }
 
     fn parent_geometry(&self, parent: &WlSurface) -> smithay::utils::Rectangle<i32, Logical> {

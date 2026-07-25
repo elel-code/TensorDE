@@ -348,6 +348,76 @@ impl RuntimeState {
         SceneSnapshot::with_content(scene.workspace_id, logical, nodes, contents)
     }
 
+    /// Refresh buffer identity for a mapped session-lock surface commit.
+    #[cfg(feature = "tty")]
+    pub(crate) fn handle_session_lock_commit(&mut self, surface: &WlSurface) -> bool {
+        let Some(lock) = self.protocol_side.session_lock.as_ref() else {
+            return false;
+        };
+        let is_lock = lock
+            .surfaces
+            .values()
+            .any(|lock_surface| lock_surface.wl_surface() == surface);
+        if !is_lock {
+            return false;
+        }
+        if surface_has_buffer(surface) {
+            let mut commits = Vec::new();
+            collect_surface_tree(surface, (0, 0), SurfaceLayer::Popup, &mut commits);
+            if let Some(update) = self
+                .surface_buffers
+                .update_view_tree(&surface.id(), commits)
+            {
+                for surface_id in update.removed_surfaces {
+                    if let Some(sync) = self.surface_sync.remove(surface_id) {
+                        self.finish_surface_sync(surface_id, sync.release);
+                    }
+                }
+                self.release_client_buffers(update.released_buffers);
+                self.flush_client_releases();
+            }
+        }
+        self.request_redraw_all();
+        true
+    }
+
+    /// When the session is locked, only lock surfaces for this head are drawn.
+    #[cfg(feature = "tty")]
+    pub(super) fn merge_session_lock_surfaces(
+        &self,
+        scene: SceneSnapshot,
+        output: &smithay::output::Output,
+        logical: Rect,
+    ) -> SceneSnapshot {
+        let Some(lock) = self.protocol_side.session_lock.as_ref() else {
+            return scene;
+        };
+        let Some(lock_surface) = lock.surfaces.get(&output.name()) else {
+            // Locked but no surface yet: blank frame (no client content).
+            return SceneSnapshot::new(scene.workspace_id, logical, Vec::new());
+        };
+        let surface = lock_surface.wl_surface();
+        if !surface_has_buffer(surface) {
+            return SceneSnapshot::new(scene.workspace_id, logical, Vec::new());
+        }
+        let contents = self.surface_buffers.view_tree_contents(&surface.id());
+        if contents.is_empty() {
+            return SceneSnapshot::new(scene.workspace_id, logical, Vec::new());
+        }
+        let span = match crate::scene::ContentSpan::new(0, contents.len()) {
+            Some(span) => span,
+            None => return SceneSnapshot::new(scene.workspace_id, logical, Vec::new()),
+        };
+        let node = SceneNode::new(
+            ViewId::new(0xB000_0000_0000_0000),
+            u64::MAX,
+            LayoutPlacement::new(logical, logical),
+            EffectStyle::default(),
+        )
+        .with_content(span);
+        SceneSnapshot::with_content(scene.workspace_id, logical, vec![node], contents)
+    }
+
     /// Logical workspace rectangle after layer exclusive zones.
     #[cfg(feature = "tty")]
     pub(super) fn exclusive_workspace_area(

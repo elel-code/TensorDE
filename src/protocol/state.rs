@@ -89,6 +89,8 @@ struct DeferredSurfaceSync {
 
 pub(crate) struct RuntimeState {
     pub(crate) display_handle: DisplayHandle,
+    /// calloop handle for protocol listeners (security-context sockets, etc.).
+    pub(crate) loop_handle: LoopHandle<'static, Self>,
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
     pub(crate) shm_state: ShmState,
@@ -173,6 +175,7 @@ impl RuntimeState {
 
         Self {
             display_handle,
+            loop_handle,
             compositor_state,
             xdg_shell_state,
             shm_state,

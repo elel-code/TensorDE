@@ -1,3 +1,5 @@
+mod tablet;
+
 use smithay::{
     backend::{
         input::{
@@ -61,16 +63,24 @@ impl RuntimeState {
                 | InputEvent::TouchUp { .. }
         );
         match event {
-            InputEvent::DeviceAdded { device } => {
+            InputEvent::DeviceAdded { ref device } => {
                 let capabilities = InputDeviceCapabilities {
-                    keyboard: Device::has_capability(&device, DeviceCapability::Keyboard),
-                    pointer: Device::has_capability(&device, DeviceCapability::Pointer),
-                    touch: Device::has_capability(&device, DeviceCapability::Touch),
+                    keyboard: Device::has_capability(device, DeviceCapability::Keyboard),
+                    pointer: Device::has_capability(device, DeviceCapability::Pointer),
+                    touch: Device::has_capability(device, DeviceCapability::Touch),
                 };
                 self.input_devices.insert(device.id(), capabilities);
                 self.reconcile_seat_capabilities();
+                if Device::has_capability(device, DeviceCapability::TabletTool) {
+                    self.process_tablet_event(event);
+                }
             }
-            InputEvent::DeviceRemoved { device } => {
+            InputEvent::DeviceRemoved { ref device } => {
+                if Device::has_capability(device, DeviceCapability::TabletTool) {
+                    self.process_tablet_event(InputEvent::DeviceRemoved {
+                        device: device.clone(),
+                    });
+                }
                 self.input_devices.remove(&device.id());
                 self.reconcile_seat_capabilities();
             }
@@ -81,12 +91,17 @@ impl RuntimeState {
             }
             InputEvent::PointerButton { event } => self.forward_pointer_button(event),
             InputEvent::PointerAxis { event } => self.forward_pointer_axis(event),
+            InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. } => self.process_tablet_event(event),
             _ => {}
         }
         if activity {
             self.protocol_globals
                 .idle_notifier()
                 .notify_activity(&self.seat);
+            self.refresh_idle_inhibition();
         }
     }
 

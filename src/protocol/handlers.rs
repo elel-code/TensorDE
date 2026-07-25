@@ -106,7 +106,7 @@ impl CompositorHandler for RuntimeState {
         self.popups.commit(surface);
 
         #[cfg(feature = "tty")]
-        if self.handle_layer_shell_commit(surface) {
+        if self.handle_session_lock_commit(surface) || self.handle_layer_shell_commit(surface) {
             if let Some(points) = explicit_sync.take() {
                 self.finish_unused_explicit_sync(points);
             }
