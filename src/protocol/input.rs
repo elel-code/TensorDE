@@ -6,7 +6,6 @@ use smithay::{
         },
         libinput::LibinputInputBackend,
     },
-    desktop::WindowSurfaceType,
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{ButtonEvent, MotionEvent},
@@ -321,49 +320,20 @@ impl RuntimeState {
         pointer.axis(self, frame);
     }
 
-    /// Resolve pointer input in compositor logical coordinates. XWayland
-    /// surfaces remain ordinary Wayland pointer targets; their X11 focus is
-    /// handled separately when a root window is activated.
+    /// Resolve pointer input in compositor logical coordinates. Overlay and
+    /// top layer surfaces sit above windows; bottom/background sit below.
+    /// XWayland surfaces remain ordinary Wayland pointer targets.
     fn pointer_focus_under(
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, window_location) = self.space.element_under(location)?;
-        window
-            .surface_under(location - window_location.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, surface_location)| {
-                (surface, (surface_location + window_location).to_f64())
-            })
+        self.layer_or_window_pointer_focus(location)
     }
 
-    /// Focus the toplevel/root rather than a subsurface or popup. This keeps
-    /// client popup lifetimes stable and lets X11 windows run their ICCCM
-    /// focus handshake through `X11Surface`.
+    /// Focus the keyboard-capable target under the pointer: layer shells with
+    /// exclusive/on-demand interactivity, otherwise the toplevel/root window.
     fn focus_window_at(&mut self, location: Point<f64, Logical>, serial: smithay::utils::Serial) {
-        let Some((window, _)) = self
-            .space
-            .element_under(location)
-            .map(|(window, location)| (window.clone(), location))
-        else {
-            return;
-        };
-        let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
-            return;
-        };
-        let Some(root) = self.owning_view_root(&surface) else {
-            return;
-        };
-        let Some(root_window) = self
-            .space
-            .elements()
-            .find(|candidate| candidate.wl_surface().as_deref() == Some(&root))
-            .cloned()
-        else {
-            return;
-        };
-        if self.focus_mapped_window(root_window, serial) {
-            self.reflow_default_workspace();
-        }
+        self.focus_at_pointer(location, serial);
     }
 
     /// Reapply the ECS-selected root when a keyboard capability becomes
@@ -420,6 +390,8 @@ impl RuntimeState {
             warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
             return false;
         }
+        // Window activation supersedes on-demand layer keyboard memory.
+        self.layer_shell_on_demand_focus = None;
         self.publish_window_activation(Some(&window));
         // Match Niri and Hyprland's central focus-state early return: a seat
         // focus repair must not silently reorder Smithay's hit-test space

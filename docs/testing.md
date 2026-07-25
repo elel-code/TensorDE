@@ -120,7 +120,8 @@ and rendering itself.
   relative pointer, pointer gestures, presentation-time, cursor-shape, xdg-activation, idle-notify,
   and wlr-layer-shell capability flags from a real display. They assert preferred-scale (including
   `150/120`), decoration configure, monotonic clock, and discarded-feedback events, including
-  protocol-correct child-object destruction order.
+  protocol-correct child-object destruction order. Layer draw-order helpers assert Overlay sits
+  above Top and Bottom in the value-only scene merge.
 - XWayland scaling tests keep rootless X11 buffers on the ordinary surface path: integer client
   buffer scale, `N/120` output geometry, outward damage coverage, and linear final sampling are one
   contract. X11 provenance must not enable a nearest-neighbor default or a second coordinate model.

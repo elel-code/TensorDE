@@ -133,6 +133,9 @@ pub(crate) struct RuntimeState {
     /// Emit per-submit timing at info level when enabled by config.
     #[cfg(feature = "tty")]
     frame_stats: bool,
+    /// On-demand layer surface that last received click or new-map focus.
+    #[cfg(feature = "tty")]
+    pub(crate) layer_shell_on_demand_focus: Option<smithay::desktop::LayerSurface>,
     surface_views: HashMap<ObjectId, ViewId>,
     #[cfg(feature = "xwayland")]
     pub(crate) xwm: Option<X11Wm>,
@@ -208,6 +211,8 @@ impl RuntimeState {
             force_full_redraw: false,
             #[cfg(feature = "tty")]
             frame_stats: false,
+            #[cfg(feature = "tty")]
+            layer_shell_on_demand_focus: None,
             surface_views: HashMap::new(),
             #[cfg(feature = "xwayland")]
             xwm: None,

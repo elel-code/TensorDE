@@ -1,4 +1,4 @@
-//! wlr-layer-shell commit, exclusive-zone layout, and value-only scene merge.
+//! wlr-layer-shell commit, exclusive-zone layout, input hit-test, and scene merge.
 //!
 //! Layer surfaces stay outside the ECS view graph: they are output-local Smithay
 //! state. The frame path only receives the same value-only surface content that
@@ -13,11 +13,12 @@ use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
     desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
-    utils::IsAlive,
+    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
         fractional_scale::with_fractional_scale,
-        shell::wlr_layer::Layer as WlrLayer,
+        seat::WaylandFocus,
+        shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer},
     },
 };
 use tensor_util::Rect;
@@ -30,6 +31,7 @@ use crate::{
 };
 
 use super::{RuntimeState, tree::collect_surface_tree};
+use crate::protocol::focus::KeyboardFocusTarget;
 
 impl RuntimeState {
     /// Handle a commit for a layer-shell surface tree.
@@ -46,6 +48,7 @@ impl RuntimeState {
             return false;
         };
 
+        let mut newly_mapped_on_demand = None;
         {
             let mut map = layer_map_for_output(&output);
             map.arrange();
@@ -64,17 +67,35 @@ impl RuntimeState {
                     fractional.set_preferred_scale(scale.fractional_scale());
                 });
             });
+            let mapped = surface_has_buffer(&root);
+            let had_content = !self
+                .surface_buffers
+                .view_tree_contents(&root.id())
+                .is_empty();
+            if mapped && !had_content {
+                let on_demand =
+                    layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand;
+                if on_demand {
+                    newly_mapped_on_demand = Some(layer);
+                }
+            }
         }
 
         if surface_has_buffer(&root) {
             let _ = self.update_layer_surface_content(&root);
         } else {
             self.clear_layer_surface_content(&root);
+            self.clear_on_demand_if_surface(&root);
+        }
+
+        if let Some(layer) = newly_mapped_on_demand {
+            self.layer_shell_on_demand_focus = Some(layer);
         }
 
         // Exclusive zones reshape the workspace; always reflow when a layer
         // commits so bars reserve space before the next frame.
         let _ = self.reflow_default_workspace_layout();
+        self.reconcile_layer_keyboard_focus();
         self.request_redraw_all();
         true
     }
@@ -83,6 +104,100 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) fn forget_layer_surface(&mut self, surface: &WlSurface) {
         self.clear_layer_surface_content(surface);
+        self.clear_on_demand_if_surface(surface);
+        self.reconcile_layer_keyboard_focus();
+    }
+
+    /// Pointer hit-test: Overlay/Top layers, then windows, then Bottom/Background.
+    #[cfg(feature = "tty")]
+    pub(crate) fn layer_or_window_pointer_focus(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let (output, output_geo) = self.output_under_location(location)?;
+        let pos_in_output = location - output_geo.loc.to_f64();
+        let map = layer_map_for_output(&output);
+
+        if let Some(hit) = layer_surface_under(
+            &map,
+            pos_in_output,
+            output_geo,
+            [WlrLayer::Overlay, WlrLayer::Top],
+        ) {
+            return Some(hit);
+        }
+        drop(map);
+
+        if let Some(hit) = self.window_pointer_focus(location) {
+            return Some(hit);
+        }
+
+        let map = layer_map_for_output(&output);
+        layer_surface_under(
+            &map,
+            pos_in_output,
+            output_geo,
+            [WlrLayer::Bottom, WlrLayer::Background],
+        )
+    }
+
+    /// Click focus: keyboard-capable layers first (same stacking order), else windows.
+    #[cfg(feature = "tty")]
+    pub(crate) fn focus_at_pointer(
+        &mut self,
+        location: Point<f64, Logical>,
+        serial: smithay::utils::Serial,
+    ) {
+        if let Some(layer) = self.keyboard_layer_under(location) {
+            self.focus_layer_surface(layer, serial);
+            return;
+        }
+        if let Some((window, _)) = self
+            .space
+            .element_under(location)
+            .map(|(window, loc)| (window.clone(), loc))
+        {
+            let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
+                return;
+            };
+            let Some(root) = self.owning_view_root(&surface) else {
+                return;
+            };
+            let Some(root_window) = self
+                .space
+                .elements()
+                .find(|candidate| candidate.wl_surface().as_deref() == Some(&root))
+                .cloned()
+            else {
+                return;
+            };
+            self.layer_shell_on_demand_focus = None;
+            if self.focus_mapped_window(root_window, serial) {
+                self.reflow_default_workspace();
+            }
+        }
+    }
+
+    /// Apply exclusive / on-demand layer keyboard policy after map changes.
+    #[cfg(feature = "tty")]
+    pub(crate) fn reconcile_layer_keyboard_focus(&mut self) {
+        self.sanitize_on_demand_layer_focus();
+        let serial = SERIAL_COUNTER.next_serial();
+        if let Some(layer) = self.preferred_layer_keyboard_target() {
+            self.focus_layer_surface(layer, serial);
+            return;
+        }
+        // No layer claim: restore ECS-selected window if the seat sits on a layer.
+        let on_layer = self.seat.get_keyboard().is_some_and(|keyboard| {
+            keyboard.current_focus().is_some_and(|focus| {
+                focus.wl_surface().is_some_and(|surface| {
+                    self.layer_output_for_surface(surface.as_ref()).is_some()
+                })
+            })
+        });
+        if on_layer {
+            self.restore_keyboard_focus();
+        }
     }
 
     #[cfg(feature = "tty")]
@@ -204,11 +319,198 @@ impl RuntimeState {
             )
         })
     }
+
+    #[cfg(feature = "tty")]
+    fn window_pointer_focus(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let (window, window_location) = self.space.element_under(location)?;
+        window
+            .surface_under(location - window_location.to_f64(), WindowSurfaceType::ALL)
+            .map(|(surface, surface_location)| {
+                (surface, (surface_location + window_location).to_f64())
+            })
+    }
+
+    #[cfg(feature = "tty")]
+    fn output_under_location(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(
+        smithay::output::Output,
+        smithay::utils::Rectangle<i32, Logical>,
+    )> {
+        let output = self.space.output_under(location).next()?.clone();
+        let geometry = self.space.output_geometry(&output)?;
+        Some((output, geometry))
+    }
+
+    /// Layer under the pointer that can accept keyboard focus.
+    #[cfg(feature = "tty")]
+    fn keyboard_layer_under(&self, location: Point<f64, Logical>) -> Option<LayerSurface> {
+        let (output, output_geo) = self.output_under_location(location)?;
+        let pos_in_output = location - output_geo.loc.to_f64();
+        let map = layer_map_for_output(&output);
+        for band in [
+            WlrLayer::Overlay,
+            WlrLayer::Top,
+            WlrLayer::Bottom,
+            WlrLayer::Background,
+        ] {
+            if let Some(layer) = map.layer_under(band, pos_in_output)
+                && layer.can_receive_keyboard_focus()
+                && layer_has_surface_under(&map, layer, pos_in_output)
+            {
+                return Some(layer.clone());
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "tty")]
+    fn focus_layer_surface(&mut self, layer: LayerSurface, serial: smithay::utils::Serial) {
+        if !layer.alive() || !layer.can_receive_keyboard_focus() {
+            return;
+        }
+        let keyboard = self.seat.get_keyboard();
+        if keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
+        {
+            return;
+        }
+        match layer.cached_state().keyboard_interactivity {
+            KeyboardInteractivity::OnDemand => {
+                self.layer_shell_on_demand_focus = Some(layer.clone());
+            }
+            KeyboardInteractivity::Exclusive => {
+                // Exclusive claims the seat without clearing on-demand memory;
+                // on-demand is restored when exclusive surfaces leave.
+            }
+            KeyboardInteractivity::None => return,
+        }
+        // Layer focus is not an ECS view: clear xdg-toplevel Activated.
+        self.publish_window_activation(None);
+        let focus = KeyboardFocusTarget::from(layer.wl_surface().clone());
+        if let Some(keyboard) = keyboard
+            && keyboard.current_focus().as_ref() != Some(&focus)
+        {
+            keyboard.set_focus(self, Some(focus), serial);
+        }
+    }
+
+    /// Prefer exclusive overlay/top, then selected on-demand, then exclusive
+    /// bottom/background only when the workspace has no mapped views (Niri-style).
+    #[cfg(feature = "tty")]
+    fn preferred_layer_keyboard_target(&self) -> Option<LayerSurface> {
+        // Space membership is enough here: exclusive bottom layers only claim
+        // the seat when no mapped window can receive ordinary keyboard focus.
+        let workspace_empty = self.space.elements().next().is_none();
+        for output in self.space.outputs() {
+            let map = layer_map_for_output(output);
+            for band in [WlrLayer::Overlay, WlrLayer::Top] {
+                if let Some(layer) = exclusive_layer_on(&map, band) {
+                    return Some(layer);
+                }
+            }
+            if let Some(layer) = self.layer_shell_on_demand_focus.as_ref()
+                && layer.alive()
+                && map.layers().any(|candidate| candidate == layer)
+                && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand
+            {
+                return Some(layer.clone());
+            }
+            if workspace_empty {
+                for band in [WlrLayer::Bottom, WlrLayer::Background] {
+                    if let Some(layer) = exclusive_layer_on(&map, band) {
+                        return Some(layer);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "tty")]
+    fn sanitize_on_demand_layer_focus(&mut self) {
+        let keep = self
+            .layer_shell_on_demand_focus
+            .as_ref()
+            .is_some_and(|layer| {
+                layer.alive()
+                    && layer.cached_state().keyboard_interactivity
+                        == KeyboardInteractivity::OnDemand
+                    && surface_has_buffer(layer.wl_surface())
+            });
+        if !keep {
+            self.layer_shell_on_demand_focus = None;
+        }
+    }
+
+    #[cfg(feature = "tty")]
+    fn clear_on_demand_if_surface(&mut self, surface: &WlSurface) {
+        if self
+            .layer_shell_on_demand_focus
+            .as_ref()
+            .is_some_and(|layer| layer.wl_surface() == surface)
+        {
+            self.layer_shell_on_demand_focus = None;
+        }
+    }
 }
 
 #[cfg(feature = "tty")]
 fn surface_has_buffer(surface: &WlSurface) -> bool {
     with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
+}
+
+#[cfg(feature = "tty")]
+fn exclusive_layer_on(map: &smithay::desktop::LayerMap, band: WlrLayer) -> Option<LayerSurface> {
+    map.layers_on(band).find_map(|layer| {
+        (layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+            && layer.alive()
+            && surface_has_buffer(layer.wl_surface()))
+        .then(|| layer.clone())
+    })
+}
+
+#[cfg(feature = "tty")]
+fn layer_surface_under(
+    map: &smithay::desktop::LayerMap,
+    pos_in_output: Point<f64, Logical>,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    bands: [WlrLayer; 2],
+) -> Option<(WlSurface, Point<f64, Logical>)> {
+    for band in bands {
+        if let Some(layer) = map.layer_under(band, pos_in_output)
+            && let Some(layer_geo) = map.layer_geometry(layer)
+            && let Some((surface, surface_loc)) = layer.surface_under(
+                pos_in_output - layer_geo.loc.to_f64(),
+                WindowSurfaceType::ALL,
+            )
+        {
+            let global = surface_loc + layer_geo.loc + output_geo.loc;
+            return Some((surface, global.to_f64()));
+        }
+    }
+    None
+}
+
+#[cfg(feature = "tty")]
+fn layer_has_surface_under(
+    map: &smithay::desktop::LayerMap,
+    layer: &LayerSurface,
+    pos_in_output: Point<f64, Logical>,
+) -> bool {
+    map.layer_geometry(layer).is_some_and(|layer_geo| {
+        layer
+            .surface_under(
+                pos_in_output - layer_geo.loc.to_f64(),
+                WindowSurfaceType::ALL,
+            )
+            .is_some()
+    })
 }
 
 /// Synthetic view ids for layer surfaces. High-bit tags keep them out of the
@@ -230,4 +532,35 @@ fn layer_stacking_order(layer: WlrLayer, index: u64) -> u64 {
         WlrLayer::Overlay => u64::MAX / 2,
     };
     base.saturating_add(index)
+}
+
+#[cfg(all(test, feature = "tty"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_draw_order_places_overlay_above_top_and_bottom() {
+        assert!(
+            layer_stacking_order(WlrLayer::Background, 0)
+                < layer_stacking_order(WlrLayer::Bottom, 0)
+        );
+        assert!(layer_stacking_order(WlrLayer::Bottom, 0) < layer_stacking_order(WlrLayer::Top, 0));
+        assert!(
+            layer_stacking_order(WlrLayer::Top, 0) < layer_stacking_order(WlrLayer::Overlay, 0)
+        );
+        assert!(
+            layer_stacking_order(WlrLayer::Top, 3) < layer_stacking_order(WlrLayer::Overlay, 0)
+        );
+    }
+
+    #[test]
+    fn pointer_band_order_is_overlay_top_then_bottom_background() {
+        // Document the hit-test contract consumed by layer_or_window_pointer_focus.
+        let above = [WlrLayer::Overlay, WlrLayer::Top];
+        let below = [WlrLayer::Bottom, WlrLayer::Background];
+        assert_eq!(above[0], WlrLayer::Overlay);
+        assert_eq!(above[1], WlrLayer::Top);
+        assert_eq!(below[0], WlrLayer::Bottom);
+        assert_eq!(below[1], WlrLayer::Background);
+    }
 }
