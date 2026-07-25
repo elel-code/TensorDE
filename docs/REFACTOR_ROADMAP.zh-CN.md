@@ -435,12 +435,16 @@ operation dispatcher。
   action 层不再直接 `spawn_*_task_result`。
 - `ShellOperationRequest` 因 clipboard receiver 去掉 `Clone`；blocking 类用
   `ShellClipboardWork` / navigation 元数据表达。
+- trash view 也只经 `submit_operation_request`；`start_async_trash_view_operation`
+  包装已删除。
+- `async_operations` 拆为 `lifecycle.rs`（drain/progress/cancel/register）+
+  `submit.rs`（request 路由与 spawn），多 `impl` 块组合。
 
 后续：
-- 内部 `start_async_*` 可继续收成 private implementation detail。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
+- scene 测试 sync helper 可继续与生产 async 路径收敛。
 
 ### 6c. wayland-client-runtime 文件拆分（进行中）
 

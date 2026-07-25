@@ -13,8 +13,12 @@ impl FikaWgpuApp {
         _event_loop: &ActiveEventLoop,
         action: ShellContextMenuAction,
     ) {
-        match self.start_async_trash_view_operation(action) {
-            Ok(()) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
+        let pane_to_reload = self
+            .scene
+            .context_target_pane()
+            .unwrap_or_else(|| self.scene.active_pane());
+        let (operation, paths) = match self.scene.context_target_trash_view_operation(action) {
+            Ok(value) => value,
             Err(error) => {
                 fika_log!(
                     "[fika-wgpu] trash-view-error action={} {error}",
@@ -26,8 +30,16 @@ impl FikaWgpuApp {
                     false,
                 ));
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+                return;
             }
-        }
+        };
+        self.submit_operation_request(ShellOperationRequest::trash_view(
+            action,
+            operation,
+            paths,
+            pane_to_reload,
+        ));
+        self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
     pub(crate) fn move_context_target_to_trash(
