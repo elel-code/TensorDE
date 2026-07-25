@@ -342,6 +342,7 @@ impl ShellScene {
         Ok(())
     }
 
+    #[cfg(test)]
     fn move_context_target_to_trash(
         &mut self,
         size: PhysicalSize<u32>,

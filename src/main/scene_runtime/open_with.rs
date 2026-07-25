@@ -248,8 +248,9 @@ impl ShellScene {
         mode: FileTransferMode,
         item_count: usize,
         detail: String,
+        privileged: bool,
     ) {
-        let label = async_transfer_task_label(source, mode, item_count);
+        let label = async_transfer_task_label(source, mode, item_count, privileged);
         self.context_target = None;
         self.context_menu = None;
         self.drop_menu = None;
@@ -262,7 +263,42 @@ impl ShellScene {
         self.place_press = None;
         self.dnd_hover_target = None;
         self.pending_drop_request = None;
-        self.record_task_status(ShellTaskStatus::running(task_id, label, detail, false));
+        self.record_task_status(ShellTaskStatus::running(
+            task_id,
+            label,
+            detail,
+            privileged,
+        ));
+    }
+
+    fn record_async_move_to_trash_started(
+        &mut self,
+        task_id: ShellTaskId,
+        path_count: usize,
+        privileged: bool,
+    ) {
+        self.context_target = None;
+        self.context_menu = None;
+        self.drop_menu = None;
+        self.properties_overlay = None;
+        self.create_dialog = None;
+        self.rename_dialog = None;
+        self.rubber_band = None;
+        self.internal_drag = None;
+        self.external_drag = None;
+        self.place_press = None;
+        self.dnd_hover_target = None;
+        self.pending_drop_request = None;
+        self.record_task_status(ShellTaskStatus::running(
+            task_id,
+            if privileged {
+                "Administrator move to Trash"
+            } else {
+                "Moving to Trash"
+            },
+            count_label(path_count, "item", "items"),
+            privileged,
+        ));
     }
 
     fn record_async_trash_view_started(
@@ -320,9 +356,19 @@ impl ShellScene {
         let status = if transfer.cancelled {
             ShellTaskStatus::cancelled(
                 match completion.source {
-                    ShellAsyncTransferSource::Paste => "Paste cancelled".to_string(),
+                    ShellAsyncTransferSource::Paste => {
+                        if result.privileged {
+                            "Administrator paste cancelled".to_string()
+                        } else {
+                            "Paste cancelled".to_string()
+                        }
+                    }
                     ShellAsyncTransferSource::Drop => {
-                        format!("{} cancelled", result.mode.label())
+                        if result.privileged {
+                            format!("Administrator {} cancelled", result.mode.label())
+                        } else {
+                            format!("{} cancelled", result.mode.label())
+                        }
                     }
                 },
                 transfer_task_detail(
@@ -337,8 +383,20 @@ impl ShellScene {
         } else if result.failure_count > 0 {
             ShellTaskStatus::failed(
                 match completion.source {
-                    ShellAsyncTransferSource::Paste => "Paste failed".to_string(),
-                    ShellAsyncTransferSource::Drop => format!("{} failed", result.mode.label()),
+                    ShellAsyncTransferSource::Paste => {
+                        if result.privileged {
+                            "Administrator paste failed".to_string()
+                        } else {
+                            "Paste failed".to_string()
+                        }
+                    }
+                    ShellAsyncTransferSource::Drop => {
+                        if result.privileged {
+                            format!("Administrator {} failed", result.mode.label())
+                        } else {
+                            format!("{} failed", result.mode.label())
+                        }
+                    }
                 },
                 transfer_task_detail(
                     result.success_count,
@@ -352,8 +410,20 @@ impl ShellScene {
         } else {
             ShellTaskStatus::completed(
                 match completion.source {
-                    ShellAsyncTransferSource::Paste => "Pasted".to_string(),
-                    ShellAsyncTransferSource::Drop => result.mode.label().to_string(),
+                    ShellAsyncTransferSource::Paste => {
+                        if result.privileged {
+                            "Administrator paste".to_string()
+                        } else {
+                            "Pasted".to_string()
+                        }
+                    }
+                    ShellAsyncTransferSource::Drop => {
+                        if result.privileged {
+                            format!("Administrator {}", result.mode.label())
+                        } else {
+                            result.mode.label().to_string()
+                        }
+                    }
                 },
                 transfer_task_detail(
                     result.success_count,
@@ -378,6 +448,70 @@ impl ShellScene {
             for affected_dir in &transfer.result.refresh_dirs {
                 self.reload_panes_showing_path(affected_dir, size)?;
             }
+        }
+        Ok(result)
+    }
+
+    fn apply_async_move_to_trash_completion(
+        &mut self,
+        completion: &ShellAsyncMoveToTrashCompletion,
+        size: PhysicalSize<u32>,
+    ) -> Result<ShellTrashResult, String> {
+        let result = completion.result.clone();
+        self.record_trash_content_change();
+        fika_log!(
+            "[fika-wgpu] async-trash paths={} success={} failure={} privileged={} changes={}",
+            completion.paths.len(),
+            result.success_count,
+            result.failure_count,
+            result.privileged as u8,
+            self.trash_changes
+        );
+        let status = if result.failure_count > 0 {
+            ShellTaskStatus::failed(
+                if result.privileged {
+                    "Administrator move to Trash failed"
+                } else {
+                    "Move to Trash failed"
+                },
+                transfer_task_detail(
+                    result.success_count,
+                    result.failure_count,
+                    Path::new("Trash"),
+                    result.first_error.as_deref(),
+                    result.administrator_available,
+                ),
+                result.privileged,
+            )
+        } else {
+            ShellTaskStatus::completed(
+                if result.privileged {
+                    "Administrator move to Trash"
+                } else {
+                    "Moved to Trash"
+                },
+                paths_task_summary(&completion.paths),
+                result.privileged,
+            )
+        };
+        self.finish_task_status(completion.task_id, status);
+
+        if !result.changed() {
+            return Ok(result);
+        }
+
+        self.context_target = None;
+        self.context_menu = None;
+        self.drop_menu = None;
+        self.properties_overlay = None;
+        self.create_dialog = None;
+        self.rename_dialog = None;
+        self.rubber_band = None;
+        if let Some(affected_dir) = self
+            .pane_state(completion.pane_to_reload)
+            .map(|state| state.path.clone())
+        {
+            self.reload_panes_showing_path(&affected_dir, size)?;
         }
         Ok(result)
     }

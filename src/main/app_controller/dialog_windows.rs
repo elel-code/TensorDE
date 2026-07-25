@@ -207,6 +207,32 @@ impl FikaWgpuApp {
                         }
                     }
                 }
+                ShellAsyncTaskResult::MoveToTrash(completion) => {
+                    self.active_task_controllers.remove(&completion.task_id);
+                    self.active_task_base_details.remove(&completion.task_id);
+                    let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+                        continue;
+                    };
+                    match self
+                        .scene
+                        .apply_async_move_to_trash_completion(&completion, size)
+                    {
+                        Ok(_) => {
+                            changed = true;
+                        }
+                        Err(error) => {
+                            self.scene.finish_task_status(
+                                completion.task_id,
+                                ShellTaskStatus::failed(
+                                    "Task update failed",
+                                    error,
+                                    completion.privileged,
+                                ),
+                            );
+                            changed = true;
+                        }
+                    }
+                }
                 ShellAsyncTaskResult::Clipboard(completion) => {
                     changed |= self.apply_async_clipboard_completion(completion);
                 }
@@ -484,7 +510,7 @@ impl FikaWgpuApp {
         }
     }
 
-    fn start_async_transfer(
+    fn start_async_transfer_with_privilege(
         &mut self,
         source: ShellAsyncTransferSource,
         target_dir: PathBuf,
@@ -492,6 +518,7 @@ impl FikaWgpuApp {
         paths: Vec<PathBuf>,
         label: &'static str,
         clear_clipboard: bool,
+        privileged: bool,
     ) {
         let task_id = self.next_task_id();
         let controller = OperationController::new();
@@ -506,6 +533,7 @@ impl FikaWgpuApp {
             mode,
             paths.len(),
             base_detail,
+            privileged,
         );
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
@@ -516,13 +544,14 @@ impl FikaWgpuApp {
                 let target_dir = target_dir.clone();
                 let paths = paths.clone();
                 move || async move {
-                    transfer_paths_async_with_controller(
+                    transfer_paths_async_with_controller_and_privilege(
                         target_dir,
                         mode,
                         paths,
                         label,
                         clear_clipboard,
                         controller,
+                        privileged,
                     )
                     .await
                 }
@@ -543,13 +572,14 @@ impl FikaWgpuApp {
                 }
             },
         ) {
-            let transfer = transfer_runtime_failure(
+            let mut transfer = transfer_runtime_failure(
                 target_dir_for_error.clone(),
                 mode,
                 label,
                 clear_clipboard,
                 error,
             );
+            transfer.privileged = privileged;
             let _ = self.async_task_tx.send(ShellAsyncTaskResult::Transfer(
                 ShellAsyncTransferCompletion {
                     task_id,
@@ -559,6 +589,55 @@ impl FikaWgpuApp {
                 },
             ));
             self.event_loop_proxy.wake_up();
+        }
+    }
+
+    fn start_async_move_to_trash(
+        &mut self,
+        paths: Vec<PathBuf>,
+        pane_to_reload: ShellPaneId,
+        privileged: bool,
+    ) {
+        let task_id = self.next_task_id();
+        self.active_task_controllers
+            .insert(task_id, OperationController::new());
+        self.scene
+            .record_async_move_to_trash_started(task_id, paths.len(), privileged);
+        let tx = self.async_task_tx.clone();
+        let proxy = self.event_loop_proxy.clone();
+        let paths_for_task = paths.clone();
+        if let Err(error) = spawn_operation_task_with_completion(
+            move || async move {
+                trash_paths_async_with_privilege(paths_for_task, privileged).await
+            },
+            move |result| {
+                if tx
+                    .send(ShellAsyncTaskResult::MoveToTrash(
+                        ShellAsyncMoveToTrashCompletion {
+                            task_id,
+                            pane_to_reload,
+                            paths,
+                            privileged,
+                            result,
+                        },
+                    ))
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            },
+        ) {
+            fika_log!("[fika-wgpu] move-to-trash-runtime-error {error}");
+            self.active_task_controllers.remove(&task_id);
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                if privileged {
+                    "Administrator move to Trash failed"
+                } else {
+                    "Move to Trash failed"
+                },
+                error.to_string(),
+                privileged,
+            ));
         }
     }
 }

@@ -248,10 +248,11 @@ use shell::toolbar::{
     ShellToolbarLayout, ShellToolbarViewModeSegment, app_toolbar_layout as build_app_toolbar_layout,
 };
 use shell::transfer::{
-    ShellAsyncTaskResult, ShellAsyncTransferCompletion, ShellAsyncTransferSource,
-    ShellAsyncTrashViewCompletion, ShellPasteResult, ShellTransferExecution,
-    async_transfer_task_detail, async_transfer_task_label, transfer_paths_async_with_controller,
-    transfer_paths_with_privilege, transfer_runtime_failure,
+    ShellAsyncMoveToTrashCompletion, ShellAsyncTaskResult, ShellAsyncTransferCompletion,
+    ShellAsyncTransferSource, ShellAsyncTrashViewCompletion, ShellPasteResult,
+    ShellTransferExecution, async_transfer_task_detail, async_transfer_task_label,
+    transfer_paths_async_with_controller_and_privilege, transfer_paths_with_privilege,
+    transfer_runtime_failure, trash_paths_async_with_privilege,
 };
 use shell::trash_conflict::{ShellTrashConflictDialog, TrashConflictDialogClick};
 use shell::ui_chrome::{

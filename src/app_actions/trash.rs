@@ -4,6 +4,7 @@ use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;
 use crate::shell::context_menu::ShellContextMenuAction;
 use crate::shell::tasks::ShellTaskStatus;
+use fika_core::is_network_path;
 
 impl FikaWgpuApp {
     pub(crate) fn perform_trash_view_context_action(
@@ -50,17 +51,15 @@ impl FikaWgpuApp {
 
     pub(crate) fn move_context_target_to_trash(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         privileged: bool,
     ) {
-        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
-            return;
-        };
-        match self.scene.move_context_target_to_trash(size, privileged) {
-            Ok(result) if result.changed() => {
-                self.apply_action_outcome(event_loop, ShellActionOutcome::Present("move-to-trash"));
-            }
-            Ok(_) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
+        let pane_to_reload = self
+            .scene
+            .context_target_pane()
+            .unwrap_or_else(|| self.scene.active_pane());
+        let paths = match self.scene.context_target_trash_paths() {
+            Ok(paths) => paths,
             Err(error) => {
                 fika_log!("[fika-wgpu] trash-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
@@ -73,8 +72,25 @@ impl FikaWgpuApp {
                     privileged,
                 ));
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+                return;
             }
+        };
+        if paths.iter().any(|path| is_network_path(path)) {
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                if privileged {
+                    "Administrator move to Trash failed"
+                } else {
+                    "Move to Trash failed"
+                },
+                "remote trash is not available yet",
+                privileged,
+            ));
+            self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+            return;
         }
+
+        self.start_async_move_to_trash(paths, pane_to_reload, privileged);
+        self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
     pub(crate) fn replace_trash_restore_conflicts(&mut self, event_loop: &ActiveEventLoop) {

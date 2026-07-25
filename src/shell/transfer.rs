@@ -13,7 +13,8 @@ use crate::shell::create_rename::{CreateEntryRequest, RenameEntryRequest};
 use crate::shell::metrics::WGPU_SHELL_PANE_ID;
 use crate::shell::pane::ShellPaneId;
 use crate::shell::privilege::{
-    ShellPrivilegeOutcome, run_privileged_command_sync, should_attempt_privileged_operation,
+    ShellPrivilegeOutcome, run_privileged_command, run_privileged_command_sync,
+    should_attempt_privileged_operation,
 };
 use crate::shell::tasks::ShellTaskId;
 
@@ -139,6 +140,7 @@ pub(crate) enum ShellAsyncTaskResult {
     Navigation(ShellAsyncNavigationCompletion),
     Transfer(ShellAsyncTransferCompletion),
     TrashView(ShellAsyncTrashViewCompletion),
+    MoveToTrash(ShellAsyncMoveToTrashCompletion),
     Clipboard(ShellAsyncClipboardCompletion),
     Create(ShellAsyncCreateCompletion),
     Rename(ShellAsyncRenameCompletion),
@@ -257,13 +259,14 @@ pub(crate) fn transfer_paths_with_privilege(
     }
 }
 
-pub(crate) async fn transfer_paths_async_with_controller(
+pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
     target_dir: PathBuf,
     mode: FileTransferMode,
     paths: Vec<PathBuf>,
     label: &'static str,
     clear_clipboard: bool,
     controller: OperationController,
+    privileged: bool,
 ) -> ShellTransferExecution {
     let operation = mode.operation();
     let mut success_count = 0;
@@ -281,6 +284,40 @@ pub(crate) async fn transfer_paths_async_with_controller(
             failure_count += 1;
             if first_error.is_none() {
                 first_error = Some("operation cancelled".to_string());
+            }
+            continue;
+        }
+        if privileged {
+            match run_privileged_command(PrivilegedCommand::Transfer {
+                operation: operation.to_string(),
+                source: source.clone(),
+                target_dir: target_dir.clone(),
+            })
+            .await
+            {
+                Ok(_) => {
+                    success_count += 1;
+                    push_transfer_refresh_dirs(
+                        mode,
+                        &source,
+                        &target_dir,
+                        &mut affected_dirs,
+                        &mut refresh_dirs,
+                    );
+                }
+                Err(error) => {
+                    failure_count += 1;
+                    if first_error.is_none() {
+                        first_error = Some(error.clone());
+                    }
+                    fika_log!(
+                        "[fika-wgpu] privileged-async-transfer-error mode={} source={} target={} error={error}",
+                        mode.label(),
+                        source.display(),
+                        target_dir.display()
+                    );
+                    push_unique_path(&mut refresh_dirs, target_dir.clone());
+                }
             }
             continue;
         }
@@ -344,21 +381,88 @@ pub(crate) async fn transfer_paths_async_with_controller(
             undo_items,
             created_items: Vec::new(),
         },
-        privileged: false,
+        privileged,
         administrator_available,
         first_error,
         cancelled,
     }
 }
 
+/// Async move-to-trash used by UI bridges (including privileged D-Bus helper).
+pub(crate) async fn trash_paths_async_with_privilege(
+    paths: Vec<PathBuf>,
+    privileged: bool,
+) -> crate::ShellTrashResult {
+    if privileged {
+        return match run_privileged_command(PrivilegedCommand::Trash {
+            paths: paths.clone(),
+        })
+        .await
+        {
+            Ok(_) => crate::ShellTrashResult {
+                success_count: paths.len(),
+                failure_count: 0,
+                trash_pairs: Vec::new(),
+                privileged: true,
+                administrator_available: false,
+                first_error: None,
+            },
+            Err(error) => crate::ShellTrashResult {
+                success_count: 0,
+                failure_count: paths.len(),
+                trash_pairs: Vec::new(),
+                privileged: true,
+                administrator_available: false,
+                first_error: Some(error),
+            },
+        };
+    }
+
+    let summary = file_ops::trash_paths_async(paths).await;
+    crate::ShellTrashResult {
+        success_count: summary.successes.len(),
+        failure_count: summary.failures.len(),
+        trash_pairs: summary
+            .successes
+            .iter()
+            .map(|record| (record.original_path.clone(), record.trash_path.clone()))
+            .collect(),
+        privileged: false,
+        administrator_available: summary
+            .failures
+            .iter()
+            .any(|failure| should_attempt_privileged_operation(failure)),
+        first_error: summary.failures.first().cloned(),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ShellAsyncMoveToTrashCompletion {
+    pub(crate) task_id: ShellTaskId,
+    pub(crate) pane_to_reload: ShellPaneId,
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) privileged: bool,
+    pub(crate) result: crate::ShellTrashResult,
+}
+
 pub(crate) fn async_transfer_task_label(
     source: ShellAsyncTransferSource,
     mode: FileTransferMode,
     item_count: usize,
+    privileged: bool,
 ) -> String {
-    match source {
-        ShellAsyncTransferSource::Paste => "Pasting".to_string(),
-        ShellAsyncTransferSource::Drop => mode.progress_label(item_count),
+    if privileged {
+        match source {
+            ShellAsyncTransferSource::Paste => "Administrator pasting".to_string(),
+            ShellAsyncTransferSource::Drop => {
+                format!("Administrator {}", mode.progress_label(item_count))
+            }
+        }
+    } else {
+        match source {
+            ShellAsyncTransferSource::Paste => "Pasting".to_string(),
+            ShellAsyncTransferSource::Drop => mode.progress_label(item_count),
+        }
     }
 }
 

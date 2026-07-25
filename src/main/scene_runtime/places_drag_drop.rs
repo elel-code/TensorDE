@@ -207,6 +207,10 @@ impl ShellScene {
         }
     }
 
+    // Production drop path is async via FikaWgpuApp::perform_drop_operation_request.
+    // Keep this sync helper only for tests that exercise scene-side transfer bookkeeping.
+    #[cfg(test)]
+    #[allow(dead_code)]
     fn perform_drop_operation_request(
         &mut self,
         request: &ShellDropOperationRequest,
