@@ -32,6 +32,10 @@ record and try to enqueue it, while a dedicated Compio drain thread owns the sel
 `stderr`. `TENSOR_LOG_FILE` selects a compositor log file; without it, the drain writes to
 `stderr`, which systemd captures as journal output. The queue is deliberately lossy under a burst
 and records a later drop notice rather than ever blocking frame, input, or protocol dispatch.
+Termination signals are blocked early and delivered through calloop's signalfd source (Niri-style):
+the handler writes a best-effort line to stderr, logs through tracing, and stops the loop. After
+`event_loop.run` returns, Tensor announces stop (including optional systemd `STOPPING=1`), records
+that the loop stopped, and joins the log drain so queued shutdown lines are flushed before exit.
 
 Client commands use the same resolved systemd policy after startup. `ProcessLauncher` performs a
 double-fork without a shell. In an active systemd scope it waits for the transient-unit job before

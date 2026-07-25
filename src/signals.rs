@@ -30,7 +30,10 @@ pub(crate) fn unblock_all_for_child() -> io::Result<()> {
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod platform {
-    use std::{io, mem};
+    use std::{
+        io::{self, Write},
+        mem,
+    };
 
     use smithay::reexports::calloop::{
         Error, LoopHandle, LoopSignal,
@@ -49,11 +52,27 @@ mod platform {
         let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP])?;
         handle
             .insert_source(signals, move |event, _, _| {
-                info!(signal = ?event.signal(), "stopping compositor after termination signal");
+                // Niri-style: keep the handler tiny (log + stop). Also write to
+                // stderr so a SIGTERM is visible even when the asynchronous file
+                // drain has not yet flushed its queue.
+                let signal = event.signal();
+                write_signal_notice(signal);
+                info!(
+                    signal = ?signal,
+                    "stopping compositor after termination signal"
+                );
                 stop_signal.stop();
             })
             .map_err(Error::from)?;
         Ok(())
+    }
+
+    fn write_signal_notice(signal: Signal) {
+        let line = format!("tensor: quitting due to receiving signal {signal:?}\n");
+        let stderr = io::stderr();
+        let mut handle = stderr.lock();
+        let _ = handle.write_all(line.as_bytes());
+        let _ = handle.flush();
     }
 
     pub(super) fn unblock_all_for_child() -> io::Result<()> {

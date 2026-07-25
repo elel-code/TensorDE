@@ -2,7 +2,7 @@ use std::io;
 
 use clap::Parser;
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{StartupGateError, cli::Cli, gates::StartupGates, logging};
 use crate::{compositor::Compositor, config::Config, xwayland};
@@ -55,9 +55,25 @@ pub fn run() -> Result<(), StartupError> {
             compositor.spawn_startup_commands(permit);
         }
         info!("entering compositor event loop");
-        compositor.run()?;
+        let run_result = compositor.run();
+        // Hyprland-style second phase: the loop has returned; announce stop and
+        // drain diagnostics before process teardown drops the log worker.
+        #[cfg(feature = "systemd")]
+        if systemd_active
+            && let Err(error) = crate::service::notify_stopping()
+        {
+            warn!(%error, "failed to notify systemd that the compositor is stopping");
+        }
+        match &run_result {
+            Ok(()) => info!("compositor event loop stopped"),
+            Err(error) => warn!(%error, "compositor event loop returned with an error"),
+        }
+        logging.shutdown();
+        run_result?;
+        return Ok(());
     }
 
+    logging.shutdown();
     Ok(())
 }
 

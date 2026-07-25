@@ -68,7 +68,7 @@ pub(crate) fn initialize() -> Result<Logging, LoggingError> {
     subscriber.map_err(|error| LoggingError::Subscriber(error.to_string()))?;
 
     Ok(Logging {
-        _asynchronous: asynchronous,
+        asynchronous,
         file_path,
     })
 }
@@ -87,13 +87,21 @@ fn create_log_directory(path: &Path) -> Result<(), LoggingError> {
 }
 
 pub(crate) struct Logging {
-    _asynchronous: AsyncLogGuard,
+    asynchronous: AsyncLogGuard,
     file_path: Option<PathBuf>,
 }
 
 impl Logging {
     pub(crate) fn file_path(&self) -> Option<&Path> {
         self.file_path.as_deref()
+    }
+
+    /// Stop accepting records and join the drain thread after it flushes.
+    ///
+    /// Call this after the compositor event loop returns so SIGTERM / shutdown
+    /// lines enqueued on the way out are not lost when the process exits.
+    pub(crate) fn shutdown(self) {
+        self.asynchronous.shutdown();
     }
 }
 
@@ -137,10 +145,12 @@ impl AsyncLogGuard {
             state: self.state.clone(),
         }
     }
-}
 
-impl Drop for AsyncLogGuard {
-    fn drop(&mut self) {
+    fn shutdown(mut self) {
+        self.shutdown_worker();
+    }
+
+    fn shutdown_worker(&mut self) {
         // The global tracing subscriber retains its MakeWriter, so closing the
         // sender cannot be the shutdown signal. New records become no-ops and
         // the drain worker flushes records already accepted into its queue.
@@ -148,6 +158,12 @@ impl Drop for AsyncLogGuard {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+impl Drop for AsyncLogGuard {
+    fn drop(&mut self) {
+        self.shutdown_worker();
     }
 }
 

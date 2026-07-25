@@ -16,6 +16,14 @@ pub fn notify_ready() -> io::Result<()> {
     ])
 }
 
+/// Tell the user manager that orderly shutdown has begun (Hyprland-style STOPPING).
+pub fn notify_stopping() -> io::Result<()> {
+    sd_notify::notify(&[
+        sd_notify::NotifyState::Stopping,
+        sd_notify::NotifyState::Status("Tensor compositor stopping"),
+    ])
+}
+
 pub struct ImportedEnvironment {
     _private: (),
 }
