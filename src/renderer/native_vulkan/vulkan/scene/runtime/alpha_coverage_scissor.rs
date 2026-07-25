@@ -1,12 +1,18 @@
-//! Conservative sparse scissors for transparent image-waterwaves composites.
+//! Conservative sparse scissors for transparent image-waterwaves composites
+//! and identity-sampled alpha-blended object images.
 //!
 //! Scene-color composites use projected object UV → surface scissors. Multipass
 //! `image-local-*` sources/fields instead use authored-texture UV identity on the
 //! local target extent (`gl_Position = vec4(a_TexCoord * 2 - 1, ...)`), so
 //! coverage must never reuse surface affine there.
+//!
+//! Identity object images (`we/genericimage4` under standard alpha blend) sample
+//! slot-0 UV without displacement; zero-alpha fragments contribute nothing to
+//! the destination, so sparse coverage is stream-safe with only a bilinear
+//! filter guard.
 
 use crate::engine::scene::{
-    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneRenderTargetKind,
+    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneCompositeBlend, SceneRenderTargetKind,
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
     SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneStorage,
 };
@@ -27,6 +33,14 @@ const SPARSE_COMPOSITE_SHADERS: &[&str] = &[
     "we/image-waterwaves-multiply-composite",
     "we/image-waterwaves-direct",
     "we/image-waterwaves-multiply-direct",
+];
+/// Identity UV sample + standard alpha blend: no authored displacement.
+const IDENTITY_ALPHA_OBJECT_SHADERS: &[&str] = &["we/genericimage4"];
+/// Final-program object draws with UV displacement bounded by strength².
+/// Only exact keys under standard alpha blend (modulate / multiply excluded).
+const FINAL_DISPLACED_ALPHA_OBJECT_SHADERS: &[&str] = &[
+    "we/image-waterwaves-final",
+    "we/image-waterripple-final",
 ];
 /// Source assembly on local RT: UV covers the full target, so sparse coverage is
 /// identity-mapped in authored-texture domain.
@@ -68,21 +82,17 @@ pub(super) fn scene_alpha_coverage_scissors(
             continue;
         };
         let local_target = pass_is_local_effect_target(pass.target);
-        let sparse_kind = sparse_coverage_kind(shader, local_target);
+        let sparse_kind = sparse_coverage_kind(shader, local_target, pass_record.scene_blend);
         let Some(sparse_kind) = sparse_kind else {
             continue;
-        };
-        let displacement = match sparse_kind {
-            SparseCoverageKind::LocalSource => [WATERWAVES_FILTER_GUARD_CELLS; 2],
-            SparseCoverageKind::LocalField | SparseCoverageKind::SceneComposite => {
-                graph_waterwaves_displacement_cells(storage, graph, pass.graph_index)
-            }
         };
         let coverage_extent = match sparse_kind {
             SparseCoverageKind::LocalSource | SparseCoverageKind::LocalField => {
                 local_coverage_extent(graph, pass)
             }
-            SparseCoverageKind::SceneComposite => Some(output_extent),
+            SparseCoverageKind::SceneComposite
+            | SparseCoverageKind::IdentityObject
+            | SparseCoverageKind::FinalDisplacedObject => Some(output_extent),
         };
         let Some(coverage_extent) = coverage_extent else {
             continue;
@@ -102,6 +112,17 @@ pub(super) fn scene_alpha_coverage_scissors(
             let Some(texture) = source_texture_for_sparse_draw(storage, graph, pass, draw) else {
                 continue;
             };
+            let displacement = match sparse_kind {
+                SparseCoverageKind::LocalSource | SparseCoverageKind::IdentityObject => {
+                    [WATERWAVES_FILTER_GUARD_CELLS; 2]
+                }
+                SparseCoverageKind::LocalField | SparseCoverageKind::SceneComposite => {
+                    graph_waterwaves_displacement_cells(storage, graph, pass.graph_index)
+                }
+                SparseCoverageKind::FinalDisplacedObject => {
+                    final_program_displacement_cells(storage, draw, shader)
+                }
+            };
             let coverage = dilate_coverage(
                 texture.alpha_coverage_rows,
                 displacement[0],
@@ -114,7 +135,9 @@ pub(super) fn scene_alpha_coverage_scissors(
                 SparseCoverageKind::LocalSource | SparseCoverageKind::LocalField => {
                     LOCAL_IDENTITY_AFFINE
                 }
-                SparseCoverageKind::SceneComposite => {
+                SparseCoverageKind::SceneComposite
+                | SparseCoverageKind::IdentityObject
+                | SparseCoverageKind::FinalDisplacedObject => {
                     let Some(affine) = object_uv_to_screen_affine(storage, draw, coverage_extent)
                     else {
                         continue;
@@ -166,13 +189,21 @@ pub(super) fn scene_alpha_coverage_scissors(
 enum SparseCoverageKind {
     /// Scene-color waterwaves composite / direct mesh path.
     SceneComposite,
+    /// Scene-color identity UV object image under standard alpha blend.
+    IdentityObject,
+    /// Final waterwaves/waterripple object draw under standard alpha blend.
+    FinalDisplacedObject,
     /// Local RT source assembly (`image-effect-source` family).
     LocalSource,
     /// Local RT field / multipass waterwaves write.
     LocalField,
 }
 
-fn sparse_coverage_kind(shader: &str, local_target: bool) -> Option<SparseCoverageKind> {
+fn sparse_coverage_kind(
+    shader: &str,
+    local_target: bool,
+    scene_blend: SceneCompositeBlend,
+) -> Option<SparseCoverageKind> {
     if local_target {
         if matches_shader_or_stage_variant(shader, LOCAL_SPARSE_SOURCE_SHADERS)
             || LOCAL_SPARSE_SOURCE_SHADERS
@@ -186,8 +217,32 @@ fn sparse_coverage_kind(shader: &str, local_target: bool) -> Option<SparseCovera
         }
         return None;
     }
-    matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS)
-        .then_some(SparseCoverageKind::SceneComposite)
+    if matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS) {
+        return Some(SparseCoverageKind::SceneComposite);
+    }
+    // Exact keys only. Multiply / modulate / screen blends can change the
+    // destination under zero source alpha and are excluded.
+    // Opt-out for formal A/B: GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_IDENTITY=off.
+    let identity_enabled = !std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_IDENTITY")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("off"));
+    if identity_enabled
+        && scene_blend == SceneCompositeBlend::Alpha
+        && IDENTITY_ALPHA_OBJECT_SHADERS
+            .iter()
+            .any(|base| shader.eq_ignore_ascii_case(base))
+    {
+        return Some(SparseCoverageKind::IdentityObject);
+    }
+    if identity_enabled
+        && scene_blend == SceneCompositeBlend::Alpha
+        && FINAL_DISPLACED_ALPHA_OBJECT_SHADERS
+            .iter()
+            .any(|base| shader.eq_ignore_ascii_case(base))
+    {
+        return Some(SparseCoverageKind::FinalDisplacedObject);
+    }
+    None
 }
 
 fn pass_is_local_effect_target(target: SceneRenderTargetKind) -> bool {
@@ -238,7 +293,10 @@ fn draw_accepts_sparse_coverage(
         return false;
     }
     match kind {
-        SparseCoverageKind::SceneComposite | SparseCoverageKind::LocalSource => {
+        SparseCoverageKind::SceneComposite
+        | SparseCoverageKind::IdentityObject
+        | SparseCoverageKind::FinalDisplacedObject
+        | SparseCoverageKind::LocalSource => {
             draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
         }
         SparseCoverageKind::LocalField => matches!(
@@ -362,6 +420,44 @@ fn waterwaves_stage_displacement(strength: f32, direction: f32) -> [f32; 2] {
         direction.cos().abs() * displacement,
         direction.sin().abs() * displacement,
     ]
+}
+
+/// Final-program UV displacement is bounded by `strength²` in texture UV
+/// (waterwaves / waterripple sample offset). Expand coverage isotropically.
+fn final_program_displacement_cells(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    shader: &str,
+) -> [usize; 2] {
+    let strength = if shader.eq_ignore_ascii_case("we/image-waterwaves-final") {
+        material_parameter_values(storage, draw.material, &["effect.strength"])
+            .first()
+            .copied()
+            .unwrap_or(0.1)
+            .abs()
+    } else {
+        material_parameter_values(
+            storage,
+            draw.material,
+            &["effect.ripplestrength", "effect.strength"],
+        )
+        .first()
+        .copied()
+        .unwrap_or(0.1)
+        .abs()
+    };
+    let max_uv = strength * strength;
+    let safety_cells = std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_PADDING")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(WATERWAVES_FILTER_GUARD_CELLS)
+        .min(SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE);
+    let cells = (max_uv * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32)
+        .ceil()
+        .max(0.0) as usize
+        + safety_cells;
+    let cells = cells.min(SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE);
+    [cells, cells]
 }
 
 fn axis_aligned(affine: [[f32; 3]; 2]) -> bool {
@@ -560,31 +656,119 @@ mod tests {
     #[test]
     fn local_target_sparse_kinds_are_separated_from_scene_composite() {
         assert_eq!(
-            sparse_coverage_kind("we/image-effect-source", true),
+            sparse_coverage_kind("we/image-effect-source", true, SceneCompositeBlend::Alpha),
             Some(SparseCoverageKind::LocalSource)
         );
         assert_eq!(
-            sparse_coverage_kind("we/effect-waterwaves-direct__STAGES_2", true),
+            sparse_coverage_kind(
+                "we/effect-waterwaves-direct__STAGES_2",
+                true,
+                SceneCompositeBlend::Alpha
+            ),
             Some(SparseCoverageKind::LocalField)
         );
         assert_eq!(
-            sparse_coverage_kind("we/image-waterwaves-direct__STAGES_2", false),
+            sparse_coverage_kind(
+                "we/image-waterwaves-direct__STAGES_2",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
             Some(SparseCoverageKind::SceneComposite)
         );
         // Scene-color multipass composite stays on the surface path only.
         assert_eq!(
-            sparse_coverage_kind("we/image-effect-composite", false),
+            sparse_coverage_kind(
+                "we/image-effect-composite",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
             None
         );
         assert_eq!(
-            sparse_coverage_kind("we/image-effect-source", false),
+            sparse_coverage_kind("we/image-effect-source", false, SceneCompositeBlend::Alpha),
             None
         );
         // Must not apply surface composite scissors on local targets.
         assert_eq!(
-            sparse_coverage_kind("we/image-waterwaves-direct__STAGES_2", true),
+            sparse_coverage_kind(
+                "we/image-waterwaves-direct__STAGES_2",
+                true,
+                SceneCompositeBlend::Alpha
+            ),
             None
         );
+    }
+
+    #[test]
+    fn identity_genericimage4_accepts_alpha_blend_only() {
+        assert_eq!(
+            sparse_coverage_kind("we/genericimage4", false, SceneCompositeBlend::Alpha),
+            Some(SparseCoverageKind::IdentityObject)
+        );
+        assert_eq!(
+            sparse_coverage_kind("we/genericimage4", false, SceneCompositeBlend::Modulate),
+            None
+        );
+        assert_eq!(
+            sparse_coverage_kind(
+                "we/genericimage4-multiply-composite",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
+            None
+        );
+        assert_eq!(
+            sparse_coverage_kind("we/genericimage4", true, SceneCompositeBlend::Alpha),
+            None
+        );
+    }
+
+    #[test]
+    fn final_displaced_alpha_object_accepts_waterwaves_and_ripple() {
+        assert_eq!(
+            sparse_coverage_kind(
+                "we/image-waterwaves-final",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
+            Some(SparseCoverageKind::FinalDisplacedObject)
+        );
+        assert_eq!(
+            sparse_coverage_kind(
+                "we/image-waterripple-final",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
+            Some(SparseCoverageKind::FinalDisplacedObject)
+        );
+        assert_eq!(
+            sparse_coverage_kind(
+                "we/image-waterripple-modulate-final",
+                false,
+                SceneCompositeBlend::Modulate
+            ),
+            None
+        );
+        assert_eq!(
+            sparse_coverage_kind(
+                "we/image-waterripple-modulate-final",
+                false,
+                SceneCompositeBlend::Alpha
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn final_program_displacement_uses_strength_squared() {
+        // strength 0.1 → 0.01 UV → ceil(0.01*32)+2 = 1+2 = 3
+        let cells = {
+            let max_uv = 0.1f32 * 0.1;
+            let cells = (max_uv * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize
+                + WATERWAVES_FILTER_GUARD_CELLS;
+            [cells, cells]
+        };
+        assert_eq!(cells, [3, 3]);
     }
 
     #[test]
