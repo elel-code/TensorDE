@@ -6,7 +6,7 @@ use crate::shell::metrics::WGPU_SHELL_PANE_ID;
 use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::{ShellAsyncDeviceCompletion, ShellAsyncTaskResult};
 use crate::{DeviceActionRequest, FikaWgpuApp};
-use fika_core::{perform_device_place_operation, spawn_operation_task_with_completion};
+use fika_core::perform_device_place_operation;
 
 impl FikaWgpuApp {
     pub(crate) fn perform_device_context_action(
@@ -51,12 +51,10 @@ impl FikaWgpuApp {
         self.scene.context_menu = None;
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
 
-        let tx = self.async_task_tx.clone();
-        let proxy = self.event_loop_proxy.clone();
         let action_label = request.action.label();
         let action_name = request.action.as_str();
         let request_for_task = request.clone();
-        if let Err(error) = spawn_operation_task_with_completion(
+        if let Err(error) = self.spawn_async_task_result(
             move || async move {
                 perform_device_place_operation(
                     WGPU_SHELL_PANE_ID,
@@ -67,15 +65,7 @@ impl FikaWgpuApp {
                 .await
             },
             move |result| {
-                if tx
-                    .send(ShellAsyncTaskResult::Device(ShellAsyncDeviceCompletion {
-                        request,
-                        result,
-                    }))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
+                ShellAsyncTaskResult::Device(ShellAsyncDeviceCompletion { request, result })
             },
         ) {
             fika_log!("[fika-wgpu] device-action-runtime-error action={action_name} error={error}");

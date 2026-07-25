@@ -36,8 +36,9 @@ use fika_core::{
     network_path_from_uri, network_root_path, OperationRuntimeError, path_uri_from_path,
     place_order_path_for_user_places_path, read_entries_sync, read_gio_devices,
     read_network_entry_batches_sync_cancellable, resolve_location_input, save_app_settings,
-    save_place_order, save_user_places, spawn_operation_task_with_completion,
-    thumbnail_request_may_have_preview, trash_view_operation_result_async,
+    save_place_order, save_user_places, spawn_blocking_operation_with_completion,
+    spawn_operation_task_with_completion, thumbnail_request_may_have_preview,
+    trash_view_operation_result_async,
 };
 use platform::{
     ActiveEventLoop, ApplicationHandler, AsyncRequestSerial, ControlFlow, CursorIcon,

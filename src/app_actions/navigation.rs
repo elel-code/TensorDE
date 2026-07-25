@@ -13,7 +13,7 @@ use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::{
     ShellAsyncNavigationCompletion, ShellAsyncTaskResult, ShellNavigationHistoryUpdate,
 };
-use fika_core::{default_user_places_path, spawn_blocking_operation_with_completion};
+use fika_core::default_user_places_path;
 
 impl FikaWgpuApp {
     pub(crate) fn perform_path_navigation(
@@ -185,13 +185,11 @@ impl FikaWgpuApp {
 
         let generation = self.navigation_generations[pane.index()].wrapping_add(1);
         self.navigation_generations[pane.index()] = generation;
-        let tx = self.async_task_tx.clone();
-        let proxy = self.event_loop_proxy.clone();
         let listing_target = target_path.clone();
-        let _ = spawn_blocking_operation_with_completion(
+        let _ = self.spawn_blocking_task_result(
             move || read_shell_entries_sync(&listing_target),
             move |result| {
-                let completion = ShellAsyncNavigationCompletion {
+                ShellAsyncTaskResult::Navigation(ShellAsyncNavigationCompletion {
                     generation,
                     pane,
                     source_path,
@@ -199,13 +197,7 @@ impl FikaWgpuApp {
                     history,
                     reason,
                     result,
-                };
-                if tx
-                    .send(ShellAsyncTaskResult::Navigation(completion))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
+                })
             },
         );
 

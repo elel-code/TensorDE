@@ -421,10 +421,14 @@ operation dispatcher。
 - 纯文本 paste 改为 `paste_text_async` + transfer completion；生产 UI 不再同步
   `paste_text_result` / `transfer_paths_with_privilege`。
 - transfer spawn 路径抽成 `begin/spawn/fail` helper，file/text paste 共用 completion 通道。
+- async operation 生命周期抽到 `app_controller/async_operations.rs`：
+  `register/forget` task、`post/spawn_async_task_result`、`spawn_blocking_task_result`、
+  drain/progress/cancel；create/rename/device/clipboard/navigation 也走统一投递。
+- `dialog_windows.rs` 不再承载 transfer/trash spawn 与 drain。
 
 后续：
 - 继续把 UI 侧 operation submit / completion 与 task status 生命周期收敛到 dispatcher
-  （见第 6 节）：`FikaWgpuApp` 只提交 request 并 apply completion；统一 task id 生命周期。
+  （见第 6 节）：可进一步把 request 类型化（`OperationRequest`），让 app 只 submit/apply。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。

@@ -1,8 +1,6 @@
 use std::io::Result as IoResult;
 use std::sync::mpsc::Receiver;
 
-use fika_core::spawn_blocking_operation_with_completion;
-
 use crate::shell::clipboard::FileClipboardExportRequest;
 use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::{ShellAsyncClipboardCompletion, ShellAsyncTaskResult};
@@ -179,18 +177,9 @@ impl FikaWgpuApp {
         T: Send + 'static,
         F: FnOnce(Result<T, String>) -> ShellAsyncClipboardCompletion + Send + 'static,
     {
-        let tx = self.async_task_tx.clone();
-        let proxy = self.event_loop_proxy.clone();
-        if let Err(error) = spawn_blocking_operation_with_completion(
+        if let Err(error) = self.spawn_blocking_task_result(
             move || receive_clipboard_result(reply_rx),
-            move |result| {
-                if tx
-                    .send(ShellAsyncTaskResult::Clipboard(map(result)))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
-            },
+            move |result| ShellAsyncTaskResult::Clipboard(map(result)),
         ) {
             fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
         }

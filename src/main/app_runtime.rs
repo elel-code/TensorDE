@@ -75,6 +75,7 @@ struct OutgoingDndTransfer {
 include!("app_controller/window_lifecycle.rs");
 include!("app_controller/dialog_windows.rs");
 include!("app_controller/text_input.rs");
+include!("app_controller/async_operations.rs");
 include!("app_controller/async_tasks.rs");
 include!("app_controller/settings_window.rs");
 impl ApplicationHandler for FikaWgpuApp {

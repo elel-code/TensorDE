@@ -25,6 +25,7 @@ pub(crate) struct ShellPasteResult {
     pub(crate) mode: FileTransferMode,
     pub(crate) success_count: usize,
     pub(crate) failure_count: usize,
+    #[allow(dead_code)] // retained for scene tests and logging paths
     pub(crate) clear_clipboard: bool,
     pub(crate) privileged: bool,
     pub(crate) administrator_available: bool,

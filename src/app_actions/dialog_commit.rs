@@ -12,9 +12,7 @@ use crate::shell::transfer::{
     ShellAsyncCreateCompletion, ShellAsyncRenameCompletion, ShellAsyncTaskResult,
 };
 use crate::{FikaWgpuApp, path_display_label, task_error_detail};
-use fika_core::{
-    MimeApplicationCache, set_default_mime_application, spawn_operation_task_with_completion,
-};
+use fika_core::{MimeApplicationCache, set_default_mime_application};
 
 impl FikaWgpuApp {
     pub(crate) fn commit_rename_dialog(&mut self, _event_loop: &ActiveEventLoop) {
@@ -47,21 +45,11 @@ impl FikaWgpuApp {
         ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
 
-        let tx = self.async_task_tx.clone();
-        let proxy = self.event_loop_proxy.clone();
         let request_for_task = request.clone();
-        if let Err(error) = spawn_operation_task_with_completion(
+        if let Err(error) = self.spawn_async_task_result(
             move || async move { rename_entry_on_disk_explicit_async(request_for_task).await },
             move |outcome| {
-                if tx
-                    .send(ShellAsyncTaskResult::Rename(ShellAsyncRenameCompletion {
-                        request,
-                        outcome,
-                    }))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
+                ShellAsyncTaskResult::Rename(ShellAsyncRenameCompletion { request, outcome })
             },
         ) {
             fika_log!("[fika-wgpu] rename-runtime-error {error}");
@@ -170,21 +158,11 @@ impl FikaWgpuApp {
         ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
 
-        let tx = self.async_task_tx.clone();
-        let proxy = self.event_loop_proxy.clone();
         let request_for_task = request.clone();
-        if let Err(error) = spawn_operation_task_with_completion(
+        if let Err(error) = self.spawn_async_task_result(
             move || async move { create_entry_on_disk_explicit_async(request_for_task).await },
             move |outcome| {
-                if tx
-                    .send(ShellAsyncTaskResult::Create(ShellAsyncCreateCompletion {
-                        request,
-                        outcome,
-                    }))
-                    .is_ok()
-                {
-                    proxy.wake_up();
-                }
+                ShellAsyncTaskResult::Create(ShellAsyncCreateCompletion { request, outcome })
             },
         ) {
             fika_log!("[fika-wgpu] create-runtime-error {error}");
