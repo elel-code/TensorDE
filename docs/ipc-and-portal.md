@@ -8,7 +8,13 @@ that server instance.
 The server is registered in the Smithay calloop. Each client has bounded frame decoding, a bounded
 response queue, and a separate non-blocking response writer, so a slow IPC peer cannot stall
 Wayland dispatch or grow compositor memory without limit.
-`tensor-msg` exposes `ping`, `get-state`, `set-layout`, and `quit` using the same codec.
+`tensor-msg` exposes `ping`, `get-state`, `set-layout`, `spawn`, and `quit` using the same codec.
+
+`spawn` accepts a direct argv array (one program and optional arguments). The compositor queues the
+command on the asynchronous launch worker and returns `accepted` as soon as the request is enqueued;
+process creation and optional systemd scope setup complete off the calloop thread. Empty argv is
+rejected with `invalid_argument`. A saturated launch queue returns `queue_full`. Tensor never
+invokes a shell for this path.
 
 Connection handling verifies peer credentials before dispatch. Requests are validated and dispatched
 on the compositor event-loop thread; they do not receive direct access to ECS, Smithay, or Vulkan

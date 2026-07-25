@@ -29,7 +29,15 @@ struct Cli {
 enum CliCommand {
     Ping,
     GetState,
-    SetLayout { layout: LayoutKind },
+    SetLayout {
+        layout: LayoutKind,
+    },
+    /// Queue a direct argv launch (no shell) on the compositor.
+    Spawn {
+        /// Program and arguments, for example: `tensor-msg spawn -- foot --server`
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
+    },
     Quit,
 }
 
@@ -39,6 +47,7 @@ impl From<CliCommand> for Command {
             CliCommand::Ping => Self::Ping,
             CliCommand::GetState => Self::GetState,
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
+            CliCommand::Spawn { argv } => Self::Spawn { argv },
             CliCommand::Quit => Self::Quit,
         }
     }
@@ -144,6 +153,12 @@ mod tests {
             Command::SetLayout {
                 layout: LayoutKind::MasterStack
             }
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::Spawn {
+                argv: vec!["foot".to_owned(), "--server".to_owned()]
+            }),
+            Command::Spawn { argv } if argv == ["foot", "--server"]
         ));
     }
 }

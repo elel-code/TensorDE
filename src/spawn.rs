@@ -6,5 +6,6 @@ mod scope;
 
 pub use launcher::{ProcessLauncher, SpawnError, SpawnStrategy, SpawnedProcess};
 pub use worker::{
-    LaunchOutcome, LaunchRequest, LaunchSubmitError, LaunchWorker, LaunchWorkerError,
+    LaunchOutcome, LaunchRequest, LaunchSubmitError, LaunchSubmitter, LaunchWorker,
+    LaunchWorkerError,
 };

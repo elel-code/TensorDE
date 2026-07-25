@@ -72,9 +72,30 @@ impl LaunchOutcome {
     }
 }
 
+/// Cloneable, value-only handle for queueing launches from calloop callbacks.
+///
+/// The worker thread owns process creation; this handle only performs a
+/// non-blocking send of a fully resolved request.
+#[derive(Clone, Debug)]
+pub struct LaunchSubmitter {
+    requests: SyncSender<LaunchRequest>,
+}
+
+impl LaunchSubmitter {
+    /// Queue a command without waiting for process creation or systemd.
+    pub fn submit(&self, request: LaunchRequest) -> Result<(), LaunchSubmitError> {
+        let id = request.id;
+        match self.requests.try_send(request) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(LaunchSubmitError::QueueFull { id }),
+            Err(TrySendError::Disconnected(_)) => Err(LaunchSubmitError::WorkerStopped { id }),
+        }
+    }
+}
+
 /// Persistent process-launch worker.
 pub struct LaunchWorker {
-    requests: SyncSender<LaunchRequest>,
+    submitter: LaunchSubmitter,
     _thread: JoinHandle<()>,
 }
 
@@ -89,19 +110,19 @@ impl LaunchWorker {
             .spawn(move || run(launcher, receiver, outcomes))
             .map_err(LaunchWorkerError::Spawn)?;
         Ok(Self {
-            requests,
+            submitter: LaunchSubmitter { requests },
             _thread: thread,
         })
     }
 
+    /// Cloneable submit handle for IPC and other calloop-owned paths.
+    pub fn submitter(&self) -> LaunchSubmitter {
+        self.submitter.clone()
+    }
+
     /// Queue a command without waiting for process creation or systemd.
     pub fn submit(&self, request: LaunchRequest) -> Result<(), LaunchSubmitError> {
-        let id = request.id;
-        match self.requests.try_send(request) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(LaunchSubmitError::QueueFull { id }),
-            Err(TrySendError::Disconnected(_)) => Err(LaunchSubmitError::WorkerStopped { id }),
-        }
+        self.submitter.submit(request)
     }
 }
 

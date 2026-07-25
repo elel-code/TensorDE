@@ -46,7 +46,16 @@ impl Response {
 pub enum Command {
     Ping,
     GetState,
-    SetLayout { layout: LayoutKind },
+    SetLayout {
+        layout: LayoutKind,
+    },
+    /// Queue an application launch on the compositor's async worker.
+    ///
+    /// `argv` is one program followed by zero or more arguments. Tensor never
+    /// invokes a shell; empty argv is rejected with a structured error.
+    Spawn {
+        argv: Vec<String>,
+    },
     Quit,
 }
 

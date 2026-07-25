@@ -149,7 +149,7 @@ server never removes an existing socket when binding fails, and its destructor r
 socket inode it created. This is intentionally a new protocol surface; compatibility shims are not
 part of the initial design.
 
-`tensor-msg` is the matching CLI for `ping`, `get-state`, `set-layout`, and graceful `quit`. It uses
+`tensor-msg` is the matching CLI for `ping`, `get-state`, `set-layout`, `spawn`, and graceful `quit`. It uses
 the same framed protocol and never shells out.
 
 ## systemd (optional)

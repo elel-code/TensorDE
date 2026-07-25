@@ -18,7 +18,10 @@ use crate::{
     protocol::{ProtocolError, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
-    spawn::{LaunchOutcome, LaunchRequest, LaunchWorker, LaunchWorkerError, ProcessLauncher},
+    spawn::{
+        LaunchOutcome, LaunchRequest, LaunchSubmitError, LaunchSubmitter, LaunchWorker,
+        LaunchWorkerError, ProcessLauncher,
+    },
     startup::SessionAutostartPermit,
     xwayland::XWaylandConfig,
 };
@@ -223,7 +226,17 @@ impl Compositor {
         Ok(())
     }
 
-    pub fn run(self) -> Result<(), CompositorError> {
+    pub fn run(mut self) -> Result<(), CompositorError> {
+        // IPC spawn and optional late autostart share one worker. Create it
+        // before calloop takes ownership so the submit handle can be cloned
+        // into the IPC callback without holding Smithay objects.
+        let launch_submitter = match self.ensure_launch_worker() {
+            Ok(worker) => worker.submitter(),
+            Err(error) => {
+                warn!(%error, "could not start the asynchronous launch worker");
+                return Err(CompositorError::LaunchWorker(error));
+            }
+        };
         let Self {
             mut protocol,
             ipc,
@@ -268,8 +281,13 @@ impl Compositor {
             },
             move |request, state| {
                 let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
-                let reply =
-                    handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal);
+                let reply = handle_ipc_request(
+                    request,
+                    &mut state.layout,
+                    &mut state.world,
+                    &stop_signal,
+                    &launch_submitter,
+                );
                 if reflow {
                     state.reflow_default_workspace();
                 }
@@ -286,6 +304,7 @@ fn handle_ipc_request(
     layout: &mut LayoutEngine,
     world: &mut CompositorWorld,
     stop_signal: &smithay::reexports::calloop::LoopSignal,
+    launch_submitter: &LaunchSubmitter,
 ) -> IpcReply {
     let request_id = request.request_id;
     if request.version != IPC_PROTOCOL_VERSION {
@@ -310,6 +329,12 @@ fn handle_ipc_request(
             world.reset_layout_states();
             ResultBody::Accepted
         }
+        IpcCommand::Spawn { argv } => match queue_spawn(request_id, argv, launch_submitter) {
+            Ok(()) => ResultBody::Accepted,
+            Err((code, message)) => {
+                return IpcReply::new(Response::error(request_id, code, message));
+            }
+        },
         IpcCommand::Quit => {
             return IpcReply::stop_after_flush(
                 Response::new(request_id, ResultBody::Accepted),
@@ -318,6 +343,44 @@ fn handle_ipc_request(
         }
     };
     IpcReply::new(Response::new(request_id, result))
+}
+
+fn queue_spawn(
+    request_id: u64,
+    argv: Vec<String>,
+    launch_submitter: &LaunchSubmitter,
+) -> Result<(), (&'static str, String)> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err((
+            "invalid_argument",
+            "spawn requires a non-empty argv".to_owned(),
+        ));
+    };
+    if program.is_empty() {
+        return Err((
+            "invalid_argument",
+            "spawn program must not be empty".to_owned(),
+        ));
+    }
+    let request = LaunchRequest::new(
+        request_id,
+        program.as_str(),
+        args.iter().map(String::as_str),
+    );
+    match launch_submitter.submit(request) {
+        Ok(()) => {
+            info!(request_id, program, "IPC spawn queued");
+            Ok(())
+        }
+        Err(LaunchSubmitError::QueueFull { id }) => Err((
+            "queue_full",
+            format!("launch queue is full for request {id}"),
+        )),
+        Err(LaunchSubmitError::WorkerStopped { id }) => Err((
+            "worker_stopped",
+            format!("launch worker stopped before accepting request {id}"),
+        )),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -330,6 +393,8 @@ pub enum CompositorError {
     Renderer(#[from] RendererError),
     #[error(transparent)]
     DrmNode(#[from] DrmNodeError),
+    #[error(transparent)]
+    LaunchWorker(#[from] LaunchWorkerError),
 }
 
 #[cfg(test)]
@@ -342,17 +407,35 @@ mod tests {
         EventLoop::<()>::try_new().unwrap().get_signal()
     }
 
+    fn live_worker() -> (
+        LaunchWorker,
+        smithay::reexports::calloop::channel::Channel<LaunchOutcome>,
+    ) {
+        let (outcomes, receiver) =
+            smithay::reexports::calloop::channel::sync_channel::<LaunchOutcome>(4);
+        let worker = LaunchWorker::new(
+            ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
+            outcomes,
+        )
+        .unwrap();
+        (worker, receiver)
+    }
+
     #[test]
     fn ipc_rejects_unknown_protocol_versions() {
         let mut world = CompositorWorld::new();
         let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
         let mut request = Request::new(11, IpcCommand::Ping);
         request.version = IPC_PROTOCOL_VERSION + 1;
+        let (worker, _) = live_worker();
+        let submitter = worker.submitter();
 
-        let response = handle_ipc_request(request, &mut layout, &mut world, &stop_signal());
+        let response =
+            handle_ipc_request(request, &mut layout, &mut world, &stop_signal(), &submitter);
 
         assert_eq!(response.response.request_id, 11);
         assert!(matches!(response.response.result, ResultBody::Error(_)));
+        drop(worker);
     }
 
     #[test]
@@ -366,6 +449,8 @@ mod tests {
             ..Default::default()
         };
         let mut layout = LayoutEngine::with_options(LayoutKind::Scrolling1D, options);
+        let (worker, _) = live_worker();
+        let submitter = worker.submitter();
 
         let changed = handle_ipc_request(
             Request::new(
@@ -377,6 +462,7 @@ mod tests {
             &mut layout,
             &mut world,
             &stop_signal(),
+            &submitter,
         );
         assert!(matches!(changed.response.result, ResultBody::Accepted));
 
@@ -385,6 +471,7 @@ mod tests {
             &mut layout,
             &mut world,
             &stop_signal(),
+            &submitter,
         );
         let ResultBody::State(state) = state.response.result else {
             panic!("expected IPC state response");
@@ -392,5 +479,68 @@ mod tests {
         assert_eq!(state.layout, LayoutKind::Spatial2D);
         assert_eq!(state.view_count, 1);
         assert_eq!(layout.options(), options);
+        drop(worker);
+    }
+
+    #[test]
+    fn ipc_spawn_rejects_empty_argv() {
+        let mut world = CompositorWorld::new();
+        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let (worker, _) = live_worker();
+        let submitter = worker.submitter();
+
+        let response = handle_ipc_request(
+            Request::new(14, IpcCommand::Spawn { argv: Vec::new() }),
+            &mut layout,
+            &mut world,
+            &stop_signal(),
+            &submitter,
+        );
+
+        let ResultBody::Error(error) = response.response.result else {
+            panic!("expected spawn rejection");
+        };
+        assert_eq!(error.code, "invalid_argument");
+        drop(worker);
+    }
+
+    #[test]
+    fn ipc_spawn_queues_on_a_live_worker() {
+        use std::time::Duration;
+
+        let mut world = CompositorWorld::new();
+        let mut layout = LayoutEngine::new(LayoutKind::Scrolling1D);
+        let (worker, receiver) = live_worker();
+        let submitter = worker.submitter();
+        let program = format!("tensor-missing-ipc-spawn-{}", std::process::id());
+
+        let response = handle_ipc_request(
+            Request::new(
+                15,
+                IpcCommand::Spawn {
+                    argv: vec![program.clone()],
+                },
+            ),
+            &mut layout,
+            &mut world,
+            &stop_signal(),
+            &submitter,
+        );
+        assert!(matches!(response.response.result, ResultBody::Accepted));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let outcome = loop {
+            if let Ok(outcome) = receiver.try_recv() {
+                break outcome;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("launch worker should report the missing program");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(outcome.id(), 15);
+        assert_eq!(outcome.program(), std::ffi::OsStr::new(&program));
+        assert!(outcome.result().is_err());
+        drop(worker);
     }
 }
