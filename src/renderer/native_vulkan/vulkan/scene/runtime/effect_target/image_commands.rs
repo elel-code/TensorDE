@@ -16,9 +16,14 @@ pub(super) fn target_spec(
         .map(|format| target_format(format, swapchain_format))
         .transpose()?
         .unwrap_or(swapchain_format);
+    // When the plan already recorded a non-zero authored allocation (e.g.
+    // image-local multipass from authored_source_extent), honor it. Overriding
+    // with projected object_mesh_pixel_extent expands WE's texture-space domain
+    // (e.g. 2318×1794) into screen AABB size (e.g. 2542×1968) and breaks the
+    // multipass resource/state stream. Alpha scissor already uses allocation
+    // extents for local coverage; keep CreateImage/BeginRendering consistent.
     let (width, height) = if allocation.width != 0 && allocation.height != 0 {
-        puppet_effect_target_extent(storage, graph, allocation.graph_index, swapchain_extent)
-            .unwrap_or((allocation.width, allocation.height))
+        (allocation.width, allocation.height)
     } else {
         image_target
             .map(|target| scaled_extent(swapchain_extent, target))
@@ -53,33 +58,6 @@ pub(super) fn target_spec(
                     ))
         }),
     })
-}
-
-pub(super) fn puppet_effect_target_extent(
-    storage: &SceneStorage,
-    graph: &SceneRenderingDeviceGraphPlan,
-    graph_index: u32,
-    output_extent: vk::Extent2D,
-) -> Option<(u32, u32)> {
-    let draw = graph
-        .pass_nodes
-        .iter()
-        .filter(|pass| {
-            pass.graph_index == graph_index && pass.role == SceneRenderPassKind::BaseMaterial
-        })
-        .flat_map(|pass| {
-            let start = pass.mesh_draw_start as usize;
-            let end = start.saturating_add(pass.mesh_draw_count as usize);
-            graph.mesh_draws.get(start..end).unwrap_or(&[])
-        })
-        .find(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)?;
-    let [width, height] = super::super::composite_scissor::object_mesh_pixel_extent(
-        storage,
-        graph,
-        draw,
-        [output_extent.width, output_extent.height],
-    )?;
-    Some((width, height))
 }
 
 impl LogicalEffectTargetKey {

@@ -63,6 +63,38 @@ fn effect_target_image_plan_scales_and_aliases_physical_slots() {
     assert_eq!(plans[0].aliased_logical_target_count, 2);
 }
 
+
+#[test]
+fn effect_target_image_plan_honors_non_zero_plan_allocation_extent() {
+    // Authored multipass local targets carry plan width/height (e.g. WE 2318×1794).
+    // Runtime must not expand them via projected mesh AABB (historical 2542×1968 bug).
+    let storage = SceneStorage::from_document(SceneBinaryDocument::default()).expect("storage");
+    let mut alloc = allocation(
+        0,
+        SceneRenderTargetKind::ImageLocalMain,
+        SceneStringId::NONE,
+    );
+    alloc.width = 2318;
+    alloc.height = 1794;
+    let graph = graph_with_allocations(vec![alloc]);
+
+    let plans = scene_effect_target_image_plan(
+        &storage,
+        &graph,
+        vk::Format::B8G8R8A8_UNORM,
+        vk::Extent2D {
+            width: 3856,
+            height: 2199,
+        },
+    )
+    .expect("effect target plan");
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].width, 2318);
+    assert_eq!(plans[0].height, 1794);
+}
+
+
 #[test]
 fn effect_batch_atlas_applies_its_declared_field_resolution_once() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
