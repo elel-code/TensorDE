@@ -37,8 +37,26 @@ impl ShellScene {
         let trash_has_items = file_ops::trash_has_items();
         fika_log!("[fika-wgpu] places entries={}", places.len());
 
-        Ok(Self {
-            panes: ShellPaneStates::new(slot0_pane),
+        Ok(Self::from_primary_pane(
+            slot0_pane,
+            places,
+            trash_has_items,
+            show_hidden,
+        ))
+    }
+
+    /// Build a scene around a primary pane with default chrome and counters.
+    ///
+    /// Production load and test fixtures share this so new `ShellScene` fields
+    /// only need one default assignment.
+    fn from_primary_pane(
+        primary: ShellPaneState,
+        places: Vec<ShellPlace>,
+        trash_has_items: bool,
+        show_hidden: bool,
+    ) -> Self {
+        Self {
+            panes: ShellPaneStates::new(primary),
             compact_layout_cache: CompactLayoutCache::new(),
             icons_layout_height_cache: IconsLayoutHeightCache::new(),
             active_pane: ShellPaneId::SLOT_0,
@@ -117,7 +135,7 @@ impl ShellScene {
             split_pane_changes: 0,
             dnd_hover_changes: 0,
             dnd_drop_requests: 0,
-        })
+        }
     }
 
     fn invalidate_layout_caches(&self, pane: ShellPaneId) {

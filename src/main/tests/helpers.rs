@@ -322,97 +322,28 @@
         }
     }
 
+    /// In-memory scene fixture with deterministic places (no disk listing).
+    ///
+    /// Defaults live in [`ShellScene::from_primary_pane`]; prefer this over
+    /// hand-writing `ShellScene { ... }` when adding fields.
     fn test_scene(entries: Vec<Entry>, view_mode: ShellViewMode) -> ShellScene {
-        ShellScene {
-            panes: ShellPaneStates::new(ShellPaneState::from_entries(
-                PathBuf::from("/tmp"),
-                view_mode,
-                entries,
-                false,
-                "",
-            )),
-            compact_layout_cache: CompactLayoutCache::new(),
-            icons_layout_height_cache: IconsLayoutHeightCache::new(),
-            active_pane: ShellPaneId::SLOT_0,
-            places: vec![
-                ShellPlace::new("", "H", "Home", PathBuf::from("/tmp"), false),
+        test_scene_at(PathBuf::from("/tmp"), entries, view_mode)
+    }
+
+    fn test_scene_at(
+        path: PathBuf,
+        entries: Vec<Entry>,
+        view_mode: ShellViewMode,
+    ) -> ShellScene {
+        ShellScene::from_primary_pane(
+            ShellPaneState::from_entries(path.clone(), view_mode, entries, false, ""),
+            vec![
+                ShellPlace::new("", "H", "Home", path, false),
                 ShellPlace::new("Devices", "/", "Root", PathBuf::from("/"), false),
             ],
-            trash_has_items: false,
-            location_draft: None,
-            filter_active: false,
-            filter_pattern: String::new(),
-            show_hidden: false,
-            dark_mode: false,
-            background_blur: false,
-            background_opacity: 1.0,
-            places_visible: true,
-            places_width: PLACES_SIDEBAR_WIDTH,
-            places_scroll_y: 0.0,
-            scrollbar_drag: None,
-            pointer: None,
-            hovered_item: None,
-            hovered_place: None,
-            last_item_click: None,
-            histories: ShellPaneHistories::default(),
-            context_target: None,
-            context_menu: None,
-            context_menu_safe_triangle: ShellContextMenuSafeTriangleRuntime::default(),
-            drop_menu: None,
-            properties_overlay: None,
-            create_dialog: None,
-            rename_dialog: None,
-            open_with_chooser: None,
-            trash_conflict_dialog: None,
-            task_detail_dialog: None,
-            split_pane_left_fraction: 0.5,
-            visible_slots: ShellPaneVisibleSlotPools::default(),
-            visible_slot_stats: ShellVisibleItemSlotStats::default(),
-            metadata_roles: ShellMetadataRoleRuntime::new(),
-            folder_preview_roles: RefCell::new(ShellFolderPreviewRoleRuntime::new()),
-            icon_role_read_ahead: RefCell::new(ShellIconRoleReadAheadQueue::new()),
-            internal_drag: None,
-            external_drag: None,
-            place_press: None,
-            dnd_hover_target: None,
-            pending_drop_request: None,
-            task_statuses: ShellTaskStatusStore::new(),
-            rubber_band: None,
-            item_reflow: shell::item_reflow::ShellItemReflowRuntime::default(),
-            animations: ShellAnimationRuntime::default(),
-            text_hit_tests: RefCell::new(TextHitTestRuntime::new()),
-            scale_factor: 1.0,
-            hit_tests: 0,
-            selection_changes: 0,
-            context_target_changes: 0,
-            context_menu_actions: 0,
-            properties_changes: 0,
-            create_changes: 0,
-            rename_changes: 0,
-            open_with_changes: 0,
-            open_changes: 0,
-            copy_location_changes: 0,
-            file_clipboard_changes: 0,
-            paste_changes: 0,
-            trash_changes: 0,
-            places_changes: 0,
-            places_resize_changes: 0,
-            places_scroll_changes: 0,
-            content_scroll_changes: 0,
-            keyboard_navigation: 0,
-            rubber_band_updates: 0,
-            view_switches: 0,
-            path_changes: 0,
-            directory_reloads: 0,
-            location_changes: 0,
-            filter_changes: 0,
-            hidden_changes: 0,
-            appearance_changes: 0,
-            zoom_changes: 0,
-            split_pane_changes: 0,
-            dnd_hover_changes: 0,
-            dnd_drop_requests: 0,
-        }
+            false,
+            false,
+        )
     }
 
     fn set_test_pane(

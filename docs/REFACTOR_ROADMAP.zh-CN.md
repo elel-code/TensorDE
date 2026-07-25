@@ -478,14 +478,17 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
 
 目标：减少测试直接构造 `ShellScene` 字段导致的迁移成本。
 
-候选 builder：
-- `TestShellSceneBuilder`
-- pane / entries / places / dialogs / task statuses presets。
+已完成：
+- `ShellScene::from_primary_pane` 集中默认字段；生产 `load_with_hidden_visibility`
+  与测试 `test_scene` / `test_scene_at` 共用，新增字段只改一处。
+
+候选后续：
+- 链式 `TestShellSceneBuilder`（show_hidden / dark_mode / split / dialogs presets）。
 - damage snapshot helper。
 
 完成标准：
 - 新测试不再手写完整 `ShellScene` 字段。
-- 迁移字段时主要改 builder，而不是批量改测试。
+- 迁移字段时主要改 `from_primary_pane` / builder，而不是批量改测试。
 
 ## 当前推荐顺序
 
