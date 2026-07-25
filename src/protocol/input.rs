@@ -1,5 +1,4 @@
 mod tablet;
-
 use smithay::{
     backend::{
         input::{

@@ -20,7 +20,11 @@ use smithay::{
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
-        selection::primary_selection::PrimarySelectionState,
+        selection::{
+            ext_data_control::DataControlState as ExtDataControlState,
+            primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState as WlrDataControlState,
+        },
         session_lock::SessionLockManagerState,
         shell::{wlr_layer::WlrLayerShellState, xdg::decoration::XdgDecorationState},
         single_pixel_buffer::SinglePixelBufferState,
@@ -54,6 +58,8 @@ pub(crate) struct ProtocolGlobals {
     fractional_scale: FractionalScaleManagerState,
     xdg_decoration: XdgDecorationState,
     primary_selection: PrimarySelectionState,
+    wlr_data_control: WlrDataControlState,
+    ext_data_control: ExtDataControlState,
     relative_pointer: RelativePointerManagerState,
     pointer_gestures: PointerGesturesState,
     pointer_constraints: PointerConstraintsState,
@@ -95,11 +101,29 @@ impl ProtocolGlobals {
         loop_handle: &LoopHandle<'static, RuntimeState>,
     ) -> Self {
         let _ = loop_handle;
+        let primary_selection = PrimarySelectionState::new::<RuntimeState>(display);
+        let unrestricted = |client: &smithay::reexports::wayland_server::Client| {
+            client
+                .get_data::<crate::protocol::state::WaylandClientState>()
+                .is_none_or(|data| !data.from_security_context)
+        };
+        let wlr_data_control = WlrDataControlState::new::<RuntimeState, _>(
+            display,
+            Some(&primary_selection),
+            unrestricted,
+        );
+        let ext_data_control = ExtDataControlState::new::<RuntimeState, _>(
+            display,
+            Some(&primary_selection),
+            unrestricted,
+        );
         Self {
             viewporter: ViewporterState::new::<RuntimeState>(display),
             fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
             xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
-            primary_selection: PrimarySelectionState::new::<RuntimeState>(display),
+            primary_selection,
+            wlr_data_control,
+            ext_data_control,
             relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
             pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
@@ -179,6 +203,14 @@ impl ProtocolGlobals {
         &mut self.primary_selection
     }
 
+    pub(crate) fn wlr_data_control(&mut self) -> &mut WlrDataControlState {
+        &mut self.wlr_data_control
+    }
+
+    pub(crate) fn ext_data_control(&mut self) -> &mut ExtDataControlState {
+        &mut self.ext_data_control
+    }
+
     pub(crate) fn activation(&mut self) -> &mut XdgActivationState {
         &mut self.activation
     }
@@ -213,6 +245,8 @@ impl ProtocolGlobals {
             &self.fractional_scale,
             &self.xdg_decoration,
             &self.primary_selection,
+            &self.wlr_data_control,
+            &self.ext_data_control,
             &self.relative_pointer,
             &self.pointer_gestures,
             &self.pointer_constraints,
@@ -248,6 +282,8 @@ impl ProtocolGlobals {
             fractional_scale: true,
             xdg_decoration: true,
             primary_selection: true,
+            wlr_data_control: true,
+            ext_data_control: true,
             relative_pointer: true,
             pointer_gestures: true,
             pointer_constraints: true,
@@ -293,6 +329,8 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) fractional_scale: bool,
     pub(crate) xdg_decoration: bool,
     pub(crate) primary_selection: bool,
+    pub(crate) wlr_data_control: bool,
+    pub(crate) ext_data_control: bool,
     pub(crate) relative_pointer: bool,
     pub(crate) pointer_gestures: bool,
     pub(crate) pointer_constraints: bool,
@@ -355,6 +393,8 @@ mod tests {
                 fractional_scale: true,
                 xdg_decoration: true,
                 primary_selection: true,
+                wlr_data_control: true,
+                ext_data_control: true,
                 relative_pointer: true,
                 pointer_gestures: true,
                 pointer_constraints: true,
