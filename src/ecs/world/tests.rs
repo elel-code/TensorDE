@@ -309,6 +309,38 @@ fn removed_views_release_their_stable_id() {
 }
 
 #[test]
+fn focused_view_removal_prefers_its_owner_then_focus_history() {
+    let mut world = CompositorWorld::new();
+    for id in 1..=3 {
+        world.spawn_view(view(id), workspace(1)).unwrap();
+    }
+
+    world.focus_view(view(1)).unwrap();
+    world.focus_view(view(2)).unwrap();
+    assert_eq!(
+        world.focus_replacement_after_removal(view(2)).unwrap(),
+        Some(view(1)),
+        "a closed tiled view returns to the most recently focused survivor"
+    );
+
+    world
+        .set_view_placement(
+            view(3),
+            ViewPlacement::Attached {
+                owner: view(2),
+                preferred_size: Size::new(20, 20),
+            },
+        )
+        .unwrap();
+    world.focus_view(view(3)).unwrap();
+    assert_eq!(
+        world.focus_replacement_after_removal(view(3)).unwrap(),
+        Some(view(2)),
+        "closing a focused dialog restores its tiled owner before history"
+    );
+}
+
+#[test]
 fn attached_view_keeps_an_independent_scene_node_out_of_tile_allocation() {
     let mut world = CompositorWorld::new();
     world.spawn_view(view(1), workspace(1)).unwrap();

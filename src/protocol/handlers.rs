@@ -148,7 +148,8 @@ impl CompositorHandler for RuntimeState {
                 });
                 let constraints_changed =
                     self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
-                if constraints_changed || !toplevel.is_initial_configure_sent() {
+                let needs_initial_configure = !toplevel.is_initial_configure_sent();
+                if constraints_changed || needs_initial_configure {
                     #[cfg(feature = "tty")]
                     {
                         reflowed = self.reflow_default_workspace();
@@ -158,8 +159,15 @@ impl CompositorHandler for RuntimeState {
                         self.reflow_default_workspace();
                     }
                 }
-                if !toplevel.is_initial_configure_sent() {
-                    toplevel.send_configure();
+                if needs_initial_configure {
+                    if !toplevel.is_initial_configure_sent() {
+                        toplevel.send_configure();
+                    }
+                    // `focus_mapped_window` selects ECS and XDG activation
+                    // immediately, but waits for this mandatory initial
+                    // configure before emitting `wl_keyboard.enter`.
+                    #[cfg(feature = "tty")]
+                    self.restore_keyboard_focus();
                 }
             }
         }

@@ -334,41 +334,42 @@ impl RuntimeState {
         else {
             return;
         };
-        self.focus_mapped_window(root_window, serial);
-        self.reflow_default_workspace();
+        if self.focus_mapped_window(root_window, serial) {
+            self.reflow_default_workspace();
+        }
     }
 
     /// Reapply the ECS-selected root when a keyboard capability becomes
     /// available after its window mapped. The focus method intentionally does
     /// not reflow here: the window already has its configure, and only a
     /// `wl_keyboard.enter` is missing.
-    fn restore_keyboard_focus(&mut self) {
+    pub(crate) fn restore_keyboard_focus(&mut self) {
         let Some(view_id) = self.world.focused_view(DEFAULT_WORKSPACE) else {
             return;
         };
         let Some(window) = self.mapped_window_for_view(view_id) else {
             return;
         };
-        self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+        let _ = self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
     }
 
     pub(crate) fn focus_mapped_window(
         &mut self,
         window: smithay::desktop::Window,
         serial: smithay::utils::Serial,
-    ) {
+    ) -> bool {
         let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
-            return;
+            return false;
         };
         let Some(view_id) = self.view_for_surface(&surface) else {
-            return;
+            return false;
         };
         let keyboard = self.seat.get_keyboard();
         if keyboard
             .as_ref()
             .is_some_and(|keyboard| keyboard.is_grabbed())
         {
-            return;
+            return false;
         }
 
         #[cfg(feature = "xwayland")]
@@ -380,23 +381,48 @@ impl RuntimeState {
         #[cfg(not(feature = "xwayland"))]
         let focus = KeyboardFocusTarget::from(surface);
 
+        let focus_changed = !self.world.is_focused(view_id);
+        // Niri and Hyprland make the state transition idempotent before they
+        // notify clients. Smithay performs the same equality check internally,
+        // but keeping it explicit here means a focus repair cannot reach a
+        // future keyboard-grab implementation as a redundant enter/leave.
+        let seat_focus_changed = keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.current_focus().as_ref() != Some(&focus));
         if let Err(error) = self.world.focus_view(view_id) {
             warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
+            return false;
         }
-        self.publish_window_activation(&window);
-        self.raise_view_family_in_space(view_id, &window);
-        #[cfg(feature = "xwayland")]
-        self.raise_x11_popups_for_root(&surface);
-        #[cfg(feature = "xwayland")]
-        if let KeyboardFocusTarget::X11(x11) = &focus
-            && let Some(xwm) = self.xwm.as_mut()
-            && let Err(error) = xwm.raise_window(x11.as_ref())
+        self.publish_window_activation(Some(&window));
+        // Match Niri and Hyprland's central focus-state early return: a seat
+        // focus repair must not silently reorder Smithay's hit-test space
+        // after ECS intentionally kept its scene order unchanged. Only a real
+        // active-view transition raises the complete attachment family.
+        if focus_changed {
+            self.raise_view_family_in_space(view_id, &window);
+            #[cfg(feature = "xwayland")]
+            self.raise_x11_popups_for_root(&surface);
+            #[cfg(feature = "xwayland")]
+            if let KeyboardFocusTarget::X11(x11) = &focus
+                && let Some(xwm) = self.xwm.as_mut()
+                && let Err(error) = xwm.raise_window(x11.as_ref())
+            {
+                warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
+            }
+        }
+        // XDG clients must observe their first configure before a keyboard
+        // enter. The initial commit handler sends that configure and then
+        // re-enters this focus path; X11 has no XDG configure gate.
+        let keyboard_ready = window
+            .toplevel()
+            .is_none_or(|toplevel| toplevel.is_initial_configure_sent());
+        if let Some(keyboard) = keyboard
+            && keyboard_ready
+            && seat_focus_changed
         {
-            warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
-        }
-        if let Some(keyboard) = keyboard {
             keyboard.set_focus(self, Some(focus), serial);
         }
+        focus_changed
     }
 
     /// Keep the three focus contracts in lockstep: ECS owns the selected
@@ -407,10 +433,14 @@ impl RuntimeState {
     /// Initial xdg configure publication remains in the commit handler. A
     /// toplevel that has not made its first commit only receives this pending
     /// state there, as required by xdg-shell's initial-configure ordering.
-    fn publish_window_activation(&mut self, focused_window: &smithay::desktop::Window) {
+    pub(crate) fn publish_window_activation(
+        &mut self,
+        focused_window: Option<&smithay::desktop::Window>,
+    ) {
         let windows = self.space.elements().cloned().collect::<Vec<_>>();
         for window in windows {
-            if !window.set_activated(window == *focused_window) {
+            let active = focused_window.is_some_and(|focused| window == *focused);
+            if !window.set_activated(active) {
                 continue;
             }
             if let Some(toplevel) = window.toplevel()
@@ -460,7 +490,7 @@ impl RuntimeState {
         family
     }
 
-    fn mapped_window_for_view(
+    pub(crate) fn mapped_window_for_view(
         &self,
         view_id: crate::ecs::ViewId,
     ) -> Option<smithay::desktop::Window> {

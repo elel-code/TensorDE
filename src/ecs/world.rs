@@ -359,6 +359,45 @@ impl CompositorWorld {
             .map(|(view, _, _)| view.id)
     }
 
+    /// Select the view that should inherit focus when `view_id` disappears.
+    ///
+    /// The policy is deliberately part of the ECS ownership boundary rather
+    /// than the Wayland teardown path. An attached dialog returns to its
+    /// owner; a tiled view returns to the most recently raised surviving view
+    /// in the same workspace. This gives close-time focus the same stable
+    /// scene ordering that rendering and input already use, while keeping
+    /// protocol resources out of ECS.
+    #[cfg(any(feature = "tty", test))]
+    pub(crate) fn focus_replacement_after_removal(
+        &mut self,
+        view_id: ViewId,
+    ) -> Result<Option<ViewId>, ViewLifecycleError> {
+        let entity = self.entity_for(view_id)?;
+        if self.world.get::<Focused>(entity).is_none() {
+            return Ok(None);
+        }
+        let workspace_id = self
+            .world
+            .get::<Workspace>(entity)
+            .expect("every view has a workspace")
+            .id;
+        if let Some(owner) = self
+            .world
+            .get::<ViewPlacement>(entity)
+            .expect("every view has placement state")
+            .owner()
+        {
+            return Ok(Some(owner));
+        }
+
+        let mut query = self.world.query::<(&View, &Workspace, &StackingOrder)>();
+        Ok(query
+            .iter(&self.world)
+            .filter(|(view, workspace, _)| view.id != view_id && workspace.id == workspace_id)
+            .max_by_key(|(view, _, stacking)| (stacking.0, view.id))
+            .map(|(view, _, _)| view.id))
+    }
+
     pub fn arrange_workspace(
         &mut self,
         workspace_id: WorkspaceId,

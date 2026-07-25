@@ -141,7 +141,7 @@ impl RuntimeState {
         self.space.map_element(window.clone(), (0, 0), false);
         self.update_x11_constraints(&surface, &x11);
         #[cfg(feature = "tty")]
-        self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
+        let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
         self.reflow_default_workspace();
         self.reconcile_x11_popups();
         Some(view_id)

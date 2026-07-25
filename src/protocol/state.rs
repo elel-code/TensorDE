@@ -15,6 +15,8 @@ use std::collections::HashMap;
 #[cfg(feature = "tty")]
 use std::collections::HashSet;
 
+#[cfg(feature = "tty")]
+use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState},
@@ -24,7 +26,6 @@ use smithay::{
         backend::{ClientData, ClientId, DisconnectReason, ObjectId},
         protocol::wl_surface::WlSurface,
     },
-    utils::SERIAL_COUNTER,
     wayland::{
         compositor::{
             CompositorClientState, CompositorState, get_parent, send_surface_state, with_states,
@@ -285,7 +286,6 @@ impl RuntimeState {
 
     pub(crate) fn unregister_toplevel(&mut self, surface: &WlSurface) -> Option<ViewId> {
         let view_id = self.view_for_surface(surface)?;
-        self.clear_keyboard_focus_for_surface(surface);
         #[cfg(feature = "xwayland")]
         if !self.detach_x11_transient_views_for_owner(view_id) {
             warn!(
@@ -293,6 +293,21 @@ impl RuntimeState {
                 "refused to tear down a view with unresolved attachments"
             );
             return None;
+        }
+        #[cfg(feature = "tty")]
+        let replacement = match self.world.focus_replacement_after_removal(view_id) {
+            Ok(replacement) => replacement.and_then(|view_id| self.mapped_window_for_view(view_id)),
+            Err(error) => {
+                warn!(%error, view_id = view_id.get(), "failed to select focus after view teardown");
+                None
+            }
+        };
+        #[cfg(feature = "tty")]
+        if self.world.is_focused(view_id) && replacement.is_none() {
+            // Clear before dropping the old Smithay window so a final keyboard
+            // leave and XDG deactivation can still reference a live root.
+            self.clear_keyboard_focus_for_surface(surface);
+            self.publish_window_activation(None);
         }
         #[cfg(feature = "xwayland")]
         self.detach_x11_popups_for_owner(&surface.id());
@@ -329,10 +344,18 @@ impl RuntimeState {
         if let Err(error) = self.world.remove_view(view_id) {
             warn!(%error, view_id = view_id.get(), "Wayland view was missing from ECS");
         }
+        #[cfg(feature = "tty")]
+        if let Some(window) = replacement {
+            // Niri and Hyprland both move focus as part of close-time state
+            // reconciliation. Transfer directly rather than leaving the seat
+            // and `Activated` state blank until another input event arrives.
+            let _ = self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+        }
         self.reflow_default_workspace();
         Some(view_id)
     }
 
+    #[cfg(feature = "tty")]
     fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;

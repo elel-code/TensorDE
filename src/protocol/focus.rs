@@ -27,6 +27,7 @@ pub(crate) enum KeyboardFocusTarget {
 }
 
 impl KeyboardFocusTarget {
+    #[cfg(feature = "tty")]
     pub(crate) fn targets_surface(&self, surface: &WlSurface) -> bool {
         self.wl_surface()
             .is_some_and(|focused| focused.as_ref() == surface)
