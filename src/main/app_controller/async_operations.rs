@@ -263,7 +263,7 @@ impl FikaWgpuApp {
         task_id
     }
 
-    /// Single entry point for typed file-operation requests from UI actions.
+    /// Single entry point for typed operation requests from UI actions.
     fn submit_operation_request(&mut self, request: ShellOperationRequest) {
         match request {
             ShellOperationRequest::Transfer {
@@ -308,7 +308,194 @@ impl FikaWgpuApp {
                 paths,
                 pane_to_reload,
             ),
+            ShellOperationRequest::Create { request } => self.start_async_create(request),
+            ShellOperationRequest::Rename { request } => self.start_async_rename(request),
+            ShellOperationRequest::Device { request } => self.start_async_device(request),
+            ShellOperationRequest::Launch {
+                kind,
+                running_label,
+                running_detail,
+                work,
+            } => self.start_async_launch_work(kind, running_label, running_detail, work),
         }
+    }
+
+    fn start_async_create(&mut self, request: CreateEntryRequest) {
+        let privileged = request.privileged;
+        let request_for_task = request.clone();
+        if let Err(error) = self.spawn_async_task_result(
+            move || async move {
+                crate::shell::create_rename::disk::create_entry_on_disk_explicit_async(
+                    request_for_task,
+                )
+                .await
+            },
+            move |outcome| {
+                ShellAsyncTaskResult::Create(ShellAsyncCreateCompletion { request, outcome })
+            },
+        ) {
+            fika_log!("[fika-wgpu] create-runtime-error {error}");
+            if self.scene.set_create_dialog_error(error.to_string()) {
+                self.finish_create_dialog_state_change();
+            }
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Create failed",
+                error.to_string(),
+                privileged,
+            ));
+        }
+    }
+
+    fn start_async_rename(&mut self, request: RenameEntryRequest) {
+        let privileged = request.privileged;
+        let request_for_task = request.clone();
+        if let Err(error) = self.spawn_async_task_result(
+            move || async move {
+                crate::shell::create_rename::disk::rename_entry_on_disk_explicit_async(
+                    request_for_task,
+                )
+                .await
+            },
+            move |outcome| {
+                ShellAsyncTaskResult::Rename(ShellAsyncRenameCompletion { request, outcome })
+            },
+        ) {
+            fika_log!("[fika-wgpu] rename-runtime-error {error}");
+            if self.scene.set_rename_dialog_error(error.to_string()) {
+                self.finish_rename_dialog_state_change();
+            }
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                "Rename failed",
+                error.to_string(),
+                privileged,
+            ));
+        }
+    }
+
+    fn start_async_device(&mut self, request: DeviceActionRequest) {
+        let action_label = request.action.label();
+        let action_name = request.action.as_str();
+        let request_for_task = request.clone();
+        if let Err(error) = self.spawn_async_task_result(
+            move || async move {
+                perform_device_place_operation(
+                    WGPU_SHELL_PANE_ID,
+                    request_for_task.id.clone(),
+                    request_for_task.label.clone(),
+                    request_for_task.operation,
+                )
+                .await
+            },
+            move |result| {
+                ShellAsyncTaskResult::Device(ShellAsyncDeviceCompletion { request, result })
+            },
+        ) {
+            fika_log!("[fika-wgpu] device-action-runtime-error action={action_name} error={error}");
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                format!("{action_label} failed"),
+                error.to_string(),
+                false,
+            ));
+        }
+    }
+
+    fn start_async_launch_work(
+        &mut self,
+        kind: ShellAsyncLaunchKind,
+        running_label: String,
+        running_detail: String,
+        work: ShellLaunchWork,
+    ) {
+        self.start_async_launch_task(kind, running_label, running_detail, move || async move {
+            match work {
+                ShellLaunchWork::Systemd {
+                    plan,
+                    path,
+                    app_name,
+                    target_label,
+                } => match kind {
+                    ShellAsyncLaunchKind::OpenFile => {
+                        match launch_with_systemd_user(plan).await {
+                            Ok(result) => {
+                                let message = format!(
+                                    "Opened {} with {} via {} systemd unit(s)",
+                                    path.display(),
+                                    app_name,
+                                    result.units.len()
+                                );
+                                fika_log!(
+                                    "[fika-wgpu] open-finished path={} app={:?} units={}",
+                                    path.display(),
+                                    app_name,
+                                    result.units.join(",")
+                                );
+                                (true, message)
+                            }
+                            Err(error) => {
+                                let message = format!(
+                                    "Cannot open {} with {}: {error}",
+                                    path.display(),
+                                    app_name
+                                );
+                                fika_log!(
+                                    "[fika-wgpu] open-finished path={} app={:?} error={error}",
+                                    path.display(),
+                                    app_name
+                                );
+                                (false, message)
+                            }
+                        }
+                    }
+                    ShellAsyncLaunchKind::OpenWith => {
+                        let result = launch_with_systemd_user(plan).await;
+                        let success = result.is_ok();
+                        let status = OpenWithLaunchResult {
+                            pane_id: WGPU_SHELL_PANE_ID,
+                            path,
+                            app_name,
+                            result,
+                        }
+                        .status_message();
+                        fika_log!("[fika-wgpu] open-with-finished {status}");
+                        (success, status)
+                    }
+                    ShellAsyncLaunchKind::ServiceMenu => {
+                        let result = launch_with_systemd_user(plan).await;
+                        let success = result.is_ok();
+                        let status = ServiceMenuLaunchResult {
+                            pane_id: WGPU_SHELL_PANE_ID,
+                            target_label: target_label.unwrap_or_else(|| path.display().to_string()),
+                            app_name,
+                            result,
+                        }
+                        .status_message();
+                        fika_log!("[fika-wgpu] service-menu-finished {status}");
+                        (success, status)
+                    }
+                    ShellAsyncLaunchKind::ArkExtractAndTrash => {
+                        unreachable!("ark extract work uses ShellLaunchWork::ArkExtractAndTrash")
+                    }
+                },
+                ShellLaunchWork::ArkExtractAndTrash { request } => {
+                    let paths = request.paths.clone();
+                    let app_name = request.app_name.clone();
+                    let target_label = service_menu_target_label(&paths);
+                    match crate::shell::ark::extract::execute_ark_extract_and_trash(request).await {
+                        Ok(message) => {
+                            let status = format!("Ran {app_name} for {target_label}: {message}");
+                            fika_log!("[fika-wgpu] service-menu-finished {status}");
+                            (true, status)
+                        }
+                        Err(err) => {
+                            let status =
+                                format!("Cannot run {app_name} for {target_label}: {err}");
+                            fika_log!("[fika-wgpu] service-menu-finished {status}");
+                            (false, status)
+                        }
+                    }
+                }
+            }
+        });
     }
 
     fn start_async_transfer_with_privilege(

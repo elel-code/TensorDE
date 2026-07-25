@@ -429,11 +429,13 @@ operation dispatcher。
   `ShellAsyncLaunchCompletion` + `start_async_launch_task`，完成时更新 task status
   （不再只写日志）。
 - 文件操作 request 类型化：`ShellOperationRequest`（transfer / paste-text /
-  move-to-trash / trash-view）+ `submit_operation_request`；UI action 只构造 request。
+  move-to-trash / trash-view / create / rename / device / launch）+
+  `submit_operation_request`；UI action 只构造 request。
+- create/rename/device/launch 的 spawn 细节下沉到 dispatcher；action 层不再直接
+  `spawn_async_task_result`。
 
 后续：
-- 继续把 create/rename/device/launch/navigation/clipboard 也收成 request 类型，
-  让 app 更接近「只 submit/apply」。
+- navigation / clipboard 也可收成 request 变体（blocking 类）。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。

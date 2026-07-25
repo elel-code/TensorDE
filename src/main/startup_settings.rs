@@ -109,7 +109,7 @@ use shell::metadata_roles::{
 };
 use shell::metrics::*;
 use shell::open_file::OpenFileRequest;
-use shell::operation_request::ShellOperationRequest;
+use shell::operation_request::{ShellLaunchWork, ShellOperationRequest};
 #[cfg(test)]
 use shell::open_file::default_open_file_launch_request;
 #[cfg(test)]
@@ -250,7 +250,8 @@ use shell::toolbar::{
     ShellToolbarLayout, ShellToolbarViewModeSegment, app_toolbar_layout as build_app_toolbar_layout,
 };
 use shell::transfer::{
-    ShellAsyncLaunchCompletion, ShellAsyncLaunchKind, ShellAsyncMoveToTrashCompletion,
+    ShellAsyncCreateCompletion, ShellAsyncDeviceCompletion, ShellAsyncLaunchCompletion,
+    ShellAsyncLaunchKind, ShellAsyncMoveToTrashCompletion, ShellAsyncRenameCompletion,
     ShellAsyncTaskResult, ShellAsyncTransferCompletion, ShellAsyncTransferSource,
     ShellAsyncTrashViewCompletion, ShellPasteResult, ShellTransferExecution,
     async_transfer_task_detail, async_transfer_task_label, paste_text_async,

@@ -2,11 +2,10 @@ use crate::platform::ActiveEventLoop;
 
 use super::outcome::{ShellActionEffect, ShellActionOutcome};
 use crate::shell::context_menu::ShellContextMenuAction;
-use crate::shell::metrics::WGPU_SHELL_PANE_ID;
+use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::tasks::ShellTaskStatus;
-use crate::shell::transfer::{ShellAsyncDeviceCompletion, ShellAsyncTaskResult};
+use crate::shell::transfer::ShellAsyncDeviceCompletion;
 use crate::{DeviceActionRequest, FikaWgpuApp};
-use fika_core::perform_device_place_operation;
 
 impl FikaWgpuApp {
     pub(crate) fn perform_device_context_action(
@@ -50,32 +49,8 @@ impl FikaWgpuApp {
         self.scene.context_target = None;
         self.scene.context_menu = None;
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-
-        let action_label = request.action.label();
-        let action_name = request.action.as_str();
-        let request_for_task = request.clone();
-        if let Err(error) = self.spawn_async_task_result(
-            move || async move {
-                perform_device_place_operation(
-                    WGPU_SHELL_PANE_ID,
-                    request_for_task.id.clone(),
-                    request_for_task.label.clone(),
-                    request_for_task.operation,
-                )
-                .await
-            },
-            move |result| {
-                ShellAsyncTaskResult::Device(ShellAsyncDeviceCompletion { request, result })
-            },
-        ) {
-            fika_log!("[fika-wgpu] device-action-runtime-error action={action_name} error={error}");
-            self.scene.record_task_status(ShellTaskStatus::failed(
-                format!("{action_label} failed"),
-                error.to_string(),
-                false,
-            ));
-            self.apply_action_outcome(event_loop, ShellActionOutcome::Redraw);
-        }
+        self.submit_operation_request(ShellOperationRequest::device(request));
+        let _ = event_loop;
     }
 
     pub(crate) fn apply_async_device_completion(

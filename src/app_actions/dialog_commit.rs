@@ -3,14 +3,10 @@ use std::path::Path;
 use crate::platform::{ActiveEventLoop, PhysicalSize};
 
 use super::outcome::ShellActionOutcome;
-use crate::shell::create_rename::disk::{
-    create_entry_on_disk_explicit_async, rename_entry_on_disk_explicit_async,
-};
+use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::privilege::should_attempt_privileged_operation;
 use crate::shell::tasks::ShellTaskStatus;
-use crate::shell::transfer::{
-    ShellAsyncCreateCompletion, ShellAsyncRenameCompletion, ShellAsyncTaskResult,
-};
+use crate::shell::transfer::{ShellAsyncCreateCompletion, ShellAsyncRenameCompletion};
 use crate::{FikaWgpuApp, path_display_label, task_error_detail};
 use fika_core::{MimeApplicationCache, set_default_mime_application};
 
@@ -44,24 +40,7 @@ impl FikaWgpuApp {
             privileged,
         ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-
-        let request_for_task = request.clone();
-        if let Err(error) = self.spawn_async_task_result(
-            move || async move { rename_entry_on_disk_explicit_async(request_for_task).await },
-            move |outcome| {
-                ShellAsyncTaskResult::Rename(ShellAsyncRenameCompletion { request, outcome })
-            },
-        ) {
-            fika_log!("[fika-wgpu] rename-runtime-error {error}");
-            if self.scene.set_rename_dialog_error(error.to_string()) {
-                self.finish_rename_dialog_state_change();
-            }
-            self.scene.record_task_status(ShellTaskStatus::failed(
-                "Rename failed",
-                error.to_string(),
-                privileged,
-            ));
-        }
+        self.submit_operation_request(ShellOperationRequest::rename(request));
     }
 
     pub(crate) fn apply_async_rename_completion(
@@ -157,24 +136,7 @@ impl FikaWgpuApp {
             privileged,
         ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
-
-        let request_for_task = request.clone();
-        if let Err(error) = self.spawn_async_task_result(
-            move || async move { create_entry_on_disk_explicit_async(request_for_task).await },
-            move |outcome| {
-                ShellAsyncTaskResult::Create(ShellAsyncCreateCompletion { request, outcome })
-            },
-        ) {
-            fika_log!("[fika-wgpu] create-runtime-error {error}");
-            if self.scene.set_create_dialog_error(error.to_string()) {
-                self.finish_create_dialog_state_change();
-            }
-            self.scene.record_task_status(ShellTaskStatus::failed(
-                "Create failed",
-                error.to_string(),
-                privileged,
-            ));
-        }
+        self.submit_operation_request(ShellOperationRequest::create(request));
     }
 
     pub(crate) fn apply_async_create_completion(
