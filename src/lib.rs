@@ -77,7 +77,9 @@ pub use core::network::{
 };
 pub use core::operation_runtime::{
     OperationController, OperationId, OperationRuntime, OperationRuntimeError, OperationSnapshot,
-    run_operation_blocking, run_operation_task, run_registered_operation,
+    run_blocking_operation, run_operation_blocking, run_operation_task, run_registered_operation,
+    spawn_blocking_operation_with_completion, spawn_operation_task,
+    spawn_operation_task_with_completion,
 };
 pub use core::operations::{
     AffectedDirectoryRefresh, CreateItemResult, CreateUndoItem, CreatedItemKind, FileTransferMode,

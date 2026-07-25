@@ -331,14 +331,10 @@ fn spawn_trash_emptying_cleanup(paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
-    std::thread::spawn(move || {
-        let _ = pollster::block_on(crate::core::operation_runtime::run_operation_task(
-            move || async move {
-                for path in paths {
-                    let _ = remove_path_if_present_async(&path).await;
-                }
-            },
-        ));
+    let _ = crate::core::operation_runtime::spawn_operation_task(move || async move {
+        for path in paths {
+            let _ = remove_path_if_present_async(&path).await;
+        }
     });
 }
 

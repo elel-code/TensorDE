@@ -133,8 +133,9 @@ pub struct OperationSubmission<T> {
 
 /// Compio-only async operation dispatcher.
 ///
-/// File I/O and long-running tasks run on a dedicated Compio thread. Completion
-/// is bridged with runtime-agnostic channels so callers do not need Tokio.
+/// File I/O and long-running tasks run on a dedicated Compio thread. Callers on
+/// the UI thread should prefer the non-async `spawn_*` helpers so they do not
+/// need an intermediate `thread::spawn` + `block_on` wrapper.
 pub struct OperationRuntime {
     compio_tx: Sender<CompioTask>,
     next_operation_id: AtomicU64,
@@ -143,7 +144,9 @@ pub struct OperationRuntime {
 
 impl OperationRuntime {
     fn new() -> Result<Self, OperationRuntimeError> {
-        let (compio_tx, compio_rx) = async_channel::bounded::<CompioTask>(1);
+        // Unbounded: UI submit paths must not block waiting for the Compio thread
+        // to accept work (bounded(1) previously forced intermediate worker threads).
+        let (compio_tx, compio_rx) = async_channel::unbounded::<CompioTask>();
 
         std::thread::Builder::new()
             .name("fika-operation-compio".to_string())
@@ -268,18 +271,58 @@ impl OperationRuntime {
         Fut: Future<Output = T> + 'static,
         T: Send + 'static,
     {
-        let (result_tx, result_rx) = oneshot::channel();
-        let compio_task: CompioTask = Box::new(move || {
-            Box::pin(async move {
-                let result = task().await;
-                let _ = result_tx.send(result);
-            })
-        });
+        self.spawn_task(task)
+    }
+
+    /// Queue `task` on the Compio thread without awaiting a result channel.
+    pub fn spawn_detached_task<F, Fut>(&self, task: F) -> Result<(), OperationRuntimeError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let compio_task: CompioTask = Box::new(move || Box::pin(task()));
         self.compio_tx
-            .send(compio_task)
-            .await
-            .map_err(|_| OperationRuntimeError::Stopped)?;
+            .try_send(compio_task)
+            .map_err(|_| OperationRuntimeError::Stopped)
+    }
+
+    /// Queue `task` and return a oneshot that completes with its output.
+    pub fn spawn_task<F, Fut, T>(
+        &self,
+        task: F,
+    ) -> Result<oneshot::Receiver<T>, OperationRuntimeError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = T> + 'static,
+        T: Send + 'static,
+    {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.spawn_detached_task(move || async move {
+            let result = task().await;
+            let _ = result_tx.send(result);
+        })?;
         Ok(result_rx)
+    }
+
+    /// Queue `task` and invoke `on_complete` on a blocking worker when it finishes.
+    ///
+    /// `on_complete` is intentionally run via `spawn_blocking` so UI bridges can
+    /// wake the event loop / send channel results without pinning the Compio reactor.
+    pub fn spawn_task_with_completion<F, Fut, T, C>(
+        &self,
+        task: F,
+        on_complete: C,
+    ) -> Result<(), OperationRuntimeError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = T> + 'static,
+        T: Send + 'static,
+        C: FnOnce(T) + Send + 'static,
+    {
+        self.spawn_detached_task(move || async move {
+            let result = task().await;
+            let _ = compio::runtime::spawn_blocking(move || on_complete(result)).await;
+        })
     }
 
     pub async fn run_registered<F, Fut, T>(
@@ -295,7 +338,7 @@ impl OperationRuntime {
         let controller = self
             .operation_controller(id)
             .ok_or(OperationRuntimeError::UnknownOperation(id))?;
-        let result_rx = self.submit_task(move || task(controller)).await?;
+        let result_rx = self.spawn_task(move || task(controller))?;
         result_rx
             .await
             .map_err(|_| OperationRuntimeError::ResultDropped)
@@ -308,10 +351,57 @@ where
     Fut: Future<Output = T> + 'static,
     T: Send + 'static,
 {
-    let result_rx = OperationRuntime::shared()?.submit_task(task).await?;
+    let result_rx = OperationRuntime::shared()?.spawn_task(task)?;
     result_rx
         .await
         .map_err(|_| OperationRuntimeError::ResultDropped)
+}
+
+/// Fire-and-forget submission for UI / background bridges that already own
+/// their completion channel (or only need side effects).
+pub fn spawn_operation_task<F, Fut>(task: F) -> Result<(), OperationRuntimeError>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    OperationRuntime::shared()?.spawn_detached_task(task)
+}
+
+/// Submit an async task and deliver its value through `on_complete`.
+pub fn spawn_operation_task_with_completion<F, Fut, T, C>(
+    task: F,
+    on_complete: C,
+) -> Result<(), OperationRuntimeError>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = T> + 'static,
+    T: Send + 'static,
+    C: FnOnce(T) + Send + 'static,
+{
+    OperationRuntime::shared()?.spawn_task_with_completion(task, on_complete)
+}
+
+/// Submit blocking work on Compio's blocking pool and deliver the result.
+///
+/// Prefer this for directory listing / channel waits that must not pin the
+/// Compio reactor thread.
+pub fn spawn_blocking_operation_with_completion<F, T, C>(
+    task: F,
+    on_complete: C,
+) -> Result<(), OperationRuntimeError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+    C: FnOnce(T) + Send + 'static,
+{
+    OperationRuntime::shared()?.spawn_detached_task(move || async move {
+        match run_operation_blocking(task).await {
+            Ok(value) => on_complete(value),
+            Err(_) => {
+                // Runtime is shutting down; drop completion quietly.
+            }
+        }
+    })
 }
 
 pub async fn run_registered_operation<F, Fut, T>(
@@ -336,11 +426,31 @@ where
         .map_err(|_| OperationRuntimeError::BlockingWorkerStopped)
 }
 
+/// Run a blocking closure on Compio's blocking pool and wait for the result.
+///
+/// Prefer this over spawning a dedicated OS thread for short blocking work that
+/// still needs to report back synchronously on the caller thread.
+pub fn run_blocking_operation<F, T>(task: F) -> Result<T, OperationRuntimeError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    // Must enter via OperationRuntime: `compio::runtime::spawn_blocking` only
+    // works while a Compio runtime is active on the worker thread.
+    futures_lite::future::block_on(run_operation_task(move || async move {
+        run_operation_blocking(task).await
+    }))?
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OperationRuntime, run_operation_blocking, run_operation_task};
+    use super::{
+        OperationRuntime, run_blocking_operation, run_operation_blocking, run_operation_task,
+        spawn_operation_task, spawn_operation_task_with_completion,
+    };
     use crate::core::operations::Operation;
     use crate::core::pane::PaneId;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn operation_runtime_runs_compio_and_blocking_tasks() {
@@ -359,6 +469,34 @@ mod tests {
         let second = futures_lite::future::block_on(run_operation_task(|| async { 2_u8 })).unwrap();
 
         assert_eq!((first, second), (1, 2));
+    }
+
+    #[test]
+    fn spawn_operation_task_runs_without_caller_thread_wrapper() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_operation_task(move || async move {
+            let _ = tx.send(7_u8);
+        })
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 7);
+    }
+
+    #[test]
+    fn spawn_operation_task_with_completion_delivers_result() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_operation_task_with_completion(
+            || async move { 11_u8 },
+            move |value| {
+                let _ = tx.send(value);
+            },
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 11);
+    }
+
+    #[test]
+    fn run_blocking_operation_returns_value_synchronously() {
+        assert_eq!(run_blocking_operation(|| 99_u8).unwrap(), 99);
     }
 
     #[test]
@@ -387,5 +525,21 @@ mod tests {
         assert!(snapshot.cancelled);
 
         assert!(runtime.complete_operation(handle.id).is_some());
+    }
+
+    #[test]
+    fn spawn_task_does_not_block_caller_while_other_tasks_are_pending() {
+        let runtime = OperationRuntime::shared().unwrap();
+        runtime
+            .spawn_detached_task(|| async move {
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+
+        let submit_started = Instant::now();
+        runtime
+            .spawn_detached_task(|| async move {})
+            .expect("unbounded queue should accept work while other tasks are pending");
+        assert!(submit_started.elapsed() < Duration::from_millis(100));
     }
 }

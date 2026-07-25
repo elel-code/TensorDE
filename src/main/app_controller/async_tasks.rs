@@ -17,34 +17,43 @@ impl FikaWgpuApp {
 
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
-        thread::spawn(move || {
-            let result = pollster::block_on(run_operation_task({
+        if let Err(error) = spawn_operation_task_with_completion(
+            {
                 let paths = paths;
                 move || async move {
                     trash_view_operation_result_async(WGPU_SHELL_PANE_ID, operation, paths).await
                 }
-            }))
-            .unwrap_or_else(|error| {
-                fika_log!(
-                    "[fika-wgpu] trash-view-runtime-error action={} {error}",
-                    action.as_str()
-                );
-                trash_view_operation_runtime_failure(operation)
-            });
-            if tx
-                .send(ShellAsyncTaskResult::TrashView(
-                    ShellAsyncTrashViewCompletion {
-                        task_id,
-                        action,
-                        pane_to_reload,
-                        result,
-                    },
-                ))
-                .is_ok()
-            {
-                proxy.wake_up();
-            }
-        });
+            },
+            move |result| {
+                if tx
+                    .send(ShellAsyncTaskResult::TrashView(
+                        ShellAsyncTrashViewCompletion {
+                            task_id,
+                            action,
+                            pane_to_reload,
+                            result,
+                        },
+                    ))
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            },
+        ) {
+            fika_log!(
+                "[fika-wgpu] trash-view-runtime-error action={} {error}",
+                action.as_str()
+            );
+            let _ = self.async_task_tx.send(ShellAsyncTaskResult::TrashView(
+                ShellAsyncTrashViewCompletion {
+                    task_id,
+                    action,
+                    pane_to_reload,
+                    result: trash_view_operation_runtime_failure(operation),
+                },
+            ));
+            self.event_loop_proxy.wake_up();
+        }
         Ok(())
     }
 

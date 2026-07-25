@@ -494,8 +494,9 @@ impl FikaWgpuApp {
         );
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
-        thread::spawn(move || {
-            let transfer = pollster::block_on(run_operation_task({
+        let target_dir_for_error = target_dir.clone();
+        if let Err(error) = spawn_operation_task_with_completion(
+            {
                 let controller = controller.clone();
                 let target_dir = target_dir.clone();
                 let paths = paths.clone();
@@ -510,23 +511,39 @@ impl FikaWgpuApp {
                     )
                     .await
                 }
-            }))
-            .unwrap_or_else(|error| {
-                transfer_runtime_failure(target_dir.clone(), mode, label, clear_clipboard, error)
-            });
-            if tx
-                .send(ShellAsyncTaskResult::Transfer(
-                    ShellAsyncTransferCompletion {
-                        task_id,
-                        source,
-                        target_dir,
-                        transfer,
-                    },
-                ))
-                .is_ok()
-            {
-                proxy.wake_up();
-            }
-        });
+            },
+            move |transfer| {
+                if tx
+                    .send(ShellAsyncTaskResult::Transfer(
+                        ShellAsyncTransferCompletion {
+                            task_id,
+                            source,
+                            target_dir,
+                            transfer,
+                        },
+                    ))
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            },
+        ) {
+            let transfer = transfer_runtime_failure(
+                target_dir_for_error.clone(),
+                mode,
+                label,
+                clear_clipboard,
+                error,
+            );
+            let _ = self.async_task_tx.send(ShellAsyncTaskResult::Transfer(
+                ShellAsyncTransferCompletion {
+                    task_id,
+                    source,
+                    target_dir: target_dir_for_error,
+                    transfer,
+                },
+            ));
+            self.event_loop_proxy.wake_up();
+        }
     }
 }

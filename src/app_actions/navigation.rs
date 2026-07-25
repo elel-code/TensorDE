@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::thread;
 
 use crate::platform::ActiveEventLoop;
 use crate::platform::PhysicalSize;
@@ -14,7 +13,7 @@ use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::{
     ShellAsyncNavigationCompletion, ShellAsyncTaskResult, ShellNavigationHistoryUpdate,
 };
-use fika_core::default_user_places_path;
+use fika_core::{default_user_places_path, spawn_blocking_operation_with_completion};
 
 impl FikaWgpuApp {
     pub(crate) fn perform_path_navigation(
@@ -188,24 +187,27 @@ impl FikaWgpuApp {
         self.navigation_generations[pane.index()] = generation;
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
-        thread::spawn(move || {
-            let result = read_shell_entries_sync(&target_path);
-            let completion = ShellAsyncNavigationCompletion {
-                generation,
-                pane,
-                source_path,
-                target_path,
-                history,
-                reason,
-                result,
-            };
-            if tx
-                .send(ShellAsyncTaskResult::Navigation(completion))
-                .is_ok()
-            {
-                proxy.wake_up();
-            }
-        });
+        let listing_target = target_path.clone();
+        let _ = spawn_blocking_operation_with_completion(
+            move || read_shell_entries_sync(&listing_target),
+            move |result| {
+                let completion = ShellAsyncNavigationCompletion {
+                    generation,
+                    pane,
+                    source_path,
+                    target_path,
+                    history,
+                    reason,
+                    result,
+                };
+                if tx
+                    .send(ShellAsyncTaskResult::Navigation(completion))
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            },
+        );
 
         true
     }

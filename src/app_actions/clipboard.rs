@@ -1,8 +1,7 @@
 use std::io::Result as IoResult;
 use std::sync::mpsc::Receiver;
-use std::thread;
 
-use fika_core::{run_operation_blocking, run_operation_task};
+use fika_core::spawn_blocking_operation_with_completion;
 
 use crate::shell::clipboard::FileClipboardExportRequest;
 use crate::shell::tasks::ShellTaskStatus;
@@ -182,21 +181,19 @@ impl FikaWgpuApp {
     {
         let tx = self.async_task_tx.clone();
         let proxy = self.event_loop_proxy.clone();
-        thread::spawn(move || {
-            let result = pollster::block_on(run_operation_task(move || async move {
-                run_operation_blocking(move || receive_clipboard_result(reply_rx))
-                    .await
-                    .map_err(|error| error.to_string())?
-            }))
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
-            if tx
-                .send(ShellAsyncTaskResult::Clipboard(map(result)))
-                .is_ok()
-            {
-                proxy.wake_up();
-            }
-        });
+        if let Err(error) = spawn_blocking_operation_with_completion(
+            move || receive_clipboard_result(reply_rx),
+            move |result| {
+                if tx
+                    .send(ShellAsyncTaskResult::Clipboard(map(result)))
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            },
+        ) {
+            fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+        }
     }
 
     fn record_file_clipboard_store_error(

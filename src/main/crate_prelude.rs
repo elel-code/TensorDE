@@ -34,7 +34,8 @@ use fika_core::{
     network_parent_path, network_path_display_name, network_path_from_uri, network_root_path,
     paste_text_result, path_uri_from_path, place_order_path_for_user_places_path,
     read_entries_sync, read_gio_devices, read_network_entry_batches_sync_cancellable,
-    resolve_location_input, run_operation_task, save_app_settings, save_place_order,
+    resolve_location_input, save_app_settings, save_place_order,
+    spawn_operation_task_with_completion,
     save_user_places, thumbnail_request_may_have_preview, trash_view_operation_result,
     trash_view_operation_result_async,
 };

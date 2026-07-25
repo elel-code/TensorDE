@@ -7,8 +7,8 @@ use crate::shell::service_menu::ServiceMenuLaunchRequest;
 use crate::shell::tasks::ShellTaskStatus;
 use crate::{FikaWgpuApp, path_display_label};
 use fika_core::{
-    OpenWithLaunchResult, ServiceMenuLaunchResult, launch_with_systemd_user, run_operation_task,
-    service_menu_target_label,
+    OpenWithLaunchResult, ServiceMenuLaunchResult, launch_with_systemd_user,
+    service_menu_target_label, spawn_operation_task,
 };
 
 impl FikaWgpuApp {
@@ -24,9 +24,8 @@ impl FikaWgpuApp {
             }
         };
         self.scene.record_open_file_request(request);
-        std::thread::spawn(move || {
-            let result = pollster::block_on(launch_with_systemd_user(launch.plan));
-            match result {
+        let _ = spawn_operation_task(move || async move {
+            match launch_with_systemd_user(launch.plan).await {
                 Ok(result) => fika_log!(
                     "[fika-wgpu] open-finished path={} app={:?} units={}",
                     launch.path.display(),
@@ -72,8 +71,8 @@ impl FikaWgpuApp {
             format!("{} with {}", service_menu_target_label(&paths), app_name),
             false,
         ));
-        std::thread::spawn(move || {
-            let result = pollster::block_on(launch_with_systemd_user(request.plan));
+        let _ = spawn_operation_task(move || async move {
+            let result = launch_with_systemd_user(request.plan).await;
             let status = ServiceMenuLaunchResult {
                 pane_id: WGPU_SHELL_PANE_ID,
                 target_label: service_menu_target_label(&paths),
@@ -94,15 +93,12 @@ impl FikaWgpuApp {
             format!("{} with {}", service_menu_target_label(&paths), app_name),
             false,
         ));
-        std::thread::spawn(move || {
+        let _ = spawn_operation_task(move || async move {
             let target_label = service_menu_target_label(&paths);
-            let status = pollster::block_on(run_operation_task(move || async move {
-                execute_ark_extract_and_trash(request).await
-            }))
-            .map_err(|err| err.to_string())
-            .and_then(|result| result)
-            .map(|message| format!("Ran {app_name} for {target_label}: {message}"))
-            .unwrap_or_else(|err| format!("Cannot run {app_name} for {target_label}: {err}"));
+            let status = execute_ark_extract_and_trash(request)
+                .await
+                .map(|message| format!("Ran {app_name} for {target_label}: {message}"))
+                .unwrap_or_else(|err| format!("Cannot run {app_name} for {target_label}: {err}"));
             fika_log!("[fika-wgpu] service-menu-finished {status}");
         });
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
@@ -136,8 +132,8 @@ impl FikaWgpuApp {
             format!("{} using {}", path_display_label(&path), app_name),
             false,
         ));
-        std::thread::spawn(move || {
-            let result = pollster::block_on(launch_with_systemd_user(request.plan));
+        let _ = spawn_operation_task(move || async move {
+            let result = launch_with_systemd_user(request.plan).await;
             let status = OpenWithLaunchResult {
                 pane_id: WGPU_SHELL_PANE_ID,
                 path,

@@ -405,9 +405,16 @@ operation dispatcher。
 - privilege helper、XDP filechooser backend 入口改为 `async_io::block_on`。
 - Ark extract-and-trash、XDP chooser 子进程改为 `async_process`。
 - 直接依赖中已移除 `tokio`。
+- UI 侧 transfer / trash-view / navigation / clipboard / launch / ark extract 去掉
+  `thread::spawn + pollster::block_on(run_operation_task)` 包装，改为
+  `spawn_operation_task*` / `spawn_blocking_operation_with_completion` 直接入队。
+- `OperationRuntime` 提交队列改为 unbounded，避免 UI 线程在 Compio 忙时阻塞。
 
 后续：
-- 继续把 UI 侧 operation submit / completion 收敛到 dispatcher（见第 6 节）。
+- 继续把 UI 侧 operation submit / completion 与 task status 生命周期收敛到 dispatcher
+  （见第 6 节）：`FikaWgpuApp` 只提交 request 并 apply completion。
+- create/rename dialog commit 仍同步 `block_on(run_operation_task)`，后续可改为 async
+  completion 路径。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。

@@ -6,7 +6,9 @@ use crate::shell::privilege::{ShellPrivilegeOutcome, run_privileged_command_sync
 pub(crate) fn create_entry_on_disk(request: &CreateEntryRequest) -> Result<(), String> {
     let path = request.path.clone();
     let kind = request.kind;
-    pollster::block_on(run_operation_task(move || async move {
+    // Dialog commit is currently synchronous; wait on the Compio worker instead of
+    // inventing a second OS thread around pollster.
+    futures_lite::future::block_on(run_operation_task(move || async move {
         match kind {
             CreateEntryKind::Folder => file_ops::create_folder_at_async(&path)
                 .await
@@ -42,7 +44,7 @@ pub(crate) fn create_entry_on_disk_explicit(
 pub(crate) fn rename_entry_on_disk(request: &RenameEntryRequest) -> Result<(), String> {
     let source = request.source.clone();
     let target = request.target.clone();
-    pollster::block_on(run_operation_task(move || async move {
+    futures_lite::future::block_on(run_operation_task(move || async move {
         file_ops::rename_path_to_async(&source, &target)
             .await
             .map_err(|error| {
