@@ -1,7 +1,7 @@
 
     #[test]
     fn text_input_batch_replaces_location_selection_and_keeps_preedit_separate() {
-        let mut scene = test_scene(Vec::new(), ShellViewMode::Icons);
+        let mut scene = TestShellSceneBuilder::new().build();
         let size = PhysicalSize::new(640, 420);
         assert!(scene.apply_location_command(LocationCommand::Activate, size));
 
@@ -23,7 +23,7 @@
 
     #[test]
     fn text_input_batch_updates_create_name_and_clears_preedit_on_leave() {
-        let mut scene = test_scene(Vec::new(), ShellViewMode::Icons);
+        let mut scene = TestShellSceneBuilder::new().build();
         scene.create_dialog = Some(ShellCreateDialog::new(
             ShellPaneId::SLOT_0,
             PathBuf::from("/tmp"),
@@ -47,7 +47,7 @@
 
     #[test]
     fn text_input_batch_recomputes_open_with_filter_from_committed_query() {
-        let mut scene = test_scene(Vec::new(), ShellViewMode::Icons);
+        let mut scene = TestShellSceneBuilder::new().build();
         scene.open_with_chooser = Some(ShellOpenWithChooser::new(
             PathBuf::from("/tmp/note.txt"),
             None,

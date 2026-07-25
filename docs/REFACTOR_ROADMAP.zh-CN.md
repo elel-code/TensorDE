@@ -481,10 +481,14 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
 已完成：
 - `ShellScene::from_primary_pane` 集中默认字段；生产 `load_with_hidden_visibility`
   与测试 `test_scene` / `test_scene_at` 共用，新增字段只改一处。
+- 链式 `TestShellSceneBuilder`（path / entries / view_mode / show_hidden /
+  dark_mode / places / scale / trash / secondary split pane）；`test_scene` 变为
+  薄封装。部分 split / text-input 测试已改用 builder。
 
 候选后续：
-- 链式 `TestShellSceneBuilder`（show_hidden / dark_mode / split / dialogs presets）。
+- dialogs / task status presets。
 - damage snapshot helper。
+- 更多测试从 `set_test_pane` 后置赋值迁到 builder。
 
 完成标准：
 - 新测试不再手写完整 `ShellScene` 字段。

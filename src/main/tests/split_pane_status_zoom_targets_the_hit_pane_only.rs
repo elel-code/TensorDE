@@ -1,15 +1,15 @@
 
     #[test]
     fn split_pane_status_zoom_targets_the_hit_pane_only() {
-        let mut scene = test_scene(vec![test_entry("left.txt", false)], ShellViewMode::Icons);
-        set_test_pane(
-            &mut scene,
-            ShellPaneId::SLOT_1,
-            PathBuf::from("/right-root"),
-            ShellViewMode::Icons,
-            vec![test_entry("right.txt", false)],
-        );
-        scene.places_visible = false;
+        let mut scene = TestShellSceneBuilder::new()
+            .with_entries(vec![test_entry("left.txt", false)])
+            .with_secondary_pane(
+                "/right-root",
+                ShellViewMode::Icons,
+                vec![test_entry("right.txt", false)],
+            )
+            .with_places_visible(false)
+            .build();
         let size = PhysicalSize::new(1400, 520);
         let right_zoom = scene
             .status_zoom_indicator_rects_for_pane(ShellPaneId::SLOT_1, size)
@@ -278,16 +278,16 @@
 
     #[test]
     fn window_scale_factor_scales_default_shell_metrics() {
-        let mut scene = test_scene(vec![test_entry("alpha.txt", false)], ShellViewMode::Icons);
-        set_test_pane(
-            &mut scene,
-            ShellPaneId::SLOT_1,
-            PathBuf::from("/right-root"),
-            ShellViewMode::Icons,
-            (0..80)
-                .map(|index| test_entry(&format!("right-{index:02}.txt"), false))
-                .collect(),
-        );
+        let mut scene = TestShellSceneBuilder::new()
+            .with_entries(vec![test_entry("alpha.txt", false)])
+            .with_secondary_pane(
+                "/right-root",
+                ShellViewMode::Icons,
+                (0..80)
+                    .map(|index| test_entry(&format!("right-{index:02}.txt"), false))
+                    .collect(),
+            )
+            .build();
         scene.panes[ShellPaneId::SLOT_1].scroll_y = 80.0;
         let size = PhysicalSize::new(900, 600);
 

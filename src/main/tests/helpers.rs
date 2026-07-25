@@ -322,12 +322,158 @@
         }
     }
 
-    /// In-memory scene fixture with deterministic places (no disk listing).
+    /// Fluent fixture builder for in-memory [`ShellScene`] tests.
     ///
-    /// Defaults live in [`ShellScene::from_primary_pane`]; prefer this over
-    /// hand-writing `ShellScene { ... }` when adding fields.
+    /// Defaults come from [`ShellScene::from_primary_pane`]. Prefer this over
+    /// mutating scene fields after `test_scene` when adding common presets.
+    #[derive(Clone, Debug)]
+    struct TestShellSceneBuilder {
+        path: PathBuf,
+        entries: Vec<Entry>,
+        view_mode: ShellViewMode,
+        show_hidden: bool,
+        dark_mode: bool,
+        places_visible: bool,
+        scale_factor: f32,
+        places: Option<Vec<ShellPlace>>,
+        trash_has_items: bool,
+        secondary: Option<TestShellScenePane>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestShellScenePane {
+        path: PathBuf,
+        view_mode: ShellViewMode,
+        entries: Vec<Entry>,
+        zoom_step: i32,
+    }
+
+    impl TestShellSceneBuilder {
+        fn new() -> Self {
+            Self {
+                path: PathBuf::from("/tmp"),
+                entries: Vec::new(),
+                view_mode: ShellViewMode::Icons,
+                show_hidden: false,
+                dark_mode: false,
+                places_visible: true,
+                scale_factor: 1.0,
+                places: None,
+                trash_has_items: false,
+                secondary: None,
+            }
+        }
+
+        fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
+            self.path = path.into();
+            self
+        }
+
+        fn with_entries(mut self, entries: Vec<Entry>) -> Self {
+            self.entries = entries;
+            self
+        }
+
+        fn with_view_mode(mut self, view_mode: ShellViewMode) -> Self {
+            self.view_mode = view_mode;
+            self
+        }
+
+        fn with_show_hidden(mut self, show_hidden: bool) -> Self {
+            self.show_hidden = show_hidden;
+            self
+        }
+
+        fn with_dark_mode(mut self, dark_mode: bool) -> Self {
+            self.dark_mode = dark_mode;
+            self
+        }
+
+        fn with_places_visible(mut self, places_visible: bool) -> Self {
+            self.places_visible = places_visible;
+            self
+        }
+
+        fn with_scale_factor(mut self, scale_factor: f32) -> Self {
+            self.scale_factor = scale_factor;
+            self
+        }
+
+        fn with_places(mut self, places: Vec<ShellPlace>) -> Self {
+            self.places = Some(places);
+            self
+        }
+
+        fn with_trash_has_items(mut self, trash_has_items: bool) -> Self {
+            self.trash_has_items = trash_has_items;
+            self
+        }
+
+        /// Open the secondary split pane with the given path/entries.
+        fn with_secondary_pane(
+            mut self,
+            path: impl Into<PathBuf>,
+            view_mode: ShellViewMode,
+            entries: Vec<Entry>,
+        ) -> Self {
+            self.secondary = Some(TestShellScenePane {
+                path: path.into(),
+                view_mode,
+                entries,
+                zoom_step: 0,
+            });
+            self
+        }
+
+        fn with_secondary_zoom_step(mut self, zoom_step: i32) -> Self {
+            if let Some(secondary) = self.secondary.as_mut() {
+                secondary.zoom_step = zoom_step;
+            }
+            self
+        }
+
+        fn build(self) -> ShellScene {
+            let places = self.places.unwrap_or_else(|| {
+                vec![
+                    ShellPlace::new("", "H", "Home", self.path.clone(), false),
+                    ShellPlace::new("Devices", "/", "Root", PathBuf::from("/"), false),
+                ]
+            });
+            let mut scene = ShellScene::from_primary_pane(
+                ShellPaneState::from_entries(
+                    self.path,
+                    self.view_mode,
+                    self.entries,
+                    self.show_hidden,
+                    "",
+                ),
+                places,
+                self.trash_has_items,
+                self.show_hidden,
+            );
+            scene.dark_mode = self.dark_mode;
+            scene.places_visible = self.places_visible;
+            scene.scale_factor = self.scale_factor;
+            if let Some(secondary) = self.secondary {
+                set_test_pane_with_zoom(
+                    &mut scene,
+                    ShellPaneId::SLOT_1,
+                    secondary.path,
+                    secondary.view_mode,
+                    secondary.entries,
+                    secondary.zoom_step,
+                );
+            }
+            scene
+        }
+    }
+
+    /// In-memory scene fixture with deterministic places (no disk listing).
     fn test_scene(entries: Vec<Entry>, view_mode: ShellViewMode) -> ShellScene {
-        test_scene_at(PathBuf::from("/tmp"), entries, view_mode)
+        TestShellSceneBuilder::new()
+            .with_entries(entries)
+            .with_view_mode(view_mode)
+            .build()
     }
 
     fn test_scene_at(
@@ -335,15 +481,11 @@
         entries: Vec<Entry>,
         view_mode: ShellViewMode,
     ) -> ShellScene {
-        ShellScene::from_primary_pane(
-            ShellPaneState::from_entries(path.clone(), view_mode, entries, false, ""),
-            vec![
-                ShellPlace::new("", "H", "Home", path, false),
-                ShellPlace::new("Devices", "/", "Root", PathBuf::from("/"), false),
-            ],
-            false,
-            false,
-        )
+        TestShellSceneBuilder::new()
+            .with_path(path)
+            .with_entries(entries)
+            .with_view_mode(view_mode)
+            .build()
     }
 
     fn set_test_pane(
@@ -352,6 +494,17 @@
         path: PathBuf,
         view_mode: ShellViewMode,
         entries: Vec<Entry>,
+    ) {
+        set_test_pane_with_zoom(scene, pane, path, view_mode, entries, 0);
+    }
+
+    fn set_test_pane_with_zoom(
+        scene: &mut ShellScene,
+        pane: ShellPaneId,
+        path: PathBuf,
+        view_mode: ShellViewMode,
+        entries: Vec<Entry>,
+        zoom_step: i32,
     ) {
         let dir_count = entries.iter().filter(|entry| entry.is_dir).count();
         let filtered_indexes = filtered_indexes_for_entries(
@@ -364,7 +517,7 @@
             ShellPaneState {
                 path,
                 view_mode,
-                zoom_step: 0,
+                zoom_step,
                 dir_count,
                 filtered_indexes,
                 entries,
@@ -384,8 +537,53 @@
     }
 
     #[test]
+    fn test_shell_scene_builder_applies_presets() {
+        let scene = TestShellSceneBuilder::new()
+            .with_path("/fixture")
+            .with_entries(vec![test_entry("a.txt", false)])
+            .with_view_mode(ShellViewMode::Details)
+            .with_show_hidden(true)
+            .with_dark_mode(true)
+            .with_places_visible(false)
+            .with_scale_factor(1.5)
+            .with_trash_has_items(true)
+            .with_secondary_pane(
+                "/right",
+                ShellViewMode::Compact,
+                vec![test_entry("b.txt", false)],
+            )
+            .with_secondary_zoom_step(2)
+            .build();
+        assert_eq!(
+            scene.panes[ShellPaneId::SLOT_0].path,
+            PathBuf::from("/fixture")
+        );
+        assert_eq!(
+            scene.panes[ShellPaneId::SLOT_0].view_mode,
+            ShellViewMode::Details
+        );
+        assert!(scene.show_hidden);
+        assert!(scene.dark_mode);
+        assert!(!scene.places_visible);
+        assert_eq!(scene.scale_factor, 1.5);
+        assert!(scene.trash_has_items);
+        assert_eq!(
+            scene.panes[ShellPaneId::SLOT_1].path,
+            PathBuf::from("/right")
+        );
+        assert_eq!(
+            scene.panes[ShellPaneId::SLOT_1].view_mode,
+            ShellViewMode::Compact
+        );
+        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_step, 2);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_1].entries.len(), 1);
+    }
+
+    #[test]
     fn places_hit_testing_is_separate_from_file_content() {
-        let mut scene = test_scene(vec![test_entry("alpha.txt", false)], ShellViewMode::Icons);
+        let mut scene = TestShellSceneBuilder::new()
+            .with_entries(vec![test_entry("alpha.txt", false)])
+            .build();
         let size = PhysicalSize::new(700, 320);
         let place_row = scene.place_row_rects(size)[0].1;
         let place_point = ViewPoint {
