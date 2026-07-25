@@ -442,6 +442,18 @@ operation dispatcher。
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
 
+### 6c. wayland-client-runtime 文件拆分（进行中）
+
+目标：把 `runtime.rs` / `runtime_handlers.rs` 拆到 1000 行文件门禁以下，同时保持
+SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）。
+
+已完成：
+- `runtime.rs` 改为 facade + `include!("runtime/*.rs")` 分片。
+- 分片：`types` / `api` / `api_private` / `runtime_data_transfer` / `runtime_helpers` /
+  `free_helpers` / `state` / `handlers_shell` / `handlers_seat` /
+  `handlers_data_device` / `handlers_protocol` / `runtime_tests`。
+- `scripts/check-rust-file-lines.sh` 通过（含 wayland-client-runtime）。
+
 完成标准：
 - `Cargo.toml` 无直接 `tokio` 依赖；`cargo tree -i tokio` 仅允许传递依赖（若有）。
 - D-Bus / 文件操作 / helper binaries 可在 Compio 或 async-io executor 上运行。
