@@ -3,6 +3,7 @@ use crate::platform::ActiveEventLoop;
 use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;
 use crate::shell::drop_menu::ShellDropOperationRequest;
+use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::ShellAsyncTransferSource;
 use fika_core::{FileClipboardRole, FileTransferMode, decode_file_clipboard_text, is_network_path};
@@ -75,7 +76,7 @@ impl FikaWgpuApp {
                 FileClipboardRole::Copy => FileTransferMode::Copy,
                 FileClipboardRole::Cut => FileTransferMode::Move,
             };
-            self.start_async_transfer_with_privilege(
+            self.submit_operation_request(ShellOperationRequest::transfer(
                 ShellAsyncTransferSource::Paste,
                 target_dir,
                 mode,
@@ -83,7 +84,7 @@ impl FikaWgpuApp {
                 "Paste",
                 payload.role == FileClipboardRole::Cut,
                 privileged,
-            );
+            ));
             return true;
         }
         if privileged {
@@ -102,7 +103,7 @@ impl FikaWgpuApp {
             ));
             return true;
         }
-        self.start_async_paste_text(target_dir, text);
+        self.submit_operation_request(ShellOperationRequest::paste_text(target_dir, text));
         true
     }
 
@@ -122,7 +123,7 @@ impl FikaWgpuApp {
             ));
             return ShellActionOutcome::Redraw;
         }
-        self.start_async_transfer_with_privilege(
+        self.submit_operation_request(ShellOperationRequest::transfer(
             ShellAsyncTransferSource::Drop,
             request.target_dir,
             request.mode,
@@ -130,7 +131,7 @@ impl FikaWgpuApp {
             request.mode.label(),
             false,
             request.privileged,
-        );
+        ));
         ShellActionOutcome::Redraw
     }
 }

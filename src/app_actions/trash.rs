@@ -3,6 +3,7 @@ use crate::platform::ActiveEventLoop;
 use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;
 use crate::shell::context_menu::ShellContextMenuAction;
+use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::tasks::ShellTaskStatus;
 use fika_core::{TrashViewOperation, file_ops, is_network_path};
 
@@ -69,7 +70,12 @@ impl FikaWgpuApp {
             return;
         }
 
-        self.start_async_move_to_trash(paths, pane_to_reload, privileged);
+        self.submit_operation_request(ShellOperationRequest::move_to_trash(
+            paths,
+            pane_to_reload,
+            privileged,
+            None,
+        ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
@@ -94,12 +100,12 @@ impl FikaWgpuApp {
             .iter()
             .all(|path| file_ops::is_in_trash_files_dir(path))
         {
-            self.start_async_trash_view_operation_with(
+            self.submit_operation_request(ShellOperationRequest::trash_view(
                 ShellContextMenuAction::DeletePermanently,
                 TrashViewOperation::DeletePermanently,
                 paths,
                 pane,
-            );
+            ));
             self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             return;
         }
@@ -113,7 +119,12 @@ impl FikaWgpuApp {
             return;
         }
 
-        self.start_async_move_to_trash_with_options(paths, pane, false, Some(pane));
+        self.submit_operation_request(ShellOperationRequest::move_to_trash(
+            paths,
+            pane,
+            false,
+            Some(pane),
+        ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
@@ -135,14 +146,14 @@ impl FikaWgpuApp {
         }
         let pane_to_reload = self.scene.active_pane();
         self.scene.trash_changes = self.scene.trash_changes.saturating_add(1);
-        self.start_async_trash_view_operation_with(
+        self.submit_operation_request(ShellOperationRequest::trash_view(
             ShellContextMenuAction::RestoreFromTrash,
             TrashViewOperation::Restore {
                 conflict_policy: file_ops::TrashRestoreConflictPolicy::Replace,
             },
             paths,
             pane_to_reload,
-        );
+        ));
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 }

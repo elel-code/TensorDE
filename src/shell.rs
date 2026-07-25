@@ -22,6 +22,7 @@ pub(crate) mod metadata_roles;
 pub(crate) mod metrics;
 pub(crate) mod open_file;
 pub(crate) mod open_with;
+pub(crate) mod operation_request;
 pub(crate) mod options;
 pub(crate) mod paint;
 pub(crate) mod pane;

@@ -109,6 +109,7 @@ use shell::metadata_roles::{
 };
 use shell::metrics::*;
 use shell::open_file::OpenFileRequest;
+use shell::operation_request::ShellOperationRequest;
 #[cfg(test)]
 use shell::open_file::default_open_file_launch_request;
 #[cfg(test)]

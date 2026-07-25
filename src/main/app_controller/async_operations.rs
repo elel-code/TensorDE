@@ -263,6 +263,54 @@ impl FikaWgpuApp {
         task_id
     }
 
+    /// Single entry point for typed file-operation requests from UI actions.
+    fn submit_operation_request(&mut self, request: ShellOperationRequest) {
+        match request {
+            ShellOperationRequest::Transfer {
+                source,
+                target_dir,
+                mode,
+                paths,
+                label,
+                clear_clipboard,
+                privileged,
+            } => self.start_async_transfer_with_privilege(
+                source,
+                target_dir,
+                mode,
+                paths,
+                label,
+                clear_clipboard,
+                privileged,
+            ),
+            ShellOperationRequest::PasteText { target_dir, text } => {
+                self.start_async_paste_text(target_dir, text);
+            }
+            ShellOperationRequest::MoveToTrash {
+                paths,
+                pane_to_reload,
+                privileged,
+                clear_selection_pane,
+            } => self.start_async_move_to_trash_with_options(
+                paths,
+                pane_to_reload,
+                privileged,
+                clear_selection_pane,
+            ),
+            ShellOperationRequest::TrashView {
+                action,
+                operation,
+                paths,
+                pane_to_reload,
+            } => self.start_async_trash_view_operation_with(
+                action,
+                operation,
+                paths,
+                pane_to_reload,
+            ),
+        }
+    }
+
     fn start_async_transfer_with_privilege(
         &mut self,
         source: ShellAsyncTransferSource,
@@ -415,15 +463,6 @@ impl FikaWgpuApp {
         ));
     }
 
-    fn start_async_move_to_trash(
-        &mut self,
-        paths: Vec<PathBuf>,
-        pane_to_reload: ShellPaneId,
-        privileged: bool,
-    ) {
-        self.start_async_move_to_trash_with_options(paths, pane_to_reload, privileged, None);
-    }
-
     fn start_async_move_to_trash_with_options(
         &mut self,
         paths: Vec<PathBuf>,
@@ -473,7 +512,12 @@ impl FikaWgpuApp {
             .context_target_pane()
             .unwrap_or_else(|| self.scene.active_pane());
         let (operation, paths) = self.scene.context_target_trash_view_operation(action)?;
-        self.start_async_trash_view_operation_with(action, operation, paths, pane_to_reload);
+        self.submit_operation_request(ShellOperationRequest::trash_view(
+            action,
+            operation,
+            paths,
+            pane_to_reload,
+        ));
         Ok(())
     }
 

@@ -428,10 +428,12 @@ operation dispatcher。
 - open / open-with / service-menu / ark extract-and-trash 并入 dispatcher：
   `ShellAsyncLaunchCompletion` + `start_async_launch_task`，完成时更新 task status
   （不再只写日志）。
+- 文件操作 request 类型化：`ShellOperationRequest`（transfer / paste-text /
+  move-to-trash / trash-view）+ `submit_operation_request`；UI action 只构造 request。
 
 后续：
-- 继续把 UI 侧 operation submit / completion 与 task status 生命周期收敛到 dispatcher
-  （见第 6 节）：可进一步把 request 类型化（`OperationRequest`），让 app 只 submit/apply。
+- 继续把 create/rename/device/launch/navigation/clipboard 也收成 request 类型，
+  让 app 更接近「只 submit/apply」。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
