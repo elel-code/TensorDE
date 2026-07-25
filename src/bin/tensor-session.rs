@@ -149,14 +149,14 @@ mod tests {
 
     #[test]
     fn extracts_split_config_argument() {
-        let args = arguments(&["--config", "/tmp/tensor.kdl", "--check"]);
-        assert_eq!(config_path(&args), Some(PathBuf::from("/tmp/tensor.kdl")));
+        let args = arguments(&["--config", "/tmp/tensor.toml", "--check"]);
+        assert_eq!(config_path(&args), Some(PathBuf::from("/tmp/tensor.toml")));
     }
 
     #[test]
     fn extracts_joined_config_argument() {
-        let args = arguments(&["--config=/tmp/tensor.kdl"]);
-        assert_eq!(config_path(&args), Some(PathBuf::from("/tmp/tensor.kdl")));
+        let args = arguments(&["--config=/tmp/tensor.toml"]);
+        assert_eq!(config_path(&args), Some(PathBuf::from("/tmp/tensor.toml")));
     }
 
     #[test]

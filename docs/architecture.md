@@ -38,8 +38,9 @@ Tensor intentionally has no general-purpose network control plane: its composito
 protocol is local Unix IPC.
 
 Lua is intentionally not a compositor-core dependency and is not a second
-configuration language. The KDL/knus boundary remains authoritative for
-startup, device, layout, IPC, and session policy. If scripting is added later,
+configuration language. The TOML/`serde` boundary remains authoritative for
+startup, device, layout, and session policy; live control stays on versioned
+IPC. If scripting is added later,
 it must be an optional capability boundary: scripts may receive value-only
 snapshots and issue versioned IPC or policy commands, but may not hold Smithay
 resources, Vulkan handles, Bevy entities, or portal ownership. Execution
@@ -214,7 +215,7 @@ backend-wide `OutputPolicy` consumes snapshots from every DRM device and produce
 `OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
 The plan also carries the selected progressive DRM mode, native fourcc, explicit modifier, plane
-count, and resolved output scale. Explicit KDL connector rules win; otherwise the policy preserves
+count, and resolved output scale. Explicit TOML connector rules win; otherwise the policy preserves
 the connector's native/preferred resolution and picks its highest available refresh, avoiding stale
 60 Hz EDID `PREFERRED` flags on high-refresh panels. A format, mode, or scale change is therefore an
 output change rather than hidden backend state. The adapter may use a custom `CrtcMapper` or drop

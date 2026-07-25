@@ -1,6 +1,6 @@
 ---
 name: tensor-compositor
-description: Use when changing the Tensor Wayland compositor, its Smithay/Vulkanalia renderer, Bevy ECS state, KDL configuration, startup sequence, IPC, or optional systemd and xdg-desktop-portal gates. Enforces the repository's descriptor-heap-only and modern Rust module contracts.
+description: Use when changing the Tensor Wayland compositor, its Smithay/Vulkanalia renderer, Bevy ECS state, TOML configuration, startup sequence, IPC, or optional systemd and xdg-desktop-portal gates. Enforces the repository's descriptor-heap-only and modern Rust module contracts.
 ---
 
 # Tensor Compositor Engineering
@@ -19,7 +19,7 @@ are preferred over compatibility layers that would constrain the renderer or IPC
 - Use `bevy_ecs` directly, not the Bevy engine. Keep Smithay/non-thread-safe handles outside normal
   components, in protocol-owned state or `NonSend` resources. Components should be IDs, lifecycle
   state, geometry, and render extraction data.
-- Parse user configuration as KDL with `knuffel`. Configuration loading and validation must be
+- Parse user configuration as TOML with `serde`/`toml`. Configuration loading and validation must be
   independent of renderer initialization and support an explicit path plus a deterministic default.
 - Keep IPC versioned, request-ID based, length-prefixed, bounded, and structurally errorful over a
   private Unix socket. Do not invent compatibility shims for a new protocol.
@@ -35,7 +35,7 @@ generated bindings and explicit fixtures are the only exclusions.
 
 ## Startup Review
 
-When modifying startup, preserve the gate order: CLI/environment, KDL load and validation,
+When modifying startup, preserve the gate order: CLI/environment, TOML load and validation,
 logging, calloop/Smithay display, Vulkan descriptor-heap probe, IPC bind, ECS scene construction,
 watchers/signals, then the event loop. `READY=1` is emitted only after every required gate passes.
 

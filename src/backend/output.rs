@@ -41,7 +41,7 @@ pub(crate) struct OutputDescriptor {
     pub(crate) modes: Vec<Mode>,
     /// The selected mode, rather than the connector's raw DRM `PREFERRED`
     /// flag. The policy may choose a higher refresh at the same native
-    /// resolution or honor a KDL output rule.
+    /// resolution or honor a TOML output rule.
     pub(crate) mode: Mode,
     pub(crate) crtc: u32,
     pub(crate) native_format: OutputFormat,
@@ -114,7 +114,7 @@ impl OutputPolicy {
     /// Mode policy intentionally uses a connector's preferred resolution as
     /// the automatic target, but never lets a stale 60 Hz `PREFERRED` bit
     /// hide a higher native refresh. Many high-refresh monitors advertise
-    /// exactly that combination in their EDID. A KDL rule can select another
+    /// exactly that combination in their EDID. A TOML rule can select another
     /// supported resolution and, when its refresh is omitted, gets the same
     /// highest-refresh behavior.
     fn select_mode(&self, connector: &ConnectorSnapshot) -> Option<Mode> {

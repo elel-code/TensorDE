@@ -1,50 +1,54 @@
 # Configuration
 
-Tensor uses KDL parsed by `knus`. KDL is chosen for readable nested blocks, repeated rules, and
-window/output matchers. Schema changes may be breaking while the project is pre-release.
+Tensor uses TOML parsed by `serde`/`toml` for cold-start policy. Runtime control stays on the
+versioned Unix-socket IPC surface rather than growing a second hot-reload dialect. Schema changes
+may be breaking while the project is pre-release.
+
+Legacy KDL (`config.kdl` / `knus`) is no longer accepted. If a default path finds only a `.kdl`
+sibling, Tensor fails closed with a migration error instead of silently falling back.
 
 Configuration path precedence is:
 
 1. `--config PATH`
 2. `TENSOR_CONFIG`
-3. `$XDG_CONFIG_HOME/tensor/config.kdl`
-4. `$HOME/.config/tensor/config.kdl`
-5. `/etc/tensor/config.kdl`
+3. `$XDG_CONFIG_HOME/tensor/config.toml`
+4. `$HOME/.config/tensor/config.toml`
+5. `/etc/tensor/config.toml`
 
 `TENSOR_LAYOUT`, `TENSOR_IPC_SOCKET`, `TENSOR_GPU`, `TENSOR_RENDER_DEVICE`, `TENSOR_SYSTEMD`, and
 `TENSOR_XWAYLAND` are development overrides applied after file parsing.
 The current schema is intentionally small:
 
-```kdl
-layout "scrolling-1d" {
-    gaps 8
-    default-column-width proportion=0.5
-    master-width proportion=0.55
-}
-ipc-socket "/run/user/1000/tensor.sock"
-gpu "discrete"
+```toml
+[layout]
+kind = "scrolling-1d"
+gaps = 8
+default_column_width = { proportion = 0.5 }
+master_width = { proportion = 0.55 }
+
+ipc_socket = "/run/user/1000/tensor.sock"
+gpu = "discrete"
 # Optional DRM primary or render node. Without this, Smithay selects the seat's primary GPU.
-# render-device "/dev/dri/renderD128"
-systemd "auto"
-xwayland true
-appearance {
-    # A compositor-owned outer ring: it does not consume client geometry.
-    focus-ring {
-        enabled true
-        width 4
-        color "#7fc8ff"
-    }
-}
-spawn-at-startup "waybar"
-spawn-at-startup "foot" "--server"
-output "eDP-1" {
-    # Explicit values are quantized to the exact N/120 representation used by
-    # wp_fractional_scale_v1. If omitted, Tensor selects a DPI-based quarter step.
-    scale 1.25
-    # Optional. A mode without @refresh chooses the highest supported refresh
-    # for this resolution; @refresh must match the connector mode exactly.
-    # mode "2560x1600@239.760"
-}
+# render_device = "/dev/dri/renderD128"
+systemd = "auto"
+xwayland = true
+
+[appearance.focus_ring]
+# A compositor-owned outer ring: it does not consume client geometry.
+enabled = true
+width = 4
+color = "#7fc8ff"
+
+spawn_at_startup = [["waybar"], ["foot", "--server"]]
+
+[[outputs]]
+name = "eDP-1"
+# Explicit values are quantized to the exact N/120 representation used by
+# wp_fractional_scale_v1. If omitted, Tensor selects a DPI-based quarter step.
+scale = 1.25
+# Optional. A mode without @refresh chooses the highest supported refresh
+# for this resolution; @refresh must match the connector mode exactly.
+# mode = "2560x1600@239.760"
 ```
 
 The initial layout surface has three layout families:
@@ -57,18 +61,18 @@ Floating, fullscreen, and monocle behavior are workspace or view state modifiers
 layout families. `tabbed` is reserved for a later container-tree extension rather than being added
 as an early compatibility mode.
 
-The `layout` node owns geometry policy. `gaps` is measured in logical pixels.
-`default-column-width` and `master-width` each accept exactly one property: `proportion` is relative
+The `[layout]` table owns geometry policy. `gaps` is measured in logical pixels.
+`default_column_width` and `master_width` each accept exactly one field: `proportion` is relative
 to the current output working area, while `fixed` is a logical-pixel width. For example,
-`default-column-width fixed=900` keeps a 900-pixel scrolling column across output changes. Invalid,
-zero, non-finite, or ambiguous widths reject the whole configuration instead of being silently
-repaired.
+`default_column_width = { fixed = 900 }` keeps a 900-pixel scrolling column across output changes.
+Invalid, zero, non-finite, or ambiguous widths reject the whole configuration instead of being
+silently repaired.
 
-Each `output` node matches the connector name reported by DRM. Its optional `scale` is constrained to
-`0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation sent by
-`wp_fractional_scale_v1`. An output without a rule uses the Niri/Mutter-style DPI heuristic and a
-quarter-step scale. Smithay exposes the resulting fractional value to clients, while `wl_output`
-continues to receive the required rounded-up integer scale.
+Each `[[outputs]]` entry matches the connector name reported by DRM. Its optional `scale` is
+constrained to `0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation
+sent by `wp_fractional_scale_v1`. An output without a rule uses the Niri/Mutter-style DPI heuristic
+and a quarter-step scale. Smithay exposes the resulting fractional value to clients, while
+`wl_output` continues to receive the required rounded-up integer scale.
 
 An optional `mode` uses `<width>x<height>` or `<width>x<height>@<refresh>`, where refresh has at
 most three decimal places and is compared in exact millihertz. With a configured resolution but no
@@ -81,7 +85,7 @@ logged and falls back to that native high-refresh policy rather than selecting a
 The focused view receives the standard `xdg_toplevel` `Activated` state and a compositor-rendered
 outer focus ring. The ring is scene data, not a client-side decoration, so it remains visible for
 native Wayland and rootless XWayland applications without covering client pixels. `appearance`
-currently owns the global `focus-ring`: `enabled` defaults to `true`, `width` defaults to four
+currently owns the global `focus_ring`: `enabled` defaults to `true`, `width` defaults to four
 logical pixels, and `color` defaults to `#7fc8ff`. Colors accept `#RRGGBB` or `#RRGGBBAA`; a zero
 width or transparent color also produces no ring. The ring is rounded and clipped in physical
 output coordinates at frame extraction, matching the same fractional-scale rules as client content.
@@ -103,7 +107,7 @@ primary/render pair, external dma-buf memory with DRM modifiers, foreign queue-f
 transfer, and bidirectional binary `SYNC_FD` semaphores. Use `integrated` or `any` only when the
 machine's topology requires it. `TENSOR_GPU` overrides the file for local development.
 
-`render-device` constrains the common Vulkan and Smithay device. Either a primary node (`cardN`) or
+`render_device` constrains the common Vulkan and Smithay device. Either a primary node (`cardN`) or
 render node (`renderDN`) is accepted. Tensor resolves its major/minor identity, selects only the
 matching Vulkan physical device, requires its paired node, and passes the selected render node to
 the tty backend. When omitted, Vulkan capability filtering and `gpu` ranking choose the pair.
@@ -127,13 +131,13 @@ while attaching to their immediate managed owner: their requested logical size i
 centered over that owner, and X11 position requests are ignored. An unresolved owner keeps the
 dialog outside the scene rather than creating a global X11 placement fallback.
 
-Each `spawn-at-startup` node contains one executable followed by zero or more arguments. Entries run
-only for `--session` startup. Tensor first prepares the runtime, installs `WAYLAND_DISPLAY`,
-`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `TENSOR_IPC_SOCKET`, and the allocated XWayland `DISPLAY`
-when enabled, then waits for an active systemd user manager to accept the same snapshot and
-publishes readiness. Inherited session values are cleared before this publication, so disabling
-XWayland cannot leak a host `DISPLAY` into children. Only then does the one-shot autostart gate
-queue commands in configuration order on the asynchronous launch worker. Process creation and
+Each `spawn_at_startup` entry is an argv array: one executable followed by zero or more arguments.
+Entries run only for `--session` startup. Tensor first prepares the runtime, installs
+`WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `TENSOR_IPC_SOCKET`, and the allocated
+XWayland `DISPLAY` when enabled, then waits for an active systemd user manager to accept the same
+snapshot and publishes readiness. Inherited session values are cleared before this publication, so
+disabling XWayland cannot leak a host `DISPLAY` into children. Only then does the one-shot autostart
+gate queue commands in configuration order on the asynchronous launch worker. Process creation and
 optional systemd scope setup complete off the compositor thread; outcomes are logged when the
 calloop channel drains. `--check`, ordinary non-session startup, environment-sync failure, and
 readiness failure launch none of them.

@@ -3,7 +3,7 @@
 The startup sequence is a set of ordered gates:
 
 1. Parse CLI arguments and environment overrides.
-2. Resolve, parse, and validate the complete KDL configuration.
+2. Resolve, parse, and validate the complete TOML configuration.
 3. Initialize logging and diagnostics.
 4. Create calloop, the Smithay display, and the Wayland listening socket.
 5. Create Vulkan, validate the client-image SPIR-V and descriptor-heap pipeline, and reject

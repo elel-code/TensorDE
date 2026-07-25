@@ -9,7 +9,7 @@ or executes an upstream test fixture.
 ## Reference-to-Tensor test conversion
 
 The local checkouts are treated as behavioral references. Their tests are translated into Tensor
-contracts over stable IDs, ECS snapshots, KDL values, Vulkan capability records, and Smithay state;
+contracts over stable IDs, ECS snapshots, TOML values, Vulkan capability records, and Smithay state;
 the reference projects are never linked into the build and their fixtures are not copied.
 
 | Reference behavior | Tensor contract | Current tests |
@@ -110,7 +110,7 @@ and rendering itself.
   constraints after deterministic track allocation.
 - ECS tests assert stable IDs, lifecycle transitions, workspace moves, focus uniqueness, and
   geometry ordering rather than Bevy internals.
-- KDL tests separate valid documents, malformed syntax, schema errors, includes, and reload races.
+- TOML tests separate valid documents, malformed syntax, schema errors, and reload races.
 - IPC tests cover fragmented reads, multiple frames per read, malformed/oversized input, request-ID
   round trips, permissions, and socket ownership.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives

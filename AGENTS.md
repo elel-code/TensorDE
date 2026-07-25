@@ -30,8 +30,9 @@ APIs for their own sake.
 - `bevy_ecs` is the long-term ECS kernel. Use only the `bevy_ecs` crate, not Bevy's renderer or
   window stack. Smithay objects and other thread-affine handles stay in `NonSend` resources or the
   protocol layer; ECS components contain stable IDs, state, and renderable geometry.
-- KDL parsed with `knus` is the user configuration format. Keep parsing, validation, defaults,
-  includes, and file watching in the config boundary.
+- TOML parsed with `serde`/`toml` is the user configuration format. Keep parsing, validation,
+  defaults, and file watching in the config boundary. Runtime control stays on the versioned IPC
+  surface rather than growing a second hot-reload dialect.
 - IPC is a versioned Unix-socket protocol with request IDs, bounded length-prefixed frames, and
   structured errors. It is a new protocol surface; do not add compatibility shims prematurely.
 - systemd readiness/activation is optional behind a Cargo feature. Core startup must work without
@@ -72,7 +73,7 @@ fixtures are exempt.
 Keep this order explicit and testable:
 
 1. Parse CLI and environment overrides.
-2. Resolve the KDL path and load/validate the complete configuration.
+2. Resolve the TOML path and load/validate the complete configuration.
 3. Initialize logging and diagnostics.
 4. Create the calloop event loop and Smithay display/protocol state.
 5. Probe Vulkan and require the descriptor-heap feature before allocating renderer state.

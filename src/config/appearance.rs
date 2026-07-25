@@ -1,14 +1,16 @@
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::scene::{FocusRingStyle, LinearRgba16, SceneAppearance};
 
 const MAX_FOCUS_RING_WIDTH: u32 = 100_000;
 
-/// KDL appearance boundary. It resolves partial user intent into the
+/// TOML appearance boundary. It resolves partial user intent into the
 /// renderer-independent scene policy consumed by ECS extraction.
-#[derive(Debug, knus::Decode)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct AppearanceFileConfig {
-    #[knus(child)]
+    #[serde(default)]
     focus_ring: Option<FocusRingFileConfig>,
 }
 
@@ -24,13 +26,11 @@ impl AppearanceFileConfig {
     }
 }
 
-#[derive(Debug, knus::Decode)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FocusRingFileConfig {
-    #[knus(child, unwrap(argument))]
     enabled: Option<bool>,
-    #[knus(child, unwrap(argument))]
     width: Option<u32>,
-    #[knus(child, unwrap(argument))]
     color: Option<String>,
 }
 
@@ -105,9 +105,12 @@ mod tests {
 
     #[test]
     fn resolves_focus_ring_overrides_without_losing_defaults() {
-        let parsed: AppearanceFileConfig = knus::parse(
-            "appearance.kdl",
-            "focus-ring {\n  width 7\n  color \"#1a2B3c80\"\n}",
+        let parsed: AppearanceFileConfig = toml::from_str(
+            r##"
+            [focus_ring]
+            width = 7
+            color = "#1a2B3c80"
+            "##,
         )
         .unwrap();
 
@@ -123,23 +126,38 @@ mod tests {
 
     #[test]
     fn disabled_focus_ring_resolves_to_no_outline() {
-        let parsed: AppearanceFileConfig =
-            knus::parse("appearance.kdl", "focus-ring { enabled false\n}").unwrap();
+        let parsed: AppearanceFileConfig = toml::from_str(
+            r#"
+            [focus_ring]
+            enabled = false
+            "#,
+        )
+        .unwrap();
 
         assert_eq!(parsed.resolve().unwrap().focus_ring.outline(), None);
     }
 
     #[test]
     fn rejects_malformed_focus_ring_color_and_unbounded_width() {
-        let malformed: AppearanceFileConfig =
-            knus::parse("appearance.kdl", "focus-ring { color \"blue\"\n}").unwrap();
+        let malformed: AppearanceFileConfig = toml::from_str(
+            r#"
+            [focus_ring]
+            color = "blue"
+            "#,
+        )
+        .unwrap();
         assert!(matches!(
             malformed.resolve(),
             Err(AppearanceConfigError::InvalidFocusRingColor { .. })
         ));
 
-        let oversized: AppearanceFileConfig =
-            knus::parse("appearance.kdl", "focus-ring { width 100001\n}").unwrap();
+        let oversized: AppearanceFileConfig = toml::from_str(
+            r#"
+            [focus_ring]
+            width = 100001
+            "#,
+        )
+        .unwrap();
         assert!(matches!(
             oversized.resolve(),
             Err(AppearanceConfigError::InvalidFocusRingWidth { .. })

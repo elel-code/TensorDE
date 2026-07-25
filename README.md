@@ -45,7 +45,7 @@ explicit DRM modifier.
 cargo test
 cargo run -- --check
 TENSOR_LAYOUT=spatial-2d cargo run -- --check
-cargo run -- --config examples/config.kdl --check
+cargo run -- --config examples/config.toml --check
 ```
 
 For a direct DRM/KMS smoke test, switch to a Linux virtual terminal, log in as
@@ -91,8 +91,9 @@ succeeds.
 the complete native renderer gate.
 `TENSOR_RENDER_DEVICE` optionally pins the common Vulkan/Smithay DRM primary or render node;
 without it Vulkan capability filtering and GPU ranking select the pair.
-The file format is KDL parsed by `knus`; `TENSOR_CONFIG` and `--config` select a file, with
-`$XDG_CONFIG_HOME/tensor/config.kdl` as the default.
+The file format is TOML parsed by `serde`/`toml`; `TENSOR_CONFIG` and `--config` select a file, with
+`$XDG_CONFIG_HOME/tensor/config.toml` as the default. Runtime control remains the versioned IPC
+protocol rather than a second configuration dialect.
 
 ## Architecture
 
@@ -125,7 +126,7 @@ The module boundaries are deliberate ownership boundaries:
 - `src/layout.rs`: constrained geometry, per-workspace scrolling state, and layout snapshots shared
   by scene extraction, damage, effects, and input policy.
 - `src/config.rs`: process configuration.
-- `src/startup.rs`: CLI, KDL load, capability gates, and startup sequencing.
+- `src/startup.rs`: CLI, TOML load, capability gates, and startup sequencing.
 - `src/compositor.rs`: top-level composition root.
 - `crates/tensor-util`: dependency-light geometry primitives shared across modules.
 

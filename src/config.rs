@@ -5,6 +5,7 @@ use std::{
     str::FromStr,
 };
 
+use serde::Deserialize;
 use tensor_util::OutputScale;
 use thiserror::Error;
 
@@ -17,10 +18,8 @@ use crate::{
 };
 
 mod appearance;
-mod scale;
 pub use appearance::AppearanceConfigError;
 use appearance::AppearanceFileConfig;
-use scale::ScaleValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -112,15 +111,26 @@ impl Config {
                         .or_else(|| {
                             env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
                         })?;
-                Some(config_dir.join("tensor/config.kdl"))
+                Some(config_dir.join("tensor/config.toml"))
             })
-            .unwrap_or_else(|| PathBuf::from("/etc/tensor/config.kdl"))
+            .unwrap_or_else(|| PathBuf::from("/etc/tensor/config.toml"))
     }
 
     pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
         match fs::read_to_string(path) {
-            Ok(document) => Self::from_kdl(path, &document),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Ok(document) => Self::from_toml(path, &document),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "toml")
+                {
+                    let kdl = path.with_extension("kdl");
+                    if kdl.is_file() {
+                        return Err(ConfigError::LegacyKdl { path: kdl });
+                    }
+                }
+                Ok(Self::default())
+            }
             Err(source) => Err(ConfigError::Read {
                 path: path.to_owned(),
                 source,
@@ -128,69 +138,17 @@ impl Config {
         }
     }
 
-    fn from_kdl(path: &Path, document: &str) -> Result<Self, ConfigError> {
-        let path_name = path.to_string_lossy();
-        let parsed: FileConfig =
-            knus::parse(&path_name, document).map_err(|error| ConfigError::Parse {
+    fn from_toml(path: &Path, document: &str) -> Result<Self, ConfigError> {
+        if path.extension().is_some_and(|extension| extension == "kdl") {
+            return Err(ConfigError::LegacyKdl {
                 path: path.to_owned(),
-                message: error.to_string(),
-            })?;
-        let (initial_layout, layout_options) = parsed
-            .layout
-            .map(LayoutFileConfig::resolve)
-            .transpose()?
-            .unwrap_or_else(|| (LayoutKind::default(), LayoutOptions::default()));
-        let ipc_socket = parsed
-            .ipc_socket
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Self::default().ipc_socket);
-        let gpu_preference = parsed
-            .gpu
-            .as_deref()
-            .map(GpuPreference::from_str)
-            .transpose()?
-            .unwrap_or_default();
-        let render_device = parsed.render_device.map(PathBuf::from);
-        let output_rules = resolve_output_rules(parsed.outputs)?;
-        let appearance = parsed
-            .appearance
-            .map(AppearanceFileConfig::resolve)
-            .transpose()?
-            .unwrap_or_default();
-        let systemd = parsed
-            .systemd
-            .as_deref()
-            .map(SystemdMode::from_str)
-            .transpose()?
-            .unwrap_or_default();
-        let xwayland = parsed
-            .xwayland
-            .unwrap_or_else(|| XWaylandConfig::default().enabled());
-        let startup_commands = parsed
-            .spawn_at_startup
-            .into_iter()
-            .enumerate()
-            .map(|(index, argv)| {
-                if argv.is_empty() {
-                    Err(ConfigError::EmptyStartupCommand { index })
-                } else {
-                    Ok(StartupCommand { argv })
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Self {
-            initial_layout,
-            layout_options,
-            ipc_socket,
-            gpu_preference,
-            render_device,
-            output_rules,
-            appearance,
-            systemd,
-            xwayland: XWaylandConfig::new(xwayland),
-            startup_commands,
-        })
+            });
+        }
+        let parsed: FileConfig = toml::from_str(document).map_err(|error| ConfigError::Parse {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+        parsed.resolve()
     }
 }
 
@@ -213,35 +171,90 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, knus::Decode)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
-    #[knus(child)]
+    #[serde(default)]
     layout: Option<LayoutFileConfig>,
-    #[knus(child, unwrap(argument))]
     ipc_socket: Option<String>,
-    #[knus(child, unwrap(argument))]
     gpu: Option<String>,
-    #[knus(child, unwrap(argument))]
     render_device: Option<String>,
-    #[knus(children(name = "output"))]
+    #[serde(default)]
     outputs: Vec<OutputFileConfig>,
-    #[knus(child)]
+    #[serde(default)]
     appearance: Option<AppearanceFileConfig>,
-    #[knus(child, unwrap(argument))]
     systemd: Option<String>,
-    #[knus(child, unwrap(argument))]
     xwayland: Option<bool>,
-    #[knus(children(name = "spawn-at-startup"), unwrap(arguments))]
+    #[serde(default)]
     spawn_at_startup: Vec<Vec<String>>,
 }
 
-#[derive(Debug, knus::Decode)]
+impl FileConfig {
+    fn resolve(self) -> Result<Config, ConfigError> {
+        let (initial_layout, layout_options) = self
+            .layout
+            .map(LayoutFileConfig::resolve)
+            .transpose()?
+            .unwrap_or_else(|| (LayoutKind::default(), LayoutOptions::default()));
+        let ipc_socket = self
+            .ipc_socket
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Config::default().ipc_socket);
+        let gpu_preference = self
+            .gpu
+            .as_deref()
+            .map(GpuPreference::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        let render_device = self.render_device.map(PathBuf::from);
+        let output_rules = resolve_output_rules(self.outputs)?;
+        let appearance = self
+            .appearance
+            .map(AppearanceFileConfig::resolve)
+            .transpose()?
+            .unwrap_or_default();
+        let systemd = self
+            .systemd
+            .as_deref()
+            .map(SystemdMode::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        let xwayland = self
+            .xwayland
+            .unwrap_or_else(|| XWaylandConfig::default().enabled());
+        let startup_commands = self
+            .spawn_at_startup
+            .into_iter()
+            .enumerate()
+            .map(|(index, argv)| {
+                if argv.is_empty() {
+                    Err(ConfigError::EmptyStartupCommand { index })
+                } else {
+                    Ok(StartupCommand { argv })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Config {
+            initial_layout,
+            layout_options,
+            ipc_socket,
+            gpu_preference,
+            render_device,
+            output_rules,
+            appearance,
+            systemd,
+            xwayland: XWaylandConfig::new(xwayland),
+            startup_commands,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OutputFileConfig {
-    #[knus(argument)]
     name: String,
-    #[knus(child, unwrap(argument))]
-    scale: Option<ScaleValue>,
-    #[knus(child, unwrap(argument))]
+    scale: Option<f64>,
     mode: Option<String>,
 }
 
@@ -253,7 +266,7 @@ fn resolve_output_rules(
         let scale = output
             .scale
             .map(|value| {
-                OutputScale::from_f64(value.get()).ok_or_else(|| ConfigError::InvalidOutputScale {
+                OutputScale::from_f64(value).ok_or_else(|| ConfigError::InvalidOutputScale {
                     output: output.name.clone(),
                     message: "must be finite and between 0.1 and 10".to_owned(),
                 })
@@ -344,15 +357,12 @@ fn parse_refresh_millihertz(value: &str) -> Result<u32, String> {
     Ok(millihertz)
 }
 
-#[derive(Debug, knus::Decode)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LayoutFileConfig {
-    #[knus(argument)]
     kind: String,
-    #[knus(child, unwrap(argument))]
     gaps: Option<u32>,
-    #[knus(child)]
     default_column_width: Option<LayoutLengthConfig>,
-    #[knus(child)]
     master_width: Option<LayoutLengthConfig>,
 }
 
@@ -372,12 +382,12 @@ impl LayoutFileConfig {
             LayoutOptions {
                 gap,
                 scrolling_default_width: resolve_layout_length(
-                    "default-column-width",
+                    "default_column_width",
                     self.default_column_width,
                     defaults.scrolling_default_width,
                 )?,
                 master_width: resolve_layout_length(
-                    "master-width",
+                    "master_width",
                     self.master_width,
                     defaults.master_width,
                 )?,
@@ -386,11 +396,10 @@ impl LayoutFileConfig {
     }
 }
 
-#[derive(Debug, knus::Decode)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LayoutLengthConfig {
-    #[knus(property)]
     proportion: Option<f64>,
-    #[knus(property)]
     fixed: Option<u32>,
 }
 
@@ -428,7 +437,7 @@ fn resolve_layout_length(
         }),
         (None, None) => Err(ConfigError::InvalidLayoutOption {
             option,
-            message: "requires a proportion or fixed property".to_owned(),
+            message: "requires a proportion or fixed field".to_owned(),
         }),
     }
 }
@@ -441,7 +450,7 @@ pub enum ConfigError {
     NonUnicodeGpu,
     #[error("TENSOR_SYSTEMD is not valid Unicode")]
     NonUnicodeSystemd,
-    #[error("spawn-at-startup entry {index} must contain a program")]
+    #[error("spawn_at_startup entry {index} must contain a program")]
     EmptyStartupCommand { index: usize },
     #[error("invalid layout option {option}: {message}")]
     InvalidLayoutOption {
@@ -465,6 +474,10 @@ pub enum ConfigError {
     },
     #[error("failed to parse config {path}: {message}")]
     Parse { path: PathBuf, message: String },
+    #[error(
+        "KDL configuration is no longer supported ({path}); migrate to config.toml (see docs/configuration.md)"
+    )]
+    LegacyKdl { path: PathBuf },
     #[error(transparent)]
     UnknownLayout(#[from] crate::layout::ParseLayoutError),
     #[error(transparent)]
@@ -481,11 +494,22 @@ pub enum ConfigError {
 mod tests {
     use super::*;
 
+    fn parse(document: &str) -> Result<Config, ConfigError> {
+        Config::from_toml(Path::new("test.toml"), document)
+    }
+
     #[test]
-    fn parses_kdl_layout_and_ipc_socket() {
-        let config = Config::from_kdl(
-            Path::new("test.kdl"),
-            "layout \"spatial-2d\"\nipc-socket \"/run/user/1000/tensor.sock\"\ngpu \"integrated\"\nrender-device \"/dev/dri/renderD128\"\nsystemd \"disabled\"\nxwayland true\nspawn-at-startup \"waybar\"\nspawn-at-startup \"foot\" \"--server\"",
+    fn parses_toml_layout_and_ipc_socket() {
+        let config = parse(
+            r#"
+            layout = { kind = "spatial-2d" }
+            ipc_socket = "/run/user/1000/tensor.sock"
+            gpu = "integrated"
+            render_device = "/dev/dri/renderD128"
+            systemd = "disabled"
+            xwayland = true
+            spawn_at_startup = [["waybar"], ["foot", "--server"]]
+            "#,
         )
         .unwrap();
 
@@ -517,9 +541,14 @@ mod tests {
 
     #[test]
     fn parses_nested_layout_policy() {
-        let config = Config::from_kdl(
-            Path::new("test.kdl"),
-            "layout \"scrolling-1d\" {\n  gaps 12\n  default-column-width proportion=0.625\n  master-width fixed=900\n}",
+        let config = parse(
+            r#"
+            [layout]
+            kind = "scrolling-1d"
+            gaps = 12
+            default_column_width = { proportion = 0.625 }
+            master_width = { fixed = 900 }
+            "#,
         )
         .unwrap();
 
@@ -533,9 +562,13 @@ mod tests {
 
     #[test]
     fn parses_per_output_rules() {
-        let config = Config::from_kdl(
-            Path::new("test.kdl"),
-            "output \"eDP-1\" {\n  scale 1.31\n  mode \"2560x1600@239.760\"\n}",
+        let config = parse(
+            r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 1.31
+            mode = "2560x1600@239.760"
+            "#,
         )
         .unwrap();
 
@@ -550,9 +583,13 @@ mod tests {
 
     #[test]
     fn parses_scene_appearance_policy() {
-        let config = Config::from_kdl(
-            Path::new("test.kdl"),
-            "appearance {\n  focus-ring {\n    enabled true\n    width 6\n    color \"#2e70ffff\"\n  }\n}",
+        let config = parse(
+            r##"
+            [appearance.focus_ring]
+            enabled = true
+            width = 6
+            color = "#2e70ffff"
+            "##,
         )
         .unwrap();
 
@@ -570,8 +607,14 @@ mod tests {
 
     #[test]
     fn accepts_integer_output_scale_literals() {
-        let config =
-            Config::from_kdl(Path::new("test.kdl"), "output \"eDP-1\" {\n  scale 2\n}").unwrap();
+        let config = parse(
+            r#"
+            [[outputs]]
+            name = "eDP-1"
+            scale = 2
+            "#,
+        )
+        .unwrap();
         assert_eq!(
             config.output_rules["eDP-1"].scale,
             Some(OutputScale::from_units(240).unwrap())
@@ -580,9 +623,12 @@ mod tests {
 
     #[test]
     fn accepts_resolution_only_output_mode() {
-        let config = Config::from_kdl(
-            Path::new("test.kdl"),
-            "output \"eDP-1\" {\n  mode \"1920x1200\"\n}",
+        let config = parse(
+            r#"
+            [[outputs]]
+            name = "eDP-1"
+            mode = "1920x1200"
+            "#,
         )
         .unwrap();
 
@@ -595,13 +641,25 @@ mod tests {
     #[test]
     fn rejects_invalid_and_duplicate_output_scales() {
         assert!(matches!(
-            Config::from_kdl(Path::new("test.kdl"), "output \"DP-1\" {\n  scale 0\n}"),
+            parse(
+                r#"
+                [[outputs]]
+                name = "DP-1"
+                scale = 0
+                "#
+            ),
             Err(ConfigError::InvalidOutputScale { .. })
         ));
         assert!(matches!(
-            Config::from_kdl(
-                Path::new("test.kdl"),
-                "output \"DP-1\" {\n  scale 1.25\n}\noutput \"DP-1\" {\n  scale 1.5\n}"
+            parse(
+                r#"
+                [[outputs]]
+                name = "DP-1"
+                scale = 1.25
+                [[outputs]]
+                name = "DP-1"
+                scale = 1.5
+                "#
             ),
             Err(ConfigError::DuplicateOutput { .. })
         ));
@@ -610,9 +668,15 @@ mod tests {
     #[test]
     fn rejects_malformed_output_modes() {
         for mode in ["2560", "0x1600", "2560x1600@0", "2560x1600@239.7601"] {
-            let config = format!("output \"DP-1\" {{\n  mode \"{mode}\"\n}}");
+            let config = format!(
+                r#"
+                [[outputs]]
+                name = "DP-1"
+                mode = "{mode}"
+                "#
+            );
             assert!(matches!(
-                Config::from_kdl(Path::new("test.kdl"), &config),
+                parse(&config),
                 Err(ConfigError::InvalidOutputMode { .. })
             ));
         }
@@ -620,32 +684,38 @@ mod tests {
 
     #[test]
     fn layout_length_requires_one_valid_mode() {
-        let both = Config::from_kdl(
-            Path::new("test.kdl"),
-            "layout \"scrolling-1d\" {\n  default-column-width proportion=0.5 fixed=800\n}",
+        let both = parse(
+            r#"
+            [layout]
+            kind = "scrolling-1d"
+            default_column_width = { proportion = 0.5, fixed = 800 }
+            "#,
         )
         .unwrap_err();
         assert!(
             matches!(
                 &both,
                 ConfigError::InvalidLayoutOption {
-                    option: "default-column-width",
+                    option: "default_column_width",
                     ..
                 }
             ),
             "unexpected error: {both:?}"
         );
 
-        let zero = Config::from_kdl(
-            Path::new("test.kdl"),
-            "layout \"scrolling-1d\" {\n  master-width fixed=0\n}",
+        let zero = parse(
+            r#"
+            [layout]
+            kind = "scrolling-1d"
+            master_width = { fixed = 0 }
+            "#,
         )
         .unwrap_err();
         assert!(
             matches!(
                 &zero,
                 ConfigError::InvalidLayoutOption {
-                    option: "master-width",
+                    option: "master_width",
                     ..
                 }
             ),
@@ -656,15 +726,15 @@ mod tests {
     #[test]
     fn rejects_unknown_systemd_mode() {
         assert!(matches!(
-            Config::from_kdl(Path::new("test.kdl"), "systemd \"launchd\""),
+            parse(r#"systemd = "launchd""#),
             Err(ConfigError::UnknownSystemd(_))
         ));
     }
 
     #[test]
-    fn rejects_unknown_kdl_nodes() {
+    fn rejects_unknown_toml_keys() {
         assert!(matches!(
-            Config::from_kdl(Path::new("test.kdl"), "compatibility true"),
+            parse(r#"compatibility = true"#),
             Err(ConfigError::Parse { .. })
         ));
     }
@@ -672,8 +742,16 @@ mod tests {
     #[test]
     fn rejects_empty_startup_commands() {
         assert!(matches!(
-            Config::from_kdl(Path::new("test.kdl"), "spawn-at-startup"),
+            parse(r#"spawn_at_startup = [[]]"#),
             Err(ConfigError::EmptyStartupCommand { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn rejects_legacy_kdl_paths() {
+        assert!(matches!(
+            Config::from_toml(Path::new("test.kdl"), "layout \"scrolling-1d\""),
+            Err(ConfigError::LegacyKdl { .. })
         ));
     }
 }
