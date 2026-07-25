@@ -1,16 +1,20 @@
 use std::path::{Path, PathBuf};
 
 use fika_core::{
-    Entry, FileTransferMode, OperationController, PrivilegedCommand, TransferTaskResult,
-    TransferUndoItem, TrashViewOperationResult, file_ops, push_unique_path,
+    DevicePlaceOperationResult, Entry, FileTransferMode, OperationController, PrivilegedCommand,
+    TransferTaskResult, TransferUndoItem, TrashViewOperationResult, file_ops, push_unique_path,
 };
 
 use crate::CopyLocationRequest;
+use crate::DeviceActionRequest;
 use crate::shell::clipboard::FileClipboardExportRequest;
 use crate::shell::context_menu::ShellContextMenuAction;
+use crate::shell::create_rename::{CreateEntryRequest, RenameEntryRequest};
 use crate::shell::metrics::WGPU_SHELL_PANE_ID;
 use crate::shell::pane::ShellPaneId;
-use crate::shell::privilege::{run_privileged_command_sync, should_attempt_privileged_operation};
+use crate::shell::privilege::{
+    ShellPrivilegeOutcome, run_privileged_command_sync, should_attempt_privileged_operation,
+};
 use crate::shell::tasks::ShellTaskId;
 
 #[derive(Clone, Debug)]
@@ -113,11 +117,32 @@ pub(crate) enum ShellAsyncClipboardCompletion {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ShellAsyncCreateCompletion {
+    pub(crate) request: CreateEntryRequest,
+    pub(crate) outcome: Result<ShellPrivilegeOutcome, String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ShellAsyncRenameCompletion {
+    pub(crate) request: RenameEntryRequest,
+    pub(crate) outcome: Result<ShellPrivilegeOutcome, String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ShellAsyncDeviceCompletion {
+    pub(crate) request: DeviceActionRequest,
+    pub(crate) result: DevicePlaceOperationResult,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ShellAsyncTaskResult {
     Navigation(ShellAsyncNavigationCompletion),
     Transfer(ShellAsyncTransferCompletion),
     TrashView(ShellAsyncTrashViewCompletion),
     Clipboard(ShellAsyncClipboardCompletion),
+    Create(ShellAsyncCreateCompletion),
+    Rename(ShellAsyncRenameCompletion),
+    Device(ShellAsyncDeviceCompletion),
 }
 
 pub(crate) fn transfer_paths_with_privilege(

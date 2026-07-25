@@ -210,6 +210,21 @@ impl FikaWgpuApp {
                 ShellAsyncTaskResult::Clipboard(completion) => {
                     changed |= self.apply_async_clipboard_completion(completion);
                 }
+                ShellAsyncTaskResult::Create(completion) => {
+                    let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+                        continue;
+                    };
+                    changed |= self.apply_async_create_completion(completion, size);
+                }
+                ShellAsyncTaskResult::Rename(completion) => {
+                    let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+                        continue;
+                    };
+                    changed |= self.apply_async_rename_completion(completion, size);
+                }
+                ShellAsyncTaskResult::Device(completion) => {
+                    changed |= self.apply_async_device_completion(event_loop, completion);
+                }
             }
         }
         if changed {

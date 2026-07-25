@@ -39,7 +39,7 @@ impl DevicePlaceOperation {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DevicePlaceOperationResult {
     pub pane_id: PaneId,
     pub device_id: String,

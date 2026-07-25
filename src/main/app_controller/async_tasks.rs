@@ -83,6 +83,9 @@ impl FikaWgpuApp {
                     .unwrap_or_else(|| PhysicalSize::new(1, 1));
                 let shortcut =
                     self.modifiers.state().control_key() || self.modifiers.state().meta_key();
+                if self.scene.create_dialog.as_ref().is_some_and(|d| d.busy) {
+                    return;
+                }
                 match create_command_for_key_event(&event, shortcut) {
                     CreateCommand::Commit => self.commit_create_dialog(event_loop),
                     CreateCommand::Ignore => {}
@@ -122,6 +125,9 @@ impl FikaWgpuApp {
                     x: position.x as f32,
                     y: position.y as f32,
                 };
+                if self.scene.create_dialog.as_ref().is_some_and(|d| d.busy) {
+                    return;
+                }
                 match self.scene.create_dialog_click_at_screen_point(point, size) {
                     CreateDialogClick::Outside | CreateDialogClick::Cancel => {
                         if self.close_dialog_state_and_window(ShellDialogWindowKind::Create) {
@@ -167,6 +173,9 @@ impl FikaWgpuApp {
                 {
                     return;
                 }
+                if self.scene.rename_dialog.as_ref().is_some_and(|d| d.busy) {
+                    return;
+                }
                 let shortcut =
                     self.modifiers.state().control_key() || self.modifiers.state().meta_key();
                 match rename_command_for_key_event(&event, shortcut) {
@@ -208,6 +217,9 @@ impl FikaWgpuApp {
                     x: position.x as f32,
                     y: position.y as f32,
                 };
+                if self.scene.rename_dialog.as_ref().is_some_and(|d| d.busy) {
+                    return;
+                }
                 match self.scene.rename_dialog_click_at_screen_point(point, size) {
                     RenameDialogClick::Outside | RenameDialogClick::Cancel => {
                         if self.close_dialog_state_and_window(ShellDialogWindowKind::Rename) {

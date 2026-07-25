@@ -54,6 +54,7 @@ pub(crate) struct ShellCreateDialog {
     pub(crate) privileged: bool,
     pub(crate) name: String,
     pub(crate) error: Option<String>,
+    pub(crate) busy: bool,
     pub(crate) replace_on_insert: bool,
     pub(crate) preedit: Option<ShellTextPreedit>,
 }
@@ -73,6 +74,7 @@ impl ShellCreateDialog {
             privileged,
             name,
             error: None,
+            busy: false,
             replace_on_insert: true,
             preedit: None,
         }
@@ -108,6 +110,7 @@ pub(crate) struct ShellRenameDialog {
     pub(crate) is_dir: bool,
     pub(crate) privileged: bool,
     pub(crate) error: Option<String>,
+    pub(crate) busy: bool,
     pub(crate) replace_on_insert: bool,
     pub(crate) preedit: Option<ShellTextPreedit>,
 }
@@ -130,6 +133,7 @@ impl ShellRenameDialog {
             is_dir,
             privileged,
             error: None,
+            busy: false,
             replace_on_insert: true,
             preedit: None,
         })

@@ -22,14 +22,23 @@ impl ShellPrivilegeOutcome {
     }
 }
 
-pub(crate) fn run_privileged_command_sync(
+pub(crate) async fn run_privileged_command(
     command: PrivilegedCommand,
 ) -> Result<ShellPrivilegeOutcome, String> {
-    let result = pollster::block_on(run_via_dbus(command));
+    let result = run_via_dbus(command).await;
     result
         .result
         .map(ShellPrivilegeOutcome::privileged)
         .map_err(|error| format!("administrator operation failed: {error}"))
+}
+
+pub(crate) fn run_privileged_command_sync(
+    command: PrivilegedCommand,
+) -> Result<ShellPrivilegeOutcome, String> {
+    futures_lite::future::block_on(fika_core::run_operation_task(move || async move {
+        run_privileged_command(command).await
+    }))
+    .map_err(|error| error.to_string())?
 }
 
 pub(crate) fn should_attempt_privileged_operation(error: &str) -> bool {

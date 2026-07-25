@@ -223,6 +223,9 @@ impl ShellScene {
             .create_dialog
             .as_ref()
             .ok_or_else(|| "create dialog is not open".to_string())?;
+        if dialog.busy {
+            return Err("create is already in progress".to_string());
+        }
         let name = dialog.name.trim();
         validate_create_name(name)?;
         let path = dialog.parent.join(name);
@@ -244,13 +247,30 @@ impl ShellScene {
             fika_log!("[fika-wgpu] create-new-error {error}");
             return false;
         };
-        if dialog.error.as_ref() == Some(&error) {
+        let already = dialog.error.as_ref() == Some(&error) && !dialog.busy;
+        if already {
             return false;
         }
         dialog.error = Some(error);
+        dialog.busy = false;
         dialog.replace_on_insert = false;
         self.create_changes += 1;
         self.log_create_dialog_state();
+        true
+    }
+
+    fn set_create_dialog_busy(&mut self, busy: bool) -> bool {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return false;
+        };
+        if dialog.busy == busy {
+            return false;
+        }
+        dialog.busy = busy;
+        if busy {
+            dialog.error = None;
+        }
+        self.create_changes += 1;
         true
     }
 
@@ -449,6 +469,9 @@ impl ShellScene {
             .rename_dialog
             .as_ref()
             .ok_or_else(|| "rename dialog is not open".to_string())?;
+        if dialog.busy {
+            return Err("rename is already in progress".to_string());
+        }
         let name = dialog.name.trim();
         validate_create_name(name)?;
         if name == dialog.original_name {

@@ -43,7 +43,7 @@ pub enum DeviceMonitorMessage {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DeviceDiscoveryError {
     Gio(String),
 }
@@ -58,7 +58,7 @@ impl fmt::Display for DeviceDiscoveryError {
 
 impl Error for DeviceDiscoveryError {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DeviceActionError {
     Discovery(DeviceDiscoveryError),
     DeviceNotFound(String),

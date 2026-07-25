@@ -229,7 +229,7 @@ impl FikaWgpuApp {
                     .into()
             }
             MainLeftPointerButtonIntent::EndPlacePointer => {
-                self.end_place_pointer(point, size, location_blur_changed)
+                self.end_place_pointer(event_loop, point, size, location_blur_changed)
             }
             MainLeftPointerButtonIntent::ItemActivationCheck => {
                 if let Some(activation) =
@@ -304,6 +304,7 @@ impl FikaWgpuApp {
 
     fn end_place_pointer(
         &mut self,
+        event_loop: &ActiveEventLoop,
         point: crate::ViewPoint,
         size: PhysicalSize<u32>,
         location_blur_changed: bool,
@@ -318,7 +319,8 @@ impl FikaWgpuApp {
                     ShellActionEffect::load_path(pane, path, "place-open")
                 }
                 ShellPlaceActivation::DeviceAction(request) => {
-                    self.perform_device_action_request(request)
+                    self.perform_device_action_request(event_loop, request);
+                    ShellActionOutcome::None.into()
                 }
             };
         }

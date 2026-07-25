@@ -5,13 +5,30 @@ impl ShellScene {
             fika_log!("[fika-wgpu] rename-error {error}");
             return false;
         };
-        if dialog.error.as_ref() == Some(&error) {
+        let already = dialog.error.as_ref() == Some(&error) && !dialog.busy;
+        if already {
             return false;
         }
         dialog.error = Some(error);
+        dialog.busy = false;
         dialog.replace_on_insert = false;
         self.rename_changes += 1;
         self.log_rename_dialog_state();
+        true
+    }
+
+    fn set_rename_dialog_busy(&mut self, busy: bool) -> bool {
+        let Some(dialog) = self.rename_dialog.as_mut() else {
+            return false;
+        };
+        if dialog.busy == busy {
+            return false;
+        }
+        dialog.busy = busy;
+        if busy {
+            dialog.error = None;
+        }
+        self.rename_changes += 1;
         true
     }
 
