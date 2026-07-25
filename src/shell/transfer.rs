@@ -139,6 +139,42 @@ pub(crate) struct ShellAsyncDeviceCompletion {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ShellAsyncLaunchCompletion {
+    pub(crate) task_id: ShellTaskId,
+    pub(crate) kind: ShellAsyncLaunchKind,
+    pub(crate) status_message: String,
+    pub(crate) success: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShellAsyncLaunchKind {
+    OpenFile,
+    OpenWith,
+    ServiceMenu,
+    ArkExtractAndTrash,
+}
+
+impl ShellAsyncLaunchKind {
+    pub(crate) fn failure_label(self) -> &'static str {
+        match self {
+            Self::OpenFile => "Open failed",
+            Self::OpenWith => "Open With failed",
+            Self::ServiceMenu => "Action failed",
+            Self::ArkExtractAndTrash => "Extract and trash failed",
+        }
+    }
+
+    pub(crate) fn success_label(self) -> &'static str {
+        match self {
+            Self::OpenFile => "Opened",
+            Self::OpenWith => "Opened With",
+            Self::ServiceMenu => "Action finished",
+            Self::ArkExtractAndTrash => "Extract and trash finished",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ShellAsyncTaskResult {
     Navigation(ShellAsyncNavigationCompletion),
     Transfer(ShellAsyncTransferCompletion),
@@ -148,6 +184,7 @@ pub(crate) enum ShellAsyncTaskResult {
     Create(ShellAsyncCreateCompletion),
     Rename(ShellAsyncRenameCompletion),
     Device(ShellAsyncDeviceCompletion),
+    Launch(ShellAsyncLaunchCompletion),
 }
 
 // Sync helper retained for scene-side tests; production uses the async path.

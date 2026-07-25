@@ -152,10 +152,66 @@ impl FikaWgpuApp {
                 ShellAsyncTaskResult::Device(completion) => {
                     changed |= self.apply_async_device_completion(event_loop, completion);
                 }
+                ShellAsyncTaskResult::Launch(completion) => {
+                    self.forget_active_task(completion.task_id);
+                    changed |= self.apply_async_launch_completion(completion);
+                }
             }
         }
         if changed {
             self.present_scene_change(event_loop, "async-task");
+        }
+    }
+
+    fn apply_async_launch_completion(&mut self, completion: ShellAsyncLaunchCompletion) -> bool {
+        let status = if completion.success {
+            ShellTaskStatus::completed(
+                completion.kind.success_label(),
+                completion.status_message,
+                false,
+            )
+        } else {
+            ShellTaskStatus::failed(
+                completion.kind.failure_label(),
+                completion.status_message,
+                false,
+            )
+        };
+        self.scene.finish_task_status(completion.task_id, status);
+        true
+    }
+
+    fn start_async_launch_task<F, Fut>(
+        &mut self,
+        kind: ShellAsyncLaunchKind,
+        running_label: impl Into<String>,
+        running_detail: impl Into<String>,
+        task: F,
+    ) where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = (bool, String)> + 'static,
+    {
+        let task_id = self.register_active_task(OperationController::new());
+        self.scene.record_task_status(ShellTaskStatus::running(
+            task_id,
+            running_label,
+            running_detail,
+            false,
+        ));
+        if let Err(error) = self.spawn_async_task_result(task, move |(success, status_message)| {
+            ShellAsyncTaskResult::Launch(ShellAsyncLaunchCompletion {
+                task_id,
+                kind,
+                status_message,
+                success,
+            })
+        }) {
+            self.forget_active_task(task_id);
+            self.scene.record_task_status(ShellTaskStatus::failed(
+                kind.failure_label(),
+                error.to_string(),
+                false,
+            ));
         }
     }
 

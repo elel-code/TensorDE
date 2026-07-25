@@ -249,9 +249,10 @@ use shell::toolbar::{
     ShellToolbarLayout, ShellToolbarViewModeSegment, app_toolbar_layout as build_app_toolbar_layout,
 };
 use shell::transfer::{
-    ShellAsyncMoveToTrashCompletion, ShellAsyncTaskResult, ShellAsyncTransferCompletion,
-    ShellAsyncTransferSource, ShellAsyncTrashViewCompletion, ShellPasteResult,
-    ShellTransferExecution, async_transfer_task_detail, async_transfer_task_label, paste_text_async,
+    ShellAsyncLaunchCompletion, ShellAsyncLaunchKind, ShellAsyncMoveToTrashCompletion,
+    ShellAsyncTaskResult, ShellAsyncTransferCompletion, ShellAsyncTransferSource,
+    ShellAsyncTrashViewCompletion, ShellPasteResult, ShellTransferExecution,
+    async_transfer_task_detail, async_transfer_task_label, paste_text_async,
     transfer_paths_async_with_controller_and_privilege, transfer_runtime_failure,
     trash_paths_async_with_privilege,
 };

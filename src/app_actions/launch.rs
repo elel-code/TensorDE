@@ -5,10 +5,11 @@ use crate::shell::open_file::{OpenFileRequest, default_open_file_launch_request}
 use crate::shell::open_with::OpenWithLaunchRequest;
 use crate::shell::service_menu::ServiceMenuLaunchRequest;
 use crate::shell::tasks::ShellTaskStatus;
+use crate::shell::transfer::ShellAsyncLaunchKind;
 use crate::{FikaWgpuApp, path_display_label};
 use fika_core::{
     OpenWithLaunchResult, ServiceMenuLaunchResult, launch_with_systemd_user,
-    service_menu_target_label, spawn_operation_task,
+    service_menu_target_label,
 };
 
 impl FikaWgpuApp {
@@ -24,21 +25,42 @@ impl FikaWgpuApp {
             }
         };
         self.scene.record_open_file_request(request);
-        let _ = spawn_operation_task(move || async move {
-            match launch_with_systemd_user(launch.plan).await {
-                Ok(result) => fika_log!(
-                    "[fika-wgpu] open-finished path={} app={:?} units={}",
-                    launch.path.display(),
-                    launch.app_name,
-                    result.units.join(",")
-                ),
-                Err(error) => fika_log!(
-                    "[fika-wgpu] open-finished path={} app={:?} error={error}",
-                    launch.path.display(),
-                    launch.app_name
-                ),
-            }
-        });
+        let path = launch.path.clone();
+        let app_name = launch.app_name.clone();
+        self.start_async_launch_task(
+            ShellAsyncLaunchKind::OpenFile,
+            "Opening",
+            format!("{} with {}", path_display_label(&path), app_name),
+            move || async move {
+                match launch_with_systemd_user(launch.plan).await {
+                    Ok(result) => {
+                        let message = format!(
+                            "Opened {} with {} via {} systemd unit(s)",
+                            path.display(),
+                            app_name,
+                            result.units.len()
+                        );
+                        fika_log!(
+                            "[fika-wgpu] open-finished path={} app={:?} units={}",
+                            path.display(),
+                            app_name,
+                            result.units.join(",")
+                        );
+                        (true, message)
+                    }
+                    Err(error) => {
+                        let message =
+                            format!("Cannot open {} with {}: {error}", path.display(), app_name);
+                        fika_log!(
+                            "[fika-wgpu] open-finished path={} app={:?} error={error}",
+                            path.display(),
+                            app_name
+                        );
+                        (false, message)
+                    }
+                }
+            },
+        );
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
@@ -66,41 +88,51 @@ impl FikaWgpuApp {
         }
         let paths = request.paths.clone();
         let app_name = request.app_name.clone();
-        self.scene.record_task_status(ShellTaskStatus::completed(
-            "Started Action",
-            format!("{} with {}", service_menu_target_label(&paths), app_name),
-            false,
-        ));
-        let _ = spawn_operation_task(move || async move {
-            let result = launch_with_systemd_user(request.plan).await;
-            let status = ServiceMenuLaunchResult {
-                pane_id: WGPU_SHELL_PANE_ID,
-                target_label: service_menu_target_label(&paths),
-                app_name,
-                result,
-            }
-            .status_message();
-            fika_log!("[fika-wgpu] service-menu-finished {status}");
-        });
+        let target_label = service_menu_target_label(&paths);
+        self.start_async_launch_task(
+            ShellAsyncLaunchKind::ServiceMenu,
+            "Running Action",
+            format!("{target_label} with {app_name}"),
+            move || async move {
+                let result = launch_with_systemd_user(request.plan).await;
+                let success = result.is_ok();
+                let status = ServiceMenuLaunchResult {
+                    pane_id: WGPU_SHELL_PANE_ID,
+                    target_label,
+                    app_name,
+                    result,
+                }
+                .status_message();
+                fika_log!("[fika-wgpu] service-menu-finished {status}");
+                (success, status)
+            },
+        );
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
     pub(crate) fn run_ark_extract_and_trash_action(&mut self, request: ServiceMenuLaunchRequest) {
         let paths = request.paths.clone();
         let app_name = request.app_name.clone();
-        self.scene.record_task_status(ShellTaskStatus::completed(
-            "Started Action",
-            format!("{} with {}", service_menu_target_label(&paths), app_name),
-            false,
-        ));
-        let _ = spawn_operation_task(move || async move {
-            let target_label = service_menu_target_label(&paths);
-            let status = execute_ark_extract_and_trash(request)
-                .await
-                .map(|message| format!("Ran {app_name} for {target_label}: {message}"))
-                .unwrap_or_else(|err| format!("Cannot run {app_name} for {target_label}: {err}"));
-            fika_log!("[fika-wgpu] service-menu-finished {status}");
-        });
+        let target_label = service_menu_target_label(&paths);
+        self.start_async_launch_task(
+            ShellAsyncLaunchKind::ArkExtractAndTrash,
+            "Extracting",
+            format!("{target_label} with {app_name}"),
+            move || async move {
+                match execute_ark_extract_and_trash(request).await {
+                    Ok(message) => {
+                        let status = format!("Ran {app_name} for {target_label}: {message}");
+                        fika_log!("[fika-wgpu] service-menu-finished {status}");
+                        (true, status)
+                    }
+                    Err(err) => {
+                        let status = format!("Cannot run {app_name} for {target_label}: {err}");
+                        fika_log!("[fika-wgpu] service-menu-finished {status}");
+                        (false, status)
+                    }
+                }
+            },
+        );
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 
@@ -127,22 +159,24 @@ impl FikaWgpuApp {
     pub(crate) fn launch_open_with_request(&mut self, request: OpenWithLaunchRequest) {
         let path = request.path.clone();
         let app_name = request.app_name.clone();
-        self.scene.record_task_status(ShellTaskStatus::completed(
+        self.start_async_launch_task(
+            ShellAsyncLaunchKind::OpenWith,
             "Opening With",
             format!("{} using {}", path_display_label(&path), app_name),
-            false,
-        ));
-        let _ = spawn_operation_task(move || async move {
-            let result = launch_with_systemd_user(request.plan).await;
-            let status = OpenWithLaunchResult {
-                pane_id: WGPU_SHELL_PANE_ID,
-                path,
-                app_name,
-                result,
-            }
-            .status_message();
-            fika_log!("[fika-wgpu] open-with-finished {status}");
-        });
+            move || async move {
+                let result = launch_with_systemd_user(request.plan).await;
+                let success = result.is_ok();
+                let status = OpenWithLaunchResult {
+                    pane_id: WGPU_SHELL_PANE_ID,
+                    path,
+                    app_name,
+                    result,
+                }
+                .status_message();
+                fika_log!("[fika-wgpu] open-with-finished {status}");
+                (success, status)
+            },
+        );
         self.apply_window_action_outcome(ShellActionOutcome::Redraw);
     }
 }

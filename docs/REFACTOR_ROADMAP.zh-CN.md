@@ -425,6 +425,9 @@ operation dispatcher。
   `register/forget` task、`post/spawn_async_task_result`、`spawn_blocking_task_result`、
   drain/progress/cancel；create/rename/device/clipboard/navigation 也走统一投递。
 - `dialog_windows.rs` 不再承载 transfer/trash spawn 与 drain。
+- open / open-with / service-menu / ark extract-and-trash 并入 dispatcher：
+  `ShellAsyncLaunchCompletion` + `start_async_launch_task`，完成时更新 task status
+  （不再只写日志）。
 
 后续：
 - 继续把 UI 侧 operation submit / completion 与 task status 生命周期收敛到 dispatcher
