@@ -27,6 +27,13 @@ saturation is intentionally lossy, but the drain emits a later dropped-record no
 preferable to allowing logging to delay input, page-flip, or frame submission. The worker has no
 Smithay, Vulkan, DRM/KMS, or ECS ownership.
 
+Application launch is the second. `ProcessLauncher` still owns double-fork and optional
+transient-systemd scope setup, but those waits never run inside a calloop callback. The
+compositor submits value-only `LaunchRequest` messages to a dedicated launch worker; the worker
+returns value-only `LaunchOutcome` results through a bounded calloop channel. Queue saturation
+rejects new submissions or drops late completion logs rather than blocking the compositor thread.
+The worker owns neither Smithay objects nor DRM/KMS descriptors.
+
 Tensor intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.
 

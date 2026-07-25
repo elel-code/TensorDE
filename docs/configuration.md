@@ -133,8 +133,10 @@ only for `--session` startup. Tensor first prepares the runtime, installs `WAYLA
 when enabled, then waits for an active systemd user manager to accept the same snapshot and
 publishes readiness. Inherited session values are cleared before this publication, so disabling
 XWayland cannot leak a host `DISPLAY` into children. Only then does the one-shot autostart gate
-release commands in configuration order. `--check`, ordinary non-session startup,
-environment-sync failure, and readiness failure launch none of them.
+queue commands in configuration order on the asynchronous launch worker. Process creation and
+optional systemd scope setup complete off the compositor thread; outcomes are logged when the
+calloop channel drains. `--check`, ordinary non-session startup, environment-sync failure, and
+readiness failure launch none of them.
 
 Values are passed directly to the executable: Tensor does not invoke a shell, expand variables, or
 interpret pipes and redirections. Use a dedicated executable when orchestration is more complex

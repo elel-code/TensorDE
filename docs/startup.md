@@ -37,7 +37,9 @@ Client commands use the same resolved systemd policy after startup. `ProcessLaun
 double-fork without a shell. In an active systemd scope it waits for the transient-unit job before
 releasing the client, and it terminates the still-blocked child if `systemd "enabled"` cannot create
 that scope. `auto` reports the scope failure and permits a direct child; `disabled` always uses the
-direct path.
+direct path. Those waits run on a dedicated launch worker thread: the compositor only enqueues a
+value-only request and later observes a value-only outcome on the calloop channel, so fork setup
+and systemd job completion never stall Wayland, input, or presentation dispatch.
 
 `--check` executes the Vulkan device gate as well as the other initialization gates, reports the
 selected physical device, and exits. It must never emit systemd readiness. Partial initialization
@@ -59,9 +61,11 @@ manager it executes `tensor-compositor --session` directly. No shell is used for
 Display managers launch `tensor-session` through the Wayland-only desktop entry in
 `contrib/wayland-sessions`; an X11 `xsessions` entry is intentionally forbidden.
 
-After readiness, session startup consumes its permit and launches every validated
-`spawn-at-startup` argv entry through the compositor-owned `ProcessLauncher`. A failed entry is
-logged without tearing down an otherwise ready session; `systemd "enabled"` still prevents that
+After readiness, session startup consumes its permit and queues every validated
+`spawn-at-startup` argv entry on the asynchronous launch worker. Queue acceptance is logged
+immediately; process creation and optional systemd scope setup complete off the compositor thread,
+and success or failure is reported when the outcome channel is drained. A failed entry is logged
+without tearing down an otherwise ready session; `systemd "enabled"` still prevents that
 individual client from running outside a scope. Direct sessions use the same process environment
 gate but do not require a systemd manager. Without the `systemd` Cargo feature, `auto` remains a
 direct session even if a manager-shaped environment was inherited; explicitly requesting

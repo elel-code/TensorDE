@@ -1,5 +1,8 @@
 use std::ffi::OsString;
 
+use smithay::reexports::calloop::channel::{
+    Channel as CalloopChannel, Event as ChannelEvent, SyncSender as CalloopSender, sync_channel,
+};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -15,7 +18,7 @@ use crate::{
     protocol::{ProtocolError, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
-    spawn::ProcessLauncher,
+    spawn::{LaunchOutcome, LaunchRequest, LaunchWorker, LaunchWorkerError, ProcessLauncher},
     startup::SessionAutostartPermit,
     xwayland::XWaylandConfig,
 };
@@ -25,6 +28,9 @@ pub struct Compositor {
     ipc: IpcServer,
     backend_config: BackendConfig,
     launcher: ProcessLauncher,
+    launch_outcome_sender: CalloopSender<LaunchOutcome>,
+    launch_outcomes: CalloopChannel<LaunchOutcome>,
+    launch_worker: Option<LaunchWorker>,
     startup_commands: Vec<StartupCommand>,
     systemd: SystemdMode,
     xwayland: XWaylandConfig,
@@ -63,11 +69,15 @@ impl Compositor {
         };
         protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;
+        let (launch_outcome_sender, launch_outcomes) = sync_channel(64);
         Ok(Self {
             protocol,
             ipc,
             backend_config,
             launcher: ProcessLauncher::new(systemd),
+            launch_outcome_sender,
+            launch_outcomes,
+            launch_worker: None,
             startup_commands,
             systemd,
             xwayland,
@@ -144,21 +154,55 @@ impl Compositor {
         );
     }
 
-    pub(crate) fn spawn_startup_commands(&self, _permit: SessionAutostartPermit) {
-        for command in &self.startup_commands {
-            let Some((program, args)) = command.argv.split_first() else {
-                continue;
-            };
-            match self.launcher.spawn(program, args) {
-                Ok(process) => info!(
-                    program,
-                    pid = process.pid(),
-                    strategy = process.strategy().name(),
-                    "startup command launched"
-                ),
-                Err(error) => warn!(program, %error, "startup command failed"),
+    pub(crate) fn spawn_startup_commands(&mut self, _permit: SessionAutostartPermit) {
+        let requests = self
+            .startup_commands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let (program, args) = command.argv.split_first()?;
+                Some((
+                    index,
+                    program.clone(),
+                    LaunchRequest::new(
+                        index as u64,
+                        program.as_str(),
+                        args.iter().map(String::as_str),
+                    ),
+                ))
+            })
+            .collect::<Vec<_>>();
+        if requests.is_empty() {
+            return;
+        }
+        let worker = match self.ensure_launch_worker() {
+            Ok(worker) => worker,
+            Err(error) => {
+                warn!(%error, "could not start the asynchronous launch worker");
+                return;
+            }
+        };
+        for (index, program, request) in requests {
+            match worker.submit(request) {
+                Ok(()) => info!(request_id = index, program, "startup command queued"),
+                Err(error) => {
+                    warn!(request_id = index, program, %error, "startup command rejected")
+                }
             }
         }
+    }
+
+    fn ensure_launch_worker(&mut self) -> Result<&LaunchWorker, LaunchWorkerError> {
+        if self.launch_worker.is_none() {
+            self.launch_worker = Some(LaunchWorker::new(
+                self.launcher.clone(),
+                self.launch_outcome_sender.clone(),
+            )?);
+        }
+        Ok(self
+            .launch_worker
+            .as_ref()
+            .expect("launch worker was installed"))
     }
 
     pub(crate) fn publish_session_environment(
@@ -185,21 +229,53 @@ impl Compositor {
             ipc,
             backend_config: _,
             launcher,
+            launch_outcome_sender,
+            launch_outcomes,
+            launch_worker,
             startup_commands,
             systemd,
             xwayland,
         } = self;
-        let runtime_owners = (launcher, startup_commands, systemd, xwayland);
+        let runtime_owners = (
+            launcher,
+            launch_outcome_sender,
+            launch_worker,
+            startup_commands,
+            systemd,
+            xwayland,
+        );
         let stop_signal = protocol.stop_signal();
-        protocol.run_with_ipc(&ipc, move |request, state| {
-            let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
-            let reply =
-                handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal);
-            if reflow {
-                state.reflow_default_workspace();
-            }
-            reply
-        })?;
+        protocol.run_with_ipc_and_channel(
+            &ipc,
+            launch_outcomes,
+            |event, _| match event {
+                ChannelEvent::Msg(outcome) => match outcome.result() {
+                    Ok(process) => info!(
+                        request_id = outcome.id(),
+                        program = ?outcome.program(),
+                        pid = process.pid(),
+                        strategy = process.strategy().name(),
+                        "application launch completed"
+                    ),
+                    Err(error) => warn!(
+                        request_id = outcome.id(),
+                        program = ?outcome.program(),
+                        %error,
+                        "application launch failed"
+                    ),
+                },
+                ChannelEvent::Closed => warn!("asynchronous launch worker disconnected"),
+            },
+            move |request, state| {
+                let reflow = matches!(&request.command, IpcCommand::SetLayout { .. });
+                let reply =
+                    handle_ipc_request(request, &mut state.layout, &mut state.world, &stop_signal);
+                if reflow {
+                    state.reflow_default_workspace();
+                }
+                reply
+            },
+        )?;
         drop(runtime_owners);
         Ok(())
     }
