@@ -4,42 +4,114 @@ use tracing::{debug, info, warn};
 use crate::{
     backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
     render::{NativeOutputBuffer, NativeOutputTarget, RenderOutputId},
+    scene::SceneSnapshot,
 };
 
-use super::{DEFAULT_WORKSPACE, ManagedOutput, RuntimeState};
+use super::{DEFAULT_WORKSPACE, ManagedOutput, OutputRedrawState, RuntimeState};
 
 impl RuntimeState {
+    /// Queue a redraw for every connected output.
+    ///
+    /// Call sites that previously submitted a single default-workspace frame
+    /// now mark every CRTC dirty; the per-output scheduler drains those that
+    /// are not already waiting on a page flip.
     #[cfg(feature = "tty")]
     pub(crate) fn submit_default_workspace_frame(&mut self) {
-        let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE) else {
+        self.queue_redraw_all();
+        self.redraw_queued_outputs();
+    }
+
+    #[cfg(feature = "tty")]
+    fn queue_redraw_all(&mut self) {
+        let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
+        for output in outputs {
+            self.queue_redraw(output);
+        }
+    }
+
+    #[cfg(feature = "tty")]
+    fn queue_redraw(&mut self, output: BackendOutputId) {
+        let state = self
+            .redraw_states
+            .entry(output)
+            .or_insert(OutputRedrawState::Idle);
+        *state = state.queue();
+    }
+
+    /// Force a first frame for every output, even if a sibling is mid-flip.
+    ///
+    /// Mirrors Nourish's `force_redraw` / Hyprland's `AQ_SCHEDULE_NEW_MONITOR`:
+    /// a CRTC that has never flipped has no vblank ring of its own.
+    #[cfg(feature = "tty")]
+    fn force_redraw_all(&mut self) {
+        let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
+        for output in outputs {
+            self.redraw_states.insert(output, OutputRedrawState::Queued);
+        }
+        self.redraw_queued_outputs();
+    }
+
+    #[cfg(feature = "tty")]
+    fn redraw_queued_outputs(&mut self) {
+        // Snapshot first: a failed submit may leave the CRTC `Queued` for a
+        // later GPU/KMS retry, and must not re-enter the same output forever
+        // inside this drain (unit tests without a renderer hit that path).
+        let queued = self
+            .redraw_states
+            .iter()
+            .filter_map(|(id, state)| state.is_queued().then_some(*id))
+            .collect::<Vec<_>>();
+        for output_id in queued {
+            self.submit_output_frame(output_id);
+        }
+        self.schedule_renderer_retry_if_needed();
+    }
+
+    #[cfg(feature = "tty")]
+    fn submit_output_frame(&mut self, output_id: BackendOutputId) {
+        if !matches!(
+            self.redraw_states.get(&output_id).copied(),
+            Some(OutputRedrawState::Queued)
+        ) {
+            return;
+        }
+        let Some(managed) = self.outputs.get(&output_id) else {
+            self.redraw_states.remove(&output_id);
             return;
         };
+        let output = managed.output.clone();
+        let target = renderer_target(&managed.descriptor);
+        let Some(geometry) = self.space.output_geometry(&output) else {
+            self.redraw_states
+                .insert(output_id, OutputRedrawState::Idle);
+            return;
+        };
+        let logical = Rect::new(
+            geometry.loc.x,
+            geometry.loc.y,
+            u32::try_from(geometry.size.w).unwrap_or(0),
+            u32::try_from(geometry.size.h).unwrap_or(0),
+        );
+        if logical.width == 0 || logical.height == 0 {
+            self.redraw_states
+                .insert(output_id, OutputRedrawState::Idle);
+            return;
+        }
+
+        if self.renderer.is_none() || self.backend.is_none() {
+            // Keep the request latched until the renderer/backend exist; the
+            // next successful attach path calls force_redraw_all / queue again.
+            return;
+        }
+
+        let scene = self.scene_for_output(logical);
         if let Err(error) = self.prepare_surface_acquires(&scene) {
             self.flush_client_releases();
             warn!(%error, "client explicit-sync acquire is not ready");
+            self.defer_output_repaint(output_id);
             return;
         }
-        let Some((output_id, output)) = self
-            .outputs
-            .iter()
-            .find(|(_, managed)| {
-                let Some(geometry) = self.space.output_geometry(&managed.output) else {
-                    return false;
-                };
-                geometry.loc.x == scene.viewport.x
-                    && geometry.loc.y == scene.viewport.y
-                    && geometry.size.w == i32::try_from(scene.viewport.width).unwrap_or(i32::MAX)
-                    && geometry.size.h == i32::try_from(scene.viewport.height).unwrap_or(i32::MAX)
-            })
-            .map(|(id, managed)| (*id, managed.output.clone()))
-        else {
-            return;
-        };
-        let target = self
-            .outputs
-            .get(&output_id)
-            .map(|managed| renderer_target(&managed.descriptor))
-            .expect("selected output must retain its renderer target");
+
         let pointer_location = self
             .seat
             .get_pointer()
@@ -101,6 +173,8 @@ impl RuntimeState {
             .map(|renderer| renderer.submit_scene(render_output, scene, cursor))
         else {
             drop(captured_presentation);
+            self.redraw_states
+                .insert(output_id, OutputRedrawState::Idle);
             return;
         };
         match result {
@@ -119,6 +193,8 @@ impl RuntimeState {
                         timeline = frame.timeline_value,
                         "renderer submitted a native frame without a KMS SYNC_FD"
                     );
+                    self.redraw_states
+                        .insert(output_id, OutputRedrawState::Idle);
                     return;
                 };
                 let Some(backend) = self.backend.as_mut() else {
@@ -153,7 +229,12 @@ impl RuntimeState {
                 // presentation feedback remains pending until vblank.
                 self.send_submitted_frame_callbacks(&output, &captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
-                self.repaint_pending.remove(&output_id);
+                self.redraw_states.insert(
+                    output_id,
+                    OutputRedrawState::WaitingForVBlank {
+                        redraw_needed: false,
+                    },
+                );
                 debug!(
                     output_device = output_id.device_id,
                     output_connector = output_id.connector_id,
@@ -188,12 +269,24 @@ impl RuntimeState {
         }
     }
 
+    /// Workspace content lives on the default output; other CRTCs get a blank
+    /// scene with their own logical viewport so each still starts a vblank ring.
+    #[cfg(feature = "tty")]
+    pub(super) fn scene_for_output(&mut self, logical: Rect) -> SceneSnapshot {
+        if let Some(scene) = self.world.extract_scene(DEFAULT_WORKSPACE)
+            && scene.viewport == logical
+        {
+            return scene;
+        }
+        SceneSnapshot::new(DEFAULT_WORKSPACE, logical, Vec::new())
+    }
+
     /// Keep an input-driven redraw live when the previous submission still
     /// owns the only scheduler slot. Page-flip completion handles the normal
     /// KMS case; this additionally polls the Vulkan timeline when a pointer
     /// event arrives after that page flip but before GPU retirement.
     fn defer_output_repaint(&mut self, output: BackendOutputId) {
-        self.repaint_pending.insert(output);
+        self.queue_redraw(output);
         self.schedule_renderer_retry_if_needed();
     }
 
@@ -228,9 +321,20 @@ impl RuntimeState {
                 "KMS page flip had no pending Wayland presentation feedback"
             );
         }
-        if self.repaint_pending.remove(&presentation.output) {
-            self.submit_default_workspace_frame();
+        let redraw_needed = match self.redraw_states.get(&presentation.output).copied() {
+            Some(OutputRedrawState::WaitingForVBlank { redraw_needed }) => redraw_needed,
+            Some(OutputRedrawState::Queued) => true,
+            Some(OutputRedrawState::Idle) | None => false,
+        };
+        if redraw_needed {
+            self.redraw_states
+                .insert(presentation.output, OutputRedrawState::Queued);
+            self.submit_output_frame(presentation.output);
+        } else {
+            self.redraw_states
+                .insert(presentation.output, OutputRedrawState::Idle);
         }
+        self.schedule_renderer_retry_if_needed();
     }
 
     #[cfg(feature = "tty")]
@@ -261,6 +365,9 @@ impl RuntimeState {
                     "discarded in-flight presentation feedback on session pause"
                 );
             }
+            for state in self.redraw_states.values_mut() {
+                *state = OutputRedrawState::Idle;
+            }
         }
         let Some(mut backend) = self.backend.take() else {
             return;
@@ -282,16 +389,12 @@ impl RuntimeState {
     /// events have run. The backend schedules this as a calloop idle callback
     /// so a stale page-flip cannot be mistaken for the resumed frame.
     pub(crate) fn repaint_after_session_resume(&mut self) {
-        let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
-        self.repaint_pending.extend(outputs);
-        self.submit_default_workspace_frame();
-        self.schedule_renderer_retry_if_needed();
+        self.force_redraw_all();
     }
 
     pub(crate) fn retry_renderer_repaint(&mut self) {
         self.renderer_retry_scheduled = false;
-        self.submit_default_workspace_frame();
-        self.schedule_renderer_retry_if_needed();
+        self.redraw_queued_outputs();
     }
 
     fn schedule_renderer_retry_if_needed(&mut self) {
@@ -311,11 +414,12 @@ impl RuntimeState {
         let Some(renderer) = self.renderer.as_ref() else {
             return false;
         };
-        self.repaint_pending.iter().copied().any(|output| {
-            renderer.output_waiting_for_gpu(RenderOutputId {
-                device_id: output.device_id,
-                connector_id: output.connector_id,
-            })
+        self.redraw_states.iter().any(|(output, state)| {
+            state.needs_gpu_retry()
+                && renderer.output_waiting_for_gpu(RenderOutputId {
+                    device_id: output.device_id,
+                    connector_id: output.connector_id,
+                })
         })
     }
 
@@ -382,14 +486,17 @@ impl RuntimeState {
         );
         let global = output.create_global::<Self>(&self.display_handle);
         self.space.map_output(&output, (0, 0));
+        let output_id = descriptor.id;
         self.outputs.insert(
-            descriptor.id,
+            output_id,
             ManagedOutput {
                 output,
                 global,
                 descriptor,
             },
         );
+        self.redraw_states
+            .insert(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();
         Ok(())
     }
@@ -445,7 +552,11 @@ impl RuntimeState {
             )),
             None,
         );
+        let output_id = descriptor.id;
         managed.descriptor = descriptor;
+        // Mode replacement ends any in-flight flip; force a fresh first frame.
+        self.redraw_states
+            .insert(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();
         Ok(())
     }
@@ -463,7 +574,7 @@ impl RuntimeState {
                 connector_id: id.connector_id,
             });
         }
-        self.repaint_pending.remove(&id);
+        self.redraw_states.remove(&id);
         if let Some(backend) = self.backend.as_mut() {
             backend.remove_output_buffers(id);
         }
@@ -524,7 +635,11 @@ impl RuntimeState {
                     .unwrap_or(0),
             );
         }
+        // Arrange the default workspace against the primary output, then force
+        // every CRTC (including secondaries with no workspace content) through
+        // a first frame so each page-flip ring starts.
         self.reflow_default_workspace();
+        self.force_redraw_all();
     }
 }
 
@@ -543,5 +658,32 @@ fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarget {
         ),
         format: descriptor.native_format,
         scale: descriptor.scale,
+    }
+}
+
+#[cfg(all(test, feature = "tty"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_marks_idle_and_waiting_outputs_dirty() {
+        assert_eq!(OutputRedrawState::Idle.queue(), OutputRedrawState::Queued);
+        assert_eq!(OutputRedrawState::Queued.queue(), OutputRedrawState::Queued);
+        assert_eq!(
+            OutputRedrawState::WaitingForVBlank {
+                redraw_needed: false
+            }
+            .queue(),
+            OutputRedrawState::WaitingForVBlank {
+                redraw_needed: true
+            }
+        );
+        assert!(
+            OutputRedrawState::WaitingForVBlank {
+                redraw_needed: true
+            }
+            .queue()
+            .needs_gpu_retry()
+        );
     }
 }

@@ -1,0 +1,180 @@
+use smithay::{
+    backend::allocator::{Format as DrmFormat, Fourcc, Modifier},
+    output::{Mode, Subpixel},
+    reexports::wayland_server::Display,
+};
+
+use super::*;
+
+fn descriptor(connector_id: u32, name: &str, width: i32) -> OutputDescriptor {
+    let mode = Mode {
+        size: (width, 1080).into(),
+        refresh: 60_000,
+    };
+    OutputDescriptor {
+        id: BackendOutputId {
+            device_id: 1,
+            connector_id,
+        },
+        name: name.to_owned(),
+        physical_size: (600, 340),
+        subpixel: Subpixel::HorizontalRgb,
+        modes: vec![mode],
+        mode,
+        crtc: connector_id,
+        native_format: crate::render::OutputFormat {
+            format: DrmFormat {
+                code: Fourcc::Xrgb8888,
+                modifier: Modifier::from(9),
+            },
+            plane_count: 1,
+        },
+        scale: tensor_util::OutputScale::ONE,
+    }
+}
+
+fn output_location(state: &RuntimeState, name: &str) -> i32 {
+    state
+        .space
+        .outputs()
+        .find(|output| output.name() == name)
+        .unwrap()
+        .current_location()
+        .x
+}
+
+fn output_geometry(
+    state: &RuntimeState,
+    name: &str,
+) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+    let output = state
+        .space
+        .outputs()
+        .find(|output| output.name() == name)
+        .unwrap();
+    state.space.output_geometry(output).unwrap()
+}
+
+#[test]
+fn output_events_keep_smithay_space_stable_across_hotplug() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 2560)),
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+        ])
+        .unwrap();
+    assert_eq!(state.output_count(), 2);
+    assert_eq!(output_location(&state, "DP-1"), 0);
+    assert_eq!(output_location(&state, "DP-2"), 1920);
+
+    state
+        .apply_backend_output_events([BackendOutputEvent::Changed(descriptor(1, "DP-1", 1280))])
+        .unwrap();
+    assert_eq!(output_location(&state, "DP-2"), 1280);
+
+    state
+        .apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId {
+            device_id: 1,
+            connector_id: 1,
+        })])
+        .unwrap();
+    assert_eq!(state.output_count(), 1);
+    assert_eq!(output_location(&state, "DP-2"), 0);
+}
+
+#[test]
+fn fractional_output_scale_controls_logical_reflow() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    let mut first = descriptor(1, "DP-1", 1920);
+    first.scale = tensor_util::OutputScale::from_f64(1.25).unwrap();
+    let second = descriptor(2, "DP-2", 1920);
+
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(first),
+            BackendOutputEvent::Connected(second),
+        ])
+        .unwrap();
+
+    assert_eq!(output_geometry(&state, "DP-1").size, (1536, 864).into());
+    assert_eq!(output_location(&state, "DP-2"), 1536);
+    let first = state
+        .space
+        .outputs()
+        .find(|output| output.name() == "DP-1")
+        .unwrap();
+    assert_eq!(first.current_scale().fractional_scale(), 1.25);
+    assert_eq!(first.current_scale().integer_scale(), 2);
+}
+
+#[test]
+fn every_connected_output_starts_a_redraw_cycle() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(827, "HDMI-A-1", 2560)),
+            BackendOutputEvent::Connected(descriptor(830, "eDP-1", 2560)),
+        ])
+        .unwrap();
+
+    // Without a Vulkan/KMS backend the first-frame submit leaves each CRTC
+    // queued so a later renderer/backend attach can complete the ring.
+    assert_eq!(state.redraw_states.len(), 2);
+    assert!(
+        state
+            .redraw_states
+            .values()
+            .all(|state| state.needs_gpu_retry() || matches!(state, OutputRedrawState::Idle))
+    );
+    assert!(state.redraw_states.contains_key(&BackendOutputId {
+        device_id: 1,
+        connector_id: 827,
+    }));
+    assert!(state.redraw_states.contains_key(&BackendOutputId {
+        device_id: 1,
+        connector_id: 830,
+    }));
+}
+
+#[test]
+fn secondary_output_scene_is_blank_with_its_own_viewport() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display.handle(),
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 1280)),
+        ])
+        .unwrap();
+
+    let primary = state.scene_for_output(tensor_util::Rect::new(0, 0, 1920, 1080));
+    let secondary = state.scene_for_output(tensor_util::Rect::new(1920, 0, 1280, 1080));
+    assert_eq!(primary.viewport, tensor_util::Rect::new(0, 0, 1920, 1080));
+    assert_eq!(
+        secondary.viewport,
+        tensor_util::Rect::new(1920, 0, 1280, 1080)
+    );
+    assert!(secondary.nodes().is_empty());
+}

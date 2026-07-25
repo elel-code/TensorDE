@@ -105,8 +105,11 @@ pub(crate) struct RuntimeState {
     pending_surface_sync: HashMap<ObjectId, DeferredSurfaceSync>,
     #[cfg(feature = "tty")]
     outputs: HashMap<BackendOutputId, ManagedOutput>,
+    /// Per-CRTC redraw scheduler. Niri-style Idle/Queued/WaitingForVBlank so
+    /// each output owns its own page-flip ring instead of sharing one global
+    /// workspace submit path.
     #[cfg(feature = "tty")]
-    repaint_pending: HashSet<BackendOutputId>,
+    redraw_states: HashMap<BackendOutputId, OutputRedrawState>,
     #[cfg(feature = "tty")]
     renderer_retry_scheduled: bool,
     #[cfg(feature = "tty")]
@@ -176,7 +179,7 @@ impl RuntimeState {
             #[cfg(feature = "tty")]
             outputs: HashMap::new(),
             #[cfg(feature = "tty")]
-            repaint_pending: HashSet::new(),
+            redraw_states: HashMap::new(),
             #[cfg(feature = "tty")]
             renderer_retry_scheduled: false,
             #[cfg(feature = "tty")]
@@ -604,6 +607,45 @@ struct ManagedOutput {
     descriptor: OutputDescriptor,
 }
 
+/// Per-output redraw lifecycle, modeled on Niri's `RedrawState`.
+///
+/// A newly connected CRTC has no vblank until the first page flip lands. The
+/// `Queued` state forces that first frame; subsequent damage either queues
+/// immediately or latches `redraw_needed` while a flip is in flight.
+#[cfg(feature = "tty")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputRedrawState {
+    Idle,
+    Queued,
+    WaitingForVBlank { redraw_needed: bool },
+}
+
+#[cfg(feature = "tty")]
+impl OutputRedrawState {
+    const fn queue(self) -> Self {
+        match self {
+            Self::Idle | Self::Queued => Self::Queued,
+            Self::WaitingForVBlank { .. } => Self::WaitingForVBlank {
+                redraw_needed: true,
+            },
+        }
+    }
+
+    const fn is_queued(self) -> bool {
+        matches!(self, Self::Queued)
+    }
+
+    const fn needs_gpu_retry(self) -> bool {
+        matches!(
+            self,
+            Self::Queued
+                | Self::WaitingForVBlank {
+                    redraw_needed: true
+                }
+        )
+    }
+}
+
 #[cfg(feature = "tty")]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct InputDeviceCapabilities {
@@ -624,125 +666,4 @@ impl ClientData for WaylandClientState {
 }
 
 #[cfg(all(test, feature = "tty"))]
-mod tests {
-    use smithay::{
-        backend::allocator::{Format as DrmFormat, Fourcc, Modifier},
-        output::{Mode, Subpixel},
-        reexports::wayland_server::Display,
-    };
-
-    use super::*;
-
-    fn descriptor(connector_id: u32, name: &str, width: i32) -> OutputDescriptor {
-        let mode = Mode {
-            size: (width, 1080).into(),
-            refresh: 60_000,
-        };
-        OutputDescriptor {
-            id: BackendOutputId {
-                device_id: 1,
-                connector_id,
-            },
-            name: name.to_owned(),
-            physical_size: (600, 340),
-            subpixel: Subpixel::HorizontalRgb,
-            modes: vec![mode],
-            mode,
-            crtc: connector_id,
-            native_format: crate::render::OutputFormat {
-                format: DrmFormat {
-                    code: Fourcc::Xrgb8888,
-                    modifier: Modifier::from(9),
-                },
-                plane_count: 1,
-            },
-            scale: tensor_util::OutputScale::ONE,
-        }
-    }
-
-    fn output_location(state: &RuntimeState, name: &str) -> i32 {
-        state
-            .space
-            .outputs()
-            .find(|output| output.name() == name)
-            .unwrap()
-            .current_location()
-            .x
-    }
-
-    fn output_geometry(
-        state: &RuntimeState,
-        name: &str,
-    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
-        let output = state
-            .space
-            .outputs()
-            .find(|output| output.name() == name)
-            .unwrap();
-        state.space.output_geometry(output).unwrap()
-    }
-
-    #[test]
-    fn output_events_keep_smithay_space_stable_across_hotplug() {
-        let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::with_appearance(
-            display.handle(),
-            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
-            SceneAppearance::default(),
-        );
-
-        state
-            .apply_backend_output_events([
-                BackendOutputEvent::Connected(descriptor(2, "DP-2", 2560)),
-                BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
-            ])
-            .unwrap();
-        assert_eq!(state.output_count(), 2);
-        assert_eq!(output_location(&state, "DP-1"), 0);
-        assert_eq!(output_location(&state, "DP-2"), 1920);
-
-        state
-            .apply_backend_output_events([BackendOutputEvent::Changed(descriptor(1, "DP-1", 1280))])
-            .unwrap();
-        assert_eq!(output_location(&state, "DP-2"), 1280);
-
-        state
-            .apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId {
-                device_id: 1,
-                connector_id: 1,
-            })])
-            .unwrap();
-        assert_eq!(state.output_count(), 1);
-        assert_eq!(output_location(&state, "DP-2"), 0);
-    }
-
-    #[test]
-    fn fractional_output_scale_controls_logical_reflow() {
-        let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::with_appearance(
-            display.handle(),
-            LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
-            SceneAppearance::default(),
-        );
-        let mut first = descriptor(1, "DP-1", 1920);
-        first.scale = tensor_util::OutputScale::from_f64(1.25).unwrap();
-        let second = descriptor(2, "DP-2", 1920);
-
-        state
-            .apply_backend_output_events([
-                BackendOutputEvent::Connected(first),
-                BackendOutputEvent::Connected(second),
-            ])
-            .unwrap();
-
-        assert_eq!(output_geometry(&state, "DP-1").size, (1536, 864).into());
-        assert_eq!(output_location(&state, "DP-2"), 1536);
-        let first = state
-            .space
-            .outputs()
-            .find(|output| output.name() == "DP-1")
-            .unwrap();
-        assert_eq!(first.current_scale().fractional_scale(), 1.25);
-        assert_eq!(first.current_scale().integer_scale(), 2);
-    }
-}
+mod tests;
