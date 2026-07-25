@@ -1,3 +1,12 @@
+fn receive_clipboard_reply<T>(
+    reply_rx: std::sync::mpsc::Receiver<std::io::Result<T>>,
+) -> Result<T, String> {
+    reply_rx
+        .recv()
+        .map_err(|_| "clipboard worker stopped before replying".to_string())?
+        .map_err(|error| error.to_string())
+}
+
 impl FikaWgpuApp {
     fn next_task_id(&mut self) -> ShellTaskId {
         let task_id = self.next_task_id;
@@ -317,6 +326,109 @@ impl FikaWgpuApp {
                 running_detail,
                 work,
             } => self.start_async_launch_work(kind, running_label, running_detail, work),
+            ShellOperationRequest::Navigation {
+                generation,
+                pane,
+                source_path,
+                target_path,
+                history,
+                reason,
+            } => self.start_async_navigation(
+                generation,
+                pane,
+                source_path,
+                target_path,
+                history,
+                reason,
+            ),
+            ShellOperationRequest::Clipboard { work } => self.start_async_clipboard(work),
+        }
+    }
+
+    fn start_async_navigation(
+        &mut self,
+        generation: u64,
+        pane: ShellPaneId,
+        source_path: PathBuf,
+        target_path: PathBuf,
+        history: ShellNavigationHistoryUpdate,
+        reason: &'static str,
+    ) {
+        let listing_target = target_path.clone();
+        let _ = self.spawn_blocking_task_result(
+            move || read_shell_entries_sync(&listing_target),
+            move |result| {
+                ShellAsyncTaskResult::Navigation(ShellAsyncNavigationCompletion {
+                    generation,
+                    pane,
+                    source_path,
+                    target_path,
+                    history,
+                    reason,
+                    result,
+                })
+            },
+        );
+    }
+
+    fn start_async_clipboard(&mut self, work: ShellClipboardWork) {
+        match work {
+            ShellClipboardWork::StoreFile { request, reply_rx } => {
+                if let Err(error) = self.spawn_blocking_task_result(
+                    move || receive_clipboard_reply(reply_rx),
+                    move |result| {
+                        ShellAsyncTaskResult::Clipboard(ShellAsyncClipboardCompletion::StoreFile {
+                            request,
+                            result,
+                        })
+                    },
+                ) {
+                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                }
+            }
+            ShellClipboardWork::CopyLocation { request, reply_rx } => {
+                if let Err(error) = self.spawn_blocking_task_result(
+                    move || receive_clipboard_reply(reply_rx),
+                    move |result| {
+                        ShellAsyncTaskResult::Clipboard(
+                            ShellAsyncClipboardCompletion::CopyLocation { request, result },
+                        )
+                    },
+                ) {
+                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                }
+            }
+            ShellClipboardWork::LoadPaste {
+                use_context,
+                privileged,
+                reply_rx,
+            } => {
+                if let Err(error) = self.spawn_blocking_task_result(
+                    move || receive_clipboard_reply(reply_rx),
+                    move |result| {
+                        ShellAsyncTaskResult::Clipboard(ShellAsyncClipboardCompletion::LoadPaste {
+                            use_context,
+                            privileged,
+                            result,
+                        })
+                    },
+                ) {
+                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                }
+            }
+            ShellClipboardWork::Clear { reason, reply_rx } => {
+                if let Err(error) = self.spawn_blocking_task_result(
+                    move || receive_clipboard_reply(reply_rx),
+                    move |result| {
+                        ShellAsyncTaskResult::Clipboard(ShellAsyncClipboardCompletion::Clear {
+                            reason,
+                            result,
+                        })
+                    },
+                ) {
+                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                }
+            }
         }
     }
 

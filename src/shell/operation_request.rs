@@ -1,18 +1,26 @@
+use std::io::Result as IoResult;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
 use fika_core::{DesktopLaunchPlan, FileTransferMode, TrashViewOperation};
 
+use crate::CopyLocationRequest;
 use crate::DeviceActionRequest;
+use crate::shell::clipboard::FileClipboardExportRequest;
 use crate::shell::context_menu::ShellContextMenuAction;
 use crate::shell::create_rename::{CreateEntryRequest, RenameEntryRequest};
 use crate::shell::pane::ShellPaneId;
-use crate::shell::transfer::{ShellAsyncLaunchKind, ShellAsyncTransferSource};
+use crate::shell::transfer::{
+    ShellAsyncLaunchKind, ShellAsyncTransferSource, ShellNavigationHistoryUpdate,
+};
 
 /// Typed async work submitted by UI actions into the operation dispatcher.
 ///
 /// Call sites should build a request and call `FikaWgpuApp::submit_operation_request`
-/// rather than invoking individual `start_async_*` helpers.
-#[derive(Clone, Debug)]
+/// rather than invoking individual spawn helpers.
+///
+/// Not `Clone`: some variants own oneshot/mpsc receivers that cannot be cloned.
+#[derive(Debug)]
 pub(crate) enum ShellOperationRequest {
     Transfer {
         source: ShellAsyncTransferSource,
@@ -54,6 +62,17 @@ pub(crate) enum ShellOperationRequest {
         running_detail: String,
         work: ShellLaunchWork,
     },
+    Navigation {
+        generation: u64,
+        pane: ShellPaneId,
+        source_path: PathBuf,
+        target_path: PathBuf,
+        history: ShellNavigationHistoryUpdate,
+        reason: &'static str,
+    },
+    Clipboard {
+        work: ShellClipboardWork,
+    },
 }
 
 /// Launch-side work payload owned by the dispatcher after submit.
@@ -67,6 +86,28 @@ pub(crate) enum ShellLaunchWork {
     },
     ArkExtractAndTrash {
         request: crate::shell::service_menu::ServiceMenuLaunchRequest,
+    },
+}
+
+/// Clipboard worker wait owned by the dispatcher after submit.
+#[derive(Debug)]
+pub(crate) enum ShellClipboardWork {
+    StoreFile {
+        request: FileClipboardExportRequest,
+        reply_rx: Receiver<IoResult<()>>,
+    },
+    CopyLocation {
+        request: CopyLocationRequest,
+        reply_rx: Receiver<IoResult<()>>,
+    },
+    LoadPaste {
+        use_context: bool,
+        privileged: bool,
+        reply_rx: Receiver<IoResult<String>>,
+    },
+    Clear {
+        reason: &'static str,
+        reply_rx: Receiver<IoResult<()>>,
     },
 }
 
@@ -217,5 +258,27 @@ impl ShellOperationRequest {
             running_detail,
             ShellLaunchWork::ArkExtractAndTrash { request },
         )
+    }
+
+    pub(crate) fn navigation(
+        generation: u64,
+        pane: ShellPaneId,
+        source_path: PathBuf,
+        target_path: PathBuf,
+        history: ShellNavigationHistoryUpdate,
+        reason: &'static str,
+    ) -> Self {
+        Self::Navigation {
+            generation,
+            pane,
+            source_path,
+            target_path,
+            history,
+            reason,
+        }
+    }
+
+    pub(crate) fn clipboard(work: ShellClipboardWork) -> Self {
+        Self::Clipboard { work }
     }
 }

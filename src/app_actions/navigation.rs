@@ -5,14 +5,12 @@ use crate::platform::PhysicalSize;
 
 use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;
-use crate::read_shell_entries_sync;
 use crate::shell::location::LocationDraftPurpose;
+use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::pane::ShellPaneId;
 use crate::shell::shortcuts::PathNavigationAction;
 use crate::shell::tasks::ShellTaskStatus;
-use crate::shell::transfer::{
-    ShellAsyncNavigationCompletion, ShellAsyncTaskResult, ShellNavigationHistoryUpdate,
-};
+use crate::shell::transfer::{ShellAsyncNavigationCompletion, ShellNavigationHistoryUpdate};
 use fika_core::default_user_places_path;
 
 impl FikaWgpuApp {
@@ -185,21 +183,14 @@ impl FikaWgpuApp {
 
         let generation = self.navigation_generations[pane.index()].wrapping_add(1);
         self.navigation_generations[pane.index()] = generation;
-        let listing_target = target_path.clone();
-        let _ = self.spawn_blocking_task_result(
-            move || read_shell_entries_sync(&listing_target),
-            move |result| {
-                ShellAsyncTaskResult::Navigation(ShellAsyncNavigationCompletion {
-                    generation,
-                    pane,
-                    source_path,
-                    target_path,
-                    history,
-                    reason,
-                    result,
-                })
-            },
-        );
+        self.submit_operation_request(ShellOperationRequest::navigation(
+            generation,
+            pane,
+            source_path,
+            target_path,
+            history,
+            reason,
+        ));
 
         true
     }

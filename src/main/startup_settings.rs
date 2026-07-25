@@ -109,7 +109,7 @@ use shell::metadata_roles::{
 };
 use shell::metrics::*;
 use shell::open_file::OpenFileRequest;
-use shell::operation_request::{ShellLaunchWork, ShellOperationRequest};
+use shell::operation_request::{ShellClipboardWork, ShellLaunchWork, ShellOperationRequest};
 #[cfg(test)]
 use shell::open_file::default_open_file_launch_request;
 #[cfg(test)]
@@ -250,10 +250,11 @@ use shell::toolbar::{
     ShellToolbarLayout, ShellToolbarViewModeSegment, app_toolbar_layout as build_app_toolbar_layout,
 };
 use shell::transfer::{
-    ShellAsyncCreateCompletion, ShellAsyncDeviceCompletion, ShellAsyncLaunchCompletion,
-    ShellAsyncLaunchKind, ShellAsyncMoveToTrashCompletion, ShellAsyncRenameCompletion,
-    ShellAsyncTaskResult, ShellAsyncTransferCompletion, ShellAsyncTransferSource,
-    ShellAsyncTrashViewCompletion, ShellPasteResult, ShellTransferExecution,
+    ShellAsyncClipboardCompletion, ShellAsyncCreateCompletion, ShellAsyncDeviceCompletion,
+    ShellAsyncLaunchCompletion, ShellAsyncLaunchKind, ShellAsyncMoveToTrashCompletion,
+    ShellAsyncNavigationCompletion, ShellAsyncRenameCompletion, ShellAsyncTaskResult,
+    ShellAsyncTransferCompletion, ShellAsyncTransferSource, ShellAsyncTrashViewCompletion,
+    ShellNavigationHistoryUpdate, ShellPasteResult, ShellTransferExecution,
     async_transfer_task_detail, async_transfer_task_label, paste_text_async,
     transfer_paths_async_with_controller_and_privilege, transfer_runtime_failure,
     trash_paths_async_with_privilege,

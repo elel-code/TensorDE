@@ -1,17 +1,8 @@
-use std::io::Result as IoResult;
-use std::sync::mpsc::Receiver;
-
 use crate::shell::clipboard::FileClipboardExportRequest;
+use crate::shell::operation_request::{ShellClipboardWork, ShellOperationRequest};
 use crate::shell::tasks::ShellTaskStatus;
-use crate::shell::transfer::{ShellAsyncClipboardCompletion, ShellAsyncTaskResult};
+use crate::shell::transfer::ShellAsyncClipboardCompletion;
 use crate::{CopyLocationRequest, FikaWgpuApp, file_clipboard_role_as_str, paths_task_summary};
-
-fn receive_clipboard_result<T>(reply_rx: Receiver<IoResult<T>>) -> Result<T, String> {
-    reply_rx
-        .recv()
-        .map_err(|_| "clipboard worker stopped before replying".to_string())?
-        .map_err(|error| error.to_string())
-}
 
 impl FikaWgpuApp {
     pub(crate) fn store_file_clipboard_request(&mut self, request: &FileClipboardExportRequest) {
@@ -22,10 +13,12 @@ impl FikaWgpuApp {
                 request.text.clone(),
             ) {
                 Ok(reply_rx) => {
-                    let request = request.clone();
-                    self.spawn_clipboard_reply(reply_rx, move |result| {
-                        ShellAsyncClipboardCompletion::StoreFile { request, result }
-                    });
+                    self.submit_operation_request(ShellOperationRequest::clipboard(
+                        ShellClipboardWork::StoreFile {
+                            request: request.clone(),
+                            reply_rx,
+                        },
+                    ));
                 }
                 Err(error) => self.record_file_clipboard_store_error(request, error),
             }
@@ -62,9 +55,9 @@ impl FikaWgpuApp {
 
         match clipboard.store_text_async(request.text.clone()) {
             Ok(reply_rx) => {
-                self.spawn_clipboard_reply(reply_rx, move |result| {
-                    ShellAsyncClipboardCompletion::CopyLocation { request, result }
-                });
+                self.submit_operation_request(ShellOperationRequest::clipboard(
+                    ShellClipboardWork::CopyLocation { request, reply_rx },
+                ));
             }
             Err(error) => self.record_copy_location_error(&request, error),
         }
@@ -83,13 +76,13 @@ impl FikaWgpuApp {
 
         match clipboard.load_text_async() {
             Ok(reply_rx) => {
-                self.spawn_clipboard_reply(reply_rx, move |result| {
-                    ShellAsyncClipboardCompletion::LoadPaste {
+                self.submit_operation_request(ShellOperationRequest::clipboard(
+                    ShellClipboardWork::LoadPaste {
                         use_context,
                         privileged,
-                        result,
-                    }
-                });
+                        reply_rx,
+                    },
+                ));
             }
             Err(error) => {
                 fika_log!("[fika-wgpu] paste-error load={error}");
@@ -112,9 +105,9 @@ impl FikaWgpuApp {
 
         match clipboard.store_text_async(String::new()) {
             Ok(reply_rx) => {
-                self.spawn_clipboard_reply(reply_rx, move |result| {
-                    ShellAsyncClipboardCompletion::Clear { reason, result }
-                });
+                self.submit_operation_request(ShellOperationRequest::clipboard(
+                    ShellClipboardWork::Clear { reason, reply_rx },
+                ));
             }
             Err(error) => {
                 fika_log!("[fika-wgpu] clipboard-clear-error reason={reason} error={error}");
@@ -169,19 +162,6 @@ impl FikaWgpuApp {
                 }
                 false
             }
-        }
-    }
-
-    pub(crate) fn spawn_clipboard_reply<T, F>(&self, reply_rx: Receiver<IoResult<T>>, map: F)
-    where
-        T: Send + 'static,
-        F: FnOnce(Result<T, String>) -> ShellAsyncClipboardCompletion + Send + 'static,
-    {
-        if let Err(error) = self.spawn_blocking_task_result(
-            move || receive_clipboard_result(reply_rx),
-            move |result| ShellAsyncTaskResult::Clipboard(map(result)),
-        ) {
-            fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
         }
     }
 
