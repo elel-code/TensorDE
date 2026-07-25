@@ -68,10 +68,10 @@ impl ShellScene {
     }
 
     // Production delete path is async via FikaWgpuApp::delete_active_selection.
+    // Sync helper reuses apply_move_to_trash_result so UI bookkeeping matches production.
     #[cfg(test)]
     fn delete_active_selection(&mut self, size: PhysicalSize<u32>) -> Result<bool, String> {
         let pane = self.active_pane();
-        let affected_dir = self.pane_state(pane).map(|state| state.path.clone());
         let Some(paths) = self.active_selection_item_paths()? else {
             return Ok(false);
         };
@@ -101,51 +101,15 @@ impl ShellScene {
                 return Err(error);
             }
         };
-        let changed = result.changed();
-        self.record_trash_content_change();
-        fika_log!(
-            "[fika-wgpu] trash paths={} success={} failure={} privileged={} changes={}",
-            paths.len(),
-            result.success_count,
-            result.failure_count,
-            result.privileged as u8,
-            self.trash_changes
-        );
-        self.record_task_status(if result.failure_count > 0 {
-            ShellTaskStatus::failed(
-                "Move to Trash failed",
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    Path::new("Trash"),
-                    result.first_error.as_deref(),
-                    result.administrator_available,
-                ),
-                result.privileged,
-            )
-        } else {
-            ShellTaskStatus::completed(
-                "Moved to Trash",
-                paths_task_summary(&paths),
-                result.privileged,
-            )
-        });
-        if changed {
-            self.context_target = None;
-            self.context_menu = None;
-            self.drop_menu = None;
-            self.properties_overlay = None;
-            self.create_dialog = None;
-            self.rename_dialog = None;
-            self.rubber_band = None;
-            if let Some(selection) = self.pane_selection_mut(pane) {
-                selection.clear();
-            }
-            if let Some(affected_dir) = affected_dir {
-                self.reload_panes_showing_path(&affected_dir, size)?;
-            }
-        }
-        Ok(changed)
+        let result = self.apply_move_to_trash_result(
+            result,
+            &paths,
+            pane,
+            Some(pane),
+            None,
+            size,
+        )?;
+        Ok(result.changed())
     }
 
     fn context_target_trash_paths(&self) -> Result<Vec<PathBuf>, String> {
@@ -349,6 +313,7 @@ impl ShellScene {
         Ok(())
     }
 
+    // Production path is async via FikaWgpuApp::move_context_target_to_trash.
     #[cfg(test)]
     fn move_context_target_to_trash(
         &mut self,
@@ -358,9 +323,6 @@ impl ShellScene {
         let pane_to_reload = self
             .context_target_pane()
             .unwrap_or_else(|| self.active_pane());
-        let affected_dir = self
-            .pane_state(pane_to_reload)
-            .map(|state| state.path.clone());
         let paths = self.context_target_trash_paths()?;
         if paths.iter().any(|path| is_network_path(path)) {
             return Err("remote trash is not available yet".to_string());
@@ -380,58 +342,7 @@ impl ShellScene {
                 return Err(error);
             }
         };
-        self.record_trash_content_change();
-        fika_log!(
-            "[fika-wgpu] trash paths={} success={} failure={} privileged={} changes={}",
-            paths.len(),
-            result.success_count,
-            result.failure_count,
-            result.privileged as u8,
-            self.trash_changes
-        );
-        self.record_task_status(if result.failure_count > 0 {
-            ShellTaskStatus::failed(
-                if result.privileged {
-                    "Administrator move to Trash failed"
-                } else {
-                    "Move to Trash failed"
-                },
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    Path::new("Trash"),
-                    result.first_error.as_deref(),
-                    result.administrator_available,
-                ),
-                result.privileged,
-            )
-        } else {
-            ShellTaskStatus::completed(
-                if result.privileged {
-                    "Administrator move to Trash"
-                } else {
-                    "Moved to Trash"
-                },
-                paths_task_summary(&paths),
-                result.privileged,
-            )
-        });
-
-        if !result.changed() {
-            return Ok(result);
-        }
-
-        self.context_target = None;
-        self.context_menu = None;
-        self.drop_menu = None;
-        self.properties_overlay = None;
-        self.create_dialog = None;
-        self.rename_dialog = None;
-        self.rubber_band = None;
-        if let Some(affected_dir) = affected_dir {
-            self.reload_panes_showing_path(&affected_dir, size)?;
-        }
-        Ok(result)
+        self.apply_move_to_trash_result(result, &paths, pane_to_reload, None, None, size)
     }
 
     fn is_trash_conflict_dialog_open(&self) -> bool {

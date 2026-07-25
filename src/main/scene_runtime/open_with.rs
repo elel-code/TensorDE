@@ -457,11 +457,30 @@ impl ShellScene {
         completion: &ShellAsyncMoveToTrashCompletion,
         size: PhysicalSize<u32>,
     ) -> Result<ShellTrashResult, String> {
-        let result = completion.result.clone();
+        self.apply_move_to_trash_result(
+            completion.result.clone(),
+            &completion.paths,
+            completion.pane_to_reload,
+            completion.clear_selection_pane,
+            Some(completion.task_id),
+            size,
+        )
+    }
+
+    /// Shared completion for production async trash and scene test sync helpers.
+    fn apply_move_to_trash_result(
+        &mut self,
+        result: ShellTrashResult,
+        paths: &[PathBuf],
+        pane_to_reload: ShellPaneId,
+        clear_selection_pane: Option<ShellPaneId>,
+        task_id: Option<ShellTaskId>,
+        size: PhysicalSize<u32>,
+    ) -> Result<ShellTrashResult, String> {
         self.record_trash_content_change();
         fika_log!(
-            "[fika-wgpu] async-trash paths={} success={} failure={} privileged={} changes={}",
-            completion.paths.len(),
+            "[fika-wgpu] trash paths={} success={} failure={} privileged={} changes={}",
+            paths.len(),
             result.success_count,
             result.failure_count,
             result.privileged as u8,
@@ -490,11 +509,15 @@ impl ShellScene {
                 } else {
                     "Moved to Trash"
                 },
-                paths_task_summary(&completion.paths),
+                paths_task_summary(paths),
                 result.privileged,
             )
         };
-        self.finish_task_status(completion.task_id, status);
+        if let Some(task_id) = task_id {
+            self.finish_task_status(task_id, status);
+        } else {
+            self.record_task_status(status);
+        }
 
         if !result.changed() {
             return Ok(result);
@@ -507,13 +530,13 @@ impl ShellScene {
         self.create_dialog = None;
         self.rename_dialog = None;
         self.rubber_band = None;
-        if let Some(pane) = completion.clear_selection_pane
+        if let Some(pane) = clear_selection_pane
             && let Some(selection) = self.pane_selection_mut(pane)
         {
             selection.clear();
         }
         if let Some(affected_dir) = self
-            .pane_state(completion.pane_to_reload)
+            .pane_state(pane_to_reload)
             .map(|state| state.path.clone())
         {
             self.reload_panes_showing_path(&affected_dir, size)?;
