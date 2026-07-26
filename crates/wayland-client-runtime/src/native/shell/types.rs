@@ -174,6 +174,18 @@ pub enum NativeShellEvent {
     OutputRemoved {
         output: u32,
     },
+    /// A `wl_seat` was bound (hotplug or late global).
+    SeatAdded {
+        seat: u32,
+        name: Option<String>,
+        has_keyboard: bool,
+        has_pointer: bool,
+        has_touch: bool,
+    },
+    /// Registry `global_remove` for a previously bound `wl_seat`.
+    SeatRemoved {
+        seat: u32,
+    },
     SurfaceOutputEnter {
         surface: NativeSurfaceId,
         output: u32,
@@ -379,6 +391,8 @@ pub struct NativeCapabilities {
     pub viewporter: bool,
     pub cursor_shape: bool,
     pub seat: bool,
+    /// Number of currently bound seats (multi-seat compositors may be > 1).
+    pub seat_count: u32,
     pub pointer: bool,
     pub keyboard: bool,
     pub touch: bool,
@@ -617,6 +631,8 @@ pub struct NativeShellState {
     pub(crate) seats: HashMap<u32, SeatRecord>,
     /// `wl_seat` protocol id → registry global name.
     pub(crate) seat_objects: HashMap<u32, u32>,
+    /// Primary seat changed (hotplug); rebind data-device / text-input after dispatch.
+    pub(crate) pending_primary_seat_rebind: bool,
     /// Primary-seat keyboard (mirrors first seat that has keyboard).
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     /// Primary-seat pointer.
@@ -879,6 +895,7 @@ impl Default for NativeShellState {
             seat: None,
             seats: HashMap::new(),
             seat_objects: HashMap::new(),
+            pending_primary_seat_rebind: false,
             keyboard: None,
             pointer: None,
             touch: None,
@@ -1036,6 +1053,8 @@ impl NativeShellState {
     }
 
     /// Register a newly bound seat as primary if none yet, always store in `seats`.
+    ///
+    /// Emits [`NativeShellEvent::SeatAdded`] after insert.
     pub(crate) fn register_seat(&mut self, global_name: u32, seat: wl_seat::WlSeat) {
         let proto = seat.id().protocol_id();
         self.seat_objects.insert(proto, global_name);
@@ -1054,6 +1073,71 @@ impl NativeShellState {
                 touch: None,
             },
         );
+        self.push(NativeShellEvent::SeatAdded {
+            seat: global_name,
+            name: None,
+            has_keyboard: false,
+            has_pointer: false,
+            has_touch: false,
+        });
+    }
+
+    /// Tear down a seat removed from the registry (devices released with proxy drop).
+    pub(crate) fn unregister_seat(&mut self, global_name: u32) {
+        let Some(rec) = self.seats.remove(&global_name) else {
+            return;
+        };
+        self.seat_objects
+            .retain(|_, name| *name != global_name);
+
+        let was_primary = self
+            .seat
+            .as_ref()
+            .is_some_and(|s| s.id() == rec.seat.id());
+
+        // Drop capability devices; proxies are destroyed when rec drops.
+        drop(rec.keyboard);
+        drop(rec.pointer);
+        drop(rec.touch);
+
+        if was_primary {
+            // Promote another seat if available, else clear primary fields.
+            if let Some((_, next)) = self.seats.iter().next() {
+                self.seat = Some(next.seat.clone());
+                self.keyboard = next.keyboard.clone();
+                self.pointer = next.pointer.clone();
+                self.touch = next.touch.clone();
+                self.seat_capabilities = next.capabilities;
+            } else {
+                self.seat = None;
+                self.keyboard = None;
+                self.pointer = None;
+                self.touch = None;
+                self.seat_capabilities = wl_seat::Capability::empty();
+                // Clear touch tracking when the last seat vanishes.
+                if !self.touch_active.is_empty() || !self.touch_pending.is_empty() {
+                    self.touch_pending.clear();
+                    self.touch_active.clear();
+                    self.touch_points.clear();
+                    self.push(NativeShellEvent::TouchCancel);
+                }
+            }
+            // Gestures / constraints were bound to the old primary pointer.
+            self.swipe_gesture = None;
+            self.pinch_gesture = None;
+            self.hold_gesture = None;
+            self.relative_pointer = None;
+            self.locked_pointer = None;
+            self.confined_pointer = None;
+            self.gesture_surface = None;
+            // Seat-scoped devices must rebind to the new primary (or clear).
+            self.data_device = None;
+            self.primary_device = None;
+            self.text_input = None;
+            self.pending_primary_seat_rebind = true;
+        }
+
+        self.push(NativeShellEvent::SeatRemoved { seat: global_name });
     }
 
     /// Borrow the content `wl_surface` for any role (toplevel / popup / layer).

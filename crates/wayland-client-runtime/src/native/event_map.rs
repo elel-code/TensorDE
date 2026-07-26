@@ -22,7 +22,7 @@ use crate::pointer_constraints::{PointerConstraint, PointerConstraintEvent};
 use crate::output::{OutputEvent, OutputId, OutputInfo};
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
-    RelativePointerEvent,
+    RelativePointerEvent, SeatEvent, SeatId, SeatInfo,
 };
 
 /// Bidirectional id map for native ↔ public surface identifiers.
@@ -713,6 +713,22 @@ pub fn map_native_event_full(
         NativeShellEvent::OutputRemoved { output } => {
             Some(Event::Output(OutputEvent::Removed(OutputId::from_raw(output))))
         }
+        NativeShellEvent::SeatAdded {
+            seat,
+            name,
+            has_keyboard,
+            has_pointer,
+            has_touch,
+        } => Some(Event::Seat(SeatEvent::Added(SeatInfo {
+            id: SeatId::from_raw(seat),
+            name,
+            has_keyboard,
+            has_pointer,
+            has_touch,
+        }))),
+        NativeShellEvent::SeatRemoved { seat } => {
+            Some(Event::Seat(SeatEvent::Removed(SeatId::from_raw(seat))))
+        }
         NativeShellEvent::OutputGeometry {
             output,
             x,
@@ -884,6 +900,36 @@ mod tests {
         };
         // Without seat, serial-bearing touch events are dropped.
         assert!(map_native_event_full(event.clone(), &mut map, None, &mut map_state).is_none());
+    }
+
+    #[test]
+    fn maps_seat_added_and_removed() {
+        let mut map = SurfaceIdMap::new();
+        let added = map_native_event(
+            NativeShellEvent::SeatAdded {
+                seat: 7,
+                name: Some("seat0".into()),
+                has_keyboard: true,
+                has_pointer: true,
+                has_touch: false,
+            },
+            &mut map,
+        )
+        .expect("seat added maps");
+        match added {
+            Event::Seat(SeatEvent::Added(info)) => {
+                assert_eq!(info.id.get(), 7);
+                assert_eq!(info.name.as_deref(), Some("seat0"));
+                assert!(info.has_keyboard && info.has_pointer && !info.has_touch);
+            }
+            other => panic!("expected Seat::Added, got {other:?}"),
+        }
+        let removed = map_native_event(NativeShellEvent::SeatRemoved { seat: 7 }, &mut map)
+            .expect("seat removed maps");
+        match removed {
+            Event::Seat(SeatEvent::Removed(id)) => assert_eq!(id.get(), 7),
+            other => panic!("expected Seat::Removed, got {other:?}"),
+        }
     }
 
     #[test]

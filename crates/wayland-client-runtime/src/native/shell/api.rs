@@ -352,18 +352,22 @@ impl NativeShell {
             fractional_scale: self.state.fractional_manager.is_some(),
             viewporter: self.state.viewporter.is_some(),
             cursor_shape: self.state.cursor_shape_manager.is_some(),
-            seat: self.state.seat.is_some(),
+            seat: self.state.seat.is_some() || !self.state.seats.is_empty(),
+            seat_count: self.state.seats.len() as u32,
             pointer: self.state.pointer.is_some()
+                || self.state.seats.values().any(|s| s.pointer.is_some())
                 || self
                     .state
                     .seat_capabilities
                     .contains(wayland_client::protocol::wl_seat::Capability::Pointer),
             keyboard: self.state.keyboard.is_some()
+                || self.state.seats.values().any(|s| s.keyboard.is_some())
                 || self
                     .state
                     .seat_capabilities
                     .contains(wayland_client::protocol::wl_seat::Capability::Keyboard),
             touch: self.state.touch.is_some()
+                || self.state.seats.values().any(|s| s.touch.is_some())
                 || self
                     .state
                     .seat_capabilities
@@ -1415,6 +1419,10 @@ impl NativeShell {
 
     /// Apply deferred CSD work that cannot run inside `Dispatch` handlers.
     fn after_dispatch(&mut self) -> Result<(), NativeError> {
+        if self.state.pending_primary_seat_rebind {
+            self.state.pending_primary_seat_rebind = false;
+            self.rebind_primary_seat_devices();
+        }
         if self.state.pending_blur_replay {
             self.state.pending_blur_replay = false;
             let _ = self.apply_pending_blur_all();
@@ -1512,6 +1520,44 @@ impl NativeShell {
     #[inline]
     pub fn pending_event_count(&self) -> usize {
         self.state.events.len()
+    }
+
+    /// Re-create seat-scoped protocol objects after primary seat changes.
+    fn rebind_primary_seat_devices(&mut self) {
+        let qh = self.queue.handle();
+        let Some(seat) = self.state.seat.clone() else {
+            return;
+        };
+        if self.state.data_device.is_none() {
+            if let Some(manager) = self.state.data_device_manager.as_ref() {
+                self.state.data_device = Some(manager.get_data_device(&seat, &qh, ()));
+            }
+        }
+        if self.state.primary_device.is_none() {
+            if let Some(manager) = self.state.primary_selection_manager.as_ref() {
+                self.state.primary_device = Some(manager.get_device(&seat, &qh, ()));
+            }
+        }
+        if self.state.text_input.is_none() {
+            if let Some(tim) = self.state.text_input_manager.as_ref() {
+                self.state.text_input = Some(tim.get_text_input(&seat, &qh, ()));
+            }
+        }
+        // Recreate pointer gestures on the new primary pointer if present.
+        if let Some(pointer) = self.state.pointer.clone() {
+            if let Some(manager) = self.state.pointer_gestures.as_ref() {
+                if self.state.swipe_gesture.is_none() {
+                    self.state.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
+                }
+                if self.state.pinch_gesture.is_none() {
+                    self.state.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
+                }
+                if manager.version() >= 3 && self.state.hold_gesture.is_none() {
+                    self.state.hold_gesture = Some(manager.get_hold_gesture(&pointer, &qh, ()));
+                }
+            }
+        }
+        self.connection.mark_dirty();
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = NativeShellEvent> + '_ {

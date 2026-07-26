@@ -26,6 +26,15 @@ pub struct SeatInfo {
     pub has_touch: bool,
 }
 
+/// Seat hotplug (registry `global` / `global_remove` for `wl_seat`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeatEvent {
+    /// A seat was bound (devices may still be empty until capabilities arrive).
+    Added(SeatInfo),
+    /// A previously bound seat was removed from the registry.
+    Removed(SeatId),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum CursorIcon {
     ColResize,

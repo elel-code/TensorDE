@@ -126,7 +126,7 @@ pub use native::{
     native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,
     NativeError, NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry,
     NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, ProtocolClass,
-    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
+    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX, specs_in_class,
 };
 #[cfg(feature = "compio")]
 pub use native::NativeRuntime;
@@ -138,7 +138,7 @@ pub use event::{
     SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind,
 };
 pub use geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
-pub use input::{CursorIcon, InputSerial, InputSerialSource, SeatId, SeatInfo};
+pub use input::{CursorIcon, InputSerial, InputSerialSource, SeatEvent, SeatId, SeatInfo};
 pub use layer_shell::{
     LayerAnchor, LayerEdge, LayerKeyboardInteractivity, LayerMargins, LayerSurfaceAttributes,
     LayerSurfaceError, LayerSurfaceEvent, LayerSurfaceLayer, LayerSurfaceState,

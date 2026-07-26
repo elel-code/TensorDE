@@ -3,7 +3,8 @@ use bitflags::bitflags;
 use crate::{
     ActivationEvent, DndEvent, InputSerial, LayerSurfaceEvent, LogicalPosition, LogicalSize,
     OutputEvent, OutputId, PointerAxisSource, PointerAxisValue, PointerConstraintEvent,
-    PointerGestureEvent, RelativePointerEvent, SuggestedSize, SurfaceId, TextInputEvent,
+    PointerGestureEvent, RelativePointerEvent, SeatEvent, SuggestedSize, SurfaceId,
+    TextInputEvent,
 };
 
 bitflags! {
@@ -210,6 +211,8 @@ pub enum Event {
     Surface(SurfaceEvent),
     LayerSurface(LayerSurfaceEvent),
     Output(OutputEvent),
+    /// Seat hotplug (`wl_seat` registry add/remove).
+    Seat(SeatEvent),
     Activation(ActivationEvent),
     Pointer(PointerEvent),
     PointerGesture(PointerGestureEvent),

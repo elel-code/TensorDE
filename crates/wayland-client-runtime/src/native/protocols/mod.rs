@@ -71,11 +71,13 @@ pub struct ProtocolSpec {
     pub min_version: u32,
 }
 
-/// Fika-relevant globals, classified for the native migration.
+/// Globals this crate understands, classified by upstream stability.
 ///
 /// Order is documentation / discovery only; bind order is decided by
 /// dependency (compositor before surface roles, seat before text-input, …).
-pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
+///
+/// Alias: [`FIKA_PROTOCOL_MATRIX`] (historical name kept for compatibility).
+pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
     // —— core ——
     ProtocolSpec {
         interface: "wl_compositor",
@@ -205,9 +207,12 @@ pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
     },
 ];
 
+/// Historical alias for [`PROTOCOL_MATRIX`] (Fika workspace name).
+pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = PROTOCOL_MATRIX;
+
 /// Filter the matrix by class (for phased implementation).
 pub fn specs_in_class(class: ProtocolClass) -> impl Iterator<Item = &'static ProtocolSpec> {
-    FIKA_PROTOCOL_MATRIX
+    PROTOCOL_MATRIX
         .iter()
         .filter(move |spec| spec.class == class)
 }
@@ -218,18 +223,20 @@ mod tests {
 
     #[test]
     fn matrix_covers_core_and_xdg() {
-        assert!(FIKA_PROTOCOL_MATRIX
+        assert!(PROTOCOL_MATRIX
             .iter()
             .any(|s| s.interface == "wl_compositor" && s.class == ProtocolClass::Core));
-        assert!(FIKA_PROTOCOL_MATRIX
+        assert!(PROTOCOL_MATRIX
             .iter()
             .any(|s| s.interface == "xdg_wm_base" && s.class == ProtocolClass::Stable));
-        assert!(FIKA_PROTOCOL_MATRIX.iter().any(|s| {
+        assert!(PROTOCOL_MATRIX.iter().any(|s| {
             s.interface == "wp_fractional_scale_manager_v1" && s.class == ProtocolClass::Staging
         }));
-        assert!(FIKA_PROTOCOL_MATRIX
+        assert!(PROTOCOL_MATRIX
             .iter()
             .any(|s| s.interface == "zwlr_layer_shell_v1" && s.class == ProtocolClass::Community));
+        // Alias stays in lockstep.
+        assert_eq!(PROTOCOL_MATRIX.len(), FIKA_PROTOCOL_MATRIX.len());
     }
 
     #[test]

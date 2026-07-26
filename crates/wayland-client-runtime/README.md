@@ -8,8 +8,9 @@ Native protocol code is organized like **wayland-protocols / Smithay**:
 `core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
 (`src/native/protocols/`).
 
-The crate is developed in the Fika workspace but is general-purpose: no
-Fika-specific model or renderer dependency.
+The crate is developed in the Fika workspace but is **general-purpose**: no
+Fika-specific model or renderer dependency. Other Wayland clients (panels,
+wallpapers, terminals, tools) can depend on it with or without Compio.
 
 ## Features
 
@@ -72,6 +73,8 @@ and is passed to `wgpu::Instance::create_surface`.
 | Data transfer | Clipboard and DnD share one MIME-content model, runtime connection, seat/serial state, data devices and pipe I/O; application-specific formats stay in the application |
 | Drag and drop | Handles incoming/outgoing offers, action negotiation and lifecycle events; optional RGBA previews use owned SHM drag-icon surfaces |
 | Input | Translates framed multi-touch, keyboard, pointer, and touchpad gesture events into crate-owned values; preserves continuous, discrete, value120, source, stop, and relative-direction axis data; uses cursor-shape when available and falls back to the system cursor theme |
+| Seats / outputs | Binds every `wl_seat` and `wl_output`; seat/output hotplug events; `seats()` / `outputs_into()`; primary-seat compat for single-seat APIs; presentation and frame request coalescing |
+| GPU present | Bufferless toplevel/layer surfaces + raw-window-handle 0.6 for Vulkan/wgpu; `SurfaceRegion` opaque/input; `request_frame` / presentation feedback; dmabuf feedback and import helpers |
 | Pointer capture | Implements `zwp_pointer_constraints_v1` confinement/locking and lazily creates `zwp_relative_pointer_v1` only for subscribed or locked surfaces |
 | Pointer gestures | Implements `zwp_pointer_gestures_v1` swipe, pinch/pan/rotation, and v3 hold lifecycles with per-seat objects and surface-safe routing |
 | Text input | Implements seat-scoped `zwp_text_input_v3`, atomic preedit/commit/delete batches, retained editor state, UTF-8 byte offsets, content hints and cursor rectangles |

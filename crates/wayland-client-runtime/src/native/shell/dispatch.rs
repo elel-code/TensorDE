@@ -107,6 +107,9 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
                     state.output_objects.retain(|_, n| *n != name);
                     state.push(NativeShellEvent::OutputRemoved { output: name });
                 }
+                if state.seats.contains_key(&name) {
+                    state.unregister_seat(name);
+                }
             }
             _ => {}
         }
