@@ -157,6 +157,5 @@ fn draw_command(pipeline_index: u32) -> SceneGpuDrawCommand {
         skinning_byte_offset: 0,
         skinning_byte_count: 0,
         scissor: None,
-        alpha_coverage_scissors: Vec::new(),
     }
 }

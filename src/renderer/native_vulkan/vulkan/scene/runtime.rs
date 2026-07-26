@@ -60,7 +60,6 @@ use super::super::present::swapchain::{
     queue_flag_labels, select_vulkanalia_present_queue, swapchain_create_flag_labels,
 };
 
-mod alpha_coverage_scissor;
 mod command_order;
 mod composite_scissor;
 mod descriptor_layout;
@@ -95,11 +94,9 @@ mod scene_viewport;
 use present_loop::with_scene_present;
 use resource_setup::*;
 
-use alpha_coverage_scissor::scene_alpha_coverage_scissors;
 use command_order::scene_command_order;
 use draw_recording::{
-    SceneGpuDrawCommand, SceneGpuGraphDrawRange, SceneGpuScissor, draw_range_count,
-    scene_color_draw_ranges,
+    SceneGpuDrawCommand, SceneGpuGraphDrawRange, draw_range_count, scene_color_draw_ranges,
 };
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
 use frame_context::{
@@ -264,9 +261,6 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub composite_scissor_draw_count: usize,
     pub composite_scissor_covered_pixels: u64,
     pub composite_scissor_avoided_pixels: u64,
-    pub alpha_coverage_scissor_draw_count: usize,
-    pub alpha_coverage_scissor_segment_count: usize,
-    pub alpha_coverage_scissor_pixels: u64,
     pub scene_pipeline_count: usize,
     pub mesh_draw_count: usize,
     pub particle_instance_capacity: u64,
@@ -677,7 +671,6 @@ fn scene_descriptor_plan_inputs(
     layout: &ScenePipelineDescriptorLayout,
     pipeline_indices: &[u32],
     disabled_pipeline_indices: &[Option<u32>],
-    alpha_coverage_scissors: &[Vec<SceneGpuScissor>],
 ) -> (
     Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     Vec<SceneGpuDrawCommand>,
@@ -741,10 +734,6 @@ fn scene_descriptor_plan_inputs(
             skinning_byte_offset,
             skinning_byte_count,
             scissor: None,
-            alpha_coverage_scissors: alpha_coverage_scissors
-                .get(index)
-                .cloned()
-                .unwrap_or_default(),
         });
     }
     (resources, commands)

@@ -112,16 +112,6 @@ pub(super) fn create_scene_gpu_resources(
     let draw_count = backend_plan.rendering_device_graph.mesh_draws.len();
     let include_fullscreen_utility =
         graph_uses_fullscreen_utility_primitive(&backend_plan.rendering_device_graph);
-    let alpha_coverage_scissors =
-        if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_FULL_ALPHA_COVERAGE_TARGET").is_some() {
-            vec![Vec::new(); draw_count]
-        } else {
-            scene_alpha_coverage_scissors(
-                storage,
-                &backend_plan.rendering_device_graph,
-                [extent.width, extent.height],
-            )
-        };
     let vertex_payload = pack_scene_vertices(storage, include_fullscreen_utility);
     let index_payload = pack_scene_indices(storage, include_fullscreen_utility);
     let transform_payload = pack_scene_draw_uniforms(
@@ -243,7 +233,6 @@ pub(super) fn create_scene_gpu_resources(
         &descriptor_layout,
         &pipeline_indices,
         &disabled_pipeline_indices,
-        &alpha_coverage_scissors,
     );
     let particle_global_descriptor_base = particle_resources::append_global_descriptor_plan(
         &mut resource_descriptors,

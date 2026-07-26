@@ -804,22 +804,6 @@ pub(super) fn with_scene_present(
                         .contains(&"device-local"),
             )
         });
-    let alpha_coverage_scissor_draw_count = scene_resources
-        .draw_commands
-        .iter()
-        .filter(|draw| !draw.alpha_coverage_scissors.is_empty())
-        .count();
-    let alpha_coverage_scissor_segment_count = scene_resources
-        .draw_commands
-        .iter()
-        .map(|draw| draw.alpha_coverage_scissors.len())
-        .sum();
-    let alpha_coverage_scissor_pixels = scene_resources
-        .draw_commands
-        .iter()
-        .flat_map(|draw| &draw.alpha_coverage_scissors)
-        .map(|scissor| u64::from(scissor.extent[0]) * u64::from(scissor.extent[1]))
-        .sum();
     let mesh_draw_recorded = mesh_draw_count > 0;
     let command_order = scene_command_order(
         scene_resources.descriptor_layout.sampled_slots.is_empty(),

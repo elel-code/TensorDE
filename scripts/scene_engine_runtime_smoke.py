@@ -210,15 +210,6 @@ def main() -> int:
             "composite_scissor_avoided_pixels": report["present"].get(
                 "composite_scissor_avoided_pixels", 0
             ),
-            "alpha_coverage_scissor_draw_count": report["present"].get(
-                "alpha_coverage_scissor_draw_count", 0
-            ),
-            "alpha_coverage_scissor_segment_count": report["present"].get(
-                "alpha_coverage_scissor_segment_count", 0
-            ),
-            "alpha_coverage_scissor_pixels": report["present"].get(
-                "alpha_coverage_scissor_pixels", 0
-            ),
             "frame_state_update_total_micros": report["present"].get(
                 "frame_state_update_total_micros", 0
             ),

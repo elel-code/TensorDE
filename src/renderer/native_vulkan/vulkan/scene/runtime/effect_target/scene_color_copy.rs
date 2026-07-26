@@ -400,7 +400,6 @@ mod tests {
             skinning_byte_offset: 0,
             skinning_byte_count: 0,
             scissor: scissor.map(|(offset, extent)| SceneGpuScissor { offset, extent }),
-            alpha_coverage_scissors: Vec::new(),
         }
     }
 
