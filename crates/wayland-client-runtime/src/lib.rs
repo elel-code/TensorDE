@@ -1,14 +1,19 @@
-//! A Wayland-native client runtime built on Smithay Client Toolkit.
+//! A Wayland-native client runtime.
 //!
 //! The crate deliberately exposes Wayland concepts instead of reproducing a
 //! cross-platform window API. Protocol objects and their parent/child ordering
 //! are owned by [`Runtime`]; renderers receive [`SurfaceHandle`] values that
 //! implement raw-window-handle 0.6 for both wgpu and direct Vulkan use.
+//!
+//! **Migration:** the long-term backend is Compio + a native protocol stack
+//! (see `ARCHITECTURE.md`). Phase 1 exposes Compio display readiness while
+//! protocol handling still uses SCTK/calloop for compatibility.
 
 mod activation;
 mod blur;
 pub mod clipboard;
 pub mod data_transfer;
+mod display_io;
 mod dnd;
 mod event;
 mod fractional_scale;
@@ -32,6 +37,7 @@ pub use activation::{
 };
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
+pub use display_io::DisplayReadiness;
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,
 };

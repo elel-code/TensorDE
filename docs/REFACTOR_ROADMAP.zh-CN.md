@@ -481,6 +481,58 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
 - D-Bus / 文件操作 / helper binaries 可在 Compio 或 async-io executor 上运行。
 - 回归：`cargo test`、`scripts/check-rust-file-lines.sh`。
 
+### 6d. wayland-client-runtime：剥离 SCTK + Compio 异步后端（主任务）
+
+目标（性能优先、架构优先）：
+
+- **去掉** `smithay-client-toolkit` / calloop 回调式 `Dispatch`/`Handler` 状态机。
+- 用 **Compio** 作为唯一异步执行与 I/O 模型：`async`/`await` 同步书写，
+  `wl_display` fd、pipe、文件与 shell 任务同一 executor。
+- 保留 crate **公共语义面**（`Runtime` / `SurfaceId` / `Event` / capabilities），
+  Fika `platform_*` 只换 dispatch 入口，不改业务事件映射。
+
+原则：
+
+- 协议 wire 优先成熟绑定（`wayland-client` / protocols），自研 **shell/seat/状态机**，
+  不复制 SCTK 内部结构。
+- 禁止重新引入 Tokio 作为第二 runtime。
+- 双轨迁移：SCTK 实现可暂时共存；native backend 覆盖 Fika 路径后再删除 SCTK。
+- 完成标准以 **性能路径清晰 + 架构边界清晰 + 回归** 为准，不做兼容性双 API 永久化。
+
+目标运行形态：
+
+```text
+compio executor
+  └─ await display readable (PollOnce / PollFd)
+  └─ decode + state machine (no SCTK Handler callbacks)
+  └─ Event queue → Fika async loop (linear await)
+  └─ same executor: file transfer / trash / timers
+```
+
+阶段：
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 0 | 架构文档、API 冻结意图、依赖矩阵 | 进行中 |
+| 1 | Compio `DisplayReadiness` + `dispatch_pending` / `wait_display_readable` | 进行中 |
+| 2 | 核心 shell 自研：registry/compositor/shm/xdg/seat/xkb | 未开始 |
+| 3 | data_device、fractional_scale、text_input、gestures… | 未开始 |
+| 4 | 删除 SCTK/calloop；README/UPSTREAM 更新 | 未开始 |
+
+已完成（Phase 1 起点）：
+
+- `crates/wayland-client-runtime/ARCHITECTURE.md` 记录目标分层与迁移规则。
+- `display_io::DisplayReadiness`：对 `wl_display` fd 的 Compio `PollFd` 可读等待。
+- `Runtime::wait_display_readable` / `dispatch_pending`：async 等待 + 非阻塞派发，
+  现有 `dispatch`（calloop）仍为 Fika 默认路径。
+
+完成标准：
+
+- `Cargo.toml` 无 `smithay-client-toolkit` / calloop。
+- 主循环可在 Compio runtime 上 `await` 事件，无需 calloop。
+- Fika：`cargo check` / `cargo test` / 行数门禁；examples smoke 在有 display 时可用。
+- 性能：无双 reactor；热路径少分配；事件队列可复用 drain。
+
 ### 7. Test Fixture Builder
 
 目标：减少测试直接构造 `ShellScene` 字段导致的迁移成本。
@@ -503,17 +555,10 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
 
 ## 当前推荐顺序
 
-1. Command / Action 层后续：把 pointer move / drag route 继续收敛到 snapshot +
-   planner，并开始把 effect 返回值统一成 action outcome。
-2. Async operation dispatcher：优先承接 trash / paste / drop / create / rename 等文件
-   操作，把 completion 也映射为 action outcome；runtime 已是 Compio-first（见 6b）。
-3. Animation registry 后续：delete 动画、reflow 启动点返回 outcome、location shine
-   经 action 层调度；继续收缩直接 `request_redraw` 旁路。
-4. Render surface / frame pipeline。
-5. ShellScene hit testing 模块化。
-6. Test fixture builder 穿插进行。
-7. Render dirty / damage 后续收敛穿插进行。
-8. Runtime 后续：可选把 process/time 再收紧到 compio feature；保持无直接 Tokio 依赖。
+1. **主任务：wayland-client-runtime §6d** — SCTK 剥离 + Compio 后端（性能/架构优先）。
+2. Fika Command / Action、animation、render、hit-testing 与 fixture 在 runtime 迁移
+   间隙穿插，避免阻塞 native shell 落地。
+3. Runtime 后续：process/time 可继续收紧到 compio feature；禁止重新引入 Tokio。
 
 ## 每步提交前验证
 

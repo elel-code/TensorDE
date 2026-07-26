@@ -114,6 +114,9 @@ impl Runtime {
             .insert(event_loop.handle())
             .map_err(|error| RuntimeError::EventLoop(error.to_string()))?;
         let wake = WakeHandle(event_loop.get_signal());
+        let display_readiness = crate::DisplayReadiness::from_as_fd(&connection).map_err(
+            |error| RuntimeError::EventLoop(format!("display readiness: {error}")),
+        )?;
 
         Ok(Self {
             connection,
@@ -122,6 +125,7 @@ impl Runtime {
             state,
             wake,
             capabilities,
+            display_readiness,
         })
     }
 
@@ -161,9 +165,34 @@ impl Runtime {
     }
 
     /// Wait for and dispatch protocol events. `None` waits indefinitely.
+    ///
+    /// Uses calloop (transitional). Prefer [`Self::wait_display_readable`] +
+    /// [`Self::dispatch_pending`] on a Compio executor when integrating async.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
         self.event_loop
             .dispatch(timeout, &mut self.state)
+            .map_err(|error| RuntimeError::EventLoop(error.to_string()))
+    }
+
+    /// Await readability on the Wayland display fd (Compio).
+    ///
+    /// Must run inside a Compio runtime. After this returns, call
+    /// [`Self::dispatch_pending`] to process queued protocol messages without
+    /// blocking on calloop's wait.
+    pub async fn wait_display_readable(&self) -> Result<(), RuntimeError> {
+        self.display_readiness
+            .wait_readable()
+            .await
+            .map_err(|error| RuntimeError::EventLoop(error.to_string()))
+    }
+
+    /// Dispatch already-available protocol events without blocking.
+    ///
+    /// Intended for the Compio path: `wait_display_readable().await` then
+    /// `dispatch_pending()`. Safe to call when no events are ready.
+    pub fn dispatch_pending(&mut self) -> Result<(), RuntimeError> {
+        self.event_loop
+            .dispatch(Some(Duration::ZERO), &mut self.state)
             .map_err(|error| RuntimeError::EventLoop(error.to_string()))
     }
 

@@ -4,15 +4,18 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
-description = "A Wayland-native client protocol, surface, and event runtime built on SCTK"
+description = "A Wayland-native client protocol, surface, and event runtime (migrating from SCTK to Compio)"
 readme = "README.md"
 repository = "https://github.com/elel-code/fika"
 documentation = "https://docs.rs/wayland-client-runtime"
-keywords = ["wayland", "sctk", "windowing", "wgpu", "vulkan"]
+keywords = ["wayland", "compio", "windowing", "wgpu", "vulkan"]
 categories = ["gui", "os::linux-apis"]
 
 [dependencies]
 bitflags = "2"
+# Compio drives display-fd readiness (Phase 1); protocol state still uses SCTK
+# until the native shell migration completes.
+compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"] }
 raw-window-handle = "0.6"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "system", "xkbcommon"] }
 thiserror = "2"

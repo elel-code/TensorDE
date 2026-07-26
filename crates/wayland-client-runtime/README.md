@@ -1,8 +1,14 @@
 # wayland-client-runtime
 
 `wayland-client-runtime` is a Wayland-only client protocol, surface and event
-layer built on Smithay Client Toolkit (SCTK). It intentionally models Wayland
-roles instead of imitating a cross-platform `Window` API.
+layer. It intentionally models Wayland roles instead of imitating a
+cross-platform `Window` API.
+
+**Backend migration (in progress):** the long-term stack is **Compio + a native
+protocol implementation** (no SCTK/calloop callbacks). See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and Fika roadmap §6d. Today protocol state
+still uses SCTK; display-fd readiness already uses Compio
+(`Runtime::wait_display_readable` / `dispatch_pending`).
 
 The crate is currently developed in the Fika workspace. Its public API is
 general-purpose and contains no Fika-specific model or renderer dependency.
@@ -11,7 +17,7 @@ general-purpose and contains no Fika-specific model or renderer dependency.
 
 | Area | Public behavior |
 | --- | --- |
-| Connection/event loop | Owns the Wayland connection, event queue and calloop dispatcher; exposes an owned event queue and cross-thread wake handle |
+| Connection/event loop | Owns the Wayland connection and event queue; calloop dispatch remains for compatibility; Compio can await display readability |
 | Toplevels | Creates xdg-toplevel surfaces, reports configure/close/frame/scale events, and starts compositor-driven move, eight-edge resize, and window-menu interactions |
 | Dialogs | Creates parented xdg-dialog-v1 surfaces with modality; falls back to a parented xdg-toplevel when unsupported |
 | Activation | Exports and consumes `xdg-activation-v1` tokens, carries optional app/seat/serial context, and supports coalesced user-attention requests |
