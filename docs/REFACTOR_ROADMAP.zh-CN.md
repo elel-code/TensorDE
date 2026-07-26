@@ -534,11 +534,12 @@ compio executor
   - `protocols/core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
   - `ProtocolClass` + `FIKA_PROTOCOL_MATRIX` 标注 interface 与可选性
   - 实现落在对应类别目录，避免扁平 Handler 堆叠
-- **`NativeShell`（无 SCTK，已可用）**：
+- **`NativeShell`（无 SCTK，已可用且持续丰富）**：
   - 绑定 `wl_compositor` / `wl_shm` / `xdg_wm_base` / 可选 `wl_seat`
-  - `create_toplevel` + memfd 实色 buffer；configure/close/keyboard 事件队列
+  - 可选 `wp_viewporter` + `wp_fractional_scale_manager_v1`（buffer_scale=1）
+  - `create_toplevel` + memfd 实色 buffer；configure/close/scale/pointer/keyboard
   - Compio `pump_once`；example `native_toplevel_smoke`
-  - 待丰富：pointer、popup、fractional scale、data_device、与 Fika Runtime 合流
+  - 待丰富：popup、cursor_shape、text_input、data_device、与 Fika Runtime 合流
 
 完成标准：
 

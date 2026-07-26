@@ -41,6 +41,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             return;
                         }
                     }
+                    NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
+                        println!("scale {id:?} factor={factor:.3}");
+                    }
+                    NativeShellEvent::PointerEnter { surface: id, x, y }
+                    | NativeShellEvent::PointerMotion { surface: id, x, y } => {
+                        println!("pointer {id:?} @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::PointerLeave { surface: id } => {
+                        println!("pointer leave {id:?}");
+                    }
+                    NativeShellEvent::PointerButton {
+                        button,
+                        pressed,
+                        ..
+                    } => {
+                        println!("pointer button={button} pressed={pressed}");
+                    }
+                    NativeShellEvent::PointerAxis {
+                        horizontal,
+                        vertical,
+                        ..
+                    } => {
+                        println!("pointer axis h={horizontal:.2} v={vertical:.2}");
+                    }
                 }
             }
             if configured {
