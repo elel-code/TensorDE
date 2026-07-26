@@ -236,6 +236,9 @@ impl EventLoop {
                 Ok(())
             }
             Event::Touch(_) => Ok(()),
+            // Dmabuf feedback/buffer lifecycle is for explicit GPU import paths;
+            // Fika presents via wgpu/RWH today and does not consume these yet.
+            Event::Dmabuf(_) => Ok(()),
             Event::Dnd(event) => {
                 self.dispatch_dnd_event(app, event);
                 Ok(())

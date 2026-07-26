@@ -209,6 +209,8 @@ pub enum Event {
     TextInput(TextInputEvent),
     Touch(TouchEvent),
     Dnd(DndEvent),
+    /// Linux dmabuf feedback / buffer lifecycle (`zwp_linux_dmabuf_v1`).
+    Dmabuf(crate::dmabuf::DmabufEvent),
 }
 
 /// Contiguous pending-event storage optimized for append-and-drain batches.

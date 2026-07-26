@@ -23,7 +23,8 @@ bitflags = "2"
 compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"], optional = true }
 raw-window-handle = "0.6"
 # Safe syscall wrappers (eventfd, memfd, seals, fcntl nonblock).
-rustix = { version = "1", default-features = false, features = ["event", "fs", "std"] }
+# `mm` maps linux-dmabuf format tables (and other mmap needs) without memmap2.
+rustix = { version = "1", default-features = false, features = ["event", "fs", "mm", "std"] }
 thiserror = "2"
 # `system` exposes ObjectId::as_ptr for raw-window-handle / wgpu.
 wayland-client = { version = "0.31", features = ["system"] }

@@ -8,3 +8,5 @@
 //! - `wp_viewporter` — fractional-scale destination
 //! - `wp_presentation` — presentation-time feedback
 //!   ([`NativeShell::request_presentation_feedback`])
+//! - `zwp_linux_dmabuf_v1` — GPU zero-copy buffers + feedback
+//!   ([`NativeShell::create_dmabuf_buffer`], feedback APIs)

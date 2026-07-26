@@ -88,6 +88,7 @@ mod activation {
 mod blur;
 pub mod clipboard;
 pub mod data_transfer;
+pub mod dmabuf;
 #[cfg(feature = "compio")]
 mod display_io;
 mod dnd;
@@ -114,6 +115,10 @@ pub use activation::{
 };
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
+pub use dmabuf::{
+    DmabufBufferFlags, DmabufBufferId, DmabufBufferParams, DmabufEvent, DmabufFeedback,
+    DmabufFeedbackTranche, DmabufFormat, DmabufPlane, DmabufTrancheFlags,
+};
 #[cfg(feature = "compio")]
 pub use display_io::{CompioFdReady, DisplayReadiness};
 pub use native::{

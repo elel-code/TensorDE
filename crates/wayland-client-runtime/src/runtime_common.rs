@@ -44,6 +44,10 @@ pub struct RuntimeCapabilities {
     pub primary_selection: bool,
     /// `zwp_idle_inhibit_manager_v1` (screensaver / idle inhibit).
     pub idle_inhibit: bool,
+    /// `zwp_linux_dmabuf_v1` (GPU zero-copy buffers).
+    pub linux_dmabuf: bool,
+    /// Bound linux-dmabuf protocol version (0 if unbound).
+    pub linux_dmabuf_version: u32,
 }
 
 #[derive(Debug, thiserror::Error)]

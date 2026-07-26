@@ -322,6 +322,22 @@ pub enum NativeShellEvent {
         kind: u8,
         active: bool,
     },
+    /// Default or surface-scoped dmabuf feedback (`zwp_linux_dmabuf_feedback_v1.done`).
+    DmabufFeedback {
+        /// `None` = default feedback; `Some` = surface-scoped feedback.
+        surface: Option<NativeSurfaceId>,
+        feedback: crate::dmabuf::DmabufFeedback,
+    },
+    /// Async `zwp_linux_buffer_params_v1.created`.
+    DmabufBufferCreated {
+        id: crate::dmabuf::DmabufBufferId,
+    },
+    /// Async `zwp_linux_buffer_params_v1.failed`.
+    DmabufBufferFailed,
+    /// Compositor released a dmabuf-backed `wl_buffer` (may be reused / destroyed).
+    DmabufBufferReleased {
+        id: crate::dmabuf::DmabufBufferId,
+    },
 }
 
 /// Positioner inputs for native `xdg_popup` creation.
@@ -383,6 +399,10 @@ pub struct NativeCapabilities {
     pub primary_selection: bool,
     /// `zwp_idle_inhibit_manager_v1` (screensaver / idle inhibit).
     pub idle_inhibit: bool,
+    /// `zwp_linux_dmabuf_v1` (GPU zero-copy buffers).
+    pub linux_dmabuf: bool,
+    /// Bound linux-dmabuf protocol version (0 if unbound).
+    pub linux_dmabuf_version: u32,
 }
 
 /// In-flight presentation feedback object metadata.
@@ -449,6 +469,30 @@ pub(crate) struct ToplevelRecord {
     pub(crate) logical_h: u32,
     pub(crate) scale_factor: f64,
     pub(crate) title: String,
+}
+
+/// In-progress feedback object assembly (one per feedback proxy).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DmabufFeedbackBuild {
+    pub(crate) main_device: u64,
+    pub(crate) formats: Vec<crate::dmabuf::DmabufFormat>,
+    pub(crate) tranches: Vec<crate::dmabuf::DmabufFeedbackTranche>,
+}
+
+/// In-progress tranche for a feedback proxy.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingDmabufTranche {
+    pub(crate) device: u64,
+    pub(crate) flags: crate::dmabuf::DmabufTrancheFlags,
+    pub(crate) formats: Vec<u16>,
+}
+
+/// Live dmabuf-backed `wl_buffer` owned by the shell.
+pub(crate) struct DmabufBufferRecord {
+    pub(crate) buffer: wl_buffer::WlBuffer,
+    /// Params object that created this buffer (destroyed after create/failed).
+    #[allow(dead_code)]
+    pub(crate) params_proto: Option<u32>,
 }
 
 /// One compositor touch event held until `wl_touch.frame` (or Weston workaround).
@@ -580,6 +624,43 @@ pub struct NativeShellState {
         NativeSurfaceId,
         wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
     >,
+    /// `zwp_linux_dmabuf_v1` global (version 3+; Mesa needs ≥3).
+    pub(crate) linux_dmabuf: Option<
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+    >,
+    /// Bound protocol version (0 if unbound).
+    pub(crate) linux_dmabuf_version: u32,
+    /// Legacy format/modifier pairs from v3 `modifier` events (empty on v4+).
+    pub(crate) dmabuf_modifiers: Vec<crate::dmabuf::DmabufFormat>,
+    /// Default feedback object (v4+), if requested.
+    pub(crate) dmabuf_default_feedback_obj: Option<
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+    >,
+    /// Latest completed default feedback snapshot.
+    pub(crate) dmabuf_default_feedback: Option<crate::dmabuf::DmabufFeedback>,
+    /// feedback protocol id → surface (None tracked separately as default).
+    pub(crate) dmabuf_feedback_surfaces: HashMap<u32, NativeSurfaceId>,
+    /// Live surface-scoped feedback proxies.
+    pub(crate) dmabuf_surface_feedback_objs: HashMap<
+        NativeSurfaceId,
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+    >,
+    /// Latest completed surface feedback.
+    pub(crate) dmabuf_surface_feedback: HashMap<NativeSurfaceId, crate::dmabuf::DmabufFeedback>,
+    /// In-progress feedback builds keyed by feedback proxy protocol id.
+    pub(crate) dmabuf_feedback_pending: HashMap<u32, DmabufFeedbackBuild>,
+    /// In-progress tranche keyed by feedback proxy protocol id.
+    pub(crate) dmabuf_tranche_pending: HashMap<u32, PendingDmabufTranche>,
+    /// Live params objects (protocol id → proxy) awaiting create/failed.
+    pub(crate) dmabuf_params: HashMap<
+        u32,
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+    >,
+    /// Imported dmabuf buffers.
+    pub(crate) dmabuf_buffers: HashMap<u64, DmabufBufferRecord>,
+    /// `wl_buffer` protocol id → dmabuf buffer id.
+    pub(crate) dmabuf_buffer_by_proto: HashMap<u32, u64>,
+    pub(crate) next_dmabuf_buffer_id: u64,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
@@ -770,6 +851,20 @@ impl Default for NativeShellState {
             primary_offer_mimes: HashMap::new(),
             idle_inhibit_manager: None,
             idle_inhibitors: HashMap::new(),
+            linux_dmabuf: None,
+            linux_dmabuf_version: 0,
+            dmabuf_modifiers: Vec::new(),
+            dmabuf_default_feedback_obj: None,
+            dmabuf_default_feedback: None,
+            dmabuf_feedback_surfaces: HashMap::new(),
+            dmabuf_surface_feedback_objs: HashMap::new(),
+            dmabuf_surface_feedback: HashMap::new(),
+            dmabuf_feedback_pending: HashMap::new(),
+            dmabuf_tranche_pending: HashMap::new(),
+            dmabuf_params: HashMap::new(),
+            dmabuf_buffers: HashMap::new(),
+            dmabuf_buffer_by_proto: HashMap::new(),
+            next_dmabuf_buffer_id: 1,
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,

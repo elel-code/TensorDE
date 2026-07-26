@@ -741,6 +741,21 @@ pub fn map_native_event_full(
                 scale_factor: factor,
             })))
         }
+        NativeShellEvent::DmabufFeedback { surface, feedback } => {
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::Feedback {
+                surface: surface.map(|s| surfaces.intern(s)),
+                feedback,
+            }))
+        }
+        NativeShellEvent::DmabufBufferCreated { id } => {
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferCreated { id }))
+        }
+        NativeShellEvent::DmabufBufferFailed => {
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferFailed))
+        }
+        NativeShellEvent::DmabufBufferReleased { id } => {
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferReleased { id }))
+        }
         // ActivationToken is correlated in NativeRuntime::drain_events_into.
         // Selection / primary selection mime lists remain internal until apps
         // request a receive (same model as clipboard).

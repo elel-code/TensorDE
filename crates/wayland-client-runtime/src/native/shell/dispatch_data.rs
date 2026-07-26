@@ -568,6 +568,42 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_linux_dmabuf_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        if !shell.has_linux_dmabuf() {
+            return;
+        }
+        assert!(shell.capabilities().linux_dmabuf);
+        let ver = shell.linux_dmabuf_version().expect("version");
+        assert!(ver >= 3);
+        // v4+: request default feedback (events may arrive after more dispatch).
+        if ver >= 4 {
+            shell
+                .request_dmabuf_default_feedback()
+                .expect("default feedback");
+            let _ = shell.dispatch_pending();
+            // Feedback is optional timing-wise; just ensure no panic.
+            let _ = shell.dmabuf_default_feedback();
+        }
+        // v3: modifiers may be populated after roundtrip; presence is enough.
+        let _ = shell.dmabuf_modifiers();
+        let id = shell
+            .create_toplevel_gpu("dmabuf", "dev.fika.Dmabuf", 100, 100)
+            .expect("toplevel");
+        if ver >= 4 {
+            let _ = shell.request_dmabuf_surface_feedback(id);
+            let _ = shell.dispatch_pending();
+        }
+        // Invalid params must fail client-side without contacting the compositor.
+        let bad = crate::dmabuf::DmabufBufferParams::new(0, 0, 0x34325241);
+        assert!(shell.create_dmabuf_buffer(bad).is_err());
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_idle_inhibit_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

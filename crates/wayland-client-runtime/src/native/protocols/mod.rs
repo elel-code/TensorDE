@@ -123,6 +123,12 @@ pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Stable,
         min_version: 1,
     },
+    ProtocolSpec {
+        // Stable linux-dmabuf-v1; bind versions 3..=5 (Mesa needs ≥3, feedback ≥4).
+        interface: "zwp_linux_dmabuf_v1",
+        class: ProtocolClass::Stable,
+        min_version: 3,
+    },
     // —— unstable (still widely deployed) ——
     ProtocolSpec {
         interface: "zwp_primary_selection_device_manager_v1",

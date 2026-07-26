@@ -155,13 +155,22 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for NativeShellState {
 
 impl Dispatch<wl_buffer::WlBuffer, ()> for NativeShellState {
     fn event(
-        _: &mut Self,
-        _: &wl_buffer::WlBuffer,
-        _: wl_buffer::Event,
+        state: &mut Self,
+        buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        // SHM / icon buffers ignore release; dmabuf-backed ones notify the app.
+        if matches!(event, wl_buffer::Event::Release) {
+            let proto = buffer.id().protocol_id();
+            if let Some(&id) = state.dmabuf_buffer_by_proto.get(&proto) {
+                state.push(NativeShellEvent::DmabufBufferReleased {
+                    id: crate::dmabuf::DmabufBufferId(id),
+                });
+            }
+        }
     }
 }
 

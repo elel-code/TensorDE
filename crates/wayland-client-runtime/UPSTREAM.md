@@ -78,6 +78,22 @@ oversized region clipped by the compositor because a NULL region means
 - Behavior: create/destroy per-surface inhibitors; destroy on surface teardown;
   `set_fullscreen(true)` best-effort enables inhibit, `false` releases it.
 
+## Linux dmabuf
+
+- Protocol: stable `zwp_linux_dmabuf_v1` (bind versions 3..=5; Mesa needs ≥3)
+- SCTK module: `dmabuf` in `smithay-client-toolkit` 0.21
+- Behavior retained:
+  - v3: collect `modifier` events; ignore legacy `format` (duplicated by modifiers)
+  - v4+: default + surface feedback (`format_table` mmap, main device, tranches)
+  - `create_params` → async `create` / `create_immed` → owned `wl_buffer`
+  - buffer `release` events for dmabuf-backed buffers only
+  - surface destroy drops surface-scoped feedback objects
+- Public API: `DmabufBufferParams` / `DmabufFeedback` / `create_dmabuf_buffer` /
+  `attach_dmabuf_buffer` / feedback request helpers; events via `Event::Dmabuf`.
+- Format-table mapping uses `rustix::mm` (no `memmap2`). wgpu/Vulkan still
+  present through RWH; this path is for explicit client-owned dmabuf import
+  (scan-out, multi-GPU, custom allocators).
+
 ## Core data-device and cursor behavior
 
 DnD source/offer negotiation follows the `wl_data_device` protocol and SCTK
