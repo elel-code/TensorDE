@@ -7,9 +7,9 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, WindowHandle,
 };
-use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
-use smithay_client_toolkit::reexports::client::{Connection, Proxy};
-use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Connection, Proxy};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgSurface;
 use smithay_client_toolkit::shell::xdg::dialog::Dialog;
@@ -176,7 +176,7 @@ impl ProtocolSurface {
     pub(crate) fn xdg_surface(
         &self,
     ) -> Option<
-        &smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_surface::XdgSurface,
+        &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
     > {
         match self {
             Self::Toplevel(window) | Self::FallbackDialog(window) => Some(window.xdg_surface()),
@@ -189,7 +189,7 @@ impl ProtocolSurface {
     pub(crate) fn xdg_toplevel(
         &self,
     ) -> Option<
-        &smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
+        &wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
     >{
         match self {
             Self::Toplevel(window) | Self::FallbackDialog(window) => Some(window.xdg_toplevel()),

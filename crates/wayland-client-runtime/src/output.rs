@@ -40,7 +40,7 @@ pub enum OutputEvent {
 mod sctk_map {
     use super::*;
     use smithay_client_toolkit::output::{OutputInfo as SctkOutputInfo, OutputState};
-    use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
+    use wayland_client::protocol::wl_output::WlOutput;
 
     pub(crate) fn output_info(state: &OutputState, output: &WlOutput) -> Option<OutputInfo> {
         let info = state.info(output)?;

@@ -1,12 +1,12 @@
 use crate::{InputSerial, SurfaceId};
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::reexports::client::globals::{BindError, GlobalList};
-use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
+use wayland_client::globals::{BindError, GlobalList};
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
     Event as ActivationTokenEvent, XdgActivationTokenV1,
 };
-use smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
+use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
 
 /// Correlates an asynchronous xdg-activation token response with its request.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

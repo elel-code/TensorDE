@@ -58,22 +58,22 @@ use smithay_client_toolkit::error::GlobalError;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::{EventLoop as CalloopEventLoop, LoopSignal};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
-use smithay_client_toolkit::reexports::client::backend::ObjectId;
-use smithay_client_toolkit::reexports::client::globals::{GlobalList, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::wl_data_device_manager::DndAction as WlDndAction;
-use smithay_client_toolkit::reexports::client::protocol::{
+use wayland_client::backend::ObjectId;
+use wayland_client::globals::{GlobalList, registry_queue_init};
+use wayland_client::protocol::wl_data_device_manager::DndAction as WlDndAction;
+use wayland_client::protocol::{
     wl_data_device, wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
     wl_touch,
 };
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::{
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::xdg::shell::client::{
     xdg_positioner, xdg_toplevel,
 };
-use smithay_client_toolkit::reexports::protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
-use smithay_client_toolkit::reexports::protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
-use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
-use smithay_client_toolkit::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
-use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::Capability as BackgroundEffectCapability;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::Capability as BackgroundEffectCapability;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardData, KeyboardHandler, Modifiers as SctkModifiers, RawModifiers,

@@ -3,11 +3,11 @@ use std::sync::Mutex;
 
 use bitflags::bitflags;
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::reexports::client::globals::{BindError, GlobalList};
-use smithay_client_toolkit::reexports::client::protocol::{wl_seat, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
-use smithay_client_toolkit::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
+use wayland_client::globals::{BindError, GlobalList};
+use wayland_client::protocol::{wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     ChangeCause, ContentHint, ContentPurpose, Event as ProtocolEvent, ZwpTextInputV3,
 };
 

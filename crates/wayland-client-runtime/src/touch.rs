@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::reexports::client::protocol::{wl_seat, wl_touch};
-use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
+use wayland_client::protocol::{wl_seat, wl_touch};
+use wayland_client::{Connection, QueueHandle};
 
 use crate::SurfaceId;
 

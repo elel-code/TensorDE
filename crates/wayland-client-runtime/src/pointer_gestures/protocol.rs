@@ -2,19 +2,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::reexports::client::globals::{BindError, GlobalList};
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_seat, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::{
+use wayland_client::globals::{BindError, GlobalList};
+use wayland_client::protocol::{wl_pointer, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::{
     Event as HoldProtocolEvent, ZwpPointerGestureHoldV1,
 };
-use smithay_client_toolkit::reexports::protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::{
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::{
     Event as PinchProtocolEvent, ZwpPointerGesturePinchV1,
 };
-use smithay_client_toolkit::reexports::protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_swipe_v1::{
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_swipe_v1::{
     Event as SwipeProtocolEvent, ZwpPointerGestureSwipeV1,
 };
-use smithay_client_toolkit::reexports::protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
 
 use super::event::{PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent};
 use crate::{InputSerial, InputSerialSource, SurfaceId};

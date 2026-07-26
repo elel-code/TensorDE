@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::reexports::client::globals::{BindError, GlobalList};
-use smithay_client_toolkit::reexports::client::protocol::wl_shm;
-use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
-use smithay_client_toolkit::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::{
+use wayland_client::globals::{BindError, GlobalList};
+use wayland_client::protocol::wl_shm;
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
+use wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::{
     Event as ManagerEvent, XdgToplevelIconManagerV1,
 };
-use smithay_client_toolkit::reexports::protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_v1::XdgToplevelIconV1;
+use wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_v1::XdgToplevelIconV1;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::Shm;
 

@@ -1,15 +1,15 @@
 use smithay_client_toolkit::error::GlobalError;
 use smithay_client_toolkit::globals::GlobalData;
-use smithay_client_toolkit::reexports::client::globals::GlobalList;
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_region, wl_surface};
-use smithay_client_toolkit::reexports::client::{Dispatch, Proxy, QueueHandle};
-use smithay_client_toolkit::reexports::protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
-use smithay_client_toolkit::reexports::protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
-use smithay_client_toolkit::reexports::protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::{
+use wayland_client::globals::GlobalList;
+use wayland_client::protocol::{wl_pointer, wl_region, wl_surface};
+use wayland_client::{Dispatch, Proxy, QueueHandle};
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::{
     Lifetime, ZwpPointerConstraintsV1,
 };
-use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
-use smithay_client_toolkit::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
 use smithay_client_toolkit::seat::pointer_constraints::{
     PointerConstraintData, PointerConstraintsState,
 };

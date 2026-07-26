@@ -2,6 +2,7 @@
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+#[cfg(feature = "sctk")]
 use std::thread;
 
 #[cfg(feature = "sctk")]

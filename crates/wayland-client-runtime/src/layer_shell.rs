@@ -2,9 +2,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bitflags::bitflags;
-use smithay_client_toolkit::reexports::client::globals::{BindError, GlobalList};
-use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
-use smithay_client_toolkit::reexports::client::{Dispatch, Proxy, QueueHandle};
+use wayland_client::globals::{BindError, GlobalList};
+use wayland_client::protocol::{wl_output, wl_surface};
+use wayland_client::{Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::{LogicalSize, OutputId, SuggestedSize, SurfaceId};

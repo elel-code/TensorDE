@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat;
-use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::{
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_protocols::xdg::shell::client::xdg_toplevel::{
     ResizeEdge as WireResizeEdge, XdgToplevel,
 };
 
