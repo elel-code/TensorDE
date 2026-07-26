@@ -10,6 +10,7 @@ mod tests {
     include!("tests/dnd_hover_target_can_be_updated_and_cleared_from_retained_hit_testing.rs");
     include!("tests/folder_preview_role_draw_rect_keeps_aspect_inside_folder_shell_slot.rs");
     include!("tests/folder_preview_role_rasterizes_chinese_named_jpeg_when_video_is_present.rs");
+    include!("tests/icon_dmabuf_slot_upload_smoke.rs");
     include!("tests/icon_raster_cache_reuses_closest_size_for_zoom_transition.rs");
     include!("tests/location_draft_replaces_completes_and_cancels.rs");
     include!("tests/open_with_chooser_builds_launch_plan_for_selected_application.rs");

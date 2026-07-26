@@ -545,17 +545,52 @@ impl<'a> IconFrameBuilder<'a> {
         screen: ViewRect,
         layer: IconDrawLayer,
     ) {
+        self.push_raster_draw(raster, rect, screen, layer, None);
+    }
+
+    /// Attach a dmabuf plane to a new unique raster slot (scheme C zero-copy path).
+    ///
+    /// If the raster is already slotted this frame, the plane is dropped and the
+    /// existing slot is reused (CPU path already owns that GPU texture key).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn push_raster_with_dmabuf(
+        &mut self,
+        raster: IconRaster,
+        rect: ViewRect,
+        screen: ViewRect,
+        layer: IconDrawLayer,
+        plane: crate::shell::render::dmabuf::DmabufImportPlane,
+    ) {
+        self.push_raster_draw(
+            raster,
+            rect,
+            screen,
+            layer,
+            Some(IconDmabufSource { plane }),
+        );
+    }
+
+    fn push_raster_draw(
+        &mut self,
+        raster: IconRaster,
+        rect: ViewRect,
+        screen: ViewRect,
+        layer: IconDrawLayer,
+        dmabuf: Option<IconDmabufSource>,
+    ) {
         // Scheme C: one GPU texture per unique raster (deduped within the frame).
         let padded_raster = padded_icon_atlas_raster(&raster);
         let raster_key = IconAtlasRasterKey::from_raster(&padded_raster);
         let slot = if let Some(&slot) = self.slot_by_raster.get(&raster_key) {
+            // Already have a slot for this raster; drop extra plane.
+            drop(dmabuf);
             slot
         } else {
             let slot = self.slots.len() as u32;
             self.slots.push(IconGpuSlot {
                 key: raster_key.clone(),
                 raster: padded_raster.clone(),
-                dmabuf: None,
+                dmabuf,
             });
             self.slot_by_raster.insert(raster_key, slot);
             slot

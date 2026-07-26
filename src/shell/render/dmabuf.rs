@@ -358,6 +358,80 @@ pub(crate) fn upload_rgba8_texture(
     ))
 }
 
+/// Allocate a single-plane linear ARGB8888 dmabuf via `/dev/udmabuf` when available.
+///
+/// Used by smoke tests and diagnostics. Returns `(fd, stride_bytes)`.
+/// Fails (returns `None`) if the node is missing, sealed memfd fails, or
+/// the process lacks permission.
+#[cfg(test)]
+pub(crate) fn try_allocate_udmabuf_argb8888(
+    width: u32,
+    height: u32,
+) -> Option<(std::os::fd::OwnedFd, u32)> {
+    use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
+    use std::fs::{File, OpenOptions};
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::io::AsRawFd;
+    use std::path::Path;
+
+    if !Path::new("/dev/udmabuf").exists() {
+        return None;
+    }
+    let stride = width.checked_mul(4)?;
+    let size = (stride as u64)
+        .checked_mul(height as u64)?
+        .max(4096)
+        .next_multiple_of(4096);
+
+    let memfd =
+        memfd_create("fika-dmabuf", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).ok()?;
+    let mut file = File::from(memfd);
+    file.set_len(size).ok()?;
+    // Solid opaque red in little-endian ARGB8888 (B,G,R,A).
+    let pixel = [0u8, 0, 255, 255];
+    let row = pixel.repeat(width as usize);
+    for y in 0..height {
+        file.seek(SeekFrom::Start(u64::from(y) * u64::from(stride)))
+            .ok()?;
+        file.write_all(&row).ok()?;
+    }
+    fcntl_add_seals(&file, SealFlags::SHRINK | SealFlags::SEAL).ok()?;
+
+    #[repr(C)]
+    struct UdmabufCreate {
+        memfd: u32,
+        flags: u32,
+        offset: u64,
+        size: u64,
+    }
+    // Linux uapi: _IOW('u', 0x42, struct udmabuf_create) → 0x40187542.
+    const UDMABUF_CREATE: std::os::raw::c_ulong = 0x4018_7542;
+    let ud = OpenOptions::new().read(true).write(true).open("/dev/udmabuf").ok()?;
+    let arg = UdmabufCreate {
+        memfd: file.as_raw_fd() as u32,
+        flags: 0,
+        offset: 0,
+        size,
+    };
+    unsafe extern "C" {
+        fn ioctl(
+            fd: std::os::raw::c_int,
+            request: std::os::raw::c_ulong,
+            ...
+        ) -> std::os::raw::c_int;
+    }
+    // SAFETY: UDMABUF_CREATE returns a new dmabuf fd on success.
+    let dmabuf_raw = unsafe { ioctl(ud.as_raw_fd(), UDMABUF_CREATE, &arg) };
+    drop(file);
+    drop(ud);
+    if dmabuf_raw < 0 {
+        return None;
+    }
+    // SAFETY: kernel returned a fresh owned fd.
+    Some((unsafe { OwnedFd::from_raw_fd(dmabuf_raw) }, stride))
+}
+
 /// Prefer dmabuf import when a plan + plane are available; otherwise CPU upload.
 ///
 /// This is the business-facing entry point for external content (video frames,
@@ -516,8 +590,6 @@ pub(crate) fn import_dmabuf_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::{FromRawFd, OwnedFd};
-    use std::os::unix::io::AsRawFd;
 
     #[test]
     fn fourcc_maps_common_formats() {
@@ -636,74 +708,9 @@ mod tests {
         ext.texture.destroy();
     }
 
-    /// Allocate a single-plane linear ARGB8888 dmabuf via `/dev/udmabuf` when available.
-    fn try_udmabuf_argb8888(width: u32, height: u32) -> Option<(OwnedFd, u32)> {
-        use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
-        use std::fs::{File, OpenOptions};
-        use std::io::{Seek, SeekFrom, Write};
-        use std::path::Path;
-
-        if !Path::new("/dev/udmabuf").exists() {
-            return None;
-        }
-        let stride = width.checked_mul(4)?;
-        let size = (stride as u64)
-            .checked_mul(height as u64)?
-            .max(4096)
-            .next_multiple_of(4096);
-
-        let memfd =
-            memfd_create("fika-dmabuf-test", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)
-                .ok()?;
-        let mut file = File::from(memfd);
-        file.set_len(size).ok()?;
-        // Solid opaque red in little-endian ARGB8888 (B,G,R,A bytes).
-        let pixel = [0u8, 0, 255, 255];
-        let row = pixel.repeat(width as usize);
-        for y in 0..height {
-            file.seek(SeekFrom::Start(u64::from(y) * u64::from(stride)))
-                .ok()?;
-            file.write_all(&row).ok()?;
-        }
-        fcntl_add_seals(&file, SealFlags::SHRINK | SealFlags::SEAL).ok()?;
-
-        #[repr(C)]
-        struct UdmabufCreate {
-            memfd: u32,
-            flags: u32,
-            offset: u64,
-            size: u64,
-        }
-        // Linux uapi: _IOW('u', 0x42, struct udmabuf_create) → 0x40187542.
-        const UDMABUF_CREATE: std::os::raw::c_ulong = 0x4018_7542;
-        let ud = OpenOptions::new().read(true).write(true).open("/dev/udmabuf").ok()?;
-        let arg = UdmabufCreate {
-            memfd: file.as_raw_fd() as u32,
-            flags: 0,
-            offset: 0,
-            size,
-        };
-        unsafe extern "C" {
-            fn ioctl(
-                fd: std::os::raw::c_int,
-                request: std::os::raw::c_ulong,
-                ...
-            ) -> std::os::raw::c_int;
-        }
-        // SAFETY: UDMABUF_CREATE returns a new dmabuf fd on success.
-        let dmabuf_raw = unsafe { ioctl(ud.as_raw_fd(), UDMABUF_CREATE, &arg) };
-        drop(file);
-        drop(ud);
-        if dmabuf_raw < 0 {
-            return None;
-        }
-        // SAFETY: kernel returned a fresh owned fd.
-        Some((unsafe { OwnedFd::from_raw_fd(dmabuf_raw) }, stride))
-    }
-
     #[test]
     fn import_udmabuf_into_wgpu_when_available() {
-        let Some((fd, stride)) = try_udmabuf_argb8888(64, 64) else {
+        let Some((fd, stride)) = try_allocate_udmabuf_argb8888(64, 64) else {
             eprintln!("skip: /dev/udmabuf unavailable or permission denied");
             return;
         };
