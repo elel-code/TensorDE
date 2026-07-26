@@ -8,7 +8,7 @@ use wayland_client::backend::WaylandError;
 
 use crate::display_io::DisplayReadiness;
 
-/// Errors from the SCTK-free connection path.
+/// Errors from the native Wayland connection path.
 #[derive(Debug)]
 pub enum NativeError {
     Connect(String),
@@ -48,10 +48,10 @@ impl From<wayland_client::DispatchError> for NativeError {
     }
 }
 
-/// SCTK-free connection + Compio display readiness.
+/// Native connection + Compio display readiness (io_uring completion).
 ///
-/// This is the foundation for replacing calloop: readiness is awaited on
-/// Compio; protocol reads use `Connection::prepare_read` / `read`.
+/// Readiness is awaited on Compio; protocol reads use
+/// `Connection::prepare_read` / `read`.
 pub struct NativeConnection {
     connection: Connection,
     readiness: DisplayReadiness,

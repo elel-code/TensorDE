@@ -234,6 +234,11 @@ impl NativeShell {
         &self.connection
     }
 
+    /// Compio readiness for the display connection (io_uring completion).
+    pub fn readiness(&self) -> &DisplayReadiness {
+        &self.readiness
+    }
+
     pub fn has_fractional_scale(&self) -> bool {
         self.state.fractional_manager.is_some() && self.state.viewporter.is_some()
     }

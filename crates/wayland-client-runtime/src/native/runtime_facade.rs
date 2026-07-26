@@ -1,14 +1,17 @@
 //! Fika-facing facade over [`NativeShell`].
 //!
-//! Exposes the public runtime API used by the platform event loop and common
-//! shell interactions (move/resize/menu, capture, DnD, icons, blur, CSD).
+//! I/O waits use Compio's completion model (io_uring via [`PollFd`]), not a
+//! blocking `poll(2)` loop. The public [`Self::dispatch`] API stays synchronous
+//! by driving a dedicated Compio runtime with `block_on`.
 
 use std::collections::HashMap;
-use std::os::fd::AsRawFd;
+use std::future::poll_fn;
+use std::task::Poll;
 use std::time::Duration;
 
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 
+use crate::display_io::DisplayReadiness;
 use crate::event::Event;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::CursorIcon;
@@ -28,7 +31,15 @@ use crate::{
     TextInputState, ToplevelIcon,
 };
 
-/// Native Compio-free shell wrapped for Fika's event loop.
+/// Which readiness source completed a Compio wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaitSource {
+    Display,
+    Wake,
+    Timeout,
+}
+
+/// Native shell wrapped for Fika's event loop, driven by Compio.
 pub struct NativeRuntime {
     shell: NativeShell,
     surfaces: SurfaceIdMap,
@@ -38,7 +49,11 @@ pub struct NativeRuntime {
     activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
     next_activation_request_id: u64,
     wake: std::sync::Arc<EventFdWake>,
+    /// Compio readiness on a clone of the wake eventfd.
+    wake_readiness: DisplayReadiness,
     wake_handle: WakeHandle,
+    /// Owns the io_uring proactor used for display/wake waits.
+    compio: compio::runtime::Runtime,
     capabilities: RuntimeCapabilities,
     public_events: Vec<Event>,
 }
@@ -51,7 +66,11 @@ impl NativeRuntime {
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
+        let wake_readiness = DisplayReadiness::from_as_fd(wake.as_ref())
+            .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake_handle = WakeHandle::from_event_fd(wake.clone());
+        let compio = compio::runtime::Runtime::new()
+            .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         Ok(Self {
             shell,
             surfaces: SurfaceIdMap::new(),
@@ -60,7 +79,9 @@ impl NativeRuntime {
             activation_pending: HashMap::new(),
             next_activation_request_id: 1,
             wake,
+            wake_readiness,
             wake_handle,
+            compio,
             capabilities: RuntimeCapabilities {
                 fractional_scale: caps.fractional_scale && caps.viewporter,
                 cursor_shape: caps.cursor_shape,
@@ -126,7 +147,11 @@ impl NativeRuntime {
         target.append(&mut self.public_events);
     }
 
-    /// Poll display + wake fd. `None` waits indefinitely.
+    /// Drive Wayland I/O with Compio completion waits.
+    ///
+    /// * `None` — wait until the display is readable or a [`WakeHandle`] fires.
+    /// * `Some(0)` — flush/dispatch only; never block on the proactor.
+    /// * `Some(d)` — wait up to `d` via Compio timers + io_uring readiness.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
         self.shell
             .connection()
@@ -134,40 +159,46 @@ impl NativeRuntime {
             .map_err(map_native_error)?;
         let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
 
-        let display_fd = self.shell.connection().as_fd().as_raw_fd();
-        let wake_fd = self.wake.as_raw_fd();
+        // Zero-timeout: only process already-queued protocol state.
+        if matches!(timeout, Some(d) if d.is_zero()) {
+            return Ok(());
+        }
 
-        let mut pollfds = [
-            libc::pollfd {
-                fd: display_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: wake_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        let timeout_ms = match timeout {
-            None => -1,
-            Some(d) if d.is_zero() => 0,
-            Some(d) => d.as_millis().min(i32::MAX as u128) as i32,
+        // Classic client pattern: prepare_read before waiting so the queue is
+        // locked against concurrent dispatch while the proactor sleeps.
+        let prepared = self.shell.connection().connection().prepare_read();
+        let Some(guard) = prepared else {
+            let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
+            return Ok(());
         };
-        // SAFETY: poll on two valid fds owned by this process.
-        let n = unsafe { libc::poll(pollfds.as_mut_ptr(), 2, timeout_ms) };
-        if n < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                return Ok(());
+
+        // Partial borrows: Compio runtime + readiness handles without aliasing.
+        let source = {
+            let display = self.shell.readiness();
+            let wake = &self.wake_readiness;
+            let compio = &self.compio;
+            compio.block_on(async {
+                let race = race_display_or_wake(display, wake);
+                match timeout {
+                    None => race.await,
+                    Some(duration) => match compio::runtime::time::timeout(duration, race).await {
+                        Ok(result) => result,
+                        Err(_elapsed) => Ok(WaitSource::Timeout),
+                    },
+                }
+            })?
+        };
+
+        match source {
+            WaitSource::Wake => {
+                // Drop the read guard without consuming socket data.
+                drop(guard);
+                self.wake.drain();
             }
-            return Err(RuntimeError::EventLoop(err.to_string()));
-        }
-        if pollfds[1].revents != 0 {
-            self.wake.drain();
-        }
-        if pollfds[0].revents != 0 {
-            if let Some(guard) = self.shell.connection().connection().prepare_read() {
+            WaitSource::Timeout => {
+                drop(guard);
+            }
+            WaitSource::Display => {
                 match guard.read() {
                     Ok(_) => {}
                     Err(wayland_client::backend::WaylandError::Io(err))
@@ -176,8 +207,8 @@ impl NativeRuntime {
                         return Err(RuntimeError::EventLoop(error.to_string()));
                     }
                 }
+                let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
             }
-            let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
         }
         Ok(())
     }
@@ -864,6 +895,29 @@ fn map_native_error(error: NativeError) -> RuntimeError {
         NativeError::Protocol(msg) => RuntimeError::Protocol(msg),
         NativeError::Io(msg) => RuntimeError::EventLoop(msg),
     }
+}
+
+/// Race display readability against the wake eventfd on Compio's proactor.
+async fn race_display_or_wake(
+    display: &DisplayReadiness,
+    wake: &DisplayReadiness,
+) -> Result<WaitSource, RuntimeError> {
+    poll_fn(|cx| {
+        // Prefer display so we drain compositor traffic when both are ready.
+        match display.poll_read_ready(cx) {
+            Poll::Ready(Ok(())) => return Poll::Ready(Ok(WaitSource::Display)),
+            Poll::Ready(Err(err)) => {
+                return Poll::Ready(Err(RuntimeError::EventLoop(err.to_string())));
+            }
+            Poll::Pending => {}
+        }
+        match wake.poll_read_ready(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(WaitSource::Wake)),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(RuntimeError::EventLoop(err.to_string()))),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }
 
 fn to_native_positioner(p: &PopupPositioner) -> Result<NativePopupPositioner, RuntimeError> {

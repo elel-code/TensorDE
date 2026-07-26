@@ -1,4 +1,4 @@
-// Fika uses NativeRuntime only (SCTK fully removed from this crate).
+// Fika uses NativeRuntime (Compio io_uring completion waits, no SCTK).
 /// Active protocol backend for the Fika event loop.
 struct PlatformBackend {
     inner: NativeRuntime,
@@ -11,10 +11,8 @@ impl PlatformBackend {
             .to_ascii_lowercase();
         if matches!(backend.as_str(), "sctk" | "smithay" | "legacy") {
             eprintln!(
-                "[fika-wayland] FIKA_WAYLAND_BACKEND={backend:?} ignored: SCTK path removed; using native"
+                "[fika-wayland] FIKA_WAYLAND_BACKEND={backend:?} ignored: native Compio backend only"
             );
-        } else {
-            eprintln!("[fika-wayland] backend=native (NativeShell, no SCTK)");
         }
         Ok(Self {
             inner: NativeRuntime::connect()?,

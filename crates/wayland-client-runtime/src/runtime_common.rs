@@ -98,7 +98,7 @@ pub enum RuntimeError {
     Protocol(String),
 }
 
-/// Thread-safe handle for interrupting a blocking native poll.
+/// Thread-safe handle for interrupting a Compio-driven native wait.
 #[derive(Clone, Debug)]
 pub struct WakeHandle(std::sync::Arc<crate::wake_fd::EventFdWake>);
 

@@ -1,25 +1,22 @@
-//! Compio-backed readiness for the Wayland display file descriptor.
+//! Compio (io_uring completion) readiness for Wayland-related file descriptors.
 //!
-//! Phase 1 of the SCTK → native migration: wait for display readability on the
-//! Compio executor without calloop. Protocol dispatch still uses the existing
-//! runtime path until Phase 2 replaces SCTK handlers.
-//!
-//! The readiness object holds a **duplicated** fd so it does not take ownership
-//! of the live [`wayland_client::Connection`].
+//! [`DisplayReadiness`] wraps [`compio::runtime::fd::PollFd`] so waits complete
+//! through the Compio proactor rather than a blocking `poll(2)` loop.
 
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
+use std::task::{Context, Poll};
 
 use compio::runtime::fd::PollFd;
 
-/// Compio poll handle for `wl_display` readability (and future write flush).
+/// Compio readiness handle for a cloned fd (display socket or eventfd).
 #[derive(Debug)]
 pub struct DisplayReadiness {
-    poll: PollFd<OwnedFd>,
+    poll: PollFd<std::os::fd::OwnedFd>,
 }
 
 impl DisplayReadiness {
-    /// Duplicate `source`'s fd and attach it to Compio's readiness poller.
+    /// Duplicate `source`'s fd and attach it to Compio's readiness proactor.
     pub fn from_as_fd(source: impl AsFd) -> io::Result<Self> {
         let owned = source.as_fd().try_clone_to_owned()?;
         Ok(Self {
@@ -27,14 +24,19 @@ impl DisplayReadiness {
         })
     }
 
-    /// Wait until the display fd is readable (messages available or hangup).
+    /// Wait until the fd is readable (messages available, hangup, or eventfd).
     ///
     /// Must be called from a Compio runtime context (`block_on` / task).
     pub async fn wait_readable(&self) -> io::Result<()> {
         self.poll.read_ready().await
     }
 
-    /// Wait until the display fd is writable (for future non-blocking flush).
+    /// Non-async poll for racing multiple readiness futures.
+    pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll.poll_read_ready(cx)
+    }
+
+    /// Wait until the fd is writable (for future non-blocking flush).
     pub async fn wait_writable(&self) -> io::Result<()> {
         self.poll.write_ready().await
     }

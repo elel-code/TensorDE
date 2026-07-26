@@ -17,7 +17,7 @@ pub struct PumpStep {
     pub did_read: bool,
 }
 
-/// Owns connection + registry and advances protocol I/O without calloop/SCTK.
+/// Owns connection + registry and advances protocol I/O on Compio.
 pub struct NativePump {
     connection: NativeConnection,
     registry: NativeRegistry,
@@ -47,8 +47,7 @@ impl NativePump {
 
     /// Flush, wait for display data if needed, read, and dispatch pending.
     ///
-    /// Must run on a Compio executor. This is the async shape future Fika main
-    /// loops will use once shell objects move off SCTK.
+    /// Must run on a Compio executor (io_uring completion waits).
     pub async fn pump_once(&mut self) -> Result<PumpStep, NativeError> {
         self.connection.flush()?;
 

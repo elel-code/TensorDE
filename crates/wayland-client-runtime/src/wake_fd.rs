@@ -1,4 +1,7 @@
-//! Eventfd-based wake for native (non-calloop) event loops.
+//! Eventfd-based wake for the native Compio event loop.
+//!
+//! Writes are safe from any thread. Readiness is observed on the event-loop
+//! thread through a cloned fd registered with Compio's io_uring proactor.
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -35,7 +38,7 @@ impl EventFdWake {
         let _ = nix_write_u64(self.fd.as_raw_fd(), one);
     }
 
-    /// Drain the eventfd counter after poll reports readable.
+    /// Drain the eventfd counter after Compio reports the wake fd readable.
     pub fn drain(&self) {
         let mut buf = [0u8; 8];
         loop {
