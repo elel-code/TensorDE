@@ -1,8 +1,7 @@
 //! Thin Fika-facing facade over [`NativeShell`].
 //!
-//! Mirrors the subset of SCTK [`crate::Runtime`] that the platform event loop
-//! needs for a basic toplevel + input + frame path. Full feature parity
-//! (dialogs, blur, icons, rich DnD) remains on the SCTK backend until ported.
+//! Mirrors SCTK [`crate::Runtime`] APIs used by the platform event loop and
+//! common shell interactions (move/resize/menu, capture, DnD, icons, blur).
 
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
@@ -463,6 +462,89 @@ impl NativeRuntime {
                 }
                 other => map_native_error(other),
             })
+    }
+
+    pub fn set_pointer_constraint_region(
+        &mut self,
+        surface: SurfaceId,
+        region: crate::PointerConstraintRegion,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        let mut capture = self
+            .shell
+            .state
+            .toplevels
+            .get(&native)
+            .map(|r| r.pointer_capture.clone())
+            .ok_or(RuntimeError::SurfaceNotFound(surface))?;
+        capture.region = region;
+        self.shell
+            .set_pointer_capture_state(native, capture)
+            .map_err(map_native_error)
+    }
+
+    pub fn set_locked_pointer_position_hint(
+        &mut self,
+        surface: SurfaceId,
+        position: (f64, f64),
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_locked_pointer_position_hint(native, position)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("not locked") => {
+                    RuntimeError::PointerNotLocked(surface)
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .begin_interactive_move(native)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("serial") => {
+                    RuntimeError::InvalidToplevelInteractionSerial
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn begin_interactive_resize(
+        &mut self,
+        surface: SurfaceId,
+        edge: crate::ResizeEdge,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .begin_interactive_resize(native, edge)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("serial") => {
+                    RuntimeError::InvalidToplevelInteractionSerial
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn show_window_menu(
+        &mut self,
+        surface: SurfaceId,
+        position: LogicalPosition,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .show_window_menu(native, position)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("serial") => {
+                    RuntimeError::InvalidToplevelInteractionSerial
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
+        self.shell.preferred_icon_sizes().to_vec()
     }
 
     pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {

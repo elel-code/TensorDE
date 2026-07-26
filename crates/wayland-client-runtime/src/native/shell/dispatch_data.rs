@@ -316,6 +316,25 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_interactive_apis_need_serial() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("move", "dev.fika.Move", 200, 200)
+            .expect("toplevel");
+        // Without input serial, interactive requests fail cleanly.
+        assert!(shell.begin_interactive_move(id).is_err());
+        assert!(shell
+            .begin_interactive_resize(id, crate::ResizeEdge::Right)
+            .is_err());
+        assert!(shell
+            .show_window_menu(id, crate::geometry::LogicalPosition::new(1, 1))
+            .is_err());
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_pointer_constraints_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

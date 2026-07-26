@@ -6,6 +6,7 @@
 mod api;
 mod api_chrome;
 mod api_constraints;
+mod api_interaction;
 mod api_surface;
 mod api_transfer;
 mod dispatch;
