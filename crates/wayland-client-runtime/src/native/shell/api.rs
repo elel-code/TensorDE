@@ -119,6 +119,14 @@ impl NativeShell {
         ) {
             state.layer_shell = Some(layer);
         }
+        if let Ok(dialog) = globals.bind::<
+            wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.xdg_wm_dialog = Some(dialog);
+        }
         if let Ok(act) =
             globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ())
         {
@@ -216,7 +224,12 @@ impl NativeShell {
                 .as_ref()
                 .is_some_and(|g| g.version() >= 3),
             relative_pointer: self.state.relative_pointer_manager.is_some(),
+            xdg_dialog: self.state.xdg_wm_dialog.is_some(),
         }
+    }
+
+    pub fn has_xdg_dialog(&self) -> bool {
+        self.state.xdg_wm_dialog.is_some()
     }
 
     /// Enable `zwp_relative_pointer_v1` for the seat pointer (unaccelerated motion).
@@ -609,6 +622,18 @@ impl NativeShell {
             let _ = self.destroy_popup(pid);
         }
 
+        // Also destroy child dialog toplevels that named us as parent.
+        let child_dialogs: Vec<_> = self
+            .state
+            .toplevels
+            .iter()
+            .filter(|(_, t)| t.parent == Some(id))
+            .map(|(&cid, _)| cid)
+            .collect();
+        for cid in child_dialogs {
+            let _ = self.destroy_toplevel(cid);
+        }
+
         let Some(record) = self.state.toplevels.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown surface {id:?}")));
         };
@@ -621,6 +646,9 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .remove(&record.wl.id().protocol_id());
+        if let Some(dialog) = record.dialog {
+            dialog.destroy();
+        }
         if let Some(ref frac) = record.fractional {
             self.state
                 .fractional_objects

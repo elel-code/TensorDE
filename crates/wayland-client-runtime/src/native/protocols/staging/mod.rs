@@ -7,4 +7,5 @@
 //!   viewporter destination + `buffer_scale = 1`
 //! - `cursor_shape` — `NativeShell::set_cursor_shape`
 //! - `xdg_activation` — `request_activation_token` / `activate_with_token`
-//! - Planned: `xdg_dialog`, `xdg_toplevel_icon`
+//! - `xdg_dialog` — `create_dialog_gpu` + `set_dialog_modal` when global present
+//! - Planned: `xdg_toplevel_icon`

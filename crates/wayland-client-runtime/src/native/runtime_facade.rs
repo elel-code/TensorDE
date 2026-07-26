@@ -58,6 +58,7 @@ impl NativeRuntime {
                 pointer_gestures_v1: caps.pointer_gestures,
                 pointer_gesture_hold_v1: caps.pointer_gesture_hold,
                 relative_pointer_v1: caps.relative_pointer,
+                xdg_dialog_v1: caps.xdg_dialog,
                 popup_reposition: false,
                 ..RuntimeCapabilities::default()
             },
@@ -161,23 +162,73 @@ impl NativeRuntime {
             .shell
             .create_toplevel_gpu(attributes.title, attributes.app_id, width, height)
             .map_err(map_native_error)?;
-        // Soft-apply min/max when present (xdg_toplevel requests not yet wired).
-        let _ = (attributes.min_size, attributes.max_size, attributes.decorations);
+        if let Some(min) = attributes.min_size {
+            let _ = self.shell.set_min_size(native, Some(min));
+        }
+        if let Some(max) = attributes.max_size {
+            let _ = self.shell.set_max_size(native, Some(max));
+        }
+        let _ = attributes.decorations; // CSD not on native path yet.
         let public = self.surfaces.intern(native);
         self.native_ids.insert(public, native);
         Ok(public)
     }
 
-    /// Dialog role is not on the native path yet; open a normal toplevel as fallback.
+    /// Parent a transient toplevel; uses `xdg_dialog_v1` modality when available.
     pub fn create_dialog(
         &mut self,
-        _parent: SurfaceId,
+        parent: SurfaceId,
         attributes: crate::DialogAttributes,
     ) -> Result<SurfaceId, RuntimeError> {
-        eprintln!(
-            "[fika-wayland] native backend: dialog falls back to toplevel (no xdg_dialog yet)"
-        );
-        self.create_toplevel(attributes.toplevel)
+        let parent_native = self.native(parent)?;
+        let width = attributes
+            .toplevel
+            .initial_size
+            .map(|s| s.width)
+            .filter(|&w| w > 0)
+            .or_else(|| {
+                attributes
+                    .toplevel
+                    .min_size
+                    .map(|s| s.width)
+                    .filter(|&w| w > 0)
+            })
+            .unwrap_or(480)
+            .max(1);
+        let height = attributes
+            .toplevel
+            .initial_size
+            .map(|s| s.height)
+            .filter(|&h| h > 0)
+            .or_else(|| {
+                attributes
+                    .toplevel
+                    .min_size
+                    .map(|s| s.height)
+                    .filter(|&h| h > 0)
+            })
+            .unwrap_or(360)
+            .max(1);
+        let native = self
+            .shell
+            .create_dialog_gpu(
+                parent_native,
+                attributes.toplevel.title,
+                attributes.toplevel.app_id,
+                width,
+                height,
+                attributes.modal,
+            )
+            .map_err(map_native_error)?;
+        if let Some(min) = attributes.toplevel.min_size {
+            let _ = self.shell.set_min_size(native, Some(min));
+        }
+        if let Some(max) = attributes.toplevel.max_size {
+            let _ = self.shell.set_max_size(native, Some(max));
+        }
+        let public = self.surfaces.intern(native);
+        self.native_ids.insert(public, native);
+        Ok(public)
     }
 
     pub fn surface_handle(&self, surface: SurfaceId) -> Option<SurfaceHandle> {
@@ -194,18 +245,24 @@ impl NativeRuntime {
 
     pub fn set_min_size(
         &mut self,
-        _surface: SurfaceId,
-        _size: Option<LogicalSize>,
+        surface: SurfaceId,
+        size: Option<LogicalSize>,
     ) -> Result<(), RuntimeError> {
-        Ok(())
+        let native = self.native(surface)?;
+        self.shell
+            .set_min_size(native, size)
+            .map_err(map_native_error)
     }
 
     pub fn set_max_size(
         &mut self,
-        _surface: SurfaceId,
-        _size: Option<LogicalSize>,
+        surface: SurfaceId,
+        size: Option<LogicalSize>,
     ) -> Result<(), RuntimeError> {
-        Ok(())
+        let native = self.native(surface)?;
+        self.shell
+            .set_max_size(native, size)
+            .map_err(map_native_error)
     }
 
     pub fn set_cursor(&mut self, icon: CursorIcon) -> Result<(), RuntimeError> {
@@ -261,9 +318,14 @@ impl NativeRuntime {
     pub fn set_window_geometry(
         &mut self,
         surface: SurfaceId,
-        _origin: LogicalPosition,
+        origin: LogicalPosition,
         size: LogicalSize,
     ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_window_geometry(native, origin, size)
+            .map_err(map_native_error)?;
+        // Keep viewporter destination in sync for fractional-scale clients.
         self.set_viewport_destination(surface, Some(size))
     }
 

@@ -9,6 +9,7 @@ mod api_transfer;
 mod dispatch;
 mod dispatch_activation;
 mod dispatch_data;
+mod dispatch_dialog;
 mod dispatch_gestures;
 mod dispatch_layer;
 mod dispatch_relative;

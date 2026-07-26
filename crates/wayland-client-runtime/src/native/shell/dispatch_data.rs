@@ -312,4 +312,34 @@ mod tests {
         let _ = shell.destroy_popup(popup);
         let _ = shell.destroy_toplevel(parent);
     }
+
+    #[test]
+    fn native_shell_creates_parented_dialog_when_compositor_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let parent = shell
+            .create_toplevel_gpu("parent", "dev.fika.DialogParent", 400, 300)
+            .expect("parent");
+        let dialog = shell
+            .create_dialog_gpu(parent, "dialog", "dev.fika.DialogChild", 320, 240, true)
+            .expect("dialog");
+        assert_eq!(shell.toplevel_count(), 2);
+        let _ = shell.set_min_size(
+            dialog,
+            Some(crate::geometry::LogicalSize::new(200, 100)),
+        );
+        let _ = shell.set_max_size(
+            dialog,
+            Some(crate::geometry::LogicalSize::new(800, 600)),
+        );
+        let _ = shell.set_window_geometry(
+            dialog,
+            crate::geometry::LogicalPosition::new(0, 0),
+            crate::geometry::LogicalSize::new(320, 240),
+        );
+        let _ = shell.dispatch_pending();
+        let _ = shell.destroy_toplevel(dialog);
+        let _ = shell.destroy_toplevel(parent);
+    }
 }

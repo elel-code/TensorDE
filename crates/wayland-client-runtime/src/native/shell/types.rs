@@ -314,6 +314,7 @@ pub struct NativeCapabilities {
     pub pointer_gestures: bool,
     pub pointer_gesture_hold: bool,
     pub relative_pointer: bool,
+    pub xdg_dialog: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -328,6 +329,11 @@ pub(crate) struct ToplevelRecord {
     #[allow(dead_code)]
     pub(crate) xdg: xdg_surface::XdgSurface,
     pub(crate) toplevel: xdg_toplevel::XdgToplevel,
+    /// Optional `xdg_dialog_v1` role (staging); destroyed with the toplevel.
+    pub(crate) dialog: Option<
+        wayland_protocols::xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1,
+    >,
+    pub(crate) parent: Option<NativeSurfaceId>,
     pub(crate) buffer: Option<wl_buffer::WlBuffer>,
     pub(crate) _pool: Option<wl_shm_pool::WlShmPool>,
     pub(crate) _file: Option<File>,
@@ -396,6 +402,9 @@ pub struct NativeShellState {
     pub(crate) text_input_pending_delete: (u32, u32),
     pub(crate) layer_shell: Option<
         wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    >,
+    pub(crate) xdg_wm_dialog: Option<
+        wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1,
     >,
     pub(crate) activation: Option<
         wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
@@ -499,6 +508,7 @@ impl Default for NativeShellState {
             text_input_pending_preedit: None,
             text_input_pending_delete: (0, 0),
             layer_shell: None,
+            xdg_wm_dialog: None,
             activation: None,
             activation_tokens: HashMap::new(),
             pointer_gestures: None,
