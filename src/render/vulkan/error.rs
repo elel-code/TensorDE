@@ -1,4 +1,4 @@
-use smithay::backend::allocator::Fourcc;
+use tensor_host::Fourcc;
 use thiserror::Error;
 use vulkanalia::{Version, loader::LIBRARY, vk};
 

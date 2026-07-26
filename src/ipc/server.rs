@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use smithay::reexports::calloop::{LoopHandle, LoopSignal};
+use calloop::{LoopHandle, LoopSignal};
 use thiserror::Error;
 
 use super::message::{Request, Response};
@@ -155,7 +155,7 @@ pub enum IpcError {
 mod tests {
     use super::*;
     use crate::ipc::{Command, FrameDecoder, Request, Response, ResultBody, encode};
-    use smithay::reexports::calloop::EventLoop;
+    use calloop::EventLoop;
     use std::io::{Read, Write};
     use std::time::Duration;
 

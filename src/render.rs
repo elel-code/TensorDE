@@ -1,6 +1,8 @@
 #[cfg(feature = "tty")]
 mod cursor;
 mod device;
+#[cfg(feature = "tty")]
+mod dmabuf;
 mod format;
 #[cfg(feature = "tty")]
 mod frame;
@@ -14,6 +16,8 @@ pub use device::{
     DescriptorHeapProperties, DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity,
     DrmNodeError, DrmNodeId, GpuPreference, ParseGpuPreferenceError,
 };
+#[cfg(feature = "tty")]
+pub(crate) use dmabuf::{Dmabuf, DmabufPlane, ExportedDmabuf};
 #[cfg(not(feature = "tty"))]
 pub(crate) use format::VulkanFormatCapability;
 #[cfg(feature = "tty")]

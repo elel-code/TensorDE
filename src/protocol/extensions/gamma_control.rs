@@ -119,17 +119,16 @@ where
                         .gamma_control_manager_state()
                         .gamma_controls
                         .contains_key(&output)
+                        && let Some(gamma_size) = state.get_gamma_size(&output)
                     {
-                        if let Some(gamma_size) = state.get_gamma_size(&output) {
-                            let zwlr_gamma_control =
-                                data_init.init(id, GammaControlState { gamma_size });
-                            zwlr_gamma_control.gamma_size(gamma_size);
-                            state
-                                .gamma_control_manager_state()
-                                .gamma_controls
-                                .insert(output, zwlr_gamma_control);
-                            return;
-                        }
+                        let zwlr_gamma_control =
+                            data_init.init(id, GammaControlState { gamma_size });
+                        zwlr_gamma_control.gamma_size(gamma_size);
+                        state
+                            .gamma_control_manager_state()
+                            .gamma_controls
+                            .insert(output, zwlr_gamma_control);
+                        return;
                     }
                 }
                 data_init
@@ -142,6 +141,9 @@ where
     }
 }
 
+// Smithay `Output` is the protocol adapter's lifetime key. Tensor-owned policy
+// uses stable connector IDs and never inherits this internally mutable key.
+#[allow(clippy::mutable_key_type)]
 impl<D> Dispatch2<ZwlrGammaControlV1, D> for GammaControlState
 where
     D: GammaControlHandler,

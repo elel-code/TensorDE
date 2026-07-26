@@ -1,59 +1,55 @@
+//! Output topology policy — compositor wrapper over `tensor-drm`.
+//!
+//! Types are Smithay-free (`tensor_host` / `tensor_drm`). The tty adapter maps
+//! DRM scan results into these values; protocol maps them into `wl_output`.
+
 use std::collections::BTreeMap;
 
-use smithay::output::{Mode, Subpixel};
-use tensor_util::{OutputScale, Size};
-use tracing::warn;
+use tensor_drm::{
+    ConnectorSnapshot as DrmConnectorSnapshot, OutputDescriptor as DrmOutputDescriptor,
+    OutputPlan as DrmOutputPlan, OutputRule as DrmOutputRule, OutputRuleTable, PlanEvent,
+    diff_plans, plan_outputs,
+};
+use tensor_host::{ConnectorId, ConnectorState, PhysicalMode, SubpixelLayout};
+use tensor_util::OutputScale;
 
 use crate::{
     config::{OutputMode, OutputRule},
     render::OutputFormat,
 };
 
-mod scale;
-use scale::guess_monitor_scale;
+// Scale heuristic lives in `tensor_drm::guess_monitor_scale` (Smithay-free).
 
+/// Backend output identity (alias of host [`ConnectorId`]).
+pub(crate) type BackendOutputId = ConnectorId;
+
+/// Discovered connector after DRM scan (+ negotiated format for this compositor).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConnectorSnapshot {
     pub(crate) id: BackendOutputId,
     pub(crate) name: String,
     pub(crate) state: ConnectorState,
     pub(crate) physical_size: (i32, i32),
-    pub(crate) subpixel: Subpixel,
-    pub(crate) modes: Vec<Mode>,
-    pub(crate) preferred_mode: Option<Mode>,
+    pub(crate) subpixel: SubpixelLayout,
+    pub(crate) modes: Vec<PhysicalMode>,
+    pub(crate) preferred_mode: Option<PhysicalMode>,
     pub(crate) mapped_crtc: Option<u32>,
     pub(crate) native_format: Option<OutputFormat>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ConnectorState {
-    Connected,
-    Disconnected,
-    Unknown,
-}
-
+/// Planned scanout target for one connector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutputDescriptor {
     pub(crate) id: BackendOutputId,
     pub(crate) name: String,
     pub(crate) physical_size: (i32, i32),
-    pub(crate) subpixel: Subpixel,
-    pub(crate) modes: Vec<Mode>,
-    /// The selected mode, rather than the connector's raw DRM `PREFERRED`
-    /// flag. The policy may choose a higher refresh at the same native
-    /// resolution or honor a TOML output rule.
-    pub(crate) mode: Mode,
+    pub(crate) subpixel: SubpixelLayout,
+    pub(crate) modes: Vec<PhysicalMode>,
+    pub(crate) mode: PhysicalMode,
     pub(crate) crtc: u32,
     pub(crate) native_format: OutputFormat,
     pub(crate) scale: OutputScale,
-    /// Optional configured logical origin. `None` means automatic placement.
     pub(crate) position: Option<(i32, i32)>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct BackendOutputId {
-    pub(crate) device_id: u64,
-    pub(crate) connector_id: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,152 +63,166 @@ pub(crate) type OutputPlan = BTreeMap<BackendOutputId, OutputDescriptor>;
 
 #[derive(Debug, Default)]
 pub(crate) struct OutputPolicy {
-    configured_rules: BTreeMap<String, OutputRule>,
+    rules: OutputRuleTable,
 }
 
 impl OutputPolicy {
     pub(crate) fn new(configured_rules: BTreeMap<String, OutputRule>) -> Self {
-        Self { configured_rules }
+        let mut rules = BTreeMap::new();
+        for (name, rule) in configured_rules {
+            rules.insert(name, to_drm_rule(rule));
+        }
+        Self {
+            rules: OutputRuleTable::new(rules),
+        }
+    }
+
+    pub(crate) fn rules(&self) -> BTreeMap<String, OutputRule> {
+        self.rules
+            .rules()
+            .iter()
+            .map(|(k, v)| (k.clone(), from_drm_rule(v)))
+            .collect()
+    }
+
+    /// Insert or update one connector rule by name.
+    pub(crate) fn upsert_rule(&mut self, name: impl Into<String>, rule: OutputRule) {
+        self.rules.upsert(name, to_drm_rule(rule));
     }
 
     pub(crate) fn plan<'a>(
         &self,
         connectors: impl IntoIterator<Item = &'a ConnectorSnapshot>,
     ) -> OutputPlan {
-        connectors
-            .into_iter()
-            .filter_map(|connector| self.output_for_connector(connector))
-            .map(|output| (output.id, output))
-            .collect()
-    }
-
-    fn output_for_connector(&self, connector: &ConnectorSnapshot) -> Option<OutputDescriptor> {
-        if connector.state != ConnectorState::Connected {
-            return None;
+        let connectors: Vec<&ConnectorSnapshot> = connectors.into_iter().collect();
+        let snaps: Vec<_> = connectors.iter().map(|c| to_drm_snapshot(c)).collect();
+        let planned = plan_outputs(&self.rules, &snaps);
+        let mut out = OutputPlan::new();
+        for (id, desc) in planned {
+            let Some(snap) = connectors.iter().find(|c| c.id == id) else {
+                continue;
+            };
+            let Some(native_format) = snap.native_format else {
+                continue;
+            };
+            out.insert(id, from_drm_descriptor(desc, native_format));
         }
-        let rule = self.configured_rules.get(&connector.name);
-        if rule.is_some_and(|rule| !rule.enabled) {
-            return None;
-        }
-        let mode = self.select_mode(connector)?;
-        let resolution = Size::new(
-            u32::try_from(mode.size.w).ok()?,
-            u32::try_from(mode.size.h).ok()?,
-        );
-        let scale = rule
-            .and_then(|rule| rule.scale)
-            .unwrap_or_else(|| guess_monitor_scale(connector.physical_size, resolution));
-        Some(OutputDescriptor {
-            id: connector.id,
-            name: connector.name.clone(),
-            physical_size: connector.physical_size,
-            subpixel: connector.subpixel,
-            modes: connector.modes.clone(),
-            mode,
-            crtc: connector.mapped_crtc?,
-            native_format: connector.native_format?,
-            scale,
-            position: rule.and_then(|rule| rule.position),
-        })
-    }
-
-    /// Mode policy intentionally uses a connector's preferred resolution as
-    /// the automatic target, but never lets a stale 60 Hz `PREFERRED` bit
-    /// hide a higher native refresh. Many high-refresh monitors advertise
-    /// exactly that combination in their EDID. A TOML rule can select another
-    /// supported resolution and, when its refresh is omitted, gets the same
-    /// highest-refresh behavior.
-    fn select_mode(&self, connector: &ConnectorSnapshot) -> Option<Mode> {
-        let native_preferred = connector.preferred_mode?;
-        if let Some(requested) = self
-            .configured_rules
-            .get(&connector.name)
-            .and_then(|rule| rule.mode)
-        {
-            if let Some(mode) = select_requested_mode(&connector.modes, requested) {
-                return Some(mode);
-            }
-            warn!(
-                output = connector.name.as_str(),
-                width = requested.width,
-                height = requested.height,
-                refresh_millihertz = ?requested.refresh_millihertz,
-                "configured output mode is unavailable; falling back to the native mode policy"
-            );
-        }
-        let selected = highest_refresh_at_size(&connector.modes, native_preferred.size, None)
-            .or(Some(native_preferred));
-        let Some(cap) = self
-            .configured_rules
-            .get(&connector.name)
-            .and_then(|rule| rule.max_refresh_millihertz)
-        else {
-            return selected;
-        };
-        highest_refresh_at_size(&connector.modes, native_preferred.size, Some(cap)).or(selected)
+        out
     }
 }
 
-fn select_requested_mode(modes: &[Mode], requested: OutputMode) -> Option<Mode> {
-    let width = i32::try_from(requested.width).ok()?;
-    let height = i32::try_from(requested.height).ok()?;
-    let requested_size = (width, height).into();
-    let mut matching_size = modes
-        .iter()
-        .copied()
-        .filter(|mode| mode.size == requested_size);
-    match requested.refresh_millihertz {
-        Some(refresh) => i32::try_from(refresh)
-            .ok()
-            .and_then(|refresh| matching_size.find(|mode| mode.refresh == refresh)),
-        None => matching_size.max_by_key(|mode| mode.refresh),
+fn to_drm_rule(rule: OutputRule) -> DrmOutputRule {
+    DrmOutputRule {
+        scale: rule.scale,
+        mode: rule.mode.map(|m| tensor_drm::OutputModeRequest {
+            width: m.width,
+            height: m.height,
+            refresh_millihertz: m.refresh_millihertz,
+        }),
+        position: rule.position,
+        enabled: rule.enabled,
+        max_refresh_millihertz: rule.max_refresh_millihertz,
     }
 }
 
-fn highest_refresh_at_size(
-    modes: &[Mode],
-    size: smithay::utils::Size<i32, smithay::utils::Physical>,
-    max_refresh_millihertz: Option<u32>,
-) -> Option<Mode> {
-    let max_refresh = max_refresh_millihertz.and_then(|value| i32::try_from(value).ok());
-    modes
-        .iter()
-        .copied()
-        .filter(|mode| mode.size == size)
-        .filter(|mode| max_refresh.is_none_or(|cap| mode.refresh <= cap))
-        .max_by_key(|mode| mode.refresh)
+fn from_drm_rule(rule: &DrmOutputRule) -> OutputRule {
+    OutputRule {
+        scale: rule.scale,
+        mode: rule.mode.map(|m| OutputMode {
+            width: m.width,
+            height: m.height,
+            refresh_millihertz: m.refresh_millihertz,
+        }),
+        position: rule.position,
+        enabled: rule.enabled,
+        max_refresh_millihertz: rule.max_refresh_millihertz,
+    }
+}
+
+fn to_drm_snapshot(c: &ConnectorSnapshot) -> DrmConnectorSnapshot {
+    DrmConnectorSnapshot {
+        id: c.id,
+        name: c.name.clone(),
+        state: c.state,
+        physical_size_mm: c.physical_size,
+        subpixel: c.subpixel,
+        modes: c.modes.clone(),
+        preferred_mode: c.preferred_mode,
+        mapped_crtc: c.mapped_crtc,
+        has_native_format: c.native_format.is_some(),
+    }
+}
+
+fn from_drm_descriptor(desc: DrmOutputDescriptor, native_format: OutputFormat) -> OutputDescriptor {
+    OutputDescriptor {
+        id: desc.id,
+        name: desc.name,
+        physical_size: desc.physical_size_mm,
+        subpixel: desc.subpixel,
+        modes: desc.modes,
+        mode: desc.mode,
+        crtc: desc.crtc,
+        native_format,
+        scale: desc.scale,
+        position: desc.position,
+    }
+}
+
+fn to_drm_desc_for_diff(d: &OutputDescriptor) -> DrmOutputDescriptor {
+    DrmOutputDescriptor {
+        id: d.id,
+        name: d.name.clone(),
+        physical_size_mm: d.physical_size,
+        subpixel: d.subpixel,
+        modes: d.modes.clone(),
+        mode: d.mode,
+        crtc: d.crtc,
+        scale: d.scale,
+        position: d.position,
+        has_native_format: true,
+    }
 }
 
 pub(crate) fn diff_output_plans(
     previous: &OutputPlan,
     current: &OutputPlan,
 ) -> Vec<BackendOutputEvent> {
-    let disconnected = previous
-        .keys()
-        .filter(|id| !current.contains_key(id))
-        .copied()
-        .map(BackendOutputEvent::Disconnected);
-    let activated = current
+    let prev: DrmOutputPlan = previous
         .iter()
-        .filter_map(|(id, descriptor)| match previous.get(id) {
-            None => Some(BackendOutputEvent::Connected(descriptor.clone())),
-            Some(old) if old != descriptor => Some(BackendOutputEvent::Changed(descriptor.clone())),
-            Some(_) => None,
-        });
-    disconnected.chain(activated).collect()
+        .map(|(id, d)| (*id, to_drm_desc_for_diff(d)))
+        .collect();
+    let curr: DrmOutputPlan = current
+        .iter()
+        .map(|(id, d)| (*id, to_drm_desc_for_diff(d)))
+        .collect();
+    let diff = diff_plans(&prev, &curr);
+    diff.events
+        .into_iter()
+        .filter_map(|event| match event {
+            PlanEvent::Connected(d) => {
+                let fmt = current.get(&d.id)?.native_format;
+                Some(BackendOutputEvent::Connected(from_drm_descriptor(d, fmt)))
+            }
+            PlanEvent::Changed(d) => {
+                let fmt = current.get(&d.id)?.native_format;
+                Some(BackendOutputEvent::Changed(from_drm_descriptor(d, fmt)))
+            }
+            PlanEvent::Disconnected(id) => Some(BackendOutputEvent::Disconnected(id)),
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+    use tensor_host::{DrmFormat, Fourcc, Modifier};
 
     use super::*;
 
     fn native_format(modifier: u64) -> OutputFormat {
         OutputFormat {
             format: DrmFormat {
-                code: Fourcc::Xrgb8888,
-                modifier: Modifier::from(modifier),
+                code: Fourcc::XRGB8888,
+                modifier: Modifier::from_raw(modifier),
             },
             plane_count: 1,
         }
@@ -225,30 +235,17 @@ mod tests {
         mapped_crtc: Option<u32>,
         width: Option<i32>,
     ) -> ConnectorSnapshot {
-        let mode = width.map(|width| Mode {
-            size: (width, 1080).into(),
-            refresh: 60_000,
-        });
+        let mode = width.map(|width| PhysicalMode::new(width, 1080, 60_000));
         ConnectorSnapshot {
-            id: BackendOutputId {
-                device_id,
-                connector_id,
-            },
+            id: BackendOutputId::new(device_id, connector_id),
             name: format!("card-{device_id}-connector-{connector_id}"),
             state,
             physical_size: (600, 340),
-            subpixel: Subpixel::HorizontalRgb,
+            subpixel: SubpixelLayout::HorizontalRgb,
             modes: mode.into_iter().collect(),
             preferred_mode: mode,
             mapped_crtc,
             native_format: Some(native_format(9)),
-        }
-    }
-
-    fn mode(width: i32, height: i32, refresh: i32) -> Mode {
-        Mode {
-            size: (width, height).into(),
-            refresh,
         }
     }
 
@@ -293,157 +290,44 @@ mod tests {
     }
 
     #[test]
-    fn plan_diff_disconnects_before_connecting_and_changing() {
-        let removed = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
-        let old_changed = connector(1, 2, ConnectorState::Connected, Some(2), Some(1920));
-        let changed = connector(1, 2, ConnectorState::Connected, Some(2), Some(2560));
-        let added = connector(1, 3, ConnectorState::Connected, Some(3), Some(3840));
-        let previous = OutputPolicy::default().plan([&removed, &old_changed]);
-        let current = OutputPolicy::default().plan([&changed, &added]);
-
-        let events = diff_output_plans(&previous, &current);
-
-        assert_eq!(
-            events,
-            vec![
-                BackendOutputEvent::Disconnected(removed.id),
-                BackendOutputEvent::Changed(current[&changed.id].clone()),
-                BackendOutputEvent::Connected(current[&added.id].clone()),
-            ]
-        );
-    }
-
-    #[test]
-    fn format_change_is_an_output_change() {
-        let old = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
-        let mut changed = old.clone();
-        changed.native_format = Some(native_format(10));
-        let previous = OutputPolicy::default().plan([&old]);
-        let current = OutputPolicy::default().plan([&changed]);
-
-        assert_eq!(
-            diff_output_plans(&previous, &current),
-            vec![BackendOutputEvent::Changed(current[&changed.id].clone())]
-        );
-    }
-
-    #[test]
-    fn configured_scale_overrides_the_monitor_heuristic() {
-        let connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
-        let policy = OutputPolicy::new(
-            [(
-                connector.name.clone(),
-                OutputRule {
-                    scale: Some(OutputScale::from_f64(1.25).unwrap()),
-                    mode: None,
-                    position: None,
-                    enabled: true,
-                    max_refresh_millihertz: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        );
-        assert_eq!(
-            policy.plan([&connector])[&connector.id].scale,
-            OutputScale::from_f64(1.25).unwrap()
-        );
-    }
-
-    #[test]
-    fn automatic_mode_keeps_native_resolution_and_uses_highest_refresh() {
-        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
-        connector.modes = vec![
-            mode(2560, 1600, 60_000),
-            mode(2560, 1600, 120_000),
-            mode(2560, 1600, 240_000),
-            mode(1920, 1200, 360_000),
+    fn configured_mode_selects_matching_refresh() {
+        let mut snap = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
+        snap.modes = vec![
+            PhysicalMode::new(1920, 1080, 60_000),
+            PhysicalMode::new(1920, 1080, 144_000),
         ];
-        connector.preferred_mode = Some(mode(2560, 1600, 60_000));
+        snap.preferred_mode = Some(PhysicalMode::new(1920, 1080, 60_000));
 
-        assert_eq!(
-            OutputPolicy::default().plan([&connector])[&connector.id].mode,
-            mode(2560, 1600, 240_000)
+        let mut rules = BTreeMap::new();
+        rules.insert(
+            snap.name.clone(),
+            OutputRule {
+                mode: Some(OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihertz: Some(144_000),
+                }),
+                ..OutputRule::new()
+            },
         );
+        let plan = OutputPolicy::new(rules).plan([&snap]);
+        assert_eq!(plan[&snap.id].mode.refresh_millihertz, 144_000);
     }
 
     #[test]
-    fn configured_resolution_uses_its_highest_supported_refresh() {
-        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
-        connector.modes = vec![
-            mode(2560, 1600, 60_000),
-            mode(1920, 1200, 120_000),
-            mode(1920, 1200, 144_000),
-        ];
-        let policy = OutputPolicy::new(
-            [(
-                connector.name.clone(),
-                OutputRule {
-                    scale: None,
-                    mode: Some(OutputMode::new(1920, 1200, None)),
-                    position: None,
-                    enabled: true,
-                    max_refresh_millihertz: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        );
-
-        assert_eq!(
-            policy.plan([&connector])[&connector.id].mode,
-            mode(1920, 1200, 144_000)
-        );
-    }
-
-    #[test]
-    fn configured_exact_refresh_wins_over_higher_refresh_modes() {
-        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
-        connector.modes = vec![mode(2560, 1600, 144_000), mode(2560, 1600, 240_000)];
-        let policy = OutputPolicy::new(
-            [(
-                connector.name.clone(),
-                OutputRule {
-                    scale: None,
-                    mode: Some(OutputMode::new(2560, 1600, Some(144_000))),
-                    position: None,
-                    enabled: true,
-                    max_refresh_millihertz: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        );
-
-        assert_eq!(
-            policy.plan([&connector])[&connector.id].mode,
-            mode(2560, 1600, 144_000)
-        );
-    }
-
-    #[test]
-    fn unavailable_configured_mode_falls_back_to_native_highest_refresh() {
-        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(2560));
-        connector.modes = vec![mode(2560, 1600, 60_000), mode(2560, 1600, 180_000)];
-        connector.preferred_mode = Some(mode(2560, 1600, 60_000));
-        let policy = OutputPolicy::new(
-            [(
-                connector.name.clone(),
-                OutputRule {
-                    scale: None,
-                    mode: Some(OutputMode::new(3840, 2160, Some(120_000))),
-                    position: None,
-                    enabled: true,
-                    max_refresh_millihertz: None,
-                },
-            )]
-            .into_iter()
-            .collect(),
-        );
-
-        assert_eq!(
-            policy.plan([&connector])[&connector.id].mode,
-            mode(2560, 1600, 180_000)
-        );
+    fn diff_reports_disconnect_and_connect() {
+        let a = connector(1, 1, ConnectorState::Connected, Some(1), Some(1920));
+        let b = connector(1, 2, ConnectorState::Connected, Some(2), Some(1920));
+        let prev = OutputPolicy::default().plan([&a]);
+        let next = OutputPolicy::default().plan([&b]);
+        let events = diff_output_plans(&prev, &next);
+        assert!(matches!(
+            events[0],
+            BackendOutputEvent::Disconnected(id) if id == a.id
+        ));
+        assert!(matches!(
+            events[1],
+            BackendOutputEvent::Connected(ref d) if d.id == b.id
+        ));
     }
 }

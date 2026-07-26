@@ -2,31 +2,25 @@ use tensor_util::Rect;
 use tracing::{debug, info, warn};
 
 use crate::{
-    backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
+    backend::BackendOutputId,
     render::{NativeOutputBuffer, RenderOutputId},
     scene::SceneSnapshot,
 };
 
-use super::{
-    DEFAULT_WORKSPACE, ManagedOutput, OutputRedrawState, RuntimeState,
-    output_helpers::{rects_overlap, renderer_target},
-};
+use super::{OutputRedrawState, RuntimeState, output_helpers::renderer_target};
 
 impl RuntimeState {
-    /// Queue a redraw for every connected output and drain the scheduler.
     #[cfg(feature = "tty")]
     pub(crate) fn request_redraw_all(&mut self) {
         self.queue_redraw_all();
         self.redraw_queued_outputs();
     }
 
-    /// Prefer workspace-local heads over every CRTC.
     #[cfg(feature = "tty")]
     pub(crate) fn submit_default_workspace_frame(&mut self) {
         self.request_redraw_workspace();
     }
 
-    /// Redraw only outputs that carry the default workspace viewport.
     #[cfg(feature = "tty")]
     pub(crate) fn request_redraw_workspace(&mut self) {
         if self.force_full_redraw {
@@ -76,13 +70,13 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn set_redraw_state(&mut self, output: BackendOutputId, state: OutputRedrawState) {
+    pub(super) fn set_redraw_state(&mut self, output: BackendOutputId, state: OutputRedrawState) {
         self.redraw_states.insert(output, state);
     }
 
     /// Force a first frame for every output, even if a sibling is mid-flip.
     #[cfg(feature = "tty")]
-    fn force_redraw_all(&mut self) {
+    pub(super) fn force_redraw_all(&mut self) {
         let outputs = self.outputs.keys().copied().collect::<Vec<_>>();
         for output in outputs {
             self.set_redraw_state(output, OutputRedrawState::Queued);
@@ -228,11 +222,13 @@ impl RuntimeState {
         };
         let mut selected_slot = None;
         for attempt in 0..NativeOutputBuffer::COUNT {
-            if self
+            let policy_ready =
+                self.present_slot_ready(output_id, tensor_host::PresentSlot(next_slot));
+            let kms_ready = self
                 .backend
                 .as_ref()
-                .is_some_and(|backend| backend.output_ready_for_slot(output_id, next_slot))
-            {
+                .is_some_and(|backend| backend.output_ready_for_slot(output_id, next_slot));
+            if policy_ready && kms_ready {
                 selected_slot = Some(next_slot);
                 break;
             }
@@ -293,12 +289,45 @@ impl RuntimeState {
                     self.defer_output_repaint(output_id);
                     return;
                 };
-                if let Err(error) = backend.submit_output_frame(
+                // Value-only present intent: readiness table gates the slot
+                // before the adapter touches KMS (Smithay exit stage 4).
+                let intent = tensor_host::PresentIntent::new(
                     output_id,
-                    frame.output_slot,
+                    tensor_host::PresentSlot(frame.output_slot),
+                    frame.serial,
                     frame.timeline_value,
+                );
+                if let Err(error) = self.event_loop.present_queue().try_push(intent) {
+                    drop(captured_presentation);
+                    warn!(
+                        output_device = output_id.device_id,
+                        output_connector = output_id.connector_id,
+                        %error,
+                        "present queue rejected frame before KMS"
+                    );
+                    self.defer_output_repaint(output_id);
+                    return;
+                }
+                // Drain one intent immediately on the compositor thread (no
+                // worker hop — present stays latency-critical).
+                let Some(queued) = self.event_loop.present_queue().try_pop() else {
+                    drop(captured_presentation);
+                    self.defer_output_repaint(output_id);
+                    return;
+                };
+                debug_assert_eq!(queued.output, output_id);
+                if let Err(error) = backend.submit_output_frame(
+                    queued.output,
+                    queued.slot.0,
+                    queued.timeline_value,
                     sync_fd,
                 ) {
+                    // Roll readiness so the slot is not stuck Queued forever.
+                    if let Some(ready) = self.event_loop.present_queue().readiness_mut(output_id)
+                        && let Some(slot) = ready.slot_mut(queued.slot)
+                    {
+                        slot.state = tensor_host::PresentState::Idle;
+                    }
                     drop(captured_presentation);
                     warn!(
                         output_device = output_id.device_id,
@@ -308,6 +337,9 @@ impl RuntimeState {
                     );
                     self.defer_output_repaint(output_id);
                     return;
+                }
+                if let Some(ready) = self.event_loop.present_queue().readiness_mut(output_id) {
+                    ready.mark_waiting_vblank(queued.slot);
                 }
                 // Atomic KMS has latched ownership of the submitted client
                 // buffers. Let clients prepare their next frame immediately;
@@ -347,7 +379,7 @@ impl RuntimeState {
                     frame_output_connector = frame.target.output.connector_id,
                     viewport = ?frame.target.viewport,
                     format = %frame.target.format.format.code,
-                    modifier = %format_args!("{:#x}", u64::from(frame.target.format.format.modifier)),
+                    modifier = %frame.target.format.format.modifier,
                     planes = frame.target.format.plane_count,
                     "renderer frame submitted to atomic KMS"
                 );
@@ -365,14 +397,14 @@ impl RuntimeState {
         }
     }
 
-    /// Full-output scene with layer-shell surfaces for this head.
     #[cfg(feature = "tty")]
     pub(super) fn scene_for_output(
         &mut self,
         output: &smithay::output::Output,
         logical: Rect,
     ) -> SceneSnapshot {
-        let base = match self.world.extract_scene(DEFAULT_WORKSPACE) {
+        let workspace = self.active_workspace();
+        let base = match self.world.extract_scene(workspace) {
             Some(scene) if scene.viewport == logical => scene,
             Some(scene) if scene.viewport.intersection(logical).is_some() => {
                 SceneSnapshot::with_content(
@@ -382,7 +414,7 @@ impl RuntimeState {
                     scene.contents().to_vec(),
                 )
             }
-            _ => SceneSnapshot::new(DEFAULT_WORKSPACE, logical, Vec::new()),
+            _ => SceneSnapshot::new(workspace, logical, Vec::new()),
         };
         let with_layers = self.merge_layer_surfaces(base, output, logical);
         if self.session_is_locked() {
@@ -392,10 +424,6 @@ impl RuntimeState {
         }
     }
 
-    /// Keep an input-driven redraw live when the previous submission still
-    /// owns the only scheduler slot. Page-flip completion handles the normal
-    /// KMS case; this additionally polls the Vulkan timeline when a pointer
-    /// event arrives after that page flip but before GPU retirement.
     fn defer_output_repaint(&mut self, output: BackendOutputId) {
         self.queue_redraw(output);
         self.schedule_renderer_retry_if_needed();
@@ -415,15 +443,25 @@ impl RuntimeState {
         let Some(presentation) = presentation else {
             return;
         };
+        let sequence = metadata.map(|metadata| metadata.sequence).unwrap_or(0);
         debug!(
             output_device = presentation.output.device_id,
             output_connector = presentation.output.connector_id,
             output_slot = presentation.slot,
             timeline = presentation.timeline_value,
             released_timeline = ?presentation.released_timeline,
-            sequence = metadata.map(|metadata| metadata.sequence),
+            sequence,
             "atomic KMS page flip completed"
         );
+        self.push_vblank(presentation.output, u64::from(sequence));
+        // Free the present slot for the next triple-buffer cycle.
+        if let Some(ready) = self
+            .event_loop
+            .present_queue()
+            .readiness_mut(presentation.output)
+        {
+            ready.mark_presented(tensor_host::PresentSlot(presentation.slot));
+        }
         if !self.finish_presentation(presentation.output, presentation.timeline_value, metadata) {
             warn!(
                 output_device = presentation.output.device_id,
@@ -530,261 +568,5 @@ impl RuntimeState {
                     connector_id: output.connector_id,
                 })
         })
-    }
-
-    #[cfg(feature = "tty")]
-    pub(crate) fn apply_backend_output_events(
-        &mut self,
-        events: impl IntoIterator<Item = BackendOutputEvent>,
-    ) -> Result<(), String> {
-        let mut first_error = None;
-        for event in events {
-            let result = match event {
-                BackendOutputEvent::Connected(descriptor) => self.connect_output(descriptor),
-                BackendOutputEvent::Changed(descriptor) => self.change_output(descriptor),
-                BackendOutputEvent::Disconnected(id) => {
-                    self.disconnect_output(id);
-                    Ok(())
-                }
-            };
-            if let Err(error) = result {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    #[cfg(feature = "tty")]
-    fn connect_output(&mut self, descriptor: OutputDescriptor) -> Result<(), String> {
-        if self.outputs.contains_key(&descriptor.id) {
-            return self.change_output(descriptor);
-        }
-        self.register_renderer_output(&descriptor, None)?;
-        info!(
-            output = descriptor.name,
-            device_id = descriptor.id.device_id,
-            connector_id = descriptor.id.connector_id,
-            crtc = descriptor.crtc,
-            mode_width = descriptor.mode.size.w,
-            mode_height = descriptor.mode.size.h,
-            refresh_millihertz = descriptor.mode.refresh,
-            scale = descriptor.scale.as_f64(),
-            "Smithay output connected"
-        );
-        let output = smithay::output::Output::new(
-            descriptor.name.clone(),
-            smithay::output::PhysicalProperties {
-                size: descriptor.physical_size.into(),
-                subpixel: descriptor.subpixel,
-                make: "Unknown".to_owned(),
-                model: descriptor.name.clone(),
-                serial_number: "Unknown".to_owned(),
-            },
-        );
-        for mode in &descriptor.modes {
-            output.add_mode(*mode);
-        }
-        output.set_preferred(descriptor.mode);
-        output.change_current_state(
-            Some(descriptor.mode),
-            None,
-            Some(smithay::output::Scale::Fractional(
-                descriptor.scale.as_f64(),
-            )),
-            Some((0, 0).into()),
-        );
-        let global = output.create_global::<Self>(&self.display_handle);
-        self.space.map_output(&output, (0, 0));
-        let output_id = descriptor.id;
-        self.outputs.insert(
-            output_id,
-            ManagedOutput {
-                output,
-                global,
-                descriptor,
-                has_presented: false,
-            },
-        );
-        self.set_redraw_state(output_id, OutputRedrawState::Queued);
-        self.reflow_outputs();
-        Ok(())
-    }
-
-    #[cfg(feature = "tty")]
-    fn change_output(&mut self, descriptor: OutputDescriptor) -> Result<(), String> {
-        info!(
-            output = descriptor.name,
-            device_id = descriptor.id.device_id,
-            connector_id = descriptor.id.connector_id,
-            crtc = descriptor.crtc,
-            mode_width = descriptor.mode.size.w,
-            mode_height = descriptor.mode.size.h,
-            refresh_millihertz = descriptor.mode.refresh,
-            scale = descriptor.scale.as_f64(),
-            "Smithay output modes changed"
-        );
-        if !self.outputs.contains_key(&descriptor.id) {
-            return self.connect_output(descriptor);
-        }
-        let previous_descriptor = self
-            .outputs
-            .get(&descriptor.id)
-            .expect("output existence was checked before renderer registration")
-            .descriptor
-            .clone();
-        self.register_renderer_output(&descriptor, Some(&previous_descriptor))?;
-        let discarded = self.discard_output_presentations(descriptor.id);
-        if discarded > 0 {
-            info!(
-                output_device = descriptor.id.device_id,
-                output_connector = descriptor.id.connector_id,
-                discarded,
-                "discarded presentation feedback for replaced output mode"
-            );
-        }
-        let managed = self
-            .outputs
-            .get_mut(&descriptor.id)
-            .expect("output existence was checked before renderer registration");
-        for mode in managed.output.modes() {
-            managed.output.delete_mode(mode);
-        }
-        for mode in &descriptor.modes {
-            managed.output.add_mode(*mode);
-        }
-        managed.output.set_preferred(descriptor.mode);
-        managed.output.change_current_state(
-            Some(descriptor.mode),
-            None,
-            Some(smithay::output::Scale::Fractional(
-                descriptor.scale.as_f64(),
-            )),
-            None,
-        );
-        let output_id = descriptor.id;
-        managed.descriptor = descriptor;
-        // Mode replacement ends any in-flight flip; force a fresh first frame.
-        self.set_redraw_state(output_id, OutputRedrawState::Queued);
-        self.reflow_outputs();
-        Ok(())
-    }
-
-    #[cfg(feature = "tty")]
-    fn disconnect_output(&mut self, id: BackendOutputId) {
-        let discarded = self.discard_output_presentations(id);
-        let Some(managed) = self.outputs.remove(&id) else {
-            return;
-        };
-        self.space.unmap_output(&managed.output);
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.unregister_output(RenderOutputId {
-                device_id: id.device_id,
-                connector_id: id.connector_id,
-            });
-        }
-        self.redraw_states.remove(&id);
-        if let Some(backend) = self.backend.as_mut() {
-            backend.remove_output_buffers(id);
-        }
-        self.display_handle.remove_global::<Self>(managed.global);
-        self.reflow_outputs();
-        info!(
-            device_id = id.device_id,
-            connector_id = id.connector_id,
-            discarded_presentations = discarded,
-            "Smithay output disconnected"
-        );
-    }
-
-    #[cfg(feature = "tty")]
-    fn register_renderer_output(
-        &mut self,
-        descriptor: &OutputDescriptor,
-        restore: Option<&OutputDescriptor>,
-    ) -> Result<(), String> {
-        let target = renderer_target(descriptor);
-        let result = self
-            .renderer
-            .as_mut()
-            .map(|renderer| renderer.register_output(target));
-        let Some(result) = result else {
-            return Ok(());
-        };
-        let buffers = result.map_err(|error| error.to_string())?;
-        if let Some(backend) = self.backend.as_mut()
-            && let Err(error) = backend.install_output_buffers(descriptor.id, buffers)
-        {
-            if let Some(previous) = restore {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let _ = renderer.register_output(renderer_target(previous));
-                }
-            } else if let Some(renderer) = self.renderer.as_mut() {
-                renderer.unregister_output(target.output);
-            }
-            return Err(error.to_string());
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "tty")]
-    fn reflow_outputs(&mut self) {
-        let mut outputs = self.outputs.iter().collect::<Vec<_>>();
-        outputs.sort_by(|(left_id, left), (right_id, right)| {
-            left.descriptor
-                .name
-                .cmp(&right.descriptor.name)
-                .then_with(|| left_id.cmp(right_id))
-        });
-        outputs.sort_by_key(|(_, managed)| managed.descriptor.position.is_none());
-
-        let mut placed = Vec::<(i32, i32, i32, i32)>::new();
-        let mut auto_x: i32 = 0;
-        for (_, managed) in outputs {
-            let size = self
-                .space
-                .output_geometry(&managed.output)
-                .map(|geometry| (geometry.size.w, geometry.size.h))
-                .unwrap_or_else(|| {
-                    let scale = managed.descriptor.scale.as_f64();
-                    let width = (f64::from(managed.descriptor.mode.size.w) / scale).round() as i32;
-                    let height = (f64::from(managed.descriptor.mode.size.h) / scale).round() as i32;
-                    (width.max(1), height.max(1))
-                });
-            let position = managed
-                .descriptor
-                .position
-                .filter(|(x, y)| {
-                    let target = (*x, *y, size.0, size.1);
-                    !placed
-                        .iter()
-                        .any(|existing| rects_overlap(*existing, target))
-                })
-                .unwrap_or_else(|| {
-                    let position = (auto_x, 0);
-                    auto_x = auto_x.saturating_add(size.0);
-                    position
-                });
-            managed.output.change_current_state(
-                None,
-                None,
-                None,
-                Some((position.0, position.1).into()),
-            );
-            self.space
-                .map_output(&managed.output, (position.0, position.1));
-            if let Some(geometry) = self.space.output_geometry(&managed.output) {
-                placed.push((
-                    geometry.loc.x,
-                    geometry.loc.y,
-                    geometry.size.w,
-                    geometry.size.h,
-                ));
-                if managed.descriptor.position.is_none() {
-                    auto_x = auto_x.max(geometry.loc.x.saturating_add(geometry.size.w));
-                }
-            }
-        }
-        self.reflow_default_workspace_layout();
-        self.force_redraw_all();
     }
 }

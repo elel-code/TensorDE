@@ -47,6 +47,8 @@ pub enum Command {
     Ping,
     GetState,
     GetOutputs,
+    /// List virtual desktops (fixed pool) with occupancy.
+    GetWorkspaces,
     SetLayout {
         layout: LayoutKind,
     },
@@ -56,6 +58,34 @@ pub enum Command {
     /// invokes a shell; empty argv is rejected with a structured error.
     Spawn {
         argv: Vec<String>,
+    },
+    /// Activate virtual desktop by zero-based index (`0..workspace_count`).
+    SetWorkspace {
+        index: u32,
+    },
+    /// Move the focused view to another workspace.
+    MoveFocusedToWorkspace {
+        index: u32,
+        /// When true, also activate the destination workspace.
+        #[serde(default)]
+        follow: bool,
+    },
+    /// Set logical origin of a connector (`eDP-1`, `HDMI-A-1`, …).
+    SetOutputPosition {
+        name: String,
+        x: i32,
+        y: i32,
+    },
+    /// Enable or disable a connector for scanout.
+    SetOutputEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Set fractional scale for a connector (e.g. `1.25`).
+    SetOutputScale {
+        name: String,
+        /// Scale as percent of 100 (125 → 1.25) to stay integer on the wire.
+        scale_percent: u32,
     },
     Quit,
 }
@@ -73,6 +103,7 @@ pub enum ResultBody {
     Pong,
     State(StateSnapshot),
     Outputs(Vec<OutputSnapshot>),
+    Workspaces(Vec<WorkspaceSnapshot>),
     Accepted,
     Error(IpcErrorBody),
 }
@@ -82,6 +113,22 @@ pub struct StateSnapshot {
     pub layout: LayoutKind,
     pub view_count: usize,
     pub output_count: usize,
+    pub focused_view: Option<u64>,
+    /// Active virtual desktop (zero-based).
+    pub workspace: u32,
+    /// Fixed workspace pool size.
+    pub workspace_count: u32,
+}
+
+/// One virtual desktop in the fixed pool.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceSnapshot {
+    /// Zero-based index.
+    pub index: u32,
+    /// Human-facing name (`"1"` … `"9"`).
+    pub name: String,
+    pub active: bool,
+    pub view_count: usize,
     pub focused_view: Option<u64>,
 }
 
@@ -98,6 +145,13 @@ pub struct OutputSnapshot {
     pub mode_height: i32,
     pub refresh_millihertz: i32,
     pub primary: bool,
+    /// False when the connector is policy-disabled (still may appear in DRM).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

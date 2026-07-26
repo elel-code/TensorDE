@@ -10,6 +10,8 @@ use smithay::{
     },
 };
 
+use super::capture::CaptureSessions;
+
 /// Side tables for protocols that keep compositor-owned identity beyond a global.
 #[derive(Default)]
 pub(crate) struct ProtocolSideState {
@@ -17,6 +19,7 @@ pub(crate) struct ProtocolSideState {
     pub(crate) shortcut_inhibitors: HashMap<ObjectKey, KeyboardShortcutsInhibitor>,
     pub(crate) foreign_toplevels: HashMap<ObjectKey, ForeignToplevelHandle>,
     pub(crate) session_lock: Option<SessionLockState>,
+    pub(crate) capture: CaptureSessions,
 }
 
 /// Hashable key for live Wayland surfaces.

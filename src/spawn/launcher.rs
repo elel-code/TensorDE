@@ -9,7 +9,7 @@ use std::{
 #[cfg(feature = "systemd")]
 use std::thread;
 
-use smithay::reexports::rustix::{
+use rustix::{
     io::{read, retry_on_intr, write},
     pipe::{PipeFlags, pipe_with},
 };

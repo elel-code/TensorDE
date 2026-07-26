@@ -15,7 +15,7 @@ use crate::{
 };
 use tensor_util::Rect;
 
-use super::{DEFAULT_WORKSPACE, RuntimeState, xdg_size_constraints};
+use super::{RuntimeState, xdg_size_constraints};
 
 pub(super) use popup::XWaylandPopupRegistry;
 pub(super) use transient::XWaylandTransientRegistry;
@@ -127,7 +127,7 @@ impl RuntimeState {
 
         let view_id = self.allocate_view_id();
         self.world
-            .spawn_view(view_id, DEFAULT_WORKSPACE)
+            .spawn_view(view_id, self.active_workspace())
             .expect("monotonic view IDs must be unique");
         if let Some(placement) = placement
             && let Err(error) = self.world.set_view_placement(view_id, placement)

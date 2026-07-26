@@ -334,12 +334,14 @@ impl RuntimeState {
             let stacking = layer_stacking_order(layer.layer(), layer_index);
             layer_index = layer_index.saturating_add(1);
             let view_id = ViewId::new(layer_view_id(layer));
+            // Layer shells commonly request panel blur via ext-background-effect.
+            let effects = Self::layer_surface_effects(layer.wl_surface());
             nodes.push(
                 SceneNode::new(
                     view_id,
                     stacking,
                     LayoutPlacement::new(global, logical),
-                    EffectStyle::default(),
+                    effects,
                 )
                 .with_content(span),
             );

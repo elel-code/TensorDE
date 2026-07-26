@@ -1,3 +1,5 @@
+#[cfg(feature = "xwayland")]
+use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     reexports::{calloop::LoopHandle, wayland_server::DisplayHandle},
     utils::{ClockSource, Monotonic},
@@ -12,6 +14,10 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
+        image_capture_source::{
+            ImageCaptureSourceState, OutputCaptureSourceState, ToplevelCaptureSourceState,
+        },
+        image_copy_capture::ImageCopyCaptureState,
         input_method::InputMethodManagerState,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         pointer_constraints::PointerConstraintsState,
@@ -37,12 +43,12 @@ use smithay::{
         xdg_system_bell::XdgSystemBellState,
         xdg_toplevel_icon::XdgToplevelIconManager,
         xdg_toplevel_tag::XdgToplevelTagManager,
-        xwayland_keyboard_grab::XWaylandKeyboardGrabState,
     },
 };
 
 use super::extensions::{
-    gamma_control::GammaControlManagerState, virtual_pointer::VirtualPointerManagerState,
+    ext_workspace::ExtWorkspaceManagerState, gamma_control::GammaControlManagerState,
+    output_management::OutputManagementState, virtual_pointer::VirtualPointerManagerState,
 };
 use super::state::RuntimeState;
 
@@ -91,9 +97,17 @@ pub(crate) struct ProtocolGlobals {
     toplevel_tag: XdgToplevelTagManager,
     fifo: FifoManagerState,
     commit_timing: CommitTimingManagerState,
+    #[cfg(feature = "xwayland")]
     xwayland_keyboard_grab: XWaylandKeyboardGrabState,
     virtual_pointer: VirtualPointerManagerState,
     gamma_control: GammaControlManagerState,
+    ext_workspace: ExtWorkspaceManagerState,
+    output_management: OutputManagementState,
+    /// Opaque capture sources (shared by output/toplevel managers).
+    image_capture_source: ImageCaptureSourceState,
+    output_capture_source: OutputCaptureSourceState,
+    toplevel_capture_source: ToplevelCaptureSourceState,
+    image_copy_capture: ImageCopyCaptureState,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -165,12 +179,24 @@ impl ProtocolGlobals {
             toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
             fifo: FifoManagerState::new::<RuntimeState>(display),
             commit_timing: CommitTimingManagerState::new::<RuntimeState>(display),
+            #[cfg(feature = "xwayland")]
             xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
             virtual_pointer: VirtualPointerManagerState::new::<RuntimeState, _>(
                 display,
                 unrestricted,
             ),
             gamma_control: GammaControlManagerState::new::<RuntimeState, _>(display, unrestricted),
+            ext_workspace: ExtWorkspaceManagerState::new::<RuntimeState, _>(display, unrestricted),
+            // Community stopgap until a staging/stable output-management lands.
+            output_management: OutputManagementState::new::<RuntimeState, _>(display, unrestricted),
+            // ext-image-capture-source + ext-image-copy-capture (prefer over wlr-screencopy).
+            image_capture_source: ImageCaptureSourceState::new(),
+            output_capture_source: OutputCaptureSourceState::new::<RuntimeState>(display),
+            toplevel_capture_source: ToplevelCaptureSourceState::new::<RuntimeState>(display),
+            image_copy_capture: ImageCopyCaptureState::new_with_filter::<RuntimeState, _>(
+                display,
+                unrestricted,
+            ),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -183,7 +209,7 @@ impl ProtocolGlobals {
         &mut self,
         display: &DisplayHandle,
         main_device: libc::dev_t,
-        formats: impl IntoIterator<Item = smithay::backend::allocator::Format>,
+        formats: impl IntoIterator<Item = tensor_host::DrmFormat>,
     ) -> Result<bool, String> {
         self.dmabuf.install(display, main_device, formats)
     }
@@ -257,7 +283,37 @@ impl ProtocolGlobals {
         &mut self.gamma_control
     }
 
+    pub(crate) fn ext_workspace(&mut self) -> &mut ExtWorkspaceManagerState {
+        &mut self.ext_workspace
+    }
+
+    pub(crate) fn output_management(&mut self) -> &mut OutputManagementState {
+        &mut self.output_management
+    }
+
+    pub(crate) fn output_capture_source(&mut self) -> &mut OutputCaptureSourceState {
+        &mut self.output_capture_source
+    }
+
+    pub(crate) fn toplevel_capture_source(&mut self) -> &mut ToplevelCaptureSourceState {
+        &mut self.toplevel_capture_source
+    }
+
+    pub(crate) fn image_copy_capture(&mut self) -> &mut ImageCopyCaptureState {
+        &mut self.image_copy_capture
+    }
+
     pub(crate) fn capabilities(&self) -> ProtocolCapabilities {
+        // Link the tier catalog into non-test builds (docs / AGENTS contract).
+        let _tier_index = (
+            crate::protocol::PROTOCOL_CATALOG.len(),
+            crate::protocol::PROTOCOL_CATALOG
+                .iter()
+                .filter(|entry| entry.tier.preferred_for_new_work())
+                .count(),
+            crate::protocol::ProtocolTier::Core.as_str(),
+            crate::protocol::ProtocolTier::Proprietary.as_str(),
+        );
         let _global_owners = (
             &self.viewporter,
             &self.fractional_scale,
@@ -293,10 +349,17 @@ impl ProtocolGlobals {
             &self.toplevel_tag,
             &self.fifo,
             &self.commit_timing,
-            &self.xwayland_keyboard_grab,
             &self.virtual_pointer,
             &self.gamma_control,
+            &self.ext_workspace,
+            &self.output_management,
+            &self.image_capture_source,
+            &self.output_capture_source,
+            &self.toplevel_capture_source,
+            &self.image_copy_capture,
         );
+        #[cfg(feature = "xwayland")]
+        let _xwayland_global_owner = &self.xwayland_keyboard_grab;
         ProtocolCapabilities {
             viewporter: true,
             fractional_scale: true,
@@ -332,9 +395,13 @@ impl ProtocolGlobals {
             toplevel_tag: true,
             fifo: true,
             commit_timing: true,
-            xwayland_keyboard_grab: true,
+            xwayland_keyboard_grab: cfg!(feature = "xwayland"),
             virtual_pointer: true,
             gamma_control: true,
+            ext_workspace: true,
+            output_management: true,
+            image_capture_source: true,
+            image_copy_capture: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -384,6 +451,10 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) xwayland_keyboard_grab: bool,
     pub(crate) virtual_pointer: bool,
     pub(crate) gamma_control: bool,
+    pub(crate) ext_workspace: bool,
+    pub(crate) output_management: bool,
+    pub(crate) image_capture_source: bool,
+    pub(crate) image_copy_capture: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -394,7 +465,8 @@ pub(crate) struct ProtocolCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+    use calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
 
     use super::*;
     use crate::layout::{LayoutEngine, LayoutKind};
@@ -409,6 +481,19 @@ mod tests {
             LayoutEngine::new(LayoutKind::Scrolling1D),
             crate::scene::SceneAppearance::default(),
         );
+
+        // Tier catalog stays aligned with advertised desktop surface (docs contract).
+        assert!(
+            tensor_protocol::catalog_entry("ext-image-copy-capture")
+                .is_some_and(|e| e.prefer_over_community)
+        );
+        assert!(
+            tensor_protocol::catalog_entry("wlr-layer-shell")
+                .is_some_and(|e| e.tier == crate::protocol::ProtocolTier::Community)
+        );
+        assert!(crate::protocol::PROTOCOL_CATALOG.iter().any(|e| {
+            e.name == "ext-background-effect" && e.tier == crate::protocol::ProtocolTier::StagingExt
+        }));
 
         assert_eq!(
             state.protocol_globals.capabilities(),
@@ -447,9 +532,13 @@ mod tests {
                 toplevel_tag: true,
                 fifo: true,
                 commit_timing: true,
-                xwayland_keyboard_grab: true,
+                xwayland_keyboard_grab: cfg!(feature = "xwayland"),
                 virtual_pointer: true,
                 gamma_control: true,
+                ext_workspace: true,
+                output_management: true,
+                image_capture_source: true,
+                image_copy_capture: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

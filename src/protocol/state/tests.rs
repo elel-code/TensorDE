@@ -1,31 +1,23 @@
-use smithay::{
-    backend::allocator::{Format as DrmFormat, Fourcc, Modifier},
-    output::{Mode, Subpixel},
-    reexports::{calloop::EventLoop, wayland_server::Display},
-};
+use calloop::EventLoop;
+use smithay::reexports::wayland_server::Display;
+use tensor_host::{DrmFormat, Fourcc, Modifier, PhysicalMode, SubpixelLayout};
 
 use super::*;
 
 fn descriptor(connector_id: u32, name: &str, width: i32) -> OutputDescriptor {
-    let mode = Mode {
-        size: (width, 1080).into(),
-        refresh: 60_000,
-    };
+    let mode = PhysicalMode::new(width, 1080, 60_000);
     OutputDescriptor {
-        id: BackendOutputId {
-            device_id: 1,
-            connector_id,
-        },
+        id: BackendOutputId::new(1, connector_id),
         name: name.to_owned(),
         physical_size: (600, 340),
-        subpixel: Subpixel::HorizontalRgb,
+        subpixel: SubpixelLayout::HorizontalRgb,
         modes: vec![mode],
         mode,
         crtc: connector_id,
         native_format: crate::render::OutputFormat {
             format: DrmFormat {
-                code: Fourcc::Xrgb8888,
-                modifier: Modifier::from(9),
+                code: Fourcc::XRGB8888,
+                modifier: Modifier::from_raw(9),
             },
             plane_count: 1,
         },
@@ -82,10 +74,7 @@ fn output_events_keep_smithay_space_stable_across_hotplug() {
     assert_eq!(output_location(&state, "DP-2"), 1280);
 
     state
-        .apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId {
-            device_id: 1,
-            connector_id: 1,
-        })])
+        .apply_backend_output_events([BackendOutputEvent::Disconnected(BackendOutputId::new(1, 1))])
         .unwrap();
     assert_eq!(state.output_count(), 1);
     assert_eq!(output_location(&state, "DP-2"), 0);
@@ -148,14 +137,16 @@ fn every_connected_output_starts_a_redraw_cycle() {
             .values()
             .all(|state| state.needs_gpu_retry() || matches!(state, OutputRedrawState::Idle))
     );
-    assert!(state.redraw_states.contains_key(&BackendOutputId {
-        device_id: 1,
-        connector_id: 827,
-    }));
-    assert!(state.redraw_states.contains_key(&BackendOutputId {
-        device_id: 1,
-        connector_id: 830,
-    }));
+    assert!(
+        state
+            .redraw_states
+            .contains_key(&BackendOutputId::new(1, 827))
+    );
+    assert!(
+        state
+            .redraw_states
+            .contains_key(&BackendOutputId::new(1, 830))
+    );
 }
 
 #[test]
@@ -215,14 +206,8 @@ fn workspace_redraw_targets_only_the_primary_output() {
         ])
         .unwrap();
 
-    let primary = BackendOutputId {
-        device_id: 1,
-        connector_id: 1,
-    };
-    let secondary = BackendOutputId {
-        device_id: 1,
-        connector_id: 2,
-    };
+    let primary = BackendOutputId::new(1, 1);
+    let secondary = BackendOutputId::new(1, 2);
     // Simulate a settled dual-head session: both heads idle after first frame.
     state.redraw_states.insert(primary, OutputRedrawState::Idle);
     state
@@ -257,14 +242,8 @@ fn pointer_redraw_targets_only_the_output_under_the_cursor() {
         ])
         .unwrap();
 
-    let primary = BackendOutputId {
-        device_id: 1,
-        connector_id: 1,
-    };
-    let secondary = BackendOutputId {
-        device_id: 1,
-        connector_id: 2,
-    };
+    let primary = BackendOutputId::new(1, 1);
+    let secondary = BackendOutputId::new(1, 2);
     state.redraw_states.insert(primary, OutputRedrawState::Idle);
     state
         .redraw_states

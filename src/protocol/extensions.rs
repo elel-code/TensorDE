@@ -4,5 +4,7 @@
 //! and implement Smithay's modern `Dispatch2`/`GlobalDispatch2` so
 //! `delegate_dispatch2!(RuntimeState)` routes them correctly.
 
+pub mod ext_workspace;
 pub mod gamma_control;
+pub mod output_management;
 pub mod virtual_pointer;

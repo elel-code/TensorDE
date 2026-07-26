@@ -1,5 +1,4 @@
 use smithay::{
-    backend::allocator::Format,
     reexports::wayland_server::DisplayHandle,
     wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal, DmabufState},
 };
@@ -31,9 +30,12 @@ impl DmabufProtocol {
         &mut self,
         display: &DisplayHandle,
         main_device: libc::dev_t,
-        formats: impl IntoIterator<Item = Format>,
+        formats: impl IntoIterator<Item = tensor_host::DrmFormat>,
     ) -> Result<bool, String> {
-        let formats = formats.into_iter().collect::<Vec<_>>();
+        let formats = formats
+            .into_iter()
+            .map(crate::backend::smithay_drm_format)
+            .collect::<Vec<_>>();
         if formats.is_empty() {
             return Ok(false);
         }
@@ -55,10 +57,8 @@ impl DmabufProtocol {
 
 #[cfg(test)]
 mod tests {
-    use smithay::{
-        backend::allocator::{Format, Fourcc, Modifier},
-        reexports::wayland_server::Display,
-    };
+    use smithay::reexports::wayland_server::Display;
+    use tensor_host::{DrmFormat, Fourcc, Modifier};
 
     use super::*;
 
@@ -73,10 +73,7 @@ mod tests {
         );
         assert!(!protocol.advertised());
 
-        let format = Format {
-            code: Fourcc::Xrgb8888,
-            modifier: Modifier::from(9),
-        };
+        let format = DrmFormat::new(Fourcc::XRGB8888, Modifier::from_raw(9));
         assert!(protocol.install(&display.handle(), 0, [format]).unwrap());
         assert!(protocol.advertised());
     }

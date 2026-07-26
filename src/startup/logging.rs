@@ -3,8 +3,10 @@
 //! Smithay callbacks and Vulkan frame work may emit tracing events, but neither
 //! may wait for a terminal, journal, or filesystem write. This boundary turns
 //! each formatted record into a bounded value-only message and gives a single
-//! Compio-owned drain thread sole ownership of the output handle. Compio uses
-//! io_uring when the host supports it and falls back to polling otherwise.
+//! Compio-owned drain thread sole ownership of the output handle. Compio is a
+//! **completion** runtime (writes complete; no readiness loop). Linux product
+//! driver is io_uring; Compio's polling feature is only an automatic host
+//! fallback if io_uring cannot be created.
 //!
 //! `sequence::run` blocks termination signals before this worker exists, so
 //! the worker inherits the compositor's signal mask and never competes with

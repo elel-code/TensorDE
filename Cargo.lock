@@ -2040,13 +2040,22 @@ dependencies = [
  "calloop-wayland-source",
  "clap",
  "compio",
+ "drm-ffi",
  "gbm",
  "libc",
+ "rustix 1.1.4",
  "sd-notify",
  "serde",
  "serde_json",
  "smithay",
  "smithay-drm-extras",
+ "tensor-drm",
+ "tensor-event",
+ "tensor-host",
+ "tensor-input",
+ "tensor-present",
+ "tensor-protocol",
+ "tensor-runtime",
  "tensor-util",
  "thiserror",
  "toml",
@@ -2056,6 +2065,67 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "zbus",
+]
+
+[[package]]
+name = "tensor-drm"
+version = "0.1.0"
+dependencies = [
+ "tensor-host",
+ "tensor-util",
+ "thiserror",
+]
+
+[[package]]
+name = "tensor-event"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "tensor-host"
+version = "0.1.0"
+dependencies = [
+ "tensor-event",
+ "tensor-util",
+ "thiserror",
+]
+
+[[package]]
+name = "tensor-input"
+version = "0.1.0"
+dependencies = [
+ "tensor-event",
+ "tensor-host",
+]
+
+[[package]]
+name = "tensor-present"
+version = "0.1.0"
+dependencies = [
+ "tensor-host",
+ "tensor-util",
+ "thiserror",
+]
+
+[[package]]
+name = "tensor-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tensor-util",
+]
+
+[[package]]
+name = "tensor-runtime"
+version = "0.1.0"
+dependencies = [
+ "compio",
+ "rustix 1.1.4",
+ "tensor-event",
+ "thiserror",
 ]
 
 [[package]]

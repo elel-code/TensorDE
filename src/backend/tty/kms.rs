@@ -18,10 +18,7 @@ use smithay::{
 use thiserror::Error;
 use tracing::warn;
 
-use crate::{
-    backend::{BackendOutputId, OutputDescriptor},
-    render::NativeOutputBuffer,
-};
+use crate::backend::{BackendOutputId, OutputDescriptor};
 
 use super::{BackendError, TtyBackend};
 
@@ -142,7 +139,7 @@ impl KmsOutput {
         gbm: &GbmDevice<DrmDeviceFd>,
         descriptor: &OutputDescriptor,
         mode: DrmMode,
-        buffers: Vec<NativeOutputBuffer>,
+        buffers: Vec<(u8, Dmabuf)>,
     ) -> Result<Self, KmsError> {
         let crtc = crtc_handle(descriptor.crtc)?;
         let connector = connector_handle(descriptor.id.connector_id)?;
@@ -154,16 +151,17 @@ impl KmsOutput {
         }
 
         let mut slots = Vec::with_capacity(buffers.len());
-        for buffer in buffers {
+        for (slot, dmabuf) in buffers {
             let framebuffer =
-                framebuffer_from_dmabuf(surface.device_fd(), gbm, &buffer.dmabuf, true, false)
-                    .map_err(|source| KmsError::CreateFramebuffer {
-                        slot: buffer.slot,
+                framebuffer_from_dmabuf(surface.device_fd(), gbm, &dmabuf, true, false).map_err(
+                    |source| KmsError::CreateFramebuffer {
+                        slot,
                         message: source.to_string(),
-                    })?;
+                    },
+                )?;
             slots.push(KmsSlot {
-                slot: buffer.slot,
-                _dmabuf: buffer.dmabuf,
+                slot,
+                _dmabuf: dmabuf,
                 framebuffer,
             });
         }
@@ -173,7 +171,7 @@ impl KmsOutput {
             id: descriptor.id,
             name: descriptor.name.clone(),
             surface,
-            size: (descriptor.mode.size.w, descriptor.mode.size.h),
+            size: (descriptor.mode.width, descriptor.mode.height),
             slots,
             scanout: ScanoutState::default(),
         };

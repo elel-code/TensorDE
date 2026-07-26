@@ -1,18 +1,10 @@
 use std::{
     collections::BTreeMap,
     os::fd::{FromRawFd, OwnedFd},
+    sync::Arc,
 };
 
-use smithay::{
-    backend::{
-        allocator::{
-            Fourcc,
-            dmabuf::{Dmabuf, DmabufFlags, MAX_PLANES},
-        },
-        drm::DrmNode,
-    },
-    reexports::rustix::fs::makedev,
-};
+use tensor_host::Fourcc;
 use thiserror::Error;
 use vulkanalia::vk::{
     DeviceV1_0, ExtImageDrmFormatModifierExtensionDeviceCommands, HasBuilder, InstanceV1_0,
@@ -20,16 +12,17 @@ use vulkanalia::vk::{
 };
 use vulkanalia::{Device, Instance, vk};
 
-use crate::render::{DrmNodeId, NativeOutputTarget, RenderOutputId};
+use crate::render::{DmabufPlane, DrmNodeId, ExportedDmabuf, NativeOutputTarget, RenderOutputId};
 
 use super::{native_image_usage, vulkan_format_for_fourcc};
 
 const OUTPUT_IMAGE_COUNT: usize = 3;
+const MAX_DMABUF_PLANES: usize = 4;
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeOutputBuffer {
     pub(crate) slot: u8,
-    pub(crate) dmabuf: Dmabuf,
+    pub(crate) dmabuf: ExportedDmabuf,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,21 +38,18 @@ impl NativeOutputBuffer {
 }
 
 pub(super) struct NativeTargetManager {
-    render_node: DrmNode,
+    render_node: DrmNodeId,
     active: BTreeMap<RenderOutputId, NativeTargetSet>,
     retired: Vec<NativeTargetSet>,
 }
 
 impl NativeTargetManager {
-    pub(super) fn new(render_node: DrmNodeId) -> Result<Self, NativeTargetError> {
-        let device_id = makedev(render_node.major(), render_node.minor());
-        let render_node = DrmNode::from_dev_id(device_id)
-            .map_err(|error| NativeTargetError::DrmNode(error.to_string()))?;
-        Ok(Self {
+    pub(super) fn new(render_node: DrmNodeId) -> Self {
+        Self {
             render_node,
             active: BTreeMap::new(),
             retired: Vec::new(),
-        })
+        }
     }
 
     pub(super) fn register(
@@ -162,7 +152,7 @@ impl NativeTargetSet {
         instance: &Instance,
         device: &Device,
         physical_device: vk::PhysicalDevice,
-        render_node: DrmNode,
+        render_node: DrmNodeId,
         target: NativeOutputTarget,
     ) -> Result<Self, NativeTargetError> {
         let mut images = Vec::with_capacity(OUTPUT_IMAGE_COUNT);
@@ -198,7 +188,7 @@ struct NativeOutputImage {
     view: vk::ImageView,
     view_info: vk::ImageViewCreateInfo,
     foreign_owned: bool,
-    dmabuf: Dmabuf,
+    dmabuf: ExportedDmabuf,
 }
 
 impl NativeOutputImage {
@@ -206,13 +196,13 @@ impl NativeOutputImage {
         instance: &Instance,
         device: &Device,
         physical_device: vk::PhysicalDevice,
-        render_node: DrmNode,
+        render_node: DrmNodeId,
         target: NativeOutputTarget,
     ) -> Result<Self, NativeImageError> {
         let vulkan_format = vulkan_format_for_fourcc(target.format.format.code).ok_or(
             NativeImageError::UnsupportedFourcc(target.format.format.code),
         )?;
-        let drm_modifier = u64::from(target.format.format.modifier);
+        let drm_modifier = target.format.format.modifier.raw();
         let modifiers = [drm_modifier];
         let mut modifier_info =
             vk::ImageDrmFormatModifierListCreateInfoEXT::builder().drm_format_modifiers(&modifiers);
@@ -259,7 +249,7 @@ impl NativeOutputImage {
         instance: &Instance,
         device: &Device,
         physical_device: vk::PhysicalDevice,
-        render_node: DrmNode,
+        render_node: DrmNodeId,
         target: NativeOutputTarget,
         vulkan_format: vk::Format,
         drm_modifier: u64,
@@ -340,12 +330,12 @@ impl NativeOutputImage {
 
 fn export_dmabuf(
     device: &Device,
-    render_node: DrmNode,
+    render_node: DrmNodeId,
     target: NativeOutputTarget,
     expected_modifier: u64,
     image: vk::Image,
     memory: vk::DeviceMemory,
-) -> Result<Dmabuf, NativeImageError> {
+) -> Result<ExportedDmabuf, NativeImageError> {
     let mut modifier_properties = vk::ImageDrmFormatModifierPropertiesEXT::default();
     unsafe { device.get_image_drm_format_modifier_properties_ext(image, &mut modifier_properties) }
         .map_err(NativeImageError::QueryModifier)?;
@@ -360,23 +350,15 @@ fn export_dmabuf(
         .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
     let raw_fd =
         unsafe { device.get_memory_fd_khr(&fd_info) }.map_err(NativeImageError::ExportMemoryFd)?;
-    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-    let width = i32::try_from(target.viewport.width).map_err(|_| NativeImageError::SizeOverflow)?;
-    let height =
-        i32::try_from(target.viewport.height).map_err(|_| NativeImageError::SizeOverflow)?;
-    let mut builder = Dmabuf::builder(
-        (width, height),
-        target.format.format.code,
-        target.format.format.modifier,
-        DmabufFlags::empty(),
-    );
+    let fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_fd) });
     let plane_count = usize::try_from(target.format.plane_count)
         .map_err(|_| NativeImageError::InvalidPlaneCount(target.format.plane_count))?;
-    if plane_count == 0 || plane_count > MAX_PLANES {
+    if plane_count == 0 || plane_count > MAX_DMABUF_PLANES {
         return Err(NativeImageError::InvalidPlaneCount(
             target.format.plane_count,
         ));
     }
+    let mut planes = Vec::with_capacity(plane_count);
     for plane in 0..plane_count {
         let subresource = vk::ImageSubresource::builder()
             .aspect_mask(memory_plane_aspect(plane))
@@ -386,17 +368,18 @@ fn export_dmabuf(
         let offset = u32::try_from(layout.offset).map_err(|_| NativeImageError::LayoutOverflow)?;
         let stride =
             u32::try_from(layout.row_pitch).map_err(|_| NativeImageError::LayoutOverflow)?;
-        let plane_fd = fd
-            .try_clone()
-            .map_err(|source| NativeImageError::DuplicateFd(source.to_string()))?;
-        if !builder.add_plane(plane_fd, offset, stride) {
-            return Err(NativeImageError::InvalidPlaneCount(
-                target.format.plane_count,
-            ));
-        }
+        planes.push(DmabufPlane {
+            fd: Arc::clone(&fd),
+            offset,
+            stride,
+        });
     }
-    builder.set_node(render_node);
-    builder.build().ok_or(NativeImageError::AssembleDmabuf)
+    Ok(ExportedDmabuf {
+        size: target.viewport.size(),
+        format: target.format.format,
+        node: Some(render_node),
+        planes,
+    })
 }
 
 fn memory_plane_aspect(plane: usize) -> vk::ImageAspectFlags {
@@ -405,7 +388,7 @@ fn memory_plane_aspect(plane: usize) -> vk::ImageAspectFlags {
         1 => vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
         2 => vk::ImageAspectFlags::MEMORY_PLANE_2_EXT,
         3 => vk::ImageAspectFlags::MEMORY_PLANE_3_EXT,
-        _ => unreachable!("plane count is bounded by Smithay MAX_PLANES"),
+        _ => unreachable!("plane count is bounded by MAX_DMABUF_PLANES"),
     }
 }
 
@@ -428,8 +411,6 @@ fn select_memory_type(
 
 #[derive(Debug, Error)]
 pub(super) enum NativeTargetError {
-    #[error("failed to resolve the selected DRM render node: {0}")]
-    DrmNode(String),
     #[error("failed to create native output image slot {slot}: {source}")]
     CreateSlot {
         slot: usize,
@@ -457,16 +438,10 @@ pub(super) enum NativeImageError {
     ModifierMismatch { expected: u64, actual: u64 },
     #[error("failed to export Vulkan image memory as a dma-buf fd: {0:?}")]
     ExportMemoryFd(vk::ErrorCode),
-    #[error("failed to duplicate a dma-buf plane fd: {0}")]
-    DuplicateFd(String),
-    #[error("output dimensions exceed Smithay's signed buffer coordinates")]
-    SizeOverflow,
     #[error("dma-buf plane offset or stride exceeds the Linux u32 ABI")]
     LayoutOverflow,
     #[error("native output reports unsupported plane count {0}")]
     InvalidPlaneCount(u32),
-    #[error("failed to assemble the exported Smithay dma-buf")]
-    AssembleDmabuf,
 }
 
 #[cfg(test)]
@@ -500,7 +475,9 @@ mod tests {
     #[test]
     fn every_supported_dmabuf_plane_has_a_vulkan_memory_aspect() {
         assert_eq!(
-            (0..MAX_PLANES).map(memory_plane_aspect).collect::<Vec<_>>(),
+            (0..MAX_DMABUF_PLANES)
+                .map(memory_plane_aspect)
+                .collect::<Vec<_>>(),
             vec![
                 vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
                 vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,

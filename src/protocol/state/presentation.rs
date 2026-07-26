@@ -396,14 +396,8 @@ mod tests {
 
     use super::*;
 
-    const OUTPUT: BackendOutputId = BackendOutputId {
-        device_id: 1,
-        connector_id: 2,
-    };
-    const SECOND_OUTPUT: BackendOutputId = BackendOutputId {
-        device_id: 1,
-        connector_id: 3,
-    };
+    const OUTPUT: BackendOutputId = BackendOutputId::new(1, 2);
+    const SECOND_OUTPUT: BackendOutputId = BackendOutputId::new(1, 3);
 
     fn feedback() -> OutputPresentationFeedback {
         let output = Output::new(

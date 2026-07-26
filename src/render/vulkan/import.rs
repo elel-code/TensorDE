@@ -3,12 +3,12 @@ use std::{
     os::fd::{AsFd, AsRawFd, IntoRawFd},
 };
 
-use smithay::backend::allocator::{Buffer, Fourcc, dmabuf::Dmabuf};
+use tensor_host::Fourcc;
 use thiserror::Error;
 use vulkanalia::vk::{DeviceV1_0, HasBuilder, KhrExternalMemoryFdExtensionDeviceCommands};
 use vulkanalia::{Device, vk};
 
-use crate::ecs::SurfaceBufferId;
+use crate::{ecs::SurfaceBufferId, render::Dmabuf};
 
 use super::vulkan_format_for_fourcc;
 
@@ -37,11 +37,11 @@ pub(super) struct ClientImageInfo {
 }
 
 impl ClientImageCache {
-    pub(super) fn import(
+    pub(super) fn import<F: AsFd>(
         &mut self,
         id: SurfaceBufferId,
         device: &Device,
-        dmabuf: &Dmabuf,
+        dmabuf: &Dmabuf<F>,
     ) -> Result<(), ClientImportError> {
         if self.active.contains_key(&id) {
             return Ok(());
@@ -120,12 +120,13 @@ struct ImportedClientImage {
 }
 
 impl ImportedClientImage {
-    fn create(device: &Device, dmabuf: &Dmabuf) -> Result<Self, ClientImportError> {
-        let format = dmabuf.format();
-        let vulkan_format = vulkan_format_for_fourcc(format.code)
-            .ok_or(ClientImportError::UnsupportedFourcc(format.code))?;
+    fn create<F: AsFd>(device: &Device, dmabuf: &Dmabuf<F>) -> Result<Self, ClientImportError> {
+        let format = dmabuf.format;
+        let host_code = format.code;
+        let vulkan_format = vulkan_format_for_fourcc(host_code)
+            .ok_or(ClientImportError::UnsupportedFourcc(host_code))?;
         let shape = validate_shape(dmabuf)?;
-        let fd = dmabuf.handles().next().ok_or(ClientImportError::NoPlanes)?;
+        let fd = &dmabuf.planes.first().ok_or(ClientImportError::NoPlanes)?.fd;
         let plane_layout = vk::SubresourceLayout::builder()
             .offset(u64::from(shape.offset))
             .size(0)
@@ -135,7 +136,7 @@ impl ImportedClientImage {
             .build();
         let plane_layouts = [plane_layout];
         let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::builder()
-            .drm_format_modifier(u64::from(format.modifier))
+            .drm_format_modifier(format.modifier.raw())
             .plane_layouts(&plane_layouts);
         let mut external_info = vk::ExternalMemoryImageCreateInfo::builder()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -172,7 +173,7 @@ impl ImportedClientImage {
             r: vk::ComponentSwizzle::IDENTITY,
             g: vk::ComponentSwizzle::IDENTITY,
             b: vk::ComponentSwizzle::IDENTITY,
-            a: if is_opaque(format.code) {
+            a: if is_opaque(host_code) {
                 vk::ComponentSwizzle::ONE
             } else {
                 vk::ComponentSwizzle::IDENTITY
@@ -275,23 +276,23 @@ struct ImportShape {
     stride: u32,
 }
 
-fn validate_shape(dmabuf: &Dmabuf) -> Result<ImportShape, ClientImportError> {
-    let size = dmabuf.size();
-    let width = u32::try_from(size.w).map_err(|_| ClientImportError::InvalidDimensions)?;
-    let height = u32::try_from(size.h).map_err(|_| ClientImportError::InvalidDimensions)?;
+fn validate_shape<F>(dmabuf: &Dmabuf<F>) -> Result<ImportShape, ClientImportError> {
+    let width = dmabuf.size.width;
+    let height = dmabuf.size.height;
     if width == 0 || height == 0 {
         return Err(ClientImportError::InvalidDimensions);
     }
-    if dmabuf.num_planes() != 1 {
+    if dmabuf.planes.len() != 1 {
         return Err(ClientImportError::UnsupportedPlaneCount(
-            dmabuf.num_planes(),
+            dmabuf.planes.len(),
         ));
     }
-    if dmabuf.format().modifier == smithay::backend::allocator::Modifier::Invalid {
+    if dmabuf.format.modifier.is_invalid() {
         return Err(ClientImportError::ImplicitModifier);
     }
-    let offset = dmabuf.offsets().next().ok_or(ClientImportError::NoPlanes)?;
-    let stride = dmabuf.strides().next().ok_or(ClientImportError::NoPlanes)?;
+    let plane = dmabuf.planes.first().ok_or(ClientImportError::NoPlanes)?;
+    let offset = plane.offset;
+    let stride = plane.stride;
     if stride == 0 {
         return Err(ClientImportError::InvalidStride);
     }
@@ -306,7 +307,7 @@ fn validate_shape(dmabuf: &Dmabuf) -> Result<ImportShape, ClientImportError> {
 fn is_opaque(format: Fourcc) -> bool {
     matches!(
         format,
-        Fourcc::Xrgb8888 | Fourcc::Xbgr8888 | Fourcc::Xrgb2101010 | Fourcc::Xbgr2101010
+        Fourcc::XRGB8888 | Fourcc::XBGR8888 | Fourcc::XRGB2101010 | Fourcc::XBGR2101010
     )
 }
 
@@ -342,29 +343,37 @@ pub(super) enum ClientImportError {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, os::fd::AsFd};
+    use std::{fs::File, os::fd::OwnedFd};
 
-    use smithay::backend::allocator::{Fourcc, Modifier, dmabuf::DmabufFlags};
+    use tensor_host::{DrmFormat, Modifier};
+    use tensor_util::Size;
 
     use super::*;
+    use crate::render::DmabufPlane;
 
-    fn dmabuf(size: (i32, i32), planes: usize, modifier: Modifier, stride: u32) -> Dmabuf {
-        let file = File::open("/dev/null").unwrap();
-        let mut builder = Dmabuf::builder(size, Fourcc::Xrgb8888, modifier, DmabufFlags::empty());
-        for _ in 0..planes {
-            assert!(builder.add_plane(file.as_fd().try_clone_to_owned().unwrap(), 0, stride));
+    fn dmabuf(size: Size, planes: usize, modifier: Modifier, stride: u32) -> Dmabuf<OwnedFd> {
+        Dmabuf {
+            size,
+            format: DrmFormat::new(Fourcc::XRGB8888, modifier),
+            node: None,
+            planes: (0..planes)
+                .map(|_| DmabufPlane {
+                    fd: File::open("/dev/null").unwrap().into(),
+                    offset: 0,
+                    stride,
+                })
+                .collect(),
         }
-        builder.build().unwrap()
     }
 
     #[test]
     fn client_import_shape_rejects_implicit_and_multi_plane_buffers() {
         assert!(matches!(
-            validate_shape(&dmabuf((64, 64), 1, Modifier::Invalid, 256)),
+            validate_shape(&dmabuf(Size::new(64, 64), 1, Modifier::INVALID, 256)),
             Err(ClientImportError::ImplicitModifier)
         ));
         assert!(matches!(
-            validate_shape(&dmabuf((64, 64), 2, Modifier::from(9), 256)),
+            validate_shape(&dmabuf(Size::new(64, 64), 2, Modifier::from_raw(9), 256)),
             Err(ClientImportError::UnsupportedPlaneCount(2))
         ));
     }
@@ -372,7 +381,7 @@ mod tests {
     #[test]
     fn client_import_shape_preserves_explicit_plane_layout() {
         assert_eq!(
-            validate_shape(&dmabuf((128, 72), 1, Modifier::from(9), 512)).unwrap(),
+            validate_shape(&dmabuf(Size::new(128, 72), 1, Modifier::from_raw(9), 512)).unwrap(),
             ImportShape {
                 width: 128,
                 height: 72,

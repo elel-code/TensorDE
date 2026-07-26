@@ -2,8 +2,9 @@
 //!
 //! Process creation and transient-systemd scope setup can wait on fork setup,
 //! the user D-Bus, and a systemd job. They therefore never execute from a
-//! calloop callback. The compositor submits value-only requests, while this
-//! worker returns value-only outcomes through a bounded calloop channel.
+//! compositor wait callback. The compositor submits value-only requests, while
+//! this worker returns value-only outcomes through a bounded channel (calloop
+//! today; reactor-agnostic `SyncSender` so Compio can own the wait later).
 
 use std::{
     ffi::{OsStr, OsString},
@@ -12,7 +13,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use smithay::reexports::calloop::channel::SyncSender as CalloopSender;
+use calloop::channel::SyncSender as OutcomeSender;
 use thiserror::Error;
 use tracing::warn;
 
@@ -63,7 +64,7 @@ impl LaunchRequest {
     }
 }
 
-/// Completion information delivered back to the calloop thread.
+/// Completion information delivered back to the compositor thread.
 #[derive(Debug)]
 pub struct LaunchOutcome {
     id: u64,
@@ -85,7 +86,7 @@ impl LaunchOutcome {
     }
 }
 
-/// Cloneable, value-only handle for queueing launches from calloop callbacks.
+/// Cloneable, value-only handle for queueing launches from the compositor.
 ///
 /// The worker thread owns process creation; this handle only performs a
 /// non-blocking send of a fully resolved request.
@@ -115,7 +116,7 @@ pub struct LaunchWorker {
 impl LaunchWorker {
     pub fn new(
         launcher: ProcessLauncher,
-        outcomes: CalloopSender<LaunchOutcome>,
+        outcomes: OutcomeSender<LaunchOutcome>,
     ) -> Result<Self, LaunchWorkerError> {
         let (requests, receiver) = mpsc::sync_channel(MAX_PENDING_LAUNCHES);
         let thread = thread::Builder::new()
@@ -128,7 +129,7 @@ impl LaunchWorker {
         })
     }
 
-    /// Cloneable submit handle for IPC and other calloop-owned paths.
+    /// Cloneable submit handle for IPC and other compositor-owned paths.
     pub fn submitter(&self) -> LaunchSubmitter {
         self.submitter.clone()
     }
@@ -142,7 +143,7 @@ impl LaunchWorker {
 fn run(
     launcher: ProcessLauncher,
     requests: Receiver<LaunchRequest>,
-    outcomes: CalloopSender<LaunchOutcome>,
+    outcomes: OutcomeSender<LaunchOutcome>,
 ) {
     while let Ok(request) = requests.recv() {
         let LaunchRequest {
@@ -196,7 +197,7 @@ pub enum LaunchWorkerError {
 mod tests {
     use std::{fs, path::PathBuf, thread, time::Duration};
 
-    use smithay::reexports::calloop::channel::sync_channel;
+    use calloop::channel::sync_channel;
 
     use super::*;
     use crate::service::SystemdMode;

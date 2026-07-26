@@ -6,14 +6,26 @@ APIs for their own sake.
 
 ## Core Direction
 
-- Smithay `master` owns the Wayland protocol, input, session, calloop, DRM/KMS, GBM, connector,
-  CRTC, page-flip, and scanout lifecycle.
-- Smithay/calloop remains the compositor event loop and owns Wayland, input, session, DRM/KMS,
-  and presentation state; this does not prohibit asynchronous work. Tensor-owned local async I/O
-  should prefer Compio and its io_uring path on supported Linux hosts. Async workers exchange
-  bounded, value-only messages with the compositor and never own Smithay objects or DRM/KMS file
-  descriptors. Do not force native dependencies such as zbus onto blocking APIs merely to avoid
-  async, and do not add an unused runtime as a marker dependency.
+- **Event layer (Tensor-owned):** `tensor-event` owns value-only events, fixed-capacity
+  phase-bucketed queues, coalescing (pointer motion / per-output vblank), and dispatch order.
+  Policy must not depend on calloop callback order. See `docs/event-layer.md`.
+- **Runtime (Compio = completion model, io_uring driver):** `tensor-runtime` owns Compio workers
+  and turn contracts (`run_turn`, `EventfdWake`, `CompletionDriver::IoUring`). Compio is
+  **submit → complete**, not a readiness poll loop. On Linux the product driver is **io_uring**;
+  Compio's `polling` feature is only an automatic host fallback when io_uring cannot be created —
+  never the architecture we design for. Async workers exchange value-only messages only and never
+  own Wayland objects or DRM/KMS file descriptors. Do not force native dependencies such as zbus
+  onto blocking APIs merely to avoid async, and do not add an unused runtime as a marker dependency.
+- **Smithay (mature adapter, transitional):** Smithay `master` still provides Wayland protocol
+  objects, input/session/DRM bindings, and (today) a calloop readiness loop. Borrow its patterns
+  (sources, bounded channels, idle-after-wait) but route semantics through `tensor-event`.
+  Page-flip and KMS submission stay on the compositor thread; Compio does not own scanout.
+  Replacing calloop means expressing the same work as **Compio-completed ops** (io_uring driver),
+  not re-homing a poll/epoll readiness registry.
+  **Exit path:** policy and value types live in `tensor-host` / `tensor-drm` /
+  `tensor-present` / `tensor-input` (and later `tensor-protocol`). Smithay may only appear in
+  adapter modules that map to those crates. See `docs/smithay-exit.md`. Do not add new
+  compositor policy that depends on `smithay::` types outside adapters.
 - Vulkanalia is the renderer binding. The renderer requires Vulkan `VK_EXT_descriptor_heap` and
   models it as a first-class `DescriptorHeap`. Descriptor sets are not a backend and must not be
   added as a compatibility path. Native devices also require external dma-buf memory, explicit DRM
@@ -35,13 +47,22 @@ APIs for their own sake.
   surface rather than growing a second hot-reload dialect.
 - IPC is a versioned Unix-socket protocol with request IDs, bounded length-prefixed frames, and
   structured errors. It is a new protocol surface; do not add compatibility shims prematurely.
-- Wayland protocol selection prefers **standardized / `ext-*` / `wp-*` / `xdg-*` surfaces** over
-  **`zwlr_*` (wlr)** when both cover the same capability. Implement the ext path first and treat
-  wlr as optional only when no standard equivalent exists (for example `wlr-layer-shell` today) or
-  when a critical client ecosystem still cannot bind the ext global. Do not add a wlr twin solely
-  for parity with Hyprland/Niri if Tensor already advertises the ext protocol. Capture work should
-  target `ext-image-copy-capture` / `ext-image-capture-source` rather than `zwlr-screencopy`. See
-  `docs/protocol-surface.md`.
+- Wayland protocol work follows **wayland-protocols / Smithay-style tiers** (see
+  `docs/protocol-surface.md`). Prefer higher tiers; never invent a twin in a lower tier for
+  compositor-parity alone:
+  1. **Core** — `wayland.xml` (compositor, seat, shm, …)
+  2. **Stable standard** — `xdg-*`, mature `wp-*` (viewporter, presentation-time, linux-dmabuf, …)
+  3. **Staging / `ext-*`** — ready for adoption; implement when the feature is needed (session-lock,
+     foreign-toplevel-list, image-copy-capture, background-effect, …)
+  4. **Unstable (`z*`)** — legacy only; prefer a staging/stable replacement when one exists
+  5. **Community** — `wayland-protocols-wlr` / plasma / misc; use only when no tier-2/3 equivalent
+     exists (e.g. `wlr-layer-shell` today) or a critical client cannot bind the standard global
+  6. **Proprietary** (hyprland-*, kde server-decoration as policy, …) — out of scope unless
+     explicitly productized
+  Within the same capability, **`ext-*` / staging beats `zwlr_*`**. Capture targets
+  `ext-image-copy-capture` / `ext-image-capture-source`, not `zwlr-screencopy`. Smithay modules and
+  Dispatch2 are the preferred implementation vehicle; Tensor-owned protocol code stays value-only
+  at the ECS/render boundary.
 - systemd readiness/activation is optional behind a Cargo feature. Core startup must work without
   systemd. Follow Niri's session lifecycle: a compiled `tensor-session` launcher, a user service,
   graphical-session targets, explicit environment publication, and readiness only after gates.
@@ -82,7 +103,8 @@ Keep this order explicit and testable:
 1. Parse CLI and environment overrides.
 2. Resolve the TOML path and load/validate the complete configuration.
 3. Initialize logging and diagnostics.
-4. Create the calloop event loop and Smithay display/protocol state.
+4. Create the event reactor (calloop today; Compio-oriented `tensor-runtime` workers already)
+   and Smithay display/protocol state; compositor turns should drain into `tensor-event`.
 5. Probe Vulkan and require the descriptor-heap feature before allocating renderer state.
 6. Bind the IPC socket and optional portal/systemd adapters.
 7. Construct ECS resources/components and the initial scene.

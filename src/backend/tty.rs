@@ -6,16 +6,12 @@ use std::{
 
 use smithay::{
     backend::{
-        allocator::{
-            Format as DrmFormat,
-            gbm::{GbmBufferFlags, GbmDevice},
-        },
+        allocator::gbm::{GbmBufferFlags, GbmDevice},
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent},
     },
-    output::{Mode, Subpixel},
     reexports::{
         calloop::{
             Dispatcher, LoopHandle, RegistrationToken,
@@ -32,15 +28,21 @@ use tracing::{debug, info, trace, warn};
 
 use super::{
     BackendConfig, BackendOutputEvent,
-    output::{ConnectorSnapshot, ConnectorState, OutputPlan, OutputPolicy, diff_output_plans},
+    host_map::{
+        host_drm_format, physical_mode_from_smithay, smithay_drm_format, subpixel_from_smithay,
+    },
+    output::{ConnectorSnapshot, OutputPlan, OutputPolicy, diff_output_plans},
 };
 use crate::{
     protocol::RuntimeState,
     render::{GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats},
 };
+use tensor_host::{ConnectorState, DrmFormat};
 
 mod buffers;
+mod gamma;
 mod kms;
+mod management;
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
@@ -65,6 +67,8 @@ struct OpenDevice {
     connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
     output_formats: BTreeMap<super::BackendOutputId, Vec<OutputFormat>>,
     native_targets: BTreeMap<super::BackendOutputId, kms::KmsOutput>,
+    /// Per-output gamma LUT state (atomic blob or legacy). Not on the flip path.
+    gamma: BTreeMap<super::BackendOutputId, gamma::OutputGamma>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,6 +199,31 @@ impl TtyBackend {
         std::mem::take(&mut self.pending_outputs)
     }
 
+    /// Runtime output policy table (for IPC introspection).
+    pub(crate) fn output_rules(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::config::OutputRule> {
+        self.output_policy.rules()
+    }
+
+    /// Upsert one named rule and replan (position / enable / scale intent).
+    ///
+    /// Mode/CRTC rebinding still needs a completed modeset generation for
+    /// buffer replacement; plan diffs surface as topology events.
+    pub(crate) fn upsert_output_rule(&mut self, name: String, rule: crate::config::OutputRule) {
+        self.output_policy.upsert_rule(name, rule);
+        self.reconcile_outputs();
+    }
+
+    /// Replace output policy atomically and produce one topology diff.
+    pub(crate) fn replace_output_rules(
+        &mut self,
+        rules: std::collections::BTreeMap<String, crate::config::OutputRule>,
+    ) {
+        self.output_policy = OutputPolicy::new(rules);
+        self.reconcile_outputs();
+    }
+
     pub(crate) fn schedule_renderer_retry(&self) -> Result<(), String> {
         self.loop_handle
             .insert_source(
@@ -220,24 +249,38 @@ impl TtyBackend {
             .map(|device| device.drm.device_fd().clone())
     }
 
-    /// Request a libseat-mediated VT change. Smithay retains all DRM and
-    /// session lifecycle ownership around the resulting pause/activation.
     /// LUT size for `zwlr_gamma_control_v1`, when the CRTC exposes gamma.
     pub(crate) fn gamma_size(&self, output: &smithay::output::Output) -> Option<u32> {
-        let _ = (self, output);
-        // Full KMS gamma LUT wiring follows Niri's GammaProps path; until then
-        // clients learn that gamma is unavailable (None) rather than a fake size.
-        None
+        let id = *output.user_data().get::<super::BackendOutputId>()?;
+        let device = self.devices.get(&(id.device_id as libc::dev_t))?;
+        let state = device.gamma.get(&id)?;
+        state.gamma_size(&device.drm)
     }
 
     /// Apply or reset a gamma ramp for an output (protocol boundary).
+    ///
+    /// Does not touch scanout or renderer state; cost is one property/blob
+    /// ioctl (or legacy gamma ioctl) proportional to the hardware LUT length.
     pub(crate) fn set_gamma(
         &mut self,
         output: &smithay::output::Output,
         ramp: Option<&[u16]>,
     ) -> Option<()> {
-        let _ = (self, output, ramp);
-        None
+        let id = *output.user_data().get::<super::BackendOutputId>()?;
+        let session_active = self.session.is_active();
+        let device = self.devices.get_mut(&(id.device_id as libc::dev_t))?;
+        let state = device.gamma.get_mut(&id)?;
+        match state.set_gamma(&device.drm, ramp, session_active) {
+            Ok(()) => Some(()),
+            Err(error) => {
+                warn!(
+                    output = %output.name(),
+                    %error,
+                    "failed to apply gamma ramp"
+                );
+                None
+            }
+        }
     }
 
     pub(crate) fn change_vt(&mut self, vt: i32) {
@@ -289,6 +332,9 @@ impl TtyBackend {
                 for device in self.devices.values_mut() {
                     if let Err(error) = device.drm.activate(false) {
                         warn!(%error, "failed to reactivate DRM device");
+                    }
+                    for gamma in device.gamma.values_mut() {
+                        gamma.restore_after_session_resume(&device.drm);
                     }
                 }
                 let devices = self
@@ -408,6 +454,7 @@ impl TtyBackend {
                 connectors: BTreeMap::new(),
                 output_formats: BTreeMap::new(),
                 native_targets: BTreeMap::new(),
+                gamma: BTreeMap::new(),
             },
         );
         self.topology_generation = self.topology_generation.wrapping_add(1);
@@ -475,6 +522,7 @@ impl TtyBackend {
                     })
                     .collect::<std::collections::BTreeSet<_>>();
                 device.native_targets.retain(|id, _| unchanged.contains(id));
+                device.gamma.retain(|id, _| unchanged.contains(id));
                 device.connectors = current;
                 device.output_formats = output_formats;
                 true
@@ -494,9 +542,31 @@ impl TtyBackend {
                 .values()
                 .flat_map(|device| device.connectors.values()),
         );
+        self.ensure_gamma_for_plan(&current);
         self.pending_outputs
             .extend(diff_output_plans(&self.outputs, &current));
         self.outputs = current;
+    }
+
+    /// Bind gamma state for every planned output (cheap: property probe once).
+    fn ensure_gamma_for_plan(&mut self, plan: &OutputPlan) {
+        for descriptor in plan.values() {
+            let device_id = descriptor.id.device_id as libc::dev_t;
+            let Some(device) = self.devices.get_mut(&device_id) else {
+                continue;
+            };
+            if device.gamma.contains_key(&descriptor.id) {
+                continue;
+            }
+            let Some(crtc) = gamma::crtc_handle(descriptor.crtc) else {
+                continue;
+            };
+            let state = gamma::OutputGamma::new(&device.drm, crtc);
+            device.gamma.insert(descriptor.id, state);
+        }
+        for device in self.devices.values_mut() {
+            device.gamma.retain(|id, _| plan.contains_key(id));
+        }
     }
 }
 
@@ -539,8 +609,9 @@ fn negotiate_device_output_formats(
             .flat_map(|plane| plane.formats.iter())
             .copied()
         {
-            if !kms_scanout.contains(&format) {
-                kms_scanout.push(format);
+            let host = host_drm_format(format);
+            if !kms_scanout.contains(&host) {
+                kms_scanout.push(host);
             }
         }
 
@@ -548,12 +619,15 @@ fn negotiate_device_output_formats(
         let gbm = kms_scanout
             .iter()
             .copied()
-            .map(|format| GbmFormatCapability {
-                format,
-                scanout: device.gbm.is_format_supported(format.code, usage),
-                plane_count: device
-                    .gbm
-                    .format_modifier_plane_count(format.code, format.modifier),
+            .map(|format| {
+                let smithay = smithay_drm_format(format);
+                GbmFormatCapability {
+                    format,
+                    scanout: device.gbm.is_format_supported(smithay.code, usage),
+                    plane_count: device
+                        .gbm
+                        .format_modifier_plane_count(smithay.code, smithay.modifier),
+                }
             })
             .collect::<Vec<_>>();
         let candidates =
@@ -568,7 +642,7 @@ fn negotiate_device_output_formats(
             device_id,
             output = output.name,
             format = %preferred.format.code,
-            modifier = %format_args!("{:#x}", u64::from(preferred.format.modifier)),
+            modifier = %preferred.format.modifier,
             planes = preferred.plane_count,
             candidates = candidates.len(),
             "native output formats negotiated"
@@ -592,7 +666,7 @@ fn describe_connector(
                 .flags()
                 .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
         })
-        .map(Mode::from)
+        .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
         .collect::<Vec<_>>();
     let preferred_mode = connector
         .modes()
@@ -605,14 +679,11 @@ fn describe_connector(
                     .flags()
                     .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
         })
-        .map(Mode::from)
+        .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
         .or_else(|| modes.first().copied());
     let physical_size = connector.size().unwrap_or((0, 0));
     ConnectorSnapshot {
-        id: super::BackendOutputId {
-            device_id,
-            connector_id: connector.handle().into(),
-        },
+        id: super::BackendOutputId::new(device_id, connector.handle().into()),
         name: connector.to_string(),
         state: match connector.state() {
             smithay::reexports::drm::control::connector::State::Connected => {
@@ -624,7 +695,7 @@ fn describe_connector(
             smithay::reexports::drm::control::connector::State::Unknown => ConnectorState::Unknown,
         },
         physical_size: (physical_size.0 as i32, physical_size.1 as i32),
-        subpixel: Subpixel::from(connector.subpixel()),
+        subpixel: subpixel_from_smithay(smithay::output::Subpixel::from(connector.subpixel())),
         modes,
         preferred_mode,
         mapped_crtc: crtc.map(Into::into),

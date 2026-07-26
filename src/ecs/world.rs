@@ -312,6 +312,13 @@ impl CompositorWorld {
         Ok(())
     }
 
+    pub fn view_effects(&self, view_id: ViewId) -> Option<EffectStyle> {
+        let entity = self.view_entities.get(&view_id).copied()?;
+        self.world
+            .get::<ViewEffects>(entity)
+            .map(|effects| effects.0)
+    }
+
     pub fn set_view_effects(
         &mut self,
         view_id: ViewId,
@@ -511,6 +518,11 @@ impl CompositorWorld {
             .iter(&self.world)
             .filter(|workspace| workspace.id == workspace_id)
             .count()
+    }
+
+    pub fn view_workspace(&self, view_id: ViewId) -> Option<WorkspaceId> {
+        let entity = self.view_entities.get(&view_id).copied()?;
+        self.world.get::<Workspace>(entity).map(|ws| ws.id)
     }
 
     pub fn geometry(&self, view_id: ViewId) -> Option<Rect> {

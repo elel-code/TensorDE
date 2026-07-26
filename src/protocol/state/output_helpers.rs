@@ -23,8 +23,8 @@ pub(super) fn renderer_target(descriptor: &OutputDescriptor) -> NativeOutputTarg
         viewport: Rect::new(
             0,
             0,
-            u32::try_from(descriptor.mode.size.w).unwrap_or(0),
-            u32::try_from(descriptor.mode.size.h).unwrap_or(0),
+            u32::try_from(descriptor.mode.width).unwrap_or(0),
+            u32::try_from(descriptor.mode.height).unwrap_or(0),
         ),
         format: descriptor.native_format,
         scale: descriptor.scale,

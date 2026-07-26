@@ -1,4 +1,4 @@
-use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+use tensor_host::{DrmFormat, Fourcc, Modifier};
 use tensor_util::{OutputScale, Rect, Size};
 
 use crate::{
@@ -24,8 +24,8 @@ fn target() -> NativeOutputTarget {
         viewport: VIEWPORT,
         format: OutputFormat {
             format: DrmFormat {
-                code: Fourcc::Xrgb8888,
-                modifier: Modifier::from(9),
+                code: Fourcc::XRGB8888,
+                modifier: Modifier::from_raw(9),
             },
             plane_count: 1,
         },

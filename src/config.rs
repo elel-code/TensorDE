@@ -80,9 +80,8 @@ impl OutputRule {
 }
 
 /// A DRM mode requested by its visible dimensions and optional exact refresh.
-/// Refresh is stored in millihertz, the same unit Smithay exposes on
-/// [`smithay::output::Mode`], which prevents a floating-point comparison at
-/// the configuration-to-DRM boundary.
+/// Refresh is stored in millihertz, the same unit as [`tensor_host::PhysicalMode`],
+/// which prevents a floating-point comparison at the configuration-to-DRM boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputMode {
     pub width: u32,

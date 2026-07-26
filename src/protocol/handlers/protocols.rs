@@ -83,11 +83,21 @@ impl RuntimeState {
         if self.protocol_side.foreign_toplevels.contains_key(&key) {
             return;
         }
+        let title = title.into();
+        let app_id = app_id.into();
         let handle = self
             .protocol_globals
             .foreign_toplevel_list()
-            .new_toplevel::<RuntimeState>(title, app_id);
+            .new_toplevel::<RuntimeState>(title.clone(), app_id.clone());
+        // Stable surface key for capture/IPC without scanning the map by title.
+        handle.user_data().insert_if_missing(|| key);
         self.protocol_side.foreign_toplevels.insert(key, handle);
+        debug!(
+            surface = surface.id().protocol_id(),
+            title = %title,
+            app_id = %app_id,
+            "ext-foreign-toplevel-list: published"
+        );
     }
 
     pub(crate) fn update_foreign_toplevel(
@@ -100,10 +110,17 @@ impl RuntimeState {
         let Some(handle) = self.protocol_side.foreign_toplevels.get(&key) else {
             return;
         };
-        if let Some(title) = title {
+        // Smithay skips no-op title/app_id events; only send `done` when either
+        // field actually changes so idle clients are not woken every configure.
+        let title_changed = title.is_some_and(|title| handle.title() != title);
+        let app_id_changed = app_id.is_some_and(|app_id| handle.app_id() != app_id);
+        if !title_changed && !app_id_changed {
+            return;
+        }
+        if let Some(title) = title.filter(|_| title_changed) {
             handle.send_title(title);
         }
-        if let Some(app_id) = app_id {
+        if let Some(app_id) = app_id.filter(|_| app_id_changed) {
             handle.send_app_id(app_id);
         }
         handle.send_done();
@@ -441,37 +458,54 @@ impl smithay::wayland::selection::ext_data_control::DataControlHandler for Runti
     }
 }
 
-// Blur regions live on surface cached state until the Vulkan frame path
-// samples them; advertising the global matches Niri-class clients.
-impl smithay::wayland::background_effect::ExtBackgroundEffectHandler for RuntimeState {}
+impl smithay::wayland::background_effect::ExtBackgroundEffectHandler for RuntimeState {
+    fn capabilities(&self) -> smithay::wayland::background_effect::Capability {
+        // Advertise blur only when the scene can mark backdrop sampling.
+        // Pixel blur still follows compositor policy radius until the GPU pass.
+        smithay::wayland::background_effect::Capability::Blur
+    }
 
+    fn set_blur_region(
+        &mut self,
+        wl_surface: WlSurface,
+        region: smithay::wayland::compositor::RegionAttributes,
+    ) {
+        // Pending state is already on the surface cache; commit applies to ECS.
+        // Trace-level only: this runs on protocol traffic, not the flip path.
+        debug!(
+            surface = wl_surface.id().protocol_id(),
+            rects = region.rects.len(),
+            "ext-background-effect: blur region pending"
+        );
+    }
+
+    fn unset_blur_region(&mut self, wl_surface: WlSurface) {
+        debug!(
+            surface = wl_surface.id().protocol_id(),
+            "ext-background-effect: blur region cleared (pending)"
+        );
+    }
+}
+
+#[cfg(feature = "xwayland")]
 impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for RuntimeState {
     fn keyboard_focus_for_xsurface(
         &self,
         surface: &WlSurface,
     ) -> Option<crate::protocol::focus::KeyboardFocusTarget> {
-        #[cfg(feature = "xwayland")]
-        {
-            use smithay::desktop::Window;
-            use smithay::wayland::seat::WaylandFocus;
-            self.space
-                .elements()
-                .find(|window| window.wl_surface().as_deref() == Some(surface))
-                .and_then(Window::x11_surface)
-                .cloned()
-                .map(crate::protocol::focus::KeyboardFocusTarget::from)
-                .or_else(|| {
-                    Some(crate::protocol::focus::KeyboardFocusTarget::from(
-                        surface.clone(),
-                    ))
-                })
-        }
-        #[cfg(not(feature = "xwayland"))]
-        {
-            Some(crate::protocol::focus::KeyboardFocusTarget::from(
-                surface.clone(),
-            ))
-        }
+        use smithay::desktop::Window;
+        use smithay::wayland::seat::WaylandFocus;
+        self.space
+            .elements()
+            .find(|window| window.wl_surface().as_deref() == Some(surface))
+            .and_then(Window::x11_surface)
+            .cloned()
+            .map(crate::protocol::focus::KeyboardFocusTarget::from)
+            .or_else(|| {
+                Some(crate::protocol::focus::KeyboardFocusTarget::from(
+                    surface.clone(),
+                ))
+            })
     }
 }
 
@@ -560,5 +594,127 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
             let _ = (output, ramp);
             None
         }
+    }
+}
+
+impl smithay::wayland::image_capture_source::ImageCaptureSourceHandler for RuntimeState {
+    fn source_destroyed(
+        &mut self,
+        _source: smithay::wayland::image_capture_source::ImageCaptureSource,
+    ) {
+    }
+}
+
+impl smithay::wayland::image_capture_source::OutputCaptureSourceHandler for RuntimeState {
+    fn output_capture_source_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_capture_source::OutputCaptureSourceState {
+        self.protocol_globals.output_capture_source()
+    }
+
+    fn output_source_created(
+        &mut self,
+        source: smithay::wayland::image_capture_source::ImageCaptureSource,
+        output: &smithay::output::Output,
+    ) {
+        source.user_data().insert_if_missing(|| output.downgrade());
+    }
+}
+
+impl smithay::wayland::image_capture_source::ToplevelCaptureSourceHandler for RuntimeState {
+    fn toplevel_capture_source_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_capture_source::ToplevelCaptureSourceState {
+        self.protocol_globals.toplevel_capture_source()
+    }
+
+    fn toplevel_source_created(
+        &mut self,
+        source: smithay::wayland::image_capture_source::ImageCaptureSource,
+        toplevel: smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
+    ) {
+        source
+            .user_data()
+            .insert_if_missing(|| toplevel.downgrade());
+    }
+}
+
+impl crate::protocol::extensions::ext_workspace::ExtWorkspaceHandler for RuntimeState {
+    fn ext_workspace_manager_state(
+        &mut self,
+    ) -> &mut crate::protocol::extensions::ext_workspace::ExtWorkspaceManagerState {
+        self.protocol_globals.ext_workspace()
+    }
+
+    fn activate_workspace_id(&mut self, id: crate::ecs::WorkspaceId) {
+        let _ = self.activate_workspace(id);
+    }
+
+    fn workspace_snapshot(
+        &self,
+    ) -> crate::protocol::extensions::ext_workspace::WorkspaceProtocolSnapshot {
+        crate::protocol::extensions::ext_workspace::WorkspaceProtocolSnapshot {
+            active: self.active_workspace(),
+            count: self.workspace_count(),
+        }
+    }
+}
+
+impl crate::protocol::extensions::output_management::OutputManagementHandler for RuntimeState {
+    fn output_management_state(
+        &mut self,
+    ) -> &mut crate::protocol::extensions::output_management::OutputManagementState {
+        self.protocol_globals.output_management()
+    }
+
+    fn apply_output_configuration(
+        &mut self,
+        updates: Vec<(
+            String,
+            crate::protocol::extensions::output_management::OutputHeadUpdate,
+        )>,
+    ) -> Result<(), String> {
+        RuntimeState::apply_output_configuration(self, updates)
+    }
+
+    fn current_output_heads(
+        &self,
+    ) -> Vec<crate::protocol::extensions::output_management::HeadSnapshot> {
+        self.output_management_heads()
+    }
+}
+
+impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for RuntimeState {
+    fn image_copy_capture_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_copy_capture::ImageCopyCaptureState {
+        self.protocol_globals.image_copy_capture()
+    }
+
+    fn capture_constraints(
+        &mut self,
+        source: &smithay::wayland::image_capture_source::ImageCaptureSource,
+    ) -> Option<smithay::wayland::image_copy_capture::BufferConstraints> {
+        self.capture_constraints_for_source(source)
+    }
+
+    fn new_session(&mut self, session: smithay::wayland::image_copy_capture::Session) {
+        self.store_capture_session(session);
+    }
+
+    fn new_cursor_session(&mut self, session: smithay::wayland::image_copy_capture::CursorSession) {
+        self.store_cursor_capture_session(session);
+    }
+
+    fn frame(
+        &mut self,
+        session: &smithay::wayland::image_copy_capture::SessionRef,
+        frame: smithay::wayland::image_copy_capture::Frame,
+    ) {
+        self.handle_capture_frame(session, frame);
+    }
+
+    fn session_destroyed(&mut self, session: smithay::wayland::image_copy_capture::SessionRef) {
+        self.drop_capture_session(&session);
     }
 }

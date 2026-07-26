@@ -1,6 +1,18 @@
+mod adapter;
 mod tablet;
 #[cfg(feature = "tty")]
 mod virtual_pointer;
+
+mod pointer_geometry;
+#[cfg(test)]
+mod tests;
+
+use pointer_geometry::{
+    center_pointer_location, replace_non_finite_pointer_location, sanitize_relative_pointer_delta,
+    virtual_terminal_for_keysym, workspace_index_for_keysym,
+};
+
+pub(crate) use pointer_geometry::constrain_pointer_location;
 
 use smithay::{
     backend::{
@@ -22,7 +34,7 @@ use tracing::{debug, warn};
 
 use super::{
     focus::KeyboardFocusTarget,
-    state::{DEFAULT_WORKSPACE, InputDeviceCapabilities, RuntimeState},
+    state::{InputDeviceCapabilities, RuntimeState},
 };
 
 impl RuntimeState {
@@ -70,10 +82,11 @@ impl RuntimeState {
                     keyboard: Device::has_capability(device, DeviceCapability::Keyboard),
                     pointer: Device::has_capability(device, DeviceCapability::Pointer),
                     touch: Device::has_capability(device, DeviceCapability::Touch),
+                    tablet: Device::has_capability(device, DeviceCapability::TabletTool),
                 };
                 self.input_devices.insert(device.id(), capabilities);
                 self.reconcile_seat_capabilities();
-                if Device::has_capability(device, DeviceCapability::TabletTool) {
+                if capabilities.tablet {
                     self.process_tablet_event(event);
                 }
             }
@@ -178,20 +191,46 @@ impl RuntimeState {
             event.state(),
             SERIAL_COUNTER.next_serial(),
             event.time_msec(),
-            move |state, _, handle| {
-                let Some(vt) = virtual_terminal_for_keysym(handle.modified_sym().raw()) else {
-                    return FilterResult::Forward;
-                };
-
-                if key_state == KeyState::Pressed {
-                    state.request_virtual_terminal(vt);
+            move |state, modifiers, handle| {
+                let keysym = handle.modified_sym().raw();
+                if let Some(vt) = virtual_terminal_for_keysym(keysym) {
+                    if key_state == KeyState::Pressed {
+                        state.request_virtual_terminal(vt);
+                    }
+                    // A VT switch can prevent a key release from reaching us.
+                    return FilterResult::Intercept(());
                 }
-                // A VT switch can prevent a key release from reaching us. Keep
-                // both sides compositor-owned so a client never sees a lone
-                // release for this non-inhibitable recovery action.
-                FilterResult::Intercept(())
+                // Super+digit → workspace 1..9; Super+Shift+digit moves focused view
+                // and follows; Super+Page_Up/Down cycles.
+                if key_state == KeyState::Pressed && modifiers.logo {
+                    if let Some(index) = workspace_index_for_keysym(keysym) {
+                        if modifiers.shift {
+                            if let Some(view) = state.world.focused_view(state.active_workspace()) {
+                                let _ = state.move_view_to_workspace(
+                                    view,
+                                    crate::ecs::WorkspaceId::new(index),
+                                );
+                                let _ = state.activate_workspace_index(index);
+                            }
+                        } else {
+                            let _ = state.activate_workspace_index(index);
+                        }
+                        return FilterResult::Intercept(());
+                    }
+                    if keysym == keysyms::KEY_Page_Down || keysym == keysyms::KEY_Right {
+                        let _ = state.cycle_workspace(1);
+                        return FilterResult::Intercept(());
+                    }
+                    if keysym == keysyms::KEY_Page_Up || keysym == keysyms::KEY_Left {
+                        let _ = state.cycle_workspace(-1);
+                        return FilterResult::Intercept(());
+                    }
+                }
+                FilterResult::Forward
             },
         );
+        // Value bus: keycode-level sample (not keysym — keymap stays seat-side).
+        self.push_key_sample(adapter::key_sample(&event));
     }
 
     fn request_virtual_terminal(&mut self, vt: i32) {
@@ -256,10 +295,15 @@ impl RuntimeState {
         );
         pointer.frame(self);
         self.maybe_activate_pointer_constraint();
+        // Value bus: coalesce motion samples for the event layer (device Hz
+        // must not expand the queue). Seat path already applied the sample.
+        // Value bus via tensor-input sample (adapter-free payload).
+        let _ = self.push_event(adapter::motion_sample(location.x, location.y, time).into_event());
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target
         // only the head under the pointer so dual high-refresh outputs do not
-        // both resubmit on every relative move.
+        // both resubmit on every relative move. Immediate redraw keeps pointer
+        // latency off the idle-turn path; bus coalescing still records intent.
         self.request_redraw_at(location);
     }
 
@@ -267,7 +311,7 @@ impl RuntimeState {
     /// into a neighboring output, but motion through a gap is clipped to the
     /// current output. This keeps a compositor-owned cursor renderable on a
     /// real output at all times.
-    fn relative_pointer_location(
+    pub(super) fn relative_pointer_location(
         &self,
         previous: Point<f64, Logical>,
         delta: Point<f64, Logical>,
@@ -337,6 +381,7 @@ impl RuntimeState {
             },
         );
         pointer.frame(self);
+        let _ = self.push_event(adapter::button_sample(&event).into_event());
     }
 
     fn forward_pointer_axis(
@@ -353,15 +398,26 @@ impl RuntimeState {
             .source(event.source())
             .relative_direction(Axis::Horizontal, event.relative_direction(Axis::Horizontal))
             .relative_direction(Axis::Vertical, event.relative_direction(Axis::Vertical));
+        let mut horizontal = 0.0;
+        let mut vertical = 0.0;
         for axis in [Axis::Horizontal, Axis::Vertical] {
             if let Some(amount) = event.amount(axis) {
                 frame = frame.value(axis, amount);
+                match axis {
+                    Axis::Horizontal => horizontal = amount,
+                    Axis::Vertical => vertical = amount,
+                }
             }
             if let Some(steps) = event.amount_v120(axis) {
                 frame = frame.v120(axis, steps.round() as i32);
             }
         }
         pointer.axis(self, frame);
+        if let Some(sample) =
+            adapter::axis_sample_if_nonzero(horizontal, vertical, event.time_msec())
+        {
+            let _ = self.push_event(sample.into_event());
+        }
     }
 
     /// Resolve pointer input in compositor logical coordinates. Overlay and
@@ -385,7 +441,7 @@ impl RuntimeState {
     /// not reflow here: the window already has its configure, and only a
     /// `wl_keyboard.enter` is missing.
     pub(crate) fn restore_keyboard_focus(&mut self) {
-        let Some(view_id) = self.world.focused_view(DEFAULT_WORKSPACE) else {
+        let Some(view_id) = self.world.focused_view(self.active_workspace()) else {
             return;
         };
         let Some(window) = self.mapped_window_for_view(view_id) else {
@@ -547,187 +603,5 @@ impl RuntimeState {
                     == Some(view_id)
             })
             .cloned()
-    }
-}
-
-pub(crate) fn constrain_pointer_location(
-    location: Point<f64, Logical>,
-    bounds: Rectangle<i32, Logical>,
-) -> Point<f64, Logical> {
-    let min_x = f64::from(bounds.loc.x);
-    let min_y = f64::from(bounds.loc.y);
-    let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));
-    let max_y = min_y + f64::from(bounds.size.h.saturating_sub(1));
-    (
-        constrain_pointer_coordinate(location.x, min_x, max_x),
-        constrain_pointer_coordinate(location.y, min_y, max_y),
-    )
-        .into()
-}
-
-fn center_pointer_location(bounds: Rectangle<i32, Logical>) -> Point<f64, Logical> {
-    let min_x = f64::from(bounds.loc.x);
-    let min_y = f64::from(bounds.loc.y);
-    let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));
-    let max_y = min_y + f64::from(bounds.size.h.saturating_sub(1));
-    ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0).into()
-}
-
-fn sanitize_relative_pointer_delta(delta: Point<f64, Logical>) -> Point<f64, Logical> {
-    (
-        if delta.x.is_finite() { delta.x } else { 0.0 },
-        if delta.y.is_finite() { delta.y } else { 0.0 },
-    )
-        .into()
-}
-
-fn replace_non_finite_pointer_location(
-    location: Point<f64, Logical>,
-    fallback: Point<f64, Logical>,
-) -> Point<f64, Logical> {
-    (
-        if location.x.is_finite() {
-            location.x
-        } else {
-            fallback.x
-        },
-        if location.y.is_finite() {
-            location.y
-        } else {
-            fallback.y
-        },
-    )
-        .into()
-}
-
-fn constrain_pointer_coordinate(value: f64, min: f64, max: f64) -> f64 {
-    if value.is_nan() || value == f64::NEG_INFINITY {
-        min
-    } else if value == f64::INFINITY {
-        max
-    } else {
-        value.clamp(min, max)
-    }
-}
-
-fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
-    (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
-        .contains(&keysym)
-        .then(|| (keysym - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
-}
-
-#[cfg(test)]
-mod tests {
-    use smithay::reexports::calloop::EventLoop;
-    use smithay::{
-        input::keyboard::keysyms,
-        output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-        reexports::wayland_server::Display,
-        utils::{Logical, Point, Rectangle},
-    };
-
-    use super::{
-        RuntimeState, constrain_pointer_location, replace_non_finite_pointer_location,
-        sanitize_relative_pointer_delta, virtual_terminal_for_keysym,
-    };
-    use crate::layout::{LayoutEngine, LayoutKind};
-
-    #[test]
-    fn virtual_terminal_recovery_keys_are_complete_and_bounded() {
-        for vt in 1..=12 {
-            let keysym = keysyms::KEY_XF86Switch_VT_1 + (vt - 1);
-            assert_eq!(virtual_terminal_for_keysym(keysym), Some(vt as i32));
-        }
-        assert_eq!(
-            virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_1 - 1),
-            None
-        );
-        assert_eq!(
-            virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_12 + 1),
-            None
-        );
-    }
-
-    #[test]
-    fn pointer_location_stays_inside_the_logical_output_edges() {
-        let bounds = Rectangle::<i32, Logical>::new((-20, 40).into(), (100, 80).into());
-
-        assert_eq!(
-            constrain_pointer_location((-120.0, 999.0).into(), bounds),
-            Point::from((-20.0, 119.0))
-        );
-    }
-
-    #[test]
-    fn pointer_location_handles_non_finite_input_without_protocol_escape() {
-        let bounds = Rectangle::<i32, Logical>::new((10, 20).into(), (4, 6).into());
-
-        assert_eq!(
-            constrain_pointer_location((f64::INFINITY, f64::NAN).into(), bounds),
-            Point::from((13.0, 20.0))
-        );
-    }
-
-    #[test]
-    fn relative_pointer_delta_ignores_non_finite_axes() {
-        assert_eq!(
-            sanitize_relative_pointer_delta((f64::NAN, f64::INFINITY).into()),
-            Point::from((0.0, 0.0))
-        );
-    }
-
-    #[test]
-    fn absolute_pointer_location_retains_valid_axes_when_one_axis_is_invalid() {
-        assert_eq!(
-            replace_non_finite_pointer_location((f64::NAN, 95.0).into(), Point::from((30.0, 40.0)),),
-            Point::from((30.0, 95.0))
-        );
-    }
-
-    #[test]
-    fn relative_pointer_crosses_neighboring_outputs_but_not_a_gap() {
-        let display = Display::<RuntimeState>::new().unwrap();
-        let mut state = RuntimeState::with_appearance(
-            display.handle(),
-            EventLoop::<RuntimeState>::try_new().unwrap().handle(),
-            LayoutEngine::new(LayoutKind::Scrolling1D),
-            crate::scene::SceneAppearance::default(),
-        );
-        map_output(&mut state, "left", (0, 0), (100, 100));
-        map_output(&mut state, "right", (200, 0), (100, 100));
-
-        assert_eq!(
-            state.relative_pointer_location((90.0, 40.0).into(), (30.0, 0.0).into()),
-            Some(Point::from((99.0, 40.0))),
-            "a gap is clipped to the output that already contains the pointer"
-        );
-        assert_eq!(
-            state.relative_pointer_location((90.0, 40.0).into(), (120.0, 0.0).into()),
-            Some(Point::from((210.0, 40.0))),
-            "a direct crossing remains possible"
-        );
-    }
-
-    fn map_output(state: &mut RuntimeState, name: &str, location: (i32, i32), size: (i32, i32)) {
-        let output = Output::new(
-            name.to_owned(),
-            PhysicalProperties {
-                size: (600, 340).into(),
-                subpixel: Subpixel::HorizontalRgb,
-                make: "Tensor test".to_owned(),
-                model: name.to_owned(),
-                serial_number: name.to_owned(),
-            },
-        );
-        output.change_current_state(
-            Some(Mode {
-                size: size.into(),
-                refresh: 60_000,
-            }),
-            None,
-            Some(Scale::Integer(1)),
-            Some(location.into()),
-        );
-        state.space.map_output(&output, location);
     }
 }

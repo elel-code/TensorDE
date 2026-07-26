@@ -6,7 +6,7 @@
 
 use std::io;
 
-use smithay::reexports::calloop::{Error, LoopHandle, LoopSignal};
+use calloop::{Error, LoopHandle, LoopSignal};
 
 /// Block termination signals before any compositor-owned threads can inherit an
 /// unmasked signal disposition.
@@ -35,7 +35,7 @@ mod platform {
         mem,
     };
 
-    use smithay::reexports::calloop::{
+    use calloop::{
         Error, LoopHandle, LoopSignal,
         signals::{Signal, Signals},
     };
@@ -120,7 +120,7 @@ mod platform {
 mod platform {
     use std::io;
 
-    use smithay::reexports::calloop::{Error, LoopHandle, LoopSignal};
+    use calloop::{Error, LoopHandle, LoopSignal};
 
     pub(super) fn block_early() -> io::Result<()> {
         Ok(())
@@ -140,7 +140,7 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use smithay::reexports::calloop::EventLoop;
+    use calloop::EventLoop;
 
     use super::*;
 

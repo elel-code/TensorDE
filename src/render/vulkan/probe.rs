@@ -1,4 +1,4 @@
-use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+use tensor_host::{DrmFormat, Fourcc, Modifier};
 use vulkanalia::{Instance, Version, prelude::v1_4::*, vk};
 
 use crate::render::{
@@ -194,10 +194,7 @@ fn probe_format_capability(
     let external = external_properties.external_memory_properties;
     let compatible = external.compatible_handle_types.contains(dma_buf);
     Ok(Some(VulkanFormatCapability {
-        format: DrmFormat {
-            code: fourcc,
-            modifier: Modifier::from(modifier.drm_format_modifier),
-        },
+        format: DrmFormat::new(fourcc, Modifier::from_raw(modifier.drm_format_modifier)),
         plane_count: modifier.drm_format_modifier_plane_count,
         renderable: true,
         importable: compatible

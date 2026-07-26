@@ -8,7 +8,17 @@ description = "A Smithay and Vulkanalia based Wayland compositor"
 license = "MIT OR Apache-2.0"
 
 [workspace]
-members = [".", "crates/tensor-util"]
+members = [
+    ".",
+    "crates/tensor-util",
+    "crates/tensor-event",
+    "crates/tensor-runtime",
+    "crates/tensor-host",
+    "crates/tensor-drm",
+    "crates/tensor-present",
+    "crates/tensor-input",
+    "crates/tensor-protocol",
+]
 resolver = "3"
 
 [features]
@@ -16,6 +26,7 @@ default = ["tty", "xwayland"]
 systemd = ["dep:sd-notify", "dep:zbus"]
 tty = [
     "dep:calloop-wayland-source",
+    "dep:drm-ffi",
     "dep:gbm",
     "dep:smithay-drm-extras",
     "smithay/backend_drm",
@@ -31,14 +42,24 @@ bevy_ecs = { version = "0.19", default-features = false, features = ["std", "mul
 calloop = { version = "0.14", features = ["signals"] }
 calloop-wayland-source = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"] }
+# Compio = completion model; io-uring is the product driver; `polling` is Compio's host fallback only.
 compio = { version = "0.19", default-features = false, features = ["runtime", "io-uring", "polling", "fs"] }
+drm-ffi = { version = "0.9", optional = true }
 gbm = { version = "0.18", optional = true }
 libc = "0.2"
+rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }
 smithay = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, features = ["desktop", "wayland_frontend"] }
 smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, optional = true }
 sd-notify = { version = "0.5", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tensor-drm = { path = "crates/tensor-drm" }
+tensor-event = { path = "crates/tensor-event" }
+tensor-host = { path = "crates/tensor-host" }
+tensor-input = { path = "crates/tensor-input" }
+tensor-present = { path = "crates/tensor-present" }
+tensor-protocol = { path = "crates/tensor-protocol" }
+tensor-runtime = { path = "crates/tensor-runtime" }
 tensor-util = { path = "crates/tensor-util" }
 toml = "0.8"
 thiserror = "2"

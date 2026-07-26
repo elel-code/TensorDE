@@ -1,13 +1,11 @@
 use std::{ffi::OsString, sync::Arc};
 
-use smithay::reexports::{
-    calloop::{
-        EventLoop, Interest, LoopSignal, Mode, PostAction,
-        channel::{Channel, Event as ChannelEvent},
-        generic::Generic,
-    },
-    wayland_server::Display,
+use calloop::{
+    EventLoop, Interest, LoopSignal, Mode, PostAction,
+    channel::{Channel, Event as ChannelEvent},
+    generic::Generic,
 };
+use smithay::reexports::wayland_server::Display;
 use thiserror::Error;
 use tracing::warn;
 
@@ -151,6 +149,8 @@ impl WaylandRuntime {
                 |_, display, state| dispatch_display(display, state),
             )
             .map_err(|error| ProtocolError::DisplaySource(error.to_string()))?;
+        // Advertise the fixed workspace pool to any early ext-workspace binders.
+        self.state.refresh_ext_workspace_protocol();
         self.prepared = true;
         Ok(())
     }
@@ -159,8 +159,10 @@ impl WaylandRuntime {
         if !self.prepared {
             return Err(ProtocolError::RuntimeNotPrepared);
         }
+        // Between waits: Tensor event turn (inject/drain/coalesced redraw), then
+        // flush Wayland clients — same slot calloop used for idle work.
         self.event_loop
-            .run(None, &mut self.state, RuntimeState::flush_wayland_clients)
+            .run(None, &mut self.state, RuntimeState::on_loop_idle)
             .map_err(ProtocolError::Run)
     }
 
@@ -189,6 +191,16 @@ impl WaylandRuntime {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_runtime_state(
+    layout: LayoutEngine,
+    appearance: SceneAppearance,
+) -> RuntimeState {
+    let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
+    let display = Display::<RuntimeState>::new().unwrap();
+    RuntimeState::with_appearance(display.handle(), event_loop.handle(), layout, appearance)
+}
+
 fn bind_socket_source()
 -> Result<ListeningSocketSource, smithay::reexports::wayland_server::BindError> {
     let mut last_error = None;
@@ -208,9 +220,9 @@ fn bind_socket_source()
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("failed to initialize the Smithay event loop: {0}")]
-    EventLoop(smithay::reexports::calloop::Error),
+    EventLoop(calloop::Error),
     #[error("failed to register the compositor signal source: {0}")]
-    SignalSource(smithay::reexports::calloop::Error),
+    SignalSource(calloop::Error),
     #[error("failed to initialize the Wayland display: {0}")]
     Display(smithay::reexports::wayland_server::backend::InitError),
     #[error("failed to bind the Wayland socket: {0}")]
@@ -230,7 +242,7 @@ pub enum ProtocolError {
     #[error("Wayland runtime must be prepared before entering the event loop")]
     RuntimeNotPrepared,
     #[error("failed to run the Smithay event loop: {0}")]
-    Run(smithay::reexports::calloop::Error),
+    Run(calloop::Error),
     #[error("failed to spawn XWayland: {0}")]
     XWayland(std::io::Error),
     #[error("failed to register XWayland with the event loop: {0}")]
@@ -247,7 +259,7 @@ pub enum ProtocolError {
 
 #[allow(unsafe_code)]
 fn dispatch_display(
-    display: &mut smithay::reexports::calloop::generic::NoIoDrop<Display<RuntimeState>>,
+    display: &mut calloop::generic::NoIoDrop<Display<RuntimeState>>,
     state: &mut RuntimeState,
 ) -> Result<PostAction, std::io::Error> {
     // Generic owns the display source for the entire event loop, so this mutable access does not

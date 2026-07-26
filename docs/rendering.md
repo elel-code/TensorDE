@@ -35,7 +35,7 @@ format for every active output path.
 
 ## Native Format Gate
 
-`render::format` is the value-only boundary between Vulkanalia and the Smithay tty backend. Vulkan
+`render::format` is the value-only capability boundary between Vulkanalia and the tty adapter. Vulkan
 probing enumerates `VkDrmFormatModifierPropertiesList2EXT`, rejects modifiers without color-target
 support, and calls `vkGetPhysicalDeviceImageFormatProperties2` with the real sampled,
 color-attachment, and transfer usage. `VkExternalImageFormatProperties` records dma-buf import and
@@ -59,10 +59,11 @@ in-flight timeline ownership until the old submission retires.
 Registration now allocates three native output slots per target. Each slot is a Vulkan 2D image
 created with `DRM_FORMAT_MODIFIER_EXT`, dedicated exportable dma-buf memory, and an image view. The
 created modifier is queried back and must equal the negotiated modifier; every reported memory
-plane is exported with its offset and row pitch. The tty boundary imports those dma-bufs through
-Smithay's GBM device and validates dimensions, fourcc, modifier, and plane count before retaining
-the GBM objects. Vulkan image resources replaced by a mode or format change remain in a retired
-queue until their last renderer timeline value completes.
+plane is exported with its offset and row pitch as Tensor's Smithay-free `ExportedDmabuf` value.
+Only the tty boundary converts that description into a Smithay dma-buf, imports it through the GBM
+device, and validates dimensions, fourcc, modifier, and plane count before retaining the GBM
+objects. Vulkan image resources replaced by a mode or format change remain in a retired queue until
+their last renderer timeline value completes.
 
 GBM remains owned by Smithay and does not become a renderer. Its check validates the allocation and
 KMS-facing boundary; Vulkanalia remains the only component that creates and renders native output
@@ -71,20 +72,23 @@ images.
 ## Buffer Ownership
 
 Vulkanalia owns render images and their memory. A native render target is allocated with an
-explicit DRM modifier and exportable dma-buf memory. Tensor exports the dma-buf planes to Smithay;
-Smithay owns DRM/KMS, its GBM device, framebuffer creation, atomic commits, page flips, and direct
-scanout decisions. Vulkan handles and DRM surface handles never cross into ECS or IPC.
+explicit DRM modifier and exportable dma-buf memory. The renderer returns Tensor-owned
+`ExportedDmabuf` plane descriptions; the tty adapter converts them to Smithay only immediately
+before GBM/KMS use. Smithay currently owns DRM/KMS, its GBM device, framebuffer creation, atomic
+commits, page flips, and direct scanout decisions. Vulkan handles and DRM surface handles never
+cross into ECS or IPC.
 
 Before an image leaves Vulkan for KMS or another API, Tensor releases it to
 `VK_QUEUE_FAMILY_FOREIGN_EXT`; imported images are acquired back from the same external owner.
 This is mandatory for multi-plane and driver-compressed modifiers and is never replaced with a
 queue-idle compatibility path.
 
-Imported client dma-bufs and compositor-owned output images use separate lifetime caches. A client
-cache entry is keyed by the compositor-assigned stable buffer identity and retains the validated
-format, modifier, dimensions, plane offsets, and strides from the Smithay dma-buf object; an fd
-number is never an identity. Buffer reuse waits for the renderer timeline and Wayland release path
-before the Vulkan image is destroyed.
+Imported client dma-bufs and compositor-owned output images use separate lifetime caches. The
+protocol adapter borrows the Smithay object into Tensor's generic `Dmabuf` description before
+calling the renderer. A client cache entry is keyed by the compositor-assigned stable buffer
+identity and retains the validated format, modifier, dimensions, plane offsets, and strides from
+that value description; an fd number is never an identity. Buffer reuse waits for the renderer
+timeline and Wayland release path before the Vulkan image is destroyed.
 
 ## Client linux-dmabuf
 

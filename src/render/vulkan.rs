@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use smithay::backend::allocator::Fourcc;
+use tensor_host::Fourcc;
 use tracing::{debug, info};
 use vulkanalia::{
     Device, Entry, Instance, Version,
@@ -16,7 +16,9 @@ use vulkanalia::{
 };
 
 #[cfg(feature = "tty")]
-use super::{CursorOverlay, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId};
+use super::{
+    CursorOverlay, Dmabuf, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId,
+};
 use super::{
     DescriptorHeapProperties, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId,
     NativeInteropCapabilities, RendererTarget, VulkanFormatCapability,
@@ -54,14 +56,14 @@ const DESCRIPTOR_HEAP_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PENDING_SYNC_FDS_PER_OUTPUT: usize = 3;
 
 const OUTPUT_FORMATS: &[(Fourcc, vk::Format)] = &[
-    (Fourcc::Xrgb8888, vk::Format::B8G8R8A8_SRGB),
-    (Fourcc::Argb8888, vk::Format::B8G8R8A8_SRGB),
-    (Fourcc::Xbgr8888, vk::Format::R8G8B8A8_SRGB),
-    (Fourcc::Abgr8888, vk::Format::R8G8B8A8_SRGB),
-    (Fourcc::Xrgb2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
-    (Fourcc::Argb2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
-    (Fourcc::Xbgr2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
-    (Fourcc::Abgr2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
+    (Fourcc::XRGB8888, vk::Format::B8G8R8A8_SRGB),
+    (Fourcc::ARGB8888, vk::Format::B8G8R8A8_SRGB),
+    (Fourcc::XBGR8888, vk::Format::R8G8B8A8_SRGB),
+    (Fourcc::ABGR8888, vk::Format::R8G8B8A8_SRGB),
+    (Fourcc::XRGB2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
+    (Fourcc::ARGB2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
+    (Fourcc::XBGR2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
+    (Fourcc::ABGR2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
 ];
 
 pub(crate) struct VulkanRenderer {
@@ -202,8 +204,7 @@ impl VulkanRenderer {
             .and_then(DrmDeviceIdentity::node_pair)
             .ok_or(DeviceSelectionError::MissingDrmNodePair)?;
         #[cfg(feature = "tty")]
-        let native_targets = target::NativeTargetManager::new(render_node)
-            .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
+        let native_targets = target::NativeTargetManager::new(render_node);
         let device = create_device(
             &instance.instance,
             selected.handle,
@@ -330,7 +331,7 @@ impl VulkanRenderer {
         }) {
             return Err(RendererError::UnsupportedOutputTarget {
                 format: target.format.format.code,
-                modifier: u64::from(target.format.format.modifier),
+                modifier: target.format.format.modifier.raw(),
                 plane_count: target.format.plane_count,
             });
         }
@@ -359,7 +360,7 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn client_import_formats(&self) -> Vec<smithay::backend::allocator::Format> {
+    pub(crate) fn client_import_formats(&self) -> Vec<tensor_host::DrmFormat> {
         self.selected
             .formats
             .iter()
@@ -370,10 +371,10 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn import_client_dmabuf(
+    pub(crate) fn import_client_dmabuf<F: AsFd>(
         &mut self,
         id: SurfaceBufferId,
-        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        dmabuf: &Dmabuf<F>,
     ) -> Result<(), RendererError> {
         self.refresh_completed()?;
         self.client_images

@@ -180,6 +180,7 @@ Every change runs:
 ```sh
 cargo fmt --all -- --check
 uv run scripts/check_file_lines.py
+uv run scripts/check_crate_boundaries.py
 cargo test --workspace --all-targets
 cargo test --workspace --all-targets --features systemd
 cargo test --workspace --all-targets --no-default-features

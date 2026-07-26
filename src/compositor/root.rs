@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use smithay::reexports::calloop::channel::{
+use calloop::channel::{
     Channel as CalloopChannel, Event as ChannelEvent, SyncSender as CalloopSender, sync_channel,
 };
 use thiserror::Error;
@@ -169,11 +169,7 @@ impl Compositor {
             .enumerate()
             .filter_map(|(index, command)| {
                 let (program, args) = command.argv.split_first()?;
-                Some((
-                    index,
-                    program.clone(),
-                    args.iter().cloned().collect::<Vec<_>>(),
-                ))
+                Some((index, program.clone(), args.to_vec()))
             })
             .collect::<Vec<_>>();
         if requests.is_empty() {
@@ -238,9 +234,6 @@ impl Compositor {
     }
 
     pub fn run(mut self) -> Result<(), CompositorError> {
-        // IPC spawn and optional late autostart share one worker. Create it
-        // before calloop takes ownership so the submit handle can be cloned
-        // into the IPC callback without holding Smithay objects.
         let launch_submitter = self.ensure_launch_worker()?.submitter();
         let Self {
             mut protocol,
@@ -255,9 +248,6 @@ impl Compositor {
             systemd,
             xwayland,
         } = self;
-        // Keep non-loop owners alive for the whole run without naming them in
-        // the IPC closures. launch_outcomes moves into calloop; the worker and
-        // outcome sender stay here until the loop returns.
         let _runtime_owners = (
             launcher,
             launch_outcome_sender,
@@ -325,23 +315,39 @@ fn apply_user_environment(environment: &mut Vec<EnvironmentValue>, policy: &Envi
     }
 }
 
-fn handle_launch_outcome(event: ChannelEvent<LaunchOutcome>, _: &mut RuntimeState) {
+fn handle_launch_outcome(event: ChannelEvent<LaunchOutcome>, state: &mut RuntimeState) {
     match event {
-        ChannelEvent::Msg(outcome) => match outcome.result() {
-            Ok(process) => info!(
-                request_id = outcome.id(),
-                program = ?outcome.program(),
-                pid = process.pid(),
-                strategy = process.strategy().name(),
-                "application launch completed"
-            ),
-            Err(error) => warn!(
-                request_id = outcome.id(),
-                program = ?outcome.program(),
-                %error,
-                "application launch failed"
-            ),
-        },
+        ChannelEvent::Msg(outcome) => {
+            // Value bus: control-plane phase records completion for future
+            // policy (activation, IPC notify). Logging stays here for ops.
+            let bus = match outcome.result() {
+                Ok(process) => {
+                    info!(
+                        request_id = outcome.id(),
+                        program = ?outcome.program(),
+                        pid = process.pid(),
+                        strategy = process.strategy().name(),
+                        "application launch completed"
+                    );
+                    tensor_event::Event::Launch(tensor_event::LaunchOutcome::Started {
+                        request: outcome.id(),
+                        pid: process.pid(),
+                    })
+                }
+                Err(error) => {
+                    warn!(
+                        request_id = outcome.id(),
+                        program = ?outcome.program(),
+                        %error,
+                        "application launch failed"
+                    );
+                    tensor_event::Event::Launch(tensor_event::LaunchOutcome::Failed {
+                        request: outcome.id(),
+                    })
+                }
+            };
+            let _ = state.push_event(bus);
+        }
         ChannelEvent::Closed => warn!("asynchronous launch worker disconnected"),
     }
 }
@@ -349,7 +355,7 @@ fn handle_launch_outcome(event: ChannelEvent<LaunchOutcome>, _: &mut RuntimeStat
 fn handle_ipc_request(
     request: Request,
     state: &mut RuntimeState,
-    stop_signal: &smithay::reexports::calloop::LoopSignal,
+    stop_signal: &calloop::LoopSignal,
     launch_submitter: &LaunchSubmitter,
 ) -> IpcReply {
     let request_id = request.request_id;
@@ -368,6 +374,7 @@ fn handle_ipc_request(
         IpcCommand::Ping => ResultBody::Pong,
         IpcCommand::GetState => ResultBody::State(state.ipc_state_snapshot()),
         IpcCommand::GetOutputs => ResultBody::Outputs(state.ipc_output_snapshots()),
+        IpcCommand::GetWorkspaces => ResultBody::Workspaces(state.ipc_workspace_snapshots()),
         IpcCommand::SetLayout { layout: kind } => {
             state.layout = LayoutEngine::with_options(kind, state.layout.options());
             state.world.reset_layout_states();
@@ -381,6 +388,79 @@ fn handle_ipc_request(
                 }
             }
         }
+        IpcCommand::SetWorkspace { index } => {
+            if state.activate_workspace_index(index) {
+                ResultBody::Accepted
+            } else if index >= state.workspace_count() {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    format!(
+                        "workspace index {index} out of range (0..{})",
+                        state.workspace_count()
+                    ),
+                ));
+            } else {
+                ResultBody::Accepted
+            }
+        }
+        IpcCommand::SetOutputPosition { name, x, y } => {
+            return apply_output_ipc(request_id, state, name, |rule| {
+                rule.position = Some((x, y));
+                rule.enabled = true;
+            });
+        }
+        IpcCommand::SetOutputEnabled { name, enabled } => {
+            return apply_output_ipc(request_id, state, name, |rule| {
+                rule.enabled = enabled;
+            });
+        }
+        IpcCommand::SetOutputScale {
+            name,
+            scale_percent,
+        } => {
+            let Some(scale) = tensor_util::OutputScale::from_f64(f64::from(scale_percent) / 100.0)
+            else {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    "scale_percent must map to 0.1..=10.0 (100 = 1.0)",
+                ));
+            };
+            return apply_output_ipc(request_id, state, name, |rule| {
+                rule.scale = Some(scale);
+            });
+        }
+        IpcCommand::MoveFocusedToWorkspace { index, follow } => {
+            if index >= state.workspace_count() {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    format!(
+                        "workspace index {index} out of range (0..{})",
+                        state.workspace_count()
+                    ),
+                ));
+            }
+            let Some(view) = state.world.focused_view(state.active_workspace()) else {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "no_focus",
+                    "no focused view on the active workspace",
+                ));
+            };
+            if !state.move_view_to_workspace(view, crate::ecs::WorkspaceId::new(index)) {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "move_failed",
+                    "could not move focused view",
+                ));
+            }
+            if follow {
+                let _ = state.activate_workspace_index(index);
+            }
+            ResultBody::Accepted
+        }
         IpcCommand::Quit => {
             return IpcReply::stop_after_flush(
                 Response::new(request_id, ResultBody::Accepted),
@@ -389,6 +469,18 @@ fn handle_ipc_request(
         }
     };
     IpcReply::new(Response::new(request_id, result))
+}
+
+fn apply_output_ipc(
+    request_id: u64,
+    state: &mut RuntimeState,
+    name: String,
+    mutate: impl FnOnce(&mut crate::config::OutputRule),
+) -> IpcReply {
+    match state.apply_output_rule(name, mutate) {
+        Ok(()) => IpcReply::new(Response::new(request_id, ResultBody::Accepted)),
+        Err(message) => IpcReply::new(Response::error(request_id, "output_config", message)),
+    }
 }
 
 fn queue_spawn(
@@ -454,28 +546,21 @@ mod tests {
         layout::LayoutKind,
         scene::SceneAppearance,
     };
-    use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+    use calloop::EventLoop;
 
-    fn stop_signal() -> smithay::reexports::calloop::LoopSignal {
+    fn stop_signal() -> calloop::LoopSignal {
         EventLoop::<()>::try_new().unwrap().get_signal()
     }
 
     fn runtime_state() -> RuntimeState {
-        let display = Display::<RuntimeState>::new().unwrap();
-        RuntimeState::with_appearance(
-            display.handle(),
-            EventLoop::<RuntimeState>::try_new().unwrap().handle(),
+        crate::protocol::test_runtime_state(
             LayoutEngine::new(LayoutKind::Scrolling1D),
             SceneAppearance::default(),
         )
     }
 
-    fn live_worker() -> (
-        LaunchWorker,
-        smithay::reexports::calloop::channel::Channel<LaunchOutcome>,
-    ) {
-        let (outcomes, receiver) =
-            smithay::reexports::calloop::channel::sync_channel::<LaunchOutcome>(4);
+    fn live_worker() -> (LaunchWorker, calloop::channel::Channel<LaunchOutcome>) {
+        let (outcomes, receiver) = calloop::channel::sync_channel::<LaunchOutcome>(4);
         let worker = LaunchWorker::new(
             ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
             outcomes,
@@ -540,7 +625,37 @@ mod tests {
         assert_eq!(snapshot.view_count, 1);
         assert_eq!(snapshot.output_count, 0);
         assert_eq!(snapshot.focused_view, None);
+        assert_eq!(snapshot.workspace, 0);
+        assert_eq!(snapshot.workspace_count, 9);
         assert_eq!(state.layout.options(), options);
+
+        let workspaces = handle_ipc_request(
+            Request::new(14, IpcCommand::GetWorkspaces),
+            &mut state,
+            &stop_signal(),
+            &submitter,
+        );
+        let ResultBody::Workspaces(list) = workspaces.response.result else {
+            panic!("expected workspace list");
+        };
+        assert_eq!(list.len(), 9);
+        assert!(list[0].active);
+        assert_eq!(list[0].view_count, 1);
+        assert!(!list[1].active);
+        assert_eq!(list[1].view_count, 0);
+
+        assert!(matches!(
+            handle_ipc_request(
+                Request::new(15, IpcCommand::SetWorkspace { index: 2 }),
+                &mut state,
+                &stop_signal(),
+                &submitter,
+            )
+            .response
+            .result,
+            ResultBody::Accepted
+        ));
+        assert_eq!(state.active_workspace().get(), 2);
         drop(worker);
     }
 

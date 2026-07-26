@@ -270,10 +270,10 @@ mod tests {
             },
             viewport: physical_viewport,
             format: crate::render::OutputFormat {
-                format: smithay::backend::allocator::Format {
-                    code: smithay::backend::allocator::Fourcc::Xrgb8888,
-                    modifier: smithay::backend::allocator::Modifier::from(9),
-                },
+                format: tensor_host::DrmFormat::new(
+                    tensor_host::Fourcc::XRGB8888,
+                    tensor_host::Modifier::from_raw(9),
+                ),
                 plane_count: 1,
             },
             scale,

@@ -99,7 +99,7 @@ impl FrameScheduler {
         if target.viewport.width == 0 || target.viewport.height == 0 {
             return Err(FrameError::InvalidViewport(target.viewport));
         }
-        if target.format.format.modifier == smithay::backend::allocator::Modifier::Invalid {
+        if target.format.format.modifier.is_invalid() {
             return Err(FrameError::ImplicitOutputModifier(target.output));
         }
         if target.format.plane_count == 0 {
@@ -428,7 +428,7 @@ pub(crate) enum FrameError {
 
 #[cfg(test)]
 mod tests {
-    use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+    use tensor_host::{DrmFormat, Fourcc, Modifier};
 
     use super::*;
     use crate::{
@@ -457,8 +457,8 @@ mod tests {
             viewport: VIEWPORT,
             format: OutputFormat {
                 format: DrmFormat {
-                    code: Fourcc::Xrgb8888,
-                    modifier: Modifier::from(9),
+                    code: Fourcc::XRGB8888,
+                    modifier: Modifier::from_raw(9),
                 },
                 plane_count: 1,
             },
@@ -625,8 +625,8 @@ mod tests {
         let implicit = NativeOutputTarget {
             format: OutputFormat {
                 format: DrmFormat {
-                    code: Fourcc::Xrgb8888,
-                    modifier: Modifier::Invalid,
+                    code: Fourcc::XRGB8888,
+                    modifier: Modifier::INVALID,
                 },
                 plane_count: 1,
             },

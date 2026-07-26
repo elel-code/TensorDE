@@ -30,6 +30,7 @@ enum CliCommand {
     Ping,
     GetState,
     GetOutputs,
+    GetWorkspaces,
     SetLayout {
         layout: LayoutKind,
     },
@@ -38,6 +39,33 @@ enum CliCommand {
         /// Program and arguments, for example: `tensor-msg spawn -- foot --server`
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
+    },
+    /// Activate virtual desktop by zero-based index.
+    SetWorkspace {
+        index: u32,
+    },
+    /// Move the focused window to another virtual desktop.
+    MoveFocusedToWorkspace {
+        index: u32,
+        /// Also switch to that desktop after the move.
+        #[arg(long, default_value_t = false)]
+        follow: bool,
+    },
+    /// Set connector logical origin, e.g. `set-output-position HDMI-A-1 1920 0`.
+    SetOutputPosition {
+        name: String,
+        x: i32,
+        y: i32,
+    },
+    /// Enable or disable a connector (`set-output-enabled eDP-1 false`).
+    SetOutputEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// Set scale percent (`set-output-scale HDMI-A-1 125` → 1.25).
+    SetOutputScale {
+        name: String,
+        scale_percent: u32,
     },
     Quit,
 }
@@ -48,8 +76,24 @@ impl From<CliCommand> for Command {
             CliCommand::Ping => Self::Ping,
             CliCommand::GetState => Self::GetState,
             CliCommand::GetOutputs => Self::GetOutputs,
+            CliCommand::GetWorkspaces => Self::GetWorkspaces,
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
             CliCommand::Spawn { argv } => Self::Spawn { argv },
+            CliCommand::SetWorkspace { index } => Self::SetWorkspace { index },
+            CliCommand::MoveFocusedToWorkspace { index, follow } => {
+                Self::MoveFocusedToWorkspace { index, follow }
+            }
+            CliCommand::SetOutputPosition { name, x, y } => Self::SetOutputPosition { name, x, y },
+            CliCommand::SetOutputEnabled { name, enabled } => {
+                Self::SetOutputEnabled { name, enabled }
+            }
+            CliCommand::SetOutputScale {
+                name,
+                scale_percent,
+            } => Self::SetOutputScale {
+                name,
+                scale_percent,
+            },
             CliCommand::Quit => Self::Quit,
         }
     }

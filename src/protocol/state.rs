@@ -1,9 +1,16 @@
+mod background_effect;
+mod capture;
+mod capture_shm;
+mod event_loop;
 #[cfg(feature = "tty")]
 mod layer;
 #[cfg(feature = "tty")]
 mod output;
+mod output_config;
 #[cfg(feature = "tty")]
 mod output_helpers;
+#[cfg(feature = "tty")]
+mod output_topology;
 mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
@@ -14,10 +21,14 @@ mod surfaces;
 mod sync;
 #[cfg(feature = "tty")]
 mod tree;
+mod workspace_host;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
+pub(crate) use workspace_host::WorkspaceHost;
+
+use event_loop::EventLoopState;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -78,6 +89,8 @@ use crate::backend::BackendOutputEvent;
 #[cfg(feature = "tty")]
 use crate::backend::{BackendOutputId, OutputDescriptor, TtyBackend};
 
+/// First virtual desktop id (also the default active workspace at startup).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const DEFAULT_WORKSPACE: WorkspaceId = WorkspaceId::new(0);
 
 #[cfg(feature = "tty")]
@@ -131,6 +144,7 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) backend: Option<TtyBackend>,
     #[cfg(feature = "tty")]
+    /// Physical devices discovered by the input adapter (value-only caps).
     pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
@@ -153,6 +167,10 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "xwayland")]
     xwayland_transients: xwayland::XWaylandTransientRegistry,
     next_view_id: u64,
+    /// Tensor-owned event bus (phase rings + worker inject). Reactor-agnostic.
+    event_loop: EventLoopState,
+    /// Active virtual desktop + fixed workspace pool.
+    workspaces: WorkspaceHost,
 }
 
 impl RuntimeState {
@@ -232,6 +250,8 @@ impl RuntimeState {
             #[cfg(feature = "xwayland")]
             xwayland_transients: xwayland::XWaylandTransientRegistry::default(),
             next_view_id: 1,
+            event_loop: EventLoopState::new(),
+            workspaces: WorkspaceHost::default(),
         }
     }
 
@@ -261,8 +281,7 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         {
             let render_node = renderer.selected().render_node;
-            let main_device =
-                smithay::reexports::rustix::fs::makedev(render_node.major(), render_node.minor());
+            let main_device = rustix::fs::makedev(render_node.major(), render_node.minor());
             let formats = renderer.client_import_formats();
             if let Err(error) =
                 self.protocol_globals
@@ -278,13 +297,7 @@ impl RuntimeState {
         self.renderer.as_ref()
     }
 
-    /// Flush protocol events produced by non-Wayland event sources.
-    ///
-    /// Input, KMS, timers, and session events can enqueue client-visible
-    /// state without making the Wayland display readable. The event-loop
-    /// tail invokes this after every dispatch cycle so keyboard focus, keys,
-    /// and frame callbacks are not stranded until a client happens to send
-    /// another request.
+    /// Flush client-visible protocol after non-Wayland sources (see `event_loop`).
     pub(crate) fn flush_wayland_clients(&mut self) {
         if let Err(error) = self.display_handle.flush_clients() {
             warn!(%error, "failed to flush pending Wayland client events");
@@ -322,8 +335,9 @@ impl RuntimeState {
             return None;
         }
         let view_id = self.allocate_view_id();
+        let workspace = self.workspaces.active();
         self.world
-            .spawn_view(view_id, DEFAULT_WORKSPACE)
+            .spawn_view(view_id, workspace)
             .expect("monotonic view IDs must be unique");
         self.surface_views
             .insert(surface.wl_surface().id(), view_id);
@@ -337,6 +351,7 @@ impl RuntimeState {
         // initial surface commit, which the compositor handler performs.
         #[cfg(feature = "tty")]
         self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+        self.refresh_ext_workspace_protocol();
         Some(view_id)
     }
 
@@ -408,6 +423,7 @@ impl RuntimeState {
             // and `Activated` state blank until another input event arrives.
             let _ = self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
         }
+        self.refresh_ext_workspace_protocol();
         self.reflow_default_workspace();
         Some(view_id)
     }
@@ -489,71 +505,23 @@ impl RuntimeState {
     }
 
     pub(crate) fn reflow_default_workspace(&mut self) -> bool {
-        if !self.reflow_default_workspace_layout() {
-            return false;
-        }
-        #[cfg(feature = "tty")]
-        self.submit_default_workspace_frame();
-        true
+        // Historical name: reflows the **active** virtual desktop.
+        self.reflow_active_workspace()
     }
 
     /// Relayout and reconfigure clients without submitting a frame.
-    ///
-    /// Callers that already force a multi-output redraw (for example
-    /// `reflow_outputs`) use this to avoid a duplicate queue/drain cycle.
     pub(crate) fn reflow_default_workspace_layout(&mut self) -> bool {
-        let Some(area) = self.default_workspace_area() else {
-            return false;
+        self.reflow_active_workspace_layout()
+    }
+
+    /// Push active workspace state to bound `ext-workspace` clients.
+    pub(crate) fn refresh_ext_workspace_protocol(&mut self) {
+        use crate::protocol::extensions::ext_workspace::WorkspaceProtocolSnapshot;
+        let snapshot = WorkspaceProtocolSnapshot {
+            active: self.workspaces.active(),
+            count: self.workspaces.count(),
         };
-        self.world
-            .arrange_workspace(DEFAULT_WORKSPACE, self.layout, area);
-
-        let windows = self
-            .space
-            .elements()
-            .filter_map(|window| {
-                let surface = window.wl_surface()?;
-                let view_id = self.view_for_surface(&surface)?;
-                let geometry = self.world.geometry(view_id)?;
-                Some((window.clone(), geometry))
-            })
-            .collect::<Vec<_>>();
-
-        for (window, geometry) in &windows {
-            self.space
-                .relocate_element(window, (geometry.x, geometry.y));
-        }
-        #[cfg(feature = "xwayland")]
-        self.relocate_x11_popups();
-        self.space.refresh();
-
-        for (window, geometry) in windows {
-            self.update_window_surface_state(&window);
-            if let Some(toplevel) = window.toplevel().cloned() {
-                let size = (
-                    i32::try_from(geometry.width).unwrap_or(i32::MAX),
-                    i32::try_from(geometry.height).unwrap_or(i32::MAX),
-                )
-                    .into();
-                let bounds = (
-                    i32::try_from(area.width).unwrap_or(i32::MAX),
-                    i32::try_from(area.height).unwrap_or(i32::MAX),
-                )
-                    .into();
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(size);
-                    state.bounds = Some(bounds);
-                });
-                toplevel.send_pending_configure();
-            }
-            #[cfg(feature = "xwayland")]
-            if let Some(x11) = window.x11_surface() {
-                xwayland::configure_x11_window(x11, geometry);
-            }
-        }
-        #[cfg(feature = "xwayland")]
-        self.update_x11_popup_surface_states();
-        true
+        self.protocol_globals.ext_workspace().refresh(&snapshot);
     }
 
     pub(crate) fn update_surface_scale(&self, surface: &WlSurface) {
@@ -630,20 +598,38 @@ impl RuntimeState {
     }
 
     pub(crate) fn view_count(&mut self) -> usize {
-        self.world.view_count(DEFAULT_WORKSPACE)
+        self.world.view_count(self.workspaces.active())
     }
 
     /// Value-only compositor snapshot for the IPC control surface.
     pub(crate) fn ipc_state_snapshot(&mut self) -> crate::ipc::StateSnapshot {
+        let active = self.workspaces.active();
         crate::ipc::StateSnapshot {
             layout: self.layout.kind(),
-            view_count: self.world.view_count(DEFAULT_WORKSPACE),
+            view_count: self.world.view_count(active),
             output_count: self.output_count(),
-            focused_view: self
-                .world
-                .focused_view(DEFAULT_WORKSPACE)
-                .map(|view| view.get()),
+            focused_view: self.world.focused_view(active).map(|view| view.get()),
+            workspace: active.get(),
+            workspace_count: self.workspaces.count(),
         }
+    }
+
+    /// Value-only virtual-desktop list for docks / bar clients over IPC.
+    pub(crate) fn ipc_workspace_snapshots(&mut self) -> Vec<crate::ipc::WorkspaceSnapshot> {
+        let active = self.workspaces.active();
+        self.workspaces
+            .ids()
+            .map(|id| {
+                let index = id.get();
+                crate::ipc::WorkspaceSnapshot {
+                    index,
+                    name: (index + 1).to_string(),
+                    active: id == active,
+                    view_count: self.world.view_count(id),
+                    focused_view: self.world.focused_view(id).map(|view| view.get()),
+                }
+            })
+            .collect()
     }
 
     /// Value-only output topology for the IPC control surface.
@@ -673,6 +659,7 @@ impl RuntimeState {
                     mode_height: mode.size.h,
                     refresh_millihertz: mode.refresh,
                     primary: primary == Some(logical),
+                    enabled: true,
                 })
             })
             .collect::<Vec<_>>();
@@ -767,13 +754,9 @@ impl OutputRedrawState {
     }
 }
 
+/// Physical device capability bits (Smithay-free; from `tensor-input`).
 #[cfg(feature = "tty")]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct InputDeviceCapabilities {
-    pub(crate) keyboard: bool,
-    pub(crate) pointer: bool,
-    pub(crate) touch: bool,
-}
+pub(crate) type InputDeviceCapabilities = tensor_input::DeviceCapabilities;
 
 #[derive(Debug, Default)]
 pub(crate) struct WaylandClientState {

@@ -6,11 +6,11 @@ use std::{
     rc::Rc,
 };
 
-use smithay::reexports::calloop::{
+use calloop::{
     Interest, LoopHandle, LoopSignal, Mode, PostAction,
     generic::{Generic, NoIoDrop},
 };
-use smithay::reexports::rustix::{net::sockopt::socket_peercred, process::geteuid};
+use rustix::{net::sockopt::socket_peercred, process::geteuid};
 use tracing::warn;
 
 use super::{super::codec, super::message::Request, IpcReply};
@@ -107,7 +107,7 @@ fn on_readable<T: 'static>(
     handle: &LoopHandle<'static, T>,
     state: &Rc<RefCell<ClientState>>,
     handler: &Handler<T>,
-    source: &mut smithay::reexports::calloop::generic::NoIoDrop<UnixStream>,
+    source: &mut NoIoDrop<UnixStream>,
     data: &mut T,
 ) -> Result<PostAction, io::Error> {
     let stream = source_mut(source);
@@ -221,7 +221,7 @@ fn stop_pending_action(state: &Rc<RefCell<ClientState>>) {
 
 fn on_writable(
     state: &Rc<RefCell<ClientState>>,
-    source: &mut smithay::reexports::calloop::generic::NoIoDrop<UnixStream>,
+    source: &mut NoIoDrop<UnixStream>,
 ) -> Result<PostAction, io::Error> {
     let stream = source_mut(source);
     let mut state = state.borrow_mut();
