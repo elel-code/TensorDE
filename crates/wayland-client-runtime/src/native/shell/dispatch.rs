@@ -476,6 +476,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                     if need {
                         let keyboard = seat.get_keyboard(qh, ());
                         if let Some(global) = seat_global {
+                            state
+                                .keyboard_objects
+                                .insert(keyboard.id().protocol_id(), global);
                             if let Some(rec) = state.seats.get_mut(&global) {
                                 rec.keyboard = Some(keyboard.clone());
                             }
@@ -493,6 +496,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                     };
                     if need {
                         let pointer = seat.get_pointer(qh, ());
+                        if let Some(global) = seat_global {
+                            state
+                                .pointer_objects
+                                .insert(pointer.id().protocol_id(), global);
+                        }
                         // Gestures / relative pointer attach only to the primary
                         // pointer (single stream APIs today).
                         if is_primary || state.pointer.is_none() {
@@ -527,6 +535,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                     if need {
                         let touch = seat.get_touch(qh, ());
                         if let Some(global) = seat_global {
+                            state
+                                .touch_objects
+                                .insert(touch.id().protocol_id(), global);
                             if let Some(rec) = state.seats.get_mut(&global) {
                                 rec.touch = Some(touch.clone());
                             }
@@ -561,12 +572,13 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         event: wl_keyboard::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let seat_global = state.seat_for_keyboard(keyboard);
         match event {
             wl_keyboard::Event::Keymap { format, fd, size } => {
                 match format {
@@ -583,12 +595,17 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                 }
             }
             wl_keyboard::Event::Enter { surface, serial, .. } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
                     .copied();
                 state.keyboard_focus = id;
+                if let Some(g) = seat_global {
+                    if let Some(rec) = state.seats.get_mut(&g) {
+                        rec.keyboard_focus = id;
+                    }
+                }
                 state.push(NativeShellEvent::SeatKeyboardEnter { surface: id });
             }
             wl_keyboard::Event::Leave { surface, .. } => {
@@ -598,6 +615,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                     .copied()
                     .or(state.keyboard_focus);
                 state.keyboard_focus = None;
+                if let Some(g) = seat_global {
+                    if let Some(rec) = state.seats.get_mut(&g) {
+                        rec.keyboard_focus = None;
+                    }
+                }
                 state.push(NativeShellEvent::SeatKeyboardLeave { surface: id });
             }
             wl_keyboard::Event::Key {
@@ -606,7 +628,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                 state: key_state,
                 ..
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
                 let (keysym, text) = if let Some(xkb) = state.xkb.as_mut() {
                     let lookup = xkb.key_event(key, pressed);
@@ -646,12 +668,13 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
 impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         event: wl_pointer::Event,
         _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        let seat_global = state.seat_for_pointer(pointer);
         match event {
             wl_pointer::Event::Enter {
                 serial,
@@ -666,10 +689,21 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .copied();
                 if let Some(id) = id {
                     state.pointer_enter_serial = Some(serial);
+                    state.note_seat_serial(seat_global, serial);
+                    if let Some(g) = seat_global {
+                        if let Some(rec) = state.seats.get_mut(&g) {
+                            rec.pointer_enter_serial = Some(serial);
+                        }
+                    }
                     // CSD decoration parts: handle chrome input, map focus to parent.
                     if let Some(&(parent, kind)) = state.csd_part_owners.get(&id) {
                         state.csd_pointer_part = Some((parent, kind));
                         state.on_pointer_focus_changed(Some(parent), qh);
+                        if let Some(g) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&g) {
+                                rec.pointer_focus = Some(parent);
+                            }
+                        }
                         if let Some(frame) = state.csd_frames.get_mut(&parent) {
                             let cursor = frame.on_pointer_enter(kind, surface_x, surface_y);
                             state.pending_csd_cursor = Some(cursor);
@@ -678,6 +712,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     }
                     state.csd_pointer_part = None;
                     state.on_pointer_focus_changed(Some(id), qh);
+                    if let Some(g) = seat_global {
+                        if let Some(rec) = state.seats.get_mut(&g) {
+                            rec.pointer_focus = Some(id);
+                        }
+                    }
                     state.push(NativeShellEvent::PointerEnter {
                         surface: id,
                         x: surface_x,
@@ -701,11 +740,21 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                             }
                         }
                         state.on_pointer_focus_changed(None, qh);
+                        if let Some(g) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&g) {
+                                rec.pointer_focus = None;
+                            }
+                        }
                         return;
                     }
                 }
                 state.csd_pointer_part = None;
                 state.on_pointer_focus_changed(None, qh);
+                if let Some(g) = seat_global {
+                    if let Some(rec) = state.seats.get_mut(&g) {
+                        rec.pointer_focus = None;
+                    }
+                }
                 if let Some(id) = id {
                     state.push(NativeShellEvent::PointerLeave { surface: id });
                 }
@@ -734,7 +783,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 state: btn_state,
                 ..
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 if let Some((parent, _)) = state.csd_pointer_part {
                     if let Some(frame) = state.csd_frames.get_mut(&parent) {
@@ -909,13 +958,14 @@ impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
 impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &wl_touch::WlTouch,
+        touch: &wl_touch::WlTouch,
         event: wl_touch::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         use super::types::PendingTouchEvent;
+        let seat_global = state.seat_for_touch(touch);
 
         // SCTK-compatible frame buffering: hold down/up/motion/shape/orientation
         // until Frame, with Weston's missing-final-frame workaround (flush when
@@ -930,7 +980,7 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
                 x,
                 y,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let Some(surface_id) = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -952,7 +1002,7 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
                 });
             }
             wl_touch::Event::Up { serial, time, id } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 if let Ok(pos) = state.touch_active.binary_search(&id) {
                     state.touch_active.remove(pos);
                 }

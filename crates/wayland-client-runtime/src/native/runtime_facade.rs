@@ -372,6 +372,32 @@ impl NativeRuntime {
         self.shell.seat_count()
     }
 
+    pub fn primary_seat_id(&self) -> Option<crate::SeatId> {
+        self.shell.primary_seat_id()
+    }
+
+    pub fn seat_keyboard_focus(&self, seat: crate::SeatId) -> Option<SurfaceId> {
+        let native = self.shell.seat_keyboard_focus(seat)?;
+        self.surfaces.get(native)
+    }
+
+    pub fn seat_pointer_focus(&self, seat: crate::SeatId) -> Option<SurfaceId> {
+        let native = self.shell.seat_pointer_focus(seat)?;
+        self.surfaces.get(native)
+    }
+
+    pub fn seat_last_input_serial(&self, seat: crate::SeatId) -> Option<u32> {
+        self.shell.seat_last_input_serial(seat)
+    }
+
+    pub fn seat_input_serial(
+        &self,
+        seat: crate::SeatId,
+        source: crate::InputSerialSource,
+    ) -> Option<crate::InputSerial> {
+        self.shell.seat_input_serial(seat, source)
+    }
+
     pub fn create_popup(
         &mut self,
         parent: SurfaceId,

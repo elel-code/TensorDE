@@ -648,6 +648,13 @@ mod tests {
         if shell.seat().is_some() {
             assert!(shell.seat_count() >= 1);
             assert!(!shell.seats().is_empty());
+            if let Some(sid) = shell.primary_seat_id() {
+                // Focus/serial queries are safe with no input yet.
+                let _ = shell.seat_keyboard_focus(sid);
+                let _ = shell.seat_pointer_focus(sid);
+                let _ = shell.seat_last_input_serial(sid);
+                let _ = shell.seat_input_serial(sid, crate::InputSerialSource::PointerPress);
+            }
         }
         // outputs_into reuses capacity.
         let mut outs = Vec::with_capacity(4);

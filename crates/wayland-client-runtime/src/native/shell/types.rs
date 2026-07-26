@@ -430,23 +430,29 @@ pub(crate) struct PresentationFeedbackRecord {
     pub(crate) sync_output: Option<u32>,
 }
 
-/// One bound `wl_seat` and its capability devices.
+/// One bound `wl_seat` and its capability devices + input focus/serials.
 ///
-/// Multiple seats are tracked for multi-seat compositors. Input focus and
-/// serials still merge into the shell-wide fields (last event wins) so existing
-/// single-seat APIs keep working; clients can enumerate seats via
-/// [`crate::NativeShell::seats`].
+/// Shell-wide `pointer_focus` / `last_input_serial` still track the most recent
+/// input (last-wins) for single-seat APIs. Per-seat fields allow multi-seat
+/// clients to query each seat independently via [`crate::NativeShell`].
 pub(crate) struct SeatRecord {
     /// Registry global name (`wl_registry` name).
     pub(crate) global_name: u32,
-    /// Live seat proxy (kept for future seat-scoped grabs / data devices).
-    #[allow(dead_code)]
+    /// Live seat proxy (kept for seat-scoped grabs / data devices).
     pub(crate) seat: wl_seat::WlSeat,
     pub(crate) name: Option<String>,
     pub(crate) capabilities: wl_seat::Capability,
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
     pub(crate) touch: Option<wl_touch::WlTouch>,
+    /// Surface with keyboard focus on this seat.
+    pub(crate) keyboard_focus: Option<NativeSurfaceId>,
+    /// Surface with pointer focus on this seat.
+    pub(crate) pointer_focus: Option<NativeSurfaceId>,
+    /// Latest input serial on this seat (key / button / enter).
+    pub(crate) last_input_serial: Option<u32>,
+    /// Serial from the latest pointer enter on this seat.
+    pub(crate) pointer_enter_serial: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -631,6 +637,12 @@ pub struct NativeShellState {
     pub(crate) seats: HashMap<u32, SeatRecord>,
     /// `wl_seat` protocol id → registry global name.
     pub(crate) seat_objects: HashMap<u32, u32>,
+    /// `wl_keyboard` protocol id → seat registry name.
+    pub(crate) keyboard_objects: HashMap<u32, u32>,
+    /// `wl_pointer` protocol id → seat registry name.
+    pub(crate) pointer_objects: HashMap<u32, u32>,
+    /// `wl_touch` protocol id → seat registry name.
+    pub(crate) touch_objects: HashMap<u32, u32>,
     /// Primary seat changed (hotplug); rebind data-device / text-input after dispatch.
     pub(crate) pending_primary_seat_rebind: bool,
     /// Primary-seat keyboard (mirrors first seat that has keyboard).
@@ -895,6 +907,9 @@ impl Default for NativeShellState {
             seat: None,
             seats: HashMap::new(),
             seat_objects: HashMap::new(),
+            keyboard_objects: HashMap::new(),
+            pointer_objects: HashMap::new(),
+            touch_objects: HashMap::new(),
             pending_primary_seat_rebind: false,
             keyboard: None,
             pointer: None,
@@ -1052,6 +1067,34 @@ impl NativeShellState {
         self.presentation_pending.contains(&id)
     }
 
+    /// Seat registry name owning a keyboard/pointer/touch proxy, if known.
+    pub(crate) fn seat_for_keyboard(&self, keyboard: &wl_keyboard::WlKeyboard) -> Option<u32> {
+        self.keyboard_objects
+            .get(&keyboard.id().protocol_id())
+            .copied()
+    }
+
+    pub(crate) fn seat_for_pointer(&self, pointer: &wl_pointer::WlPointer) -> Option<u32> {
+        self.pointer_objects
+            .get(&pointer.id().protocol_id())
+            .copied()
+    }
+
+    pub(crate) fn seat_for_touch(&self, touch: &wl_touch::WlTouch) -> Option<u32> {
+        self.touch_objects
+            .get(&touch.id().protocol_id())
+            .copied()
+    }
+
+    pub(crate) fn note_seat_serial(&mut self, seat_global: Option<u32>, serial: u32) {
+        self.last_input_serial = Some(serial);
+        if let Some(g) = seat_global {
+            if let Some(rec) = self.seats.get_mut(&g) {
+                rec.last_input_serial = Some(serial);
+            }
+        }
+    }
+
     /// Register a newly bound seat as primary if none yet, always store in `seats`.
     ///
     /// Emits [`NativeShellEvent::SeatAdded`] after insert.
@@ -1071,6 +1114,10 @@ impl NativeShellState {
                 keyboard: None,
                 pointer: None,
                 touch: None,
+                keyboard_focus: None,
+                pointer_focus: None,
+                last_input_serial: None,
+                pointer_enter_serial: None,
             },
         );
         self.push(NativeShellEvent::SeatAdded {
@@ -1088,6 +1135,12 @@ impl NativeShellState {
             return;
         };
         self.seat_objects
+            .retain(|_, name| *name != global_name);
+        self.keyboard_objects
+            .retain(|_, name| *name != global_name);
+        self.pointer_objects
+            .retain(|_, name| *name != global_name);
+        self.touch_objects
             .retain(|_, name| *name != global_name);
 
         let was_primary = self

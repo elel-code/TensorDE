@@ -35,12 +35,16 @@ let mut shell = NativeShell::connect_to_env()?;
 // Register shell.display_fd() with poll / epoll / calloop / winit / …
 loop {
     shell.try_read_and_dispatch()?;
-    for event in shell.drain_events() {
+    let events: Vec<_> = shell.drain_events().collect();
+    for event in events {
         let _ = event;
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+See `examples/native_layer_poll.rs` for a full layer-shell + `poll(2)` demo
+(`--no-default-features`).
 
 ## wgpu (Vulkan on Linux)
 

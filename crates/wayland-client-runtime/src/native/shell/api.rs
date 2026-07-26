@@ -1090,6 +1090,67 @@ impl NativeShell {
         list
     }
 
+    /// Keyboard-focused surface on `seat`, if any.
+    pub fn seat_keyboard_focus(
+        &self,
+        seat: crate::SeatId,
+    ) -> Option<NativeSurfaceId> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.keyboard_focus)
+    }
+
+    /// Pointer-focused surface on `seat`, if any.
+    pub fn seat_pointer_focus(
+        &self,
+        seat: crate::SeatId,
+    ) -> Option<NativeSurfaceId> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.pointer_focus)
+    }
+
+    /// Latest input serial on `seat` (for seat-scoped grabs / selections).
+    pub fn seat_last_input_serial(&self, seat: crate::SeatId) -> Option<u32> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.last_input_serial)
+    }
+
+    /// Pointer-enter serial on `seat` (cursor shape, etc.).
+    pub fn seat_pointer_enter_serial(&self, seat: crate::SeatId) -> Option<u32> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.pointer_enter_serial)
+    }
+
+    /// Build an [`crate::InputSerial`] from the latest serial on `seat`.
+    ///
+    /// Returns `None` if the seat is unknown or has no serial yet.
+    pub fn seat_input_serial(
+        &self,
+        seat: crate::SeatId,
+        source: crate::InputSerialSource,
+    ) -> Option<crate::InputSerial> {
+        let rec = self.state.seats.get(&seat.get())?;
+        let serial = rec.last_input_serial?;
+        Some(crate::InputSerial::new(rec.seat.clone(), serial, source))
+    }
+
+    /// Primary seat id (first bound / current primary), if any.
+    pub fn primary_seat_id(&self) -> Option<crate::SeatId> {
+        let primary = self.state.seat.as_ref()?;
+        self.state
+            .seat_objects
+            .get(&primary.id().protocol_id())
+            .copied()
+            .map(crate::SeatId::from_raw)
+    }
+
     /// Create a bufferless GPU-friendly popup (no solid SHM fill).
     ///
     /// When `grab` is `Some`, the popup is grabbed with that seat+serial.
