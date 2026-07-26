@@ -174,6 +174,13 @@ impl PlatformBackend {
         self.inner.request_frame(surface)
     }
 
+    fn request_presentation_feedback(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<(), RuntimeError> {
+        self.inner.request_presentation_feedback(surface)
+    }
+
     fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         self.inner.commit(surface)
     }

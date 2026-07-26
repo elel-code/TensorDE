@@ -93,6 +93,26 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         time: u32,
     },
+    /// `wp_presentation_feedback.presented` — content became visible.
+    Presented {
+        surface: NativeSurfaceId,
+        /// Presentation clock seconds (from `tv_sec_hi`/`tv_sec_lo`).
+        tv_sec: u64,
+        /// Nanoseconds fraction of the presentation timestamp.
+        tv_nsec: u32,
+        /// Nominal refresh period in nanoseconds (`0` if unknown).
+        refresh_ns: u32,
+        /// Frame sequence counter when available.
+        seq: u64,
+        /// `wp_presentation_feedback.kind` bits.
+        flags_bits: u32,
+        /// Registry name of the synchronized `wl_output`, if known.
+        sync_output: Option<u32>,
+    },
+    /// `wp_presentation_feedback.discarded` — update never shown.
+    PresentationDiscarded {
+        surface: NativeSurfaceId,
+    },
     TouchDown {
         surface: NativeSurfaceId,
         id: i32,
@@ -334,6 +354,14 @@ pub struct NativeCapabilities {
     pub xdg_decoration: bool,
     pub pointer_constraints: bool,
     pub subcompositor: bool,
+    /// `wp_presentation` bound (stable presentation-time).
+    pub presentation: bool,
+}
+
+/// In-flight presentation feedback object metadata.
+pub(crate) struct PresentationFeedbackRecord {
+    pub(crate) surface: NativeSurfaceId,
+    pub(crate) sync_output: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -605,6 +633,14 @@ pub struct NativeShellState {
     pub(crate) seat_capabilities: wl_seat::Capability,
     /// wl_callback object id → surface.
     pub(crate) frame_callbacks: HashMap<u32, NativeSurfaceId>,
+    /// `wp_presentation` global (presentation-time).
+    pub(crate) presentation: Option<
+        wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
+    >,
+    /// Compositor presentation clock id (`clock_gettime` clockid on Linux).
+    pub(crate) presentation_clock_id: Option<u32>,
+    /// `wp_presentation_feedback` object id → pending feedback.
+    pub(crate) presentation_feedbacks: HashMap<u32, PresentationFeedbackRecord>,
     pub(crate) outputs: HashMap<u32, OutputRecord>,
     /// protocol_id → registry global name
     pub(crate) output_objects: HashMap<u32, u32>,
@@ -703,6 +739,9 @@ impl Default for NativeShellState {
             events: Vec::new(),
             seat_capabilities: wl_seat::Capability::empty(),
             frame_callbacks: HashMap::new(),
+            presentation: None,
+            presentation_clock_id: None,
+            presentation_feedbacks: HashMap::new(),
             outputs: HashMap::new(),
             output_objects: HashMap::new(),
             output_proxies: HashMap::new(),

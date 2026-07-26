@@ -119,6 +119,32 @@ pub fn map_native_event_full(
             let surface = surfaces.intern(surface);
             Some(Event::Surface(SurfaceEvent::Frame { surface, time }))
         }
+        NativeShellEvent::Presented {
+            surface,
+            tv_sec,
+            tv_nsec,
+            refresh_ns,
+            seq,
+            flags_bits,
+            sync_output,
+        } => {
+            let surface = surfaces.intern(surface);
+            Some(Event::Surface(SurfaceEvent::Presented {
+                surface,
+                tv_sec,
+                tv_nsec,
+                refresh_ns,
+                seq,
+                flags: flags_bits,
+                sync_output: sync_output.map(OutputId::from_raw),
+            }))
+        }
+        NativeShellEvent::PresentationDiscarded { surface } => {
+            let surface = surfaces.intern(surface);
+            Some(Event::Surface(SurfaceEvent::PresentationDiscarded {
+                surface,
+            }))
+        }
         NativeShellEvent::PopupConfigure {
             surface,
             x,

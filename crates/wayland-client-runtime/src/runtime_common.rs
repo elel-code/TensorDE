@@ -38,6 +38,8 @@ pub struct RuntimeCapabilities {
     pub ext_background_effect: bool,
     pub fractional_scale: bool,
     pub cursor_shape: bool,
+    /// `wp_presentation` (stable presentation-time feedback).
+    pub presentation: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

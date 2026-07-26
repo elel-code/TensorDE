@@ -524,6 +524,25 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_presentation_feedback_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("pres", "dev.fika.Presentation", 200, 200)
+            .expect("toplevel");
+        let _ = shell.dispatch_pending();
+        // Always safe: no-op without the global.
+        shell
+            .request_presentation_feedback(id)
+            .expect("presentation feedback arm");
+        if shell.has_presentation() {
+            assert!(shell.capabilities().presentation);
+        }
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_creates_parented_dialog_when_compositor_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

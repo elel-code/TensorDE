@@ -125,9 +125,14 @@ impl EventLoop {
                         RuntimeError::Unsupported(_) => Ok(()),
                         error => Err(error),
                     }),
-                RuntimeCommand::ArmFrame(surface) => runtime
-                    .request_frame(surface)
-                    .and_then(|()| runtime.commit(surface)),
+                RuntimeCommand::ArmFrame(surface) => {
+                    // Prefer presentation-time feedback when available; still arm
+                    // wl_surface.frame for pacing on compositors without it.
+                    let _ = runtime.request_presentation_feedback(surface);
+                    runtime
+                        .request_frame(surface)
+                        .and_then(|()| runtime.commit(surface))
+                }
                 RuntimeCommand::Destroy(surface) => {
                     self.active.windows.borrow_mut().remove(&surface);
                     runtime.destroy_surface(surface).map(|_| ())
@@ -592,16 +597,18 @@ impl EventLoop {
                 }
                 Ok(())
             }
-            SurfaceEvent::Frame { surface, .. } => {
+            SurfaceEvent::Frame { surface, .. }
+            | SurfaceEvent::Presented { surface, .. }
+            | SurfaceEvent::PresentationDiscarded { surface } => {
                 if let Some(window) = self.window(surface) {
                     let mut state = window
                         .state
                         .lock()
                         .expect("Wayland window state mutex poisoned");
                     state.frame_pending = false;
-                    // A frame callback often unblocks a deferred redraw; wake so
-                    // the loop re-evaluates `has_ready_redraw` instead of sleeping
-                    // forever under ControlFlow::Wait.
+                    // A frame / presentation feedback often unblocks a deferred
+                    // redraw; wake so the loop re-evaluates `has_ready_redraw`
+                    // instead of sleeping forever under ControlFlow::Wait.
                     if state.configured && state.redraw_requested {
                         drop(state);
                         self.active.shared.wake.wake();

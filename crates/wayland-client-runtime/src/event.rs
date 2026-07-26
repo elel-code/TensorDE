@@ -2,8 +2,8 @@ use bitflags::bitflags;
 
 use crate::{
     ActivationEvent, DndEvent, InputSerial, LayerSurfaceEvent, LogicalPosition, LogicalSize,
-    OutputEvent, PointerAxisSource, PointerAxisValue, PointerConstraintEvent, PointerGestureEvent,
-    RelativePointerEvent, SuggestedSize, SurfaceId, TextInputEvent,
+    OutputEvent, OutputId, PointerAxisSource, PointerAxisValue, PointerConstraintEvent,
+    PointerGestureEvent, RelativePointerEvent, SuggestedSize, SurfaceId, TextInputEvent,
 };
 
 bitflags! {
@@ -53,6 +53,25 @@ pub enum SurfaceEvent {
     Frame {
         surface: SurfaceId,
         time: u32,
+    },
+    /// `wp_presentation_feedback.presented` — content became visible to the user.
+    Presented {
+        surface: SurfaceId,
+        /// Presentation-clock timestamp (seconds + nanoseconds).
+        tv_sec: u64,
+        tv_nsec: u32,
+        /// Nominal refresh period in nanoseconds (`0` if unknown).
+        refresh_ns: u32,
+        /// Presentation sequence when available.
+        seq: u64,
+        /// `wp_presentation_feedback.kind` bitfield.
+        flags: u32,
+        /// Output registry name when the compositor reported `sync_output`.
+        sync_output: Option<OutputId>,
+    },
+    /// Content update was discarded without being shown.
+    PresentationDiscarded {
+        surface: SurfaceId,
     },
     ScaleFactorChanged {
         surface: SurfaceId,

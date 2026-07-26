@@ -8,6 +8,7 @@ use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1;
+use wayland_protocols::wp::presentation_time::client::wp_presentation;
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
@@ -106,6 +107,11 @@ impl NativeShell {
         }
         if let Ok(viewporter) = globals.bind::<wp_viewporter::WpViewporter, _, _>(&qh, 1..=1, ()) {
             state.viewporter = Some(viewporter);
+        }
+        if let Ok(presentation) =
+            globals.bind::<wp_presentation::WpPresentation, _, _>(&qh, 1..=1, ())
+        {
+            state.presentation = Some(presentation);
         }
         if let Ok(frac) = globals
             .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
@@ -298,7 +304,17 @@ impl NativeShell {
             xdg_decoration: self.state.decoration_manager.is_some(),
             pointer_constraints: self.state.pointer_constraints.is_some(),
             subcompositor: self.state.subcompositor.is_some(),
+            presentation: self.state.presentation.is_some(),
         }
+    }
+
+    pub fn has_presentation(&self) -> bool {
+        self.state.presentation.is_some()
+    }
+
+    /// Presentation clock id advertised by `wp_presentation.clock_id`, if any.
+    pub fn presentation_clock_id(&self) -> Option<u32> {
+        self.state.presentation_clock_id
     }
 
     pub fn has_pointer_constraints(&self) -> bool {
@@ -739,6 +755,41 @@ impl NativeShell {
         self.state
             .frame_callbacks
             .insert(callback.id().protocol_id(), id);
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    /// Request `wp_presentation.feedback` for the next commit on `id`.
+    ///
+    /// Associates with the **next** `wl_surface.commit` (call before or with
+    /// the content submission). Emits [`NativeShellEvent::Presented`] or
+    /// [`NativeShellEvent::PresentationDiscarded`]. No-ops cleanly when the
+    /// global is missing (returns `Ok` so callers can always arm feedback).
+    pub fn request_presentation_feedback(
+        &mut self,
+        id: NativeSurfaceId,
+    ) -> Result<(), NativeError> {
+        let Some(presentation) = self.state.presentation.clone() else {
+            return Ok(());
+        };
+        let qh = self.queue.handle();
+        let wl = self
+            .state
+            .toplevels
+            .get(&id)
+            .map(|r| r.wl.clone())
+            .or_else(|| self.state.popups.get(&id).map(|r| r.wl.clone()))
+            .or_else(|| self.state.layers.get(&id).map(|r| r.wl.clone()))
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        let feedback = presentation.feedback(&wl, &qh, ());
+        let obj = feedback.id().protocol_id();
+        self.state.presentation_feedbacks.insert(
+            obj,
+            super::types::PresentationFeedbackRecord {
+                surface: id,
+                sync_output: None,
+            },
+        );
         self.connection.flush()?;
         Ok(())
     }

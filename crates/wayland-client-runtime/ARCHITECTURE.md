@@ -122,7 +122,8 @@ Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
 | text-input-v3 | yes |
 | clipboard + DnD (+ async Send) | yes |
 | blur / activation / icons | yes |
-| raw-window-handle 0.6 (wgpu **and** Vulkan) | yes (toplevel, dialog, popup, layer) |
+| wp_presentation (presentation-time) | yes |
+| raw-window-handle 0.6 (wgpu Wayland → Vulkan) | yes (toplevel, dialog, popup, layer) |
 
 ### Vulkan / wgpu
 

@@ -102,6 +102,7 @@ impl NativeRuntime {
                 // Server decorations available when zxdg_decoration_manager_v1 is bound.
                 // Client/None still use app chrome; no separate capability bit exists.
                 popup_reposition,
+                presentation: caps.presentation,
                 ..RuntimeCapabilities::default()
             },
         })
@@ -529,6 +530,22 @@ impl NativeRuntime {
         self.shell
             .request_frame(native)
             .map_err(map_native_error)
+    }
+
+    /// Arm `wp_presentation.feedback` for the next commit (no-op if unsupported).
+    pub fn request_presentation_feedback(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .request_presentation_feedback(native)
+            .map_err(map_native_error)
+    }
+
+    /// Presentation clock id from `wp_presentation.clock_id`, if advertised.
+    pub fn presentation_clock_id(&self) -> Option<u32> {
+        self.shell.presentation_clock_id()
     }
 
     pub fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
