@@ -100,7 +100,10 @@ oversized region clipped by the compositor because a NULL region means
   on `ActiveEventLoop`. `DmabufImportPlan` / `DmabufReadiness` combine GPU
   capability with feedback to pick a fourcc+modifier; startup logs readiness.
   An optional `/dev/udmabuf` smoke test exercises real import when the node
-  is available. Export (wgpu texture → dmabuf → `wl_buffer`) is not
+  is available. Business entry point is `acquire_external_texture` (dmabuf
+  import with CPU `write_texture` fallback); icon/text atlases stay on their
+  packed `write_texture` paths. Feedback events notify the app so readiness
+  can be re-logged. Export (wgpu texture → dmabuf → `wl_buffer`) is not
   implemented; that would need a reverse path not yet in wgpu-hal.
 
 ## Core data-device and cursor behavior

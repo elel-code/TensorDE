@@ -340,6 +340,15 @@ pub trait ApplicationHandler {
         window_id: WindowId,
         event: WindowEvent,
     );
+    /// Compositor dmabuf feedback updated (default or surface-scoped).
+    ///
+    /// Default no-op; Fika logs import readiness when Vulkan + feedback align.
+    fn dmabuf_feedback_updated(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _surface: Option<WindowId>,
+    ) {
+    }
 }
 
 pub struct ActiveEventLoop {

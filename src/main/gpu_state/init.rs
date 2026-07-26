@@ -233,6 +233,37 @@ impl WgpuState {
         self.import_dmabuf_texture(desc)
     }
 
+    /// Acquire external content: dmabuf import when possible, else CPU upload.
+    ///
+    /// Icon/text atlases still use their own `write_texture` paths. Use this for
+    /// whole-texture external content (video frames, future GPU producers).
+    #[allow(dead_code)]
+    pub(crate) fn acquire_external_texture(
+        &self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+        width: u32,
+        height: u32,
+        plane: Option<crate::shell::render::dmabuf::DmabufImportPlane>,
+        pixels: Option<&[u8]>,
+        label: Option<&'static str>,
+    ) -> Result<
+        crate::shell::render::dmabuf::ExternalTexture,
+        crate::shell::render::dmabuf::DmabufImportError,
+    > {
+        let plan = self.dmabuf_import_plan(event_loop, surface);
+        crate::shell::render::dmabuf::acquire_external_texture(
+            &self.device,
+            &self.queue,
+            plan,
+            width,
+            height,
+            plane,
+            pixels,
+            label,
+        )
+    }
+
     /// Log one-line readiness after feedback may have arrived.
     pub(crate) fn log_dmabuf_readiness(
         &self,

@@ -249,27 +249,32 @@ impl EventLoop {
                         surface,
                         feedback,
                     } => {
-                        let scope = match surface {
+                        let surface_id = match surface {
                             Some(id) => {
                                 self.active
                                     .dmabuf_surface_feedback
                                     .borrow_mut()
                                     .insert(id, feedback.clone());
-                                format!("surface={id:?}")
+                                Some(id)
                             }
                             None => {
                                 *self.active.dmabuf_default_feedback.borrow_mut() =
                                     Some(feedback.clone());
-                                "default".to_string()
+                                None
                             }
                         };
                         let pick = crate::shell::render::dmabuf::pick_import_format(&feedback);
+                        let scope = match surface_id {
+                            Some(id) => format!("surface={id:?}"),
+                            None => "default".to_string(),
+                        };
                         eprintln!(
                             "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
                             feedback.main_device(),
                             feedback.formats().len(),
                             feedback.tranches().len(),
                         );
+                        app.dmabuf_feedback_updated(&self.active, surface_id);
                     }
                     wayland_client_runtime::DmabufEvent::BufferCreated { id } => {
                         eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");

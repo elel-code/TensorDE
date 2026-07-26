@@ -90,6 +90,19 @@ impl ApplicationHandler for FikaWgpuApp {
         }
     }
 
+    fn dmabuf_feedback_updated(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+    ) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        // Prefer the surface from the event; fall back to main window.
+        let surface = surface.or_else(|| self.window.as_ref().map(|w| w.id()));
+        renderer.log_dmabuf_readiness(event_loop, surface, "feedback");
+    }
+
     fn can_create_surfaces(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;

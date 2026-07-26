@@ -236,6 +236,179 @@ pub(crate) fn import_desc_from_plan(
     }
 }
 
+/// How an external GPU buffer was obtained for rendering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExternalTextureSource {
+    /// Zero-copy import via `texture_from_dmabuf_fd`.
+    DmabufImport,
+    /// CPU pixels uploaded with `queue.write_texture`.
+    CpuUpload,
+}
+
+/// A sampleable external texture with its provenance.
+#[allow(dead_code)] // fields consumed by future video/thumbnail GPU producers
+pub(crate) struct ExternalTexture {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub width: u32,
+    pub height: u32,
+    pub format: wgpu::TextureFormat,
+    pub source: ExternalTextureSource,
+}
+
+impl ExternalTexture {
+    pub fn from_imported(
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            texture,
+            view,
+            width,
+            height,
+            format,
+            source: ExternalTextureSource::DmabufImport,
+        }
+    }
+
+    pub fn from_cpu_upload(
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            texture,
+            view,
+            width,
+            height,
+            format,
+            source: ExternalTextureSource::CpuUpload,
+        }
+    }
+}
+
+/// Default usages for sampleable external content (icons, video frames, …).
+pub(crate) fn external_sample_usages() -> wgpu::TextureUsages {
+    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
+}
+
+/// Upload tightly packed RGBA/BGRA8 pixels via the normal wgpu path (fallback).
+pub(crate) fn upload_rgba8_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    pixels: &[u8],
+    label: Option<&'static str>,
+) -> Result<ExternalTexture, DmabufImportError> {
+    if width == 0 || height == 0 {
+        return Err(DmabufImportError::InvalidSize(width, height));
+    }
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(DmabufImportError::InvalidSize(width, height))?;
+    if pixels.len() < expected {
+        return Err(DmabufImportError::Hal(format!(
+            "pixel buffer too small: have {} need {expected}",
+            pixels.len()
+        )));
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: external_sample_usages() | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels[..expected],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    Ok(ExternalTexture::from_cpu_upload(
+        texture, width, height, format,
+    ))
+}
+
+/// Prefer dmabuf import when a plan + plane are available; otherwise CPU upload.
+///
+/// This is the business-facing entry point for external content (video frames,
+/// future GPU thumbnails, etc.). Icon atlas packing still uses `write_texture`
+/// into a shared atlas and does not go through this helper.
+///
+/// `pixels` is tightly packed 8-bit RGBA/BGRA matching `plan.texture_format`
+/// (or Bgra8Unorm when plan is absent); used only for CPU fallback.
+pub(crate) fn acquire_external_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    plan: Option<DmabufImportPlan>,
+    width: u32,
+    height: u32,
+    plane: Option<DmabufImportPlane>,
+    pixels: Option<&[u8]>,
+    label: Option<&'static str>,
+) -> Result<ExternalTexture, DmabufImportError> {
+    if let (Some(plan), Some(plane)) = (plan, plane) {
+        let desc = import_desc_from_plan(
+            plan,
+            width,
+            height,
+            plane,
+            external_sample_usages(),
+            label,
+        );
+        match import_dmabuf_texture(device, desc) {
+            Ok(texture) => {
+                return Ok(ExternalTexture::from_imported(
+                    texture,
+                    width,
+                    height,
+                    plan.texture_format,
+                ));
+            }
+            Err(err) => {
+                // Fall through to CPU if pixels are available.
+                if pixels.is_none() {
+                    return Err(err);
+                }
+            }
+        }
+    }
+    let pixels = pixels.ok_or(DmabufImportError::FeatureUnavailable)?;
+    let format = plan
+        .map(|p| p.texture_format)
+        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
+    upload_rgba8_texture(device, queue, width, height, format, pixels, label)
+}
+
 /// Import a single-plane dmabuf as a wgpu texture.
 ///
 /// Requires the device to have been created with
@@ -403,6 +576,64 @@ mod tests {
         assert_eq!(plan.fourcc, fourcc::ARGB8888);
         assert_eq!(plan.main_device, 42);
         assert_eq!(plan.texture_format, wgpu::TextureFormat::Bgra8Unorm);
+    }
+
+    #[test]
+    fn acquire_external_falls_back_to_cpu_without_plane() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => a,
+                Err(_) => {
+                    eprintln!("skip: no adapter for CPU fallback test");
+                    return;
+                }
+            };
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("cpu-fallback-test"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    eprintln!("skip: request_device: {e}");
+                    return;
+                }
+            };
+        // 2x2 BGRA solid.
+        let pixels: [u8; 16] = [
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        ];
+        let ext = acquire_external_texture(
+            &device,
+            &queue,
+            None,
+            2,
+            2,
+            None,
+            Some(&pixels),
+            Some("cpu-fallback"),
+        )
+        .expect("cpu upload");
+        assert_eq!(ext.source, ExternalTextureSource::CpuUpload);
+        assert_eq!(ext.width, 2);
+        assert_eq!(ext.height, 2);
+        ext.texture.destroy();
     }
 
     /// Allocate a single-plane linear ARGB8888 dmabuf via `/dev/udmabuf` when available.
