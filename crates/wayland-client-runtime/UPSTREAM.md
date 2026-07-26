@@ -78,6 +78,15 @@ oversized region clipped by the compositor because a NULL region means
 - Behavior: create/destroy per-surface inhibitors; destroy on surface teardown;
   `set_fullscreen(true)` best-effort enables inhibit, `false` releases it.
 
+## Layer shell (wallpaper / panels)
+
+- Protocol: `zwlr_layer_shell_v1`
+- SHM path: `create_layer_surface` / `create_layer_surface_full` (solid fill for smoke)
+- **GPU path**: `create_layer_surface_gpu` — bufferless initial commit, no SHM on
+  configure; exports RWH for `VK_KHR_wayland_surface` / wgpu swapchain present
+  (Gilder-style wallpaper hosts).
+- Outputs expose `refresh_mhz` / `refresh_hz()` for present pacing.
+
 ## Linux dmabuf
 
 - Protocol: stable `zwp_linux_dmabuf_v1` (bind versions 3..=5; Mesa needs ≥3)

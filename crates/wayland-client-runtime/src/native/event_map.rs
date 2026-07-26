@@ -707,6 +707,7 @@ pub fn map_native_event_full(
                 logical_position: None,
                 logical_size: None,
                 scale_factor: 1,
+                refresh_mhz: None,
             })))
         }
         NativeShellEvent::OutputGeometry {
@@ -728,6 +729,7 @@ pub fn map_native_event_full(
                 LogicalSize::new(physical_width as u32, physical_height as u32)
             }),
             scale_factor: 1,
+            refresh_mhz: None,
         }))),
         NativeShellEvent::OutputScale { output, factor } => {
             Some(Event::Output(OutputEvent::Updated(OutputInfo {
@@ -739,6 +741,7 @@ pub fn map_native_event_full(
                 logical_position: None,
                 logical_size: None,
                 scale_factor: factor,
+                refresh_mhz: None,
             })))
         }
         NativeShellEvent::DmabufFeedback { surface, feedback } => {

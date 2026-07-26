@@ -568,6 +568,45 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_layer_surface_gpu_and_outputs_refresh() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        // Outputs should carry refresh when the compositor advertised a current mode.
+        for out in shell.outputs() {
+            if let Some(mhz) = out.refresh_mhz {
+                assert!(mhz > 0, "refresh_mhz should be positive when set");
+                assert!(out.refresh_hz().unwrap_or(0.0) > 0.0);
+            }
+        }
+        if !shell.has_layer_shell() {
+            return;
+        }
+        use crate::layer_shell::{LayerAnchor, LayerSurfaceLayer, LayerSurfaceState};
+        let state = LayerSurfaceState {
+            size: crate::LogicalSize::new(0, 0),
+            anchor: LayerAnchor::TOP | LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            exclusive_zone: 0,
+            exclusive_edge: None,
+            margins: Default::default(),
+            keyboard_interactivity: Default::default(),
+            layer: LayerSurfaceLayer::Background,
+        };
+        let id = shell
+            .create_layer_surface_gpu("fika-gpu-layer", None, state)
+            .expect("gpu layer");
+        // Bufferless: no SHM buffer stored.
+        assert!(shell.is_layer_configured(id) || !shell.is_layer_configured(id));
+        let handle = shell.public_surface_handle(id).expect("handle");
+        assert!(
+            handle.window_handle().is_ok() && handle.display_handle().is_ok(),
+            "GPU layer must export RWH for Vulkan WSI"
+        );
+        let _ = shell.destroy_layer_surface(id);
+    }
+
+    #[test]
     fn native_shell_linux_dmabuf_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

@@ -425,6 +425,8 @@ pub(crate) struct OutputRecord {
     /// Current mode size when advertised.
     pub(crate) mode_width: i32,
     pub(crate) mode_height: i32,
+    /// Current mode refresh in millihertz (`wl_output.mode.refresh`).
+    pub(crate) mode_refresh_mhz: i32,
     pub(crate) done: bool,
 }
 

@@ -112,6 +112,7 @@ impl NativeShell {
                         physical_height: 0,
                         mode_width: 0,
                         mode_height: 0,
+                        mode_refresh_mhz: 0,
                         done: false,
                     },
                 );
@@ -803,11 +804,38 @@ impl NativeShell {
     }
 
     /// Create a layer surface from full attributes (optional output binding).
+    ///
+    /// Attaches a solid SHM fill so the surface maps without a GPU client.
+    /// Prefer [`Self::create_layer_surface_gpu`] for Vulkan / wgpu present.
     pub fn create_layer_surface_full(
         &mut self,
         namespace: impl Into<String>,
         output: Option<u32>,
         state: crate::layer_shell::LayerSurfaceState,
+    ) -> Result<NativeSurfaceId, NativeError> {
+        self.create_layer_surface_inner(namespace, output, state, false)
+    }
+
+    /// Create a **bufferless** layer surface for Vulkan / wgpu swapchain present.
+    ///
+    /// Initial commit has no `wl_buffer` attach (same model as
+    /// [`Self::create_toplevel_gpu`]). Configure does not auto-attach SHM.
+    /// Callers own present via raw-window-handle / `VK_KHR_wayland_surface`.
+    pub fn create_layer_surface_gpu(
+        &mut self,
+        namespace: impl Into<String>,
+        output: Option<u32>,
+        state: crate::layer_shell::LayerSurfaceState,
+    ) -> Result<NativeSurfaceId, NativeError> {
+        self.create_layer_surface_inner(namespace, output, state, true)
+    }
+
+    fn create_layer_surface_inner(
+        &mut self,
+        namespace: impl Into<String>,
+        output: Option<u32>,
+        state: crate::layer_shell::LayerSurfaceState,
+        bufferless: bool,
     ) -> Result<NativeSurfaceId, NativeError> {
         let namespace = namespace.into();
         crate::layer_shell::validate_layer_state(
@@ -822,11 +850,6 @@ impl NativeShell {
             .compositor
             .as_ref()
             .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
-        let shm = self
-            .state
-            .shm
-            .as_ref()
-            .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
         let shell = self
             .state
             .layer_shell
@@ -847,13 +870,25 @@ impl NativeShell {
             (),
         );
         apply_layer_state_to_role(&layer_surface, &state, self.state.layer_shell_version)?;
-        wl.commit();
-
-        let bw = state.size.width.max(1);
-        let bh = state.size.height.max(1);
-        let (file, pool, buffer) =
-            shm::create_solid_buffer(shm, &qh, bw, bh, [0xff, 0x18, 0x18, 0x22])
-                .map_err(|e| NativeError::Io(e.to_string()))?;
+        // Bufferless (GPU) path: commit role only — no SHM attach.
+        // SHM path: solid fill so the surface is visible without a renderer.
+        let (buffer, pool, file) = if bufferless {
+            wl.commit();
+            (None, None, None)
+        } else {
+            let shm = self
+                .state
+                .shm
+                .as_ref()
+                .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
+            let bw = state.size.width.max(1);
+            let bh = state.size.height.max(1);
+            let (file, pool, buffer) =
+                shm::create_solid_buffer(shm, &qh, bw, bh, [0xff, 0x18, 0x18, 0x22])
+                    .map_err(|e| NativeError::Io(e.to_string()))?;
+            wl.commit();
+            (Some(buffer), Some(pool), Some(file))
+        };
 
         let id = self.state.alloc_id();
         self.state
@@ -867,9 +902,9 @@ impl NativeShell {
             LayerRecord {
                 wl,
                 layer: layer_surface,
-                buffer: Some(buffer),
-                _pool: Some(pool),
-                _file: Some(file),
+                buffer,
+                _pool: pool,
+                _file: file,
                 configured: false,
                 pending_size: Some((state.size.width, state.size.height)),
                 logical_w: state.size.width,
@@ -951,6 +986,7 @@ impl NativeShell {
                     None
                 },
                 scale_factor: rec.scale,
+                refresh_mhz: (rec.mode_refresh_mhz > 0).then_some(rec.mode_refresh_mhz),
             })
             .collect();
         list.sort_by_key(|o| o.id.get());

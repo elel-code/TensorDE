@@ -25,6 +25,20 @@ pub struct OutputInfo {
     pub logical_position: Option<LogicalPosition>,
     pub logical_size: Option<LogicalSize>,
     pub scale_factor: i32,
+    /// Current mode vertical refresh in **millihertz** (`wl_output.mode.refresh`).
+    ///
+    /// Example: 60 Hz → `60_000`, 144 Hz → `144_000`. `None` if no current mode
+    /// has been advertised yet. Useful for wallpaper / present pacing.
+    pub refresh_mhz: Option<i32>,
+}
+
+impl OutputInfo {
+    /// Refresh as hertz when known (`refresh_mhz / 1000` as `f64`).
+    pub fn refresh_hz(&self) -> Option<f64> {
+        self.refresh_mhz
+            .filter(|&m| m > 0)
+            .map(|m| f64::from(m) / 1000.0)
+    }
 }
 
 /// Output hotplug or metadata change.

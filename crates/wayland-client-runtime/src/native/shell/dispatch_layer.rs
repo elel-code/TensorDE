@@ -53,6 +53,8 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for NativeShellStat
                                 if height > 0 { height } else { record.logical_h },
                             ));
                         }
+                        // SHM-backed layers re-attach on configure; bufferless
+                        // (GPU/swapchain) layers leave attach to the client.
                         if let Some(buffer) = record.buffer.as_ref() {
                             record.wl.attach(Some(buffer), 0, 0);
                             record.wl.damage_buffer(0, 0, i32::MAX, i32::MAX);

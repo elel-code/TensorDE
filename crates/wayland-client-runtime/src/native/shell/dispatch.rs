@@ -994,6 +994,7 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                     if let Some(record) = state.outputs.get_mut(&name) {
                         record.mode_width = width;
                         record.mode_height = height;
+                        record.mode_refresh_mhz = refresh;
                     }
                 }
                 state.push(NativeShellEvent::OutputMode {
