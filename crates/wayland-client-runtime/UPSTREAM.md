@@ -91,6 +91,10 @@ oversized region clipped by the compositor because a NULL region means
 - Outputs expose `refresh_mhz` / `refresh_hz()` for present pacing.
 - Hotplug: late `wl_output` globals are bound; `global_remove` emits
   `OutputEvent::Removed`.
+- `wl_surface.enter` / `leave` map to `SurfaceEvent::OutputEnter` /
+  `OutputLeave` (wallpaper hosts track which output a layer sits on).
+- `OutputDone` drains as a full `OutputInfo` snapshot (including
+  `refresh_mhz`) via `NativeShell::output_info`.
 
 ## Linux dmabuf
 

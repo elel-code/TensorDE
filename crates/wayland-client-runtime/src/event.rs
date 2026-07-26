@@ -79,6 +79,16 @@ pub enum SurfaceEvent {
         /// wp-fractional-scale-v1 is active for the surface.
         factor: f64,
     },
+    /// `wl_surface.enter` — surface is (now) on this output.
+    OutputEnter {
+        surface: SurfaceId,
+        output: OutputId,
+    },
+    /// `wl_surface.leave` — surface left this output.
+    OutputLeave {
+        surface: SurfaceId,
+        output: OutputId,
+    },
 }
 
 #[derive(Clone, Debug)]

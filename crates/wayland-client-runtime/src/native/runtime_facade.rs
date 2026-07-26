@@ -133,10 +133,12 @@ impl NativeRuntime {
         if let Some(serial) = self.shell.last_input_serial() {
             self.map_state.last_serial = serial;
         }
-        // Hint capacity for the common 1:1 native→public mapping.
-        let pending = self.shell.pending_event_count();
-        target.reserve(pending);
-        for event in self.shell.drain_events() {
+        // Collect first so we can still call `output_info` while mapping
+        // (drain iterator would hold a mutable borrow on the shell).
+        let mut native_events = Vec::new();
+        self.shell.drain_events_into(&mut native_events);
+        target.reserve(native_events.len());
+        for event in native_events {
             if let crate::NativeShellEvent::ActivationToken { surface, token } = event {
                 if let Some(request) = self.activation_pending.remove(&surface) {
                     let public = self.surfaces.intern(surface);
@@ -158,6 +160,13 @@ impl NativeRuntime {
                     target.push(mapped);
                 }
                 continue;
+            }
+            // Prefer full output snapshot after mode/geometry/name settle.
+            if let crate::NativeShellEvent::OutputDone { output } = event {
+                if let Some(info) = self.shell.output_info(output) {
+                    target.push(Event::Output(crate::OutputEvent::Updated(info)));
+                    continue;
+                }
             }
             if let Some(mapped) = crate::map_native_event_full(
                 event,

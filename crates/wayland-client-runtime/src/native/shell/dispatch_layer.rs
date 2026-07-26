@@ -43,15 +43,27 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for NativeShellStat
                         record.configured = true;
                         if width > 0 {
                             record.logical_w = width;
+                            record.state.size.width = width;
                         }
                         if height > 0 {
                             record.logical_h = height;
+                            record.state.size.height = height;
                         }
                         if width > 0 || height > 0 {
                             record.pending_size = Some((
                                 if width > 0 { width } else { record.logical_w },
                                 if height > 0 { height } else { record.logical_h },
                             ));
+                        }
+                        // Keep viewporter destination in sync with compositor size
+                        // when both axes are known (fixed-size or configured fill).
+                        if record.logical_w > 0 && record.logical_h > 0 {
+                            if let Some(vp) = record.viewport.as_ref() {
+                                vp.set_destination(
+                                    record.logical_w as i32,
+                                    record.logical_h as i32,
+                                );
+                            }
                         }
                         // SHM-backed layers re-attach on configure; bufferless
                         // (GPU/swapchain) layers leave attach to the client.

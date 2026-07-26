@@ -989,38 +989,44 @@ impl NativeShell {
 
     /// Snapshot of currently known outputs.
     pub fn outputs(&self) -> Vec<crate::output::OutputInfo> {
-        use crate::geometry::{LogicalPosition, LogicalSize};
-        use crate::output::{OutputId, OutputInfo};
         let mut list: Vec<_> = self
             .state
             .outputs
-            .iter()
-            .map(|(&name, rec)| OutputInfo {
-                id: OutputId::from_raw(name),
-                name: rec.name.clone(),
-                description: rec.description.clone(),
-                make: rec.make.clone(),
-                model: rec.model.clone(),
-                logical_position: Some(LogicalPosition::new(rec.x, rec.y)),
-                logical_size: if rec.mode_width > 0 && rec.mode_height > 0 {
-                    Some(LogicalSize::new(
-                        rec.mode_width as u32,
-                        rec.mode_height as u32,
-                    ))
-                } else if rec.physical_width > 0 && rec.physical_height > 0 {
-                    Some(LogicalSize::new(
-                        rec.physical_width as u32,
-                        rec.physical_height as u32,
-                    ))
-                } else {
-                    None
-                },
-                scale_factor: rec.scale,
-                refresh_mhz: (rec.mode_refresh_mhz > 0).then_some(rec.mode_refresh_mhz),
-            })
+            .keys()
+            .filter_map(|&name| self.output_info(name))
             .collect();
         list.sort_by_key(|o| o.id.get());
         list
+    }
+
+    /// Single-output snapshot by registry global name (`OutputId::get()`).
+    pub fn output_info(&self, name: u32) -> Option<crate::output::OutputInfo> {
+        use crate::geometry::{LogicalPosition, LogicalSize};
+        use crate::output::{OutputId, OutputInfo};
+        let rec = self.state.outputs.get(&name)?;
+        Some(OutputInfo {
+            id: OutputId::from_raw(name),
+            name: rec.name.clone(),
+            description: rec.description.clone(),
+            make: rec.make.clone(),
+            model: rec.model.clone(),
+            logical_position: Some(LogicalPosition::new(rec.x, rec.y)),
+            logical_size: if rec.mode_width > 0 && rec.mode_height > 0 {
+                Some(LogicalSize::new(
+                    rec.mode_width as u32,
+                    rec.mode_height as u32,
+                ))
+            } else if rec.physical_width > 0 && rec.physical_height > 0 {
+                Some(LogicalSize::new(
+                    rec.physical_width as u32,
+                    rec.physical_height as u32,
+                ))
+            } else {
+                None
+            },
+            scale_factor: rec.scale,
+            refresh_mhz: (rec.mode_refresh_mhz > 0).then_some(rec.mode_refresh_mhz),
+        })
     }
 
     /// Create a bufferless GPU-friendly popup (no solid SHM fill).

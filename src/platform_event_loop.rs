@@ -681,7 +681,9 @@ impl EventLoop {
                 }
                 Ok(())
             }
-            SurfaceEvent::PopupConfigure { .. } => Ok(()),
+            SurfaceEvent::PopupConfigure { .. }
+            | SurfaceEvent::OutputEnter { .. }
+            | SurfaceEvent::OutputLeave { .. } => Ok(()),
         }
     }
 

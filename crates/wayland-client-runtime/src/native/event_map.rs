@@ -747,6 +747,18 @@ pub fn map_native_event_full(
                 refresh_mhz: None,
             })))
         }
+        NativeShellEvent::SurfaceOutputEnter { surface, output } => {
+            Some(Event::Surface(SurfaceEvent::OutputEnter {
+                surface: surfaces.intern(surface),
+                output: OutputId::from_raw(output),
+            }))
+        }
+        NativeShellEvent::SurfaceOutputLeave { surface, output } => {
+            Some(Event::Surface(SurfaceEvent::OutputLeave {
+                surface: surfaces.intern(surface),
+                output: OutputId::from_raw(output),
+            }))
+        }
         NativeShellEvent::DmabufFeedback { surface, feedback } => {
             Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::Feedback {
                 surface: surface.map(|s| surfaces.intern(s)),
@@ -765,10 +777,9 @@ pub fn map_native_event_full(
         // ActivationToken is correlated in NativeRuntime::drain_events_into.
         // Selection / primary selection mime lists remain internal until apps
         // request a receive (same model as clipboard).
+        // OutputMode is folded into OutputDone / NativeShell::outputs() snapshots.
         NativeShellEvent::TouchFrame
         | NativeShellEvent::OutputMode { .. }
-        | NativeShellEvent::SurfaceOutputEnter { .. }
-        | NativeShellEvent::SurfaceOutputLeave { .. }
         | NativeShellEvent::Selection { .. }
         | NativeShellEvent::SelectionCancelled
         | NativeShellEvent::PrimarySelection { .. }
@@ -873,6 +884,45 @@ mod tests {
         };
         // Without seat, serial-bearing touch events are dropped.
         assert!(map_native_event_full(event.clone(), &mut map, None, &mut map_state).is_none());
+    }
+
+    #[test]
+    fn maps_surface_output_enter_leave() {
+        let mut map = SurfaceIdMap::new();
+        let mut map_state = NativeEventMapState::default();
+        let native = NativeSurfaceId(3);
+        let enter = map_native_event_full(
+            NativeShellEvent::SurfaceOutputEnter {
+                surface: native,
+                output: 7,
+            },
+            &mut map,
+            None,
+            &mut map_state,
+        );
+        match enter {
+            Some(Event::Surface(SurfaceEvent::OutputEnter { surface, output })) => {
+                assert_eq!(surface, map.get(native).unwrap());
+                assert_eq!(output.get(), 7);
+            }
+            other => panic!("expected OutputEnter, got {other:?}"),
+        }
+        let leave = map_native_event_full(
+            NativeShellEvent::SurfaceOutputLeave {
+                surface: native,
+                output: 7,
+            },
+            &mut map,
+            None,
+            &mut map_state,
+        );
+        match leave {
+            Some(Event::Surface(SurfaceEvent::OutputLeave { surface, output })) => {
+                assert_eq!(surface, map.get(native).unwrap());
+                assert_eq!(output.get(), 7);
+            }
+            other => panic!("expected OutputLeave, got {other:?}"),
+        }
     }
 
     #[test]
