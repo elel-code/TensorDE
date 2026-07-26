@@ -108,6 +108,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::TouchCancel => {
                         println!("touch cancel");
                     }
+                    NativeShellEvent::OutputGeometry {
+                        output,
+                        make,
+                        model,
+                        ..
+                    } => {
+                        println!("output {output} geometry make={make:?} model={model:?}");
+                    }
+                    NativeShellEvent::OutputMode {
+                        output,
+                        width,
+                        height,
+                        current,
+                        ..
+                    } => {
+                        println!(
+                            "output {output} mode {width}x{height} current={current}"
+                        );
+                    }
+                    NativeShellEvent::OutputScale { output, factor } => {
+                        println!("output {output} scale={factor}");
+                    }
+                    NativeShellEvent::OutputDone { output } => {
+                        println!("output {output} done");
+                    }
+                    NativeShellEvent::SurfaceOutputEnter { surface: id, output } => {
+                        println!("surface {id:?} enter output {output}");
+                    }
+                    NativeShellEvent::SurfaceOutputLeave { surface: id, output } => {
+                        println!("surface {id:?} leave output {output}");
+                    }
                 }
             }
             if configured {

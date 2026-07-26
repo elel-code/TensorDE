@@ -1,7 +1,7 @@
 //! NativeShell public methods.
 
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_compositor, wl_seat, wl_shm};
+use wayland_client::protocol::{wl_compositor, wl_output, wl_seat, wl_shm};
 use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
@@ -51,6 +51,25 @@ impl NativeShell {
         }
         if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=9, ()) {
             state.seat = Some(seat);
+        }
+        // Bind every advertised wl_output (multi-instance).
+        for global in globals.contents().clone_list() {
+            if global.interface == "wl_output" {
+                let version = global.version.min(4).max(1);
+                let output = globals
+                    .registry()
+                    .bind::<wl_output::WlOutput, _, _>(global.name, version, &qh, ());
+                state.output_objects.insert(output.id().protocol_id(), global.name);
+                state.outputs.insert(
+                    global.name,
+                    super::types::OutputRecord {
+                        name: global.name,
+                        scale: 1,
+                        make: String::new(),
+                        model: String::new(),
+                    },
+                );
+            }
         }
         if let Ok(viewporter) = globals.bind::<wp_viewporter::WpViewporter, _, _>(&qh, 1..=1, ()) {
             state.viewporter = Some(viewporter);
@@ -126,7 +145,12 @@ impl NativeShell {
                     .state
                     .seat_capabilities
                     .contains(wayland_client::protocol::wl_seat::Capability::Touch),
+            output_count: self.state.outputs.len() as u32,
         }
+    }
+
+    pub fn output_scale_factor(&self, output_name: u32) -> Option<i32> {
+        self.state.outputs.get(&output_name).map(|o| o.scale)
     }
 
     /// Request a `wl_surface.frame` callback; emits [`NativeShellEvent::Frame`].

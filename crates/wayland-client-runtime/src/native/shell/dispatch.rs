@@ -2,8 +2,8 @@
 
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
-    wl_shm_pool, wl_surface, wl_touch,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -56,13 +56,42 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for NativeShellState {
 
 impl Dispatch<wl_surface::WlSurface, ()> for NativeShellState {
     fn event(
-        _: &mut Self,
-        _: &wl_surface::WlSurface,
-        _: wl_surface::Event,
+        state: &mut Self,
+        surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let surface_id = state
+            .wl_surface_objects
+            .get(&surface.id().protocol_id())
+            .copied();
+        match event {
+            wl_surface::Event::Enter { output } => {
+                if let (Some(surface), Some(&output_name)) = (
+                    surface_id,
+                    state.output_objects.get(&output.id().protocol_id()),
+                ) {
+                    state.push(NativeShellEvent::SurfaceOutputEnter {
+                        surface,
+                        output: output_name,
+                    });
+                }
+            }
+            wl_surface::Event::Leave { output } => {
+                if let (Some(surface), Some(&output_name)) = (
+                    surface_id,
+                    state.output_objects.get(&output.id().protocol_id()),
+                ) {
+                    state.push(NativeShellEvent::SurfaceOutputLeave {
+                        surface,
+                        output: output_name,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -511,6 +540,77 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
             }
             wl_touch::Event::Cancel => {
                 state.push(NativeShellEvent::TouchCancel);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(&name) = state.output_objects.get(&output.id().protocol_id()) else {
+            return;
+        };
+        match event {
+            wl_output::Event::Geometry {
+                x,
+                y,
+                physical_width,
+                physical_height,
+                make,
+                model,
+                ..
+            } => {
+                if let Some(record) = state.outputs.get_mut(&name) {
+                    record.make = make.clone();
+                    record.model = model.clone();
+                }
+                state.push(NativeShellEvent::OutputGeometry {
+                    output: name,
+                    x,
+                    y,
+                    physical_width,
+                    physical_height,
+                    make,
+                    model,
+                });
+            }
+            wl_output::Event::Mode {
+                flags,
+                width,
+                height,
+                refresh,
+            } => {
+                let current = match flags {
+                    WEnum::Value(f) => f.contains(wl_output::Mode::Current),
+                    _ => false,
+                };
+                state.push(NativeShellEvent::OutputMode {
+                    output: name,
+                    width,
+                    height,
+                    refresh,
+                    current,
+                });
+            }
+            wl_output::Event::Scale { factor } => {
+                if let Some(record) = state.outputs.get_mut(&name) {
+                    record.scale = factor;
+                }
+                state.push(NativeShellEvent::OutputScale {
+                    output: name,
+                    factor,
+                });
+            }
+            wl_output::Event::Done => {
+                state.push(NativeShellEvent::OutputDone { output: name });
             }
             _ => {}
         }

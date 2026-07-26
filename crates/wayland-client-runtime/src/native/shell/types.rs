@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fs::File;
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-    wl_touch,
+    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface, wl_touch,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
@@ -94,6 +94,37 @@ pub enum NativeShellEvent {
     },
     TouchFrame,
     TouchCancel,
+    OutputGeometry {
+        output: u32,
+        x: i32,
+        y: i32,
+        physical_width: i32,
+        physical_height: i32,
+        make: String,
+        model: String,
+    },
+    OutputMode {
+        output: u32,
+        width: i32,
+        height: i32,
+        refresh: i32,
+        current: bool,
+    },
+    OutputScale {
+        output: u32,
+        factor: i32,
+    },
+    OutputDone {
+        output: u32,
+    },
+    SurfaceOutputEnter {
+        surface: NativeSurfaceId,
+        output: u32,
+    },
+    SurfaceOutputLeave {
+        surface: NativeSurfaceId,
+        output: u32,
+    },
 }
 
 /// Capability snapshot for the native shell connection.
@@ -106,6 +137,15 @@ pub struct NativeCapabilities {
     pub pointer: bool,
     pub keyboard: bool,
     pub touch: bool,
+    pub output_count: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OutputRecord {
+    pub(crate) name: u32,
+    pub(crate) scale: i32,
+    pub(crate) make: String,
+    pub(crate) model: String,
 }
 
 pub(crate) struct ToplevelRecord {
@@ -155,6 +195,8 @@ pub struct NativeShellState {
     pub(crate) seat_capabilities: wl_seat::Capability,
     /// wl_callback object id → surface.
     pub(crate) frame_callbacks: HashMap<u32, NativeSurfaceId>,
+    pub(crate) outputs: HashMap<u32, OutputRecord>,
+    pub(crate) output_objects: HashMap<u32, u32>,
 }
 
 impl Default for NativeShellState {
@@ -184,6 +226,8 @@ impl Default for NativeShellState {
             events: Vec::new(),
             seat_capabilities: wl_seat::Capability::empty(),
             frame_callbacks: HashMap::new(),
+            outputs: HashMap::new(),
+            output_objects: HashMap::new(),
         }
     }
 }
