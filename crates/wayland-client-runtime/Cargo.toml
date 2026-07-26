@@ -25,7 +25,8 @@ libc = "0.2"
 raw-window-handle = "0.6"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "system", "xkbcommon"], optional = true }
 thiserror = "2"
-wayland-client = "0.31"
+# `system` exposes ObjectId::as_ptr for raw-window-handle / wgpu.
+wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # Native keyboard text (keymap fd → utf8). Feature `wayland` enables new_from_fd.

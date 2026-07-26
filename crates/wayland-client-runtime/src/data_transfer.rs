@@ -1,6 +1,8 @@
 //! MIME payloads and pipes shared by clipboard and drag-and-drop transfers.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
+#[cfg(feature = "sctk")]
+use std::io::Write;
 use std::sync::Arc;
 #[cfg(feature = "sctk")]
 use std::thread;

@@ -119,7 +119,7 @@ pub struct WakeHandle(WakeKind);
 enum WakeKind {
     /// SCTK / calloop event loop signal.
     #[cfg(feature = "sctk")]
-    Calloop(smithay_client_toolkit::reexports::calloop::LoopSignal),
+    Calloop(::smithay_client_toolkit::reexports::calloop::LoopSignal),
     /// Eventfd used by the native Compio-free poll path.
     EventFd(std::sync::Arc<crate::wake_fd::EventFdWake>),
 }
@@ -127,7 +127,7 @@ enum WakeKind {
 impl WakeHandle {
     #[cfg(feature = "sctk")]
     pub(crate) fn from_calloop(
-        signal: smithay_client_toolkit::reexports::calloop::LoopSignal,
+        signal: ::smithay_client_toolkit::reexports::calloop::LoopSignal,
     ) -> Self {
         Self(WakeKind::Calloop(signal))
     }
