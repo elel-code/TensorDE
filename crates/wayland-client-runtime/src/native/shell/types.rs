@@ -364,6 +364,8 @@ pub struct NativeCapabilities {
     pub presentation: bool,
     /// `zwp_primary_selection_device_manager_v1` (middle-click paste).
     pub primary_selection: bool,
+    /// `zwp_idle_inhibit_manager_v1` (screensaver / idle inhibit).
+    pub idle_inhibit: bool,
 }
 
 /// In-flight presentation feedback object metadata.
@@ -512,6 +514,15 @@ pub struct NativeShellState {
     pub(crate) primary_content: Option<crate::data_transfer::TransferContent>,
     /// offer protocol id → mimes for primary offers (parallel to offer_mimes).
     pub(crate) primary_offer_mimes: HashMap<u32, Vec<String>>,
+    /// Idle inhibit manager (prevent screensaver / idle lock while active).
+    pub(crate) idle_inhibit_manager: Option<
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+    >,
+    /// Active inhibitors keyed by content surface.
+    pub(crate) idle_inhibitors: HashMap<
+        NativeSurfaceId,
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+    >,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
@@ -697,6 +708,8 @@ impl Default for NativeShellState {
             primary_source: None,
             primary_content: None,
             primary_offer_mimes: HashMap::new(),
+            idle_inhibit_manager: None,
+            idle_inhibitors: HashMap::new(),
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,

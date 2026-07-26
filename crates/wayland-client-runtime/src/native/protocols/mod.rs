@@ -129,6 +129,11 @@ pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Unstable,
         min_version: 1,
     },
+    ProtocolSpec {
+        interface: "zwp_idle_inhibit_manager_v1",
+        class: ProtocolClass::Unstable,
+        min_version: 1,
+    },
     // —— staging ——
     ProtocolSpec {
         interface: "wp_fractional_scale_manager_v1",

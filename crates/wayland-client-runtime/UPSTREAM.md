@@ -69,7 +69,14 @@ oversized region clipped by the compositor because a NULL region means
   (resist faulty compositors), async pipe receive, dual-write from regular
   clipboard `set_selection` when the global exists so middle-click paste works.
 - Public API: `store_primary_selection` / `receive_primary_selection`; Fika
-  middle-click uses primary paste into the active pane.
+  middle-click uses async primary paste into the active pane (same worker path
+  as Ctrl+V; never blocks the event loop).
+
+## Idle inhibit
+
+- Protocol: `zwp_idle_inhibit_manager_v1`
+- Behavior: create/destroy per-surface inhibitors; destroy on surface teardown;
+  `set_fullscreen(true)` best-effort enables inhibit, `false` releases it.
 
 ## Core data-device and cursor behavior
 

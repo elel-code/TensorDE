@@ -9,6 +9,7 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1;
 use wayland_protocols::wp::presentation_time::client::wp_presentation;
+use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1;
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
@@ -130,6 +131,14 @@ impl NativeShell {
         >(&qh, 1..=1, ())
         {
             state.primary_selection_manager = Some(psm);
+        }
+        if let Ok(idle) = globals.bind::<
+            zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.idle_inhibit_manager = Some(idle);
         }
         if let Ok(frac) = globals
             .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
@@ -345,6 +354,7 @@ impl NativeShell {
             subcompositor: self.state.subcompositor.is_some(),
             presentation: self.state.presentation.is_some(),
             primary_selection: self.state.primary_selection_manager.is_some(),
+            idle_inhibit: self.state.idle_inhibit_manager.is_some(),
         }
     }
 
@@ -354,6 +364,46 @@ impl NativeShell {
 
     pub fn has_primary_selection(&self) -> bool {
         self.state.primary_selection_manager.is_some()
+    }
+
+    pub fn has_idle_inhibit(&self) -> bool {
+        self.state.idle_inhibit_manager.is_some()
+    }
+
+    /// Enable or disable idle/screensaver inhibition for a surface.
+    ///
+    /// When enabled, the compositor should not blank the screen or enter idle
+    /// lock while this surface is mapped (common for fullscreen media/viewers).
+    pub fn set_idle_inhibit(
+        &mut self,
+        id: NativeSurfaceId,
+        inhibit: bool,
+    ) -> Result<(), NativeError> {
+        if !inhibit {
+            if let Some(inhibitor) = self.state.idle_inhibitors.remove(&id) {
+                inhibitor.destroy();
+                self.connection.flush()?;
+            }
+            return Ok(());
+        }
+        if self.state.idle_inhibitors.contains_key(&id) {
+            return Ok(());
+        }
+        let manager = self
+            .state
+            .idle_inhibit_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("zwp_idle_inhibit_manager_v1 missing".into()))?;
+        let wl = self
+            .state
+            .wl_surface(id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?
+            .clone();
+        let qh = self.queue.handle();
+        let inhibitor = manager.create_inhibitor(&wl, &qh, ());
+        self.state.idle_inhibitors.insert(id, inhibitor);
+        self.connection.flush()?;
+        Ok(())
     }
 
     /// Presentation clock id advertised by `wp_presentation.clock_id`, if any.
@@ -1081,6 +1131,8 @@ impl NativeShell {
     }
 
     pub fn destroy_toplevel(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        // Drop idle inhibitor before the surface goes away.
+        let _ = self.set_idle_inhibit(id, false);
         // Destroy child popups first (parent must outlive them for some compositors).
         let child_popups: Vec<_> = self
             .state

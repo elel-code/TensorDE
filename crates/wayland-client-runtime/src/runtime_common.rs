@@ -42,6 +42,8 @@ pub struct RuntimeCapabilities {
     pub presentation: bool,
     /// `zwp_primary_selection_device_manager_v1` (middle-click paste).
     pub primary_selection: bool,
+    /// `zwp_idle_inhibit_manager_v1` (screensaver / idle inhibit).
+    pub idle_inhibit: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

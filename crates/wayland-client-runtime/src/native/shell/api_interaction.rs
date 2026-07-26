@@ -108,6 +108,9 @@ impl NativeShell {
             record.toplevel.unset_fullscreen();
         }
         self.connection.flush()?;
+        // Best-effort: keep the display awake while fullscreen (media/viewers).
+        // Missing manager or surface is ignored so fullscreen itself still works.
+        let _ = self.set_idle_inhibit(id, fullscreen);
         Ok(())
     }
 

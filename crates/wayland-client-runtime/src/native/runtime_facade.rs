@@ -111,6 +111,7 @@ impl NativeRuntime {
                 popup_reposition,
                 presentation: caps.presentation,
                 primary_selection: caps.primary_selection,
+                idle_inhibit: caps.idle_inhibit,
                 ..RuntimeCapabilities::default()
             },
         })
@@ -808,6 +809,21 @@ impl NativeRuntime {
         let native = self.native(surface)?;
         self.shell
             .set_fullscreen(native, fullscreen)
+            .map_err(map_native_error)
+    }
+
+    /// Enable/disable idle inhibit for a surface (no-op style error if unsupported).
+    pub fn set_idle_inhibit(
+        &mut self,
+        surface: SurfaceId,
+        inhibit: bool,
+    ) -> Result<(), RuntimeError> {
+        if !self.shell.has_idle_inhibit() {
+            return Err(RuntimeError::Unsupported("zwp_idle_inhibit_manager_v1"));
+        }
+        let native = self.native(surface)?;
+        self.shell
+            .set_idle_inhibit(native, inhibit)
             .map_err(map_native_error)
     }
 

@@ -95,6 +95,31 @@ impl FikaWgpuApp {
         }
     }
 
+    /// Middle-click / primary selection paste (async; does not block the UI thread).
+    pub(crate) fn load_primary_text_for_paste(&mut self) {
+        let Some(clipboard) = self.clipboard.as_ref() else {
+            fika_log!("[fika-wgpu] primary-paste-error error=clipboard-unavailable");
+            return;
+        };
+
+        match clipboard.load_primary_text_async() {
+            Ok(reply_rx) => {
+                // Same completion path as Ctrl+V into the active pane.
+                self.submit_operation_request(ShellOperationRequest::clipboard(
+                    ShellClipboardWork::LoadPaste {
+                        use_context: false,
+                        privileged: false,
+                        reply_rx,
+                    },
+                ));
+            }
+            Err(error) => {
+                // Missing primary global or empty offer is common; keep quiet unless noisy.
+                fika_log!("[fika-wgpu] primary-paste-error load={error}");
+            }
+        }
+    }
+
     pub(crate) fn queue_clipboard_clear(&mut self, reason: &'static str) {
         let Some(clipboard) = self.clipboard.as_ref() else {
             fika_log!(

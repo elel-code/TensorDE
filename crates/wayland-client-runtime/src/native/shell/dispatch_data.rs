@@ -568,6 +568,28 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_idle_inhibit_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        if !shell.has_idle_inhibit() {
+            return;
+        }
+        assert!(shell.capabilities().idle_inhibit);
+        let id = shell
+            .create_toplevel_gpu("idle", "dev.fika.IdleInhibit", 100, 100)
+            .expect("toplevel");
+        // Fullscreen path best-effort arms inhibit; explicit API must work too.
+        shell.set_idle_inhibit(id, true).expect("inhibit on");
+        shell.set_idle_inhibit(id, true).expect("inhibit idempotent");
+        shell.set_idle_inhibit(id, false).expect("inhibit off");
+        let _ = shell.set_fullscreen(id, true);
+        let _ = shell.set_fullscreen(id, false);
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_presentation_feedback_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;
