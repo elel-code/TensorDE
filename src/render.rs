@@ -1,4 +1,6 @@
 #[cfg(feature = "tty")]
+mod completion;
+#[cfg(feature = "tty")]
 mod cursor;
 mod device;
 #[cfg(feature = "tty")]
@@ -10,6 +12,10 @@ mod interop;
 mod target;
 mod vulkan;
 
+#[cfg(feature = "tty")]
+pub(crate) use completion::{
+    GpuFenceEvent, GpuFenceRuntime, GpuFenceRuntimeError, GpuFenceSubmitter, MAX_PENDING_GPU_FENCES,
+};
 #[cfg(feature = "tty")]
 pub(crate) use cursor::CursorOverlay;
 pub use device::{

@@ -1,5 +1,7 @@
 use std::{cell::RefCell, ffi::OsString, rc::Rc};
 
+#[cfg(feature = "tty")]
+mod gpu;
 mod ipc;
 mod launch;
 mod signal;
@@ -11,10 +13,14 @@ use tensor_runtime::{
 use thiserror::Error;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "tty")]
+use gpu::drain_gpu_fence_events;
 use ipc::drain_ipc_events;
 use launch::drain_launch_outcomes;
 use signal::drain_signal_events;
 
+#[cfg(feature = "tty")]
+use crate::render::{GpuFenceEvent, GpuFenceRuntime, GpuFenceRuntimeError, MAX_PENDING_GPU_FENCES};
 use crate::{
     backend::BackendConfig,
     config::{Config, EnvironmentConfig, StartupCommand},
@@ -50,6 +56,12 @@ pub struct Compositor {
     signal_event_sender: WorkerTx<SignalEvent>,
     signal_events: WorkerRx<SignalEvent>,
     signal_runtime: SignalRuntime,
+    #[cfg(feature = "tty")]
+    gpu_fence_event_sender: WorkerTx<GpuFenceEvent>,
+    #[cfg(feature = "tty")]
+    gpu_fence_events: WorkerRx<GpuFenceEvent>,
+    #[cfg(feature = "tty")]
+    gpu_fence_runtime: GpuFenceRuntime,
     completion_notifications: CalloopChannel<()>,
     completion_relay: EventfdCompletionRelay,
     launch_worker: Option<LaunchWorker>,
@@ -114,6 +126,15 @@ impl Compositor {
         let (signal_event_sender, signal_events) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_SIGNAL_EVENTS, completion_relay.wake());
         let signal_runtime = SignalRuntime::start(signal_event_sender.clone())?;
+        #[cfg(feature = "tty")]
+        let (gpu_fence_event_sender, gpu_fence_events) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_GPU_FENCES, completion_relay.wake());
+        #[cfg(feature = "tty")]
+        let gpu_fence_runtime = GpuFenceRuntime::start(gpu_fence_event_sender.clone())?;
+        #[cfg(feature = "tty")]
+        protocol
+            .state_mut()
+            .install_gpu_fence_submitter(gpu_fence_runtime.submitter());
         Ok(Self {
             protocol,
             ipc,
@@ -129,6 +150,12 @@ impl Compositor {
             signal_event_sender,
             signal_events,
             signal_runtime,
+            #[cfg(feature = "tty")]
+            gpu_fence_event_sender,
+            #[cfg(feature = "tty")]
+            gpu_fence_events,
+            #[cfg(feature = "tty")]
+            gpu_fence_runtime,
             completion_notifications,
             completion_relay,
             launch_worker: None,
@@ -309,6 +336,12 @@ impl Compositor {
             signal_event_sender,
             signal_events,
             signal_runtime,
+            #[cfg(feature = "tty")]
+            gpu_fence_event_sender,
+            #[cfg(feature = "tty")]
+            gpu_fence_events,
+            #[cfg(feature = "tty")]
+            gpu_fence_runtime,
             completion_notifications,
             completion_relay,
             launch_worker,
@@ -333,6 +366,8 @@ impl Compositor {
             systemd,
             xwayland,
         );
+        #[cfg(feature = "tty")]
+        let _gpu_fence_runtime_owners = (gpu_fence_event_sender, gpu_fence_runtime);
         let stop_signal = protocol.stop_signal();
         let callback_stop = stop_signal.clone();
         let runtime_failure = Rc::new(RefCell::new(None));
@@ -340,6 +375,8 @@ impl Compositor {
         protocol.run_with_channel(completion_notifications, move |event, state| match event {
             ChannelEvent::Msg(()) => {
                 drain_signal_events(&signal_events, &callback_stop, &callback_failure);
+                #[cfg(feature = "tty")]
+                drain_gpu_fence_events(&gpu_fence_events, state, &callback_stop, &callback_failure);
                 drain_launch_outcomes(&launch_outcomes, state);
                 drain_ipc_events(
                     &ipc_events,
@@ -420,6 +457,9 @@ pub enum CompositorError {
     CompletionRelay(#[from] CompletionRelayError),
     #[error(transparent)]
     SignalRuntime(#[from] SignalRuntimeError),
+    #[cfg(feature = "tty")]
+    #[error(transparent)]
+    GpuFenceRuntime(#[from] GpuFenceRuntimeError),
     #[error("completion service failed: {0}")]
     CompletionRuntime(String),
 }

@@ -85,7 +85,7 @@ area or move policy behind these crates is not exit work.
 | 2 | **Done** | `tensor-host` / `tensor-drm` / `tensor-present` scaffolded + tests |
 | 3 | **Done** | `backend/output` policy uses host types; Smithay maps only in `host_map` / protocol advertise |
 | 4 | **Done (partial)** | Submit path: policy readiness + `PresentIntent` push/pop before KMS; format negotiation and renderer dma-buf descriptions are Smithay-free |
-| 5 | **In progress** | `run_turn` + `EventfdWake` + submitted `EventfdCompletion` read + Compio-completed IPC and signalfd operations + `CompletionDriver::IoUring`; calloop readiness remains only for transitional Smithay/Wayland/backend sources — replace it with completed ops, not epoll-as-goal |
+| 5 | **In progress** | `run_turn` + `EventfdWake` + submitted `EventfdCompletion` read + Compio-completed IPC, signalfd, and one-shot GPU sync-file operations + `CompletionDriver::IoUring`; calloop readiness remains only for transitional Smithay/Wayland/backend sources — replace it with completed ops, not epoll-as-goal |
 | 6 | **In progress** | `tensor-input` samples (motion/button/axis/key) + caps; libinput adapter-only |
 | 7 | **In progress** | `tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy; wire shell still needs removal of Smithay `desktop` / Dispatch1 |
 | 8 | Exit | Optional `tensor-smithay` removed; dependency deleted |

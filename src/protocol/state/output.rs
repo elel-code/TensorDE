@@ -1,11 +1,10 @@
+#[cfg(feature = "tty")]
+use std::os::fd::AsFd;
+
 use tensor_util::Rect;
 use tracing::{debug, info, warn};
 
-use crate::{
-    backend::BackendOutputId,
-    render::{NativeOutputBuffer, RenderOutputId},
-    scene::SceneSnapshot,
-};
+use crate::{backend::BackendOutputId, render::NativeOutputBuffer, scene::SceneSnapshot};
 
 use super::{OutputRedrawState, RuntimeState, output_helpers::renderer_target};
 
@@ -134,7 +133,6 @@ impl RuntimeState {
         for output_id in queued {
             self.submit_output_frame(output_id);
         }
-        self.schedule_renderer_retry_if_needed();
     }
 
     #[cfg(feature = "tty")]
@@ -208,7 +206,7 @@ impl RuntimeState {
             && let Err(error) = renderer.refresh_completed()
         {
             self.defer_output_repaint(output_id);
-            warn!(%error, "renderer completion poll failed before output slot selection");
+            warn!(%error, "renderer completion query failed before output slot selection");
             return;
         }
         let render_output = target.output;
@@ -278,6 +276,55 @@ impl RuntimeState {
                     self.set_redraw_state(output_id, OutputRedrawState::Idle);
                     return;
                 };
+                let fence_fd = match sync_fd.as_fd().try_clone_to_owned() {
+                    Ok(fd) => fd,
+                    Err(error) => {
+                        drop(captured_presentation);
+                        if let Some(backend) = self.backend.as_mut() {
+                            backend.mark_output_faulted(output_id);
+                        }
+                        warn!(
+                            output_device = output_id.device_id,
+                            output_connector = output_id.connector_id,
+                            timeline = frame.timeline_value,
+                            %error,
+                            "could not duplicate the renderer SYNC_FD for completion submission"
+                        );
+                        self.set_redraw_state(output_id, OutputRedrawState::Idle);
+                        return;
+                    }
+                };
+                let Some(fence_submitter) = self.gpu_fence_submitter.as_ref() else {
+                    drop(captured_presentation);
+                    if let Some(backend) = self.backend.as_mut() {
+                        backend.mark_output_faulted(output_id);
+                    }
+                    warn!(
+                        output_device = output_id.device_id,
+                        output_connector = output_id.connector_id,
+                        timeline = frame.timeline_value,
+                        "renderer frame has no GPU fence completion submitter"
+                    );
+                    self.set_redraw_state(output_id, OutputRedrawState::Idle);
+                    return;
+                };
+                if let Err(error) =
+                    fence_submitter.submit(output_id, frame.timeline_value, fence_fd)
+                {
+                    drop(captured_presentation);
+                    if let Some(backend) = self.backend.as_mut() {
+                        backend.mark_output_faulted(output_id);
+                    }
+                    warn!(
+                        output_device = output_id.device_id,
+                        output_connector = output_id.connector_id,
+                        timeline = frame.timeline_value,
+                        %error,
+                        "renderer fence could not enter the completion runtime"
+                    );
+                    self.set_redraw_state(output_id, OutputRedrawState::Idle);
+                    return;
+                }
                 let Some(backend) = self.backend.as_mut() else {
                     drop(captured_presentation);
                     warn!(
@@ -426,7 +473,6 @@ impl RuntimeState {
 
     fn defer_output_repaint(&mut self, output: BackendOutputId) {
         self.queue_redraw(output);
-        self.schedule_renderer_retry_if_needed();
     }
 
     #[cfg(feature = "tty")]
@@ -481,7 +527,6 @@ impl RuntimeState {
         } else {
             self.set_redraw_state(presentation.output, OutputRedrawState::Idle);
         }
-        self.schedule_renderer_retry_if_needed();
     }
 
     #[cfg(feature = "tty")]
@@ -539,34 +584,35 @@ impl RuntimeState {
         self.force_redraw_all();
     }
 
-    pub(crate) fn retry_renderer_repaint(&mut self) {
-        self.renderer_retry_scheduled = false;
+    pub(crate) fn handle_gpu_fence_completion(
+        &mut self,
+        output: BackendOutputId,
+        timeline_value: u64,
+    ) -> Result<(), String> {
+        let completed = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| "GPU fence completed without an installed renderer".to_owned())?
+            .refresh_completed()
+            .map_err(|error| error.to_string())?;
+        if completed < timeline_value {
+            return Err(format!(
+                "SYNC_FD for timeline {timeline_value} completed while Vulkan reported only {completed}"
+            ));
+        }
+        debug!(
+            output_device = output.device_id,
+            output_connector = output.connector_id,
+            timeline = timeline_value,
+            completed_timeline = completed,
+            "renderer SYNC_FD completion retired GPU work"
+        );
+        let _ = self.push_event(tensor_event::Event::Gpu(tensor_event::GpuTimeline {
+            output: Self::event_output_id(output),
+            value: timeline_value,
+        }));
+        self.flush_client_releases();
         self.redraw_queued_outputs();
-    }
-
-    fn schedule_renderer_retry_if_needed(&mut self) {
-        if self.renderer_retry_scheduled || !self.renderer_repaint_waits_for_gpu() {
-            return;
-        }
-        let Some(backend) = self.backend.as_ref() else {
-            return;
-        };
-        match backend.schedule_renderer_retry() {
-            Ok(()) => self.renderer_retry_scheduled = true,
-            Err(error) => warn!(%error, "failed to schedule renderer completion retry"),
-        }
-    }
-
-    fn renderer_repaint_waits_for_gpu(&self) -> bool {
-        let Some(renderer) = self.renderer.as_ref() else {
-            return false;
-        };
-        self.redraw_states.iter().any(|(output, state)| {
-            state.needs_gpu_retry()
-                && renderer.output_waiting_for_gpu(RenderOutputId {
-                    device_id: output.device_id,
-                    connector_id: output.connector_id,
-                })
-        })
+        Ok(())
     }
 }

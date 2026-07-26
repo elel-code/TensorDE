@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use smithay::{
@@ -13,10 +12,7 @@ use smithay::{
         udev::{UdevBackend, UdevEvent},
     },
     reexports::{
-        calloop::{
-            Dispatcher, LoopHandle, RegistrationToken,
-            timer::{TimeoutAction, Timer},
-        },
+        calloop::{Dispatcher, LoopHandle, RegistrationToken},
         input::Libinput,
         rustix::fs::{OFlags, makedev},
     },
@@ -85,8 +81,6 @@ pub(crate) struct BackendStatus {
 }
 
 impl TtyBackend {
-    const RENDERER_RETRY_INTERVAL: Duration = Duration::from_millis(8);
-
     pub(crate) fn new(
         loop_handle: LoopHandle<'static, RuntimeState>,
         config: &BackendConfig,
@@ -222,19 +216,6 @@ impl TtyBackend {
     ) {
         self.output_policy = OutputPolicy::new(rules);
         self.reconcile_outputs();
-    }
-
-    pub(crate) fn schedule_renderer_retry(&self) -> Result<(), String> {
-        self.loop_handle
-            .insert_source(
-                Timer::from_duration(Self::RENDERER_RETRY_INTERVAL),
-                |_, _, state| {
-                    state.retry_renderer_repaint();
-                    TimeoutAction::Drop
-                },
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
     }
 
     /// Primary DRM fd shared with Smithay's syncobj protocol owner.  This is

@@ -26,6 +26,11 @@ messages across bounded bridges. Workers never own
 Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
 
+Vulkan output submissions export a binary sync-file for KMS. Tensor duplicates only that sync-file
+and submits a one-shot io_uring fence wait on a Compio service; the worker never receives a Vulkan
+object, dma-buf, DRM device, or KMS state. Fence signal produces a value-only GPU timeline event and
+replaces the former timer-driven timeline query loop.
+
 Diagnostics are the first such service. Tracing formats a record on its caller, caps it at 8 KiB,
 then performs a non-blocking enqueue into an 8,192-record fan-in queue. One Compio drain thread
 owns either the selected `TENSOR_LOG_FILE` or `stderr` (and therefore the systemd journal in a

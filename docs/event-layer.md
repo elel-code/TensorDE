@@ -84,8 +84,9 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    immediate redraw.
 5. **In progress:** completion contracts (`run_turn`, `EventfdWake`,
    `EventfdCompletion`, `CompletionDriver::IoUring`); submitted Compio reads
-   now complete worker eventfd wakes; IPC accept/read/write and Linux signalfd
-   reads are Compio completion services. calloop still owns Smithay fds.
+   now complete worker eventfd wakes; IPC accept/read/write, Linux signalfd
+   reads, and one-shot GPU sync-file waits are Compio completion services.
+   calloop still owns Smithay fds.
    Next: express those sources as Compio-completed ops (io_uring driver).
 6. Replace Smithay backends with native input/DRM open path; delete Smithay
    (see `docs/smithay-exit.md`).

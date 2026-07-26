@@ -116,6 +116,8 @@ and rendering itself.
   completions, and response-before-shutdown ordering.
 - Signal tests direct a blocked termination signal at the runtime thread and require a submitted
   Compio signalfd read to return its value.
+- GPU fence tests require a submitted one-shot io_uring wait to remain pending until the sync-file
+  test fd signals, then preserve its output and timeline value.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.

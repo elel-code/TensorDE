@@ -88,6 +88,8 @@ use sync::{PendingClientRelease, SurfaceSyncRegistry};
 use crate::backend::BackendOutputEvent;
 #[cfg(feature = "tty")]
 use crate::backend::{BackendOutputId, OutputDescriptor, TtyBackend};
+#[cfg(feature = "tty")]
+use crate::render::GpuFenceSubmitter;
 
 /// First virtual desktop id (also the default active workspace at startup).
 #[cfg_attr(not(test), allow(dead_code))]
@@ -138,7 +140,7 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "tty")]
     redraw_states: HashMap<BackendOutputId, OutputRedrawState>,
     #[cfg(feature = "tty")]
-    renderer_retry_scheduled: bool,
+    gpu_fence_submitter: Option<GpuFenceSubmitter>,
     #[cfg(feature = "tty")]
     pending_presentations: PendingPresentations,
     #[cfg(feature = "tty")]
@@ -225,7 +227,7 @@ impl RuntimeState {
             #[cfg(feature = "tty")]
             redraw_states: HashMap::new(),
             #[cfg(feature = "tty")]
-            renderer_retry_scheduled: false,
+            gpu_fence_submitter: None,
             #[cfg(feature = "tty")]
             pending_presentations: PendingPresentations::default(),
             #[cfg(feature = "tty")]
@@ -295,6 +297,15 @@ impl RuntimeState {
 
     pub(crate) fn renderer(&self) -> Option<&VulkanRenderer> {
         self.renderer.as_ref()
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn install_gpu_fence_submitter(&mut self, submitter: GpuFenceSubmitter) {
+        assert!(
+            self.gpu_fence_submitter.is_none(),
+            "GPU fence submitter was installed more than once"
+        );
+        self.gpu_fence_submitter = Some(submitter);
     }
 
     /// Flush client-visible protocol after non-Wayland sources (see `event_loop`).
@@ -743,6 +754,7 @@ impl OutputRedrawState {
         matches!(self, Self::Queued)
     }
 
+    #[cfg(test)]
     const fn needs_gpu_retry(self) -> bool {
         matches!(
             self,

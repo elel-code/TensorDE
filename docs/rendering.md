@@ -229,16 +229,18 @@ as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bound
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
 An input-driven compositor overlay repaint remains pending when its only blocked gate is a Vulkan
-timeline submission that has not retired yet. A low-frequency one-shot calloop timer then polls
-completion until it can submit; KMS-owned slot waits remain driven by the next page flip, so Tensor
-does not spin or treat an old page flip as retirement of new GPU work.
+timeline submission that has not retired yet. Tensor duplicates that submission's exported
+`SYNC_FD` and submits one io_uring `PollAdd` through a dedicated Compio runtime. The kernel request
+completes only when the sync-file fence signals, then a bounded `{output, timeline}` value reaches
+the compositor and retires renderer resources. This is a one-shot fence completion, not a timer
+poll, epoll registry, or generic readiness loop. KMS receives the original `SYNC_FD`, and KMS-owned
+slot waits remain driven by the next page flip.
 After VT/session resume, Smithay refreshes each DRM surface while Tensor quarantines the previously
 current and pending slots. A calloop idle repaint runs only after already-ready DRM events drain; the
-first new page flip releases the quarantine. If the old Vulkan submission is still completing, a
-low-frequency one-shot calloop timer polls its timeline until the recovery frame can be selected;
-it stops before KMS slot waiting and never blocks the event loop. If repeated interruption leaves
-every slot uncertain, Tensor resets that DRM device instead of risking writes into a scanned-out
-dma-buf.
+first new page flip releases the quarantine. If the old Vulkan submission is still completing, its
+submitted sync-file wait triggers recovery only after the GPU fence signals. If repeated
+interruption leaves every slot uncertain, Tensor resets that DRM device instead of risking writes
+into a scanned-out dma-buf.
 
 Tensor implements the modern `wp_linux_drm_syncobj_v1` path supplied by Smithay master. The global
 is created only when the Vulkan-selected primary DRM device supports `drmSyncobjEventfd`; hot-unplug

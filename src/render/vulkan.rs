@@ -466,10 +466,6 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn output_waiting_for_gpu(&self, output: RenderOutputId) -> bool {
-        self.frames.output_waiting_for_gpu(output)
-    }
-
     #[cfg(feature = "tty")]
     pub(crate) fn advance_output_slot(&mut self, output: RenderOutputId) -> Option<u8> {
         self.frames.advance_output_slot(output)

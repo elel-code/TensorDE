@@ -281,7 +281,8 @@ impl RuntimeState {
                 self.event_loop.redraw_all = true;
             }
             Event::Gpu(_) => {
-                // Timeline readiness: renderer retry paths remain explicit.
+                // The completed sync-file already retired renderer resources;
+                // the bus value preserves phase order for observers.
             }
             Event::Ipc(_) | Event::Timer(_) => {
                 // Control-plane payloads resolved by their owners via IDs.

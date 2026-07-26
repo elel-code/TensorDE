@@ -144,6 +144,7 @@ impl FrameScheduler {
             .map(|state| state.next_slot)
     }
 
+    #[cfg(test)]
     pub(crate) fn output_waiting_for_gpu(&self, output: RenderOutputId) -> bool {
         !self.device_lost
             && self
