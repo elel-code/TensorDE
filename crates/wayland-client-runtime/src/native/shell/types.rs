@@ -56,9 +56,21 @@ pub enum NativeShellEvent {
         horizontal: f64,
         vertical: f64,
     },
+    SeatKeyboardEnter {
+        surface: Option<NativeSurfaceId>,
+    },
+    SeatKeyboardLeave {
+        surface: Option<NativeSurfaceId>,
+    },
     SeatKeyboardKey {
         key: u32,
         pressed: bool,
+    },
+    SeatModifiers {
+        mods_depressed: u32,
+        mods_latched: u32,
+        mods_locked: u32,
+        group: u32,
     },
 }
 
@@ -90,12 +102,16 @@ pub struct NativeShellState {
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    pub(crate) cursor_shape_manager:
+        Option<wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
     pub(crate) toplevels: HashMap<NativeSurfaceId, ToplevelRecord>,
     pub(crate) toplevel_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) xdg_surface_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) wl_surface_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) fractional_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) pointer_focus: Option<NativeSurfaceId>,
+    pub(crate) keyboard_focus: Option<NativeSurfaceId>,
+    pub(crate) pointer_enter_serial: Option<u32>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
     pub(crate) axis_h: f64,
     pub(crate) axis_v: f64,
@@ -115,12 +131,15 @@ impl Default for NativeShellState {
             pointer: None,
             viewporter: None,
             fractional_manager: None,
+            cursor_shape_manager: None,
             toplevels: HashMap::new(),
             toplevel_objects: HashMap::new(),
             xdg_surface_objects: HashMap::new(),
             wl_surface_objects: HashMap::new(),
             fractional_objects: HashMap::new(),
             pointer_focus: None,
+            keyboard_focus: None,
+            pointer_enter_serial: None,
             axis_h: 0.0,
             axis_v: 0.0,
             next_id: 1,

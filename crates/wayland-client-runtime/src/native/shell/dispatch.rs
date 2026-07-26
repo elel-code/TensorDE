@@ -6,6 +6,9 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
@@ -226,17 +229,47 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Key {
-            key,
-            state: key_state,
-            ..
-        } = event
-        {
-            let pressed = matches!(
-                key_state,
-                WEnum::Value(wl_keyboard::KeyState::Pressed)
-            );
-            state.push(NativeShellEvent::SeatKeyboardKey { key, pressed });
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => {
+                let id = state
+                    .wl_surface_objects
+                    .get(&surface.id().protocol_id())
+                    .copied();
+                state.keyboard_focus = id;
+                state.push(NativeShellEvent::SeatKeyboardEnter { surface: id });
+            }
+            wl_keyboard::Event::Leave { surface, .. } => {
+                let id = state
+                    .wl_surface_objects
+                    .get(&surface.id().protocol_id())
+                    .copied()
+                    .or(state.keyboard_focus);
+                state.keyboard_focus = None;
+                state.push(NativeShellEvent::SeatKeyboardLeave { surface: id });
+            }
+            wl_keyboard::Event::Key {
+                key,
+                state: key_state,
+                ..
+            } => {
+                let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
+                state.push(NativeShellEvent::SeatKeyboardKey { key, pressed });
+            }
+            wl_keyboard::Event::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            } => {
+                state.push(NativeShellEvent::SeatModifiers {
+                    mods_depressed,
+                    mods_latched,
+                    mods_locked,
+                    group,
+                });
+            }
+            _ => {}
         }
     }
 }
@@ -252,7 +285,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
     ) {
         match event {
             wl_pointer::Event::Enter {
-                surface, surface_x, surface_y, ..
+                serial,
+                surface,
+                surface_x,
+                surface_y,
+                ..
             } => {
                 let id = state
                     .wl_surface_objects
@@ -260,6 +297,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .copied();
                 if let Some(id) = id {
                     state.pointer_focus = Some(id);
+                    state.pointer_enter_serial = Some(serial);
                     state.push(NativeShellEvent::PointerEnter {
                         surface: id,
                         x: surface_x,
@@ -383,6 +421,30 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for NativeShellSt
                 });
             }
         }
+    }
+}
+
+impl Dispatch<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+        _: wp_cursor_shape_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
+        _: wp_cursor_shape_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
     }
 }
 

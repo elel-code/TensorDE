@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use wayland_client_runtime::{NativeShell, NativeShellEvent};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shell = NativeShell::connect_to_env()?;
@@ -44,9 +45,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");
                     }
-                    NativeShellEvent::PointerEnter { surface: id, x, y }
-                    | NativeShellEvent::PointerMotion { surface: id, x, y } => {
-                        println!("pointer {id:?} @ ({x:.1},{y:.1})");
+                    NativeShellEvent::PointerEnter { surface: id, x, y } => {
+                        println!("pointer enter {id:?} @ ({x:.1},{y:.1})");
+                        if shell.has_cursor_shape() {
+                            let _ = shell.set_cursor_shape(Shape::Default);
+                        }
+                    }
+                    NativeShellEvent::PointerMotion { surface: id, x, y } => {
+                        println!("pointer motion {id:?} @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::SeatKeyboardEnter { surface: id } => {
+                        println!("keyboard enter {id:?}");
+                    }
+                    NativeShellEvent::SeatKeyboardLeave { surface: id } => {
+                        println!("keyboard leave {id:?}");
+                    }
+                    NativeShellEvent::SeatModifiers {
+                        mods_depressed, ..
+                    } => {
+                        println!("modifiers depressed={mods_depressed:#x}");
                     }
                     NativeShellEvent::PointerLeave { surface: id } => {
                         println!("pointer leave {id:?}");

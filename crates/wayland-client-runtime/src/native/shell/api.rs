@@ -3,6 +3,8 @@
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_compositor, wl_seat, wl_shm};
 use wayland_client::Proxy;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
@@ -59,6 +61,13 @@ impl NativeShell {
         {
             state.fractional_manager = Some(frac);
         }
+        if let Ok(cursor) = globals.bind::<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, _, _>(
+            &qh,
+            1..=1,
+            (),
+        ) {
+            state.cursor_shape_manager = Some(cursor);
+        }
 
         if state.compositor.is_none() {
             return Err(NativeError::Registry("wl_compositor missing".into()));
@@ -87,6 +96,34 @@ impl NativeShell {
 
     pub fn has_fractional_scale(&self) -> bool {
         self.state.fractional_manager.is_some() && self.state.viewporter.is_some()
+    }
+
+    pub fn has_cursor_shape(&self) -> bool {
+        self.state.cursor_shape_manager.is_some()
+    }
+
+    /// Set the pointer cursor via `wp_cursor_shape` when available.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) -> Result<(), NativeError> {
+        let serial = self
+            .state
+            .pointer_enter_serial
+            .ok_or_else(|| NativeError::Protocol("no pointer enter serial".into()))?;
+        let pointer = self
+            .state
+            .pointer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
+        let manager = self
+            .state
+            .cursor_shape_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("wp_cursor_shape_manager_v1 missing".into()))?;
+        let qh = self.queue.handle();
+        let device = manager.get_pointer(pointer, &qh, ());
+        device.set_shape(serial, shape);
+        device.destroy();
+        self.connection.flush()?;
+        Ok(())
     }
 
     pub fn create_toplevel(
