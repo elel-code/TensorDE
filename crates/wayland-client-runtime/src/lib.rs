@@ -40,10 +40,11 @@ pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
 pub use display_io::DisplayReadiness;
 pub use native::{
-    list_env_globals, map_native_event, map_native_key_text, native_key_text_pressed,
-    GlobalAdvertisement, NativeCapabilities, NativeConnection, NativeError, NativePopupPositioner,
-    NativePump, NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
-    ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
+    list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
+    native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,
+    NativeError, NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry,
+    NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, ProtocolClass,
+    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
 };
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,

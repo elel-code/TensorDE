@@ -562,6 +562,35 @@ impl NativeShell {
         target.append(&mut self.state.events);
     }
 
+    /// Drain native events mapped to the public [`crate::Event`] model.
+    ///
+    /// Uses the live seat proxy when present so keyboard/pointer serials are real
+    /// `WlSeat` handles. Unmapped events (clipboard, modifiers, …) are dropped;
+    /// use [`Self::drain_events`] when those are needed.
+    pub fn drain_public_events(
+        &mut self,
+        surfaces: &mut crate::native::event_map::SurfaceIdMap,
+        map_state: &mut crate::native::event_map::NativeEventMapState,
+        out: &mut Vec<crate::Event>,
+    ) {
+        let seat = self.state.seat.clone();
+        for event in self.state.events.drain(..) {
+            if let Some(mapped) = crate::native::event_map::map_native_event_full(
+                event,
+                surfaces,
+                seat.as_ref(),
+                map_state,
+            ) {
+                out.push(mapped);
+            }
+        }
+    }
+
+    /// Borrow the seat proxy (for building [`crate::InputSerial`] outside the shell).
+    pub fn seat(&self) -> Option<&wayland_client::protocol::wl_seat::WlSeat> {
+        self.state.seat.as_ref()
+    }
+
     pub fn toplevel_count(&self) -> usize {
         self.state.toplevels.len()
     }

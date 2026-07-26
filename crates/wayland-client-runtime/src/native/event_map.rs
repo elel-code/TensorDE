@@ -1,16 +1,24 @@
 //! Map [`NativeShellEvent`] toward the public [`crate::Event`] model.
 //!
-//! Structural bridge for migrating Fika off SCTK `Runtime`. Events that need a
-//! live `WlSeat` serial (press/grab) are omitted until the native seat proxy is
-//! threaded through; surface lifecycle and text-bearing keys map cleanly.
+//! Structural bridge for migrating Fika off SCTK `Runtime`. With a live seat
+//! proxy and focus tracking, keyboard / pointer / gesture events map fully.
 
 use std::collections::HashMap;
 
-use crate::event::{Event, SurfaceEvent};
+use wayland_client::protocol::wl_seat::WlSeat;
+
+use crate::event::{
+    Event, KeyState, KeyboardEvent, PointerEvent, PointerEventKind, SurfaceEvent, TouchEvent,
+    TouchEventKind,
+};
 use crate::geometry::{LogicalPosition, LogicalSize};
+use crate::input::{InputSerial, InputSerialSource};
 use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
 use crate::surface::SurfaceId;
-use crate::{LayerSurfaceEvent, ToplevelState};
+use crate::{
+    LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
+    ToplevelState,
+};
 
 /// Bidirectional id map for native ↔ public surface identifiers.
 #[derive(Clone, Debug, Default)]
@@ -45,13 +53,33 @@ impl SurfaceIdMap {
     }
 }
 
+/// Mutable mapping context (seat + focus) for serial-bearing events.
+#[derive(Clone, Debug, Default)]
+pub struct NativeEventMapState {
+    pub keyboard_focus: Option<NativeSurfaceId>,
+    pub pointer_focus: Option<NativeSurfaceId>,
+    pub pointer_pos: (f64, f64),
+    pub gesture_surface: Option<NativeSurfaceId>,
+}
+
 /// Convert one native shell event into a public crate event when possible.
 ///
-/// Returns `None` for events that still need seat proxies, full DnD types, or
-/// other SCTK-era context not yet available on the native path.
+/// Without `seat`, only surface/layer lifecycle events map. With `seat`,
+/// keyboard/pointer/touch/gesture paths fill real [`InputSerial`] values and
+/// update `map_state` focus tracking.
 pub fn map_native_event(
     event: NativeShellEvent,
     surfaces: &mut SurfaceIdMap,
+) -> Option<Event> {
+    map_native_event_full(event, surfaces, None, &mut NativeEventMapState::default())
+}
+
+/// Full mapping with seat + focus state (preferred for Fika merge).
+pub fn map_native_event_full(
+    event: NativeShellEvent,
+    surfaces: &mut SurfaceIdMap,
+    seat: Option<&WlSeat>,
+    map_state: &mut NativeEventMapState,
 ) -> Option<Event> {
     match event {
         NativeShellEvent::ToplevelConfigure {
@@ -115,15 +143,329 @@ pub fn map_native_event(
                 surface: surfaces.intern(surface),
             }))
         }
-        // Keyboard text is the critical Fika path; serial/seat filled later.
-        // We expose raw mapping via [`map_native_key_text`] for consumers that
-        // do not need the full [`KeyboardEvent`] shape yet.
-        _ => None,
+        NativeShellEvent::SeatKeyboardEnter { surface } => {
+            map_state.keyboard_focus = surface;
+            let seat = seat?;
+            let surface = surface.map(|s| surfaces.intern(s))?;
+            Some(Event::Keyboard(KeyboardEvent::Enter {
+                surface,
+                serial: InputSerial::new(seat.clone(), 0, InputSerialSource::KeyboardEnter),
+                pressed_raw_codes: Vec::new(),
+            }))
+        }
+        NativeShellEvent::SeatKeyboardLeave { surface } => {
+            let surface = surface
+                .or(map_state.keyboard_focus)
+                .map(|s| surfaces.intern(s))?;
+            map_state.keyboard_focus = None;
+            Some(Event::Keyboard(KeyboardEvent::Leave { surface }))
+        }
+        NativeShellEvent::SeatKeyboardKey {
+            key,
+            pressed,
+            keysym,
+            text,
+        } => {
+            let seat = seat?;
+            let surface = map_state
+                .keyboard_focus
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::Keyboard(KeyboardEvent::Key {
+                surface,
+                state: if pressed {
+                    KeyState::Pressed
+                } else {
+                    KeyState::Released
+                },
+                time: 0,
+                raw_code: key,
+                keysym,
+                text,
+                serial: InputSerial::new(seat.clone(), 0, InputSerialSource::KeyboardKey),
+            }))
+        }
+        NativeShellEvent::PointerEnter { surface, x, y } => {
+            map_state.pointer_focus = Some(surface);
+            map_state.pointer_pos = (x, y);
+            let seat = seat?;
+            Some(Event::Pointer(PointerEvent {
+                surface: surfaces.intern(surface),
+                position: (x, y),
+                kind: PointerEventKind::Enter {
+                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::PointerEnter),
+                },
+            }))
+        }
+        NativeShellEvent::PointerLeave { surface } => {
+            map_state.pointer_focus = None;
+            Some(Event::Pointer(PointerEvent {
+                surface: surfaces.intern(surface),
+                position: map_state.pointer_pos,
+                kind: PointerEventKind::Leave,
+            }))
+        }
+        NativeShellEvent::PointerMotion { surface, x, y } => {
+            map_state.pointer_focus = Some(surface);
+            map_state.pointer_pos = (x, y);
+            Some(Event::Pointer(PointerEvent {
+                surface: surfaces.intern(surface),
+                position: (x, y),
+                kind: PointerEventKind::Motion { time: 0 },
+            }))
+        }
+        NativeShellEvent::PointerButton {
+            surface,
+            button,
+            pressed,
+        } => {
+            let seat = seat?;
+            let surface = surface
+                .or(map_state.pointer_focus)
+                .map(|s| surfaces.intern(s))?;
+            let source = if pressed {
+                InputSerialSource::PointerPress
+            } else {
+                InputSerialSource::PointerRelease
+            };
+            Some(Event::Pointer(PointerEvent {
+                surface,
+                position: map_state.pointer_pos,
+                kind: if pressed {
+                    PointerEventKind::Press {
+                        time: 0,
+                        button,
+                        serial: InputSerial::new(seat.clone(), 0, source),
+                    }
+                } else {
+                    PointerEventKind::Release {
+                        time: 0,
+                        button,
+                        serial: InputSerial::new(seat.clone(), 0, source),
+                    }
+                },
+            }))
+        }
+        NativeShellEvent::TouchDown {
+            surface,
+            id,
+            x,
+            y,
+        } => {
+            let seat = seat?;
+            Some(Event::Touch(TouchEvent {
+                surface: Some(surfaces.intern(surface)),
+                kind: TouchEventKind::Down {
+                    time: 0,
+                    id,
+                    position: (x, y),
+                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::TouchDown),
+                },
+            }))
+        }
+        NativeShellEvent::TouchUp { id } => {
+            let seat = seat?;
+            Some(Event::Touch(TouchEvent {
+                surface: None,
+                kind: TouchEventKind::Up {
+                    time: 0,
+                    id,
+                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::TouchUp),
+                },
+            }))
+        }
+        NativeShellEvent::TouchMotion { id, x, y } => Some(Event::Touch(TouchEvent {
+            surface: None,
+            kind: TouchEventKind::Motion {
+                time: 0,
+                id,
+                position: (x, y),
+            },
+        })),
+        NativeShellEvent::TouchCancel => Some(Event::Touch(TouchEvent {
+            surface: None,
+            kind: TouchEventKind::Cancelled,
+        })),
+        NativeShellEvent::GestureSwipeBegin {
+            surface,
+            fingers,
+            time,
+        } => {
+            map_state.gesture_surface = Some(surface);
+            let seat = seat?;
+            Some(Event::PointerGesture(PointerGestureEvent::Swipe(
+                PointerSwipeEvent::Begin {
+                    surface: surfaces.intern(surface),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureBegin,
+                    ),
+                    time,
+                    fingers,
+                },
+            )))
+        }
+        NativeShellEvent::GestureSwipeUpdate { dx, dy, time } => {
+            let surface = map_state
+                .gesture_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::PointerGesture(PointerGestureEvent::Swipe(
+                PointerSwipeEvent::Update {
+                    surface,
+                    time,
+                    delta: (dx, dy),
+                },
+            )))
+        }
+        NativeShellEvent::GestureSwipeEnd { cancelled, time } => {
+            let seat = seat?;
+            let surface = map_state
+                .gesture_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            map_state.gesture_surface = None;
+            Some(Event::PointerGesture(PointerGestureEvent::Swipe(
+                PointerSwipeEvent::End {
+                    surface,
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureEnd,
+                    ),
+                    time,
+                    cancelled,
+                },
+            )))
+        }
+        NativeShellEvent::GesturePinchBegin {
+            surface,
+            fingers,
+            time,
+        } => {
+            map_state.gesture_surface = Some(surface);
+            let seat = seat?;
+            Some(Event::PointerGesture(PointerGestureEvent::Pinch(
+                PointerPinchEvent::Begin {
+                    surface: surfaces.intern(surface),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureBegin,
+                    ),
+                    time,
+                    fingers,
+                },
+            )))
+        }
+        NativeShellEvent::GesturePinchUpdate {
+            dx,
+            dy,
+            scale,
+            rotation,
+            time,
+        } => {
+            let surface = map_state
+                .gesture_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::PointerGesture(PointerGestureEvent::Pinch(
+                PointerPinchEvent::Update {
+                    surface,
+                    time,
+                    delta: (dx, dy),
+                    scale,
+                    rotation_degrees_cw: rotation,
+                },
+            )))
+        }
+        NativeShellEvent::GesturePinchEnd { cancelled, time } => {
+            let seat = seat?;
+            let surface = map_state
+                .gesture_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            map_state.gesture_surface = None;
+            Some(Event::PointerGesture(PointerGestureEvent::Pinch(
+                PointerPinchEvent::End {
+                    surface,
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureEnd,
+                    ),
+                    time,
+                    cancelled,
+                },
+            )))
+        }
+        NativeShellEvent::GestureHoldBegin {
+            surface,
+            fingers,
+            time,
+        } => {
+            map_state.gesture_surface = Some(surface);
+            let seat = seat?;
+            Some(Event::PointerGesture(PointerGestureEvent::Hold(
+                PointerHoldEvent::Begin {
+                    surface: surfaces.intern(surface),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureBegin,
+                    ),
+                    time,
+                    fingers,
+                },
+            )))
+        }
+        NativeShellEvent::GestureHoldEnd { cancelled, time } => {
+            let seat = seat?;
+            let surface = map_state
+                .gesture_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            map_state.gesture_surface = None;
+            Some(Event::PointerGesture(PointerGestureEvent::Hold(
+                PointerHoldEvent::End {
+                    surface,
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        0,
+                        InputSerialSource::PointerGestureEnd,
+                    ),
+                    time,
+                    cancelled,
+                },
+            )))
+        }
+        // Still deferred: axis detail, modifiers flags, outputs, clipboard, dnd, text_input, activation.
+        NativeShellEvent::PointerAxis { .. }
+        | NativeShellEvent::SeatModifiers { .. }
+        | NativeShellEvent::TouchFrame
+        | NativeShellEvent::OutputGeometry { .. }
+        | NativeShellEvent::OutputMode { .. }
+        | NativeShellEvent::OutputScale { .. }
+        | NativeShellEvent::OutputDone { .. }
+        | NativeShellEvent::SurfaceOutputEnter { .. }
+        | NativeShellEvent::SurfaceOutputLeave { .. }
+        | NativeShellEvent::Selection { .. }
+        | NativeShellEvent::SelectionCancelled
+        | NativeShellEvent::DndEnter { .. }
+        | NativeShellEvent::DndLeave
+        | NativeShellEvent::DndMotion { .. }
+        | NativeShellEvent::DndDrop
+        | NativeShellEvent::DndFinished { .. }
+        | NativeShellEvent::TextInputEnter { .. }
+        | NativeShellEvent::TextInputLeave { .. }
+        | NativeShellEvent::TextInputDone { .. }
+        | NativeShellEvent::ActivationToken { .. } => None,
     }
 }
 
 /// Extract UTF-8 / keysym from a native key event without building a full
-/// [`KeyboardEvent`] (avoids inventing a fake `InputSerial` / seat).
+/// [`KeyboardEvent`].
 pub fn map_native_key_text(
     event: &NativeShellEvent,
 ) -> Option<(u32, u32, bool, Option<&str>)> {
@@ -188,7 +530,7 @@ mod tests {
         assert_eq!(native_key_text_pressed(&event), Some("a"));
         let (key, keysym, pressed, text) = map_native_key_text(&event).unwrap();
         assert_eq!((key, keysym, pressed, text), (30, 0x61, true, Some("a")));
-        // Full Event mapping intentionally skips keys until seat serial exists.
+        // Without seat, key events do not become public Event.
         let mut map = SurfaceIdMap::new();
         assert!(map_native_event(event, &mut map).is_none());
     }

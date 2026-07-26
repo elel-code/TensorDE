@@ -18,7 +18,8 @@ mod shell;
 
 pub use connection::{NativeConnection, NativeError};
 pub use event_map::{
-    map_native_event, map_native_key_text, native_key_text_pressed, SurfaceIdMap,
+    map_native_event, map_native_event_full, map_native_key_text, native_key_text_pressed,
+    NativeEventMapState, SurfaceIdMap,
 };
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};

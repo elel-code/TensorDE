@@ -1,4 +1,5 @@
-use smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat;
+// Same type as smithay_client_toolkit reexports (both are wayland-client 0.31).
+use wayland_client::protocol::wl_seat::WlSeat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum CursorIcon {
