@@ -7,10 +7,10 @@ use smithay::{
         Seat,
         keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{IsAlive, Serial},
     wayland::seat::WaylandFocus,
 };
+use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::X11Surface;

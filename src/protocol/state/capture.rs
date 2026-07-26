@@ -18,7 +18,6 @@ use std::{
 
 use smithay::{
     output::{Output, WeakOutput},
-    reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm},
     utils::{Buffer as BufferCoords, Size, Transform},
     wayland::{
         foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle},
@@ -31,6 +30,7 @@ use smithay::{
     },
 };
 use tracing::{debug, trace, warn};
+use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
 
 use super::capture_shm;
 use super::{ObjectKey, RuntimeState};
@@ -237,7 +237,7 @@ fn fill_capture_frame(
 
 /// Surfaces eligible for a real SHM pixel blit (idle path).
 struct ShmBlit {
-    surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface: wayland_server::protocol::wl_surface::WlSurface,
     rect: Rect,
 }
 

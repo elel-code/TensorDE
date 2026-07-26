@@ -1,5 +1,4 @@
 use smithay::{
-    reexports::wayland_server::Resource,
     utils::{Logical, Rectangle},
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{
@@ -8,6 +7,7 @@ use smithay::{
     },
 };
 use tracing::{debug, warn};
+use wayland_server::Resource;
 
 use super::RuntimeState;
 
@@ -19,7 +19,7 @@ impl XWaylandShellHandler for RuntimeState {
     fn surface_associated(
         &mut self,
         _xwm: XwmId,
-        wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        wl_surface: wayland_server::protocol::wl_surface::WlSurface,
         window: X11Surface,
     ) {
         if window.is_override_redirect() {

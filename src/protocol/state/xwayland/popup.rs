@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use smithay::{
     desktop::Window,
-    reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{Logical, Point},
     wayland::seat::WaylandFocus,
     xwayland::X11Surface,
 };
 use tracing::debug;
+use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
 use super::super::RuntimeState;
 

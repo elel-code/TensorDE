@@ -4,11 +4,9 @@ use std::{
     sync::Arc,
 };
 
-use smithay::{
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
-    wayland::drm_syncobj::DrmSyncPoint,
-};
+use smithay::wayland::drm_syncobj::DrmSyncPoint;
 use tracing::warn;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::{ecs::SurfaceId, render::ClientReleaseFence};
 

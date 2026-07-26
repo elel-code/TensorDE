@@ -10,16 +10,14 @@ use smithay::{
         take_presentation_feedback_surface_tree,
     },
     output::Output,
-    reexports::{
-        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
-        wayland_server::{Resource, protocol::wl_surface::WlSurface},
-    },
     utils::{Clock, Monotonic},
     wayland::{compositor::SurfaceData, presentation::Refresh, seat::WaylandFocus},
 };
 use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;
 use tracing::warn;
+use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::{
     backend::BackendOutputId,

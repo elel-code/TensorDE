@@ -87,7 +87,7 @@ area or move policy behind these crates is not exit work.
 | 4 | **Done (partial)** | Submit path: policy readiness + `PresentIntent` push/pop before KMS; format negotiation and renderer dma-buf descriptions are Smithay-free |
 | 5 | **In progress** | `run_turn` + `EventfdWake` + `CompletionDriver::IoUring`; the compositor thread now runs a Compio completion loop directly, with no shared relay thread/channel. IPC, signalfd, GPU sync-file, security-context, Wayland listener/display, XWayland displayfd startup, udev hotplug, libinput, Tensor-owned libseat session waits, and per-device DRM page-flip waits are Compio-completed operations. DRM waits stay on the compositor thread, use one submitted op per device, decode one fixed stack batch after the CQE, and rearm explicitly. Libseat, udev, and libinput cursors apply one event at a time without per-completion staging vectors. Session-resume repaint is a completion-turn tail after DRM CQEs; tty no longer owns a calloop handle. The aggregate remains only for Smithay's internal XWM event channel and focus-release ping |
 | 6 | **In progress** | `tensor-input` samples (motion/button/axis/key) + caps; libinput adapter-only |
-| 7 | **In progress** | `tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy; wire shell still needs removal of Smithay `desktop` / Dispatch1 |
+| 7 | **In progress** | `tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy. All wire types now come directly from `wayland-server`, `wayland-protocols`, and `wayland-protocols-wlr`; Smithay reexports are gone. Wire shell still needs removal of Smithay `desktop` / Dispatch1 |
 | 8 | Exit | Optional `tensor-smithay` removed; dependency deleted |
 
 ## Performance rules (unchanged)

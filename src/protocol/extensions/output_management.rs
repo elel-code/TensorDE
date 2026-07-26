@@ -9,23 +9,19 @@
 
 use std::collections::HashMap;
 
-use smithay::{
-    reexports::{
-        wayland_protocols_wlr::output_management::v1::server::{
-            zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
-            zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
-            zwlr_output_head_v1::ZwlrOutputHeadV1,
-            zwlr_output_manager_v1::{self, ZwlrOutputManagerV1},
-            zwlr_output_mode_v1::ZwlrOutputModeV1,
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-            backend::ClientId, protocol::wl_output::Transform as WlTransform,
-        },
-    },
-    wayland::{Dispatch2, GlobalDispatch2},
-};
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::{debug, warn};
+use wayland_protocols_wlr::output_management::v1::server::{
+    zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
+    zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
+    zwlr_output_head_v1::ZwlrOutputHeadV1,
+    zwlr_output_manager_v1::{self, ZwlrOutputManagerV1},
+    zwlr_output_mode_v1::ZwlrOutputModeV1,
+};
+use wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
+    protocol::wl_output::Transform as WlTransform,
+};
 
 pub use tensor_protocol::{OutputHeadSnapshot as HeadSnapshot, OutputHeadUpdate};
 

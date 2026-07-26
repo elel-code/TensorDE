@@ -2,10 +2,6 @@
 
 use smithay::{
     input::pointer::PointerHandle,
-    reexports::wayland_server::{
-        Resource,
-        protocol::{wl_output::WlOutput, wl_surface::WlSurface},
-    },
     utils::{IsAlive, Logical, Point, Serial},
     wayland::{
         foreign_toplevel_list::ForeignToplevelListHandler,
@@ -24,6 +20,10 @@ use smithay::{
     },
 };
 use tracing::{debug, info, warn};
+use wayland_server::{
+    Resource,
+    protocol::{wl_output::WlOutput, wl_surface::WlSurface},
+};
 
 use crate::protocol::extensions::security_context::{
     SecurityContextHandler, SecurityContextListener,
@@ -245,7 +245,7 @@ impl PointerWarpHandler for RuntimeState {
     fn warp_pointer(
         &mut self,
         surface: WlSurface,
-        _pointer: smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer,
+        _pointer: wayland_server::protocol::wl_pointer::WlPointer,
         pos: Point<f64, Logical>,
         _serial: Serial,
     ) {
@@ -361,10 +361,7 @@ impl SessionLockHandler for RuntimeState {
 }
 
 impl SecurityContextHandler for RuntimeState {
-    fn security_context_is_nested(
-        &self,
-        client: &smithay::reexports::wayland_server::Client,
-    ) -> bool {
+    fn security_context_is_nested(&self, client: &wayland_server::Client) -> bool {
         client
             .get_data::<crate::protocol::state::WaylandClientState>()
             .is_some_and(|data| data.security_context.is_some())

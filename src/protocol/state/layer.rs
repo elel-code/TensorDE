@@ -12,7 +12,6 @@ use std::{
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
     desktop::{LayerSurface, PopupManager, WindowSurfaceType, layer_map_for_output},
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
@@ -23,6 +22,7 @@ use smithay::{
 };
 use tensor_util::Rect;
 use tracing::warn;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::{
     ecs::ViewId,

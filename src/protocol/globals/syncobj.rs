@@ -1,8 +1,8 @@
 use smithay::{
     backend::drm::DrmDeviceFd,
-    reexports::wayland_server::DisplayHandle,
     wayland::drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
 };
+use wayland_server::DisplayHandle;
 
 use super::super::state::RuntimeState;
 

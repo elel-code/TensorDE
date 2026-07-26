@@ -33,12 +33,7 @@ use rustix::{
         sockopt::{socket_acceptconn, socket_type},
     },
 };
-use smithay::{
-    reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::GlobalId,
-    },
-    wayland::{Dispatch2, GlobalDispatch2},
-};
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tensor_protocol::SecurityContextMetadata;
 use tensor_runtime::{
     EventfdWake, EventfdWakeError, TrySendError, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
@@ -49,6 +44,7 @@ use wayland_protocols::wp::security_context::v1::server::{
     wp_security_context_manager_v1::{self, WpSecurityContextManagerV1},
     wp_security_context_v1::{self, WpSecurityContextV1},
 };
+use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::GlobalId};
 
 const VERSION: u32 = 1;
 const MAX_ACTIVE_LISTENERS: usize = 64;
@@ -107,10 +103,7 @@ impl crate::protocol::state::RuntimeState {
 impl SecurityContextManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
-        D: smithay::reexports::wayland_server::GlobalDispatch<
-                WpSecurityContextManagerV1,
-                SecurityContextGlobalData,
-            >,
+        D: wayland_server::GlobalDispatch<WpSecurityContextManagerV1, SecurityContextGlobalData>,
         D: Dispatch<WpSecurityContextManagerV1, SecurityContextManagerUserData>,
         D: Dispatch<WpSecurityContextV1, SecurityContextUserData>,
         D: SecurityContextHandler,

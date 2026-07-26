@@ -26,11 +26,11 @@ use smithay::{
         keyboard::{FilterResult, keysyms},
         pointer::{ButtonEvent, MotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
+use wayland_server::protocol::wl_surface::WlSurface;
 
 use super::{
     focus::KeyboardFocusTarget,

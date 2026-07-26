@@ -36,20 +36,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use calloop::LoopHandle;
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState},
     output::Scale,
-    reexports::{
-        calloop::LoopHandle,
-        wayland_server::{
-            DisplayHandle, Resource,
-            backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-            protocol::wl_surface::WlSurface,
-        },
-    },
     wayland::{
         compositor::{
             CompositorClientState, CompositorState, get_parent, send_surface_state, with_states,
@@ -65,7 +58,13 @@ use smithay::{
 #[cfg(feature = "xwayland")]
 use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
 use tracing::warn;
-use wayland_server::Display;
+#[cfg(feature = "tty")]
+use wayland_server::backend::GlobalId;
+use wayland_server::{
+    Display, DisplayHandle, Resource,
+    backend::{ClientData, ClientId, DisconnectReason, ObjectId},
+    protocol::wl_surface::WlSurface,
+};
 
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
@@ -479,7 +478,7 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) fn register_imported_client_buffer(
         &mut self,
-        object: smithay::reexports::wayland_server::backend::ObjectId,
+        object: ObjectId,
         id: crate::ecs::SurfaceBufferId,
         size: tensor_util::Size,
     ) -> bool {
@@ -488,10 +487,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn buffer_destroyed(
-        &mut self,
-        object: &smithay::reexports::wayland_server::backend::ObjectId,
-    ) {
+    pub(crate) fn buffer_destroyed(&mut self, object: &ObjectId) {
         let released = self.surface_buffers.buffer_destroyed(object);
         self.release_client_buffers(released);
     }
@@ -729,7 +725,7 @@ fn maximum_axis(value: i32) -> Option<u32> {
 #[cfg(feature = "tty")]
 struct ManagedOutput {
     output: smithay::output::Output,
-    global: smithay::reexports::wayland_server::backend::GlobalId,
+    global: GlobalId,
     descriptor: OutputDescriptor,
     /// True after at least one frame was accepted by atomic KMS. Used to skip
     /// empty secondary scanouts once the CRTC has a live page-flip ring.

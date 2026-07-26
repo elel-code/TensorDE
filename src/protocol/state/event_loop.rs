@@ -314,7 +314,7 @@ mod tests {
     use super::*;
     use crate::layout::{LayoutEngine, LayoutKind};
     use calloop::EventLoop;
-    use smithay::reexports::wayland_server::Display;
+    use wayland_server::Display;
 
     fn state() -> RuntimeState {
         let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();

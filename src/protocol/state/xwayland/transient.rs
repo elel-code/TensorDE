@@ -1,10 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::{
-    reexports::wayland_server::protocol::wl_surface::WlSurface, wayland::seat::WaylandFocus,
-    xwayland::X11Surface,
-};
+use smithay::{wayland::seat::WaylandFocus, xwayland::X11Surface};
 use tracing::{debug, warn};
+use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::ecs::{ViewId, ViewPlacement};
 use tensor_util::Size;

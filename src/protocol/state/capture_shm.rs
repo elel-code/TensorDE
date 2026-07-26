@@ -6,10 +6,10 @@
 
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm, wl_surface::WlSurface},
     wayland::shm::{BufferAccessError, with_buffer_contents},
 };
 use tracing::trace;
+use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm, wl_surface::WlSurface};
 
 use crate::layout::Rect;
 

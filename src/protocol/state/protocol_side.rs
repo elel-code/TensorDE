@@ -2,13 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use smithay::{
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    wayland::{
-        foreign_toplevel_list::ForeignToplevelHandle,
-        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor, session_lock::LockSurface,
-    },
+use smithay::wayland::{
+    foreign_toplevel_list::ForeignToplevelHandle,
+    keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor, session_lock::LockSurface,
 };
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::capture::CaptureSessions;
 
@@ -28,7 +26,6 @@ pub(crate) struct ObjectKey(u32);
 
 impl ObjectKey {
     pub(crate) fn from_surface(surface: &WlSurface) -> Self {
-        use smithay::reexports::wayland_server::Resource;
         Self(surface.id().protocol_id())
     }
 }

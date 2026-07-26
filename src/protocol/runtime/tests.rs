@@ -388,7 +388,8 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         &mut feedback,
         |_, _| Some(output.clone()),
         |_, _| {
-            smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::empty()
+            wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::empty(
+            )
         },
     );
     drop(feedback);

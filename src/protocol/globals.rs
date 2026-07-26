@@ -1,7 +1,7 @@
+use calloop::LoopHandle;
 #[cfg(feature = "xwayland")]
 use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
-    reexports::{calloop::LoopHandle, wayland_server::DisplayHandle},
     utils::{ClockSource, Monotonic},
     wayland::{
         alpha_modifier::AlphaModifierState,
@@ -44,6 +44,7 @@ use smithay::{
         xdg_toplevel_tag::XdgToplevelTagManager,
     },
 };
+use wayland_server::{Client, DisplayHandle};
 
 use super::extensions::{
     ext_workspace::ExtWorkspaceManagerState, gamma_control::GammaControlManagerState,
@@ -121,7 +122,7 @@ impl ProtocolGlobals {
     ) -> Self {
         let _ = loop_handle;
         let primary_selection = PrimarySelectionState::new::<RuntimeState>(display);
-        let unrestricted = |client: &smithay::reexports::wayland_server::Client| {
+        let unrestricted = |client: &Client| {
             client
                 .get_data::<crate::protocol::state::WaylandClientState>()
                 .is_none_or(|data| data.security_context.is_none())
@@ -469,7 +470,7 @@ pub(crate) struct ProtocolCapabilities {
 #[cfg(test)]
 mod tests {
     use calloop::EventLoop;
-    use smithay::reexports::wayland_server::Display;
+    use wayland_server::Display;
 
     use super::*;
     use crate::layout::{LayoutEngine, LayoutKind};

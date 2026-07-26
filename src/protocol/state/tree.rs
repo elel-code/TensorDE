@@ -1,7 +1,6 @@
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
     desktop::{PopupManager, find_popup_root_surface},
-    reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::IsAlive,
     wayland::{
         compositor::{
@@ -12,6 +11,7 @@ use smithay::{
     },
 };
 use tracing::warn;
+use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
 use crate::scene::{SurfaceLayer, SurfaceTransform};
 

@@ -77,6 +77,7 @@ udev = { version = "0.9", optional = true }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
 wayland-server = "0.31"
 zbus = { version = "5", optional = true }
 

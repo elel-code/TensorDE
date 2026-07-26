@@ -2,10 +2,6 @@ use std::cell::RefCell;
 
 use smithay::{
     backend::allocator::{Buffer, dmabuf::Dmabuf as SmithayDmabuf},
-    reexports::wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::{
-        self, WpLinuxDrmSyncobjSurfaceV1,
-    },
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
         compositor::{BufferAssignment, SurfaceAttributes, with_states},
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
@@ -13,6 +9,10 @@ use smithay::{
     },
 };
 use tracing::warn;
+use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::{
+    self, WpLinuxDrmSyncobjSurfaceV1,
+};
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::protocol::state::{ExplicitSyncPoints, RuntimeState};
 

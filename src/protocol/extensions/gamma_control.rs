@@ -7,18 +7,14 @@ use std::{collections::HashMap, fs::File, io::Read};
 
 use smithay::{
     output::Output,
-    reexports::{
-        wayland_protocols_wlr::gamma_control::v1::server::{
-            zwlr_gamma_control_manager_v1::{self, ZwlrGammaControlManagerV1},
-            zwlr_gamma_control_v1::{self, ZwlrGammaControlV1},
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId,
-        },
-    },
     wayland::{Dispatch2, GlobalDispatch2},
 };
 use tracing::{trace, warn};
+use wayland_protocols_wlr::gamma_control::v1::server::{
+    zwlr_gamma_control_manager_v1::{self, ZwlrGammaControlManagerV1},
+    zwlr_gamma_control_v1::{self, ZwlrGammaControlV1},
+};
+use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId};
 
 const VERSION: u32 = 1;
 
@@ -43,10 +39,7 @@ pub struct GammaControlState {
 impl GammaControlManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
-        D: smithay::reexports::wayland_server::GlobalDispatch<
-                ZwlrGammaControlManagerV1,
-                GammaControlManagerGlobalData,
-            >,
+        D: wayland_server::GlobalDispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData>,
         D: Dispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData>,
         D: Dispatch<ZwlrGammaControlV1, GammaControlState>,
         D: GammaControlHandler,

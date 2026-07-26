@@ -1,16 +1,14 @@
 mod popup;
 mod transient;
 
+use calloop::LoopHandle;
 use smithay::{
     desktop::Window,
-    reexports::{
-        calloop::LoopHandle,
-        wayland_server::{Client, Resource, protocol::wl_surface::WlSurface},
-    },
     utils::{Logical, Rectangle},
     xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData, xwm::XwmId},
 };
 use tracing::warn;
+use wayland_server::{Client, Resource, protocol::wl_surface::WlSurface};
 
 use crate::{
     ecs::{ViewId, ViewPlacement},

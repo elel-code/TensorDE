@@ -9,18 +9,15 @@ use smithay::backend::input::{
 };
 use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
-use smithay::reexports::wayland_server::protocol::wl_pointer;
-use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId,
-};
-use smithay::reexports::{
-    wayland_protocols_wlr::virtual_pointer::v1::server::{
-        zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1,
-    },
-    wayland_server::WEnum,
-};
 use smithay::wayland::{Dispatch2, GlobalDispatch2};
+use wayland_protocols_wlr::virtual_pointer::v1::server::{
+    zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1,
+};
+use wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, New, Resource, WEnum,
+    backend::ClientId,
+    protocol::{wl_pointer, wl_seat::WlSeat},
+};
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
@@ -295,7 +292,7 @@ pub trait VirtualPointerHandler: 'static {
 impl VirtualPointerManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
-        D: smithay::reexports::wayland_server::GlobalDispatch<
+        D: wayland_server::GlobalDispatch<
                 ZwlrVirtualPointerManagerV1,
                 VirtualPointerManagerGlobalData,
             >,

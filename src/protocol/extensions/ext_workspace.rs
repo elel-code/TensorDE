@@ -8,21 +8,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use smithay::{
-    reexports::{
-        wayland_protocols::ext::workspace::v1::server::{
-            ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
-            ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
-            ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-            backend::ClientId,
-        },
-    },
-    wayland::{Dispatch2, GlobalDispatch2},
-};
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::trace;
+use wayland_protocols::ext::workspace::v1::server::{
+    ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
+    ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
+    ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
+};
+use wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
+};
 
 use crate::ecs::WorkspaceId;
 

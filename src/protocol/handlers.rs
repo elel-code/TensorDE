@@ -16,10 +16,6 @@ use smithay::{
         dnd::DndGrabHandler,
         pointer::{CursorImageStatus, Focus},
     },
-    reexports::wayland_server::{
-        Client, Resource,
-        protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
-    },
     utils::Serial,
     wayland::{
         buffer::BufferHandler,
@@ -47,6 +43,10 @@ use smithay::{
     },
 };
 use tracing::warn;
+use wayland_server::{
+    Client, Resource,
+    protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+};
 
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::XWaylandClientData;
@@ -415,7 +415,7 @@ impl XdgDecorationHandler for RuntimeState {
     fn request_mode(
         &mut self,
         toplevel: ToplevelSurface,
-        _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        _mode: wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     ) {
         set_client_side_decoration(&toplevel);
     }
@@ -426,7 +426,7 @@ impl XdgDecorationHandler for RuntimeState {
 }
 
 fn set_client_side_decoration(toplevel: &ToplevelSurface) {
-    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+    use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 
     toplevel.with_pending_state(|state| {
         state.decoration_mode = Some(Mode::ClientSide);
@@ -519,7 +519,7 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
     fn new_layer_surface(
         &mut self,
         surface: smithay::wayland::shell::wlr_layer::LayerSurface,
-        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        output: Option<wayland_server::protocol::wl_output::WlOutput>,
         _layer: smithay::wayland::shell::wlr_layer::Layer,
         namespace: String,
     ) {

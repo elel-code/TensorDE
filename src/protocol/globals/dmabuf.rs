@@ -1,7 +1,5 @@
-use smithay::{
-    reexports::wayland_server::DisplayHandle,
-    wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal, DmabufState},
-};
+use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
+use wayland_server::DisplayHandle;
 
 use super::super::state::RuntimeState;
 
@@ -57,8 +55,8 @@ impl DmabufProtocol {
 
 #[cfg(test)]
 mod tests {
-    use smithay::reexports::wayland_server::Display;
     use tensor_host::{DrmFormat, Fourcc, Modifier};
+    use wayland_server::Display;
 
     use super::*;
 

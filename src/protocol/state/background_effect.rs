@@ -5,13 +5,11 @@
 //! [`BackdropBlur`] on the view (or layer merge path). Radius is compositor
 //! policy; region emptiness is evaluated without allocating.
 
-use smithay::{
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    wayland::{
-        background_effect::BackgroundEffectSurfaceCachedState,
-        compositor::{RegionAttributes, with_states},
-    },
+use smithay::wayland::{
+    background_effect::BackgroundEffectSurfaceCachedState,
+    compositor::{RegionAttributes, with_states},
 };
+use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::scene::{BackdropBlur, EffectStyle};
 

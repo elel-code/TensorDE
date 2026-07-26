@@ -2086,6 +2086,7 @@ dependencies = [
  "vulkanalia",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "wayland-server",
  "zbus",
 ]

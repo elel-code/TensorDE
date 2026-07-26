@@ -1,6 +1,6 @@
 use calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use tensor_host::{DrmFormat, Fourcc, Modifier, PhysicalMode, SubpixelLayout};
+use wayland_server::Display;
 
 use super::*;
 

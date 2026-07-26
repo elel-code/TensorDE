@@ -2,9 +2,9 @@ use calloop::EventLoop;
 use smithay::{
     input::keyboard::keysyms,
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::wayland_server::Display,
     utils::{Logical, Point, Rectangle},
 };
+use wayland_server::Display;
 
 use super::pointer_geometry::{
     constrain_pointer_location, replace_non_finite_pointer_location,
