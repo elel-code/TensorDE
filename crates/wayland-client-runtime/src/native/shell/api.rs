@@ -268,6 +268,12 @@ impl NativeShell {
         self.connection.as_fd()
     }
 
+    /// Long-lived Compio readiness watch on a clone of the display fd.
+    #[cfg(feature = "compio")]
+    pub(crate) fn display_ready(&self) -> &crate::display_io::CompioFdReady {
+        &self.display_ready
+    }
+
     pub fn has_fractional_scale(&self) -> bool {
         self.state.fractional_manager.is_some() && self.state.viewporter.is_some()
     }
@@ -762,11 +768,7 @@ impl NativeShell {
         let qh = self.queue.handle();
         let wl = self
             .state
-            .toplevels
-            .get(&id)
-            .map(|r| &r.wl)
-            .or_else(|| self.state.popups.get(&id).map(|r| &r.wl))
-            .or_else(|| self.state.layers.get(&id).map(|r| &r.wl))
+            .wl_surface(id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         let callback = wl.frame(&qh, ());
         self.state
@@ -792,12 +794,9 @@ impl NativeShell {
         let qh = self.queue.handle();
         let wl = self
             .state
-            .toplevels
-            .get(&id)
-            .map(|r| r.wl.clone())
-            .or_else(|| self.state.popups.get(&id).map(|r| r.wl.clone()))
-            .or_else(|| self.state.layers.get(&id).map(|r| r.wl.clone()))
-            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+            .wl_surface(id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?
+            .clone();
         let feedback = presentation.feedback(&wl, &qh, ());
         let obj = feedback.id().protocol_id();
         self.state.presentation_feedbacks.insert(
@@ -881,20 +880,25 @@ impl NativeShell {
     pub fn try_read_and_dispatch(&mut self) -> Result<usize, NativeError> {
         self.connection.flush()?;
         let mut n = self.dispatch_pending()?;
+        n += self.read_display_nonblocking()?;
+        Ok(n)
+    }
+
+    /// Shared non-blocking display read (no wait). Used by protocol pumps and
+    /// the Compio runtime after a readiness completion.
+    pub(crate) fn read_display_nonblocking(&mut self) -> Result<usize, NativeError> {
         match self.connection.connection().prepare_read() {
-            None => {
-                n += self.dispatch_pending()?;
-            }
+            None => self.dispatch_pending(),
             Some(guard) => match guard.read() {
-                Ok(_) => {
-                    n += self.dispatch_pending()?;
-                }
+                Ok(_) => self.dispatch_pending(),
                 Err(wayland_client::backend::WaylandError::Io(err))
-                    if err.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error.into()),
+                    if err.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    Ok(0)
+                }
+                Err(error) => Err(error.into()),
             },
         }
-        Ok(n)
     }
 
     /// Compio-driven pump: wait until the display is readable, then dispatch.
@@ -905,6 +909,7 @@ impl NativeShell {
     pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
         self.connection.flush()?;
         let mut n = self.dispatch_pending()?;
+        // If the queue is empty, wait once then read; otherwise drain only.
         match self.connection.connection().prepare_read() {
             None => {
                 n += self.dispatch_pending()?;
@@ -912,12 +917,13 @@ impl NativeShell {
             Some(guard) => {
                 self.display_ready.wait_readable().await?;
                 match guard.read() {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        n += self.dispatch_pending()?;
+                    }
                     Err(wayland_client::backend::WaylandError::Io(err))
                         if err.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(error) => return Err(error.into()),
                 }
-                n += self.dispatch_pending()?;
             }
         }
         Ok(n)

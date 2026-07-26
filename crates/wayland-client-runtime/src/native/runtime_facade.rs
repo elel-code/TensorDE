@@ -55,9 +55,8 @@ pub struct NativeRuntime {
     activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
     next_activation_request_id: u64,
     wake: std::sync::Arc<EventFdWake>,
-    /// Compio readiness watch on a clone of the display socket (long-lived).
-    display_ready: CompioFdReady,
     /// Compio readiness watch on a clone of the wake eventfd (long-lived).
+    /// Display readiness reuses [`NativeShell::display_ready`].
     wake_ready: CompioFdReady,
     wake_handle: WakeHandle,
     /// Owns the io_uring proactor used for display/wake waits.
@@ -71,10 +70,6 @@ impl NativeRuntime {
         let caps = shell.capabilities();
         let popup_reposition = shell.supports_popup_reposition();
         let layer_ver = shell.layer_shell_version();
-        // Prefer the shell’s already-built display watch when present (same fd
-        // clone semantics; constructed once at connect).
-        let display_ready = CompioFdReady::watch(shell.display_fd())
-            .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
@@ -91,7 +86,6 @@ impl NativeRuntime {
             activation_pending: HashMap::new(),
             next_activation_request_id: 1,
             wake,
-            display_ready,
             wake_ready,
             wake_handle,
             compio,
@@ -180,14 +174,12 @@ impl NativeRuntime {
     /// (and other) messages buffered while `frame_pending` stayed true, which
     /// froze the UI after the first presented frame.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
-        self.shell
-            .connection()
-            .flush()
+        // Drain already-buffered socket data before sleeping (edge-triggered
+        // io_uring readiness). Shares the protocol shell’s read path.
+        let _ = self
+            .shell
+            .try_read_and_dispatch()
             .map_err(map_native_error)?;
-        let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
-        // Drain any already-buffered socket data before sleeping (important for
-        // edge-triggered io_uring POLL_ADD readiness).
-        self.try_read_display()?;
 
         // Zero-timeout: only process already-queued protocol state.
         if matches!(timeout, Some(d) if d.is_zero()) {
@@ -202,9 +194,9 @@ impl NativeRuntime {
             return Ok(());
         };
 
-        // Partial borrows: Compio runtime + long-lived readiness watches.
+        // Partial borrows: shell display watch + wake watch + Compio runtime.
         let source = {
-            let display = &self.display_ready;
+            let display = self.shell.display_ready();
             let wake = &self.wake_ready;
             let compio = &self.compio;
             compio.block_on(async {
@@ -235,26 +227,6 @@ impl NativeRuntime {
             }
         }
         let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
-        Ok(())
-    }
-
-    /// Non-blocking drain of the Wayland display socket (no Compio wait).
-    fn try_read_display(&mut self) -> Result<(), RuntimeError> {
-        let prepared = self.shell.connection().connection().prepare_read();
-        let Some(guard) = prepared else {
-            let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
-            return Ok(());
-        };
-        match guard.read() {
-            Ok(_) => {
-                let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
-            }
-            Err(wayland_client::backend::WaylandError::Io(err))
-                if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => {
-                return Err(RuntimeError::EventLoop(error.to_string()));
-            }
-        }
         Ok(())
     }
 

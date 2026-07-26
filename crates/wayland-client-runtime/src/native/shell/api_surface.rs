@@ -204,22 +204,13 @@ impl NativeShell {
     }
 
     pub fn commit_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
-        if let Some(record) = self.state.toplevels.get(&id) {
-            record.wl.commit();
-            self.connection.flush()?;
-            return Ok(());
-        }
-        if let Some(record) = self.state.popups.get(&id) {
-            record.wl.commit();
-            self.connection.flush()?;
-            return Ok(());
-        }
-        if let Some(record) = self.state.layers.get(&id) {
-            record.wl.commit();
-            self.connection.flush()?;
-            return Ok(());
-        }
-        Err(NativeError::Protocol(format!("unknown surface {id:?}")))
+        let wl = self
+            .state
+            .wl_surface(id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        wl.commit();
+        self.connection.flush()?;
+        Ok(())
     }
 
     pub fn set_buffer_scale(
@@ -230,11 +221,7 @@ impl NativeShell {
         let factor = factor.max(1);
         let wl = self
             .state
-            .toplevels
-            .get(&id)
-            .map(|r| &r.wl)
-            .or_else(|| self.state.popups.get(&id).map(|r| &r.wl))
-            .or_else(|| self.state.layers.get(&id).map(|r| &r.wl))
+            .wl_surface(id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         wl.set_buffer_scale(factor);
         self.connection.flush()?;

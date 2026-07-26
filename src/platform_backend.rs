@@ -6,10 +6,14 @@ struct PlatformBackend {
 
 impl PlatformBackend {
     fn connect() -> Result<Self, RuntimeError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED_LEGACY_BACKEND: AtomicBool = AtomicBool::new(false);
         let backend = std::env::var("FIKA_WAYLAND_BACKEND")
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if matches!(backend.as_str(), "sctk" | "smithay" | "legacy") {
+        if matches!(backend.as_str(), "sctk" | "smithay" | "legacy")
+            && !WARNED_LEGACY_BACKEND.swap(true, Ordering::Relaxed)
+        {
             eprintln!(
                 "[fika-wayland] FIKA_WAYLAND_BACKEND={backend:?} ignored: native Compio backend only"
             );

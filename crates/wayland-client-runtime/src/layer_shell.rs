@@ -219,10 +219,8 @@ pub(crate) fn validate_layer_state(
     {
         return Err(LayerSurfaceError::OnDemandKeyboardUnsupported);
     }
-    // set_layer is version 2+; creation always sets the initial layer via
-    // get_layer_surface, so this only matters for dynamic updates (caller
-    // checks DynamicLayerUnsupported separately when layer changes).
-    let _ = version;
+    // `set_layer` is version 2+; creation sets the initial layer via
+    // get_layer_surface. Dynamic layer changes are gated at apply time.
     Ok(())
 }
 

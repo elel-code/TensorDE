@@ -126,9 +126,11 @@ impl EventLoop {
                         error => Err(error),
                     }),
                 RuntimeCommand::ArmFrame(surface) => {
-                    // Prefer presentation-time feedback when available; still arm
-                    // wl_surface.frame for pacing on compositors without it.
-                    let _ = runtime.request_presentation_feedback(surface);
+                    // Arm presentation feedback only when the global exists;
+                    // always keep wl_surface.frame for pacing.
+                    if runtime.capabilities().presentation {
+                        let _ = runtime.request_presentation_feedback(surface);
+                    }
                     runtime
                         .request_frame(surface)
                         .and_then(|()| runtime.commit(surface))

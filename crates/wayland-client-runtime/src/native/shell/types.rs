@@ -736,7 +736,8 @@ impl Default for NativeShellState {
             axis_h120: 0,
             axis_v120: 0,
             next_id: 1,
-            events: Vec::new(),
+            // Hot path: avoid realloc on typical multi-event dispatch batches.
+            events: Vec::with_capacity(64),
             seat_capabilities: wl_seat::Capability::empty(),
             frame_callbacks: HashMap::new(),
             presentation: None,
@@ -764,6 +765,18 @@ impl NativeShellState {
 
     pub(crate) fn push(&mut self, event: NativeShellEvent) {
         self.events.push(event);
+    }
+
+    /// Borrow the content `wl_surface` for any role (toplevel / popup / layer).
+    pub(crate) fn wl_surface(
+        &self,
+        id: NativeSurfaceId,
+    ) -> Option<&wl_surface::WlSurface> {
+        self.toplevels
+            .get(&id)
+            .map(|r| &r.wl)
+            .or_else(|| self.popups.get(&id).map(|r| &r.wl))
+            .or_else(|| self.layers.get(&id).map(|r| &r.wl))
     }
 }
 
