@@ -298,6 +298,9 @@ impl PlatformBackend {
         }
     }
 
+    // Shell interaction / capture APIs — available for both backends; Fika will
+    // wire them as window chrome and games paths land.
+    #[allow(dead_code)]
     fn set_pointer_capture_state(
         &mut self,
         surface: SurfaceId,
@@ -309,6 +312,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn set_pointer_constraint(
         &mut self,
         surface: SurfaceId,
@@ -320,6 +324,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn set_relative_pointer_enabled(
         &mut self,
         surface: SurfaceId,
@@ -331,6 +336,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         match self {
             Self::Sctk(rt) => rt.begin_interactive_move(surface),
@@ -338,6 +344,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn begin_interactive_resize(
         &mut self,
         surface: SurfaceId,
@@ -349,6 +356,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn show_window_menu(
         &mut self,
         surface: SurfaceId,
@@ -360,6 +368,7 @@ impl PlatformBackend {
         }
     }
 
+    #[allow(dead_code)]
     fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
         match self {
             Self::Sctk(rt) => rt.preferred_toplevel_icon_sizes(),
