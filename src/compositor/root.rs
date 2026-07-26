@@ -2,6 +2,7 @@ use std::{cell::RefCell, ffi::OsString, rc::Rc};
 
 mod ipc;
 mod launch;
+mod signal;
 
 use calloop::channel::{Channel as CalloopChannel, Event as ChannelEvent, sync_channel};
 use tensor_runtime::{
@@ -12,6 +13,7 @@ use tracing::{error, info, warn};
 
 use ipc::drain_ipc_events;
 use launch::drain_launch_outcomes;
+use signal::drain_signal_events;
 
 use crate::{
     backend::BackendConfig,
@@ -24,6 +26,7 @@ use crate::{
     protocol::{ProtocolError, WaylandRuntime},
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
+    signals::{MAX_PENDING_SIGNAL_EVENTS, SignalEvent, SignalRuntime, SignalRuntimeError},
     spawn::{
         LaunchOutcome, LaunchRequest, LaunchWorker, LaunchWorkerError, MAX_PENDING_LAUNCHES,
         ProcessLauncher,
@@ -44,6 +47,9 @@ pub struct Compositor {
     ipc_events: WorkerRx<IpcEvent>,
     ipc_control_sender: WorkerTx<IpcControlEvent>,
     ipc_control_events: WorkerRx<IpcControlEvent>,
+    signal_event_sender: WorkerTx<SignalEvent>,
+    signal_events: WorkerRx<SignalEvent>,
+    signal_runtime: SignalRuntime,
     completion_notifications: CalloopChannel<()>,
     completion_relay: EventfdCompletionRelay,
     launch_worker: Option<LaunchWorker>,
@@ -105,6 +111,9 @@ impl Compositor {
             MAX_PENDING_IPC_CONTROL_EVENTS,
             completion_relay.wake(),
         );
+        let (signal_event_sender, signal_events) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_SIGNAL_EVENTS, completion_relay.wake());
+        let signal_runtime = SignalRuntime::start(signal_event_sender.clone())?;
         Ok(Self {
             protocol,
             ipc,
@@ -117,6 +126,9 @@ impl Compositor {
             ipc_events,
             ipc_control_sender,
             ipc_control_events,
+            signal_event_sender,
+            signal_events,
+            signal_runtime,
             completion_notifications,
             completion_relay,
             launch_worker: None,
@@ -294,6 +306,9 @@ impl Compositor {
             ipc_events,
             ipc_control_sender,
             ipc_control_events,
+            signal_event_sender,
+            signal_events,
+            signal_runtime,
             completion_notifications,
             completion_relay,
             launch_worker,
@@ -310,6 +325,8 @@ impl Compositor {
             launch_outcome_sender,
             ipc_event_sender,
             ipc_control_sender,
+            signal_event_sender,
+            signal_runtime,
             completion_relay,
             startup_commands,
             environment,
@@ -322,6 +339,7 @@ impl Compositor {
         let callback_failure = Rc::clone(&runtime_failure);
         protocol.run_with_channel(completion_notifications, move |event, state| match event {
             ChannelEvent::Msg(()) => {
+                drain_signal_events(&signal_events, &callback_stop, &callback_failure);
                 drain_launch_outcomes(&launch_outcomes, state);
                 drain_ipc_events(
                     &ipc_events,
@@ -340,7 +358,7 @@ impl Compositor {
             }
         })?;
         if let Some(message) = runtime_failure.borrow_mut().take() {
-            return Err(CompositorError::IpcRuntime(message));
+            return Err(CompositorError::CompletionRuntime(message));
         }
         Ok(())
     }
@@ -400,8 +418,10 @@ pub enum CompositorError {
     LaunchWorker(#[from] LaunchWorkerError),
     #[error(transparent)]
     CompletionRelay(#[from] CompletionRelayError),
-    #[error("IPC completion runtime failed: {0}")]
-    IpcRuntime(String),
+    #[error(transparent)]
+    SignalRuntime(#[from] SignalRuntimeError),
+    #[error("completion service failed: {0}")]
+    CompletionRuntime(String),
 }
 
 #[cfg(test)]

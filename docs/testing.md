@@ -114,6 +114,8 @@ and rendering itself.
 - IPC tests cover fragmented reads, multiple frames per read, malformed/oversized input, request-ID
   round trips, permissions, socket ownership, fixed connection capacity, real Compio socket
   completions, and response-before-shutdown ordering.
+- Signal tests direct a blocked termination signal at the runtime thread and require a submitted
+  Compio signalfd read to return its value.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.

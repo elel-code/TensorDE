@@ -41,8 +41,6 @@ impl WaylandRuntime {
         appearance: SceneAppearance,
     ) -> Result<Self, ProtocolError> {
         let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
-        crate::signals::install(&event_loop.handle(), event_loop.get_signal())
-            .map_err(ProtocolError::SignalSource)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
         let display_handle = display.handle();
         let state =
@@ -212,8 +210,6 @@ fn bind_socket_source()
 pub enum ProtocolError {
     #[error("failed to initialize the Smithay event loop: {0}")]
     EventLoop(calloop::Error),
-    #[error("failed to register the compositor signal source: {0}")]
-    SignalSource(calloop::Error),
     #[error("failed to initialize the Wayland display: {0}")]
     Display(smithay::reexports::wayland_server::backend::InitError),
     #[error("failed to bind the Wayland socket: {0}")]

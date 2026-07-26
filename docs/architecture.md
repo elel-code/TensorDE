@@ -21,8 +21,8 @@ complete**, not a readiness poll loop. On Linux the product driver is **io_uring
 `polling` feature is only an automatic host fallback when io_uring cannot be created — not the
 architecture we design for. calloop still owns some Smithay fds as a **readiness** loop during
 migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, IPC,
-and worker notifications) uses Compio completions and posts value-only messages across bounded
-bridges. Workers never own
+blocked process signals, and worker notifications) uses Compio completions and posts value-only
+messages across bounded bridges. Workers never own
 Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
 

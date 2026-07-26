@@ -42,7 +42,9 @@ pub(super) fn drain_ipc_events(
         IpcControlEvent::ShutdownFlushed => stop_signal.stop(),
         IpcControlEvent::RuntimeFailed(message) => {
             error!(%message, "IPC completion runtime failed");
-            runtime_failure.borrow_mut().replace(message);
+            runtime_failure
+                .borrow_mut()
+                .replace(format!("IPC: {message}"));
             stop_signal.stop();
         }
     });

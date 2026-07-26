@@ -10,7 +10,7 @@
 //!
 //! `sequence::run` blocks termination signals before this worker exists, so
 //! the worker inherits the compositor's signal mask and never competes with
-//! calloop's signalfd source.
+//! the Compio-completed signalfd service.
 
 use std::{
     env, fs, io,
