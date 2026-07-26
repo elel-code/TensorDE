@@ -524,6 +524,40 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_text_input_applies_cursor_rectangle_when_present() {
+        use crate::geometry::LogicalRect;
+        use crate::text_input::{
+            TextInputContentHint, TextInputContentPurpose, TextInputContentType, TextInputState,
+            TextInputSurroundingText,
+        };
+
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        if !shell.has_text_input() {
+            return;
+        }
+        let id = shell
+            .create_toplevel_gpu("ime", "dev.fika.Ime", 400, 300)
+            .expect("toplevel");
+        let surrounding = TextInputSurroundingText::new("hello", 5, 5).expect("surrounding");
+        let state = TextInputState::new()
+            .with_surrounding_text(surrounding)
+            .with_content_type(TextInputContentType {
+                hints: TextInputContentHint::COMPLETION,
+                purpose: TextInputContentPurpose::Normal,
+            })
+            .with_cursor_rectangle(LogicalRect::new(120, 80, 2, 18))
+            .expect("cursor rect");
+        // Must not hard-code (0,0); applying real rect must succeed.
+        shell
+            .set_text_input_state(id, &state)
+            .expect("set text input state with cursor");
+        shell.disable_text_input().expect("disable");
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_presentation_feedback_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

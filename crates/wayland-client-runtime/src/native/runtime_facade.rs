@@ -618,12 +618,12 @@ impl NativeRuntime {
             return Err(RuntimeError::Unsupported("text_input_v3"));
         }
         let native = self.native(surface)?;
-        if state.is_some() {
-            self.shell
-                .enable_text_input(native)
-                .map_err(map_native_error)
-        } else {
-            self.shell.disable_text_input().map_err(map_native_error)
+        match state {
+            Some(state) => self
+                .shell
+                .set_text_input_state(native, state)
+                .map_err(map_native_error),
+            None => self.shell.disable_text_input().map_err(map_native_error),
         }
     }
 
