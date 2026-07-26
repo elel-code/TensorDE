@@ -152,6 +152,11 @@ impl NativeRuntime {
     /// * `None` — wait until the display is readable or a [`WakeHandle`] fires.
     /// * `Some(0)` — flush/dispatch only; never block on the proactor.
     /// * `Some(d)` — wait up to `d` via Compio timers + io_uring readiness.
+    ///
+    /// After any wait (including wake/timeout), the display socket is always
+    /// drained when readable. Skipping the read on wake left `wl_surface.frame`
+    /// (and other) messages buffered while `frame_pending` stayed true, which
+    /// froze the UI after the first presented frame.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
         self.shell
             .connection()
@@ -161,6 +166,8 @@ impl NativeRuntime {
 
         // Zero-timeout: only process already-queued protocol state.
         if matches!(timeout, Some(d) if d.is_zero()) {
+            // Still try a non-blocking socket drain in case data is already buffered.
+            self.try_read_display()?;
             return Ok(());
         }
 
@@ -189,25 +196,40 @@ impl NativeRuntime {
             })?
         };
 
-        match source {
-            WaitSource::Wake => {
-                // Drop the read guard without consuming socket data.
-                drop(guard);
-                self.wake.drain();
+        if source == WaitSource::Wake {
+            self.wake.drain();
+        }
+
+        // Always consume the display read guard. Dropping without `read` on
+        // wake/timeout left compositor replies (notably frame callbacks) sitting
+        // in the socket while the app believed it was idle.
+        match guard.read() {
+            Ok(_) => {}
+            Err(wayland_client::backend::WaylandError::Io(err))
+                if err.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                return Err(RuntimeError::EventLoop(error.to_string()));
             }
-            WaitSource::Timeout => {
-                drop(guard);
-            }
-            WaitSource::Display => {
-                match guard.read() {
-                    Ok(_) => {}
-                    Err(wayland_client::backend::WaylandError::Io(err))
-                        if err.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(error) => {
-                        return Err(RuntimeError::EventLoop(error.to_string()));
-                    }
-                }
+        }
+        let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
+        Ok(())
+    }
+
+    /// Non-blocking drain of the Wayland display socket (no Compio wait).
+    fn try_read_display(&mut self) -> Result<(), RuntimeError> {
+        let prepared = self.shell.connection().connection().prepare_read();
+        let Some(guard) = prepared else {
+            let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
+            return Ok(());
+        };
+        match guard.read() {
+            Ok(_) => {
                 let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
+            }
+            Err(wayland_client::backend::WaylandError::Io(err))
+                if err.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                return Err(RuntimeError::EventLoop(error.to_string()));
             }
         }
         Ok(())
@@ -1068,4 +1090,49 @@ mod tests {
 
         runtime.destroy_surface(parent).expect("destroy parent");
     }
+
+    #[test]
+    fn dispatch_compio_wait_returns_on_timeout_and_zero() {
+        let Ok(mut runtime) = NativeRuntime::connect() else {
+            return;
+        };
+        let surface = runtime
+            .create_toplevel(ToplevelAttributes {
+                title: "dispatch-wait".into(),
+                app_id: "dev.fika.DispatchWait".into(),
+                initial_size: Some(LogicalSize::new(320, 240)),
+                ..Default::default()
+            })
+            .expect("toplevel");
+        // Non-blocking must return.
+        runtime
+            .dispatch(Some(Duration::from_millis(0)))
+            .expect("zero");
+        // Short timeout must return (Compio timer), not hang forever.
+        let start = std::time::Instant::now();
+        runtime
+            .dispatch(Some(Duration::from_millis(50)))
+            .expect("timeout");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "dispatch timeout took {elapsed:?}"
+        );
+        // Infinite wait would hang; only exercise with wake from another thread.
+        let wake = runtime.wake_handle();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            wake.wake();
+        });
+        let start = std::time::Instant::now();
+        runtime.dispatch(None).expect("wake");
+        let elapsed = start.elapsed();
+        handle.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "dispatch None + wake took {elapsed:?}"
+        );
+        let _ = runtime.destroy_surface(surface);
+    }
+
 }

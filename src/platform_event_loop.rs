@@ -594,11 +594,18 @@ impl EventLoop {
             }
             SurfaceEvent::Frame { surface, .. } => {
                 if let Some(window) = self.window(surface) {
-                    window
+                    let mut state = window
                         .state
                         .lock()
-                        .expect("Wayland window state mutex poisoned")
-                        .frame_pending = false;
+                        .expect("Wayland window state mutex poisoned");
+                    state.frame_pending = false;
+                    // A frame callback often unblocks a deferred redraw; wake so
+                    // the loop re-evaluates `has_ready_redraw` instead of sleeping
+                    // forever under ControlFlow::Wait.
+                    if state.configured && state.redraw_requested {
+                        drop(state);
+                        self.active.shared.wake.wake();
+                    }
                 }
                 Ok(())
             }
