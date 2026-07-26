@@ -4,6 +4,8 @@
 //! The frame path only receives the same value-only surface content that tiled
 //! views use, so the renderer never sees a LayerMap or WlSurface.
 
+#[cfg(feature = "tty")]
+mod dnd;
 mod map;
 
 #[cfg(feature = "tty")]
@@ -230,11 +232,14 @@ impl RuntimeState {
             self.focus_layer_surface(layer, serial);
             return;
         }
-        if let Some((window, _)) = self
+        let mut dnd_active = None;
+        let window = self
             .space
-            .element_under(&self.popups, location)
-            .map(|(window, loc)| (window.clone(), loc))
-        {
+            .element_under(&self.popups, location, || {
+                *dnd_active.get_or_insert_with(|| self.xwayland_dnd_pointer_grab_active())
+            })
+            .map(|hit| hit.window.clone());
+        if let Some(window) = window {
             let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
                 return;
             };
@@ -542,12 +547,14 @@ impl RuntimeState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, window_location) = self.space.element_under(&self.popups, location)?;
-        window
-            .surface_under(&self.popups, location - window_location.to_f64())
-            .map(|(surface, surface_location)| {
-                (surface, (surface_location + window_location).to_f64())
-            })
+        let mut dnd_active = None;
+        let hit = self.space.element_under(&self.popups, location, || {
+            *dnd_active.get_or_insert_with(|| self.xwayland_dnd_pointer_grab_active())
+        })?;
+        Some((
+            hit.surface,
+            (hit.surface_location + hit.window_location).to_f64(),
+        ))
     }
 
     #[cfg(feature = "tty")]

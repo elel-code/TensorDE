@@ -391,7 +391,7 @@ impl RuntimeState {
                 // Atomic KMS has latched ownership of the submitted client
                 // buffers. Let clients prepare their next frame immediately;
                 // presentation feedback remains pending until vblank.
-                self.send_submitted_frame_callbacks(&output, &captured_presentation);
+                self.send_submitted_frame_callbacks(&captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
                 if let Some(managed) = self.outputs.get_mut(&output_id) {
                     managed.has_presented = true;

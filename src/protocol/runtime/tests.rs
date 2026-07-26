@@ -1,14 +1,16 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
 use smithay::{
-    desktop::utils::OutputPresentationFeedback,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     utils::{ClockSource, Monotonic},
 };
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_compositor, wl_registry, wl_seat, wl_subcompositor, wl_subsurface, wl_surface},
+    protocol::{
+        wl_callback, wl_compositor, wl_registry, wl_seat, wl_subcompositor, wl_subsurface,
+        wl_surface,
+    },
 };
 use wayland_protocols::{
     wp::{
@@ -29,6 +31,8 @@ use wayland_protocols::{
 use wayland_server::Resource;
 
 use super::*;
+
+mod surface_callbacks;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ClientEvent {
@@ -78,6 +82,7 @@ delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
 delegate_noop!(TestClient: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(TestClient: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(TestClient: ignore wl_surface::WlSurface);
+delegate_noop!(TestClient: ignore wl_callback::WlCallback);
 delegate_noop!(TestClient: ignore wl_seat::WlSeat);
 delegate_noop!(TestClient: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(TestClient: ignore wp_viewporter::WpViewporter);
@@ -533,6 +538,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
             .unwrap();
         let surface = compositor.create_surface(&handle, ());
         let _feedback = presentation.feedback(&surface, &handle, ());
+        let _frame = surface.frame(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
         let _fractional_scale =
@@ -605,17 +611,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     assert_eq!(runtime.state.view_count(), 1);
     let window = runtime.state.space.elements().next().unwrap().clone();
     let output = runtime.state.space.outputs().next().unwrap().clone();
-    let mut feedback = OutputPresentationFeedback::new(&output);
-    window.take_presentation_feedback(
-        &runtime.state.popups,
-        &mut feedback,
-        |_, _| Some(output.clone()),
-        |_, _| {
-            wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::empty(
-            )
-        },
-    );
-    drop(feedback);
+    surface_callbacks::assert_submission_filtering(&window, &runtime.state.popups, &output);
     runtime.state.display_handle.flush_clients().unwrap();
     assert_eq!(
         dispatch_until(&mut runtime, &event_rx),

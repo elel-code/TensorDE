@@ -5,10 +5,6 @@ use std::{
 };
 
 use smithay::{
-    desktop::utils::{
-        OutputPresentationFeedback, send_frames_surface_tree,
-        take_presentation_feedback_surface_tree,
-    },
     output::Output,
     utils::{Clock, Monotonic},
     wayland::{compositor::SurfaceData, presentation::Refresh},
@@ -25,7 +21,13 @@ use crate::{
     scene::{SceneSnapshot, SurfaceContent, SurfaceLayer},
 };
 
-use super::RuntimeState;
+use super::{
+    RuntimeState,
+    surface_tree::{
+        OutputPresentationFeedback, send_frame_callbacks_surface_tree,
+        take_presentation_feedback_surface_tree,
+    },
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PresentationKey {
@@ -180,13 +182,13 @@ impl RuntimeState {
         let submitted_views = submitted.values().copied().collect::<HashSet<_>>();
         let mut feedback = OutputPresentationFeedback::new(output);
         let surface_buffers = &self.surface_buffers;
-        let output_ref = output.clone();
-        let primary_output = |surface: &WlSurface, _: &SurfaceData| {
+        let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
-                .filter(|surface_id| submitted_surfaces.contains(surface_id))
-                .map(|_| output_ref.clone())
+                .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
         };
+        let mut feedback_flags =
+            |_: &WlSurface, _: &SurfaceData| wp_presentation_feedback::Kind::empty();
         for window in self.space.elements() {
             let Some(root) = window.wl_surface() else {
                 continue;
@@ -198,16 +200,16 @@ impl RuntimeState {
                 window.take_presentation_feedback(
                     &self.popups,
                     &mut feedback,
-                    primary_output,
-                    |_, _| wp_presentation_feedback::Kind::empty(),
+                    &mut is_submitted,
+                    &mut feedback_flags,
                 );
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
                     take_presentation_feedback_surface_tree(
                         &popup,
                         &mut feedback,
-                        primary_output,
-                        |_, _| wp_presentation_feedback::Kind::empty(),
+                        &mut is_submitted,
+                        &mut feedback_flags,
                     );
                 }
             }
@@ -239,20 +241,15 @@ impl RuntimeState {
 
     /// Send frame callbacks once atomic KMS has accepted the submitted frame.
     /// Presentation feedback itself remains pending until the matching vblank.
-    pub(super) fn send_submitted_frame_callbacks(
-        &self,
-        output: &Output,
-        frame: &CapturedPresentation,
-    ) {
+    pub(super) fn send_submitted_frame_callbacks(&self, frame: &CapturedPresentation) {
         let time = Duration::from(Clock::<Monotonic>::new().now());
         let surface_buffers = &self.surface_buffers;
         let submitted_surfaces = &frame.submitted_surfaces;
         let submitted_views = &frame.submitted_views;
-        let primary_output = |surface: &WlSurface, _: &SurfaceData| {
+        let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
-                .filter(|surface_id| submitted_surfaces.contains(surface_id))
-                .map(|_| output.clone())
+                .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
         };
         for window in self.space.elements() {
             let Some(root) = window.wl_surface() else {
@@ -262,10 +259,10 @@ impl RuntimeState {
                 .view_for_surface(&root)
                 .is_some_and(|view_id| submitted_views.contains(&view_id))
             {
-                window.send_frame(&self.popups, output, time, None, primary_output);
+                window.send_frame(&self.popups, time, &mut is_submitted);
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
-                    send_frames_surface_tree(&popup, output, time, None, primary_output);
+                    send_frame_callbacks_surface_tree(&popup, time, &mut is_submitted);
                 }
             }
         }

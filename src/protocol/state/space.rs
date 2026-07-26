@@ -34,6 +34,13 @@ struct MappedWindow {
     outputs: Vec<OutputOverlap>,
 }
 
+pub(super) struct WindowHit<'a> {
+    pub(super) window: &'a ProtocolWindow,
+    pub(super) window_location: Point<i32, Logical>,
+    pub(super) surface: WlSurface,
+    pub(super) surface_location: Point<i32, Logical>,
+}
+
 impl MappedWindow {
     fn geometry(&self) -> Rectangle<i32, Logical> {
         let mut geometry = self.window.geometry();
@@ -165,13 +172,15 @@ impl WindowSpace {
         self.elements.iter().map(|entry| &entry.window)
     }
 
-    pub(crate) fn element_under<P>(
+    pub(super) fn element_under<P, F>(
         &self,
         popups: &PopupManager,
         point: P,
-    ) -> Option<(&ProtocolWindow, Point<i32, Logical>)>
+        mut xwayland_dnd_active: F,
+    ) -> Option<WindowHit<'_>>
     where
         P: Into<Point<f64, Logical>>,
+        F: FnMut() -> bool,
     {
         let point = point.into();
         self.elements.iter().rev().find_map(|entry| {
@@ -179,11 +188,17 @@ impl WindowSpace {
                 return None;
             }
             let render_location = entry.render_location();
-            entry
-                .window
-                .surface_under(popups, point - render_location.to_f64())
-                .is_some()
-                .then_some((&entry.window, render_location))
+            let (surface, surface_location) = entry.window.surface_under(
+                popups,
+                point - render_location.to_f64(),
+                &mut xwayland_dnd_active,
+            )?;
+            Some(WindowHit {
+                window: &entry.window,
+                window_location: render_location,
+                surface,
+                surface_location,
+            })
         })
     }
 

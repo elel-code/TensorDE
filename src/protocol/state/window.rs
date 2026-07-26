@@ -13,11 +13,6 @@ use std::{
 
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
-    desktop::utils::{
-        OutputPresentationFeedback, send_frames_surface_tree,
-        take_presentation_feedback_surface_tree, with_surfaces_surface_tree,
-    },
-    output::Output,
     utils::{IsAlive, Logical, Point, Rectangle},
     wayland::{
         compositor::{
@@ -34,9 +29,15 @@ use wayland_protocols::{
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "xwayland")]
-use smithay::{desktop::WindowSurfaceType, xwayland::X11Surface};
+use smithay::xwayland::X11Surface;
 
-use super::PopupManager;
+use super::{
+    PopupManager,
+    surface_tree::{
+        OutputPresentationFeedback, for_each_surface_tree, send_frame_callbacks_surface_tree,
+        take_presentation_feedback_surface_tree,
+    },
+};
 
 #[derive(Debug)]
 // The enum already lives inside one Rc allocation. Boxing X11 would add a
@@ -179,42 +180,22 @@ impl ProtocolWindow {
         let Some(root) = self.wl_surface() else {
             return;
         };
-        with_surfaces_surface_tree(root.as_ref(), &mut processor);
+        for_each_surface_tree(root.as_ref(), &mut processor);
         for (popup, _) in popups.popups_for_surface(root.as_ref()) {
-            with_surfaces_surface_tree(popup.wl_surface(), &mut processor);
+            for_each_surface_tree(popup.wl_surface(), &mut processor);
         }
     }
 
-    pub(crate) fn send_frame<T, F>(
-        &self,
-        popups: &PopupManager,
-        output: &Output,
-        time: T,
-        throttle: Option<Duration>,
-        primary_scanout_output: F,
-    ) where
-        T: Into<Duration>,
-        F: FnMut(&WlSurface, &SurfaceData) -> Option<Output> + Copy,
+    pub(crate) fn send_frame<F>(&self, popups: &PopupManager, time: Duration, is_submitted: &mut F)
+    where
+        F: FnMut(&WlSurface, &SurfaceData) -> bool,
     {
         let Some(root) = self.wl_surface() else {
             return;
         };
-        let time = time.into();
-        send_frames_surface_tree(
-            root.as_ref(),
-            output,
-            time,
-            throttle,
-            primary_scanout_output,
-        );
+        send_frame_callbacks_surface_tree(root.as_ref(), time, is_submitted);
         for (popup, _) in popups.popups_for_surface(root.as_ref()) {
-            send_frames_surface_tree(
-                popup.wl_surface(),
-                output,
-                time,
-                throttle,
-                primary_scanout_output,
-            );
+            send_frame_callbacks_surface_tree(popup.wl_surface(), time, is_submitted);
         }
     }
 
@@ -222,11 +203,11 @@ impl ProtocolWindow {
         &self,
         popups: &PopupManager,
         output_feedback: &mut OutputPresentationFeedback,
-        primary_scanout_output: F1,
-        presentation_feedback_flags: F2,
+        is_submitted: &mut F1,
+        presentation_feedback_flags: &mut F2,
     ) where
-        F1: FnMut(&WlSurface, &SurfaceData) -> Option<Output> + Copy,
-        F2: FnMut(&WlSurface, &SurfaceData) -> wp_presentation_feedback::Kind + Copy,
+        F1: FnMut(&WlSurface, &SurfaceData) -> bool,
+        F2: FnMut(&WlSurface, &SurfaceData) -> wp_presentation_feedback::Kind,
     {
         let Some(root) = self.wl_surface() else {
             return;
@@ -234,27 +215,29 @@ impl ProtocolWindow {
         take_presentation_feedback_surface_tree(
             root.as_ref(),
             output_feedback,
-            primary_scanout_output,
+            is_submitted,
             presentation_feedback_flags,
         );
         for (popup, _) in popups.popups_for_surface(root.as_ref()) {
             take_presentation_feedback_surface_tree(
                 popup.wl_surface(),
                 output_feedback,
-                primary_scanout_output,
+                is_submitted,
                 presentation_feedback_flags,
             );
         }
     }
 
     /// Finds the topmost toplevel, subsurface, or popup input surface.
-    pub(crate) fn surface_under<P>(
+    pub(crate) fn surface_under<P, F>(
         &self,
         popups: &PopupManager,
         point: P,
+        _xwayland_dnd_active: &mut F,
     ) -> Option<(WlSurface, Point<i32, Logical>)>
     where
         P: Into<Point<f64, Logical>>,
+        F: FnMut() -> bool,
     {
         let point = point.into();
         match &self.0.surface {
@@ -271,9 +254,12 @@ impl ProtocolWindow {
             }
             #[cfg(feature = "xwayland")]
             ProtocolWindowSurface::X11(surface) => {
-                // Smithay owns the active-XDND exclusion for override-redirect
-                // windows, so retain that narrow adapter behavior for now.
-                surface.surface_under(point, (0, 0), WindowSurfaceType::ALL)
+                if surface.is_override_redirect() && _xwayland_dnd_active() {
+                    return None;
+                }
+                surface
+                    .wl_surface()
+                    .and_then(|root| surface_tree_under(&root, point, (0, 0)))
             }
         }
     }

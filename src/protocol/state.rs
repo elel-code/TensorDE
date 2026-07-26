@@ -17,6 +17,7 @@ pub(super) mod popup;
 mod presentation;
 mod protocol_side;
 mod space;
+mod surface_tree;
 #[cfg(feature = "tty")]
 mod surfaces;
 #[cfg(feature = "tty")]
@@ -39,6 +40,8 @@ use layer::LayerMaps;
 #[cfg(feature = "tty")]
 use layer::LayerSurface;
 use space::WindowSpace;
+#[cfg(test)]
+pub(super) use surface_tree::OutputPresentationFeedback;
 
 use calloop::LoopHandle;
 #[cfg(feature = "tty")]
