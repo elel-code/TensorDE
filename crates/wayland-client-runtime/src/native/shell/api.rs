@@ -799,6 +799,7 @@ impl NativeShell {
     }
 
     pub fn destroy_layer_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        self.state.cancel_touch_for_surface(id);
         let Some(record) = self.state.layers.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown layer {id:?}")));
         };
@@ -1133,6 +1134,8 @@ impl NativeShell {
     pub fn destroy_toplevel(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         // Drop idle inhibitor before the surface goes away.
         let _ = self.set_idle_inhibit(id, false);
+        // Cancel any live touch points on this surface before proxies die.
+        self.state.cancel_touch_for_surface(id);
         // Destroy child popups first (parent must outlive them for some compositors).
         let child_popups: Vec<_> = self
             .state
@@ -1342,6 +1345,7 @@ impl NativeShell {
     }
 
     pub fn destroy_popup(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        self.state.cancel_touch_for_surface(id);
         let Some(record) = self.state.popups.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown popup {id:?}")));
         };

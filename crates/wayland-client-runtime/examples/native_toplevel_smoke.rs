@@ -243,14 +243,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         id: finger,
                         x,
                         y,
+                        serial,
+                        time,
                     } => {
-                        println!("touch down {id:?} finger={finger} @ ({x:.1},{y:.1})");
+                        println!(
+                            "touch down {id:?} finger={finger} @ ({x:.1},{y:.1}) serial={serial} time={time}"
+                        );
                     }
-                    NativeShellEvent::TouchUp { id: finger } => {
-                        println!("touch up finger={finger}");
+                    NativeShellEvent::TouchUp {
+                        id: finger,
+                        serial,
+                        time,
+                    } => {
+                        println!("touch up finger={finger} serial={serial} time={time}");
                     }
-                    NativeShellEvent::TouchMotion { id: finger, x, y } => {
-                        println!("touch motion finger={finger} @ ({x:.1},{y:.1})");
+                    NativeShellEvent::TouchMotion {
+                        id: finger,
+                        x,
+                        y,
+                        time,
+                    } => {
+                        println!("touch motion finger={finger} @ ({x:.1},{y:.1}) time={time}");
+                    }
+                    NativeShellEvent::TouchShape {
+                        id: finger,
+                        major,
+                        minor,
+                    } => {
+                        println!("touch shape finger={finger} major={major:.2} minor={minor:.2}");
+                    }
+                    NativeShellEvent::TouchOrientation {
+                        id: finger,
+                        degrees,
+                    } => {
+                        println!("touch orientation finger={finger} deg={degrees:.1}");
                     }
                     NativeShellEvent::TouchFrame => {
                         println!("touch frame");

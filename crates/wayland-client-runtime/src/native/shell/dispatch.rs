@@ -17,7 +17,7 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
-use super::types::{NativeShellEvent, NativeShellState};
+use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId};
 use crate::event::ToplevelState;
 use crate::geometry::SuggestedSize;
 
@@ -422,6 +422,17 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
             if capabilities.contains(wl_seat::Capability::Touch) && state.touch.is_none() {
                 state.touch = Some(seat.get_touch(qh, ()));
             }
+            if !capabilities.contains(wl_seat::Capability::Touch) {
+                if state.touch.take().is_some()
+                    || !state.touch_active.is_empty()
+                    || !state.touch_pending.is_empty()
+                {
+                    state.touch_pending.clear();
+                    state.touch_active.clear();
+                    state.touch_points.clear();
+                    state.push(NativeShellEvent::TouchCancel);
+                }
+            }
         }
     }
 }
@@ -779,37 +790,144 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        use super::types::PendingTouchEvent;
+
+        // SCTK-compatible frame buffering: hold down/up/motion/shape/orientation
+        // until Frame, with Weston's missing-final-frame workaround (flush when
+        // the last active point is released).
+        let mut flush = false;
         match event {
             wl_touch::Event::Down {
-                surface, id, x, y, ..
+                serial,
+                time,
+                surface,
+                id,
+                x,
+                y,
             } => {
-                let surface_id = state
+                state.last_input_serial = Some(serial);
+                let Some(surface_id) = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
-                    .copied();
-                if let Some(surface) = surface_id {
-                    state.push(NativeShellEvent::TouchDown {
-                        surface,
-                        id,
-                        x,
-                        y,
-                    });
+                    .copied()
+                else {
+                    return;
+                };
+                if let Err(pos) = state.touch_active.binary_search(&id) {
+                    state.touch_active.insert(pos, id);
+                }
+                state.touch_points.insert(id, surface_id);
+                state.touch_pending.push(PendingTouchEvent::Down {
+                    surface: surface_id,
+                    id,
+                    x,
+                    y,
+                    serial,
+                    time,
+                });
+            }
+            wl_touch::Event::Up { serial, time, id } => {
+                state.last_input_serial = Some(serial);
+                if let Ok(pos) = state.touch_active.binary_search(&id) {
+                    state.touch_active.remove(pos);
+                }
+                state.touch_pending.push(PendingTouchEvent::Up { id, serial, time });
+                // Weston may omit Frame after the last touch-up.
+                if state.touch_active.is_empty() {
+                    flush = true;
                 }
             }
-            wl_touch::Event::Up { id, .. } => {
-                state.push(NativeShellEvent::TouchUp { id });
+            wl_touch::Event::Motion { time, id, x, y } => {
+                state.touch_pending.push(PendingTouchEvent::Motion { id, x, y, time });
             }
-            wl_touch::Event::Motion { id, x, y, .. } => {
-                state.push(NativeShellEvent::TouchMotion { id, x, y });
+            wl_touch::Event::Shape { id, major, minor } => {
+                state.touch_pending.push(PendingTouchEvent::Shape { id, major, minor });
+            }
+            wl_touch::Event::Orientation { id, orientation } => {
+                state
+                    .touch_pending
+                    .push(PendingTouchEvent::Orientation { id, degrees: orientation });
             }
             wl_touch::Event::Frame => {
-                state.push(NativeShellEvent::TouchFrame);
+                flush = true;
             }
             wl_touch::Event::Cancel => {
+                state.touch_pending.clear();
+                state.touch_active.clear();
+                state.touch_points.clear();
                 state.push(NativeShellEvent::TouchCancel);
             }
             _ => {}
         }
+
+        if flush {
+            state.flush_touch_pending();
+        }
+    }
+}
+
+impl NativeShellState {
+    /// Drain the frame buffer into public [`NativeShellEvent`]s.
+    pub(crate) fn flush_touch_pending(&mut self) {
+        use super::types::PendingTouchEvent;
+
+        if self.touch_pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.touch_pending);
+        for ev in pending {
+            match ev {
+                PendingTouchEvent::Down {
+                    surface,
+                    id,
+                    x,
+                    y,
+                    serial,
+                    time,
+                } => {
+                    self.push(NativeShellEvent::TouchDown {
+                        surface,
+                        id,
+                        x,
+                        y,
+                        serial,
+                        time,
+                    });
+                }
+                PendingTouchEvent::Up { id, serial, time } => {
+                    self.touch_points.remove(&id);
+                    self.push(NativeShellEvent::TouchUp { id, serial, time });
+                }
+                PendingTouchEvent::Motion { id, x, y, time } => {
+                    self.push(NativeShellEvent::TouchMotion { id, x, y, time });
+                }
+                PendingTouchEvent::Shape { id, major, minor } => {
+                    self.push(NativeShellEvent::TouchShape { id, major, minor });
+                }
+                PendingTouchEvent::Orientation { id, degrees } => {
+                    self.push(NativeShellEvent::TouchOrientation { id, degrees });
+                }
+            }
+        }
+        self.push(NativeShellEvent::TouchFrame);
+    }
+
+    /// Drop tracked touch points for a destroyed surface (emit cancel once).
+    ///
+    /// Losing any live point on that surface invalidates the whole seat
+    /// gesture (Wayland convention: compositor may cancel the full set).
+    pub(crate) fn cancel_touch_for_surface(&mut self, surface: NativeSurfaceId) {
+        let had = self.touch_points.values().any(|&s| s == surface)
+            || self.touch_pending.iter().any(|ev| {
+                matches!(ev, super::types::PendingTouchEvent::Down { surface: s, .. } if *s == surface)
+            });
+        if !had {
+            return;
+        }
+        self.touch_pending.clear();
+        self.touch_active.clear();
+        self.touch_points.clear();
+        self.push(NativeShellEvent::TouchCancel);
     }
 }
 

@@ -350,44 +350,56 @@ pub fn map_native_event_full(
             id,
             x,
             y,
+            serial,
+            time,
         } => {
             let seat = seat?;
+            map_state.last_serial = serial;
             Some(Event::Touch(TouchEvent {
                 surface: Some(surfaces.intern(surface)),
                 kind: TouchEventKind::Down {
-                    time: 0,
+                    time,
                     id,
                     position: (x, y),
                     serial: InputSerial::new(
                         seat.clone(),
-                        map_state.last_serial,
+                        serial,
                         InputSerialSource::TouchDown,
                     ),
                 },
             }))
         }
-        NativeShellEvent::TouchUp { id } => {
+        NativeShellEvent::TouchUp { id, serial, time } => {
             let seat = seat?;
+            map_state.last_serial = serial;
             Some(Event::Touch(TouchEvent {
                 surface: None,
                 kind: TouchEventKind::Up {
-                    time: 0,
+                    time,
                     id,
                     serial: InputSerial::new(
                         seat.clone(),
-                        map_state.last_serial,
+                        serial,
                         InputSerialSource::TouchUp,
                     ),
                 },
             }))
         }
-        NativeShellEvent::TouchMotion { id, x, y } => Some(Event::Touch(TouchEvent {
+        NativeShellEvent::TouchMotion { id, x, y, time } => Some(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Motion {
-                time: 0,
+                time,
                 id,
                 position: (x, y),
             },
+        })),
+        NativeShellEvent::TouchShape { id, major, minor } => Some(Event::Touch(TouchEvent {
+            surface: None,
+            kind: TouchEventKind::Shape { id, major, minor },
+        })),
+        NativeShellEvent::TouchOrientation { id, degrees } => Some(Event::Touch(TouchEvent {
+            surface: None,
+            kind: TouchEventKind::Orientation { id, degrees },
         })),
         NativeShellEvent::TouchCancel => Some(Event::Touch(TouchEvent {
             surface: None,
@@ -822,6 +834,69 @@ mod tests {
                 assert_eq!(serial, 7);
             }
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_touch_down_with_serial_and_time() {
+        let mut map = SurfaceIdMap::new();
+        let mut map_state = NativeEventMapState::default();
+        let native = NativeSurfaceId(7);
+        let event = NativeShellEvent::TouchDown {
+            surface: native,
+            id: 1,
+            x: 10.0,
+            y: 20.0,
+            serial: 42,
+            time: 1000,
+        };
+        // Without seat, serial-bearing touch events are dropped.
+        assert!(map_native_event_full(event.clone(), &mut map, None, &mut map_state).is_none());
+    }
+
+    #[test]
+    fn maps_touch_shape_and_orientation() {
+        let mut map = SurfaceIdMap::new();
+        let mut map_state = NativeEventMapState::default();
+        let shape = map_native_event_full(
+            NativeShellEvent::TouchShape {
+                id: 2,
+                major: 4.0,
+                minor: 2.0,
+            },
+            &mut map,
+            None,
+            &mut map_state,
+        );
+        match shape {
+            Some(Event::Touch(TouchEvent {
+                kind: TouchEventKind::Shape { id, major, minor },
+                ..
+            })) => {
+                assert_eq!(id, 2);
+                assert_eq!(major, 4.0);
+                assert_eq!(minor, 2.0);
+            }
+            other => panic!("expected shape, got {other:?}"),
+        }
+        let orient = map_native_event_full(
+            NativeShellEvent::TouchOrientation {
+                id: 2,
+                degrees: 45.0,
+            },
+            &mut map,
+            None,
+            &mut map_state,
+        );
+        match orient {
+            Some(Event::Touch(TouchEvent {
+                kind: TouchEventKind::Orientation { id, degrees },
+                ..
+            })) => {
+                assert_eq!(id, 2);
+                assert_eq!(degrees, 45.0);
+            }
+            other => panic!("expected orientation, got {other:?}"),
         }
     }
 

@@ -99,19 +99,15 @@ changing the crate-owned cursor vocabulary.
 ## Touch input
 
 Touch behavior follows winit main at
-`d84ec647d80d9ef76c5a42b948c852b8e0db9210`: surface-local down and motion,
-seat-scoped down/up serials, multi-point identity, and cancellation are exposed
-without leaking protocol objects. Shape and orientation are preserved instead
-of being discarded.
+`d84ec647d80d9ef76c5a42b948c852b8e0db9210` and SCTK 0.21 `seat/touch`:
+surface-local down and motion, seat-scoped down/up serials and timestamps,
+multi-point identity, shape/orientation, and cancellation are exposed without
+leaking protocol objects.
 
-The runtime owns the `wl_touch` frame buffer because SCTK 0.21's generic
-`TouchData`/`Dispatch2` bounds are recursive in a catch-all Dispatch2 client.
-It matches SCTK's ordering and its workaround for compositors that omit the
-final frame after the last touch-up. Surface destruction, touch capability
-removal, and seat removal all clear tracked points; cancellations are emitted
-once per affected surface. Raw frame batching and seat-local point/serial
-tracking live in a dedicated `touch` module; the core runtime only translates
-completed frames into crate-owned events.
+The native shell owns a frame buffer for `wl_touch` events (down/up/motion/
+shape/orientation), flushed on `Frame` or when the last active point is
+released without a trailing frame (Weston workaround). Surface destruction and
+touch capability removal clear tracked points and emit a single cancel.
 
 ## Fractional scaling and viewporter
 

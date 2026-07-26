@@ -118,15 +118,32 @@ pub enum NativeShellEvent {
         id: i32,
         x: f64,
         y: f64,
+        serial: u32,
+        time: u32,
     },
     TouchUp {
         id: i32,
+        serial: u32,
+        time: u32,
     },
     TouchMotion {
         id: i32,
         x: f64,
         y: f64,
+        time: u32,
     },
+    /// Ellipse axes approximating the contact (optional; compositor-dependent).
+    TouchShape {
+        id: i32,
+        major: f64,
+        minor: f64,
+    },
+    /// Clockwise angle of the major axis from positive surface-local Y (degrees).
+    TouchOrientation {
+        id: i32,
+        degrees: f64,
+    },
+    /// End of a frame-buffered touch batch (after pending events are flushed).
     TouchFrame,
     TouchCancel,
     OutputGeometry {
@@ -434,6 +451,39 @@ pub(crate) struct ToplevelRecord {
     pub(crate) title: String,
 }
 
+/// One compositor touch event held until `wl_touch.frame` (or Weston workaround).
+#[derive(Clone, Debug)]
+pub(crate) enum PendingTouchEvent {
+    Down {
+        surface: NativeSurfaceId,
+        id: i32,
+        x: f64,
+        y: f64,
+        serial: u32,
+        time: u32,
+    },
+    Up {
+        id: i32,
+        serial: u32,
+        time: u32,
+    },
+    Motion {
+        id: i32,
+        x: f64,
+        y: f64,
+        time: u32,
+    },
+    Shape {
+        id: i32,
+        major: f64,
+        minor: f64,
+    },
+    Orientation {
+        id: i32,
+        degrees: f64,
+    },
+}
+
 pub(crate) struct PopupRecord {
     pub(crate) wl: wl_surface::WlSurface,
     #[allow(dead_code)]
@@ -492,6 +542,13 @@ pub struct NativeShellState {
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
     pub(crate) touch: Option<wl_touch::WlTouch>,
+    /// Frame-buffered touch events (SCTK/Weston-compatible; flushed on `Frame`
+    /// or when the last active point goes up without a trailing frame).
+    pub(crate) touch_pending: Vec<PendingTouchEvent>,
+    /// Sorted active touch point ids (binary search).
+    pub(crate) touch_active: Vec<i32>,
+    /// Live touch point id → surface (for cancellation on surface destroy).
+    pub(crate) touch_points: HashMap<i32, NativeSurfaceId>,
     pub(crate) data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     pub(crate) data_device: Option<wl_data_device::WlDataDevice>,
     /// Primary selection (X11-style middle-click paste), SCTK-compatible path.
@@ -698,6 +755,9 @@ impl Default for NativeShellState {
             keyboard: None,
             pointer: None,
             touch: None,
+            touch_pending: Vec::new(),
+            touch_active: Vec::new(),
+            touch_points: HashMap::new(),
             data_device_manager: None,
             data_device: None,
             primary_selection_manager: None,
