@@ -102,6 +102,83 @@ impl DmabufFeedback {
     pub fn tranches(&self) -> &[DmabufFeedbackTranche] {
         &self.tranches
     }
+
+    /// Resolve a tranche's format indices into concrete format/modifier pairs.
+    ///
+    /// Invalid indices are skipped (faulty compositors / truncated tables).
+    pub fn tranche_formats(&self, tranche: &DmabufFeedbackTranche) -> Vec<DmabufFormat> {
+        tranche
+            .formats
+            .iter()
+            .filter_map(|&idx| self.formats.get(idx as usize).copied())
+            .collect()
+    }
+
+    /// Formats in compositor preference order (tranche 0 first, then 1, …).
+    ///
+    /// Duplicates across tranches are kept once (first wins). When no tranches
+    /// were advertised, returns the raw format table.
+    pub fn preferred_formats(&self) -> Vec<DmabufFormat> {
+        if self.tranches.is_empty() {
+            return self.formats.clone();
+        }
+        let mut out = Vec::new();
+        for tranche in &self.tranches {
+            for fmt in self.tranche_formats(tranche) {
+                if !out
+                    .iter()
+                    .any(|e: &DmabufFormat| e.format == fmt.format && e.modifier == fmt.modifier)
+                {
+                    out.push(fmt);
+                }
+            }
+        }
+        out
+    }
+
+    /// Formats from the first tranche that has the `SCANOUT` flag, if any.
+    pub fn scanout_formats(&self) -> Vec<DmabufFormat> {
+        self.tranches
+            .iter()
+            .find(|t| t.flags.contains(DmabufTrancheFlags::SCANOUT))
+            .map(|t| self.tranche_formats(t))
+            .unwrap_or_default()
+    }
+
+    /// Whether this feedback advertises the given format (any modifier).
+    pub fn supports_format(&self, format: u32) -> bool {
+        self.formats.iter().any(|f| f.format == format)
+    }
+
+    /// Whether this feedback advertises an exact format/modifier pair.
+    pub fn supports_format_modifier(&self, format: u32, modifier: u64) -> bool {
+        self.formats
+            .iter()
+            .any(|f| f.format == format && f.modifier == modifier)
+    }
+
+    /// Pick the first preferred format whose fourcc is in `candidates` (order
+    /// of `candidates` is the caller's preference among equals).
+    ///
+    /// Searches tranche-ordered formats first, then falls back to the full
+    /// table. Returns `None` if nothing matches.
+    pub fn pick_format(&self, candidates: &[u32]) -> Option<DmabufFormat> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let preferred = self.preferred_formats();
+        for &cand in candidates {
+            if let Some(fmt) = preferred.iter().find(|f| f.format == cand) {
+                return Some(*fmt);
+            }
+        }
+        for &cand in candidates {
+            if let Some(fmt) = self.formats.iter().find(|f| f.format == cand) {
+                return Some(*fmt);
+            }
+        }
+        None
+    }
 }
 
 /// One plane passed to `zwp_linux_buffer_params_v1.add`.
@@ -230,5 +307,50 @@ mod tests {
         assert_eq!(params.height, 64);
         assert!(params.flags.contains(DmabufBufferFlags::Y_INVERT));
         assert!(params.planes.is_empty());
+    }
+
+    #[test]
+    fn feedback_pick_and_tranche_order() {
+        let feedback = DmabufFeedback {
+            main_device: 1,
+            formats: vec![
+                DmabufFormat::new(fourcc::XRGB8888, fourcc::MOD_LINEAR),
+                DmabufFormat::new(fourcc::ARGB8888, fourcc::MOD_LINEAR),
+                DmabufFormat::new(fourcc::BGRA8888, 0x1234),
+            ],
+            tranches: vec![
+                DmabufFeedbackTranche {
+                    device: 1,
+                    flags: DmabufTrancheFlags::SCANOUT,
+                    formats: vec![2], // BGRA with custom mod first (scan-out)
+                },
+                DmabufFeedbackTranche {
+                    device: 1,
+                    flags: DmabufTrancheFlags::empty(),
+                    formats: vec![1, 0], // ARGB then XRGB
+                },
+            ],
+        };
+        assert!(feedback.supports_format(fourcc::ARGB8888));
+        assert!(feedback.supports_format_modifier(fourcc::BGRA8888, 0x1234));
+        assert!(!feedback.supports_format_modifier(fourcc::BGRA8888, fourcc::MOD_LINEAR));
+
+        let preferred = feedback.preferred_formats();
+        assert_eq!(preferred[0].format, fourcc::BGRA8888);
+        assert_eq!(preferred[1].format, fourcc::ARGB8888);
+
+        let scanout = feedback.scanout_formats();
+        assert_eq!(scanout.len(), 1);
+        assert_eq!(scanout[0].format, fourcc::BGRA8888);
+
+        // Caller prefers ARGB over BGRA among candidates.
+        let picked = feedback
+            .pick_format(&[fourcc::ARGB8888, fourcc::BGRA8888])
+            .expect("pick");
+        assert_eq!(picked.format, fourcc::ARGB8888);
+
+        // Only BGRA is requested → tranche order still wins for that fourcc.
+        let only_bgra = feedback.pick_format(&[fourcc::BGRA8888]).expect("bgra");
+        assert_eq!(only_bgra.modifier, 0x1234);
     }
 }

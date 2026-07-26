@@ -90,6 +90,46 @@ pub(crate) fn optional_dmabuf_features(adapter: &wgpu::Adapter) -> wgpu::Feature
     want
 }
 
+/// Fourccs we can import into wgpu textures, in preference order.
+///
+/// Prefer BGRA/ARGB (native LE layout for `Bgra8Unorm`) over RGBA variants.
+pub(crate) const WGPU_IMPORT_FOURCC_PREFERENCE: &[u32] = &[
+    fourcc::ARGB8888,
+    fourcc::BGRA8888,
+    fourcc::XRGB8888,
+    fourcc::ABGR8888,
+    fourcc::RGBA8888,
+    fourcc::XBGR8888,
+];
+
+/// Pick a compositor-advertised format that wgpu can import.
+///
+/// Uses tranche preference from feedback, constrained to formats we map to a
+/// wgpu [`TextureFormat`]. Returns `None` if feedback has no overlap.
+pub(crate) fn pick_import_format(
+    feedback: &wayland_client_runtime::DmabufFeedback,
+) -> Option<wayland_client_runtime::DmabufFormat> {
+    feedback.pick_format(WGPU_IMPORT_FOURCC_PREFERENCE)
+}
+
+/// Same as [`pick_import_format`], but only consider scan-out tranches when
+/// the compositor advertises any (zero-copy direct scan-out path).
+#[allow(dead_code)] // ready for scan-out-aware import paths
+pub(crate) fn pick_scanout_import_format(
+    feedback: &wayland_client_runtime::DmabufFeedback,
+) -> Option<wayland_client_runtime::DmabufFormat> {
+    let scanout = feedback.scanout_formats();
+    if scanout.is_empty() {
+        return pick_import_format(feedback);
+    }
+    for &cand in WGPU_IMPORT_FOURCC_PREFERENCE {
+        if let Some(fmt) = scanout.iter().find(|f| f.format == cand) {
+            return Some(*fmt);
+        }
+    }
+    None
+}
+
 /// Import a single-plane dmabuf as a wgpu texture.
 ///
 /// Requires the device to have been created with
@@ -213,5 +253,26 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba8Unorm)
         );
         assert!(texture_format_for_fourcc(0xdead_beef).is_none());
+    }
+
+    #[test]
+    fn pick_import_format_prefers_argb_from_feedback() {
+        use wayland_client_runtime::{DmabufFeedback, DmabufFeedbackTranche, DmabufFormat};
+
+        let feedback = DmabufFeedback {
+            main_device: 0,
+            formats: vec![
+                DmabufFormat::new(fourcc::RGBA8888, fourcc::MOD_LINEAR),
+                DmabufFormat::new(fourcc::ARGB8888, fourcc::MOD_LINEAR),
+            ],
+            tranches: vec![DmabufFeedbackTranche {
+                device: 0,
+                flags: wayland_client_runtime::DmabufTrancheFlags::empty(),
+                formats: vec![0, 1],
+            }],
+        };
+        // Preference list puts ARGB before RGBA, even if tranche lists RGBA first.
+        let picked = pick_import_format(&feedback).expect("pick");
+        assert_eq!(picked.format, fourcc::ARGB8888);
     }
 }

@@ -18,6 +18,8 @@ impl EventLoop {
                 next_async_serial: Cell::new(1),
                 control_flow: Cell::new(ControlFlow::Wait),
                 exiting: Cell::new(false),
+                dmabuf_default_feedback: RefCell::new(None),
+                dmabuf_surface_feedback: RefCell::new(HashMap::new()),
             },
         })
     }
@@ -137,6 +139,10 @@ impl EventLoop {
                 }
                 RuntimeCommand::Destroy(surface) => {
                     self.active.windows.borrow_mut().remove(&surface);
+                    self.active
+                        .dmabuf_surface_feedback
+                        .borrow_mut()
+                        .remove(&surface);
                     runtime.destroy_surface(surface).map(|_| ())
                 }
             };
@@ -237,22 +243,32 @@ impl EventLoop {
             }
             Event::Touch(_) => Ok(()),
             Event::Dmabuf(event) => {
-                // Feedback informs format/modifier negotiation for
-                // WgpuState::import_dmabuf_texture. Present remains RWH/swapchain.
+                // Cache feedback for import negotiation; present stays RWH/swapchain.
                 match event {
                     wayland_client_runtime::DmabufEvent::Feedback {
                         surface,
                         feedback,
                     } => {
                         let scope = match surface {
-                            Some(id) => format!("surface={id:?}"),
-                            None => "default".to_string(),
+                            Some(id) => {
+                                self.active
+                                    .dmabuf_surface_feedback
+                                    .borrow_mut()
+                                    .insert(id, feedback.clone());
+                                format!("surface={id:?}")
+                            }
+                            None => {
+                                *self.active.dmabuf_default_feedback.borrow_mut() =
+                                    Some(feedback.clone());
+                                "default".to_string()
+                            }
                         };
+                        let pick = crate::shell::render::dmabuf::pick_import_format(&feedback);
                         eprintln!(
-                            "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={}",
+                            "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
                             feedback.main_device(),
                             feedback.formats().len(),
-                            feedback.tranches().len()
+                            feedback.tranches().len(),
                         );
                     }
                     wayland_client_runtime::DmabufEvent::BufferCreated { id } => {

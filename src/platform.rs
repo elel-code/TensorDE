@@ -352,6 +352,11 @@ pub struct ActiveEventLoop {
     next_async_serial: Cell<u64>,
     control_flow: Cell<ControlFlow>,
     exiting: Cell<bool>,
+    /// Latest default `zwp_linux_dmabuf` feedback (format table + tranches).
+    dmabuf_default_feedback: RefCell<Option<wayland_client_runtime::DmabufFeedback>>,
+    /// Per-surface feedback snapshots.
+    dmabuf_surface_feedback:
+        RefCell<HashMap<SurfaceId, wayland_client_runtime::DmabufFeedback>>,
 }
 
 impl ActiveEventLoop {
@@ -365,6 +370,38 @@ impl ActiveEventLoop {
     #[allow(dead_code)] // public for icon pickers / smoke
     pub fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
         self.runtime.borrow().preferred_toplevel_icon_sizes()
+    }
+
+    /// Latest default linux-dmabuf feedback, if the compositor has sent any.
+    #[allow(dead_code)]
+    pub fn dmabuf_default_feedback(&self) -> Option<wayland_client_runtime::DmabufFeedback> {
+        self.dmabuf_default_feedback.borrow().clone()
+    }
+
+    /// Latest surface-scoped linux-dmabuf feedback, falling back to default.
+    #[allow(dead_code)]
+    pub fn dmabuf_feedback_for(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<wayland_client_runtime::DmabufFeedback> {
+        self.dmabuf_surface_feedback
+            .borrow()
+            .get(&surface)
+            .cloned()
+            .or_else(|| self.dmabuf_default_feedback.borrow().clone())
+    }
+
+    /// Prefer a wgpu-importable format from cached feedback (surface then default).
+    #[allow(dead_code)]
+    pub fn preferred_dmabuf_import_format(
+        &self,
+        surface: Option<SurfaceId>,
+    ) -> Option<wayland_client_runtime::DmabufFormat> {
+        let feedback = match surface {
+            Some(id) => self.dmabuf_feedback_for(id),
+            None => self.dmabuf_default_feedback(),
+        }?;
+        crate::shell::render::dmabuf::pick_import_format(&feedback)
     }
 
     pub fn create_window(
