@@ -3462,10 +3462,12 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "compio",
+ "libc",
  "raw-window-handle",
  "smithay-client-toolkit",
  "thiserror",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
 ]
 

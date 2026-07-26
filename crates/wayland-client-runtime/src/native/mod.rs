@@ -13,8 +13,17 @@ mod connection;
 pub mod protocols;
 mod pump;
 mod registry;
+mod shell;
 
 pub use connection::{NativeConnection, NativeError};
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
+pub use shell::{NativeShell, NativeShellEvent, NativeSurfaceId};
+
+/// Shared helper for modules that already hold a `Connection`.
+pub(crate) fn display_readiness_from_conn(
+    connection: &wayland_client::Connection,
+) -> Result<crate::DisplayReadiness, NativeError> {
+    crate::DisplayReadiness::from_as_fd(connection).map_err(NativeError::from)
+}

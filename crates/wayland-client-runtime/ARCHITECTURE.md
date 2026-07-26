@@ -80,8 +80,8 @@ matching class directory (not a flat `handlers_*.rs` dump).
 | --- | --- | --- |
 | 0 | This document + roadmap §6d | Done |
 | 1 | Compio display readiness + non-blocking dispatch helpers | Done |
-| 2 | Native connection + registry + Compio pump (no shell yet) | In progress |
-| 2b | Core shell without SCTK (compositor/shm/xdg/seat) | Planned |
+| 2 | Native connection + registry + Compio pump | Done |
+| 2b | NativeShell: compositor/shm/xdg toplevel + seat keyboard | In progress (usable) |
 | 3 | Extended protocols | Planned |
 | 4 | Remove SCTK/calloop | Planned |
 
@@ -93,7 +93,19 @@ matching class directory (not a flat `handlers_*.rs` dump).
 | `registry` | `registry_queue_init`, global snapshot, late global tracking |
 | `pump` | `flush → prepare_read → await readable → read → dispatch_pending` |
 
-Public types: `NativeConnection`, `NativeRegistry`, `NativePump`, `GlobalAdvertisement`.
+Public types: `NativeConnection`, `NativeRegistry`, `NativePump`, `GlobalAdvertisement`,
+`NativeShell`, `NativeShellEvent`, `NativeSurfaceId`.
+
+### Usable native shell (`NativeShell`)
+
+Without SCTK, a client can:
+
+1. `NativeShell::connect_to_env()`
+2. `create_toplevel(title, app_id)` — solid ARGB buffer via memfd `wl_shm`
+3. `pump_once().await` on Compio — configure/close/key events
+4. `drain_events()` — linear handling
+
+Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
 
 ## SCTK surface (to eliminate)
 

@@ -3,9 +3,9 @@
 //! Production-ready FDO protocols. Missing globals are unusual on modern
 //! compositors; treat as hard errors for a desktop shell.
 //!
-//! Planned:
-//! - `xdg_shell` — `xdg_wm_base`, toplevel, popup, positioner
-//! - `viewporter` — `wp_viewporter` (pairs with fractional scale)
-//! - `presentation` — `wp_presentation` (optional timing)
+//! - xdg-shell is wired in [`crate::native::NativeShell`] (toplevel create +
+//!   configure/close events). Popup/positioner modules will split out here.
+//! - Planned: `viewporter`, `presentation`
 
-// Phase 2b: xdg_shell first.
+// Implementation currently lives in `native/shell.rs` for a cohesive first
+// usable surface; further splits land under this tree as the surface grows.

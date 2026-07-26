@@ -515,8 +515,8 @@ compio executor
 | --- | --- | --- |
 | 0 | 架构文档、API 冻结意图、依赖矩阵 | 完成 |
 | 1 | Compio `DisplayReadiness` + `dispatch_pending` / `wait_display_readable` | 完成 |
-| 2 | Native 连接 + registry + Compio pump（尚无 shell） | 进行中 |
-| 2b | 核心 shell：compositor/shm/xdg/seat/xkb | 未开始 |
+| 2 | Native 连接 + registry + Compio pump | 完成 |
+| 2b | `NativeShell`：compositor/shm/xdg toplevel + seat keyboard | 可用（继续丰富） |
 | 3 | data_device、fractional_scale、text_input、gestures… | 未开始 |
 | 4 | 删除 SCTK/calloop；README/UPSTREAM 更新 | 未开始 |
 
@@ -534,6 +534,11 @@ compio executor
   - `protocols/core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
   - `ProtocolClass` + `FIKA_PROTOCOL_MATRIX` 标注 interface 与可选性
   - 实现落在对应类别目录，避免扁平 Handler 堆叠
+- **`NativeShell`（无 SCTK，已可用）**：
+  - 绑定 `wl_compositor` / `wl_shm` / `xdg_wm_base` / 可选 `wl_seat`
+  - `create_toplevel` + memfd 实色 buffer；configure/close/keyboard 事件队列
+  - Compio `pump_once`；example `native_toplevel_smoke`
+  - 待丰富：pointer、popup、fractional scale、data_device、与 Fika Runtime 合流
 
 完成标准：
 
