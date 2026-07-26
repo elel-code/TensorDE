@@ -24,7 +24,11 @@ pub(in crate::convert::we_ingest) fn transcode_texture_upload(
     let mut mips = Vec::with_capacity(upload.mips.len());
     for mip in &upload.mips {
         let source = mip_payload(&upload, mip)?;
-        let blocks = match (upload.format, target_format) {
+        // BC images and BufferImageCopy extents must be multiples of the 4×4
+        // block size. Compressors already pad source texels; the GPU storage
+        // extent and each mip region must report that same padded size.
+        // Logical width/height stay on metadata for g_TextureNResolution.zw UV.
+        let (blocks, storage_width, storage_height) = match (upload.format, target_format) {
             (SceneTextureFormat::Rgba8Unorm, SceneTextureFormat::Bc7UnormBlock) => {
                 compress_bc7(source, mip.width, mip.height)?
             }
@@ -44,16 +48,22 @@ pub(in crate::convert::we_ingest) fn transcode_texture_upload(
         let payload_offset = payload.len() as u64;
         payload.extend_from_slice(&blocks);
         mips.push(TexUploadMip {
-            width: mip.width,
-            height: mip.height,
+            width: storage_width,
+            height: storage_height,
             payload_offset,
             payload_len: blocks.len() as u64,
         });
     }
 
+    let mut metadata = upload.metadata;
+    if let Some(first) = mips.first() {
+        metadata.storage_width = first.width;
+        metadata.storage_height = first.height;
+    }
+
     Ok(TexUpload {
         format: target_format,
-        metadata: upload.metadata,
+        metadata,
         mips,
         payload,
     })
@@ -104,7 +114,11 @@ fn mip_payload<'a>(upload: &'a TexUpload, mip: &TexUploadMip) -> Result<&'a [u8]
         ))
 }
 
-fn compress_bc7(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
+fn compress_bc7(
+    source: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), TexParseError> {
     let (pixels, padded_width, padded_height) = pad_channels::<4>(source, width, height)?;
     let surface = RgbaSurface {
         data: &pixels,
@@ -112,27 +126,47 @@ fn compress_bc7(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexPa
         height: padded_height,
         stride: padded_width * 4,
     };
-    Ok(bc7::compress_blocks(&bc7::alpha_slow_settings(), &surface))
+    Ok((
+        bc7::compress_blocks(&bc7::alpha_slow_settings(), &surface),
+        padded_width,
+        padded_height,
+    ))
 }
 
-fn compress_bc4(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
+fn compress_bc4(
+    source: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), TexParseError> {
     let (pixels, padded_width, padded_height) = pad_channels::<1>(source, width, height)?;
-    Ok(bc4::compress_blocks(&RSurface {
-        data: &pixels,
-        width: padded_width,
-        height: padded_height,
-        stride: padded_width,
-    }))
+    Ok((
+        bc4::compress_blocks(&RSurface {
+            data: &pixels,
+            width: padded_width,
+            height: padded_height,
+            stride: padded_width,
+        }),
+        padded_width,
+        padded_height,
+    ))
 }
 
-fn compress_bc5(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {
+fn compress_bc5(
+    source: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), TexParseError> {
     let (pixels, padded_width, padded_height) = pad_channels::<2>(source, width, height)?;
-    Ok(bc5::compress_blocks(&RgSurface {
-        data: &pixels,
-        width: padded_width,
-        height: padded_height,
-        stride: padded_width * 2,
-    }))
+    Ok((
+        bc5::compress_blocks(&RgSurface {
+            data: &pixels,
+            width: padded_width,
+            height: padded_height,
+            stride: padded_width * 2,
+        }),
+        padded_width,
+        padded_height,
+    ))
 }
 
 fn pad_channels<const CHANNELS: usize>(
@@ -176,9 +210,9 @@ mod tests {
 
     #[test]
     fn channel_formats_choose_semantic_bc_targets() {
-        let rgba = upload(SceneTextureFormat::Rgba8Unorm, 4 * 4 * 4);
-        let mask = upload(SceneTextureFormat::R8Unorm, 4 * 4);
-        let flow = upload(SceneTextureFormat::Rg8Unorm, 4 * 4 * 2);
+        let rgba = upload(SceneTextureFormat::Rgba8Unorm, 4, 4, 4 * 4 * 4);
+        let mask = upload(SceneTextureFormat::R8Unorm, 4, 4, 4 * 4);
+        let flow = upload(SceneTextureFormat::Rg8Unorm, 4, 4, 4 * 4 * 2);
 
         assert_eq!(
             transcode_texture_upload("materials/color.tex", rgba)
@@ -202,8 +236,8 @@ mod tests {
 
     #[test]
     fn four_channel_numeric_effect_textures_preserve_all_authored_channels() {
-        let phase = upload(SceneTextureFormat::Rgba8Unorm, 4 * 4 * 4);
-        let displacement = upload(SceneTextureFormat::Rgba8Unorm, 4 * 4 * 4);
+        let phase = upload(SceneTextureFormat::Rgba8Unorm, 4, 4, 4 * 4 * 4);
+        let displacement = upload(SceneTextureFormat::Rgba8Unorm, 4, 4, 4 * 4 * 4);
         assert_eq!(
             transcode_texture_upload("materials/effects/waterflowphase.tex", phase)
                 .unwrap()
@@ -216,7 +250,33 @@ mod tests {
         assert_eq!(displacement.payload, vec![127; 4 * 4 * 4]);
     }
 
-    fn upload(format: SceneTextureFormat, bytes: usize) -> TexUpload {
+    #[test]
+    fn bc_transcode_pads_storage_extent_and_keeps_logical_size() {
+        let rgba = upload(SceneTextureFormat::Rgba8Unorm, 5, 3, 5 * 3 * 4);
+        let bc7 = transcode_texture_upload("materials/color.tex", rgba).unwrap();
+        assert_eq!(bc7.format, SceneTextureFormat::Bc7UnormBlock);
+        assert_eq!(bc7.metadata.width, 5);
+        assert_eq!(bc7.metadata.height, 3);
+        assert_eq!(bc7.metadata.storage_width, 8);
+        assert_eq!(bc7.metadata.storage_height, 4);
+        assert_eq!(bc7.mips.len(), 1);
+        assert_eq!(bc7.mips[0].width, 8);
+        assert_eq!(bc7.mips[0].height, 4);
+        assert_eq!(bc7.mips[0].payload_len, 16 * 2 * 1);
+        assert_eq!(bc7.payload.len() as u64, bc7.mips[0].payload_len);
+
+        let mask = upload(SceneTextureFormat::R8Unorm, 5, 3, 5 * 3);
+        let bc4 = transcode_texture_upload("materials/masks/mask.tex", mask).unwrap();
+        assert_eq!(bc4.metadata.width, 5);
+        assert_eq!(bc4.metadata.height, 3);
+        assert_eq!(bc4.metadata.storage_width, 8);
+        assert_eq!(bc4.metadata.storage_height, 4);
+        assert_eq!(bc4.mips[0].width, 8);
+        assert_eq!(bc4.mips[0].height, 4);
+        assert_eq!(bc4.mips[0].payload_len, 8 * 2 * 1);
+    }
+
+    fn upload(format: SceneTextureFormat, width: u32, height: u32, bytes: usize) -> TexUpload {
         TexUpload {
             metadata: super::super::TexMetadata {
                 texv_tag: "TEXV0005".to_owned(),
@@ -227,16 +287,16 @@ mod tests {
                 sampler_seed: 0,
                 sampler_filter: crate::engine::scene::SceneTextureSamplerFilter::Anisotropic8,
                 sampler_address_mode: crate::engine::scene::SceneTextureSamplerAddressMode::Repeat,
-                width: 4,
-                height: 4,
-                storage_width: 4,
-                storage_height: 4,
+                width,
+                height,
+                storage_width: width,
+                storage_height: height,
                 mip_count: 1,
             },
             format,
             mips: vec![TexUploadMip {
-                width: 4,
-                height: 4,
+                width,
+                height,
                 payload_offset: 0,
                 payload_len: bytes as u64,
             }],
