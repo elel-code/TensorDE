@@ -16,8 +16,10 @@ pub(crate) use extensions::security_context::{
 #[cfg(test)]
 pub(crate) use runtime::test_runtime_state;
 pub(crate) use runtime::{
-    MAX_PENDING_WAYLAND_CLIENTS, MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS,
-    WaylandSocketControlEvent, drain_wayland_socket_events,
+    MAX_PENDING_WAYLAND_CLIENTS, MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS,
+    MAX_PENDING_WAYLAND_DISPLAY_EVENTS, MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS,
+    WaylandDisplayControlEvent, WaylandDisplayEvent, WaylandSocketControlEvent,
+    drain_wayland_display_events, drain_wayland_socket_events,
 };
 pub use runtime::{ProtocolError, WaylandRuntime};
 pub(crate) use state::RuntimeState;

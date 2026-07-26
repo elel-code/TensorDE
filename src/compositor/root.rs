@@ -31,9 +31,11 @@ use crate::{
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
     protocol::{
         MAX_PENDING_SECURITY_CONTEXT_EVENTS, MAX_PENDING_WAYLAND_CLIENTS,
+        MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS, MAX_PENDING_WAYLAND_DISPLAY_EVENTS,
         MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS, ProtocolError, SecurityContextEvent,
-        SecurityContextRuntime, SecurityContextRuntimeError, WaylandRuntime,
-        WaylandSocketControlEvent, drain_security_context_events, drain_wayland_socket_events,
+        SecurityContextRuntime, SecurityContextRuntimeError, WaylandDisplayControlEvent,
+        WaylandDisplayEvent, WaylandRuntime, WaylandSocketControlEvent,
+        drain_security_context_events, drain_wayland_display_events, drain_wayland_socket_events,
     },
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
@@ -65,6 +67,8 @@ pub struct Compositor {
     security_context_runtime: SecurityContextRuntime,
     wayland_clients: WorkerRx<std::os::unix::net::UnixStream>,
     wayland_socket_control_events: WorkerRx<WaylandSocketControlEvent>,
+    wayland_display_events: WorkerRx<WaylandDisplayEvent>,
+    wayland_display_control_events: WorkerRx<WaylandDisplayControlEvent>,
     #[cfg(feature = "tty")]
     gpu_fence_event_sender: WorkerTx<GpuFenceEvent>,
     #[cfg(feature = "tty")]
@@ -132,6 +136,16 @@ impl Compositor {
                 completion_relay.wake(),
             );
         protocol.install_socket_runtime(wayland_client_sender, wayland_socket_control_sender)?;
+        let (wayland_display_sender, wayland_display_events) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_WAYLAND_DISPLAY_EVENTS,
+            completion_relay.wake(),
+        );
+        let (wayland_display_control_sender, wayland_display_control_events) =
+            WorkerBridge::bounded_with_wake(
+                MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS,
+                completion_relay.wake(),
+            );
+        protocol.install_display_runtime(wayland_display_sender, wayland_display_control_sender)?;
         let (launch_outcome_sender, launch_outcomes) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_LAUNCHES, completion_relay.wake());
         let (ipc_event_sender, ipc_events) =
@@ -179,6 +193,8 @@ impl Compositor {
             security_context_runtime,
             wayland_clients,
             wayland_socket_control_events,
+            wayland_display_events,
+            wayland_display_control_events,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -369,6 +385,8 @@ impl Compositor {
             security_context_runtime,
             wayland_clients,
             wayland_socket_control_events,
+            wayland_display_events,
+            wayland_display_control_events,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -384,8 +402,10 @@ impl Compositor {
             xwayland,
         } = self;
         let wayland_socket_runtime = protocol.take_socket_runtime();
+        let wayland_display_runtime = protocol.take_display_runtime();
         let _runtime_owners = (
             wayland_socket_runtime,
+            wayland_display_runtime,
             ipc_runtime,
             ipc,
             launcher,
@@ -416,6 +436,16 @@ impl Compositor {
                     state,
                 ) {
                     error!(%message, "Wayland accept completion runtime failed");
+                    callback_failure.borrow_mut().replace(message);
+                    callback_stop.stop();
+                    return;
+                }
+                if let Err(message) = drain_wayland_display_events(
+                    &wayland_display_events,
+                    &wayland_display_control_events,
+                    state,
+                ) {
+                    error!(%message, "Wayland display completion runtime failed");
                     callback_failure.borrow_mut().replace(message);
                     callback_stop.stop();
                     return;

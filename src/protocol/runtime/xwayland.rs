@@ -16,11 +16,7 @@ impl WaylandRuntime {
             return Ok(());
         }
 
-        let display = self
-            .display
-            .as_ref()
-            .ok_or(ProtocolError::DisplayConsumed)?;
-        let display_handle = display.handle();
+        let display_handle = self.state.display_handle.clone();
         let loop_handle = self.event_loop.handle();
         let (xwayland, client) = XWayland::spawn(
             &display_handle,

@@ -479,7 +479,7 @@ mod tests {
         let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
         let display = Display::<RuntimeState>::new().unwrap();
         let state = RuntimeState::with_appearance(
-            display.handle(),
+            display,
             event_loop.handle(),
             LayoutEngine::new(LayoutKind::Scrolling1D),
             crate::scene::SceneAppearance::default(),

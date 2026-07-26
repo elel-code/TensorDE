@@ -1,6 +1,7 @@
 mod background_effect;
 mod capture;
 mod capture_shm;
+mod display;
 mod event_loop;
 #[cfg(feature = "tty")]
 mod layer;
@@ -64,6 +65,7 @@ use smithay::{
 #[cfg(feature = "xwayland")]
 use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
 use tracing::warn;
+use wayland_server::Display;
 
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
@@ -105,6 +107,7 @@ struct DeferredSurfaceSync {
 }
 
 pub(crate) struct RuntimeState {
+    display: Option<Display<Self>>,
     pub(crate) display_handle: DisplayHandle,
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
@@ -178,11 +181,12 @@ pub(crate) struct RuntimeState {
 
 impl RuntimeState {
     pub(crate) fn with_appearance(
-        display_handle: DisplayHandle,
+        display: Display<Self>,
         loop_handle: LoopHandle<'static, Self>,
         layout: LayoutEngine,
         appearance: SceneAppearance,
     ) -> Self {
+        let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, []);
@@ -195,6 +199,7 @@ impl RuntimeState {
         let seat = seat_state.new_wl_seat(&display_handle, "tensor");
 
         Self {
+            display: Some(display),
             display_handle,
             compositor_state,
             xdg_shell_state,

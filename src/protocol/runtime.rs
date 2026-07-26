@@ -1,9 +1,8 @@
 use std::ffi::OsString;
 
 use calloop::{
-    EventLoop, Interest, LoopSignal, Mode, PostAction,
+    EventLoop, LoopSignal,
     channel::{Channel, Event as ChannelEvent},
-    generic::Generic,
 };
 use thiserror::Error;
 use wayland_server::{Display, ListeningSocket};
@@ -14,6 +13,7 @@ use crate::{
 
 use super::state::RuntimeState;
 
+mod display;
 #[cfg(all(test, feature = "tty"))]
 mod focus_tests;
 mod socket;
@@ -21,6 +21,11 @@ mod socket;
 mod socket_tests;
 mod xwayland;
 
+pub(crate) use display::{
+    MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS, MAX_PENDING_WAYLAND_DISPLAY_EVENTS,
+    WaylandDisplayControlEvent, WaylandDisplayEvent, WaylandDisplayRuntime,
+    drain_wayland_display_events,
+};
 pub(crate) use socket::{
     MAX_PENDING_WAYLAND_CLIENTS, MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS,
     WaylandSocketControlEvent, WaylandSocketRuntime, drain_wayland_socket_events,
@@ -28,8 +33,8 @@ pub(crate) use socket::{
 
 pub struct WaylandRuntime {
     event_loop: EventLoop<'static, RuntimeState>,
-    display: Option<Display<RuntimeState>>,
     state: RuntimeState,
+    display_runtime: Option<WaylandDisplayRuntime>,
     socket_runtime: Option<WaylandSocketRuntime>,
     socket: ListeningSocket,
     socket_name: OsString,
@@ -47,9 +52,7 @@ impl WaylandRuntime {
     ) -> Result<Self, ProtocolError> {
         let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
-        let display_handle = display.handle();
-        let state =
-            RuntimeState::with_appearance(display_handle, event_loop.handle(), layout, appearance);
+        let state = RuntimeState::with_appearance(display, event_loop.handle(), layout, appearance);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
         let socket_name = socket
             .socket_name()
@@ -57,8 +60,8 @@ impl WaylandRuntime {
             .to_os_string();
         Ok(Self {
             event_loop,
-            display: Some(display),
             state,
+            display_runtime: None,
             socket_runtime: None,
             socket,
             socket_name,
@@ -113,8 +116,27 @@ impl WaylandRuntime {
         Ok(())
     }
 
+    pub(crate) fn install_display_runtime(
+        &mut self,
+        events: tensor_runtime::WorkerTx<WaylandDisplayEvent>,
+        control: tensor_runtime::WorkerTx<WaylandDisplayControlEvent>,
+    ) -> Result<(), ProtocolError> {
+        if self.display_runtime.is_some() {
+            return Ok(());
+        }
+        self.display_runtime = Some(
+            WaylandDisplayRuntime::start(self.state.display(), events, control)
+                .map_err(|error| ProtocolError::DisplayRuntime(error.to_string()))?,
+        );
+        Ok(())
+    }
+
     pub(crate) fn take_socket_runtime(&mut self) -> Option<WaylandSocketRuntime> {
         self.socket_runtime.take()
+    }
+
+    pub(crate) fn take_display_runtime(&mut self) -> Option<WaylandDisplayRuntime> {
+        self.display_runtime.take()
     }
 
     #[cfg(test)]
@@ -138,6 +160,16 @@ impl WaylandRuntime {
             relay.wake(),
         );
         self.install_socket_runtime(client_sender, control_sender)?;
+        let (display_sender, display_events) = tensor_runtime::WorkerBridge::bounded_with_wake(
+            MAX_PENDING_WAYLAND_DISPLAY_EVENTS,
+            relay.wake(),
+        );
+        let (display_control_sender, display_control) =
+            tensor_runtime::WorkerBridge::bounded_with_wake(
+                MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS,
+                relay.wake(),
+            );
+        self.install_display_runtime(display_sender, display_control_sender)?;
         self.event_loop
             .handle()
             .insert_source(notifications, move |event, _, state| {
@@ -145,6 +177,12 @@ impl WaylandRuntime {
                     && let Err(message) = drain_wayland_socket_events(&clients, &control, state)
                 {
                     panic!("Wayland accept completion runtime failed: {message}");
+                }
+                if matches!(event, ChannelEvent::Msg(()))
+                    && let Err(message) =
+                        drain_wayland_display_events(&display_events, &display_control, state)
+                {
+                    panic!("Wayland display completion runtime failed: {message}");
                 }
             })
             .map_err(|error| ProtocolError::ChannelSource(error.to_string()))?;
@@ -189,14 +227,9 @@ impl WaylandRuntime {
         if self.socket_runtime.is_none() {
             return Err(ProtocolError::SocketRuntimeMissing);
         }
-        let display = self.display.take().ok_or(ProtocolError::DisplayConsumed)?;
-        self.event_loop
-            .handle()
-            .insert_source(
-                Generic::new(display, Interest::READ, Mode::Level),
-                |_, display, state| dispatch_display(display, state),
-            )
-            .map_err(|error| ProtocolError::DisplaySource(error.to_string()))?;
+        if self.display_runtime.is_none() {
+            return Err(ProtocolError::DisplayRuntimeMissing);
+        }
         // Advertise the fixed workspace pool to any early ext-workspace binders.
         self.state.refresh_ext_workspace_protocol();
         self.prepared = true;
@@ -241,7 +274,7 @@ pub(crate) fn test_runtime_state(
 ) -> RuntimeState {
     let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
     let display = Display::<RuntimeState>::new().unwrap();
-    RuntimeState::with_appearance(display.handle(), event_loop.handle(), layout, appearance)
+    RuntimeState::with_appearance(display, event_loop.handle(), layout, appearance)
 }
 
 fn bind_socket_source() -> Result<ListeningSocket, wayland_server::BindError> {
@@ -269,17 +302,17 @@ pub enum ProtocolError {
     Socket(wayland_server::BindError),
     #[error("failed to start the Wayland socket completion runtime: {0}")]
     SocketRuntime(String),
-    #[error("failed to register the Wayland display source: {0}")]
-    DisplaySource(String),
+    #[error("failed to start the Wayland display completion runtime: {0}")]
+    DisplayRuntime(String),
     #[error("failed to register the worker channel source: {0}")]
     ChannelSource(String),
     #[cfg(test)]
     #[error(transparent)]
     CompletionRelay(#[from] tensor_runtime::CompletionRelayError),
-    #[error("Wayland display was already moved into the event loop")]
-    DisplayConsumed,
     #[error("Wayland socket completion runtime is not installed")]
     SocketRuntimeMissing,
+    #[error("Wayland display completion runtime is not installed")]
+    DisplayRuntimeMissing,
     #[error("Wayland runtime must be prepared before entering the event loop")]
     RuntimeNotPrepared,
     #[error("failed to run the Smithay event loop: {0}")]
@@ -296,19 +329,6 @@ pub enum ProtocolError {
     #[cfg(feature = "tty")]
     #[error("failed to initialize the tty DRM backend: {0}")]
     Backend(String),
-}
-
-#[allow(unsafe_code)]
-fn dispatch_display(
-    display: &mut calloop::generic::NoIoDrop<Display<RuntimeState>>,
-    state: &mut RuntimeState,
-) -> Result<PostAction, std::io::Error> {
-    // Generic owns the display source for the entire event loop, so this mutable access does not
-    // alias another display owner. Smithay exposes dispatch through this narrow unsafe adapter.
-    let display = unsafe { display.get_mut() };
-    display.dispatch_clients(state)?;
-    display.flush_clients()?;
-    Ok(PostAction::Continue)
 }
 
 #[cfg(test)]
