@@ -185,6 +185,28 @@ impl PlatformBackend {
         self.inner.request_presentation_feedback(surface)
     }
 
+    fn request_dmabuf_default_feedback(&mut self) -> Result<(), RuntimeError> {
+        self.inner.request_dmabuf_default_feedback()
+    }
+
+    fn request_dmabuf_surface_feedback(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<(), RuntimeError> {
+        self.inner.request_dmabuf_surface_feedback(surface)
+    }
+
+    fn has_linux_dmabuf(&self) -> bool {
+        self.inner.has_linux_dmabuf()
+    }
+
+    #[allow(dead_code)] // available for GPU format negotiation / diagnostics
+    fn dmabuf_default_feedback(
+        &self,
+    ) -> Option<wayland_client_runtime::DmabufFeedback> {
+        self.inner.dmabuf_default_feedback().cloned()
+    }
+
     fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         self.inner.commit(surface)
     }

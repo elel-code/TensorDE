@@ -135,6 +135,8 @@ struct WgpuState {
     frame_latency: ShellFrameLatencyTracker,
     render_work_pending: bool,
     clean_redraw_skips: u64,
+    /// Cached: adapter+device support Vulkan dmabuf texture import.
+    dmabuf_import_supported: bool,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShellRenderOutcome {

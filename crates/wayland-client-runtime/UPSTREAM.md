@@ -90,9 +90,15 @@ oversized region clipped by the compositor because a NULL region means
   - surface destroy drops surface-scoped feedback objects
 - Public API: `DmabufBufferParams` / `DmabufFeedback` / `create_dmabuf_buffer` /
   `attach_dmabuf_buffer` / feedback request helpers; events via `Event::Dmabuf`.
-- Format-table mapping uses `rustix::mm` (no `memmap2`). wgpu/Vulkan still
-  present through RWH; this path is for explicit client-owned dmabuf import
-  (scan-out, multi-GPU, custom allocators).
+- Format-table mapping uses `rustix::mm` (no `memmap2`).
+- **wgpu integration (Fika):** present still uses RWH → wgpu swapchain. Fika
+  requests `Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter allows
+  it, and can import single-plane dmabuf fds via
+  `wgpu_hal::vulkan::Device::texture_from_dmabuf_fd` +
+  `Device::create_texture_from_hal` (`shell/render/dmabuf.rs`). Default and
+  surface feedback are requested on main toplevel create for format negotiation.
+  Export (wgpu texture → dmabuf → `wl_buffer`) is not implemented; that would
+  need a reverse path not yet in wgpu-hal.
 
 ## Core data-device and cursor behavior
 

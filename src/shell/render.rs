@@ -2,6 +2,7 @@ pub(crate) mod damage;
 pub(crate) mod damage_bounds;
 pub(crate) mod damage_snapshot;
 pub(crate) mod dirty_key;
+pub(crate) mod dmabuf;
 pub(crate) mod frame;
 pub(crate) mod gpu;
 pub(crate) mod quad;

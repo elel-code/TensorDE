@@ -28,15 +28,25 @@ impl WgpuState {
             adapter_info.backend
         );
 
+        // Enable Vulkan dmabuf import when the driver supports it (wgpu-hal
+        // texture_from_dmabuf_fd). Present still uses RWH/swapchain; this only
+        // unlocks sampling external dmabuf textures.
+        let dmabuf_features = crate::shell::render::dmabuf::optional_dmabuf_features(&adapter);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("fika-wgpu-device"),
-            required_features: wgpu::Features::empty(),
+            required_features: dmabuf_features,
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
         }))
         .map_err(|error| format!("request device: {error}"))?;
+
+        if dmabuf_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
+            fika_log!("[fika-wgpu] dmabuf-import enabled (VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
+        } else {
+            fika_log!("[fika-wgpu] dmabuf-import unavailable on this adapter");
+        }
 
         Self::from_surface_parts(size, instance, adapter, device, queue, surface)
     }
@@ -124,6 +134,12 @@ impl WgpuState {
             size,
         );
 
+        let dmabuf_import_supported =
+            crate::shell::render::dmabuf::adapter_supports_dmabuf_import(&adapter)
+                && device
+                    .features()
+                    .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+
         Ok(Self {
             damage_clear_renderer,
             quad_renderer,
@@ -147,7 +163,29 @@ impl WgpuState {
             frame_latency: ShellFrameLatencyTracker::default(),
             render_work_pending: false,
             clean_redraw_skips: 0,
+            dmabuf_import_supported,
         })
+    }
+
+    /// Whether this renderer can wrap dmabuf fds as wgpu textures.
+    #[allow(dead_code)] // used by future thumbnail/video import paths
+    pub(crate) fn dmabuf_import_supported(&self) -> bool {
+        self.dmabuf_import_supported
+    }
+
+    /// Import a single-plane dmabuf as a sampleable wgpu texture.
+    ///
+    /// Present still uses the RWH swapchain; use this for external content
+    /// (thumbnails, video frames) that should be drawn into the retained scene.
+    #[allow(dead_code)]
+    pub(crate) fn import_dmabuf_texture(
+        &self,
+        desc: crate::shell::render::dmabuf::DmabufImportDesc,
+    ) -> Result<wgpu::Texture, crate::shell::render::dmabuf::DmabufImportError> {
+        if !self.dmabuf_import_supported {
+            return Err(crate::shell::render::dmabuf::DmabufImportError::FeatureUnavailable);
+        }
+        crate::shell::render::dmabuf::import_dmabuf_texture(&self.device, desc)
     }
 
     pub(crate) fn wait_idle(&self, reason: &'static str) {

@@ -116,7 +116,7 @@ pub use activation::{
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
 pub use dmabuf::{
-    DmabufBufferFlags, DmabufBufferId, DmabufBufferParams, DmabufEvent, DmabufFeedback,
+    fourcc, DmabufBufferFlags, DmabufBufferId, DmabufBufferParams, DmabufEvent, DmabufFeedback,
     DmabufFeedbackTranche, DmabufFormat, DmabufPlane, DmabufTrancheFlags,
 };
 #[cfg(feature = "compio")]

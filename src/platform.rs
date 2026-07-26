@@ -423,6 +423,25 @@ impl ActiveEventLoop {
                     eprintln!("[fika-wayland] pointer-gestures enable failed: {error}");
                 }
             }
+            // Request dmabuf feedback early so GPU import can negotiate formats
+            // with the compositor (v4+). Best-effort: missing global is fine.
+            {
+                let mut runtime = self.runtime.borrow_mut();
+                if runtime.has_linux_dmabuf() {
+                    match runtime.request_dmabuf_default_feedback() {
+                        Ok(()) | Err(RuntimeError::Unsupported(_)) => {}
+                        Err(error) => {
+                            eprintln!("[fika-wayland] dmabuf default feedback failed: {error}");
+                        }
+                    }
+                    match runtime.request_dmabuf_surface_feedback(id) {
+                        Ok(()) | Err(RuntimeError::Unsupported(_)) => {}
+                        Err(error) => {
+                            eprintln!("[fika-wayland] dmabuf surface feedback failed: {error}");
+                        }
+                    }
+                }
+            }
             id
         };
         match self

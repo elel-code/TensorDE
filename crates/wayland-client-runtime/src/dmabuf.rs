@@ -172,6 +172,29 @@ impl DmabufBufferId {
     }
 }
 
+/// Common DRM fourcc values used with Wayland / Vulkan / wgpu.
+///
+/// These match the kernel `drm_fourcc.h` definitions and the values advertised
+/// in `zwp_linux_dmabuf` format tables.
+pub mod fourcc {
+    /// `DRM_FORMAT_ARGB8888` — little-endian 32-bit A8R8G8B8.
+    pub const ARGB8888: u32 = 0x3432_5241; // 'AR24'
+    /// `DRM_FORMAT_XRGB8888`.
+    pub const XRGB8888: u32 = 0x3432_5258; // 'XR24'
+    /// `DRM_FORMAT_ABGR8888`.
+    pub const ABGR8888: u32 = 0x3432_4241; // 'AB24'
+    /// `DRM_FORMAT_XBGR8888`.
+    pub const XBGR8888: u32 = 0x3432_4258; // 'XB24'
+    /// `DRM_FORMAT_RGBA8888`.
+    pub const RGBA8888: u32 = 0x3432_4152; // 'RA24'
+    /// `DRM_FORMAT_BGRA8888` — matches wgpu `Bgra8Unorm` / Vulkan `B8G8R8A8`.
+    pub const BGRA8888: u32 = 0x3432_4142; // 'BA24'
+    /// `DRM_FORMAT_MOD_INVALID` — use the buffer's implicit modifier.
+    pub const MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+    /// `DRM_FORMAT_MOD_LINEAR`.
+    pub const MOD_LINEAR: u64 = 0;
+}
+
 /// Public dmabuf events delivered through [`crate::Event::Dmabuf`].
 #[derive(Clone, Debug)]
 pub enum DmabufEvent {

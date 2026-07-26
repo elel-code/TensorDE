@@ -236,9 +236,37 @@ impl EventLoop {
                 Ok(())
             }
             Event::Touch(_) => Ok(()),
-            // Dmabuf feedback/buffer lifecycle is for explicit GPU import paths;
-            // Fika presents via wgpu/RWH today and does not consume these yet.
-            Event::Dmabuf(_) => Ok(()),
+            Event::Dmabuf(event) => {
+                // Feedback informs format/modifier negotiation for
+                // WgpuState::import_dmabuf_texture. Present remains RWH/swapchain.
+                match event {
+                    wayland_client_runtime::DmabufEvent::Feedback {
+                        surface,
+                        feedback,
+                    } => {
+                        let scope = match surface {
+                            Some(id) => format!("surface={id:?}"),
+                            None => "default".to_string(),
+                        };
+                        eprintln!(
+                            "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={}",
+                            feedback.main_device(),
+                            feedback.formats().len(),
+                            feedback.tranches().len()
+                        );
+                    }
+                    wayland_client_runtime::DmabufEvent::BufferCreated { id } => {
+                        eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");
+                    }
+                    wayland_client_runtime::DmabufEvent::BufferFailed => {
+                        eprintln!("[fika-wgpu] dmabuf-buffer-failed");
+                    }
+                    wayland_client_runtime::DmabufEvent::BufferReleased { id } => {
+                        eprintln!("[fika-wgpu] dmabuf-buffer-released id={id:?}");
+                    }
+                }
+                Ok(())
+            }
             Event::Dnd(event) => {
                 self.dispatch_dnd_event(app, event);
                 Ok(())
