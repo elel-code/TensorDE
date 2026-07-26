@@ -5,7 +5,9 @@
 
 mod api;
 mod dispatch;
+mod handle;
 mod types;
 
 pub use api::NativeShell;
+pub use handle::NativeSurfaceHandle;
 pub use types::{NativeShellEvent, NativeShellState, NativeSurfaceId};

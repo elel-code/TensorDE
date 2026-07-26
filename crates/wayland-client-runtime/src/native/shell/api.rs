@@ -9,6 +9,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_man
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
+use super::handle::NativeSurfaceHandle;
 use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId, ToplevelRecord};
 use crate::display_io::DisplayReadiness;
 use crate::native::connection::{NativeConnection, NativeError};
@@ -267,6 +268,23 @@ impl NativeShell {
 
     pub fn scale_factor(&self, id: NativeSurfaceId) -> Option<f64> {
         self.state.toplevels.get(&id).map(|t| t.scale_factor)
+    }
+
+    /// Borrow a renderer handle for wgpu / Vulkan Wayland surface creation.
+    pub fn surface_handle(
+        &self,
+        id: NativeSurfaceId,
+    ) -> Result<NativeSurfaceHandle, NativeError> {
+        let record = self
+            .state
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        Ok(NativeSurfaceHandle::new(
+            self.connection.connection().clone(),
+            record.wl.clone(),
+            id,
+        ))
     }
 
     pub fn set_title(
