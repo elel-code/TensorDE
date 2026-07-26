@@ -17,6 +17,8 @@ use crate::native::event_map::{NativeEventMapState, SurfaceIdMap};
 use crate::native::shell::{NativeShell, NativeSurfaceId};
 use crate::runtime::{RuntimeCapabilities, RuntimeError, WakeHandle};
 use crate::surface::{SurfaceHandle, SurfaceId, ToplevelAttributes};
+use crate::data_transfer::{TransferContent, TransferReadPipe};
+use crate::dnd::{DndAction, DndActions, DndOfferId, DndReadPipe, DndSourceId};
 use crate::wake_fd::EventFdWake;
 use crate::{BlurState, NativeError, TextInputState, ToplevelIcon};
 
@@ -314,6 +316,102 @@ impl NativeRuntime {
         } else {
             Err(RuntimeError::Unsupported("zwp_pointer_gestures_v1"))
         }
+    }
+
+    pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {
+        self.shell
+            .set_selection_content(content)
+            .map_err(map_native_error)
+    }
+
+    pub fn receive_selection(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<TransferReadPipe, RuntimeError> {
+        let (mime, bytes) = self
+            .shell
+            .receive_selection_preferred(preferred_mimes)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("mime not found") => {
+                    RuntimeError::SelectionMimeNotFound
+                }
+                NativeError::Protocol(msg) if msg.contains("no selection") => {
+                    RuntimeError::SelectionUnavailable
+                }
+                other => map_native_error(other),
+            })?;
+        Ok(TransferReadPipe::from_bytes(mime, bytes))
+    }
+
+    pub fn start_drag(
+        &mut self,
+        origin: SurfaceId,
+        content: TransferContent,
+        _actions: DndActions,
+        _icon: Option<crate::DndIcon>,
+    ) -> Result<DndSourceId, RuntimeError> {
+        let native = self.native(origin)?;
+        let id = self
+            .shell
+            .start_drag_content(native, content)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("serial") => {
+                    RuntimeError::InvalidDragSerial
+                }
+                other => map_native_error(other),
+            })?;
+        Ok(DndSourceId(id))
+    }
+
+    pub fn set_dnd_offer_actions(
+        &mut self,
+        offer: DndOfferId,
+        accepted_mime: Option<&str>,
+        actions: DndActions,
+        preferred: Option<DndAction>,
+    ) -> Result<(), RuntimeError> {
+        if self.shell.dnd_offer_id() != Some(offer.get()) {
+            return Err(RuntimeError::DndOfferNotFound(offer));
+        }
+        self.shell
+            .set_dnd_actions(
+                accepted_mime,
+                actions.contains(DndActions::COPY),
+                actions.contains(DndActions::MOVE),
+                matches!(preferred, Some(DndAction::Copy) | None),
+            )
+            .map_err(map_native_error)
+    }
+
+    pub fn receive_dnd(
+        &mut self,
+        offer: DndOfferId,
+        mime: impl Into<String>,
+    ) -> Result<DndReadPipe, RuntimeError> {
+        if self.shell.dnd_offer_id() != Some(offer.get()) {
+            return Err(RuntimeError::DndOfferNotFound(offer));
+        }
+        let mime = mime.into();
+        let bytes = self
+            .shell
+            .receive_dnd(&mime)
+            .map_err(map_native_error)?;
+        Ok(TransferReadPipe::from_bytes(mime, bytes))
+    }
+
+    pub fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
+        if self.shell.dnd_offer_id() != Some(offer.get()) {
+            return Err(RuntimeError::DndOfferNotFound(offer));
+        }
+        self.shell.finish_dnd().map_err(map_native_error)
+    }
+
+    pub fn discard_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
+        if self.shell.dnd_offer_id() != Some(offer.get()) {
+            // Idempotent: leave may race with finish.
+            return Ok(());
+        }
+        self.shell.discard_dnd().map_err(map_native_error)
     }
 
     fn native(&self, surface: SurfaceId) -> Result<NativeSurfaceId, RuntimeError> {

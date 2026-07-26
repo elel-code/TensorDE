@@ -480,15 +480,11 @@ impl ActiveEventLoop {
                 .map_err(str::to_string)
             })
             .transpose()?;
-        let source = {
-            let mut backend = self.runtime.borrow_mut();
-            let Some(runtime) = backend.sctk_runtime_mut() else {
-                return Err("drag-and-drop requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into());
-            };
-            runtime
-                .start_drag(window, content, runtime_dnd_actions(actions), icon)
-                .map_err(|error| error.to_string())?
-        };
+        let source = self
+            .runtime
+            .borrow_mut()
+            .start_drag(window, content, runtime_dnd_actions(actions), icon)
+            .map_err(|error| error.to_string())?;
         self.dnd_sources.borrow_mut().insert(source, window);
         Ok(DataTransferId(source.get()))
     }
@@ -514,17 +510,11 @@ impl ActiveEventLoop {
             .get(&id)
             .map(|transfer| (transfer.offer, transfer.window))
             .ok_or_else(|| format!("DnD transfer {} does not exist", id.into_raw()))?;
-        let mut pipe = {
-            let backend = self.runtime.borrow();
-            let Some(runtime) = backend.sctk_runtime() else {
-                return Err(
-                    "DnD receive requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into(),
-                );
-            };
-            runtime
-                .receive_dnd(offer, hint.mime())
-                .map_err(|error| error.to_string())?
-        };
+        let mut pipe = self
+            .runtime
+            .borrow_mut()
+            .receive_dnd(offer, hint.mime())
+            .map_err(|error| error.to_string())?;
         let serial = AsyncRequestSerial(self.next_async_serial.get());
         self.next_async_serial
             .set(self.next_async_serial.get().wrapping_add(1));
@@ -569,13 +559,8 @@ impl ActiveEventLoop {
             .then(|| transfer.1.iter().find(|hint| **hint == TypeHint::UriList))
             .flatten()
             .map(TypeHint::mime);
-        let backend = self.runtime.borrow();
-        let Some(runtime) = backend.sctk_runtime() else {
-            return Err(
-                "DnD actions require SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into(),
-            );
-        };
-        runtime
+        self.runtime
+            .borrow_mut()
             .set_dnd_offer_actions(
                 transfer.0,
                 accepted_mime,

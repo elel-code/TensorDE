@@ -226,28 +226,75 @@ impl PlatformBackend {
     fn discard_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
         match self {
             Self::Sctk(rt) => rt.discard_dnd_offer(offer),
-            Self::Native(_) => Err(RuntimeError::Unsupported("native dnd")),
+            Self::Native(rt) => rt.discard_dnd_offer(offer),
         }
     }
 
     fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
         match self {
             Self::Sctk(rt) => rt.finish_dnd_offer(offer),
-            Self::Native(_) => Err(RuntimeError::Unsupported("native dnd")),
+            Self::Native(rt) => rt.finish_dnd_offer(offer),
         }
     }
 
-    fn sctk_runtime(&self) -> Option<&Runtime> {
+    fn store_selection(
+        &mut self,
+        content: TransferContent,
+    ) -> Result<(), RuntimeError> {
         match self {
-            Self::Sctk(rt) => Some(rt),
-            Self::Native(_) => None,
+            Self::Sctk(rt) => rt.store_selection(content),
+            Self::Native(rt) => rt.store_selection(content),
         }
     }
 
-    fn sctk_runtime_mut(&mut self) -> Option<&mut Runtime> {
+    fn receive_selection(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<wayland_client_runtime::TransferReadPipe, RuntimeError> {
         match self {
-            Self::Sctk(rt) => Some(rt),
-            Self::Native(_) => None,
+            Self::Sctk(rt) => rt.receive_selection(preferred_mimes),
+            Self::Native(rt) => rt.receive_selection(preferred_mimes),
+        }
+    }
+
+    fn start_drag(
+        &mut self,
+        origin: SurfaceId,
+        content: TransferContent,
+        actions: RuntimeDndActions,
+        icon: Option<RuntimeDndIcon>,
+    ) -> Result<DndSourceId, RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.start_drag(origin, content, actions, icon),
+            Self::Native(rt) => rt.start_drag(origin, content, actions, icon),
+        }
+    }
+
+    fn set_dnd_offer_actions(
+        &mut self,
+        offer: DndOfferId,
+        accepted_mime: Option<&str>,
+        actions: RuntimeDndActions,
+        preferred: Option<RuntimeDndAction>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => {
+                rt.set_dnd_offer_actions(offer, accepted_mime, actions, preferred)
+            }
+            Self::Native(rt) => {
+                rt.set_dnd_offer_actions(offer, accepted_mime, actions, preferred)
+            }
+        }
+    }
+
+    fn receive_dnd(
+        &mut self,
+        offer: DndOfferId,
+        mime: &str,
+    ) -> Result<wayland_client_runtime::DndReadPipe, RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.receive_dnd(offer, mime),
+            Self::Native(rt) => rt.receive_dnd(offer, mime),
         }
     }
 }

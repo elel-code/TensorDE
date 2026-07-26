@@ -16,6 +16,8 @@ use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::{InputSerial, InputSerialSource};
 use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
 use crate::surface::SurfaceId;
+use crate::dnd::{DndAction, DndActions, DndEvent, DndOfferId, DndSourceId};
+use crate::geometry::LogicalPosition as GeoLogicalPosition;
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
     RelativePointerEvent, ToplevelState,
@@ -61,6 +63,7 @@ pub struct NativeEventMapState {
     pub pointer_focus: Option<NativeSurfaceId>,
     pub pointer_pos: (f64, f64),
     pub gesture_surface: Option<NativeSurfaceId>,
+    pub dnd_surface: Option<NativeSurfaceId>,
     /// Latest input serial from the native shell (updated by drain helpers).
     pub last_serial: u32,
 }
@@ -568,7 +571,68 @@ pub fn map_native_event_full(
                 },
             )))
         }
-        // Still deferred: outputs, clipboard, dnd, activation.
+        NativeShellEvent::DndEnter {
+            offer,
+            surface,
+            x,
+            y,
+            mimes,
+        } => {
+            map_state.dnd_surface = Some(surface);
+            Some(Event::Dnd(DndEvent::Enter {
+                offer: DndOfferId(offer),
+                surface: surfaces.intern(surface),
+                position: GeoLogicalPosition::new(x as i32, y as i32),
+                mime_types: mimes,
+                source_actions: DndActions::COPY | DndActions::MOVE,
+            }))
+        }
+        NativeShellEvent::DndLeave { offer, surface } => {
+            let surface = surface
+                .or(map_state.dnd_surface)
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            map_state.dnd_surface = None;
+            Some(Event::Dnd(DndEvent::Leave {
+                offer: DndOfferId(offer),
+                surface,
+            }))
+        }
+        NativeShellEvent::DndMotion { offer, x, y } => {
+            let surface = map_state
+                .dnd_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::Dnd(DndEvent::Motion {
+                offer: DndOfferId(offer),
+                surface,
+                position: GeoLogicalPosition::new(x as i32, y as i32),
+            }))
+        }
+        NativeShellEvent::DndDrop { offer } => {
+            let surface = map_state
+                .dnd_surface
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::Dnd(DndEvent::Drop {
+                offer: DndOfferId(offer),
+                surface,
+                action: Some(DndAction::Copy),
+            }))
+        }
+        NativeShellEvent::DndFinished { source, cancelled } => {
+            if cancelled {
+                Some(Event::Dnd(DndEvent::SourceCancelled {
+                    source: DndSourceId(source),
+                }))
+            } else {
+                Some(Event::Dnd(DndEvent::SourceFinished {
+                    source: DndSourceId(source),
+                    action: Some(DndAction::Copy),
+                }))
+            }
+        }
+        // Still deferred: outputs, clipboard Selection events, activation.
         NativeShellEvent::TouchFrame
         | NativeShellEvent::OutputGeometry { .. }
         | NativeShellEvent::OutputMode { .. }
@@ -578,11 +642,6 @@ pub fn map_native_event_full(
         | NativeShellEvent::SurfaceOutputLeave { .. }
         | NativeShellEvent::Selection { .. }
         | NativeShellEvent::SelectionCancelled
-        | NativeShellEvent::DndEnter { .. }
-        | NativeShellEvent::DndLeave
-        | NativeShellEvent::DndMotion { .. }
-        | NativeShellEvent::DndDrop
-        | NativeShellEvent::DndFinished { .. }
         | NativeShellEvent::ActivationToken { .. } => None,
     }
 }

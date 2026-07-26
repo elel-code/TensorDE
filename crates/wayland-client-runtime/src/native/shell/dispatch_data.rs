@@ -61,34 +61,37 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
             } => {
                 state.dnd_serial = Some(serial);
                 if let Some(old) = state.dnd_offer.take() {
-                    let old_id = old.id().protocol_id();
-                    // Keep mimes if same object id path is rare; destroy old.
-                    let _ = old_id;
                     old.destroy();
                 }
                 state.dnd_mimes.clear();
+                state.dnd_offer_id = None;
                 let surface_id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
                     .copied();
                 state.dnd_focus = surface_id;
                 if let Some(offer) = id {
-                    let offer_id = offer.id().protocol_id();
-                    let mimes = state.offer_mimes.get(&offer_id).cloned().unwrap_or_default();
+                    let offer_obj = offer.id().protocol_id();
+                    let mimes = state
+                        .offer_mimes
+                        .get(&offer_obj)
+                        .cloned()
+                        .unwrap_or_default();
                     state.dnd_mimes = mimes.clone();
-                    // Accept first mime optimistically so drop can proceed.
                     if let Some(mime) = mimes.first() {
                         offer.accept(serial, Some(mime.clone()));
                     }
-                    // Prefer copy action.
                     offer.set_actions(
                         wayland_client::protocol::wl_data_device_manager::DndAction::Copy
                             | wayland_client::protocol::wl_data_device_manager::DndAction::Move,
                         wayland_client::protocol::wl_data_device_manager::DndAction::Copy,
                     );
+                    let public_id = state.alloc_transfer_id();
+                    state.dnd_offer_id = Some(public_id);
                     state.dnd_offer = Some(offer);
                     if let Some(surface) = surface_id {
                         state.push(NativeShellEvent::DndEnter {
+                            offer: public_id,
                             surface,
                             x,
                             y,
@@ -98,6 +101,8 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                 }
             }
             wl_data_device::Event::Leave => {
+                let offer = state.dnd_offer_id.unwrap_or(0);
+                let surface = state.dnd_focus;
                 if let Some(old) = state.dnd_offer.take() {
                     let old_id = old.id().protocol_id();
                     state.offer_mimes.remove(&old_id);
@@ -106,13 +111,16 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                 state.dnd_mimes.clear();
                 state.dnd_focus = None;
                 state.dnd_serial = None;
-                state.push(NativeShellEvent::DndLeave);
+                state.dnd_offer_id = None;
+                state.push(NativeShellEvent::DndLeave { offer, surface });
             }
             wl_data_device::Event::Motion { x, y, .. } => {
-                state.push(NativeShellEvent::DndMotion { x, y });
+                let offer = state.dnd_offer_id.unwrap_or(0);
+                state.push(NativeShellEvent::DndMotion { offer, x, y });
             }
             wl_data_device::Event::Drop => {
-                state.push(NativeShellEvent::DndDrop);
+                let offer = state.dnd_offer_id.unwrap_or(0);
+                state.push(NativeShellEvent::DndDrop { offer });
             }
             _ => {}
         }
@@ -170,26 +178,30 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
     ) {
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
-                let is_selection = state
+                let bytes = if state
                     .selection_source
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
-                    && state.selection_mimes.iter().any(|m| m == &mime_type);
-                let is_dnd = state
+                {
+                    state
+                        .selection_content
+                        .as_ref()
+                        .and_then(|c| c.bytes_for_mime(&mime_type))
+                } else if state
                     .dnd_source
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
-                    && state.dnd_source_mimes.iter().any(|m| m == &mime_type);
-                let bytes = if is_selection {
-                    state.selection_bytes.as_ref()
-                } else if is_dnd {
-                    state.dnd_source_bytes.as_ref()
+                {
+                    state
+                        .dnd_source_content
+                        .as_ref()
+                        .and_then(|c| c.bytes_for_mime(&mime_type))
                 } else {
                     None
                 };
                 if let Some(bytes) = bytes {
                     let mut file = std::fs::File::from(fd);
-                    let _ = file.write_all(bytes);
+                    let _ = file.write_all(&bytes);
                 }
             }
             wl_data_source::Event::Cancelled => {
@@ -199,8 +211,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     .is_some_and(|s| s.id() == source.id())
                 {
                     state.selection_source = None;
-                    state.selection_bytes = None;
-                    state.selection_mimes.clear();
+                    state.selection_content = None;
                     state.push(NativeShellEvent::SelectionCancelled);
                 }
                 if state
@@ -208,10 +219,14 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
                 {
+                    let source_id = state.dnd_source_id.unwrap_or(0);
                     state.dnd_source = None;
-                    state.dnd_source_bytes = None;
-                    state.dnd_source_mimes.clear();
-                    state.push(NativeShellEvent::DndFinished { cancelled: true });
+                    state.dnd_source_id = None;
+                    state.dnd_source_content = None;
+                    state.push(NativeShellEvent::DndFinished {
+                        source: source_id,
+                        cancelled: true,
+                    });
                 }
             }
             wl_data_source::Event::DndFinished => {
@@ -220,10 +235,14 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
                 {
+                    let source_id = state.dnd_source_id.unwrap_or(0);
                     state.dnd_source = None;
-                    state.dnd_source_bytes = None;
-                    state.dnd_source_mimes.clear();
-                    state.push(NativeShellEvent::DndFinished { cancelled: false });
+                    state.dnd_source_id = None;
+                    state.dnd_source_content = None;
+                    state.push(NativeShellEvent::DndFinished {
+                        source: source_id,
+                        cancelled: false,
+                    });
                 }
             }
             _ => {}

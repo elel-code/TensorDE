@@ -19,18 +19,11 @@ impl WaylandClipboard {
         &self,
         content: TransferContent,
     ) -> Result<mpsc::Receiver<io::Result<()>>, String> {
-        let result = {
-            let mut backend = self.runtime.borrow_mut();
-            let Some(runtime) = backend.sctk_runtime_mut() else {
-                return Err(
-                    "clipboard store requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)"
-                        .into(),
-                );
-            };
-            runtime
-                .store_selection(content)
-                .map_err(|error| io::Error::other(error.to_string()))
-        };
+        let result = self
+            .runtime
+            .borrow_mut()
+            .store_selection(content)
+            .map_err(|error| io::Error::other(error.to_string()));
         let (reply_tx, reply_rx) = mpsc::channel();
         reply_tx
             .send(result)
@@ -49,18 +42,11 @@ impl WaylandClipboard {
         &self,
         preferred_mimes: &[&str],
     ) -> Result<mpsc::Receiver<io::Result<String>>, String> {
-        let pipe = {
-            let backend = self.runtime.borrow();
-            let Some(runtime) = backend.sctk_runtime() else {
-                return Err(
-                    "clipboard load requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)"
-                        .into(),
-                );
-            };
-            runtime
-                .receive_selection(preferred_mimes)
-                .map_err(|error| error.to_string())?
-        };
+        let pipe = self
+            .runtime
+            .borrow_mut()
+            .receive_selection(preferred_mimes)
+            .map_err(|error| error.to_string())?;
         let (reply_tx, reply_rx) = mpsc::channel();
         thread::Builder::new()
             .name("fika-wayland-clipboard-read".to_string())

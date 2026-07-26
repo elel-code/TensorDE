@@ -73,20 +73,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("popup done {id:?}");
                     }
                     NativeShellEvent::DndEnter {
+                        offer,
                         surface: id,
                         x,
                         y,
                         mimes,
                     } => {
-                        println!("dnd enter {id:?} @ ({x:.1},{y:.1}) mimes={mimes:?}");
+                        println!(
+                            "dnd enter offer={offer} {id:?} @ ({x:.1},{y:.1}) mimes={mimes:?}"
+                        );
                     }
-                    NativeShellEvent::DndLeave => println!("dnd leave"),
-                    NativeShellEvent::DndMotion { x, y } => {
-                        println!("dnd motion @ ({x:.1},{y:.1})");
+                    NativeShellEvent::DndLeave { offer, surface } => {
+                        println!("dnd leave offer={offer} surface={surface:?}");
                     }
-                    NativeShellEvent::DndDrop => println!("dnd drop"),
-                    NativeShellEvent::DndFinished { cancelled } => {
-                        println!("dnd finished cancelled={cancelled}");
+                    NativeShellEvent::DndMotion { offer, x, y } => {
+                        println!("dnd motion offer={offer} @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::DndDrop { offer } => {
+                        println!("dnd drop offer={offer}");
+                    }
+                    NativeShellEvent::DndFinished { source, cancelled } => {
+                        println!("dnd finished source={source} cancelled={cancelled}");
                     }
                     NativeShellEvent::TextInputEnter { surface: id } => {
                         println!("text_input enter {id:?}");

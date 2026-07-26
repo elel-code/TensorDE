@@ -552,8 +552,9 @@ compio executor
   - **Fika 双后端**：`PlatformBackend` + `FIKA_WAYLAND_BACKEND=native|sctk`
     - `NativeRuntime` 门面：poll(display+eventfd)、create_toplevel_gpu、drain_public_events
     - `SurfaceHandle` 支持 SCTK / Native 双后端（wgpu 可接）
-    - native 路径：主窗口 + 输入 + frame + scale；dialog/clipboard/DnD/blur/icon 仍 SCTK
-  - 待丰富：native clipboard/DnD 接到 Fika、dialog、blur；默认仍 SCTK
+    - native 路径：主窗口 + 输入 + frame + scale + **clipboard + DnD** + text_input 映射
+    - dialog / blur / toplevel icon 仍 SCTK-only（或 Unsupported）
+  - 待丰富：native dialog、blur、icon；默认仍 SCTK
 
 完成标准：
 

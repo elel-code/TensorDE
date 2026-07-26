@@ -1,7 +1,10 @@
 //! Clipboard, drag-and-drop, and text-input methods for [`NativeShell`].
 
+use std::sync::Arc;
+
 use super::api::NativeShell;
 use super::types::NativeSurfaceId;
+use crate::data_transfer::TransferContent;
 use crate::native::connection::NativeError;
 
 impl NativeShell {
@@ -49,6 +52,10 @@ impl NativeShell {
         &self.state.dnd_mimes
     }
 
+    pub fn dnd_offer_id(&self) -> Option<u64> {
+        self.state.dnd_offer_id
+    }
+
     /// Accept a mime on the current drag (call after [`NativeShellEvent::DndEnter`]).
     pub fn accept_dnd(&mut self, mime: Option<&str>) -> Result<(), NativeError> {
         let serial = self
@@ -65,7 +72,48 @@ impl NativeShell {
         Ok(())
     }
 
-    /// Receive bytes from the current drag offer.
+    /// Set source/preferred actions on the current drag offer.
+    pub fn set_dnd_actions(
+        &mut self,
+        accepted_mime: Option<&str>,
+        copy: bool,
+        move_action: bool,
+        prefer_copy: bool,
+    ) -> Result<(), NativeError> {
+        let serial = self
+            .state
+            .dnd_serial
+            .ok_or_else(|| NativeError::Protocol("no dnd serial".into()))?;
+        let offer = self
+            .state
+            .dnd_offer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no dnd offer".into()))?;
+        offer.accept(serial, accepted_mime.map(str::to_string));
+        use wayland_client::protocol::wl_data_device_manager::DndAction;
+        let mut source = DndAction::empty();
+        if copy {
+            source |= DndAction::Copy;
+        }
+        if move_action {
+            source |= DndAction::Move;
+        }
+        if source.is_empty() {
+            source = DndAction::Copy;
+        }
+        let preferred = if prefer_copy && source.contains(DndAction::Copy) {
+            DndAction::Copy
+        } else if source.contains(DndAction::Move) {
+            DndAction::Move
+        } else {
+            DndAction::Copy
+        };
+        offer.set_actions(source, preferred);
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    /// Receive bytes from the current drag offer (blocking pipe read).
     pub fn receive_dnd(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
         use std::io::Read;
         use std::os::fd::AsFd;
@@ -91,37 +139,42 @@ impl NativeShell {
         reader
             .read_to_end(&mut buf)
             .map_err(|e| NativeError::Io(e.to_string()))?;
-        // Finish the offer after successful receive.
-        if let Some(offer) = self.state.dnd_offer.as_ref() {
-            offer.finish();
-        }
         Ok(buf)
     }
 
-    /// Start an outgoing drag with text payload (requires recent pointer serial).
-    pub fn start_drag_text(
-        &mut self,
-        origin: NativeSurfaceId,
-        text: impl Into<String>,
-    ) -> Result<(), NativeError> {
-        let bytes: std::sync::Arc<[u8]> = text.into().into_bytes().into();
-        self.start_drag_bytes(
-            origin,
-            bytes,
-            &[
-                "text/plain;charset=utf-8",
-                "text/plain",
-                "UTF8_STRING",
-            ],
-        )
+    /// Finish and destroy the current drag offer after a successful drop transfer.
+    pub fn finish_dnd(&mut self) -> Result<(), NativeError> {
+        if let Some(offer) = self.state.dnd_offer.take() {
+            offer.finish();
+            offer.destroy();
+        }
+        self.state.dnd_offer_id = None;
+        self.state.dnd_mimes.clear();
+        self.state.dnd_focus = None;
+        self.state.dnd_serial = None;
+        self.connection.flush()?;
+        Ok(())
     }
 
-    pub fn start_drag_bytes(
+    /// Discard the current drag offer without finishing (leave / cancel).
+    pub fn discard_dnd(&mut self) -> Result<(), NativeError> {
+        if let Some(offer) = self.state.dnd_offer.take() {
+            offer.destroy();
+        }
+        self.state.dnd_offer_id = None;
+        self.state.dnd_mimes.clear();
+        self.state.dnd_focus = None;
+        self.state.dnd_serial = None;
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    /// Start an outgoing drag with multi-mime content.
+    pub fn start_drag_content(
         &mut self,
         origin: NativeSurfaceId,
-        bytes: std::sync::Arc<[u8]>,
-        mimes: &[&str],
-    ) -> Result<(), NativeError> {
+        content: TransferContent,
+    ) -> Result<u64, NativeError> {
         let serial = self
             .state
             .last_input_serial
@@ -148,38 +201,53 @@ impl NativeShell {
             old.destroy();
         }
         let source = manager.create_data_source(&qh, ());
-        for mime in mimes {
-            source.offer((*mime).to_string());
+        for mime in content.mime_types() {
+            source.offer(mime.to_string());
         }
         source.set_actions(
             wayland_client::protocol::wl_data_device_manager::DndAction::Copy
                 | wayland_client::protocol::wl_data_device_manager::DndAction::Move,
         );
         device.start_drag(Some(&source), &origin_wl, None, serial);
+        let id = self.state.alloc_transfer_id();
         self.state.dnd_source = Some(source);
-        self.state.dnd_source_bytes = Some(bytes);
-        self.state.dnd_source_mimes = mimes.iter().map(|m| (*m).to_string()).collect();
+        self.state.dnd_source_id = Some(id);
+        self.state.dnd_source_content = Some(content);
         self.connection.flush()?;
-        Ok(())
+        Ok(id)
     }
 
-    /// Advertise UTF-8 text on the clipboard (requires a recent input serial).
-    pub fn set_selection_text(&mut self, text: impl Into<String>) -> Result<(), NativeError> {
-        let bytes: std::sync::Arc<[u8]> = text.into().into_bytes().into();
-        self.set_selection_bytes(
-            bytes,
-            &[
-                "text/plain;charset=utf-8",
-                "text/plain",
-                "UTF8_STRING",
-            ],
-        )
-    }
-
-    pub fn set_selection_bytes(
+    /// Start an outgoing drag with text payload (requires recent pointer serial).
+    pub fn start_drag_text(
         &mut self,
-        bytes: std::sync::Arc<[u8]>,
+        origin: NativeSurfaceId,
+        text: impl Into<String>,
+    ) -> Result<u64, NativeError> {
+        self.start_drag_content(origin, TransferContent::text(text.into()))
+    }
+
+    pub fn start_drag_bytes(
+        &mut self,
+        origin: NativeSurfaceId,
+        bytes: Arc<[u8]>,
         mimes: &[&str],
+    ) -> Result<u64, NativeError> {
+        let payloads = mimes
+            .iter()
+            .map(|mime| {
+                crate::data_transfer::MimePayload::new(*mime, bytes.clone())
+                    .map_err(|e| NativeError::Protocol(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let content = TransferContent::new(payloads)
+            .map_err(|e| NativeError::Protocol(e.to_string()))?;
+        self.start_drag_content(origin, content)
+    }
+
+    /// Advertise multi-mime content on the clipboard.
+    pub fn set_selection_content(
+        &mut self,
+        content: TransferContent,
     ) -> Result<(), NativeError> {
         let serial = self
             .state
@@ -200,15 +268,36 @@ impl NativeShell {
             old.destroy();
         }
         let source = manager.create_data_source(&qh, ());
-        for mime in mimes {
-            source.offer((*mime).to_string());
+        for mime in content.mime_types() {
+            source.offer(mime.to_string());
         }
         device.set_selection(Some(&source), serial);
         self.state.selection_source = Some(source);
-        self.state.selection_bytes = Some(bytes);
-        self.state.selection_mimes = mimes.iter().map(|m| (*m).to_string()).collect();
+        self.state.selection_content = Some(content);
         self.connection.flush()?;
         Ok(())
+    }
+
+    /// Advertise UTF-8 text on the clipboard (requires a recent input serial).
+    pub fn set_selection_text(&mut self, text: impl Into<String>) -> Result<(), NativeError> {
+        self.set_selection_content(TransferContent::text(text.into()))
+    }
+
+    pub fn set_selection_bytes(
+        &mut self,
+        bytes: Arc<[u8]>,
+        mimes: &[&str],
+    ) -> Result<(), NativeError> {
+        let payloads = mimes
+            .iter()
+            .map(|mime| {
+                crate::data_transfer::MimePayload::new(*mime, bytes.clone())
+                    .map_err(|e| NativeError::Protocol(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let content = TransferContent::new(payloads)
+            .map_err(|e| NativeError::Protocol(e.to_string()))?;
+        self.set_selection_content(content)
     }
 
     /// MIME types advertised by the current incoming selection, if any.
@@ -241,10 +330,8 @@ impl NativeShell {
         writer.set_nonblocking(false).ok();
         reader.set_nonblocking(false).ok();
         offer.receive(mime.to_string(), writer.as_fd());
-        // Drop writer so the peer sees EOF after compositor writes.
         drop(writer);
         self.connection.flush()?;
-        // Allow compositor to complete the transfer.
         let _ = self.dispatch_pending();
         let mut reader = reader;
         let mut buf = Vec::new();
@@ -254,4 +341,16 @@ impl NativeShell {
         Ok(buf)
     }
 
+    /// Receive the first preferred mime from the current selection.
+    pub fn receive_selection_preferred(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<(String, Vec<u8>), NativeError> {
+        let mime = preferred_mimes
+            .iter()
+            .find(|m| self.state.incoming_mimes.iter().any(|offered| offered == *m))
+            .ok_or_else(|| NativeError::Protocol("selection mime not found".into()))?;
+        let bytes = self.receive_selection(mime)?;
+        Ok(((*mime).to_string(), bytes))
+    }
 }

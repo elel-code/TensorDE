@@ -118,12 +118,31 @@ impl TransferContent {
 #[derive(Debug)]
 pub struct TransferReadPipe {
     mime: String,
-    inner: ReadPipe,
+    inner: TransferReadInner,
+}
+
+#[derive(Debug)]
+enum TransferReadInner {
+    /// SCTK / calloop path.
+    Sctk(ReadPipe),
+    /// Native path: bytes already transferred (or pre-buffered).
+    Memory(io::Cursor<Vec<u8>>),
 }
 
 impl TransferReadPipe {
     pub(crate) fn new(mime: String, inner: ReadPipe) -> Self {
-        Self { mime, inner }
+        Self {
+            mime,
+            inner: TransferReadInner::Sctk(inner),
+        }
+    }
+
+    /// Build a pipe from bytes already read on the native data-device path.
+    pub(crate) fn from_bytes(mime: String, bytes: Vec<u8>) -> Self {
+        Self {
+            mime,
+            inner: TransferReadInner::Memory(io::Cursor::new(bytes)),
+        }
     }
 
     pub fn mime(&self) -> &str {
@@ -148,7 +167,10 @@ impl TransferReadPipe {
 
 impl Read for TransferReadPipe {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buffer)
+        match &mut self.inner {
+            TransferReadInner::Sctk(pipe) => pipe.read(buffer),
+            TransferReadInner::Memory(cursor) => cursor.read(buffer),
+        }
     }
 }
 

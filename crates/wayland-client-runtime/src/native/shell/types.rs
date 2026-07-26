@@ -156,22 +156,31 @@ pub enum NativeShellEvent {
     },
     /// Incoming drag entered a surface.
     DndEnter {
+        /// Stable offer id for Fika / public [`crate::DndOfferId`].
+        offer: u64,
         surface: NativeSurfaceId,
         x: f64,
         y: f64,
         mimes: Vec<String>,
     },
     /// Drag left the surface (or was cancelled before drop).
-    DndLeave,
+    DndLeave {
+        offer: u64,
+        surface: Option<NativeSurfaceId>,
+    },
     /// Drag motion over the focused surface.
     DndMotion {
+        offer: u64,
         x: f64,
         y: f64,
     },
     /// Drop performed; call [`crate::NativeShell::accept_dnd`] / receive as needed.
-    DndDrop,
+    DndDrop {
+        offer: u64,
+    },
     /// Outgoing drag finished (source side).
     DndFinished {
+        source: u64,
         cancelled: bool,
     },
     /// text-input-v3 entered a surface.
@@ -434,21 +443,23 @@ pub struct NativeShellState {
     /// Latest serial usable for set_selection (keyboard key or pointer button).
     pub(crate) last_input_serial: Option<u32>,
     pub(crate) selection_source: Option<wl_data_source::WlDataSource>,
-    pub(crate) selection_bytes: Option<std::sync::Arc<[u8]>>,
-    pub(crate) selection_mimes: Vec<String>,
+    pub(crate) selection_content: Option<crate::data_transfer::TransferContent>,
     pub(crate) incoming_offer: Option<wl_data_offer::WlDataOffer>,
     pub(crate) incoming_mimes: Vec<String>,
     /// Mimes collected per offer object id before `Selection` / drag attach.
     pub(crate) offer_mimes: HashMap<u32, Vec<String>>,
     /// Active drag offer (incoming DnD).
     pub(crate) dnd_offer: Option<wl_data_offer::WlDataOffer>,
+    pub(crate) dnd_offer_id: Option<u64>,
     pub(crate) dnd_mimes: Vec<String>,
     pub(crate) dnd_focus: Option<NativeSurfaceId>,
     pub(crate) dnd_serial: Option<u32>,
     /// Outgoing drag source (if we started a drag).
     pub(crate) dnd_source: Option<wl_data_source::WlDataSource>,
-    pub(crate) dnd_source_bytes: Option<std::sync::Arc<[u8]>>,
-    pub(crate) dnd_source_mimes: Vec<String>,
+    pub(crate) dnd_source_id: Option<u64>,
+    pub(crate) dnd_source_content: Option<crate::data_transfer::TransferContent>,
+    /// Monotonic ids for public DndOfferId / DndSourceId.
+    pub(crate) next_transfer_id: u64,
     /// XKB state from the latest `wl_keyboard.keymap` (optional).
     pub(crate) xkb: Option<crate::native::protocols::core::NativeXkb>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
@@ -511,18 +522,19 @@ impl Default for NativeShellState {
             pointer_enter_serial: None,
             last_input_serial: None,
             selection_source: None,
-            selection_bytes: None,
-            selection_mimes: Vec::new(),
+            selection_content: None,
             incoming_offer: None,
             incoming_mimes: Vec::new(),
             offer_mimes: HashMap::new(),
             dnd_offer: None,
+            dnd_offer_id: None,
             dnd_mimes: Vec::new(),
             dnd_focus: None,
             dnd_serial: None,
             dnd_source: None,
-            dnd_source_bytes: None,
-            dnd_source_mimes: Vec::new(),
+            dnd_source_id: None,
+            dnd_source_content: None,
+            next_transfer_id: 1,
             xkb: None,
             axis_h: 0.0,
             axis_v: 0.0,
@@ -542,6 +554,12 @@ impl NativeShellState {
     pub(crate) fn alloc_id(&mut self) -> NativeSurfaceId {
         let id = NativeSurfaceId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+
+    pub(crate) fn alloc_transfer_id(&mut self) -> u64 {
+        let id = self.next_transfer_id;
+        self.next_transfer_id = self.next_transfer_id.saturating_add(1);
         id
     }
 
