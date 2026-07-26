@@ -340,22 +340,40 @@ impl ShellScene {
         completion: &ShellAsyncTransferCompletion,
         size: PhysicalSize<u32>,
     ) -> Result<ShellPasteResult, String> {
-        let transfer = &completion.transfer;
+        self.apply_transfer_result(
+            &completion.transfer,
+            completion.source,
+            &completion.target_dir,
+            Some(completion.task_id),
+            size,
+        )
+    }
+
+    /// Shared paste/drop completion for production async and scene test sync helpers.
+    fn apply_transfer_result(
+        &mut self,
+        transfer: &ShellTransferExecution,
+        source: ShellAsyncTransferSource,
+        target_dir: &Path,
+        task_id: Option<ShellTaskId>,
+        size: PhysicalSize<u32>,
+    ) -> Result<ShellPasteResult, String> {
         let result = ShellPasteResult::from_transfer(transfer);
         self.paste_changes += 1;
         fika_log!(
-            "[fika-wgpu] async-transfer source={:?} mode={} target={} success={} failure={} cancelled={} changes={}",
-            completion.source,
+            "[fika-wgpu] transfer source={:?} mode={} target={} success={} failure={} cancelled={} privileged={} changes={}",
+            source,
             result.mode.label(),
-            completion.target_dir.display(),
+            target_dir.display(),
             result.success_count,
             result.failure_count,
             transfer.cancelled as u8,
+            result.privileged as u8,
             self.paste_changes
         );
         let status = if transfer.cancelled {
             ShellTaskStatus::cancelled(
-                match completion.source {
+                match source {
                     ShellAsyncTransferSource::Paste => {
                         if result.privileged {
                             "Administrator paste cancelled".to_string()
@@ -374,7 +392,7 @@ impl ShellScene {
                 transfer_task_detail(
                     result.success_count,
                     result.failure_count,
-                    &completion.target_dir,
+                    target_dir,
                     result.first_error.as_deref(),
                     false,
                 ),
@@ -382,7 +400,7 @@ impl ShellScene {
             )
         } else if result.failure_count > 0 {
             ShellTaskStatus::failed(
-                match completion.source {
+                match source {
                     ShellAsyncTransferSource::Paste => {
                         if result.privileged {
                             "Administrator paste failed".to_string()
@@ -401,7 +419,7 @@ impl ShellScene {
                 transfer_task_detail(
                     result.success_count,
                     result.failure_count,
-                    &completion.target_dir,
+                    target_dir,
                     result.first_error.as_deref(),
                     result.administrator_available,
                 ),
@@ -409,7 +427,7 @@ impl ShellScene {
             )
         } else {
             ShellTaskStatus::completed(
-                match completion.source {
+                match source {
                     ShellAsyncTransferSource::Paste => {
                         if result.privileged {
                             "Administrator paste".to_string()
@@ -428,14 +446,18 @@ impl ShellScene {
                 transfer_task_detail(
                     result.success_count,
                     result.failure_count,
-                    &completion.target_dir,
+                    target_dir,
                     None,
                     false,
                 ),
                 result.privileged,
             )
         };
-        self.finish_task_status(completion.task_id, status);
+        if let Some(task_id) = task_id {
+            self.finish_task_status(task_id, status);
+        } else {
+            self.record_task_status(status);
+        }
 
         if result.changed() {
             self.context_target = None;

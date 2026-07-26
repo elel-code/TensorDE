@@ -208,7 +208,7 @@ impl ShellScene {
     }
 
     // Production drop path is async via FikaWgpuApp::perform_drop_operation_request.
-    // Keep this sync helper only for tests that exercise scene-side transfer bookkeeping.
+    // Sync helper reuses apply_transfer_result so bookkeeping matches production.
     #[cfg(test)]
     #[allow(dead_code)]
     fn perform_drop_operation_request(
@@ -225,64 +225,13 @@ impl ShellScene {
             false,
             request.privileged,
         );
-        let result = ShellPasteResult::from_transfer(&transfer);
-        self.paste_changes += 1;
-        fika_log!(
-            "[fika-wgpu] dnd-transfer mode={} target={} success={} failure={} privileged={} changes={}",
-            result.mode.label(),
-            request.target_dir.display(),
-            result.success_count,
-            result.failure_count,
-            result.privileged as u8,
-            self.paste_changes
-        );
-        self.record_task_status(if result.failure_count > 0 {
-            ShellTaskStatus::failed(
-                if result.privileged {
-                    format!("Administrator {} failed", result.mode.label())
-                } else {
-                    format!("{} failed", result.mode.label())
-                },
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    &request.target_dir,
-                    result.first_error.as_deref(),
-                    result.administrator_available,
-                ),
-                result.privileged,
-            )
-        } else {
-            ShellTaskStatus::completed(
-                if result.privileged {
-                    format!("Administrator {}", result.mode.label())
-                } else {
-                    result.mode.label().to_string()
-                },
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    &request.target_dir,
-                    None,
-                    false,
-                ),
-                result.privileged,
-            )
-        });
-
-        if result.changed() {
-            self.context_target = None;
-            self.context_menu = None;
-            self.drop_menu = None;
-            self.properties_overlay = None;
-            self.create_dialog = None;
-            self.rename_dialog = None;
-            self.rubber_band = None;
-            for affected_dir in transfer.result.refresh_dirs {
-                self.reload_panes_showing_path(&affected_dir, size)?;
-            }
-        }
-        Ok(result)
+        self.apply_transfer_result(
+            &transfer,
+            ShellAsyncTransferSource::Drop,
+            &request.target_dir,
+            None,
+            size,
+        )
     }
 
     fn validate_drop_operation_request(

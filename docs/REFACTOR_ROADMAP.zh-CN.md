@@ -454,8 +454,8 @@ operation dispatcher。
 - 若出现新的 async 依赖，默认要求 runtime-agnostic 或 async-io/compio 兼容，禁止重新引入
   Tokio 作为第二 runtime。
 - 评估是否把部分 process/time 路径再下沉到 `compio` 的 process/time feature（可选，非阻塞）。
-- scene 测试 sync helper：move-to-trash 完成态已与 async 共用
-  `apply_move_to_trash_result`；paste / drop 同步 helper 仍可继续收敛。
+- scene 测试 sync helper：move-to-trash 共用 `apply_move_to_trash_result`；
+  paste / drop 共用 `apply_transfer_result`（含 refresh_dirs 重载）。
 - hold / constraints / relative pointer 仍未接（文件管理器优先级低）。
 
 ### 6c. wayland-client-runtime 文件拆分（进行中）

@@ -396,63 +396,13 @@ impl ShellScene {
             }
         };
 
-        let result = ShellPasteResult::from_transfer(&transfer);
-        self.paste_changes += 1;
-        fika_log!(
-            "[fika-wgpu] paste mode={} target={} success={} failure={} clear_clipboard={} privileged={} changes={}",
-            result.mode.label(),
-            target_dir.display(),
-            result.success_count,
-            result.failure_count,
-            result.clear_clipboard as u8,
-            result.privileged as u8,
-            self.paste_changes
-        );
-        self.record_task_status(if result.failure_count > 0 {
-            ShellTaskStatus::failed(
-                if result.privileged {
-                    "Administrator paste failed"
-                } else {
-                    "Paste failed"
-                },
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    &target_dir,
-                    result.first_error.as_deref(),
-                    result.administrator_available,
-                ),
-                result.privileged,
-            )
-        } else {
-            ShellTaskStatus::completed(
-                if result.privileged {
-                    "Administrator paste"
-                } else {
-                    "Pasted"
-                },
-                transfer_task_detail(
-                    result.success_count,
-                    result.failure_count,
-                    &target_dir,
-                    None,
-                    false,
-                ),
-                result.privileged,
-            )
-        });
-
-        if result.changed() {
-            self.context_target = None;
-            self.context_menu = None;
-            self.drop_menu = None;
-            self.properties_overlay = None;
-            self.create_dialog = None;
-            self.rename_dialog = None;
-            self.rubber_band = None;
-            self.reload_panes_showing_path(&target_dir, size)?;
-        }
-        Ok(result)
+        self.apply_transfer_result(
+            &transfer,
+            ShellAsyncTransferSource::Paste,
+            &target_dir,
+            None,
+            size,
+        )
     }
 
     fn context_target_item_paths(&self) -> Result<Option<Vec<PathBuf>>, String> {
