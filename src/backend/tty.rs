@@ -4,21 +4,19 @@ use std::{
     sync::Arc,
 };
 
+use calloop::LoopHandle;
+use rustix::fs::{OFlags, makedev};
 use smithay::{
     backend::{
         allocator::gbm::{GbmBufferFlags, GbmDevice},
-        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
+        drm::{DrmDevice, DrmDeviceFd, DrmNode, NodeType},
         session::Session,
-    },
-    reexports::{
-        calloop::{LoopHandle, RegistrationToken},
-        rustix::fs::{OFlags, makedev},
     },
     utils::DeviceFd,
 };
 use smithay_drm_extras::drm_scanner::DrmScanner;
 use thiserror::Error;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use super::{
     BackendConfig, BackendOutputEvent,
@@ -83,8 +81,8 @@ pub(crate) struct TtyBackend {
 }
 
 struct OpenDevice {
-    token: RegistrationToken,
     drm: DrmDevice,
+    monotonic_timestamps: bool,
     gbm: GbmDevice<DrmDeviceFd>,
     scanner: DrmScanner,
     connectors: BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
@@ -419,34 +417,25 @@ impl TtyBackend {
                 message: format!("libseat open failed: {error:?}"),
             })?;
         let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-        let (drm, notifier) =
+        let (drm, _notifier) =
             DrmDevice::new(device_fd.clone(), false).map_err(|error| BackendError::Device {
                 path: path.to_owned(),
                 message: error.to_string(),
             })?;
+        let monotonic_timestamps =
+            drm::Device::get_driver_capability(&drm, drm::DriverCapability::MonotonicTimestamp)
+                .unwrap_or(0)
+                == 1;
         let gbm = GbmDevice::new(device_fd).map_err(|error| BackendError::Device {
             path: path.to_owned(),
             message: format!("GBM initialization failed: {error}"),
         })?;
-        let token = self
-            .loop_handle
-            .insert_source(
-                notifier,
-                move |event, metadata, state: &mut RuntimeState| match event {
-                    DrmEvent::VBlank(crtc) => {
-                        trace!(device_id, ?crtc, ?metadata, "DRM vblank");
-                        state.dispatch_drm_vblank(device_id, crtc, *metadata);
-                    }
-                    DrmEvent::Error(error) => warn!(device_id, %error, "DRM event error"),
-                },
-            )
-            .map_err(|error| BackendError::Source(error.to_string()))?;
 
         self.devices.insert(
             device_id,
             OpenDevice {
-                token,
                 drm,
+                monotonic_timestamps,
                 gbm,
                 scanner: DrmScanner::new(),
                 connectors: BTreeMap::new(),
@@ -465,10 +454,9 @@ impl TtyBackend {
     }
 
     fn remove_device(&mut self, device_id: libc::dev_t) {
-        let Some(device) = self.devices.remove(&device_id) else {
+        let Some(_device) = self.devices.remove(&device_id) else {
             return;
         };
-        self.loop_handle.remove(device.token);
         self.topology_generation = self.topology_generation.wrapping_add(1);
         self.reconcile_outputs();
         info!(device_id, "DRM/GBM device removed");
@@ -652,18 +640,14 @@ fn negotiate_device_output_formats(
 
 fn describe_connector(
     device_id: libc::dev_t,
-    connector: &smithay::reexports::drm::control::connector::Info,
-    crtc: Option<smithay::reexports::drm::control::crtc::Handle>,
+    connector: &drm::control::connector::Info,
+    crtc: Option<drm::control::crtc::Handle>,
 ) -> ConnectorSnapshot {
     let modes = connector
         .modes()
         .iter()
         .copied()
-        .filter(|mode| {
-            !mode
-                .flags()
-                .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
-        })
+        .filter(|mode| !mode.flags().contains(drm::control::ModeFlags::INTERLACE))
         .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
         .collect::<Vec<_>>();
     let preferred_mode = connector
@@ -672,10 +656,8 @@ fn describe_connector(
         .copied()
         .find(|mode| {
             mode.mode_type()
-                .contains(smithay::reexports::drm::control::ModeTypeFlags::PREFERRED)
-                && !mode
-                    .flags()
-                    .contains(smithay::reexports::drm::control::ModeFlags::INTERLACE)
+                .contains(drm::control::ModeTypeFlags::PREFERRED)
+                && !mode.flags().contains(drm::control::ModeFlags::INTERLACE)
         })
         .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
         .or_else(|| modes.first().copied());
@@ -684,13 +666,9 @@ fn describe_connector(
         id: super::BackendOutputId::new(device_id, connector.handle().into()),
         name: connector.to_string(),
         state: match connector.state() {
-            smithay::reexports::drm::control::connector::State::Connected => {
-                ConnectorState::Connected
-            }
-            smithay::reexports::drm::control::connector::State::Disconnected => {
-                ConnectorState::Disconnected
-            }
-            smithay::reexports::drm::control::connector::State::Unknown => ConnectorState::Unknown,
+            drm::control::connector::State::Connected => ConnectorState::Connected,
+            drm::control::connector::State::Disconnected => ConnectorState::Disconnected,
+            drm::control::connector::State::Unknown => ConnectorState::Unknown,
         },
         physical_size: (physical_size.0 as i32, physical_size.1 as i32),
         subpixel: subpixel_from_smithay(smithay::output::Subpixel::from(connector.subpixel())),
@@ -765,8 +743,6 @@ pub(crate) enum BackendError {
     MissingPairedNode { path: PathBuf, target: String },
     #[error("primary DRM device {path} is unavailable")]
     PrimaryUnavailable { path: PathBuf },
-    #[error("failed to register a tty event source: {0}")]
-    Source(String),
     #[error("unknown DRM device {device_id}")]
     UnknownDevice { device_id: libc::dev_t },
     #[error("unknown output {0:?}")]

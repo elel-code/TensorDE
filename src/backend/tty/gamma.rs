@@ -11,10 +11,8 @@ use std::{
     os::fd::AsFd,
 };
 
-use smithay::{
-    backend::drm::DrmDevice,
-    reexports::drm::control::{self, Device as ControlDevice, crtc, property},
-};
+use drm::control::{self, Device as ControlDevice, crtc, property};
+use smithay::backend::drm::DrmDevice;
 use tracing::warn;
 
 /// Atomic CRTC gamma property handles plus the last applied blob id.

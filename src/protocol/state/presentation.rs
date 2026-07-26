@@ -5,7 +5,6 @@ use std::{
 };
 
 use smithay::{
-    backend::drm::{DrmEventMetadata, DrmEventTime},
     desktop::utils::{
         OutputPresentationFeedback, send_frames_surface_tree,
         take_presentation_feedback_surface_tree,
@@ -18,6 +17,7 @@ use smithay::{
     utils::{Clock, Monotonic},
     wayland::{compositor::SurfaceData, presentation::Refresh, seat::WaylandFocus},
 };
+use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;
 use tracing::warn;
 
@@ -127,7 +127,7 @@ impl RuntimeState {
         &mut self,
         output_id: BackendOutputId,
         timeline_value: u64,
-        metadata: Option<DrmEventMetadata>,
+        metadata: Option<VblankMetadata>,
     ) -> bool {
         let Some(frame) = self.pending_presentations.take(output_id, timeline_value) else {
             return false;
@@ -343,21 +343,22 @@ struct PresentationSample {
 }
 
 fn presentation_sample(
-    metadata: Option<DrmEventMetadata>,
+    metadata: Option<VblankMetadata>,
     fallback_time: Duration,
     refresh_millihertz: Option<i32>,
 ) -> PresentationSample {
     let mut flags =
         wp_presentation_feedback::Kind::Vsync | wp_presentation_feedback::Kind::HwCompletion;
     let (time, sequence) = match metadata {
-        Some(DrmEventMetadata {
-            time: DrmEventTime::Monotonic(time),
+        Some(VblankMetadata {
+            timestamp,
             sequence,
-        }) if !time.is_zero() => {
+            clock: VblankClock::Monotonic,
+        }) if !timestamp.is_zero() => {
             flags.insert(wp_presentation_feedback::Kind::HwClock);
-            (time, u64::from(sequence))
+            (timestamp, u64::from(sequence))
         }
-        Some(DrmEventMetadata { sequence, .. }) => (fallback_time, u64::from(sequence)),
+        Some(VblankMetadata { sequence, .. }) => (fallback_time, u64::from(sequence)),
         None => (fallback_time, 0),
     };
     PresentationSample {
@@ -383,8 +384,6 @@ fn refresh_from_millihertz(refresh: i32) -> Refresh {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use smithay::output::{PhysicalProperties, Subpixel};
     use tensor_util::Size;
 
@@ -502,9 +501,10 @@ mod tests {
     #[test]
     fn zero_hardware_timestamp_keeps_sequence_without_claiming_hardware_clock() {
         let sample = presentation_sample(
-            Some(DrmEventMetadata {
-                time: DrmEventTime::Monotonic(Duration::ZERO),
+            Some(VblankMetadata {
+                timestamp: Duration::ZERO,
                 sequence: 11,
+                clock: VblankClock::Monotonic,
             }),
             Duration::from_secs(4),
             Some(60_000),
@@ -522,9 +522,10 @@ mod tests {
     fn monotonic_kernel_metadata_is_the_only_hardware_clock() {
         let fallback = Duration::from_secs(3);
         let monotonic = presentation_sample(
-            Some(DrmEventMetadata {
-                time: DrmEventTime::Monotonic(Duration::from_secs(2)),
+            Some(VblankMetadata {
+                timestamp: Duration::from_secs(2),
                 sequence: 9,
+                clock: VblankClock::Monotonic,
             }),
             fallback,
             Some(60_000),
@@ -538,9 +539,10 @@ mod tests {
         );
 
         let realtime = presentation_sample(
-            Some(DrmEventMetadata {
-                time: DrmEventTime::Realtime(SystemTime::UNIX_EPOCH),
+            Some(VblankMetadata {
+                timestamp: Duration::ZERO,
                 sequence: 10,
+                clock: VblankClock::Realtime,
             }),
             fallback,
             Some(60_000),

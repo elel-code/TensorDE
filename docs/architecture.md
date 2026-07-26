@@ -247,7 +247,7 @@ A toplevel is assigned a stable `ViewId` at creation and removed idempotently fr
 Tensor does not reimplement DRM/KMS, GBM, libinput, or libseat. Its small udev adapter owns only
 enumeration, the monitor fd, and value-only hotplug events; Compio completes each submitted monitor
 wait and the compositor thread performs reconciliation. The tty backend owns session activation,
-libinput seat assignment, DRM notifier tokens, GBM lifetime, and per-output native-format
+libinput seat assignment, compositor-thread DRM completion fds, GBM lifetime, and per-output native-format
 validation. It opens the primary/render pair selected during
 Vulkan probing and requires that pair to be available through the active libseat session. Future
 surface creation, modesetting, page flips, and direct scanout remain in this Smithay backend;

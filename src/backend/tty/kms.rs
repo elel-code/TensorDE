@@ -3,6 +3,7 @@ use std::{
     os::fd::{AsFd, BorrowedFd, OwnedFd},
 };
 
+use drm::control::{Mode as DrmMode, connector, crtc};
 use smithay::{
     backend::{
         allocator::{dmabuf::Dmabuf, gbm::GbmDevice},
@@ -12,7 +13,6 @@ use smithay::{
         },
         session::Session,
     },
-    reexports::drm::control::{Mode as DrmMode, connector, crtc},
     utils::{Rectangle, Transform},
 };
 use thiserror::Error;
@@ -112,14 +112,14 @@ impl TtyBackend {
 
     pub(crate) fn handle_drm_vblank(
         &mut self,
-        device_id: libc::dev_t,
-        crtc: crtc::Handle,
+        device_id: u64,
+        crtc_id: u32,
     ) -> Option<KmsPresentation> {
         self.devices
             .get_mut(&device_id)?
             .native_targets
             .values_mut()
-            .find(|output| output.crtc() == crtc)?
+            .find(|output| u32::from(output.crtc()) == crtc_id)?
             .frame_submitted()
     }
 }

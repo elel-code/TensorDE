@@ -225,7 +225,9 @@ to the compositor's monotonic clock without claiming hardware clock accuracy.
 Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as
 `SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame also signals
 an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty backend consumes it
-as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip and vblank; the bounded repaint queue
+as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip submission. One per-device operation on
+the compositor-thread Compio runtime completes for vblank, then drm-rs decodes one fixed stack
+batch before explicit rearm. The bounded repaint queue
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
 An input-driven compositor overlay repaint remains pending when its only blocked gate is a Vulkan

@@ -476,20 +476,55 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn dispatch_drm_vblank(
-        &mut self,
-        device_id: libc::dev_t,
-        crtc: smithay::reexports::drm::control::crtc::Handle,
-        metadata: Option<smithay::backend::drm::DrmEventMetadata>,
-    ) {
+    pub(crate) fn drm_completion_generation(&self) -> u64 {
+        self.backend
+            .as_ref()
+            .map_or(0, crate::backend::TtyBackend::drm_completion_generation)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn write_drm_completion_device_ids(
+        &self,
+        destination: &mut [u64],
+    ) -> Result<usize, String> {
+        self.backend.as_ref().map_or(Ok(0), |backend| {
+            backend.write_drm_completion_device_ids(destination)
+        })
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn duplicate_drm_completion_fd(
+        &self,
+        device_id: u64,
+    ) -> Result<std::os::fd::OwnedFd, String> {
+        self.backend
+            .as_ref()
+            .ok_or_else(|| "tty backend is unavailable".to_owned())?
+            .duplicate_drm_completion_fd(device_id)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn dispatch_drm_completion(&mut self, device_id: u64) -> Result<(), String> {
+        let Some(backend) = self.backend.as_ref() else {
+            return Ok(());
+        };
+        let mut events = backend.receive_drm_events(device_id)?;
+        for event in events.drain() {
+            self.dispatch_drm_vblank(event);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn dispatch_drm_vblank(&mut self, event: tensor_host::VblankEvent) {
         let presentation = self
             .backend
             .as_mut()
-            .and_then(|backend| backend.handle_drm_vblank(device_id, crtc));
+            .and_then(|backend| backend.handle_drm_vblank(event.device_id, event.crtc_id));
         let Some(presentation) = presentation else {
             return;
         };
-        let sequence = metadata.map(|metadata| metadata.sequence).unwrap_or(0);
+        let sequence = event.metadata.sequence;
         debug!(
             output_device = presentation.output.device_id,
             output_connector = presentation.output.connector_id,
@@ -508,7 +543,11 @@ impl RuntimeState {
         {
             ready.mark_presented(tensor_host::PresentSlot(presentation.slot));
         }
-        if !self.finish_presentation(presentation.output, presentation.timeline_value, metadata) {
+        if !self.finish_presentation(
+            presentation.output,
+            presentation.timeline_value,
+            Some(event.metadata),
+        ) {
             warn!(
                 output_device = presentation.output.device_id,
                 output_connector = presentation.output.connector_id,

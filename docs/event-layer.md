@@ -96,9 +96,10 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    readiness registry.
    The compositor thread now receives worker eventfd completions directly from
    its Compio runtime; the shared relay thread and calloop channel are gone.
+   DRM page flips now use one compositor-thread Compio operation per device;
+   each CQE is consumed as one fixed stack batch and explicitly rearmed.
    One submitted wait on calloop's aggregate fd remains temporarily for
-   Smithay's XWM X11-event and DRM notification adapters. Next: express those
-   sources as direct Compio-completed ops (io_uring driver).
+   Smithay's XWM X11 events and idle callbacks. Next: remove that final adapter.
 6. Replace Smithay backends with native input/DRM open path; delete Smithay
    (see `docs/smithay-exit.md`).
 

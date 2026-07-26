@@ -26,6 +26,7 @@ default = ["tty", "xwayland"]
 systemd = ["dep:sd-notify", "dep:zbus"]
 tty = [
     "dep:calloop-wayland-source",
+    "dep:drm",
     "dep:drm-ffi",
     "dep:gbm",
     "dep:input",
@@ -46,6 +47,7 @@ calloop-wayland-source = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"] }
 # Compio = completion model; io-uring is the product driver; `polling` is Compio's host fallback only.
 compio = { version = "0.19", default-features = false, features = ["runtime", "async-fd", "io-uring", "polling", "fs", "net"] }
+drm = { version = "0.14", optional = true }
 drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
 futures-util = "0.3"

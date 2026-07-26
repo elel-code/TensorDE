@@ -5,13 +5,14 @@ The startup sequence is a set of ordered gates:
 1. Parse CLI arguments and environment overrides.
 2. Resolve, parse, and validate the complete TOML configuration.
 3. Initialize logging and diagnostics.
-4. Create calloop, the Smithay display, and the Wayland listening socket.
+4. Create the compositor-thread Compio runtime boundary, Smithay display, transitional calloop
+   aggregate, and Wayland listening socket.
 5. Create Vulkan, validate the client-image SPIR-V and descriptor-heap pipeline, and reject
    devices without `VK_EXT_descriptor_heap` or a usable exportable native format/modifier.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
-8. Register the Wayland display/socket, XWayland, signals, configuration watchers, and DRM notifier
-   sources; submit the Compio IPC, udev, libinput, and libseat session completion services.
+8. Register the Wayland display/socket, XWayland, signals, and configuration watchers; submit the
+   Compio IPC, udev, libinput, libseat session, and compositor-thread per-device DRM completion ops.
    Intersect every active output's KMS/GBM formats with the Vulkan capability snapshot before this
    gate completes.
 9. Publish the session environment to the compositor-owned process launcher.

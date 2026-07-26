@@ -18,6 +18,7 @@ mod mode;
 mod present;
 mod session;
 mod subpixel;
+mod vblank;
 
 pub use connector::{ConnectorId, ConnectorState};
 pub use format::{
@@ -29,3 +30,6 @@ pub use mode::PhysicalMode;
 pub use present::{PresentIntent, PresentSlot, PresentState};
 pub use session::SessionEvent;
 pub use subpixel::SubpixelLayout;
+pub use vblank::{
+    MAX_VBLANK_EVENTS_PER_READ, VblankBatch, VblankClock, VblankEvent, VblankMetadata,
+};

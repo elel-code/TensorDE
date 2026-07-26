@@ -2056,6 +2056,7 @@ dependencies = [
  "calloop-wayland-source",
  "clap",
  "compio",
+ "drm",
  "drm-ffi",
  "futures-channel",
  "futures-util",
