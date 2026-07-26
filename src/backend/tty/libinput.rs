@@ -9,8 +9,9 @@ use input::{Libinput, event};
 use smithay::backend::{
     input::InputEvent as SmithayInputEvent,
     libinput::{LibinputInputBackend, LibinputSessionInterface, PointerScrollAxis},
-    session::libseat::LibSeatSession,
 };
+
+use super::session::SeatSession;
 
 const MAX_EVENTS_PER_COMPLETION: usize = 256;
 
@@ -22,7 +23,7 @@ pub(super) struct LibinputSource {
 }
 
 impl LibinputSource {
-    pub(super) fn new(session: LibSeatSession, seat: &str, active: bool) -> Result<Self, ()> {
+    pub(super) fn new(session: SeatSession, seat: &str, active: bool) -> Result<Self, ()> {
         let mut context = Libinput::new_with_udev(LibinputSessionInterface::from(session));
         context.udev_assign_seat(seat)?;
         if !active {

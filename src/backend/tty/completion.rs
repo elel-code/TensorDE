@@ -1,6 +1,30 @@
 use super::{LibinputEvent, TtyBackend, UdevEvent};
 
 impl TtyBackend {
+    pub(crate) fn drain_session_completions(
+        &mut self,
+    ) -> Result<Vec<tensor_host::SessionEvent>, String> {
+        let mut events = Vec::new();
+        while let Some(completion) = self.session_completions.try_recv() {
+            match self.session.drain() {
+                Ok(completed) => events.extend(completed),
+                Err(error) => {
+                    let _ = completion.finish();
+                    return Err(format!(
+                        "failed to dispatch completed libseat events: {error}"
+                    ));
+                }
+            }
+            completion
+                .rearm()
+                .map_err(|error| format!("libseat completion rearm was rejected: {error:?}"))?;
+        }
+        if let Some(message) = self.session_failures.try_recv() {
+            return Err(message);
+        }
+        Ok(events)
+    }
+
     pub(crate) fn drain_udev_completions(&mut self) -> Result<Vec<UdevEvent>, String> {
         let mut events = Vec::new();
         while let Some(completion) = self.udev_completions.try_recv() {

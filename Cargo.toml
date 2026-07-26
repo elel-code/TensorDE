@@ -29,12 +29,13 @@ tty = [
     "dep:drm-ffi",
     "dep:gbm",
     "dep:input",
+    "dep:libseat",
     "dep:smithay-drm-extras",
     "dep:udev",
     "smithay/backend_drm",
     "smithay/backend_gbm",
     "smithay/backend_libinput",
-    "smithay/backend_session_libseat",
+    "smithay/backend_session",
 ]
 xwayland = ["smithay/xwayland"]
 
@@ -50,6 +51,7 @@ futures-channel = "0.3"
 futures-util = "0.3"
 gbm = { version = "0.18", optional = true }
 input = { version = "0.10", default-features = false, optional = true, features = ["udev"] }
+libseat = { version = "0.2", default-features = false, optional = true }
 libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }
 smithay = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, features = ["desktop", "wayland_frontend"] }

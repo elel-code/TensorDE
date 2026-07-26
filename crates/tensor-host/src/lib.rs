@@ -16,6 +16,7 @@ mod format;
 mod input;
 mod mode;
 mod present;
+mod session;
 mod subpixel;
 
 pub use connector::{ConnectorId, ConnectorState};
@@ -26,4 +27,5 @@ pub use format::{
 pub use input::{AxisSource, KeyState, PointerAxis, PointerButton, PointerMotion};
 pub use mode::PhysicalMode;
 pub use present::{PresentIntent, PresentSlot, PresentState};
+pub use session::SessionEvent;
 pub use subpixel::SubpixelLayout;

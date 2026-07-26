@@ -8,7 +8,7 @@ use smithay::{
     backend::{
         allocator::gbm::{GbmBufferFlags, GbmDevice},
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
-        session::{Event as SessionEvent, Session, libseat::LibSeatSession},
+        session::Session,
     },
     reexports::{
         calloop::{LoopHandle, RegistrationToken},
@@ -42,13 +42,17 @@ mod gamma;
 mod kms;
 mod libinput;
 mod management;
+mod session;
 mod status;
 mod udev;
 
 use libinput::{LibinputEvent, LibinputSource};
+use session::SeatSession;
 pub(crate) use udev::UdevEvent;
 use udev::UdevMonitor;
 
+const MAX_PENDING_SESSION_COMPLETIONS: usize = 1;
+const MAX_PENDING_SESSION_FAILURES: usize = 1;
 const MAX_PENDING_UDEV_COMPLETIONS: usize = 1;
 const MAX_PENDING_UDEV_FAILURES: usize = 1;
 const MAX_PENDING_LIBINPUT_COMPLETIONS: usize = 1;
@@ -56,7 +60,10 @@ const MAX_PENDING_LIBINPUT_FAILURES: usize = 1;
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
-    session: LibSeatSession,
+    session: SeatSession,
+    session_completions: WorkerRx<OpaqueFdCompletion>,
+    session_failures: WorkerRx<String>,
+    _session_completion_runtime: OpaqueFdCompletionRuntime,
     libinput: LibinputSource,
     libinput_completions: WorkerRx<OpaqueFdCompletion>,
     libinput_failures: WorkerRx<String>,
@@ -93,8 +100,8 @@ impl TtyBackend {
         config: &BackendConfig,
         completion_wake: Arc<dyn WakeSink>,
     ) -> Result<Self, BackendError> {
-        let (session, notifier) =
-            LibSeatSession::new().map_err(|error| BackendError::Session(error.to_string()))?;
+        let session =
+            SeatSession::new().map_err(|error| BackendError::Session(error.to_string()))?;
         let seat = session.seat();
         let udev = UdevMonitor::new(&seat).map_err(BackendError::Udev)?;
         let initial_devices = udev
@@ -113,6 +120,21 @@ impl TtyBackend {
         let libinput = LibinputSource::new(session.clone(), &seat, session.is_active())
             .map_err(|()| BackendError::LibinputSeat(seat.clone()))?;
 
+        let (session_completion_sender, session_completions) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_SESSION_COMPLETIONS,
+            Arc::clone(&completion_wake),
+        );
+        let (session_failure_sender, session_failures) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_SESSION_FAILURES,
+            Arc::clone(&completion_wake),
+        );
+        let session_completion_runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-libseat-completions",
+            &session,
+            session_completion_sender,
+            session_failure_sender,
+        )
+        .map_err(|error| BackendError::SessionCompletion(error.to_string()))?;
         let (udev_completion_sender, udev_completions) = WorkerBridge::bounded_with_wake(
             MAX_PENDING_UDEV_COMPLETIONS,
             Arc::clone(&completion_wake),
@@ -145,6 +167,9 @@ impl TtyBackend {
         let mut backend = Self {
             loop_handle: loop_handle.clone(),
             session,
+            session_completions,
+            session_failures,
+            _session_completion_runtime: session_completion_runtime,
             libinput,
             libinput_completions,
             libinput_failures,
@@ -166,12 +191,6 @@ impl TtyBackend {
         if backend.session.is_active() {
             backend.reconcile_devices(initial_devices, true)?;
         }
-
-        loop_handle
-            .insert_source(notifier, |event, _, state| {
-                state.dispatch_session_event(event);
-            })
-            .map_err(|error| BackendError::Source(error.to_string()))?;
 
         let status = backend.status();
         info!(
@@ -295,16 +314,16 @@ impl TtyBackend {
         }
     }
 
-    pub(crate) fn handle_session_event(&mut self, event: SessionEvent) {
+    pub(crate) fn handle_session_event(&mut self, event: tensor_host::SessionEvent) {
         match event {
-            SessionEvent::PauseSession => {
+            tensor_host::SessionEvent::Paused => {
                 debug!("pausing tty session");
                 self.libinput.suspend();
                 for device in self.devices.values_mut() {
                     device.drm.pause();
                 }
             }
-            SessionEvent::ActivateSession => {
+            tensor_host::SessionEvent::Activated => {
                 debug!("activating tty session");
                 if self.libinput.resume().is_err() {
                     warn!("failed to resume libinput");
@@ -736,6 +755,8 @@ pub(crate) enum BackendError {
     LibinputSeat(String),
     #[error("failed to initialize the libinput completion runtime: {0}")]
     LibinputCompletion(String),
+    #[error("failed to initialize the libseat completion runtime: {0}")]
+    SessionCompletion(String),
     #[error("failed to initialize DRM device {path}: {message}")]
     Device { path: PathBuf, message: String },
     #[error("configured DRM node {path} has unsupported type {node_type}")]

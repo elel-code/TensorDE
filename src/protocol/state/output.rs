@@ -531,15 +531,28 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     pub(crate) fn drain_backend_completions(&mut self) -> Result<(), String> {
-        let Some(mut backend) = self.backend.take() else {
+        let Some(backend) = self.backend.as_mut() else {
             return Ok(());
         };
-        let udev_events = backend.drain_udev_completions();
-        let input_events = backend.drain_libinput_completions();
-        self.backend = Some(backend);
+        let session_events = backend.drain_session_completions();
+        for event in session_events? {
+            self.dispatch_session_event(event);
+        }
+
+        let udev_events = self
+            .backend
+            .as_mut()
+            .expect("session dispatch restored the tty backend")
+            .drain_udev_completions();
         for event in udev_events? {
             self.dispatch_udev_event(event);
         }
+
+        let input_events = self
+            .backend
+            .as_mut()
+            .expect("udev dispatch restored the tty backend")
+            .drain_libinput_completions();
         for event in input_events? {
             self.process_input_event(event);
         }
@@ -565,8 +578,8 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn dispatch_session_event(&mut self, event: smithay::backend::session::Event) {
-        if matches!(event, smithay::backend::session::Event::PauseSession) {
+    pub(crate) fn dispatch_session_event(&mut self, event: tensor_host::SessionEvent) {
+        if matches!(event, tensor_host::SessionEvent::Paused) {
             let discarded = self.discard_all_presentations();
             if discarded > 0 {
                 info!(
