@@ -51,6 +51,7 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for NativeSh
                 let Some(entry) = state.presentation_feedbacks.remove(&obj) else {
                     return;
                 };
+                state.presentation_pending.remove(&entry.surface);
                 let tv_sec = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
                 let seq = (u64::from(seq_hi) << 32) | u64::from(seq_lo);
                 let flags = match flags {
@@ -71,6 +72,7 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for NativeSh
             }
             wp_presentation_feedback::Event::Discarded => {
                 if let Some(entry) = state.presentation_feedbacks.remove(&obj) {
+                    state.presentation_pending.remove(&entry.surface);
                     state.push(NativeShellEvent::PresentationDiscarded {
                         surface: entry.surface,
                     });

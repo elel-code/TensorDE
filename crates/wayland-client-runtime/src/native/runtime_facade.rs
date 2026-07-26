@@ -357,6 +357,21 @@ impl NativeRuntime {
         self.shell.outputs()
     }
 
+    /// Fill `out` with current outputs (reuses capacity).
+    pub fn outputs_into(&self, out: &mut Vec<OutputInfo>) {
+        self.shell.outputs_into(out)
+    }
+
+    /// Bound seats (multi-seat compositors may advertise more than one).
+    pub fn seats(&self) -> Vec<crate::SeatInfo> {
+        self.shell.seats()
+    }
+
+    #[inline]
+    pub fn seat_count(&self) -> usize {
+        self.shell.seat_count()
+    }
+
     pub fn create_popup(
         &mut self,
         parent: SurfaceId,
@@ -576,6 +591,13 @@ impl NativeRuntime {
         self.shell
             .request_presentation_feedback(native)
             .map_err(map_native_error)
+    }
+
+    /// Whether presentation feedback is still outstanding for `surface`.
+    pub fn is_presentation_pending(&self, surface: SurfaceId) -> bool {
+        self.native(surface)
+            .map(|n| self.shell.is_presentation_pending(n))
+            .unwrap_or(false)
     }
 
     /// Presentation clock id from `wp_presentation.clock_id`, if advertised.

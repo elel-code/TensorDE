@@ -88,8 +88,15 @@ impl NativeShell {
             state.wm_base_version = wm_base.version();
             state.wm_base = Some(wm_base);
         }
-        if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=9, ()) {
-            state.seat = Some(seat);
+        // Bind every advertised wl_seat (multi-seat compositors).
+        for global in globals.contents().clone_list() {
+            if global.interface == "wl_seat" {
+                let version = global.version.min(9).max(1);
+                let seat = globals
+                    .registry()
+                    .bind::<wl_seat::WlSeat, _, _>(global.name, version, &qh, ());
+                state.register_seat(global.name, seat);
+            }
         }
         if let Ok(ddm) =
             globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(&qh, 1..=3, ())
@@ -1004,15 +1011,24 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Protocol(format!("unknown layer {id:?}")))
     }
 
-    /// Snapshot of currently known outputs.
+    /// Snapshot of currently known outputs into `out` (clears first, reuses capacity).
+    pub fn outputs_into(&self, out: &mut Vec<crate::output::OutputInfo>) {
+        out.clear();
+        out.reserve(self.state.outputs.len());
+        for &name in self.state.outputs.keys() {
+            if let Some(info) = self.output_info(name) {
+                out.push(info);
+            }
+        }
+        out.sort_by_key(|o| o.id.get());
+    }
+
+    /// Snapshot of currently known outputs (allocates a new `Vec`).
+    ///
+    /// Prefer [`Self::outputs_into`] in hot loops to reuse capacity.
     pub fn outputs(&self) -> Vec<crate::output::OutputInfo> {
-        let mut list: Vec<_> = self
-            .state
-            .outputs
-            .keys()
-            .filter_map(|&name| self.output_info(name))
-            .collect();
-        list.sort_by_key(|o| o.id.get());
+        let mut list = Vec::with_capacity(self.state.outputs.len());
+        self.outputs_into(&mut list);
         list
     }
 
@@ -1044,6 +1060,30 @@ impl NativeShell {
             scale_factor: rec.scale,
             refresh_mhz: (rec.mode_refresh_mhz > 0).then_some(rec.mode_refresh_mhz),
         })
+    }
+
+    /// Number of bound seats.
+    #[inline]
+    pub fn seat_count(&self) -> usize {
+        self.state.seats.len()
+    }
+
+    /// Snapshot of bound seats (registry name + optional compositor seat name).
+    pub fn seats(&self) -> Vec<crate::SeatInfo> {
+        let mut list: Vec<_> = self
+            .state
+            .seats
+            .values()
+            .map(|s| crate::SeatInfo {
+                id: crate::SeatId::from_raw(s.global_name),
+                name: s.name.clone(),
+                has_keyboard: s.keyboard.is_some(),
+                has_pointer: s.pointer.is_some(),
+                has_touch: s.touch.is_some(),
+            })
+            .collect();
+        list.sort_by_key(|s| s.id.get());
+        list
     }
 
     /// Create a bufferless GPU-friendly popup (no solid SHM fill).
@@ -1300,6 +1340,9 @@ impl NativeShell {
     /// the content submission). Emits [`NativeShellEvent::Presented`] or
     /// [`NativeShellEvent::PresentationDiscarded`]. No-ops cleanly when the
     /// global is missing (returns `Ok` so callers can always arm feedback).
+    ///
+    /// Coalesces: if feedback is already outstanding for `id`, this is a no-op
+    /// success (avoids stacking feedback objects when arming every redraw).
     pub fn request_presentation_feedback(
         &mut self,
         id: NativeSurfaceId,
@@ -1307,6 +1350,9 @@ impl NativeShell {
         let Some(presentation) = self.state.presentation.clone() else {
             return Ok(());
         };
+        if self.state.presentation_pending.contains(&id) {
+            return Ok(());
+        }
         let qh = self.queue.handle();
         let wl = self
             .state
@@ -1322,8 +1368,15 @@ impl NativeShell {
                 sync_output: None,
             },
         );
+        self.state.presentation_pending.insert(id);
         self.connection.mark_dirty();
         Ok(())
+    }
+
+    /// Whether presentation feedback is outstanding for `id`.
+    #[inline]
+    pub fn is_presentation_pending(&self, id: NativeSurfaceId) -> bool {
+        self.state.is_presentation_pending(id)
     }
 
     /// Set the pointer cursor via `wp_cursor_shape` when available.

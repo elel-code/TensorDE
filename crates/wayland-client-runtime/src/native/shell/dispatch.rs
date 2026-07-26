@@ -68,9 +68,10 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
                 interface,
                 version,
             } => {
-                if interface == "wl_seat" && state.seat.is_none() {
+                if interface == "wl_seat" && !state.seats.contains_key(&name) {
                     let v = version.min(9).max(1);
-                    state.seat = Some(registry.bind(name, v, qh, ()));
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, v, qh, ());
+                    state.register_seat(name, seat);
                 }
                 // Hotplug: bind outputs advertised after the initial registry dump.
                 if interface == "wl_output" && !state.outputs.contains_key(&name) {
@@ -438,46 +439,118 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities {
-            capabilities: WEnum::Value(capabilities),
-        } = event
-        {
-            state.seat_capabilities = capabilities;
-            if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
-            if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                let pointer = seat.get_pointer(qh, ());
-                if let Some(manager) = state.pointer_gestures.as_ref() {
-                    if state.swipe_gesture.is_none() {
-                        state.swipe_gesture =
-                            Some(manager.get_swipe_gesture(&pointer, qh, ()));
-                    }
-                    if state.pinch_gesture.is_none() {
-                        state.pinch_gesture =
-                            Some(manager.get_pinch_gesture(&pointer, qh, ()));
-                    }
-                    if manager.version() >= 3 && state.hold_gesture.is_none() {
-                        state.hold_gesture = Some(manager.get_hold_gesture(&pointer, qh, ()));
+        let seat_global = state.seat_objects.get(&seat.id().protocol_id()).copied();
+        match event {
+            wl_seat::Event::Name { name } => {
+                if let Some(global) = seat_global {
+                    if let Some(rec) = state.seats.get_mut(&global) {
+                        rec.name = Some(name);
                     }
                 }
-                // Relative pointer is opt-in via enable_relative_pointer (capture / games).
-                state.pointer = Some(pointer);
             }
-            if capabilities.contains(wl_seat::Capability::Touch) && state.touch.is_none() {
-                state.touch = Some(seat.get_touch(qh, ()));
-            }
-            if !capabilities.contains(wl_seat::Capability::Touch) {
-                if state.touch.take().is_some()
-                    || !state.touch_active.is_empty()
-                    || !state.touch_pending.is_empty()
-                {
-                    state.touch_pending.clear();
-                    state.touch_active.clear();
-                    state.touch_points.clear();
-                    state.push(NativeShellEvent::TouchCancel);
+            wl_seat::Event::Capabilities {
+                capabilities: WEnum::Value(capabilities),
+            } => {
+                // Keep shell-wide capability bits as the union of all seats for
+                // capability queries; devices still attach per-seat.
+                state.seat_capabilities |= capabilities;
+                let is_primary = state
+                    .seat
+                    .as_ref()
+                    .is_some_and(|s| s.id() == seat.id());
+
+                if let Some(global) = seat_global {
+                    if let Some(rec) = state.seats.get_mut(&global) {
+                        rec.capabilities = capabilities;
+                    }
+                }
+
+                if capabilities.contains(wl_seat::Capability::Keyboard) {
+                    let need = match seat_global.and_then(|g| state.seats.get(&g)) {
+                        Some(rec) => rec.keyboard.is_none(),
+                        None => state.keyboard.is_none(),
+                    };
+                    if need {
+                        let keyboard = seat.get_keyboard(qh, ());
+                        if let Some(global) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&global) {
+                                rec.keyboard = Some(keyboard.clone());
+                            }
+                        }
+                        // Primary-seat keyboard fills the legacy single field.
+                        if is_primary || state.keyboard.is_none() {
+                            state.keyboard = Some(keyboard);
+                        }
+                    }
+                }
+                if capabilities.contains(wl_seat::Capability::Pointer) {
+                    let need = match seat_global.and_then(|g| state.seats.get(&g)) {
+                        Some(rec) => rec.pointer.is_none(),
+                        None => state.pointer.is_none(),
+                    };
+                    if need {
+                        let pointer = seat.get_pointer(qh, ());
+                        // Gestures / relative pointer attach only to the primary
+                        // pointer (single stream APIs today).
+                        if is_primary || state.pointer.is_none() {
+                            if let Some(manager) = state.pointer_gestures.as_ref() {
+                                if state.swipe_gesture.is_none() {
+                                    state.swipe_gesture =
+                                        Some(manager.get_swipe_gesture(&pointer, qh, ()));
+                                }
+                                if state.pinch_gesture.is_none() {
+                                    state.pinch_gesture =
+                                        Some(manager.get_pinch_gesture(&pointer, qh, ()));
+                                }
+                                if manager.version() >= 3 && state.hold_gesture.is_none() {
+                                    state.hold_gesture =
+                                        Some(manager.get_hold_gesture(&pointer, qh, ()));
+                                }
+                            }
+                            state.pointer = Some(pointer.clone());
+                        }
+                        if let Some(global) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&global) {
+                                rec.pointer = Some(pointer);
+                            }
+                        }
+                    }
+                }
+                if capabilities.contains(wl_seat::Capability::Touch) {
+                    let need = match seat_global.and_then(|g| state.seats.get(&g)) {
+                        Some(rec) => rec.touch.is_none(),
+                        None => state.touch.is_none(),
+                    };
+                    if need {
+                        let touch = seat.get_touch(qh, ());
+                        if let Some(global) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&global) {
+                                rec.touch = Some(touch.clone());
+                            }
+                        }
+                        if is_primary || state.touch.is_none() {
+                            state.touch = Some(touch);
+                        }
+                    }
+                }
+                if !capabilities.contains(wl_seat::Capability::Touch) && is_primary {
+                    if state.touch.take().is_some()
+                        || !state.touch_active.is_empty()
+                        || !state.touch_pending.is_empty()
+                    {
+                        state.touch_pending.clear();
+                        state.touch_active.clear();
+                        state.touch_points.clear();
+                        state.push(NativeShellEvent::TouchCancel);
+                    }
+                    if let Some(global) = seat_global {
+                        if let Some(rec) = state.seats.get_mut(&global) {
+                            rec.touch = None;
+                        }
+                    }
                 }
             }
+            _ => {}
         }
     }
 }

@@ -631,6 +631,10 @@ mod tests {
         shell
             .request_presentation_feedback(id)
             .expect("layer presentation");
+        assert!(shell.is_presentation_pending(id) || !shell.has_presentation());
+        shell
+            .request_presentation_feedback(id)
+            .expect("presentation coalesced");
         assert_eq!(
             shell.logical_size(id),
             Some(crate::LogicalSize::new(320, 200))
@@ -640,9 +644,21 @@ mod tests {
             shell.surface_kind(id),
             Some(crate::surface::SurfaceKind::Layer)
         );
+        // Multi-seat: at least the primary seat is registered when a seat exists.
+        if shell.seat().is_some() {
+            assert!(shell.seat_count() >= 1);
+            assert!(!shell.seats().is_empty());
+        }
+        // outputs_into reuses capacity.
+        let mut outs = Vec::with_capacity(4);
+        shell.outputs_into(&mut outs);
+        let cap = outs.capacity();
+        shell.outputs_into(&mut outs);
+        assert!(outs.capacity() >= cap);
         let _ = shell.destroy_layer_surface(id);
         assert!(shell.scale_factor(id).is_none());
         assert!(!shell.is_frame_pending(id));
+        assert!(!shell.is_presentation_pending(id));
     }
 
     #[test]

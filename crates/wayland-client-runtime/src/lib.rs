@@ -138,7 +138,7 @@ pub use event::{
     SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind,
 };
 pub use geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
-pub use input::{CursorIcon, InputSerial, InputSerialSource};
+pub use input::{CursorIcon, InputSerial, InputSerialSource, SeatId, SeatInfo};
 pub use layer_shell::{
     LayerAnchor, LayerEdge, LayerKeyboardInteractivity, LayerMargins, LayerSurfaceAttributes,
     LayerSurfaceError, LayerSurfaceEvent, LayerSurfaceLayer, LayerSurfaceState,

@@ -1,6 +1,31 @@
 // Seat serial types use wayland-client WlSeat.
 use wayland_client::protocol::wl_seat::WlSeat;
 
+/// Registry-global identity of a bound `wl_seat`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SeatId(u32);
+
+impl SeatId {
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
+    pub const fn from_raw(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+/// Snapshot of a bound seat's identity and devices.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeatInfo {
+    pub id: SeatId,
+    /// Compositor seat name (`wl_seat.name`), when advertised.
+    pub name: Option<String>,
+    pub has_keyboard: bool,
+    pub has_pointer: bool,
+    pub has_touch: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum CursorIcon {
     ColResize,

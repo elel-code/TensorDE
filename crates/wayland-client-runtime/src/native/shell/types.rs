@@ -7,6 +7,7 @@ use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
     wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
+use wayland_client::Proxy;
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
@@ -415,6 +416,25 @@ pub(crate) struct PresentationFeedbackRecord {
     pub(crate) sync_output: Option<u32>,
 }
 
+/// One bound `wl_seat` and its capability devices.
+///
+/// Multiple seats are tracked for multi-seat compositors. Input focus and
+/// serials still merge into the shell-wide fields (last event wins) so existing
+/// single-seat APIs keep working; clients can enumerate seats via
+/// [`crate::NativeShell::seats`].
+pub(crate) struct SeatRecord {
+    /// Registry global name (`wl_registry` name).
+    pub(crate) global_name: u32,
+    /// Live seat proxy (kept for future seat-scoped grabs / data devices).
+    #[allow(dead_code)]
+    pub(crate) seat: wl_seat::WlSeat,
+    pub(crate) name: Option<String>,
+    pub(crate) capabilities: wl_seat::Capability,
+    pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub(crate) pointer: Option<wl_pointer::WlPointer>,
+    pub(crate) touch: Option<wl_touch::WlTouch>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OutputRecord {
     pub(crate) scale: i32,
@@ -591,9 +611,17 @@ pub struct NativeShellState {
     pub(crate) wm_base: Option<xdg_wm_base::XdgWmBase>,
     /// Bound `xdg_wm_base` version (for popup reposition etc.).
     pub(crate) wm_base_version: u32,
+    /// Primary / first seat (compat for APIs that need a single seat).
     pub(crate) seat: Option<wl_seat::WlSeat>,
+    /// All bound seats keyed by registry global name.
+    pub(crate) seats: HashMap<u32, SeatRecord>,
+    /// `wl_seat` protocol id → registry global name.
+    pub(crate) seat_objects: HashMap<u32, u32>,
+    /// Primary-seat keyboard (mirrors first seat that has keyboard).
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// Primary-seat pointer.
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
+    /// Primary-seat touch.
     pub(crate) touch: Option<wl_touch::WlTouch>,
     /// Frame-buffered touch events (SCTK/Weston-compatible; flushed on `Frame`
     /// or when the last active point goes up without a trailing frame).
@@ -832,6 +860,8 @@ pub struct NativeShellState {
     pub(crate) presentation_clock_id: Option<u32>,
     /// `wp_presentation_feedback` object id → pending feedback.
     pub(crate) presentation_feedbacks: HashMap<u32, PresentationFeedbackRecord>,
+    /// Surfaces with an outstanding presentation feedback (coalesce arms).
+    pub(crate) presentation_pending: HashSet<NativeSurfaceId>,
     pub(crate) outputs: HashMap<u32, OutputRecord>,
     /// protocol_id → registry global name
     pub(crate) output_objects: HashMap<u32, u32>,
@@ -847,6 +877,8 @@ impl Default for NativeShellState {
             wm_base: None,
             wm_base_version: 0,
             seat: None,
+            seats: HashMap::new(),
+            seat_objects: HashMap::new(),
             keyboard: None,
             pointer: None,
             touch: None,
@@ -962,6 +994,7 @@ impl Default for NativeShellState {
             presentation: None,
             presentation_clock_id: None,
             presentation_feedbacks: HashMap::new(),
+            presentation_pending: HashSet::new(),
             outputs: HashMap::new(),
             output_objects: HashMap::new(),
             output_proxies: HashMap::new(),
@@ -995,6 +1028,32 @@ impl NativeShellState {
         self.frame_pending.remove(&id);
         self.presentation_feedbacks
             .retain(|_, rec| rec.surface != id);
+        self.presentation_pending.remove(&id);
+    }
+
+    pub(crate) fn is_presentation_pending(&self, id: NativeSurfaceId) -> bool {
+        self.presentation_pending.contains(&id)
+    }
+
+    /// Register a newly bound seat as primary if none yet, always store in `seats`.
+    pub(crate) fn register_seat(&mut self, global_name: u32, seat: wl_seat::WlSeat) {
+        let proto = seat.id().protocol_id();
+        self.seat_objects.insert(proto, global_name);
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
+        self.seats.insert(
+            global_name,
+            SeatRecord {
+                global_name,
+                seat,
+                name: None,
+                capabilities: wl_seat::Capability::empty(),
+                keyboard: None,
+                pointer: None,
+                touch: None,
+            },
+        );
     }
 
     /// Borrow the content `wl_surface` for any role (toplevel / popup / layer).
