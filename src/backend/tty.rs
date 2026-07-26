@@ -4,10 +4,11 @@ use std::{
     sync::Arc,
 };
 
+use drm::node::{DrmNode, NodeType};
 use gbm::{BufferObjectFlags, Device as GbmDevice};
 use rustix::fs::{OFlags, makedev};
 use smithay::{
-    backend::drm::{DrmDevice, DrmDeviceFd, DrmNode, NodeType},
+    backend::drm::{DrmDevice, DrmDeviceFd},
     utils::DeviceFd,
 };
 use thiserror::Error;
@@ -15,7 +16,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     BackendConfig, BackendOutputEvent,
-    host_map::{host_drm_format, physical_mode_from_smithay, subpixel_from_smithay},
+    host_map::{host_drm_format, physical_mode_from_drm, subpixel_from_drm},
     output::{ConnectorSnapshot, OutputPlan, OutputPolicy, diff_output_plans},
 };
 use crate::render::{
@@ -650,7 +651,7 @@ fn describe_connector(
         .iter()
         .copied()
         .filter(|mode| !mode.flags().contains(drm::control::ModeFlags::INTERLACE))
-        .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
+        .map(physical_mode_from_drm)
         .collect::<Vec<_>>();
     let preferred_mode = connector
         .modes()
@@ -661,7 +662,7 @@ fn describe_connector(
                 .contains(drm::control::ModeTypeFlags::PREFERRED)
                 && !mode.flags().contains(drm::control::ModeFlags::INTERLACE)
         })
-        .map(|mode| physical_mode_from_smithay(smithay::output::Mode::from(mode)))
+        .map(physical_mode_from_drm)
         .or_else(|| modes.first().copied());
     let physical_size = connector.size().unwrap_or((0, 0));
     ConnectorSnapshot {
@@ -673,7 +674,7 @@ fn describe_connector(
             drm::control::connector::State::Unknown => ConnectorState::Unknown,
         },
         physical_size: (physical_size.0 as i32, physical_size.1 as i32),
-        subpixel: subpixel_from_smithay(smithay::output::Subpixel::from(connector.subpixel())),
+        subpixel: subpixel_from_drm(connector.subpixel()),
         modes,
         preferred_mode,
         mapped_crtc: crtc.map(Into::into),
@@ -726,7 +727,7 @@ pub(crate) enum BackendError {
     Udev(std::io::Error),
     #[error("failed to initialize the udev completion runtime: {0}")]
     UdevCompletion(String),
-    #[error("selected Vulkan DRM node {node} is unavailable to Smithay: {message}")]
+    #[error("selected Vulkan DRM node {node} is unavailable to the DRM adapter: {message}")]
     SelectedNode {
         node: crate::render::DrmNodeId,
         message: String,

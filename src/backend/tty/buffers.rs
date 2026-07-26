@@ -41,9 +41,7 @@ impl TtyBackend {
                 .find(|connector| u32::from(connector.handle()) == output_id.connector_id)
                 .and_then(|connector| {
                     connector.modes().iter().copied().find(|mode| {
-                        let physical = crate::backend::physical_mode_from_smithay(
-                            smithay::output::Mode::from(*mode),
-                        );
+                        let physical = crate::backend::physical_mode_from_drm(*mode);
                         physical == descriptor.mode
                     })
                 })

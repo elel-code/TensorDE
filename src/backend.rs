@@ -7,7 +7,7 @@ mod tty;
 
 #[cfg(feature = "tty")]
 pub(crate) use host_map::{
-    host_drm_format, physical_mode_from_smithay, smithay_drm_format, smithay_mode, smithay_subpixel,
+    host_drm_format, physical_mode_from_drm, smithay_drm_format, smithay_mode, smithay_subpixel,
 };
 #[cfg(feature = "tty")]
 pub(crate) use output::{BackendOutputEvent, BackendOutputId, OutputDescriptor};

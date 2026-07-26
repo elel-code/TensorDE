@@ -8,11 +8,9 @@
 use std::{
     iter::zip,
     num::{NonZeroU32, NonZeroU64},
-    os::fd::AsFd,
 };
 
 use drm::control::{self, Device as ControlDevice, crtc, property};
-use smithay::backend::drm::DrmDevice;
 use tracing::warn;
 
 /// Atomic CRTC gamma property handles plus the last applied blob id.
@@ -33,7 +31,7 @@ pub(super) struct OutputGamma {
 }
 
 impl OutputGamma {
-    pub(super) fn new(device: &DrmDevice, crtc: crtc::Handle) -> Self {
+    pub(super) fn new(device: &impl ControlDevice, crtc: crtc::Handle) -> Self {
         let mut props = GammaProps::new(device, crtc).ok();
         // Reset any leftover ramp from a previous compositor on this CRTC.
         let reset = if let Some(props) = props.as_mut() {
@@ -51,7 +49,7 @@ impl OutputGamma {
         }
     }
 
-    pub(super) fn gamma_size(&self, device: &DrmDevice) -> Option<u32> {
+    pub(super) fn gamma_size(&self, device: &impl ControlDevice) -> Option<u32> {
         if let Some(props) = &self.props {
             return props.gamma_size(device).ok().filter(|size| *size > 0);
         }
@@ -64,7 +62,7 @@ impl OutputGamma {
 
     pub(super) fn set_gamma(
         &mut self,
-        device: &DrmDevice,
+        device: &impl ControlDevice,
         ramp: Option<&[u16]>,
         session_active: bool,
     ) -> Result<(), String> {
@@ -81,7 +79,7 @@ impl OutputGamma {
     }
 
     /// Apply a queued change or restore the last blob after VT resume.
-    pub(super) fn restore_after_session_resume(&mut self, device: &DrmDevice) {
+    pub(super) fn restore_after_session_resume(&mut self, device: &impl ControlDevice) {
         if let Some(ramp) = self.pending.take() {
             if let Err(error) = self.set_gamma(device, ramp.as_deref(), true) {
                 warn!(%error, "failed to apply pending gamma after session resume");
@@ -97,7 +95,7 @@ impl OutputGamma {
 }
 
 impl GammaProps {
-    fn new(device: &DrmDevice, crtc: crtc::Handle) -> Result<Self, String> {
+    fn new(device: &impl ControlDevice, crtc: crtc::Handle) -> Result<Self, String> {
         let mut gamma_lut = None;
         let mut gamma_lut_size = None;
         let props = device
@@ -134,13 +132,17 @@ impl GammaProps {
         })
     }
 
-    fn gamma_size(&self, device: &DrmDevice) -> Result<u32, String> {
+    fn gamma_size(&self, device: &impl ControlDevice) -> Result<u32, String> {
         let value = property_value(device, self.crtc, self.gamma_lut_size)
             .ok_or_else(|| "missing GAMMA_LUT_SIZE value".to_owned())?;
         Ok(value as u32)
     }
 
-    fn set_gamma(&mut self, device: &DrmDevice, gamma: Option<&[u16]>) -> Result<(), String> {
+    fn set_gamma(
+        &mut self,
+        device: &impl ControlDevice,
+        gamma: Option<&[u16]>,
+    ) -> Result<(), String> {
         let blob = if let Some(gamma) = gamma {
             let gamma_size = self.gamma_size(device)? as usize;
             if gamma.len() != gamma_size * 3 {
@@ -190,7 +192,7 @@ impl GammaProps {
         Ok(())
     }
 
-    fn restore_gamma(&self, device: &DrmDevice) -> Result<(), String> {
+    fn restore_gamma(&self, device: &impl ControlDevice) -> Result<(), String> {
         let blob = self.previous_blob.map(NonZeroU64::get).unwrap_or(0);
         device
             .set_property(
@@ -203,7 +205,7 @@ impl GammaProps {
 }
 
 fn set_gamma_legacy(
-    device: &DrmDevice,
+    device: &impl ControlDevice,
     crtc: crtc::Handle,
     ramp: Option<&[u16]>,
 ) -> Result<(), String> {
@@ -252,7 +254,7 @@ fn linear_gamma(gamma_length: usize) -> Vec<u16> {
 }
 
 fn property_value(
-    device: &DrmDevice,
+    device: &impl ControlDevice,
     resource: impl control::ResourceHandle,
     prop: property::Handle,
 ) -> Option<property::RawValue> {
