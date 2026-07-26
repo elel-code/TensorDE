@@ -6,4 +6,5 @@
 //!
 //! - `text_input_v3` — wired in [`crate::native::NativeShell`]
 //! - `pointer_gestures` — swipe / pinch / hold on `NativeShell`
-//! - Planned: `pointer_constraints` / `relative_pointer`
+//! - `relative_pointer` — opt-in via `enable_relative_pointer`
+//! - Planned: `pointer_constraints`

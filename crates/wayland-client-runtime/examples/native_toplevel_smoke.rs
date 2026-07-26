@@ -157,6 +157,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::GestureHoldEnd { cancelled, time } => {
                         println!("hold end cancelled={cancelled} time={time}");
                     }
+                    NativeShellEvent::RelativePointer {
+                        utime,
+                        dx,
+                        dy,
+                        dx_unaccel,
+                        dy_unaccel,
+                    } => {
+                        println!(
+                            "relative motion utime={utime} dx={dx:.3} dy={dy:.3} unaccel=({dx_unaccel:.3},{dy_unaccel:.3})"
+                        );
+                    }
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");
                     }

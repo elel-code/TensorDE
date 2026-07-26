@@ -245,6 +245,14 @@ pub enum NativeShellEvent {
         cancelled: bool,
         time: u32,
     },
+    /// `zwp_relative_pointer_v1.relative_motion`.
+    RelativePointer {
+        utime: u64,
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+    },
 }
 
 /// Positioner inputs for native `xdg_popup` creation.
@@ -293,6 +301,7 @@ pub struct NativeCapabilities {
     pub activation: bool,
     pub pointer_gestures: bool,
     pub pointer_gesture_hold: bool,
+    pub relative_pointer: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -401,6 +410,12 @@ pub struct NativeShellState {
     >,
     /// Surface that currently owns an in-progress swipe/pinch/hold (begin).
     pub(crate) gesture_surface: Option<NativeSurfaceId>,
+    pub(crate) relative_pointer_manager: Option<
+        wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    >,
+    pub(crate) relative_pointer: Option<
+        wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1,
+    >,
     pub(crate) toplevels: HashMap<NativeSurfaceId, ToplevelRecord>,
     pub(crate) popups: HashMap<NativeSurfaceId, PopupRecord>,
     pub(crate) layers: HashMap<NativeSurfaceId, LayerRecord>,
@@ -475,6 +490,8 @@ impl Default for NativeShellState {
             pinch_gesture: None,
             hold_gesture: None,
             gesture_surface: None,
+            relative_pointer_manager: None,
+            relative_pointer: None,
             toplevels: HashMap::new(),
             popups: HashMap::new(),
             layers: HashMap::new(),

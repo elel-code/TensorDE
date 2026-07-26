@@ -17,7 +17,7 @@ use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
 use crate::surface::SurfaceId;
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
-    ToplevelState,
+    RelativePointerEvent, ToplevelState,
 };
 
 /// Bidirectional id map for native ↔ public surface identifiers.
@@ -60,6 +60,8 @@ pub struct NativeEventMapState {
     pub pointer_focus: Option<NativeSurfaceId>,
     pub pointer_pos: (f64, f64),
     pub gesture_surface: Option<NativeSurfaceId>,
+    /// Latest input serial from the native shell (updated by drain helpers).
+    pub last_serial: u32,
 }
 
 /// Convert one native shell event into a public crate event when possible.
@@ -149,7 +151,11 @@ pub fn map_native_event_full(
             let surface = surface.map(|s| surfaces.intern(s))?;
             Some(Event::Keyboard(KeyboardEvent::Enter {
                 surface,
-                serial: InputSerial::new(seat.clone(), 0, InputSerialSource::KeyboardEnter),
+                serial: InputSerial::new(
+                    seat.clone(),
+                    map_state.last_serial,
+                    InputSerialSource::KeyboardEnter,
+                ),
                 pressed_raw_codes: Vec::new(),
             }))
         }
@@ -182,7 +188,11 @@ pub fn map_native_event_full(
                 raw_code: key,
                 keysym,
                 text,
-                serial: InputSerial::new(seat.clone(), 0, InputSerialSource::KeyboardKey),
+                serial: InputSerial::new(
+                    seat.clone(),
+                    map_state.last_serial,
+                    InputSerialSource::KeyboardKey,
+                ),
             }))
         }
         NativeShellEvent::PointerEnter { surface, x, y } => {
@@ -193,7 +203,11 @@ pub fn map_native_event_full(
                 surface: surfaces.intern(surface),
                 position: (x, y),
                 kind: PointerEventKind::Enter {
-                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::PointerEnter),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        map_state.last_serial,
+                        InputSerialSource::PointerEnter,
+                    ),
                 },
             }))
         }
@@ -235,13 +249,13 @@ pub fn map_native_event_full(
                     PointerEventKind::Press {
                         time: 0,
                         button,
-                        serial: InputSerial::new(seat.clone(), 0, source),
+                        serial: InputSerial::new(seat.clone(), map_state.last_serial, source),
                     }
                 } else {
                     PointerEventKind::Release {
                         time: 0,
                         button,
-                        serial: InputSerial::new(seat.clone(), 0, source),
+                        serial: InputSerial::new(seat.clone(), map_state.last_serial, source),
                     }
                 },
             }))
@@ -259,7 +273,11 @@ pub fn map_native_event_full(
                     time: 0,
                     id,
                     position: (x, y),
-                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::TouchDown),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        map_state.last_serial,
+                        InputSerialSource::TouchDown,
+                    ),
                 },
             }))
         }
@@ -270,7 +288,11 @@ pub fn map_native_event_full(
                 kind: TouchEventKind::Up {
                     time: 0,
                     id,
-                    serial: InputSerial::new(seat.clone(), 0, InputSerialSource::TouchUp),
+                    serial: InputSerial::new(
+                        seat.clone(),
+                        map_state.last_serial,
+                        InputSerialSource::TouchUp,
+                    ),
                 },
             }))
         }
@@ -298,7 +320,7 @@ pub fn map_native_event_full(
                     surface: surfaces.intern(surface),
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureBegin,
                     ),
                     time,
@@ -331,7 +353,7 @@ pub fn map_native_event_full(
                     surface,
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureEnd,
                     ),
                     time,
@@ -351,7 +373,7 @@ pub fn map_native_event_full(
                     surface: surfaces.intern(surface),
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureBegin,
                     ),
                     time,
@@ -392,7 +414,7 @@ pub fn map_native_event_full(
                     surface,
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureEnd,
                     ),
                     time,
@@ -412,7 +434,7 @@ pub fn map_native_event_full(
                     surface: surfaces.intern(surface),
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureBegin,
                     ),
                     time,
@@ -432,13 +454,31 @@ pub fn map_native_event_full(
                     surface,
                     serial: InputSerial::new(
                         seat.clone(),
-                        0,
+                        map_state.last_serial,
                         InputSerialSource::PointerGestureEnd,
                     ),
                     time,
                     cancelled,
                 },
             )))
+        }
+        NativeShellEvent::RelativePointer {
+            utime,
+            dx,
+            dy,
+            dx_unaccel,
+            dy_unaccel,
+        } => {
+            let surface = map_state
+                .pointer_focus
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            Some(Event::RelativePointer(RelativePointerEvent {
+                surface,
+                time_micros: utime,
+                delta: (dx, dy),
+                delta_unaccelerated: (dx_unaccel, dy_unaccel),
+            }))
         }
         // Still deferred: axis detail, modifiers flags, outputs, clipboard, dnd, text_input, activation.
         NativeShellEvent::PointerAxis { .. }

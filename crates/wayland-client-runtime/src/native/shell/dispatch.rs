@@ -331,6 +331,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                         state.hold_gesture = Some(manager.get_hold_gesture(&pointer, qh, ()));
                     }
                 }
+                // Relative pointer is opt-in via enable_relative_pointer (capture / games).
                 state.pointer = Some(pointer);
             }
             if capabilities.contains(wl_seat::Capability::Touch) && state.touch.is_none() {

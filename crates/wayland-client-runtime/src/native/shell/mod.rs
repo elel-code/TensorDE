@@ -10,6 +10,7 @@ mod dispatch_activation;
 mod dispatch_data;
 mod dispatch_gestures;
 mod dispatch_layer;
+mod dispatch_relative;
 mod dispatch_text;
 mod handle;
 mod types;

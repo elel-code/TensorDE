@@ -19,6 +19,7 @@ use super::types::{
 use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1;
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -128,6 +129,15 @@ impl NativeShell {
         {
             state.pointer_gestures = Some(gestures);
         }
+        if let Ok(rel) = globals
+            .bind::<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+        {
+            state.relative_pointer_manager = Some(rel);
+        }
 
         if state.compositor.is_none() {
             return Err(NativeError::Registry("wl_compositor missing".into()));
@@ -205,7 +215,37 @@ impl NativeShell {
                 .pointer_gestures
                 .as_ref()
                 .is_some_and(|g| g.version() >= 3),
+            relative_pointer: self.state.relative_pointer_manager.is_some(),
         }
+    }
+
+    /// Enable `zwp_relative_pointer_v1` for the seat pointer (unaccelerated motion).
+    pub fn enable_relative_pointer(&mut self) -> Result<(), NativeError> {
+        if self.state.relative_pointer.is_some() {
+            return Ok(());
+        }
+        let manager = self
+            .state
+            .relative_pointer_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("relative_pointer_manager missing".into()))?;
+        let pointer = self
+            .state
+            .pointer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
+        let qh = self.queue.handle();
+        self.state.relative_pointer = Some(manager.get_relative_pointer(pointer, &qh, ()));
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn disable_relative_pointer(&mut self) -> Result<(), NativeError> {
+        if let Some(rel) = self.state.relative_pointer.take() {
+            rel.destroy();
+            self.connection.flush()?;
+        }
+        Ok(())
     }
 
     pub fn has_layer_shell(&self) -> bool {
@@ -574,6 +614,9 @@ impl NativeShell {
         out: &mut Vec<crate::Event>,
     ) {
         let seat = self.state.seat.clone();
+        if let Some(serial) = self.state.last_input_serial {
+            map_state.last_serial = serial;
+        }
         for event in self.state.events.drain(..) {
             if let Some(mapped) = crate::native::event_map::map_native_event_full(
                 event,
