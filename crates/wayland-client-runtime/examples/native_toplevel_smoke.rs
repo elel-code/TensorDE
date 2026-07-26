@@ -175,6 +175,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "relative motion utime={utime} dx={dx:.3} dy={dy:.3} unaccel=({dx_unaccel:.3},{dy_unaccel:.3})"
                         );
                     }
+                    NativeShellEvent::PointerConstraint {
+                        surface: id,
+                        kind,
+                        active,
+                    } => {
+                        println!(
+                            "pointer constraint {id:?} kind={kind} active={active}"
+                        );
+                    }
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");
                     }

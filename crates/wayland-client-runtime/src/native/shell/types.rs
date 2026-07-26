@@ -265,6 +265,13 @@ pub enum NativeShellEvent {
         dx_unaccel: f64,
         dy_unaccel: f64,
     },
+    /// Pointer constraint activated or deactivated.
+    PointerConstraint {
+        surface: NativeSurfaceId,
+        /// 0 = none/cleared, 1 = confined, 2 = locked.
+        kind: u8,
+        active: bool,
+    },
 }
 
 /// Positioner inputs for native `xdg_popup` creation.
@@ -318,6 +325,7 @@ pub struct NativeCapabilities {
     pub toplevel_icon: bool,
     pub background_blur: bool,
     pub xdg_decoration: bool,
+    pub pointer_constraints: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -350,6 +358,8 @@ pub(crate) struct ToplevelRecord {
     pub(crate) decoration: Option<
         wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
     >,
+    /// Desired pointer capture while this surface has pointer focus.
+    pub(crate) pointer_capture: crate::PointerCaptureState,
     pub(crate) configured: bool,
     pub(crate) pending_size: Option<(i32, i32)>,
     /// Logical destination size for viewporter (surface-local).
@@ -472,6 +482,17 @@ pub struct NativeShellState {
     pub(crate) relative_pointer: Option<
         wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1,
     >,
+    pub(crate) pointer_constraints: Option<
+        wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+    >,
+    pub(crate) locked_pointer: Option<(
+        NativeSurfaceId,
+        wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1,
+    )>,
+    pub(crate) confined_pointer: Option<(
+        NativeSurfaceId,
+        wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+    )>,
     pub(crate) toplevels: HashMap<NativeSurfaceId, ToplevelRecord>,
     pub(crate) popups: HashMap<NativeSurfaceId, PopupRecord>,
     pub(crate) layers: HashMap<NativeSurfaceId, LayerRecord>,
@@ -562,6 +583,9 @@ impl Default for NativeShellState {
             gesture_surface: None,
             relative_pointer_manager: None,
             relative_pointer: None,
+            pointer_constraints: None,
+            locked_pointer: None,
+            confined_pointer: None,
             toplevels: HashMap::new(),
             popups: HashMap::new(),
             layers: HashMap::new(),

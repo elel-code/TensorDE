@@ -316,6 +316,33 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_pointer_constraints_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("cap", "dev.fika.Capture", 200, 200)
+            .expect("toplevel");
+        if shell.has_pointer_constraints() {
+            shell
+                .set_pointer_constraint(id, crate::PointerConstraint::Confined)
+                .expect("confine");
+            shell
+                .set_pointer_constraint(id, crate::PointerConstraint::Locked)
+                .expect("lock");
+            shell
+                .set_pointer_constraint(id, crate::PointerConstraint::None)
+                .expect("clear");
+        } else {
+            let err = shell
+                .set_pointer_constraint(id, crate::PointerConstraint::Locked)
+                .expect_err("constraints missing");
+            let _ = err;
+        }
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_set_decorations_and_dnd_icon_smoke() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

@@ -18,6 +18,7 @@ use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
 use crate::surface::SurfaceId;
 use crate::dnd::{DndAction, DndActions, DndEvent, DndOfferId, DndSourceId};
 use crate::geometry::LogicalPosition as GeoLogicalPosition;
+use crate::pointer_constraints::{PointerConstraint, PointerConstraintEvent};
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
     RelativePointerEvent, ToplevelState,
@@ -631,6 +632,22 @@ pub fn map_native_event_full(
                     action: Some(DndAction::Copy),
                 }))
             }
+        }
+        NativeShellEvent::PointerConstraint {
+            surface,
+            kind,
+            active,
+        } => {
+            let constraint = match kind {
+                1 => PointerConstraint::Confined,
+                2 => PointerConstraint::Locked,
+                _ => PointerConstraint::None,
+            };
+            Some(Event::PointerConstraint(PointerConstraintEvent {
+                surface: surfaces.intern(surface),
+                constraint,
+                active,
+            }))
         }
         // Still deferred: outputs, clipboard Selection events, activation.
         NativeShellEvent::TouchFrame

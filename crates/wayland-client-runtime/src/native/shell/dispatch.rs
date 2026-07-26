@@ -433,7 +433,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
         event: wl_pointer::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
             wl_pointer::Event::Enter {
@@ -448,8 +448,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .get(&surface.id().protocol_id())
                     .copied();
                 if let Some(id) = id {
-                    state.pointer_focus = Some(id);
                     state.pointer_enter_serial = Some(serial);
+                    state.on_pointer_focus_changed(Some(id), qh);
                     state.push(NativeShellEvent::PointerEnter {
                         surface: id,
                         x: surface_x,
@@ -463,7 +463,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .get(&surface.id().protocol_id())
                     .copied()
                     .or(state.pointer_focus);
-                state.pointer_focus = None;
+                state.on_pointer_focus_changed(None, qh);
                 if let Some(id) = id {
                     state.push(NativeShellEvent::PointerLeave { surface: id });
                 }

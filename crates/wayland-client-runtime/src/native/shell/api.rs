@@ -170,6 +170,14 @@ impl NativeShell {
         {
             state.relative_pointer_manager = Some(rel);
         }
+        if let Ok(pc) = globals.bind::<
+            wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.pointer_constraints = Some(pc);
+        }
 
         if state.compositor.is_none() {
             return Err(NativeError::Registry("wl_compositor missing".into()));
@@ -252,7 +260,12 @@ impl NativeShell {
             toplevel_icon: self.state.toplevel_icon_manager.is_some(),
             background_blur: self.state.background_blur_capable,
             xdg_decoration: self.state.decoration_manager.is_some(),
+            pointer_constraints: self.state.pointer_constraints.is_some(),
         }
+    }
+
+    pub fn has_pointer_constraints(&self) -> bool {
+        self.state.pointer_constraints.is_some()
     }
 
     pub fn has_xdg_decoration(&self) -> bool {
@@ -680,6 +693,7 @@ impl NativeShell {
         let Some(record) = self.state.toplevels.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown surface {id:?}")));
         };
+        self.state.clear_live_constraints_for(id);
         self.state
             .toplevel_objects
             .remove(&record.toplevel.id().protocol_id());

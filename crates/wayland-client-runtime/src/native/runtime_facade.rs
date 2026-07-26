@@ -58,6 +58,7 @@ impl NativeRuntime {
                 pointer_gestures_v1: caps.pointer_gestures,
                 pointer_gesture_hold_v1: caps.pointer_gesture_hold,
                 relative_pointer_v1: caps.relative_pointer,
+                pointer_constraints_v1: caps.pointer_constraints,
                 xdg_dialog_v1: caps.xdg_dialog,
                 xdg_toplevel_icon_v1: caps.toplevel_icon,
                 ext_background_effect: caps.background_blur,
@@ -411,6 +412,57 @@ impl NativeRuntime {
         } else {
             Err(RuntimeError::Unsupported("zwp_pointer_gestures_v1"))
         }
+    }
+
+    pub fn set_pointer_capture_state(
+        &mut self,
+        surface: SurfaceId,
+        state: crate::PointerCaptureState,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_pointer_capture_state(native, state)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("pointer_constraints") => {
+                    RuntimeError::Unsupported("zwp-pointer-constraints-v1")
+                }
+                NativeError::Protocol(msg) if msg.contains("relative_pointer") => {
+                    RuntimeError::Unsupported("zwp-relative-pointer-v1")
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn set_pointer_constraint(
+        &mut self,
+        surface: SurfaceId,
+        constraint: crate::PointerConstraint,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_pointer_constraint(native, constraint)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("pointer_constraints") => {
+                    RuntimeError::Unsupported("zwp-pointer-constraints-v1")
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn set_relative_pointer_enabled(
+        &mut self,
+        surface: SurfaceId,
+        enabled: bool,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_relative_pointer_enabled(native, enabled)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("relative_pointer") => {
+                    RuntimeError::Unsupported("zwp-relative-pointer-v1")
+                }
+                other => map_native_error(other),
+            })
     }
 
     pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {

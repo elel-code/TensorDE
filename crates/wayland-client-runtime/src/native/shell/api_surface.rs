@@ -180,6 +180,7 @@ impl NativeShell {
                 icon_shm: Vec::new(),
                 blur_effect: None,
                 decoration: None,
+                pointer_capture: crate::PointerCaptureState::default(),
                 configured: false,
                 pending_size: Some((width as i32, height as i32)),
                 logical_w: width,

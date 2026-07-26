@@ -8,4 +8,4 @@
 //! - `pointer_gestures` — swipe / pinch / hold on `NativeShell`
 //! - `relative_pointer` — opt-in via `enable_relative_pointer`
 //! - `xdg_decoration` — `zxdg_decoration_manager_v1` server/client mode
-//! - Planned: `pointer_constraints`
+//! - `pointer_constraints` — lock/confine + focus re-apply
