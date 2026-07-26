@@ -20,6 +20,7 @@ mod fractional_scale;
 mod geometry;
 mod input;
 mod layer_shell;
+mod native;
 mod output;
 mod pointer_axis;
 mod pointer_constraints;
@@ -38,6 +39,10 @@ pub use activation::{
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
 pub use display_io::DisplayReadiness;
+pub use native::{
+    list_env_globals, GlobalAdvertisement, NativeConnection, NativeError, NativePump,
+    NativeRegistry, ProtocolClass, ProtocolSpec, PumpStep, FIKA_PROTOCOL_MATRIX, specs_in_class,
+};
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,
 };

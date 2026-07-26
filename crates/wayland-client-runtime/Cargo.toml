@@ -13,12 +13,13 @@ categories = ["gui", "os::linux-apis"]
 
 [dependencies]
 bitflags = "2"
-# Compio drives display-fd readiness (Phase 1); protocol state still uses SCTK
-# until the native shell migration completes.
+# Compio drives display-fd readiness; native stack uses wayland-client wire
+# bindings without SCTK. SCTK remains for the transitional Fika Runtime path.
 compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"] }
 raw-window-handle = "0.6"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "system", "xkbcommon"] }
 thiserror = "2"
+wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [lints.rust]

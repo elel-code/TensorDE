@@ -513,18 +513,27 @@ compio executor
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 0 | 架构文档、API 冻结意图、依赖矩阵 | 进行中 |
-| 1 | Compio `DisplayReadiness` + `dispatch_pending` / `wait_display_readable` | 进行中 |
-| 2 | 核心 shell 自研：registry/compositor/shm/xdg/seat/xkb | 未开始 |
+| 0 | 架构文档、API 冻结意图、依赖矩阵 | 完成 |
+| 1 | Compio `DisplayReadiness` + `dispatch_pending` / `wait_display_readable` | 完成 |
+| 2 | Native 连接 + registry + Compio pump（尚无 shell） | 进行中 |
+| 2b | 核心 shell：compositor/shm/xdg/seat/xkb | 未开始 |
 | 3 | data_device、fractional_scale、text_input、gestures… | 未开始 |
 | 4 | 删除 SCTK/calloop；README/UPSTREAM 更新 | 未开始 |
 
-已完成（Phase 1 起点）：
+已完成：
 
-- `crates/wayland-client-runtime/ARCHITECTURE.md` 记录目标分层与迁移规则。
-- `display_io::DisplayReadiness`：对 `wl_display` fd 的 Compio `PollFd` 可读等待。
-- `Runtime::wait_display_readable` / `dispatch_pending`：async 等待 + 非阻塞派发，
-  现有 `dispatch`（calloop）仍为 Fika 默认路径。
+- `ARCHITECTURE.md` 目标分层与迁移规则。
+- `display_io::DisplayReadiness`：`wl_display` fd 的 Compio `PollFd`。
+- `Runtime::wait_display_readable` / `dispatch_pending`（SCTK Runtime 兼容路径）。
+- **Native 骨架**（`src/native/`，无 SCTK）：
+  - `NativeConnection`：直连 `wayland-client` + Compio readiness
+  - `NativeRegistry`：`registry_queue_init` 全局快照
+  - `NativePump::pump_once`：`flush → await readable → read → dispatch_pending`
+  - 直接依赖 `wayland-client`；Fika 生产路径仍用 SCTK `Runtime`
+- **协议按上游类别分目录**（借鉴 wayland-protocols / Smithay）：
+  - `protocols/core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
+  - `ProtocolClass` + `FIKA_PROTOCOL_MATRIX` 标注 interface 与可选性
+  - 实现落在对应类别目录，避免扁平 Handler 堆叠
 
 完成标准：
 

@@ -3465,6 +3465,7 @@ dependencies = [
  "raw-window-handle",
  "smithay-client-toolkit",
  "thiserror",
+ "wayland-client",
  "wayland-protocols-wlr",
 ]
 

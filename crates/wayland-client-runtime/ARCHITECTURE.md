@@ -29,23 +29,42 @@ scheduling; this crate owns protocol state and the public event model.
 │ Public API                                  │
 │ Runtime, SurfaceId, Event, capabilities     │
 ├─────────────────────────────────────────────┤
-│ Shell / seat / transfer state machines      │  ← replace SCTK Handlers
+│ Protocol state by class (native/protocols)  │  ← replace SCTK Handlers
+│   core | stable | staging | unstable        │
+│   ext  | community/wlr                      │
 ├─────────────────────────────────────────────┤
-│ Wire / object map / protocol bindings       │  ← wayland-client or equivalent
+│ Wire / object map                           │  ← wayland-client + protocols*
 ├─────────────────────────────────────────────┤
-│ Display I/O                                 │  ← Compio PollFd (Phase 1)
+│ Display I/O                                 │  ← Compio PollFd
 └─────────────────────────────────────────────┘
 ```
+
+### Protocol classes (Smithay / wayland-protocols style)
+
+| Class | Upstream tree | Policy |
+| --- | --- | --- |
+| **core** | `wayland.xml` (`wl_*`) | Required; missing = cannot run shell |
+| **stable** | `wayland-protocols` `stable/` | Baseline desktop (xdg-shell, viewporter) |
+| **staging** | `wayland-protocols` `staging/` | Optional capability; version-cap binds |
+| **unstable** | `wayland-protocols` `unstable/` | Legacy only; prefer staging replacements |
+| **ext** | `wayland-protocols` `ext/` | Optional (`ext_*`) |
+| **community** | wlr / plasma / … | Optional; never block core startup |
+
+Code layout: `src/native/protocols/{core,stable,staging,unstable,ext,community/wlr}/`.
+
+`ProtocolClass`, `ProtocolSpec`, and `FIKA_PROTOCOL_MATRIX` document which globals
+Fika needs and how hard they are. Implementations land module-by-module in the
+matching class directory (not a flat `handlers_*.rs` dump).
 
 | Module (target) | Responsibility |
 | --- | --- |
 | `display_io` | Dup of `wl_display` fd, Compio readable/writable wait |
-| `connection` (future) | Connect, flush, read, error mapping |
-| `wire` / protocols (future) | Object map, message decode, globals |
-| `seats` (future) | Pointer/keyboard/touch + xkb |
-| `shell` (future) | xdg toplevel/dialog/popup, layer shell |
-| `transfer` | Clipboard + DnD MIME model (keep public types) |
-| `runtime` | Orchestration, event buffer, capabilities |
+| `native/connection` | Connect, flush, readiness |
+| `native/registry` | Global list + late add/remove |
+| `native/pump` | Compio read/dispatch loop |
+| `native/protocols/*` | State machines per protocol class |
+| `transfer` (public) | Clipboard + DnD MIME model |
+| `runtime` (SCTK→native) | Orchestration, event buffer, capabilities |
 
 ## Migration rules
 
@@ -60,10 +79,21 @@ scheduling; this crate owns protocol state and the public event model.
 | Phase | Goal | Status |
 | --- | --- | --- |
 | 0 | This document + roadmap §6d | Done |
-| 1 | Compio display readiness + non-blocking dispatch helpers | In progress |
-| 2 | Core shell without SCTK | Planned |
+| 1 | Compio display readiness + non-blocking dispatch helpers | Done |
+| 2 | Native connection + registry + Compio pump (no shell yet) | In progress |
+| 2b | Core shell without SCTK (compositor/shm/xdg/seat) | Planned |
 | 3 | Extended protocols | Planned |
 | 4 | Remove SCTK/calloop | Planned |
+
+### Phase 2 modules (`src/native/`)
+
+| Module | Role |
+| --- | --- |
+| `connection` | `wayland_client::Connection` + `DisplayReadiness` |
+| `registry` | `registry_queue_init`, global snapshot, late global tracking |
+| `pump` | `flush → prepare_read → await readable → read → dispatch_pending` |
+
+Public types: `NativeConnection`, `NativeRegistry`, `NativePump`, `GlobalAdvertisement`.
 
 ## SCTK surface (to eliminate)
 

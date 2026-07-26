@@ -10,6 +10,10 @@ protocol implementation** (no SCTK/calloop callbacks). See
 still uses SCTK; display-fd readiness already uses Compio
 (`Runtime::wait_display_readable` / `dispatch_pending`).
 
+Native protocol code is organized like **wayland-protocols / Smithay**:
+`core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
+(`src/native/protocols/`).
+
 The crate is currently developed in the Fika workspace. Its public API is
 general-purpose and contains no Fika-specific model or renderer dependency.
 
