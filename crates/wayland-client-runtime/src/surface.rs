@@ -52,6 +52,8 @@ pub enum DecorationPreference {
 pub struct ToplevelAttributes {
     pub title: String,
     pub app_id: String,
+    /// Preferred initial logical size (native / configure-before-first-buffer).
+    pub initial_size: Option<LogicalSize>,
     pub min_size: Option<LogicalSize>,
     pub max_size: Option<LogicalSize>,
     pub decorations: DecorationPreference,
@@ -62,6 +64,7 @@ impl Default for ToplevelAttributes {
         Self {
             title: String::new(),
             app_id: String::new(),
+            initial_size: None,
             min_size: None,
             max_size: None,
             decorations: DecorationPreference::Server,

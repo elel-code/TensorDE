@@ -143,29 +143,41 @@ impl NativeRuntime {
         &mut self,
         attributes: ToplevelAttributes,
     ) -> Result<SurfaceId, RuntimeError> {
-        // Prefer min_size as the initial buffer/viewport hint when Fika sets it;
-        // otherwise a desktop-typical default until the first configure.
         let width = attributes
-            .min_size
+            .initial_size
             .map(|s| s.width)
             .filter(|&w| w > 0)
-            .or_else(|| attributes.max_size.map(|s| s.width).filter(|&w| w > 0))
+            .or_else(|| attributes.min_size.map(|s| s.width).filter(|&w| w > 0))
             .unwrap_or(800)
             .max(1);
         let height = attributes
-            .min_size
+            .initial_size
             .map(|s| s.height)
             .filter(|&h| h > 0)
-            .or_else(|| attributes.max_size.map(|s| s.height).filter(|&h| h > 0))
+            .or_else(|| attributes.min_size.map(|s| s.height).filter(|&h| h > 0))
             .unwrap_or(600)
             .max(1);
         let native = self
             .shell
             .create_toplevel_gpu(attributes.title, attributes.app_id, width, height)
             .map_err(map_native_error)?;
+        // Soft-apply min/max when present (xdg_toplevel requests not yet wired).
+        let _ = (attributes.min_size, attributes.max_size, attributes.decorations);
         let public = self.surfaces.intern(native);
         self.native_ids.insert(public, native);
         Ok(public)
+    }
+
+    /// Dialog role is not on the native path yet; open a normal toplevel as fallback.
+    pub fn create_dialog(
+        &mut self,
+        _parent: SurfaceId,
+        attributes: crate::DialogAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        eprintln!(
+            "[fika-wayland] native backend: dialog falls back to toplevel (no xdg_dialog yet)"
+        );
+        self.create_toplevel(attributes.toplevel)
     }
 
     pub fn surface_handle(&self, surface: SurfaceId) -> Option<SurfaceHandle> {

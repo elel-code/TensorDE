@@ -78,7 +78,7 @@ impl PlatformBackend {
     ) -> Result<SurfaceId, RuntimeError> {
         match self {
             Self::Sctk(rt) => rt.create_dialog(parent, attributes),
-            Self::Native(_) => Err(RuntimeError::Unsupported("native dialog")),
+            Self::Native(rt) => rt.create_dialog(parent, attributes),
         }
     }
 

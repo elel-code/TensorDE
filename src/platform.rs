@@ -375,6 +375,7 @@ impl ActiveEventLoop {
         let toplevel = ToplevelAttributes {
             title,
             app_id,
+            initial_size: Some(logical_size),
             min_size,
             max_size,
             decorations,
