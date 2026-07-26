@@ -22,21 +22,17 @@ impl RetainedSceneEventSystem {
         &mut self,
         world: &SceneSemanticWorld<'_>,
         frame: &mut ResolvedSemanticFrame,
-        scene_time_seconds: f32,
+        frame_delta_seconds: f32,
         events: &SceneFrameEvents,
     ) {
         frame.media_clock = events.media;
         frame.video_frame = coherent_video_frame(events);
         self.pointer_parallax
-            .begin_frame(world, scene_time_seconds, events);
+            .begin_frame(world, frame_delta_seconds, events);
     }
 
-    pub(super) fn finish_frame(
-        &self,
-        world: &SceneSemanticWorld<'_>,
-        frame: &mut ResolvedSemanticFrame,
-    ) {
-        self.pointer_parallax.apply_frame(world, frame);
+    pub(super) fn finish_frame(&self, frame: &mut ResolvedSemanticFrame) {
+        self.pointer_parallax.apply_frame(frame);
     }
 }
 

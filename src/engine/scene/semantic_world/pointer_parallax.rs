@@ -4,12 +4,17 @@ use crate::engine::scene::{SceneCameraParallaxRecord, SceneFrameEvents};
 
 use super::{ResolvedSemanticFrame, SceneSemanticWorld};
 
+#[derive(Debug, Clone, Copy)]
+struct RootParallaxBinding {
+    root_object_index: usize,
+    depth: [f32; 2],
+}
+
 #[derive(Debug)]
 pub(super) struct RetainedPointerParallaxSystem {
     camera: SceneCameraParallaxRecord,
-    object_depths: Vec<[f32; 2]>,
-    displacement: [f32; 2],
-    previous_scene_time_seconds: Option<f32>,
+    root_bindings: Vec<RootParallaxBinding>,
+    camera_position: [f32; 2],
 }
 
 impl RetainedPointerParallaxSystem {
@@ -18,62 +23,101 @@ impl RetainedPointerParallaxSystem {
         for binding in world.storage.object_parallax_depths() {
             object_depths[binding.object.0 as usize] = binding.depth;
         }
+        let root_bindings = world
+            .storage
+            .objects()
+            .iter()
+            .map(|object| {
+                let root_object_index = topmost_object_index(world, object.id);
+                RootParallaxBinding {
+                    root_object_index,
+                    depth: object_depths[root_object_index],
+                }
+            })
+            .collect();
+        let project = world.storage.project();
         Self {
             camera: world.storage.camera_parallax(),
-            object_depths,
-            displacement: [0.0; 2],
-            previous_scene_time_seconds: None,
+            root_bindings,
+            camera_position: [
+                project.camera_eye.x + project.logical_width as f32 * 0.5,
+                project.camera_eye.y + project.logical_height as f32 * 0.5,
+            ],
         }
     }
 
     pub(super) fn begin_frame(
         &mut self,
         world: &SceneSemanticWorld<'_>,
-        scene_time_seconds: f32,
+        frame_delta_seconds: f32,
         events: &SceneFrameEvents,
     ) {
-        let delta_seconds = self
-            .previous_scene_time_seconds
-            .map(|previous| (scene_time_seconds - previous).max(0.0))
-            .unwrap_or(0.0);
-        self.previous_scene_time_seconds = Some(scene_time_seconds);
-        if !self.camera.enabled || self.object_depths.is_empty() {
-            self.displacement = [0.0; 2];
+        if !self.camera.enabled || self.root_bindings.is_empty() {
             return;
         }
         let normalized = pointer_scene_position(world, events).unwrap_or([0.5; 2]);
+        let project = world.storage.project();
         let target = [
-            (normalized[0] - 0.5) * self.camera.amount * self.camera.mouse_influence,
-            (normalized[1] - 0.5) * self.camera.amount * self.camera.mouse_influence,
+            project.camera_eye.x
+                + project.logical_width as f32
+                    * (0.5 * (1.0 - self.camera.mouse_influence)
+                        + normalized[0] * self.camera.mouse_influence),
+            project.camera_eye.y
+                + project.logical_height as f32
+                    * (0.5 * (1.0 - self.camera.mouse_influence)
+                        + normalized[1] * self.camera.mouse_influence),
         ];
-        let response = (self.camera.delay * delta_seconds).clamp(0.0, 1.0);
-        for (current, target) in self.displacement.iter_mut().zip(target) {
+        let response = ((1.0 - self.camera.delay / 3.0) * 10.0 * frame_delta_seconds).min(1.0);
+        for (current, target) in self.camera_position.iter_mut().zip(target) {
             *current += (target - *current) * response;
         }
     }
 
-    pub(super) fn apply_frame(
-        &self,
-        world: &SceneSemanticWorld<'_>,
-        frame: &mut ResolvedSemanticFrame,
-    ) {
+    pub(super) fn apply_frame(&self, frame: &mut ResolvedSemanticFrame) {
         for object in &mut frame.objects {
             object.render_world_matrix = object.world_matrix;
         }
-        if !self.camera.enabled || self.displacement == [0.0; 2] {
+        if !self.camera.enabled {
             return;
         }
-        let reference_size = world.storage.project().logical_width.max(1) as f32;
-        for object in &mut frame.objects {
-            let Some(depth) = self.object_depths.get(object.object_index as usize) else {
+        for object_index in 0..frame.objects.len() {
+            let Some(binding) = self.root_bindings.get(object_index).copied() else {
                 continue;
             };
-            object.render_world_matrix[12] +=
-                (depth[0] + self.camera.amount) * self.displacement[0] * reference_size;
-            object.render_world_matrix[13] +=
-                (depth[1] + self.camera.amount) * self.displacement[1] * reference_size;
+            if binding.depth == [0.0; 2] {
+                continue;
+            }
+            let root = frame.objects[binding.root_object_index];
+            let translation = [
+                self.camera.amount
+                    * (root.world_matrix[12] - self.camera_position[0])
+                    * binding.depth[0],
+                self.camera.amount
+                    * (root.world_matrix[13] - self.camera_position[1])
+                    * binding.depth[1],
+            ];
+            let object = &mut frame.objects[object_index];
+            object.render_world_matrix[12] += translation[0];
+            object.render_world_matrix[13] += translation[1];
         }
     }
+}
+
+fn topmost_object_index(
+    world: &SceneSemanticWorld<'_>,
+    object: crate::engine::scene::SceneObjectHandle,
+) -> usize {
+    let mut root = object;
+    while let Some(parent) = world.parent(root) {
+        let parent_entity = world
+            .entity_for_we_id(parent.parent_we_id)
+            .expect("validated semantic parent exists");
+        root = world
+            .entity_record(parent_entity)
+            .expect("semantic parent entity exists")
+            .object;
+    }
+    root.0 as usize
 }
 
 fn pointer_scene_position(
@@ -85,11 +129,12 @@ fn pointer_scene_position(
     }
     let normalized = events.pointer.normalized_position_top_left()?;
     let project = world.storage.project();
-    Some(cover_mapped_position(
+    let mapped = cover_mapped_position(
         normalized,
         [project.logical_width, project.logical_height],
         events.pointer.surface_size,
-    ))
+    );
+    Some([mapped[0], 1.0 - mapped[1]])
 }
 
 pub(super) fn cover_mapped_position(

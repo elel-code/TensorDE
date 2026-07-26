@@ -401,6 +401,12 @@ pub(super) fn with_scene_present(
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
+    let fixed_frame_delta_seconds =
+        std::env::var("GILDER_NATIVE_VULKAN_SCENE_FIXED_FRAME_DELTA")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0);
+    let mut previous_frame_sampled_at = None::<Instant>;
     let frame_loop_result = (|| -> Result<(), String> {
         while Instant::now() < deadline {
         if !event_sources.pump_platform(host)? {
@@ -428,9 +434,18 @@ pub(super) fn with_scene_present(
         if let Some(timing) = gpu_timing.as_mut() {
             timing.collect_completed(device)?;
         }
-        let scene_time_seconds = fixed_scene_time_seconds
-            .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
-        let sample_time_ns = started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let frame_sampled_at = Instant::now();
+        let frame_elapsed = frame_sampled_at.duration_since(started_at);
+        let scene_time_seconds =
+            fixed_scene_time_seconds.unwrap_or_else(|| frame_elapsed.as_secs_f32());
+        let frame_delta_seconds = previous_frame_sampled_at
+            .map(|previous| {
+                fixed_frame_delta_seconds
+                    .unwrap_or_else(|| frame_sampled_at.duration_since(previous).as_secs_f32())
+            })
+            .unwrap_or(0.0);
+        previous_frame_sampled_at = Some(frame_sampled_at);
+        let sample_time_ns = frame_elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
         let frame_events = event_sources.sample_frame_events(sample_time_ns, host.logical_size());
         scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
@@ -452,6 +467,7 @@ pub(super) fn with_scene_present(
             scene_resources.scene_color_attachment_clear_enabled,
             frame_events,
             scene_time_seconds,
+            frame_delta_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
         if frames_presented == 0

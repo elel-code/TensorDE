@@ -328,11 +328,17 @@ pub(super) fn write_scene_frame_buffers(
     scene_color_attachment_clear_enabled: bool,
     events: &SceneFrameEvents,
     scene_time_seconds: f32,
+    frame_delta_seconds: f32,
     output_extent: [u32; 2],
 ) -> Result<SceneFrameBufferUpdate, String> {
     let semantic_started = cpu_timing_enabled.then(Instant::now);
     let semantic_frame = semantic_resolver
-        .resolve_frame_with_events_at(semantic_world, scene_time_seconds, events)
+        .resolve_frame_with_events_at(
+            semantic_world,
+            scene_time_seconds,
+            frame_delta_seconds,
+            events,
+        )
         .map_err(|err| {
             format!(
                 "resolve scene semantic frame at {scene_time_seconds:.6}s for Vulkan buffer update: {err}"

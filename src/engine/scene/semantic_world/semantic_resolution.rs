@@ -116,11 +116,12 @@ impl SemanticFrameResolver {
         &mut self,
         world: &SceneSemanticWorld<'_>,
         scene_time_seconds: f32,
+        frame_delta_seconds: f32,
         events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
         self.dispatch_scripts(world, scene_time_seconds, events)?;
         self.event_system
-            .begin_frame(world, &mut self.frame, scene_time_seconds, events);
+            .begin_frame(world, &mut self.frame, frame_delta_seconds, events);
         merge_script_text_deltas(&self.script_deltas, &mut self.frame.script_text_values);
         merge_script_material_deltas(
             &self.script_deltas,
@@ -140,7 +141,7 @@ impl SemanticFrameResolver {
             self.frame.script_text_values = text_values;
             self.frame.media_clock = media_clock;
             self.frame.video_frame = video_frame;
-            self.event_system.finish_frame(world, &mut self.frame);
+            self.event_system.finish_frame(&mut self.frame);
             return Ok(&self.frame);
         }
 
@@ -193,7 +194,7 @@ impl SemanticFrameResolver {
             self.frame.puppet_bone_palettes = palettes;
             self.frame.puppet_bone_matrices = matrices;
         }
-        self.event_system.finish_frame(world, &mut self.frame);
+        self.event_system.finish_frame(&mut self.frame);
         self.frame.refresh_visibility_counts();
         Ok(&self.frame)
     }
