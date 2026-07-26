@@ -1,9 +1,7 @@
-//! Native Wayland backend (no SCTK).
+//! Native Wayland backend (the only backend).
 //!
-//! Phase 2 skeleton: own the connection, registry snapshot, and a Compio-driven
-//! read/dispatch pump using `wayland-client` wire bindings only. Shell/seat
-//! Production Fika still uses SCTK [`crate::Runtime`] until native coverage is
-//! complete; [`NativeShell`] is already usable for toplevel + input + scale.
+//! Owns the connection, registry, Compio-driven display pump, and
+//! [`NativeShell`] / [`NativeRuntime`] used by Fika.
 //!
 //! Protocol implementations are split by upstream class under [`protocols`]
 //! (core / stable / staging / unstable / ext / community), following

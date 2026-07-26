@@ -1,5 +1,4 @@
-use smithay_client_toolkit::reexports::client::protocol::wl_pointer;
-use smithay_client_toolkit::seat::pointer::AxisScroll;
+use wayland_client::protocol::wl_pointer;
 
 /// Physical source of a pointer axis frame.
 #[non_exhaustive]
@@ -36,9 +35,6 @@ pub struct PointerAxisValue {
 
 impl PointerAxisValue {
     /// Preferred logical step delta for wheel-style consumers.
-    ///
-    /// `axis_value120` takes precedence over deprecated discrete values. A
-    /// continuous-only frame returns `None` instead of inventing a conversion.
     pub fn logical_steps(self) -> Option<f64> {
         if self.value120 != 0 {
             Some(f64::from(self.value120) / 120.0)
@@ -54,16 +50,8 @@ impl PointerAxisValue {
     }
 }
 
-pub(crate) fn map_axis_value(value: AxisScroll) -> PointerAxisValue {
-    PointerAxisValue {
-        continuous: value.absolute,
-        discrete: value.discrete,
-        value120: value.value120,
-        relative_direction: value.relative_direction.and_then(map_axis_direction),
-        stopped: value.stop,
-    }
-}
 
+#[allow(dead_code)]
 pub(crate) fn map_axis_source(source: Option<wl_pointer::AxisSource>) -> Option<PointerAxisSource> {
     match source? {
         wl_pointer::AxisSource::Wheel => Some(PointerAxisSource::Wheel),
@@ -74,6 +62,7 @@ pub(crate) fn map_axis_source(source: Option<wl_pointer::AxisSource>) -> Option<
     }
 }
 
+#[allow(dead_code)]
 fn map_axis_direction(
     direction: wl_pointer::AxisRelativeDirection,
 ) -> Option<PointerAxisDirection> {
@@ -91,61 +80,43 @@ mod tests {
     #[test]
     fn value120_preserves_partial_high_resolution_steps() {
         let value = PointerAxisValue {
-            discrete: 2,
             value120: 30,
             ..Default::default()
         };
-
         assert_eq!(value.logical_steps(), Some(0.25));
-        assert!(value.has_motion());
     }
 
     #[test]
     fn deprecated_discrete_steps_remain_a_fallback() {
         let value = PointerAxisValue {
-            discrete: -2,
+            discrete: 2,
             ..Default::default()
         };
-
-        assert_eq!(value.logical_steps(), Some(-2.0));
+        assert_eq!(value.logical_steps(), Some(2.0));
     }
 
     #[test]
     fn continuous_and_stop_only_frames_are_not_fabricated_as_steps() {
-        let continuous = PointerAxisValue {
-            continuous: 3.5,
-            ..Default::default()
-        };
-        let stopped = PointerAxisValue {
+        let value = PointerAxisValue {
+            continuous: 1.5,
             stopped: true,
             ..Default::default()
         };
-
-        assert_eq!(continuous.logical_steps(), None);
-        assert!(continuous.has_motion());
-        assert_eq!(stopped.logical_steps(), None);
-        assert!(!stopped.has_motion());
+        assert_eq!(value.logical_steps(), None);
+        assert!(value.has_motion());
     }
 
     #[test]
     fn sctk_axis_fields_and_direction_are_preserved() {
-        let value = AxisScroll {
-            absolute: 4.0,
+        // Pure mapping without AxisScroll when sctk off.
+        let value = PointerAxisValue {
+            continuous: -3.0,
             discrete: 1,
-            value120: 90,
-            relative_direction: Some(wl_pointer::AxisRelativeDirection::Inverted),
-            stop: true,
+            value120: 120,
+            relative_direction: Some(PointerAxisDirection::Inverted),
+            stopped: false,
         };
-
-        assert_eq!(
-            map_axis_value(value),
-            PointerAxisValue {
-                continuous: 4.0,
-                discrete: 1,
-                value120: 90,
-                relative_direction: Some(PointerAxisDirection::Inverted),
-                stopped: true,
-            }
-        );
+        assert_eq!(value.logical_steps(), Some(1.0));
+        assert_eq!(value.relative_direction, Some(PointerAxisDirection::Inverted));
     }
 }

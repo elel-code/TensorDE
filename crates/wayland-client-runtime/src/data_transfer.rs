@@ -1,14 +1,8 @@
 //! MIME payloads and pipes shared by clipboard and drag-and-drop transfers.
 
 use std::io::{self, Read};
-#[cfg(feature = "sctk")]
-use std::io::Write;
 use std::sync::Arc;
-#[cfg(feature = "sctk")]
-use std::thread;
 
-#[cfg(feature = "sctk")]
-use smithay_client_toolkit::data_device_manager::{ReadPipe, WritePipe};
 
 pub const MIME_TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
 pub const MIME_UTF8_STRING: &str = "UTF8_STRING";
@@ -127,21 +121,11 @@ pub struct TransferReadPipe {
 
 #[derive(Debug)]
 enum TransferReadInner {
-    /// SCTK / calloop path.
-    #[cfg(feature = "sctk")]
-    Sctk(ReadPipe),
     /// Native path: bytes already transferred (or pre-buffered).
     Memory(io::Cursor<Vec<u8>>),
 }
 
 impl TransferReadPipe {
-    #[cfg(feature = "sctk")]
-    pub(crate) fn new(mime: String, inner: ReadPipe) -> Self {
-        Self {
-            mime,
-            inner: TransferReadInner::Sctk(inner),
-        }
-    }
 
     /// Build a pipe from bytes already read on the native data-device path.
     pub(crate) fn from_bytes(mime: String, bytes: Vec<u8>) -> Self {
@@ -174,22 +158,11 @@ impl TransferReadPipe {
 impl Read for TransferReadPipe {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match &mut self.inner {
-            #[cfg(feature = "sctk")]
-            TransferReadInner::Sctk(pipe) => pipe.read(buffer),
             TransferReadInner::Memory(cursor) => cursor.read(buffer),
         }
     }
 }
 
-#[cfg(feature = "sctk")]
-pub(crate) fn spawn_write_pipe(name: &str, mut pipe: WritePipe, bytes: Arc<[u8]>) {
-    let _ = thread::Builder::new()
-        .name(name.to_string())
-        .spawn(move || {
-            let _ = pipe.write_all(&bytes);
-            let _ = pipe.flush();
-        });
-}
 
 #[cfg(test)]
 mod tests {

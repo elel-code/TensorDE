@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Press-tracker helpers retained for interactive grab parity.
 use std::collections::HashMap;
 
 use wayland_client::protocol::wl_seat::WlSeat;

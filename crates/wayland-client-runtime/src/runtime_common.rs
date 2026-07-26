@@ -1,4 +1,4 @@
-//! Backend-agnostic runtime types shared by native and (optional) SCTK paths.
+//! Backend-agnostic runtime types.
 
 use crate::dnd::DndOfferId;
 use crate::layer_shell::LayerSurfaceError;
@@ -23,32 +23,19 @@ impl Default for RuntimeOptions {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeCapabilities {
     pub xdg_dialog_v1: bool,
-    /// The compositor supports exporting and consuming xdg activation tokens.
     pub xdg_activation_v1: bool,
-    /// The compositor supports assigning per-toplevel names or pixel icons.
     pub xdg_toplevel_icon_v1: bool,
-    /// A deployed layer-shell backend is available.
     pub layer_shell_v1: bool,
-    /// The layer-shell backend supports changing an existing surface's layer.
     pub layer_shell_dynamic_layer: bool,
-    /// The layer-shell backend supports normal on-demand keyboard focus.
     pub layer_shell_on_demand_keyboard: bool,
-    /// The layer-shell backend supports explicit exclusive-edge disambiguation.
     pub layer_shell_exclusive_edge: bool,
-    /// The compositor supports seat-scoped text input and input methods.
     pub text_input_v3: bool,
-    /// The compositor can confine or lock a pointer to a surface.
     pub pointer_constraints_v1: bool,
-    /// The compositor can report accelerated and unaccelerated relative motion.
     pub relative_pointer_v1: bool,
-    /// The compositor supports swipe and pinch pointer gestures.
     pub pointer_gestures_v1: bool,
-    /// The pointer-gestures-v1 global is new enough to support hold gestures.
     pub pointer_gesture_hold_v1: bool,
     pub popup_reposition: bool,
-    /// The compositor currently advertises the ext-background-effect-v1 blur capability.
     pub ext_background_effect: bool,
-    /// Fractional scale is usable only when both protocol globals are present.
     pub fractional_scale: bool,
     pub cursor_shape: bool,
 }
@@ -111,36 +98,16 @@ pub enum RuntimeError {
     Protocol(String),
 }
 
-/// Thread-safe handle for interrupting a blocking dispatch / native poll.
+/// Thread-safe handle for interrupting a blocking native poll.
 #[derive(Clone, Debug)]
-pub struct WakeHandle(WakeKind);
-
-#[derive(Clone, Debug)]
-enum WakeKind {
-    /// SCTK / calloop event loop signal.
-    #[cfg(feature = "sctk")]
-    Calloop(::smithay_client_toolkit::reexports::calloop::LoopSignal),
-    /// Eventfd used by the native Compio-free poll path.
-    EventFd(std::sync::Arc<crate::wake_fd::EventFdWake>),
-}
+pub struct WakeHandle(std::sync::Arc<crate::wake_fd::EventFdWake>);
 
 impl WakeHandle {
-    #[cfg(feature = "sctk")]
-    pub(crate) fn from_calloop(
-        signal: ::smithay_client_toolkit::reexports::calloop::LoopSignal,
-    ) -> Self {
-        Self(WakeKind::Calloop(signal))
-    }
-
     pub(crate) fn from_event_fd(wake: std::sync::Arc<crate::wake_fd::EventFdWake>) -> Self {
-        Self(WakeKind::EventFd(wake))
+        Self(wake)
     }
 
     pub fn wake(&self) {
-        match &self.0 {
-            #[cfg(feature = "sctk")]
-            WakeKind::Calloop(signal) => signal.wakeup(),
-            WakeKind::EventFd(wake) => wake.wake(),
-        }
+        self.0.wake();
     }
 }

@@ -1,6 +1,4 @@
-// Fika uses NativeRuntime only (SCTK Runtime removed from the production path).
-// The crate still builds SCTK behind the `sctk` feature for examples / A/B.
-
+// Fika uses NativeRuntime only (SCTK fully removed from this crate).
 /// Active protocol backend for the Fika event loop.
 struct PlatformBackend {
     inner: NativeRuntime,

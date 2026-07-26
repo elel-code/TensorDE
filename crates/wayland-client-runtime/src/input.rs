@@ -1,4 +1,4 @@
-// Same type as smithay_client_toolkit reexports (both are wayland-client 0.31).
+// Seat serial types use wayland-client WlSeat.
 use wayland_client::protocol::wl_seat::WlSeat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

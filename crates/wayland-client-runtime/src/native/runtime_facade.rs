@@ -1,7 +1,7 @@
-//! Thin Fika-facing facade over [`NativeShell`].
+//! Fika-facing facade over [`NativeShell`].
 //!
-//! Mirrors SCTK [`crate::Runtime`] APIs used by the platform event loop and
-//! common shell interactions (move/resize/menu, capture, DnD, icons, blur).
+//! Exposes the public runtime API used by the platform event loop and common
+//! shell interactions (move/resize/menu, capture, DnD, icons, blur, CSD).
 
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;

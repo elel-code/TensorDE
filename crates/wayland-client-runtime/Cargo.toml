@@ -4,32 +4,23 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
-description = "A Wayland-native client protocol, surface, and event runtime (migrating from SCTK to Compio)"
+description = "A Wayland-native client protocol, surface, and event runtime (Compio + native stack)"
 readme = "README.md"
 repository = "https://github.com/elel-code/fika"
 documentation = "https://docs.rs/wayland-client-runtime"
 keywords = ["wayland", "compio", "windowing", "wgpu", "vulkan"]
 categories = ["gui", "os::linux-apis"]
 
-[features]
-default = ["sctk"]
-# Legacy SCTK/calloop Runtime (opt-in fallback). NativeShell is always built.
-sctk = ["dep:smithay-client-toolkit"]
-
 [dependencies]
 bitflags = "2"
-# Compio drives display-fd readiness; native stack uses wayland-client wire
-# bindings without SCTK. Optional SCTK remains for the transitional Runtime path.
 compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"] }
 libc = "0.2"
 raw-window-handle = "0.6"
-smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "system", "xkbcommon"], optional = true }
 thiserror = "2"
 # `system` exposes ObjectId::as_ptr for raw-window-handle / wgpu.
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-# Native keyboard text (keymap fd → utf8). Feature `wayland` enables new_from_fd.
 xkbcommon = { version = "0.8", features = ["wayland"] }
 
 [lints.rust]

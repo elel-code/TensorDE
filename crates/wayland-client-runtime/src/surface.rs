@@ -1,26 +1,11 @@
 use std::fmt;
-use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
 
 use bitflags::bitflags;
 use raw_window_handle::{
-    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
-    RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, WindowHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::{Connection, Proxy};
-use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::xdg::XdgSurface;
-use smithay_client_toolkit::shell::xdg::dialog::Dialog;
-use smithay_client_toolkit::shell::xdg::popup::Popup;
-use smithay_client_toolkit::shell::xdg::window::Window;
 
-use crate::fractional_scale::FractionalScaleSurface;
-use crate::layer_shell::LayerProtocolSurface;
-use crate::text_input::TextInputState;
-use crate::toplevel_icon::AppliedToplevelIcon;
-use crate::{InputSerial, LogicalPosition, LogicalRect, LogicalSize, PointerCaptureState};
+use crate::{InputSerial, LogicalPosition, LogicalRect, LogicalSize};
 
 /// Stable runtime identifier for a Wayland surface role.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -155,132 +140,28 @@ pub struct PopupAttributes {
     pub grab: Option<InputSerial>,
 }
 
-pub(crate) enum ProtocolSurface {
-    Toplevel(Window),
-    NativeDialog(Dialog),
-    FallbackDialog(Window),
-    Popup(Popup),
-    Layer(LayerProtocolSurface),
-}
-
-impl ProtocolSurface {
-    pub(crate) fn wl_surface(&self) -> &WlSurface {
-        match self {
-            Self::Toplevel(window) | Self::FallbackDialog(window) => window.wl_surface(),
-            Self::NativeDialog(dialog) => dialog.wl_surface(),
-            Self::Popup(popup) => popup.wl_surface(),
-            Self::Layer(layer) => layer.wl_surface(),
-        }
-    }
-
-    pub(crate) fn xdg_surface(
-        &self,
-    ) -> Option<
-        &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
-    > {
-        match self {
-            Self::Toplevel(window) | Self::FallbackDialog(window) => Some(window.xdg_surface()),
-            Self::NativeDialog(dialog) => Some(dialog.xdg_surface()),
-            Self::Popup(popup) => Some(popup.xdg_surface()),
-            Self::Layer(_) => None,
-        }
-    }
-
-    pub(crate) fn xdg_toplevel(
-        &self,
-    ) -> Option<
-        &wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
-    >{
-        match self {
-            Self::Toplevel(window) | Self::FallbackDialog(window) => Some(window.xdg_toplevel()),
-            Self::NativeDialog(dialog) => Some(dialog.xdg_toplevel()),
-            Self::Popup(_) | Self::Layer(_) => None,
-        }
-    }
-
-    pub(crate) fn layer_surface(&self) -> Option<&LayerProtocolSurface> {
-        match self {
-            Self::Layer(layer) => Some(layer),
-            _ => None,
-        }
-    }
-}
-
-pub(crate) struct ManagedBlur(pub(crate) ExtBackgroundEffectSurfaceV1);
-
-impl Drop for ManagedBlur {
-    fn drop(&mut self) {
-        if self.0.is_alive() {
-            self.0.destroy();
-        }
-    }
-}
-
-pub(crate) struct SurfaceShared {
-    // Destruction order matters: extension role, xdg role, then parent.
-    pub(crate) blur: Mutex<Option<ManagedBlur>>,
-    pub(crate) fractional_scale: Option<FractionalScaleSurface>,
-    pub(crate) pointer_capture: Mutex<PointerCaptureState>,
-    pub(crate) text_input: Mutex<Option<TextInputState>>,
-    pub(crate) toplevel_icon: Mutex<Option<AppliedToplevelIcon>>,
-    pub(crate) protocol: ProtocolSurface,
-    pub(crate) parent: Option<Arc<SurfaceShared>>,
-    pub(crate) connection: Connection,
-    pub(crate) id: SurfaceId,
-    pub(crate) kind: SurfaceKind,
-}
-
-impl SurfaceShared {
-    pub(crate) fn wl_surface(&self) -> &WlSurface {
-        self.protocol.wl_surface()
-    }
-}
-
 /// A renderer-facing lease on a live Wayland surface.
 ///
 /// The lease keeps the protocol role, its `wl_surface`, its connection and all
-/// ancestors alive. This makes it suitable for `wgpu::Instance::create_surface`
-/// and `VK_KHR_wayland_surface` without either graphics API becoming a crate
-/// dependency.
-///
-/// Backends: SCTK [`Runtime`] (shared graph) or native [`crate::NativeShell`].
+/// ancestors alive. Suitable for wgpu / Vulkan Wayland surfaces.
 #[derive(Clone)]
 pub struct SurfaceHandle {
-    backend: SurfaceHandleBackend,
-}
-
-#[derive(Clone)]
-enum SurfaceHandleBackend {
-    Sctk(Arc<SurfaceShared>),
-    Native(crate::NativeSurfaceHandle),
+    native: crate::NativeSurfaceHandle,
 }
 
 impl SurfaceHandle {
-    pub(crate) fn from_sctk(shared: Arc<SurfaceShared>) -> Self {
-        Self {
-            backend: SurfaceHandleBackend::Sctk(shared),
-        }
-    }
-
     pub(crate) fn from_native(handle: crate::NativeSurfaceHandle) -> Self {
-        Self {
-            backend: SurfaceHandleBackend::Native(handle),
-        }
+        Self { native: handle }
     }
 
     pub fn id(&self) -> SurfaceId {
-        match &self.backend {
-            SurfaceHandleBackend::Sctk(shared) => shared.id,
-            SurfaceHandleBackend::Native(handle) => SurfaceId(u64::from(handle.id().0)),
-        }
+        SurfaceId(u64::from(self.native.id().0))
     }
 
     pub fn kind(&self) -> SurfaceKind {
-        match &self.backend {
-            SurfaceHandleBackend::Sctk(shared) => shared.kind,
-            // Native path currently only leases toplevels / layers for wgpu.
-            SurfaceHandleBackend::Native(_) => SurfaceKind::Toplevel,
-        }
+        // Native leases currently expose toplevels for wgpu; dialog/popup/layer
+        // still share the same handle shape.
+        SurfaceKind::Toplevel
     }
 }
 
@@ -296,34 +177,13 @@ impl fmt::Debug for SurfaceHandle {
 
 impl HasWindowHandle for SurfaceHandle {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        match &self.backend {
-            SurfaceHandleBackend::Sctk(shared) => {
-                let pointer = shared.wl_surface().id().as_ptr();
-                let pointer = NonNull::new(pointer.cast())
-                    .expect("a live wl_surface proxy always has a non-null pointer");
-                let raw = RawWindowHandle::Wayland(WaylandWindowHandle::new(pointer));
-                // SAFETY: borrow cannot outlive `self`, which owns the surface.
-                Ok(unsafe { WindowHandle::borrow_raw(raw) })
-            }
-            SurfaceHandleBackend::Native(handle) => handle.window_handle(),
-        }
+        self.native.window_handle()
     }
 }
 
 impl HasDisplayHandle for SurfaceHandle {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        match &self.backend {
-            SurfaceHandleBackend::Sctk(shared) => {
-                let display = shared.connection.display();
-                let pointer = display.id().as_ptr();
-                let pointer = NonNull::new(pointer.cast())
-                    .expect("a live wl_display proxy always has a non-null pointer");
-                let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(pointer));
-                // SAFETY: `self` owns Connection for at least the returned borrow.
-                Ok(unsafe { DisplayHandle::borrow_raw(raw) })
-            }
-            SurfaceHandleBackend::Native(handle) => handle.display_handle(),
-        }
+        self.native.display_handle()
     }
 }
 
