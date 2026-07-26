@@ -150,7 +150,7 @@ pub(crate) struct RuntimeState {
     pub(crate) backend: Option<TtyBackend>,
     #[cfg(feature = "tty")]
     /// Physical devices discovered by the input adapter (value-only caps).
-    pub(crate) input_devices: HashMap<String, InputDeviceCapabilities>,
+    pub(crate) input_devices: HashMap<tensor_input::DeviceId, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
     /// When true, every redraw path fans out to all CRTCs (debug only).

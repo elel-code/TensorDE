@@ -2,48 +2,52 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Device, DeviceCapability, Event as InputEventTrait, InputEvent,
-        ProximityState, TabletToolEvent, TabletToolTipState,
+        AbsolutePositionEvent, Event as InputEventTrait, ProximityState, TabletToolEvent,
+        TabletToolTipState,
     },
-    backend::libinput::LibinputInputBackend,
     utils::SERIAL_COUNTER,
     wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 use tracing::debug;
 
+use input::event::tablet_tool::{
+    TabletToolAxisEvent as LibinputTabletAxisEvent,
+    TabletToolButtonEvent as LibinputTabletButtonEvent, TabletToolEvent as LibinputTabletEvent,
+    TabletToolProximityEvent as LibinputTabletProximityEvent,
+    TabletToolTipEvent as LibinputTabletTipEvent,
+};
+use tensor_input::DeviceChange;
+
 use super::RuntimeState;
 
 impl RuntimeState {
-    pub(super) fn process_tablet_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+    pub(super) fn process_tablet_device(&mut self, device: input::Device, change: DeviceChange) {
+        let desc = TabletDescriptor::from(&device);
+        match change {
+            DeviceChange::Added => {
+                self.seat
+                    .tablet_seat()
+                    .add_tablet::<Self>(&self.display_handle, &desc);
+                debug!(name = %device.name(), "tablet tool device added");
+            }
+            DeviceChange::Removed => {
+                self.seat.tablet_seat().remove_tablet(&desc);
+                debug!(name = %device.name(), "tablet tool device removed");
+            }
+        }
+    }
+
+    pub(super) fn process_tablet_event(&mut self, event: LibinputTabletEvent) {
         match event {
-            InputEvent::DeviceAdded { device } => {
-                if Device::has_capability(&device, DeviceCapability::TabletTool) {
-                    let desc = TabletDescriptor::from(&device);
-                    self.seat
-                        .tablet_seat()
-                        .add_tablet::<Self>(&self.display_handle, &desc);
-                    debug!(name = %device.name(), "tablet tool device added");
-                }
-            }
-            InputEvent::DeviceRemoved { device } => {
-                if Device::has_capability(&device, DeviceCapability::TabletTool) {
-                    let desc = TabletDescriptor::from(&device);
-                    self.seat.tablet_seat().remove_tablet(&desc);
-                    debug!(name = %device.name(), "tablet tool device removed");
-                }
-            }
-            InputEvent::TabletToolAxis { event } => self.on_tablet_axis(event),
-            InputEvent::TabletToolProximity { event } => self.on_tablet_proximity(event),
-            InputEvent::TabletToolTip { event } => self.on_tablet_tip(event),
-            InputEvent::TabletToolButton { event } => self.on_tablet_button(event),
+            LibinputTabletEvent::Axis(event) => self.on_tablet_axis(event),
+            LibinputTabletEvent::Proximity(event) => self.on_tablet_proximity(event),
+            LibinputTabletEvent::Tip(event) => self.on_tablet_tip(event),
+            LibinputTabletEvent::Button(event) => self.on_tablet_button(event),
             _ => {}
         }
     }
 
-    fn on_tablet_axis(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::TabletToolAxisEvent,
-    ) {
+    fn on_tablet_axis(&mut self, event: LibinputTabletAxisEvent) {
         let Some(bounds) = self.pointer_coordinate_space() else {
             return;
         };
@@ -72,10 +76,7 @@ impl RuntimeState {
         self.request_redraw_at(location);
     }
 
-    fn on_tablet_proximity(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::TabletToolProximityEvent,
-    ) {
+    fn on_tablet_proximity(&mut self, event: LibinputTabletProximityEvent) {
         use smithay::backend::input::TabletToolProximityEvent;
 
         let tool = {
@@ -117,10 +118,7 @@ impl RuntimeState {
         }
     }
 
-    fn on_tablet_tip(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::TabletToolTipEvent,
-    ) {
+    fn on_tablet_tip(&mut self, event: LibinputTabletTipEvent) {
         use smithay::backend::input::TabletToolTipEvent;
 
         let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
@@ -136,10 +134,7 @@ impl RuntimeState {
         }
     }
 
-    fn on_tablet_button(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::TabletToolButtonEvent,
-    ) {
+    fn on_tablet_button(&mut self, event: LibinputTabletButtonEvent) {
         use smithay::backend::input::TabletToolButtonEvent;
 
         let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {

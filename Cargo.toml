@@ -52,7 +52,7 @@ drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
 futures-util = "0.3"
 gbm = { version = "0.18", optional = true }
-input = { version = "0.10", default-features = false, optional = true, features = ["udev"] }
+input = { version = "0.10", default-features = false, optional = true, features = ["libinput_1_19", "udev"] }
 libseat = { version = "0.2", default-features = false, optional = true }
 libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }

@@ -1,24 +1,46 @@
 //! Main-thread libinput owner driven by one-shot Compio fd completions.
 
 use std::{
+    collections::HashMap,
     io,
     os::fd::{AsFd, BorrowedFd},
 };
 
-use input::{Libinput, event};
-use smithay::backend::{
-    input::InputEvent as SmithayInputEvent,
-    libinput::{LibinputInputBackend, LibinputSessionInterface, PointerScrollAxis},
+use input::{
+    AsRaw, DeviceCapability, Libinput, event,
+    event::{
+        EventTrait as _,
+        keyboard::KeyboardEventTrait as _,
+        pointer::{PointerEventTrait as _, PointerScrollEvent as _},
+    },
+};
+use smithay::backend::libinput::LibinputSessionInterface;
+use tensor_host::AxisSource;
+use tensor_input::{
+    AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceCapabilities, DeviceChange,
+    DeviceEvent, DeviceId, KeyboardEvent, PointerAxisEvent, PointerButtonEvent,
+    RelativeMotionEvent,
 };
 
 use super::session::SeatSession;
 
 const MAX_EVENTS_PER_COMPLETION: usize = 256;
 
-pub(super) type LibinputEvent = SmithayInputEvent<LibinputInputBackend>;
+#[derive(Debug)]
+pub(crate) enum LibinputEvent {
+    Device {
+        event: DeviceEvent,
+        /// The protocol tablet adapter still needs the libinput device object.
+        tablet: Option<input::Device>,
+    },
+    Input(BackendInputEvent),
+    Tablet(event::TabletToolEvent),
+}
 
 pub(super) struct LibinputSource {
     context: Libinput,
+    device_ids: HashMap<usize, DeviceId>,
+    next_device_id: u64,
     dropped_events: u64,
     events_in_completion: usize,
     dropped_in_completion: u64,
@@ -33,6 +55,8 @@ impl LibinputSource {
         }
         Ok(Self {
             context,
+            device_ids: HashMap::new(),
+            next_device_id: 1,
             dropped_events: 0,
             events_in_completion: 0,
             dropped_in_completion: 0,
@@ -55,8 +79,12 @@ impl LibinputSource {
     }
 
     pub(super) fn next_event(&mut self) -> Option<LibinputEvent> {
-        for event in &mut self.context {
-            let Some(event) = map_event(event) else {
+        loop {
+            let Some(event) = self.context.next() else {
+                self.report_dropped_events();
+                return None;
+            };
+            let Some(event) = self.map_event(event) else {
                 continue;
             };
             if self.events_in_completion < MAX_EVENTS_PER_COMPLETION {
@@ -66,6 +94,135 @@ impl LibinputSource {
                 self.dropped_in_completion = self.dropped_in_completion.saturating_add(1);
             }
         }
+    }
+
+    fn map_event(&mut self, event: input::Event) -> Option<LibinputEvent> {
+        match event {
+            input::Event::Device(event) => match event {
+                event::DeviceEvent::Added(event) => {
+                    self.map_device(event.device(), DeviceChange::Added)
+                }
+                event::DeviceEvent::Removed(event) => {
+                    self.map_device(event.device(), DeviceChange::Removed)
+                }
+                _ => None,
+            },
+            input::Event::Touch(
+                event::TouchEvent::Down(_)
+                | event::TouchEvent::Motion(_)
+                | event::TouchEvent::Up(_),
+            ) => Some(LibinputEvent::Input(BackendInputEvent::Activity)),
+            input::Event::Touch(_) => None,
+            input::Event::Keyboard(event::KeyboardEvent::Key(event)) => {
+                let pressed = event.key_state() == event::keyboard::KeyState::Pressed;
+                Some(LibinputEvent::Input(BackendInputEvent::Keyboard(
+                    KeyboardEvent {
+                        key: event.key(),
+                        pressed,
+                        time_ns: micros_to_nanos(event.time_usec()),
+                    },
+                )))
+            }
+            input::Event::Keyboard(_) => None,
+            input::Event::Pointer(event) => self.map_pointer_event(event),
+            input::Event::Tablet(event) => Some(LibinputEvent::Tablet(event)),
+            _ => None,
+        }
+    }
+
+    fn map_device(&mut self, device: input::Device, change: DeviceChange) -> Option<LibinputEvent> {
+        let raw = device.as_raw() as usize;
+        let id = match change {
+            DeviceChange::Added => {
+                if let Some(id) = self.device_ids.get(&raw).copied() {
+                    id
+                } else {
+                    let id = DeviceId::new(self.next_device_id);
+                    self.next_device_id = self.next_device_id.checked_add(1).or_else(|| {
+                        tracing::error!("libinput device identity space exhausted");
+                        None
+                    })?;
+                    self.device_ids.insert(raw, id);
+                    id
+                }
+            }
+            DeviceChange::Removed => self.device_ids.remove(&raw).unwrap_or_else(|| {
+                tracing::warn!(device = %device.sysname(), "removed unknown libinput device");
+                DeviceId::new(0)
+            }),
+        };
+        let capabilities = DeviceCapabilities {
+            keyboard: device.has_capability(DeviceCapability::Keyboard),
+            pointer: device.has_capability(DeviceCapability::Pointer),
+            touch: device.has_capability(DeviceCapability::Touch),
+            tablet: device.has_capability(DeviceCapability::TabletTool),
+        };
+        let tablet = capabilities.tablet.then_some(device);
+        Some(LibinputEvent::Device {
+            event: DeviceEvent {
+                id,
+                capabilities,
+                change,
+            },
+            tablet,
+        })
+    }
+
+    fn map_pointer_event(&self, event: event::PointerEvent) -> Option<LibinputEvent> {
+        let event = match event {
+            event::PointerEvent::Motion(event) => {
+                BackendInputEvent::PointerMotion(RelativeMotionEvent {
+                    delta_x: event.dx(),
+                    delta_y: event.dy(),
+                    unaccelerated_x: event.dx_unaccelerated(),
+                    unaccelerated_y: event.dy_unaccelerated(),
+                    time_ns: micros_to_nanos(event.time_usec()),
+                })
+            }
+            event::PointerEvent::MotionAbsolute(event) => {
+                BackendInputEvent::PointerMotionAbsolute(AbsoluteMotionEvent {
+                    x: event.absolute_x_transformed(1),
+                    y: event.absolute_y_transformed(1),
+                    time_ns: micros_to_nanos(event.time_usec()),
+                })
+            }
+            event::PointerEvent::Button(event) => {
+                BackendInputEvent::PointerButton(PointerButtonEvent {
+                    button: event.button(),
+                    pressed: event.button_state() == event::pointer::ButtonState::Pressed,
+                    time_ns: micros_to_nanos(event.time_usec()),
+                })
+            }
+            event::PointerEvent::ScrollWheel(event) => {
+                let horizontal_v120 = event.has_axis(event::pointer::Axis::Horizontal).then(|| {
+                    event
+                        .scroll_value_v120(event::pointer::Axis::Horizontal)
+                        .round() as i32
+                });
+                let vertical_v120 = event.has_axis(event::pointer::Axis::Vertical).then(|| {
+                    event
+                        .scroll_value_v120(event::pointer::Axis::Vertical)
+                        .round() as i32
+                });
+                BackendInputEvent::PointerAxis(map_axis_event(
+                    &event,
+                    horizontal_v120,
+                    vertical_v120,
+                    AxisSource::Wheel,
+                ))
+            }
+            event::PointerEvent::ScrollFinger(event) => BackendInputEvent::PointerAxis(
+                map_axis_event(&event, None, None, AxisSource::Finger),
+            ),
+            event::PointerEvent::ScrollContinuous(event) => BackendInputEvent::PointerAxis(
+                map_axis_event(&event, None, None, AxisSource::Continuous),
+            ),
+            _ => return None,
+        };
+        Some(LibinputEvent::Input(event))
+    }
+
+    fn report_dropped_events(&mut self) {
         if self.dropped_in_completion > 0 {
             self.dropped_events = self
                 .dropped_events
@@ -77,7 +234,6 @@ impl LibinputSource {
             );
             self.dropped_in_completion = 0;
         }
-        None
     }
 }
 
@@ -87,92 +243,39 @@ impl AsFd for LibinputSource {
     }
 }
 
-fn map_event(event: input::Event) -> Option<LibinputEvent> {
-    use event::EventTrait as _;
+#[inline]
+fn micros_to_nanos(time_usec: u64) -> u64 {
+    time_usec.saturating_mul(1_000)
+}
 
-    match event {
-        input::Event::Device(event) => match event {
-            event::DeviceEvent::Added(event) => Some(SmithayInputEvent::DeviceAdded {
-                device: event.device(),
-            }),
-            event::DeviceEvent::Removed(event) => Some(SmithayInputEvent::DeviceRemoved {
-                device: event.device(),
-            }),
-            _ => None,
-        },
-        input::Event::Touch(event) => match event {
-            event::TouchEvent::Down(event) => Some(SmithayInputEvent::TouchDown { event }),
-            event::TouchEvent::Motion(event) => Some(SmithayInputEvent::TouchMotion { event }),
-            event::TouchEvent::Up(event) => Some(SmithayInputEvent::TouchUp { event }),
-            event::TouchEvent::Cancel(event) => Some(SmithayInputEvent::TouchCancel { event }),
-            event::TouchEvent::Frame(event) => Some(SmithayInputEvent::TouchFrame { event }),
-            _ => None,
-        },
-        input::Event::Keyboard(event::KeyboardEvent::Key(event)) => {
-            Some(SmithayInputEvent::Keyboard { event })
-        }
-        input::Event::Keyboard(_) => None,
-        input::Event::Pointer(event) => match event {
-            event::PointerEvent::Motion(event) => Some(SmithayInputEvent::PointerMotion { event }),
-            event::PointerEvent::MotionAbsolute(event) => {
-                Some(SmithayInputEvent::PointerMotionAbsolute { event })
-            }
-            event::PointerEvent::ScrollWheel(event) => Some(SmithayInputEvent::PointerAxis {
-                event: PointerScrollAxis::Wheel(event),
-            }),
-            event::PointerEvent::ScrollFinger(event) => Some(SmithayInputEvent::PointerAxis {
-                event: PointerScrollAxis::Finger(event),
-            }),
-            event::PointerEvent::ScrollContinuous(event) => Some(SmithayInputEvent::PointerAxis {
-                event: PointerScrollAxis::Continuous(event),
-            }),
-            event::PointerEvent::Button(event) => Some(SmithayInputEvent::PointerButton { event }),
-            _ => None,
-        },
-        input::Event::Gesture(event) => match event {
-            event::GestureEvent::Swipe(event::gesture::GestureSwipeEvent::Begin(event)) => {
-                Some(SmithayInputEvent::GestureSwipeBegin { event })
-            }
-            event::GestureEvent::Swipe(event::gesture::GestureSwipeEvent::Update(event)) => {
-                Some(SmithayInputEvent::GestureSwipeUpdate { event })
-            }
-            event::GestureEvent::Swipe(event::gesture::GestureSwipeEvent::End(event)) => {
-                Some(SmithayInputEvent::GestureSwipeEnd { event })
-            }
-            event::GestureEvent::Pinch(event::gesture::GesturePinchEvent::Begin(event)) => {
-                Some(SmithayInputEvent::GesturePinchBegin { event })
-            }
-            event::GestureEvent::Pinch(event::gesture::GesturePinchEvent::Update(event)) => {
-                Some(SmithayInputEvent::GesturePinchUpdate { event })
-            }
-            event::GestureEvent::Pinch(event::gesture::GesturePinchEvent::End(event)) => {
-                Some(SmithayInputEvent::GesturePinchEnd { event })
-            }
-            event::GestureEvent::Hold(event::gesture::GestureHoldEvent::Begin(event)) => {
-                Some(SmithayInputEvent::GestureHoldBegin { event })
-            }
-            event::GestureEvent::Hold(event::gesture::GestureHoldEvent::End(event)) => {
-                Some(SmithayInputEvent::GestureHoldEnd { event })
-            }
-            _ => None,
-        },
-        input::Event::Tablet(event) => match event {
-            event::TabletToolEvent::Axis(event) => {
-                Some(SmithayInputEvent::TabletToolAxis { event })
-            }
-            event::TabletToolEvent::Proximity(event) => {
-                Some(SmithayInputEvent::TabletToolProximity { event })
-            }
-            event::TabletToolEvent::Tip(event) => Some(SmithayInputEvent::TabletToolTip { event }),
-            event::TabletToolEvent::Button(event) => {
-                Some(SmithayInputEvent::TabletToolButton { event })
-            }
-            _ => None,
-        },
-        input::Event::Switch(event::SwitchEvent::Toggle(event)) => {
-            Some(SmithayInputEvent::SwitchToggle { event })
-        }
-        input::Event::Switch(_) => None,
-        _ => None,
-    }
+fn map_axis_event<E>(
+    event: &E,
+    horizontal_v120: Option<i32>,
+    vertical_v120: Option<i32>,
+    source: AxisSource,
+) -> PointerAxisEvent
+where
+    E: event::EventTrait + event::pointer::PointerEventTrait + event::pointer::PointerScrollEvent,
+{
+    let horizontal = event
+        .has_axis(event::pointer::Axis::Horizontal)
+        .then(|| event.scroll_value(event::pointer::Axis::Horizontal));
+    let vertical = event
+        .has_axis(event::pointer::Axis::Vertical)
+        .then(|| event.scroll_value(event::pointer::Axis::Vertical));
+    let direction = if event.device().config_scroll_natural_scroll_enabled() {
+        AxisDirection::Inverted
+    } else {
+        AxisDirection::Identical
+    };
+    PointerAxisEvent::new(
+        horizontal,
+        vertical,
+        horizontal_v120,
+        vertical_v120,
+        micros_to_nanos(event.time_usec()),
+        source,
+        direction,
+        direction,
+    )
 }

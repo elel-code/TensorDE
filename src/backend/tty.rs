@@ -42,7 +42,8 @@ mod session;
 mod status;
 mod udev;
 
-use libinput::{LibinputEvent, LibinputSource};
+pub(crate) use libinput::LibinputEvent;
+use libinput::LibinputSource;
 use session::SeatSession;
 pub(crate) use udev::UdevEvent;
 use udev::UdevMonitor;

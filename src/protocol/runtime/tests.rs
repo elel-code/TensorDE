@@ -441,7 +441,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         assert!(runtime.state.world.is_focused(focused_view));
         assert!(runtime.state.seat.get_keyboard().is_none());
         runtime.state.input_devices.insert(
-            "test-keyboard".to_owned(),
+            tensor_input::DeviceId::new(1),
             super::super::state::InputDeviceCapabilities {
                 keyboard: true,
                 ..Default::default()

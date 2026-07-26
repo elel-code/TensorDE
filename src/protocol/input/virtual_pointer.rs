@@ -32,7 +32,7 @@ impl RuntimeState {
         };
         self.forward_pointer_location(
             location,
-            (InputEventTrait::<VirtualPointerInputBackend>::time(&event) / 1000) as u32,
+            InputEventTrait::<VirtualPointerInputBackend>::time(&event).saturating_mul(1_000),
         );
     }
 
@@ -50,7 +50,7 @@ impl RuntimeState {
         let location = super::constrain_pointer_location(location, bounds);
         self.forward_pointer_location(
             location,
-            (InputEventTrait::<VirtualPointerInputBackend>::time(&event) / 1000) as u32,
+            InputEventTrait::<VirtualPointerInputBackend>::time(&event).saturating_mul(1_000),
         );
     }
 

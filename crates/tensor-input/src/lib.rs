@@ -10,7 +10,12 @@
 //! - No allocation on the input path inside this crate.
 
 mod capability;
+mod event;
 mod sample;
 
 pub use capability::{DeviceCapabilities, DeviceId};
+pub use event::{
+    AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceChange, DeviceEvent,
+    KeyboardEvent, PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
+};
 pub use sample::{ButtonCode, KeyCode, Sample, TimeNs};

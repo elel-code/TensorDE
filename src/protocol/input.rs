@@ -1,4 +1,3 @@
-mod adapter;
 mod tablet;
 #[cfg(feature = "tty")]
 mod virtual_pointer;
@@ -15,12 +14,9 @@ use pointer_geometry::{
 pub(crate) use pointer_geometry::constrain_pointer_location;
 
 use smithay::{
-    backend::{
-        input::{
-            AbsolutePositionEvent, ButtonState, Device, DeviceCapability, Event as InputEventTrait,
-            InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent,
-        },
-        libinput::LibinputInputBackend,
+    backend::input::{
+        Axis, AxisRelativeDirection, AxisSource as SmithayAxisSource, ButtonState,
+        KeyState as SmithayKeyState, Keycode,
     },
     input::{
         keyboard::{FilterResult, keysyms},
@@ -32,22 +28,68 @@ use smithay::{
 use tracing::{debug, warn};
 use wayland_server::protocol::wl_surface::WlSurface;
 
-use super::{
-    focus::KeyboardFocusTarget,
-    state::{InputDeviceCapabilities, RuntimeState},
+use tensor_host::AxisSource;
+use tensor_input::{
+    AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceChange, KeyboardEvent,
+    PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
 };
 
+use crate::backend::LibinputEvent;
+
+use super::{focus::KeyboardFocusTarget, state::RuntimeState};
+
+#[inline]
+fn xkb_keycode(evdev_key: u32) -> Keycode {
+    (evdev_key + 8).into()
+}
+
+#[inline]
+fn smithay_key_state(pressed: bool) -> SmithayKeyState {
+    if pressed {
+        SmithayKeyState::Pressed
+    } else {
+        SmithayKeyState::Released
+    }
+}
+
+#[inline]
+fn smithay_button_state(pressed: bool) -> ButtonState {
+    if pressed {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    }
+}
+
+#[inline]
+fn smithay_axis_source(source: AxisSource) -> SmithayAxisSource {
+    match source {
+        AxisSource::Finger => SmithayAxisSource::Finger,
+        AxisSource::Continuous | AxisSource::Unknown => SmithayAxisSource::Continuous,
+        AxisSource::Wheel => SmithayAxisSource::Wheel,
+        AxisSource::WheelTilt => SmithayAxisSource::WheelTilt,
+    }
+}
+
+#[inline]
+fn smithay_axis_direction(direction: AxisDirection) -> AxisRelativeDirection {
+    match direction {
+        AxisDirection::Identical => AxisRelativeDirection::Identical,
+        AxisDirection::Inverted => AxisRelativeDirection::Inverted,
+    }
+}
+
 impl RuntimeState {
-    pub(crate) fn process_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+    pub(crate) fn process_input_event(&mut self, event: LibinputEvent) {
         // Session lock captures the seat: only VT recovery remains compositor-owned.
         if self.session_is_locked() {
-            if let InputEvent::Keyboard { event } = &event {
-                let key_state = event.state();
+            if let LibinputEvent::Input(BackendInputEvent::Keyboard(event)) = event {
+                let key_state = smithay_key_state(event.pressed);
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     keyboard.input::<(), _>(
                         self,
-                        event.key_code(),
-                        event.state(),
+                        xkb_keycode(event.key),
+                        key_state,
                         SERIAL_COUNTER.next_serial(),
                         event.time_msec(),
                         move |state, _, handle| {
@@ -55,7 +97,7 @@ impl RuntimeState {
                             else {
                                 return FilterResult::Intercept(());
                             };
-                            if key_state == KeyState::Pressed {
+                            if key_state == SmithayKeyState::Pressed {
                                 state.request_virtual_terminal(vt);
                             }
                             FilterResult::Intercept(())
@@ -65,52 +107,39 @@ impl RuntimeState {
             }
             return;
         }
-        let activity = matches!(
-            event,
-            InputEvent::Keyboard { .. }
-                | InputEvent::PointerMotion { .. }
-                | InputEvent::PointerMotionAbsolute { .. }
-                | InputEvent::PointerButton { .. }
-                | InputEvent::PointerAxis { .. }
-                | InputEvent::TouchDown { .. }
-                | InputEvent::TouchMotion { .. }
-                | InputEvent::TouchUp { .. }
-        );
+        let activity = matches!(&event, LibinputEvent::Input(event) if event.is_activity());
         match event {
-            InputEvent::DeviceAdded { ref device } => {
-                let capabilities = InputDeviceCapabilities {
-                    keyboard: Device::has_capability(device, DeviceCapability::Keyboard),
-                    pointer: Device::has_capability(device, DeviceCapability::Pointer),
-                    touch: Device::has_capability(device, DeviceCapability::Touch),
-                    tablet: Device::has_capability(device, DeviceCapability::TabletTool),
-                };
-                self.input_devices.insert(device.id(), capabilities);
+            LibinputEvent::Device { event, tablet } => {
+                match event.change {
+                    DeviceChange::Added => {
+                        self.input_devices.insert(event.id, event.capabilities);
+                    }
+                    DeviceChange::Removed => {
+                        self.input_devices.remove(&event.id);
+                    }
+                }
                 self.reconcile_seat_capabilities();
-                if capabilities.tablet {
-                    self.process_tablet_event(event);
+                if let Some(device) = tablet {
+                    self.process_tablet_device(device, event.change);
                 }
             }
-            InputEvent::DeviceRemoved { ref device } => {
-                if Device::has_capability(device, DeviceCapability::TabletTool) {
-                    self.process_tablet_event(InputEvent::DeviceRemoved {
-                        device: device.clone(),
-                    });
-                }
-                self.input_devices.remove(&device.id());
-                self.reconcile_seat_capabilities();
+            LibinputEvent::Input(BackendInputEvent::Keyboard(event)) => {
+                self.forward_keyboard(event)
             }
-            InputEvent::Keyboard { event } => self.forward_keyboard(event),
-            InputEvent::PointerMotion { event } => self.forward_pointer_motion(event),
-            InputEvent::PointerMotionAbsolute { event } => {
+            LibinputEvent::Input(BackendInputEvent::PointerMotion(event)) => {
+                self.forward_pointer_motion(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::PointerMotionAbsolute(event)) => {
                 self.forward_pointer_motion_absolute(event)
             }
-            InputEvent::PointerButton { event } => self.forward_pointer_button(event),
-            InputEvent::PointerAxis { event } => self.forward_pointer_axis(event),
-            InputEvent::TabletToolAxis { .. }
-            | InputEvent::TabletToolProximity { .. }
-            | InputEvent::TabletToolTip { .. }
-            | InputEvent::TabletToolButton { .. } => self.process_tablet_event(event),
-            _ => {}
+            LibinputEvent::Input(BackendInputEvent::PointerButton(event)) => {
+                self.forward_pointer_button(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::PointerAxis(event)) => {
+                self.forward_pointer_axis(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::Activity) => {}
+            LibinputEvent::Tablet(event) => self.process_tablet_event(event),
         }
         if activity {
             self.protocol_globals
@@ -169,15 +198,12 @@ impl RuntimeState {
         );
     }
 
-    fn forward_keyboard(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::KeyboardKeyEvent,
-    ) {
+    fn forward_keyboard(&mut self, event: KeyboardEvent) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let key_state = event.state();
-        if key_state == KeyState::Pressed && self.cursor.note_keyboard_activity() {
+        let key_state = smithay_key_state(event.pressed);
+        if key_state == SmithayKeyState::Pressed && self.cursor.note_keyboard_activity() {
             // Typing hid the software cursor; repaint the pointer head.
             if let Some(pointer) = self.seat.get_pointer() {
                 self.request_redraw_at(pointer.current_location());
@@ -187,14 +213,14 @@ impl RuntimeState {
         }
         keyboard.input::<(), _>(
             self,
-            event.key_code(),
-            event.state(),
+            xkb_keycode(event.key),
+            key_state,
             SERIAL_COUNTER.next_serial(),
             event.time_msec(),
             move |state, modifiers, handle| {
                 let keysym = handle.modified_sym().raw();
                 if let Some(vt) = virtual_terminal_for_keysym(keysym) {
-                    if key_state == KeyState::Pressed {
+                    if key_state == SmithayKeyState::Pressed {
                         state.request_virtual_terminal(vt);
                     }
                     // A VT switch can prevent a key release from reaching us.
@@ -202,7 +228,7 @@ impl RuntimeState {
                 }
                 // Super+digit → workspace 1..9; Super+Shift+digit moves focused view
                 // and follows; Super+Page_Up/Down cycles.
-                if key_state == KeyState::Pressed && modifiers.logo {
+                if key_state == SmithayKeyState::Pressed && modifiers.logo {
                     if let Some(index) = workspace_index_for_keysym(keysym) {
                         if modifiers.shift {
                             if let Some(view) = state.world.focused_view(state.active_workspace()) {
@@ -230,7 +256,7 @@ impl RuntimeState {
             },
         );
         // Value bus: keycode-level sample (not keysym — keymap stays seat-side).
-        self.push_key_sample(adapter::key_sample(&event));
+        self.push_key_sample(event.sample());
     }
 
     fn request_virtual_terminal(&mut self, vt: i32) {
@@ -241,27 +267,24 @@ impl RuntimeState {
         backend.change_vt(vt);
     }
 
-    fn forward_pointer_motion(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::PointerMotionEvent,
-    ) {
+    fn forward_pointer_motion(&mut self, event: RelativeMotionEvent) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let location = self.relative_pointer_location(pointer.current_location(), event.delta());
+        let location = self.relative_pointer_location(
+            pointer.current_location(),
+            (event.delta_x, event.delta_y).into(),
+        );
         let Some(location) = location else {
             return;
         };
-        self.forward_pointer_location(location, event.time_msec());
+        self.forward_pointer_location(location, event.time_ns);
     }
 
     /// Follow the same absolute-coordinate conversion used by Niri: libinput
     /// maps the device into the compositor's logical output bounds, then the
     /// seat receives the resulting global location and a redraw is queued.
-    fn forward_pointer_motion_absolute(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::PointerMotionAbsoluteEvent,
-    ) {
+    fn forward_pointer_motion_absolute(&mut self, event: AbsoluteMotionEvent) {
         let Some(bounds) = self.pointer_coordinate_space() else {
             return;
         };
@@ -270,18 +293,19 @@ impl RuntimeState {
             .get_pointer()
             .map(|pointer| pointer.current_location())
             .unwrap_or_else(|| center_pointer_location(bounds));
-        let location = event.position_transformed(bounds.size) + bounds.loc.to_f64();
+        let location = Point::from((
+            event.x * f64::from(bounds.size.w),
+            event.y * f64::from(bounds.size.h),
+        )) + bounds.loc.to_f64();
         let location = replace_non_finite_pointer_location(location, current);
-        self.forward_pointer_location(
-            constrain_pointer_location(location, bounds),
-            event.time_msec(),
-        );
+        self.forward_pointer_location(constrain_pointer_location(location, bounds), event.time_ns);
     }
 
-    fn forward_pointer_location(&mut self, location: Point<f64, Logical>, time: u32) {
+    fn forward_pointer_location(&mut self, location: Point<f64, Logical>, time_ns: u64) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let time = (time_ns / 1_000_000) as u32;
         let _ = self.cursor.note_pointer_activity();
         let focus = self.pointer_focus_under(location);
         pointer.motion(
@@ -297,8 +321,9 @@ impl RuntimeState {
         self.maybe_activate_pointer_constraint();
         // Value bus: coalesce motion samples for the event layer (device Hz
         // must not expand the queue). Seat path already applied the sample.
-        // Value bus via tensor-input sample (adapter-free payload).
-        let _ = self.push_event(adapter::motion_sample(location.x, location.y, time).into_event());
+        let _ = self.push_event(
+            tensor_input::Sample::pointer_motion(location.x, location.y, time_ns).into_event(),
+        );
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target
         // only the head under the pointer so dual high-refresh outputs do not
@@ -360,15 +385,13 @@ impl RuntimeState {
             .reduce(Rectangle::merge)
     }
 
-    fn forward_pointer_button(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::PointerButtonEvent,
-    ) {
+    fn forward_pointer_button(&mut self, event: PointerButtonEvent) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
         let serial = SERIAL_COUNTER.next_serial();
-        if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
+        let state = smithay_button_state(event.pressed);
+        if state == ButtonState::Pressed && !pointer.is_grabbed() {
             self.focus_window_at(pointer.current_location(), serial);
         }
         pointer.button(
@@ -376,46 +399,47 @@ impl RuntimeState {
             &ButtonEvent {
                 serial,
                 time: event.time_msec(),
-                button: event.button_code(),
-                state: event.state(),
+                button: event.button,
+                state,
             },
         );
         pointer.frame(self);
-        let _ = self.push_event(adapter::button_sample(&event).into_event());
+        let _ = self.push_event(event.sample().into_event());
     }
 
-    fn forward_pointer_axis(
-        &mut self,
-        event: <LibinputInputBackend as smithay::backend::input::InputBackend>::PointerAxisEvent,
-    ) {
-        use smithay::backend::input::{Axis, PointerAxisEvent};
+    fn forward_pointer_axis(&mut self, event: PointerAxisEvent) {
         use smithay::input::pointer::AxisFrame;
 
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
         let mut frame = AxisFrame::new(event.time_msec())
-            .source(event.source())
-            .relative_direction(Axis::Horizontal, event.relative_direction(Axis::Horizontal))
-            .relative_direction(Axis::Vertical, event.relative_direction(Axis::Vertical));
-        let mut horizontal = 0.0;
-        let mut vertical = 0.0;
-        for axis in [Axis::Horizontal, Axis::Vertical] {
-            if let Some(amount) = event.amount(axis) {
+            .source(smithay_axis_source(event.source))
+            .relative_direction(
+                Axis::Horizontal,
+                smithay_axis_direction(event.horizontal_direction),
+            )
+            .relative_direction(
+                Axis::Vertical,
+                smithay_axis_direction(event.vertical_direction),
+            );
+        for (axis, amount, v120) in [
+            (
+                Axis::Horizontal,
+                event.horizontal(),
+                event.horizontal_v120(),
+            ),
+            (Axis::Vertical, event.vertical(), event.vertical_v120()),
+        ] {
+            if let Some(amount) = amount {
                 frame = frame.value(axis, amount);
-                match axis {
-                    Axis::Horizontal => horizontal = amount,
-                    Axis::Vertical => vertical = amount,
-                }
             }
-            if let Some(steps) = event.amount_v120(axis) {
-                frame = frame.v120(axis, steps.round() as i32);
+            if let Some(steps) = v120 {
+                frame = frame.v120(axis, steps);
             }
         }
         pointer.axis(self, frame);
-        if let Some(sample) =
-            adapter::axis_sample_if_nonzero(horizontal, vertical, event.time_msec())
-        {
+        if let Some(sample) = event.sample() {
             let _ = self.push_event(sample.into_event());
         }
     }
