@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fs::File;
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface, wl_touch,
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_touch,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
