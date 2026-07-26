@@ -27,6 +27,7 @@ gio = "0.22"
 image = "0.25"
 notify = "8"
 # Safe syscall wrappers (access). Already in the graph via async-io / wayland.
+# `fs` covers memfd/seals used by dmabuf import smoke tests.
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 pollster = "1"
 resvg = "0.47"
