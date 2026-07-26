@@ -1,7 +1,7 @@
 //! NativeShell public methods.
 
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_callback, wl_compositor, wl_seat, wl_shm};
+use wayland_client::protocol::{wl_compositor, wl_seat, wl_shm};
 use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
