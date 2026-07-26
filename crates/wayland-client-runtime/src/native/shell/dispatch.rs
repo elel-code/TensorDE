@@ -3,7 +3,7 @@
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
     wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
-    wl_shm_pool, wl_surface,
+    wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -215,6 +215,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
             }
             if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if capabilities.contains(wl_seat::Capability::Touch) && state.touch.is_none() {
+                state.touch = Some(seat.get_touch(qh, ()));
             }
         }
     }
@@ -467,6 +470,49 @@ impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
                     time: callback_data,
                 });
             }
+        }
+    }
+}
+
+impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        _: &wl_touch::WlTouch,
+        event: wl_touch::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_touch::Event::Down {
+                surface, id, x, y, ..
+            } => {
+                let surface_id = state
+                    .wl_surface_objects
+                    .get(&surface.id().protocol_id())
+                    .copied();
+                if let Some(surface) = surface_id {
+                    state.push(NativeShellEvent::TouchDown {
+                        surface,
+                        id,
+                        x,
+                        y,
+                    });
+                }
+            }
+            wl_touch::Event::Up { id, .. } => {
+                state.push(NativeShellEvent::TouchUp { id });
+            }
+            wl_touch::Event::Motion { id, x, y, .. } => {
+                state.push(NativeShellEvent::TouchMotion { id, x, y });
+            }
+            wl_touch::Event::Frame => {
+                state.push(NativeShellEvent::TouchFrame);
+            }
+            wl_touch::Event::Cancel => {
+                state.push(NativeShellEvent::TouchCancel);
+            }
+            _ => {}
         }
     }
 }

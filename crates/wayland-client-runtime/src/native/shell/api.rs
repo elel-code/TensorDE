@@ -121,6 +121,11 @@ impl NativeShell {
                     .state
                     .seat_capabilities
                     .contains(wayland_client::protocol::wl_seat::Capability::Keyboard),
+            touch: self.state.touch.is_some()
+                || self
+                    .state
+                    .seat_capabilities
+                    .contains(wayland_client::protocol::wl_seat::Capability::Touch),
         }
     }
 

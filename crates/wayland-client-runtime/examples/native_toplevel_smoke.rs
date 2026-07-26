@@ -88,6 +88,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("frame {id:?} time={time}");
                         let _ = shell.request_frame(id);
                     }
+                    NativeShellEvent::TouchDown {
+                        surface: id,
+                        id: finger,
+                        x,
+                        y,
+                    } => {
+                        println!("touch down {id:?} finger={finger} @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::TouchUp { id: finger } => {
+                        println!("touch up finger={finger}");
+                    }
+                    NativeShellEvent::TouchMotion { id: finger, x, y } => {
+                        println!("touch motion finger={finger} @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::TouchFrame => {
+                        println!("touch frame");
+                    }
+                    NativeShellEvent::TouchCancel => {
+                        println!("touch cancel");
+                    }
                 }
             }
             if configured {

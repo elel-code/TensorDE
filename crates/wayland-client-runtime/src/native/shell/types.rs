@@ -5,6 +5,7 @@ use std::fs::File;
 
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_touch,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
@@ -77,6 +78,22 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         time: u32,
     },
+    TouchDown {
+        surface: NativeSurfaceId,
+        id: i32,
+        x: f64,
+        y: f64,
+    },
+    TouchUp {
+        id: i32,
+    },
+    TouchMotion {
+        id: i32,
+        x: f64,
+        y: f64,
+    },
+    TouchFrame,
+    TouchCancel,
 }
 
 /// Capability snapshot for the native shell connection.
@@ -88,6 +105,7 @@ pub struct NativeCapabilities {
     pub seat: bool,
     pub pointer: bool,
     pub keyboard: bool,
+    pub touch: bool,
 }
 
 pub(crate) struct ToplevelRecord {
@@ -116,6 +134,7 @@ pub struct NativeShellState {
     pub(crate) seat: Option<wl_seat::WlSeat>,
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
+    pub(crate) touch: Option<wl_touch::WlTouch>,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
@@ -147,6 +166,7 @@ impl Default for NativeShellState {
             seat: None,
             keyboard: None,
             pointer: None,
+            touch: None,
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,
