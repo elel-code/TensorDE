@@ -1,15 +1,14 @@
 //! Multi-workspace host for compositor policy.
 //!
 //! ECS already stores per-view [`WorkspaceId`]. This host owns the **active**
-//! workspace, a fixed desktop pool, and mapping of Smithay windows when the
+//! workspace, a fixed desktop pool, and mapping of protocol windows when the
 //! user switches. Protocol (`ext-workspace`) and IPC read/write through here.
 
-use smithay::{desktop::Window, wayland::seat::WaylandFocus};
 use tracing::{debug, info};
 
 use crate::ecs::{ViewId, WorkspaceId};
 
-use super::RuntimeState;
+use super::{ProtocolWindow, RuntimeState};
 
 /// Default number of virtual desktops (1-based UX in IPC/protocol names).
 pub(crate) const WORKSPACE_COUNT: u32 = 9;
@@ -147,7 +146,7 @@ impl RuntimeState {
     /// Show only windows belonging to the active workspace.
     pub(crate) fn apply_workspace_visibility(&mut self) {
         let active = self.workspaces.active();
-        let windows: Vec<Window> = self.space.elements().cloned().collect();
+        let windows: Vec<ProtocolWindow> = self.space.elements().cloned().collect();
         for window in windows {
             let Some(surface) = window.wl_surface() else {
                 continue;

@@ -2,12 +2,9 @@ use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
     desktop::{PopupManager, find_popup_root_surface},
     utils::IsAlive,
-    wayland::{
-        compositor::{
-            SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
-            with_surface_tree_upward,
-        },
-        seat::WaylandFocus,
+    wayland::compositor::{
+        SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
+        with_surface_tree_upward,
     },
 };
 use tracing::warn;

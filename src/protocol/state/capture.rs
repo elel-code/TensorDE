@@ -25,7 +25,6 @@ use smithay::{
         image_copy_capture::{
             BufferConstraints, CaptureFailureReason, CursorSession, Frame, Session, SessionRef,
         },
-        seat::WaylandFocus,
         shm::{BufferAccessError, with_buffer_contents_mut},
     },
 };

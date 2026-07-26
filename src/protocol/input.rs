@@ -23,7 +23,6 @@ use smithay::{
         pointer::{ButtonEvent, MotionEvent},
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -36,7 +35,10 @@ use tensor_input::{
 
 use crate::backend::LibinputEvent;
 
-use super::{focus::KeyboardFocusTarget, state::RuntimeState};
+use super::{
+    focus::KeyboardFocusTarget,
+    state::{ProtocolWindow, RuntimeState},
+};
 
 #[inline]
 fn xkb_keycode(evdev_key: u32) -> Keycode {
@@ -476,7 +478,7 @@ impl RuntimeState {
 
     pub(crate) fn focus_mapped_window(
         &mut self,
-        window: smithay::desktop::Window,
+        window: ProtocolWindow,
         serial: smithay::utils::Serial,
     ) -> bool {
         let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
@@ -556,10 +558,7 @@ impl RuntimeState {
     /// Initial xdg configure publication remains in the commit handler. A
     /// toplevel that has not made its first commit only receives this pending
     /// state there, as required by xdg-shell's initial-configure ordering.
-    pub(crate) fn publish_window_activation(
-        &mut self,
-        focused_window: Option<&smithay::desktop::Window>,
-    ) {
+    pub(crate) fn publish_window_activation(&mut self, focused_window: Option<&ProtocolWindow>) {
         let windows = self.space.elements().cloned().collect::<Vec<_>>();
         for window in windows {
             let active = focused_window.is_some_and(|focused| window == *focused);
@@ -581,7 +580,7 @@ impl RuntimeState {
     fn raise_view_family_in_space(
         &mut self,
         focused: crate::ecs::ViewId,
-        focused_window: &smithay::desktop::Window,
+        focused_window: &ProtocolWindow,
     ) {
         let Some(root) = self.world.tiled_ancestor(focused) else {
             self.space.raise_element(focused_window, true);
@@ -616,7 +615,7 @@ impl RuntimeState {
     pub(crate) fn mapped_window_for_view(
         &self,
         view_id: crate::ecs::ViewId,
-    ) -> Option<smithay::desktop::Window> {
+    ) -> Option<ProtocolWindow> {
         self.space
             .elements()
             .find(|window| {

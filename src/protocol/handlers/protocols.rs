@@ -13,7 +13,6 @@ use smithay::{
         },
         pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
         pointer_warp::PointerWarpHandler,
-        seat::WaylandFocus,
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         xdg_foreign::XdgForeignHandler,
         xdg_system_bell::XdgSystemBellHandler,
@@ -481,12 +480,10 @@ impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for R
         &self,
         surface: &WlSurface,
     ) -> Option<crate::protocol::focus::KeyboardFocusTarget> {
-        use smithay::desktop::Window;
-        use smithay::wayland::seat::WaylandFocus;
         self.space
             .elements()
             .find(|window| window.wl_surface().as_deref() == Some(surface))
-            .and_then(Window::x11_surface)
+            .and_then(crate::protocol::state::ProtocolWindow::x11_surface)
             .cloned()
             .map(crate::protocol::focus::KeyboardFocusTarget::from)
             .or_else(|| {

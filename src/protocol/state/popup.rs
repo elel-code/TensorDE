@@ -3,7 +3,6 @@
 use smithay::{
     desktop::{PopupKind, get_popup_toplevel_coords},
     utils::{Logical, Rectangle},
-    wayland::seat::WaylandFocus,
 };
 use wayland_server::protocol::wl_surface::WlSurface;
 

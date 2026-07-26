@@ -11,7 +11,7 @@ use smithay::{
     },
     output::Output,
     utils::{Clock, Monotonic},
-    wayland::{compositor::SurfaceData, presentation::Refresh, seat::WaylandFocus},
+    wayland::{compositor::SurfaceData, presentation::Refresh},
 };
 use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;

@@ -23,11 +23,13 @@ mod surfaces;
 mod sync;
 #[cfg(feature = "tty")]
 mod tree;
+mod window;
 mod workspace_host;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
+pub(crate) use window::ProtocolWindow;
 pub(crate) use workspace_host::WorkspaceHost;
 
 use event_loop::EventLoopState;
@@ -42,7 +44,7 @@ use calloop::LoopHandle;
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
-    desktop::{PopupManager, Window},
+    desktop::PopupManager,
     input::{Seat, SeatState},
     output::Scale,
     wayland::{
@@ -51,7 +53,6 @@ use smithay::{
         },
         fractional_scale::with_fractional_scale,
         output::OutputManagerState,
-        seat::WaylandFocus,
         selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelSurface, XdgShellState},
         shm::ShmState,
@@ -368,7 +369,7 @@ impl RuntimeState {
             .expect("monotonic view IDs must be unique");
         self.surface_views
             .insert(surface.wl_surface().id(), view_id);
-        let window = Window::new_wayland_window(surface);
+        let window = ProtocolWindow::new_wayland(surface);
         self.space.map_element(window.clone(), (0, 0), false);
         if let Some(toplevel) = window.toplevel() {
             self.publish_foreign_toplevel_from_surface(toplevel.wl_surface());
@@ -403,7 +404,7 @@ impl RuntimeState {
         };
         #[cfg(feature = "tty")]
         if self.world.is_focused(view_id) && replacement.is_none() {
-            // Clear before dropping the old Smithay window so a final keyboard
+            // Clear before dropping the old protocol window so a final keyboard
             // leave and XDG deactivation can still reference a live root.
             self.clear_keyboard_focus_for_surface(surface);
             self.publish_window_activation(None);
@@ -567,7 +568,7 @@ impl RuntimeState {
         });
     }
 
-    fn update_window_surface_state(&self, window: &Window) {
+    fn update_window_surface_state(&self, window: &ProtocolWindow) {
         let (scale, transform) = self.window_output_state(window);
         window.with_surfaces(|surface, states| {
             send_surface_state(surface, states, scale.integer_scale(), transform);
@@ -577,7 +578,7 @@ impl RuntimeState {
         });
     }
 
-    fn window_output_state(&self, window: &Window) -> (Scale, smithay::utils::Transform) {
+    fn window_output_state(&self, window: &ProtocolWindow) -> (Scale, smithay::utils::Transform) {
         self.space
             .outputs_for_element(window)
             .filter_map(|output| {

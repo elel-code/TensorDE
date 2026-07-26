@@ -3,7 +3,6 @@ mod transient;
 
 use calloop::LoopHandle;
 use smithay::{
-    desktop::Window,
     utils::{Logical, Rectangle},
     xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData, xwm::XwmId},
 };
@@ -16,7 +15,7 @@ use crate::{
 };
 use tensor_util::Rect;
 
-use super::{RuntimeState, xdg_size_constraints};
+use super::{ProtocolWindow, RuntimeState, xdg_size_constraints};
 
 pub(super) use popup::XWaylandPopupRegistry;
 pub(super) use transient::XWaylandTransientRegistry;
@@ -146,7 +145,7 @@ impl RuntimeState {
     }
 
     /// Attach an associated, mapped rootless X11 window to the ordinary
-    /// Wayland `Window`/ECS/scene pipeline. X11's global coordinates are never
+    /// `ProtocolWindow`/ECS/scene pipeline. X11's global coordinates are never
     /// used as a layout authority.
     pub(crate) fn register_x11_window(&mut self, x11: X11Surface) -> Option<ViewId> {
         self.register_x11_window_with_placement(x11, None)
@@ -201,7 +200,7 @@ impl RuntimeState {
             return None;
         }
         self.surface_views.insert(surface.id(), view_id);
-        let window = Window::new_x11_window(x11.clone());
+        let window = ProtocolWindow::new_x11(x11.clone());
         self.space.map_element(window.clone(), (0, 0), false);
         self.update_x11_constraints(&surface, &x11);
         #[cfg(feature = "tty")]
@@ -269,7 +268,7 @@ impl RuntimeState {
     pub(super) fn managed_x11_window(&self, window_id: u32) -> Option<X11Surface> {
         self.space
             .elements()
-            .filter_map(Window::x11_surface)
+            .filter_map(ProtocolWindow::x11_surface)
             .find(|surface| surface.window_id() == window_id)
             .cloned()
     }

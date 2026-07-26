@@ -6,15 +6,14 @@
 
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
-    desktop::{PopupManager, Window, WindowSurfaceType},
+    desktop::PopupManager,
     output::Output,
     utils::{IsAlive, Logical, Point, Rectangle, Transform},
-    wayland::{
-        compositor::{TraversalAction, with_surface_tree_downward},
-        seat::WaylandFocus,
-    },
+    wayland::compositor::{TraversalAction, with_surface_tree_downward},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
+
+use super::ProtocolWindow;
 
 #[derive(Debug)]
 struct MappedOutput {
@@ -31,7 +30,7 @@ struct OutputOverlap {
 
 #[derive(Debug)]
 struct MappedWindow {
-    window: Window,
+    window: ProtocolWindow,
     location: Point<i32, Logical>,
     outputs: Vec<OutputOverlap>,
 }
@@ -63,7 +62,7 @@ pub(crate) struct WindowSpace {
 }
 
 impl WindowSpace {
-    pub(crate) fn map_element<P>(&mut self, window: Window, location: P, activate: bool)
+    pub(crate) fn map_element<P>(&mut self, window: ProtocolWindow, location: P, activate: bool)
     where
         P: Into<Point<i32, Logical>>,
     {
@@ -83,7 +82,7 @@ impl WindowSpace {
         self.insert_element(self.elements.len(), mapped, activate);
     }
 
-    pub(crate) fn raise_element(&mut self, window: &Window, activate: bool) {
+    pub(crate) fn raise_element(&mut self, window: &ProtocolWindow, activate: bool) {
         let Some(position) = self
             .elements
             .iter()
@@ -97,8 +96,8 @@ impl WindowSpace {
 
     pub(crate) fn raise_element_above(
         &mut self,
-        window: &Window,
-        reference: &Window,
+        window: &ProtocolWindow,
+        reference: &ProtocolWindow,
         activate: bool,
     ) {
         let Some(position) = self
@@ -134,7 +133,7 @@ impl WindowSpace {
         self.elements.insert(position, mapped);
     }
 
-    pub(crate) fn relocate_element<P>(&mut self, window: &Window, location: P)
+    pub(crate) fn relocate_element<P>(&mut self, window: &ProtocolWindow, location: P)
     where
         P: Into<Point<i32, Logical>>,
     {
@@ -147,7 +146,7 @@ impl WindowSpace {
         }
     }
 
-    pub(crate) fn unmap_elem(&mut self, window: &Window) {
+    pub(crate) fn unmap_elem(&mut self, window: &ProtocolWindow) {
         let Some(position) = self
             .elements
             .iter()
@@ -161,11 +160,16 @@ impl WindowSpace {
         }
     }
 
-    pub(crate) fn elements(&self) -> impl DoubleEndedIterator<Item = &Window> + ExactSizeIterator {
+    pub(crate) fn elements(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &ProtocolWindow> + ExactSizeIterator {
         self.elements.iter().map(|entry| &entry.window)
     }
 
-    pub(crate) fn element_under<P>(&self, point: P) -> Option<(&Window, Point<i32, Logical>)>
+    pub(crate) fn element_under<P>(
+        &self,
+        point: P,
+    ) -> Option<(&ProtocolWindow, Point<i32, Logical>)>
     where
         P: Into<Point<f64, Logical>>,
     {
@@ -177,20 +181,23 @@ impl WindowSpace {
             let render_location = entry.render_location();
             entry
                 .window
-                .surface_under(point - render_location.to_f64(), WindowSurfaceType::ALL)
+                .surface_under(point - render_location.to_f64())
                 .is_some()
                 .then_some((&entry.window, render_location))
         })
     }
 
-    pub(crate) fn element_location(&self, window: &Window) -> Option<Point<i32, Logical>> {
+    pub(crate) fn element_location(&self, window: &ProtocolWindow) -> Option<Point<i32, Logical>> {
         self.elements
             .iter()
             .find(|entry| &entry.window == window)
             .map(|entry| entry.location)
     }
 
-    pub(crate) fn element_geometry(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn element_geometry(
+        &self,
+        window: &ProtocolWindow,
+    ) -> Option<Rectangle<i32, Logical>> {
         self.elements
             .iter()
             .find(|entry| &entry.window == window)
@@ -276,7 +283,7 @@ impl WindowSpace {
 
     pub(crate) fn outputs_for_element<'a>(
         &'a self,
-        window: &Window,
+        window: &ProtocolWindow,
     ) -> impl Iterator<Item = &'a Output> {
         let overlaps = self
             .elements
@@ -363,7 +370,7 @@ fn refresh_window_outputs(mapped: &MappedWindow) {
     }
 }
 
-fn leave_window_output(window: &Window, output: &Output) {
+fn leave_window_output(window: &ProtocolWindow, output: &Output) {
     let Some(root) = window.wl_surface() else {
         return;
     };

@@ -120,7 +120,9 @@ and rendering itself.
   test fd signals, then preserve its output and timeline value.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Tensor `WindowSpace` location, and retained ECS snapshot. Pure geometry never
-  requires a compositor session.
+  requires a compositor session. The same client lifecycle exercises Tensor `ProtocolWindow`
+  commit-bbox caching, preferred output state traversal, frame callbacks, presentation feedback,
+  activation, and teardown without `smithay::desktop::Window`.
 - Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
   pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
   text-input, input-method, virtual-keyboard, session-lock, security-context,

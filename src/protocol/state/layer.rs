@@ -448,7 +448,7 @@ impl RuntimeState {
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         let (window, window_location) = self.space.element_under(location)?;
         window
-            .surface_under(location - window_location.to_f64(), WindowSurfaceType::ALL)
+            .surface_under(location - window_location.to_f64())
             .map(|(surface, surface_location)| {
                 (surface, (surface_location + window_location).to_f64())
             })

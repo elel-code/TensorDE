@@ -1,15 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use smithay::{
-    desktop::Window,
     utils::{Logical, Point},
-    wayland::seat::WaylandFocus,
     xwayland::X11Surface,
 };
 use tracing::debug;
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
-use super::super::RuntimeState;
+use super::super::{ProtocolWindow, RuntimeState};
 
 /// Protocol-owned attachment for one override-redirect X11 surface. The
 /// renderer only sees the associated surface through its owning view's flat
@@ -448,7 +446,7 @@ impl RuntimeState {
         None
     }
 
-    fn mapped_window_for_surface_id(&self, surface: &ObjectId) -> Option<Window> {
+    fn mapped_window_for_surface_id(&self, surface: &ObjectId) -> Option<ProtocolWindow> {
         self.space
             .elements()
             .find(|window| {
@@ -465,7 +463,7 @@ impl RuntimeState {
             .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
     }
 
-    fn x11_window_element(&self, window_id: u32) -> Option<Window> {
+    fn x11_window_element(&self, window_id: u32) -> Option<ProtocolWindow> {
         self.space
             .elements()
             .find(|window| {
@@ -488,7 +486,7 @@ impl RuntimeState {
             self.space.relocate_element(&window, location);
         } else {
             self.space.map_element(
-                Window::new_x11_window(attachment.window.clone()),
+                ProtocolWindow::new_x11(attachment.window.clone()),
                 location,
                 false,
             );

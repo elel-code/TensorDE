@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::{wayland::seat::WaylandFocus, xwayland::X11Surface};
+use smithay::xwayland::X11Surface;
 use tracing::{debug, warn};
 use wayland_server::protocol::wl_surface::WlSurface;
 

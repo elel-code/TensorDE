@@ -83,8 +83,11 @@ clears stored viewport offsets but retains configured gaps and width policy.
 ECS retains the last valid snapshot for each workspace and invalidates it on view, focus,
 constraint, or policy changes. Runtime reflow is event-driven rather than tied to every surface
 commit: initial XDG configuration, committed min/max changes, output topology, and explicit layout
-commands recompute geometry. The resulting snapshot relocates Smithay elements without changing
-their stacking order and supplies both the XDG suggested size and output-relative bounds.
+commands recompute geometry. The resulting snapshot relocates Tensor `WindowSpace` entries without
+changing their stacking order and supplies both the XDG suggested size and output-relative bounds.
+`ProtocolWindow` owns stable window identity and cached surface-tree bounds on the compositor
+thread. Its `Rc` clones share state without copying geometry, while Smithay remains only the
+underlying XDG/XWayland object and popup/XDND adapter.
 
 Scene extraction is a separate once-per-frame boundary. Nodes are stored in stable `ViewId` order
 for linear snapshot comparison and carry an independent stacking-order index for drawing. Effect
@@ -120,9 +123,9 @@ locations remain logical coordinates. Frame extraction maps shared logical recta
 same rounded physical edge, while damage and scissors round outward and clip to the physical mode.
 This keeps adjacent tiles gapless without allowing partial-edge damage to leave stale pixels.
 
-The protocol owner traverses each mapped toplevel, subsurface tree, and popup tree in Smithay draw
-order and copies only stable identities, buffer metadata, placement, and layer policy into the flat
-ECS content table. Synchronized subsurface callbacks are deferred until their non-synchronized
+The protocol owner traverses each mapped toplevel, subsurface tree, and popup tree in Tensor's
+back-to-front window order and copies only stable identities, buffer metadata, placement, and layer
+policy into the flat ECS content table. Synchronized subsurface callbacks are deferred until their non-synchronized
 ancestor applies the complete Smithay transaction; explicit acquire/release points follow the same
 gate. Popup content remains owned by its toplevel but is clipped by the output rather than the
 layout tile, and its old/new bounds participate in scene damage.
@@ -272,7 +275,7 @@ down to `ConnectorScanner` without changing the protocol or renderer boundaries.
 enter ECS or the renderer.
 
 Focused state is one contract across ECS, protocol, and rendering: a `Focused` ECS component
-extracts a value-only focus outline into the scene, the selected Smithay window receives
+extracts a value-only focus outline into the scene, the selected Tensor `ProtocolWindow` updates
 `xdg_toplevel::State::Activated` (or the corresponding XWayland activation), and the seat owns the
 keyboard focus. A true active-view transition raises the same attachment family in ECS and Smithay,
 updates activation, then delivers seat focus; a later seat-focus repair does not alter stacking or

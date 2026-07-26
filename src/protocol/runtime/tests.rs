@@ -4,7 +4,6 @@ use smithay::{
     desktop::utils::OutputPresentationFeedback,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     utils::{ClockSource, Monotonic},
-    wayland::seat::WaylandFocus,
 };
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
