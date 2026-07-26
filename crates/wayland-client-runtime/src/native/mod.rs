@@ -14,6 +14,7 @@ mod event_map;
 pub mod protocols;
 mod pump;
 mod registry;
+mod runtime_facade;
 mod shell;
 
 pub use connection::{NativeConnection, NativeError};
@@ -24,6 +25,7 @@ pub use event_map::{
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
+pub use runtime_facade::NativeRuntime;
 pub use shell::{
     NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent, NativeSurfaceHandle,
     NativeSurfaceId,

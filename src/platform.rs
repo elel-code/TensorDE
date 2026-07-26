@@ -18,9 +18,9 @@ use wayland_client_runtime::{
     BlurRegion, BlurState, CursorIcon as RuntimeCursorIcon, DecorationPreference, DialogAttributes,
     DndAction as RuntimeDndAction, DndActions as RuntimeDndActions, DndEvent,
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
-    LogicalPosition, LogicalSize, MimePayload, PointerAxisValue, PointerEventKind,
+    LogicalPosition, LogicalSize, MimePayload, NativeRuntime, PointerAxisValue, PointerEventKind,
     PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, Runtime, RuntimeError,
-    RuntimeOptions, SurfaceEvent, SurfaceHandle, SurfaceId,
+    SurfaceEvent, SurfaceHandle, SurfaceId,
     TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,
     TextInputContentPurpose as RuntimeTextInputContentPurpose,
@@ -29,6 +29,7 @@ use wayland_client_runtime::{
     TextInputSurroundingText as RuntimeTextInputSurroundingText, ToplevelAttributes,
     ToplevelIcon as RuntimeToplevelIcon, TransferContent, WakeHandle,
 };
+include!("platform_backend.rs");
 include!("platform_types.rs");
 include!("platform_text_input.rs");
 include!("platform_clipboard.rs");
@@ -340,7 +341,7 @@ pub trait ApplicationHandler {
 }
 
 pub struct ActiveEventLoop {
-    runtime: Rc<RefCell<Runtime>>,
+    runtime: Rc<RefCell<PlatformBackend>>,
     shared: Arc<LoopShared>,
     windows: Rc<RefCell<HashMap<SurfaceId, Weak<WaylandWindow>>>>,
     primary_surface: Cell<Option<SurfaceId>>,
@@ -406,7 +407,7 @@ impl ActiveEventLoop {
         };
         match self
             .runtime
-            .borrow()
+            .borrow_mut()
             .set_toplevel_icon(id, Some(window_icon))
         {
             Ok(()) | Err(RuntimeError::Unsupported(_)) => {}
@@ -479,11 +480,15 @@ impl ActiveEventLoop {
                 .map_err(str::to_string)
             })
             .transpose()?;
-        let source = self
-            .runtime
-            .borrow_mut()
-            .start_drag(window, content, runtime_dnd_actions(actions), icon)
-            .map_err(|error| error.to_string())?;
+        let source = {
+            let mut backend = self.runtime.borrow_mut();
+            let Some(runtime) = backend.sctk_runtime_mut() else {
+                return Err("drag-and-drop requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into());
+            };
+            runtime
+                .start_drag(window, content, runtime_dnd_actions(actions), icon)
+                .map_err(|error| error.to_string())?
+        };
         self.dnd_sources.borrow_mut().insert(source, window);
         Ok(DataTransferId(source.get()))
     }
@@ -509,11 +514,17 @@ impl ActiveEventLoop {
             .get(&id)
             .map(|transfer| (transfer.offer, transfer.window))
             .ok_or_else(|| format!("DnD transfer {} does not exist", id.into_raw()))?;
-        let mut pipe = self
-            .runtime
-            .borrow()
-            .receive_dnd(offer, hint.mime())
-            .map_err(|error| error.to_string())?;
+        let mut pipe = {
+            let backend = self.runtime.borrow();
+            let Some(runtime) = backend.sctk_runtime() else {
+                return Err(
+                    "DnD receive requires SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into(),
+                );
+            };
+            runtime
+                .receive_dnd(offer, hint.mime())
+                .map_err(|error| error.to_string())?
+        };
         let serial = AsyncRequestSerial(self.next_async_serial.get());
         self.next_async_serial
             .set(self.next_async_serial.get().wrapping_add(1));
@@ -558,8 +569,13 @@ impl ActiveEventLoop {
             .then(|| transfer.1.iter().find(|hint| **hint == TypeHint::UriList))
             .flatten()
             .map(TypeHint::mime);
-        self.runtime
-            .borrow()
+        let backend = self.runtime.borrow();
+        let Some(runtime) = backend.sctk_runtime() else {
+            return Err(
+                "DnD actions require SCTK backend (unset FIKA_WAYLAND_BACKEND=native)".into(),
+            );
+        };
+        runtime
             .set_dnd_offer_actions(
                 transfer.0,
                 accepted_mime,

@@ -549,7 +549,11 @@ compio executor
   - **event_map**：`SurfaceIdMap` + `map_native_event_full`（surface/keyboard/pointer/touch/gesture/relative）
   - `NativeShell::drain_public_events` + 真实 `WlSeat` serial
   - axis continuous + **value120** 高精度滚轮
-  - 待丰富：outputs/clipboard/dnd/text_input 公共 Event、xdg_dialog / blur；**与 Fika Runtime 合流**（`drain_public_events` 已就绪，Fika `platform_event_loop` 仍走 SCTK Runtime）
+  - **Fika 双后端**：`PlatformBackend` + `FIKA_WAYLAND_BACKEND=native|sctk`
+    - `NativeRuntime` 门面：poll(display+eventfd)、create_toplevel_gpu、drain_public_events
+    - `SurfaceHandle` 支持 SCTK / Native 双后端（wgpu 可接）
+    - native 路径：主窗口 + 输入 + frame + scale；dialog/clipboard/DnD/blur/icon 仍 SCTK
+  - 待丰富：native clipboard/DnD 接到 Fika、dialog、blur；默认仍 SCTK
 
 完成标准：
 

@@ -1,6 +1,6 @@
 impl EventLoop {
     pub fn new() -> Result<Self, RuntimeError> {
-        let runtime = Runtime::connect(RuntimeOptions::default())?;
+        let runtime = PlatformBackend::connect()?;
         let wake = runtime.wake_handle();
         let shared = Arc::new(LoopShared {
             wake,
@@ -527,7 +527,7 @@ impl EventLoop {
                     (physical, logical, changed)
                 };
                 {
-                    let runtime = self.active.runtime.borrow();
+                    let mut runtime = self.active.runtime.borrow_mut();
                     runtime.set_window_geometry(surface, LogicalPosition::ZERO, logical)?;
                     if fractional_scale {
                         runtime.set_buffer_scale(surface, 1)?;
@@ -568,7 +568,7 @@ impl EventLoop {
                     state.logical_size
                 };
                 {
-                    let runtime = self.active.runtime.borrow();
+                    let mut runtime = self.active.runtime.borrow_mut();
                     if runtime.capabilities().fractional_scale {
                         runtime.set_buffer_scale(surface, 1)?;
                         runtime.set_viewport_destination(surface, Some(logical))?;

@@ -4,6 +4,7 @@
 //! linear async consumers.
 
 mod api;
+mod api_surface;
 mod api_transfer;
 mod dispatch;
 mod dispatch_activation;

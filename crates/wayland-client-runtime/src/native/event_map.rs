@@ -526,7 +526,49 @@ pub fn map_native_event_full(
                 delta_unaccelerated: (dx_unaccel, dy_unaccel),
             }))
         }
-        // Still deferred: outputs, clipboard, dnd, text_input, activation; axis value120.
+        NativeShellEvent::TextInputEnter { surface } => {
+            Some(Event::TextInput(crate::TextInputEvent::Entered {
+                surface: surfaces.intern(surface),
+            }))
+        }
+        NativeShellEvent::TextInputLeave { surface } => {
+            Some(Event::TextInput(crate::TextInputEvent::Left {
+                surface: surfaces.intern(surface),
+            }))
+        }
+        NativeShellEvent::TextInputDone {
+            surface,
+            serial,
+            commit,
+            preedit,
+            delete_before,
+            delete_after,
+        } => {
+            let surface = surfaces.intern(surface);
+            let delete_surrounding =
+                if delete_before > 0 || delete_after > 0 {
+                    Some(crate::TextInputDeleteSurrounding {
+                        before_bytes: delete_before as usize,
+                        after_bytes: delete_after as usize,
+                    })
+                } else {
+                    None
+                };
+            let preedit = preedit.map(|text| crate::TextInputPreedit {
+                text,
+                cursor_range: None,
+            });
+            Some(Event::TextInput(crate::TextInputEvent::Done(
+                crate::TextInputDone {
+                    surface,
+                    serial,
+                    delete_surrounding,
+                    commit,
+                    preedit,
+                },
+            )))
+        }
+        // Still deferred: outputs, clipboard, dnd, activation.
         NativeShellEvent::TouchFrame
         | NativeShellEvent::OutputGeometry { .. }
         | NativeShellEvent::OutputMode { .. }
@@ -541,9 +583,6 @@ pub fn map_native_event_full(
         | NativeShellEvent::DndMotion { .. }
         | NativeShellEvent::DndDrop
         | NativeShellEvent::DndFinished { .. }
-        | NativeShellEvent::TextInputEnter { .. }
-        | NativeShellEvent::TextInputLeave { .. }
-        | NativeShellEvent::TextInputDone { .. }
         | NativeShellEvent::ActivationToken { .. } => None,
     }
 }

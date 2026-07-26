@@ -1,0 +1,253 @@
+// Dual Wayland backend: SCTK Runtime (default) or NativeRuntime.
+// Select with FIKA_WAYLAND_BACKEND=native (or sctk, default).
+
+/// Active protocol backend for the Fika event loop.
+enum PlatformBackend {
+    Sctk(Runtime),
+    Native(NativeRuntime),
+}
+
+impl PlatformBackend {
+    fn connect() -> Result<Self, RuntimeError> {
+        let backend = std::env::var("FIKA_WAYLAND_BACKEND")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match backend.as_str() {
+            "native" | "nativeshell" | "compio" => {
+                eprintln!("[fika-wayland] backend=native (NativeShell, no SCTK)");
+                Ok(Self::Native(NativeRuntime::connect()?))
+            }
+            "" | "sctk" | "smithay" | "default" => {
+                Ok(Self::Sctk(Runtime::connect(
+                    wayland_client_runtime::RuntimeOptions::default(),
+                )?))
+            }
+            other => {
+                eprintln!(
+                    "[fika-wayland] unknown FIKA_WAYLAND_BACKEND={other:?}, using sctk"
+                );
+                Ok(Self::Sctk(Runtime::connect(
+                    wayland_client_runtime::RuntimeOptions::default(),
+                )?))
+            }
+        }
+    }
+
+    fn wake_handle(&self) -> WakeHandle {
+        match self {
+            Self::Sctk(rt) => rt.wake_handle(),
+            Self::Native(rt) => rt.wake_handle(),
+        }
+    }
+
+    fn capabilities(&self) -> wayland_client_runtime::RuntimeCapabilities {
+        match self {
+            Self::Sctk(rt) => rt.capabilities(),
+            Self::Native(rt) => rt.capabilities(),
+        }
+    }
+
+    fn drain_events_into(&mut self, target: &mut Vec<Event>) {
+        match self {
+            Self::Sctk(rt) => rt.drain_events_into(target),
+            Self::Native(rt) => rt.drain_events_into(target),
+        }
+    }
+
+    fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.dispatch(timeout),
+            Self::Native(rt) => rt.dispatch(timeout),
+        }
+    }
+
+    fn create_toplevel(
+        &mut self,
+        attributes: ToplevelAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.create_toplevel(attributes),
+            Self::Native(rt) => rt.create_toplevel(attributes),
+        }
+    }
+
+    fn create_dialog(
+        &mut self,
+        parent: SurfaceId,
+        attributes: DialogAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.create_dialog(parent, attributes),
+            Self::Native(_) => Err(RuntimeError::Unsupported("native dialog")),
+        }
+    }
+
+    fn surface_handle(&self, surface: SurfaceId) -> Option<SurfaceHandle> {
+        match self {
+            Self::Sctk(rt) => rt.surface_handle(surface),
+            Self::Native(rt) => rt.surface_handle(surface),
+        }
+    }
+
+    fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_title(surface, title),
+            Self::Native(rt) => rt.set_title(surface, title),
+        }
+    }
+
+    fn set_min_size(
+        &mut self,
+        surface: SurfaceId,
+        size: Option<LogicalSize>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_min_size(surface, size),
+            Self::Native(rt) => rt.set_min_size(surface, size),
+        }
+    }
+
+    fn set_max_size(
+        &mut self,
+        surface: SurfaceId,
+        size: Option<LogicalSize>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_max_size(surface, size),
+            Self::Native(rt) => rt.set_max_size(surface, size),
+        }
+    }
+
+    fn set_blur(&mut self, surface: SurfaceId, state: BlurState) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_blur(surface, state),
+            Self::Native(rt) => rt.set_blur(surface, state),
+        }
+    }
+
+    fn set_cursor(&mut self, icon: RuntimeCursorIcon) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_cursor(icon),
+            Self::Native(rt) => rt.set_cursor(icon),
+        }
+    }
+
+    fn set_text_input_state(
+        &mut self,
+        surface: SurfaceId,
+        state: Option<RuntimeTextInputState>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_text_input_state(surface, state),
+            Self::Native(rt) => rt.set_text_input_state(surface, state.as_ref()),
+        }
+    }
+
+    fn request_user_attention(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.request_user_attention(surface),
+            Self::Native(rt) => rt.request_user_attention(surface),
+        }
+    }
+
+    fn request_frame(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.request_frame(surface),
+            Self::Native(rt) => rt.request_frame(surface),
+        }
+    }
+
+    fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.commit(surface),
+            Self::Native(rt) => rt.commit(surface),
+        }
+    }
+
+    fn destroy_surface(&mut self, surface: SurfaceId) -> Result<Vec<SurfaceId>, RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.destroy_surface(surface),
+            Self::Native(rt) => rt.destroy_surface(surface),
+        }
+    }
+
+    fn set_toplevel_icon(
+        &mut self,
+        surface: SurfaceId,
+        icon: Option<RuntimeToplevelIcon>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_toplevel_icon(surface, icon),
+            Self::Native(rt) => rt.set_toplevel_icon(surface, icon),
+        }
+    }
+
+    fn set_pointer_gestures_enabled(
+        &mut self,
+        surface: SurfaceId,
+        enabled: bool,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_pointer_gestures_enabled(surface, enabled),
+            Self::Native(rt) => rt.set_pointer_gestures_enabled(surface, enabled),
+        }
+    }
+
+    fn set_window_geometry(
+        &mut self,
+        surface: SurfaceId,
+        origin: LogicalPosition,
+        size: LogicalSize,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_window_geometry(surface, origin, size),
+            Self::Native(rt) => rt.set_window_geometry(surface, origin, size),
+        }
+    }
+
+    fn set_buffer_scale(&mut self, surface: SurfaceId, factor: i32) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_buffer_scale(surface, factor),
+            Self::Native(rt) => rt.set_buffer_scale(surface, factor),
+        }
+    }
+
+    fn set_viewport_destination(
+        &mut self,
+        surface: SurfaceId,
+        size: Option<LogicalSize>,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_viewport_destination(surface, size),
+            Self::Native(rt) => rt.set_viewport_destination(surface, size),
+        }
+    }
+
+    fn discard_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.discard_dnd_offer(offer),
+            Self::Native(_) => Err(RuntimeError::Unsupported("native dnd")),
+        }
+    }
+
+    fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.finish_dnd_offer(offer),
+            Self::Native(_) => Err(RuntimeError::Unsupported("native dnd")),
+        }
+    }
+
+    fn sctk_runtime(&self) -> Option<&Runtime> {
+        match self {
+            Self::Sctk(rt) => Some(rt),
+            Self::Native(_) => None,
+        }
+    }
+
+    fn sctk_runtime_mut(&mut self) -> Option<&mut Runtime> {
+        match self {
+            Self::Sctk(rt) => Some(rt),
+            Self::Native(_) => None,
+        }
+    }
+}

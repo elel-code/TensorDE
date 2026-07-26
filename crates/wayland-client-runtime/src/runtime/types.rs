@@ -109,14 +109,35 @@ impl From<GlobalError> for RuntimeError {
     }
 }
 
-/// Thread-safe handle for interrupting a blocking [`Runtime::dispatch`].
+/// Thread-safe handle for interrupting a blocking [`Runtime::dispatch`] or
+/// native shell poll.
 #[derive(Clone, Debug)]
-pub struct WakeHandle(LoopSignal);
+pub struct WakeHandle(WakeKind);
+
+#[derive(Clone, Debug)]
+enum WakeKind {
+    /// SCTK / calloop event loop signal.
+    Calloop(LoopSignal),
+    /// Eventfd used by the native Compio-free poll path.
+    EventFd(std::sync::Arc<crate::wake_fd::EventFdWake>),
+}
 
 impl WakeHandle {
-    pub fn wake(&self) {
-        self.0.wakeup();
+    pub(crate) fn from_calloop(signal: LoopSignal) -> Self {
+        Self(WakeKind::Calloop(signal))
     }
+
+    pub(crate) fn from_event_fd(wake: std::sync::Arc<crate::wake_fd::EventFdWake>) -> Self {
+        Self(WakeKind::EventFd(wake))
+    }
+
+    pub fn wake(&self) {
+        match &self.0 {
+            WakeKind::Calloop(signal) => signal.wakeup(),
+            WakeKind::EventFd(wake) => wake.wake(),
+        }
+    }
+
 }
 
 /// The Wayland connection, protocol object graph, calloop dispatcher and owned event queue.

@@ -239,18 +239,45 @@ impl SurfaceShared {
 /// ancestors alive. This makes it suitable for `wgpu::Instance::create_surface`
 /// and `VK_KHR_wayland_surface` without either graphics API becoming a crate
 /// dependency.
+///
+/// Backends: SCTK [`Runtime`] (shared graph) or native [`crate::NativeShell`].
 #[derive(Clone)]
 pub struct SurfaceHandle {
-    pub(crate) shared: Arc<SurfaceShared>,
+    backend: SurfaceHandleBackend,
+}
+
+#[derive(Clone)]
+enum SurfaceHandleBackend {
+    Sctk(Arc<SurfaceShared>),
+    Native(crate::NativeSurfaceHandle),
 }
 
 impl SurfaceHandle {
+    pub(crate) fn from_sctk(shared: Arc<SurfaceShared>) -> Self {
+        Self {
+            backend: SurfaceHandleBackend::Sctk(shared),
+        }
+    }
+
+    pub(crate) fn from_native(handle: crate::NativeSurfaceHandle) -> Self {
+        Self {
+            backend: SurfaceHandleBackend::Native(handle),
+        }
+    }
+
     pub fn id(&self) -> SurfaceId {
-        self.shared.id
+        match &self.backend {
+            SurfaceHandleBackend::Sctk(shared) => shared.id,
+            SurfaceHandleBackend::Native(handle) => SurfaceId(u64::from(handle.id().0)),
+        }
     }
 
     pub fn kind(&self) -> SurfaceKind {
-        self.shared.kind
+        match &self.backend {
+            SurfaceHandleBackend::Sctk(shared) => shared.kind,
+            // Native path currently only leases toplevels / layers for wgpu.
+            SurfaceHandleBackend::Native(_) => SurfaceKind::Toplevel,
+        }
     }
 }
 
@@ -266,25 +293,34 @@ impl fmt::Debug for SurfaceHandle {
 
 impl HasWindowHandle for SurfaceHandle {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        let pointer = self.shared.wl_surface().id().as_ptr();
-        let pointer = NonNull::new(pointer.cast())
-            .expect("a live wl_surface proxy always has a non-null pointer");
-        let raw = RawWindowHandle::Wayland(WaylandWindowHandle::new(pointer));
-        // SAFETY: the borrowed handle cannot outlive `self`, which owns the
-        // complete SCTK protocol surface and its wl_surface proxy.
-        Ok(unsafe { WindowHandle::borrow_raw(raw) })
+        match &self.backend {
+            SurfaceHandleBackend::Sctk(shared) => {
+                let pointer = shared.wl_surface().id().as_ptr();
+                let pointer = NonNull::new(pointer.cast())
+                    .expect("a live wl_surface proxy always has a non-null pointer");
+                let raw = RawWindowHandle::Wayland(WaylandWindowHandle::new(pointer));
+                // SAFETY: borrow cannot outlive `self`, which owns the surface.
+                Ok(unsafe { WindowHandle::borrow_raw(raw) })
+            }
+            SurfaceHandleBackend::Native(handle) => handle.window_handle(),
+        }
     }
 }
 
 impl HasDisplayHandle for SurfaceHandle {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        let display = self.shared.connection.display();
-        let pointer = display.id().as_ptr();
-        let pointer = NonNull::new(pointer.cast())
-            .expect("a live wl_display proxy always has a non-null pointer");
-        let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(pointer));
-        // SAFETY: `self` owns a Connection for at least the returned borrow.
-        Ok(unsafe { DisplayHandle::borrow_raw(raw) })
+        match &self.backend {
+            SurfaceHandleBackend::Sctk(shared) => {
+                let display = shared.connection.display();
+                let pointer = display.id().as_ptr();
+                let pointer = NonNull::new(pointer.cast())
+                    .expect("a live wl_display proxy always has a non-null pointer");
+                let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(pointer));
+                // SAFETY: `self` owns Connection for at least the returned borrow.
+                Ok(unsafe { DisplayHandle::borrow_raw(raw) })
+            }
+            SurfaceHandleBackend::Native(handle) => handle.display_handle(),
+        }
     }
 }
 

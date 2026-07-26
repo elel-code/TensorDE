@@ -32,6 +32,7 @@ mod text_input;
 mod toplevel_icon;
 mod toplevel_interaction;
 mod touch;
+mod wake_fd;
 
 pub use activation::{
     ActivationEvent, ActivationRequestId, ActivationToken, ActivationTokenAttributes,
@@ -43,8 +44,8 @@ pub use native::{
     list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
     native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,
     NativeError, NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry,
-    NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, ProtocolClass,
-    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
+    NativeRuntime, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+    ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
 };
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,

@@ -113,7 +113,7 @@ impl Runtime {
         WaylandSource::new(connection.clone(), event_queue)
             .insert(event_loop.handle())
             .map_err(|error| RuntimeError::EventLoop(error.to_string()))?;
-        let wake = WakeHandle(event_loop.get_signal());
+        let wake = WakeHandle::from_calloop(event_loop.get_signal());
         let display_readiness = crate::DisplayReadiness::from_as_fd(&connection).map_err(
             |error| RuntimeError::EventLoop(format!("display readiness: {error}")),
         )?;
@@ -378,7 +378,7 @@ impl Runtime {
             .surfaces
             .get(&surface)
             .cloned()
-            .map(|shared| SurfaceHandle { shared })
+            .map(SurfaceHandle::from_sctk)
     }
 
     pub fn request_frame(&self, surface: SurfaceId) -> Result<(), RuntimeError> {

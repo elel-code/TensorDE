@@ -14,7 +14,7 @@ use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use super::handle::NativeSurfaceHandle;
 use super::types::{
     LayerRecord, NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeShellState,
-    NativeSurfaceId, PopupRecord, ToplevelRecord,
+    NativeSurfaceId, PopupRecord,
 };
 use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
@@ -469,103 +469,6 @@ impl NativeShell {
         device.destroy();
         self.connection.flush()?;
         Ok(())
-    }
-
-    pub fn create_toplevel(
-        &mut self,
-        title: impl Into<String>,
-        app_id: impl Into<String>,
-    ) -> Result<NativeSurfaceId, NativeError> {
-        self.create_toplevel_sized(title, app_id, 640, 480, [0xff, 0x22, 0x66, 0xcc])
-    }
-
-    pub fn create_toplevel_sized(
-        &mut self,
-        title: impl Into<String>,
-        app_id: impl Into<String>,
-        width: u32,
-        height: u32,
-        argb: [u8; 4],
-    ) -> Result<NativeSurfaceId, NativeError> {
-        let qh = self.queue.handle();
-        let compositor = self
-            .state
-            .compositor
-            .as_ref()
-            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
-        let shm = self
-            .state
-            .shm
-            .as_ref()
-            .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
-        let wm_base = self
-            .state
-            .wm_base
-            .as_ref()
-            .ok_or_else(|| NativeError::Registry("xdg_wm_base".into()))?;
-
-        let wl = compositor.create_surface(&qh, ());
-        // Fractional-scale clients keep buffer_scale at 1.
-        wl.set_buffer_scale(1);
-
-        let viewport = self
-            .state
-            .viewporter
-            .as_ref()
-            .map(|vp| vp.get_viewport(&wl, &qh, ()));
-        if let Some(vp) = viewport.as_ref() {
-            vp.set_destination(width as i32, height as i32);
-        }
-
-        let fractional = self
-            .state
-            .fractional_manager
-            .as_ref()
-            .map(|mgr| mgr.get_fractional_scale(&wl, &qh, ()));
-
-        let (file, pool, buffer) = shm::create_solid_buffer(shm, &qh, width, height, argb)
-            .map_err(|e| NativeError::Io(e.to_string()))?;
-        let xdg = wm_base.get_xdg_surface(&wl, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_title(title.into());
-        toplevel.set_app_id(app_id.into());
-        wl.commit();
-
-        let id = self.state.alloc_id();
-        self.state
-            .toplevel_objects
-            .insert(toplevel.id().protocol_id(), id);
-        self.state
-            .xdg_surface_objects
-            .insert(xdg.id().protocol_id(), id);
-        self.state
-            .wl_surface_objects
-            .insert(wl.id().protocol_id(), id);
-        if let Some(ref frac) = fractional {
-            self.state
-                .fractional_objects
-                .insert(frac.id().protocol_id(), id);
-        }
-        self.state.toplevels.insert(
-            id,
-            ToplevelRecord {
-                wl,
-                xdg,
-                toplevel,
-                buffer: Some(buffer),
-                _pool: Some(pool),
-                _file: Some(file),
-                viewport,
-                fractional,
-                configured: false,
-                pending_size: Some((width as i32, height as i32)),
-                logical_w: width,
-                logical_h: height,
-                scale_factor: 1.0,
-            },
-        );
-        self.connection.flush()?;
-        Ok(id)
     }
 
     pub fn dispatch_pending(&mut self) -> Result<usize, NativeError> {
