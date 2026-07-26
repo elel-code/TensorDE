@@ -14,6 +14,7 @@ use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaBuffer, native_vulkan_vulkanalia_write_host_buffer,
 };
 
+use super::alpha_coverage_scissor::update_scene_alpha_coverage_scissors;
 use super::composite_scissor::update_scene_composite_scissors;
 use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::SceneGpuDrawCommand;
@@ -393,6 +394,7 @@ pub(super) fn write_scene_frame_buffers(
         output_extent,
         draw_commands,
     )?;
+    update_scene_alpha_coverage_scissors(storage, graph, output_extent, draw_commands)?;
     let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
         storage,
         mesh_coverage,

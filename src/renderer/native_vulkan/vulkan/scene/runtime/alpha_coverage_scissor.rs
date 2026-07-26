@@ -17,7 +17,7 @@ use crate::engine::scene::{
     SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneStorage,
 };
 
-use super::draw_recording::SceneGpuScissor;
+use super::draw_recording::{SceneGpuDrawCommand, SceneGpuScissor};
 use super::draw_uniform::object_uv_to_screen_affine;
 use super::material_uniform::material_parameter_values;
 
@@ -64,12 +64,61 @@ pub(super) fn scene_alpha_coverage_scissors(
     output_extent: [u32; 2],
 ) -> Vec<Vec<SceneGpuScissor>> {
     let mut draw_scissors = vec![Vec::new(); graph.mesh_draws.len()];
-    if std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE")
-        .ok()
-        .is_some_and(|value| value.eq_ignore_ascii_case("off"))
-    {
+    if alpha_coverage_globally_disabled() {
         return draw_scissors;
     }
+    fill_scene_alpha_coverage_scissors(storage, graph, output_extent, &mut draw_scissors);
+    draw_scissors
+}
+
+/// Rebuild sparse coverage scissors from the current graph draw transforms.
+///
+/// Setup-time scissors are not enough: every frame updates `clip_transform` for
+/// pointer parallax / animation, and `scene_cover_clip_transform` depends on the
+/// live output extent. Stale axis-aligned scissor rects under cover (e.g. 21:9
+/// canvas on 3840×2160) crop text with the mouse and can leave horizontal strip
+/// holes on translucent identity draws.
+pub(super) fn update_scene_alpha_coverage_scissors(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    output_extent: [u32; 2],
+    commands: &mut [SceneGpuDrawCommand],
+) -> Result<(), String> {
+    if commands.len() != graph.mesh_draws.len() {
+        return Err(format!(
+            "scene alpha coverage draw count {} does not match command count {}",
+            graph.mesh_draws.len(),
+            commands.len()
+        ));
+    }
+    if alpha_coverage_globally_disabled()
+        || std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_FULL_ALPHA_COVERAGE_TARGET").is_some()
+    {
+        for command in commands.iter_mut() {
+            command.alpha_coverage_scissors.clear();
+        }
+        return Ok(());
+    }
+    let mut draw_scissors = vec![Vec::new(); graph.mesh_draws.len()];
+    fill_scene_alpha_coverage_scissors(storage, graph, output_extent, &mut draw_scissors);
+    for (command, scissors) in commands.iter_mut().zip(draw_scissors) {
+        command.alpha_coverage_scissors = scissors;
+    }
+    Ok(())
+}
+
+fn alpha_coverage_globally_disabled() -> bool {
+    std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
+fn fill_scene_alpha_coverage_scissors(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    output_extent: [u32; 2],
+    draw_scissors: &mut [Vec<SceneGpuScissor>],
+) {
     for pass in &graph.pass_nodes {
         let Some(pass_record) = storage
             .document()
@@ -179,10 +228,11 @@ pub(super) fn scene_alpha_coverage_scissors(
                     overlapping_scissor_pairs(&scissors),
                 );
             }
-            draw_scissors[start + draw_index] = scissors;
+            if let Some(slot) = draw_scissors.get_mut(start + draw_index) {
+                *slot = scissors;
+            }
         }
     }
-    draw_scissors
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
