@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use wayland_client::Proxy;
+
 use super::api::NativeShell;
 use super::types::NativeSurfaceId;
 use crate::data_transfer::TransferContent;
@@ -135,14 +137,13 @@ impl NativeShell {
         // Keep the write end blocking for the source; reader may block off-thread.
         writer.set_nonblocking(false).ok();
         reader.set_nonblocking(false).ok();
-        offer.receive(mime.to_string(), writer.as_fd());
+        // One owned String for protocol + pipe metadata.
+        let mime = mime.to_string();
+        offer.receive(mime.clone(), writer.as_fd());
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        Ok(crate::data_transfer::TransferReadPipe::from_stream(
-            mime.to_string(),
-            reader,
-        ))
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
     }
 
     /// Receive drag-offer bytes (blocks). Prefer [`Self::receive_dnd_pipe`] on
@@ -159,10 +160,14 @@ impl NativeShell {
     /// Finish and destroy the current drag offer after a successful drop transfer.
     pub fn finish_dnd(&mut self) -> Result<(), NativeError> {
         if let Some(offer) = self.state.dnd_offer.take() {
+            let old_id = offer.id().protocol_id();
+            self.state.offer_mimes.remove(&old_id);
+            // Protocol: finish then destroy. Only valid after drop.
             offer.finish();
             offer.destroy();
         }
         self.state.dnd_offer_id = None;
+        self.state.dnd_dropped = false;
         self.state.dnd_mimes.clear();
         self.state.dnd_focus = None;
         self.state.dnd_serial = None;
@@ -173,9 +178,12 @@ impl NativeShell {
     /// Discard the current drag offer without finishing (leave / cancel).
     pub fn discard_dnd(&mut self) -> Result<(), NativeError> {
         if let Some(offer) = self.state.dnd_offer.take() {
+            let old_id = offer.id().protocol_id();
+            self.state.offer_mimes.remove(&old_id);
             offer.destroy();
         }
         self.state.dnd_offer_id = None;
+        self.state.dnd_dropped = false;
         self.state.dnd_mimes.clear();
         self.state.dnd_focus = None;
         self.state.dnd_serial = None;
@@ -368,14 +376,12 @@ impl NativeShell {
         let (reader, writer) = UnixStream::pair().map_err(NativeError::from)?;
         writer.set_nonblocking(false).ok();
         reader.set_nonblocking(false).ok();
-        offer.receive(mime.to_string(), writer.as_fd());
+        let mime = mime.to_string();
+        offer.receive(mime.clone(), writer.as_fd());
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        Ok(crate::data_transfer::TransferReadPipe::from_stream(
-            mime.to_string(),
-            reader,
-        ))
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
     }
 
     /// Receive the current selection as bytes for `mime` (blocks on the pipe).

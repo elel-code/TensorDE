@@ -58,8 +58,15 @@ impl Dispatch<ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, ()
             flags: WEnum::Value(caps),
         } = event
         {
-            state.background_blur_capable =
+            let capable =
                 caps.contains(ext_background_effect_manager_v1::Capability::Blur);
+            let became_capable = capable && !state.background_blur_capable;
+            state.background_blur_capable = capable;
+            if became_capable {
+                // Surfaces may have called set_blur before this event arrived
+                // (startup path). Re-apply after dispatch via after_dispatch.
+                state.pending_blur_replay = true;
+            }
         }
     }
 }

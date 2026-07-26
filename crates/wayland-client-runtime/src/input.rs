@@ -64,6 +64,16 @@ impl InputSerial {
         self.source
     }
 
+    /// Seat that issued this serial (must match the grab target seat).
+    pub fn seat(&self) -> &WlSeat {
+        &self.seat
+    }
+
+    /// Raw Wayland serial value.
+    pub fn serial(&self) -> u32 {
+        self.serial
+    }
+
     pub fn is_popup_grab(&self) -> bool {
         matches!(
             self.source,

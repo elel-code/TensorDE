@@ -122,14 +122,16 @@ pub struct TransferReadPipe {
 
 #[derive(Debug)]
 enum TransferReadInner {
-    /// Bytes already fully buffered (tests / prefetched paths).
+    /// Bytes already fully buffered (unit tests / future prefetched paths).
+    #[cfg(test)]
     Memory(io::Cursor<Vec<u8>>),
     /// Live pipe from `wl_data_offer.receive` — read off the event-loop thread.
     Stream(UnixStream),
 }
 
 impl TransferReadPipe {
-    /// Build a pipe from bytes already read on the native data-device path.
+    /// Build a pipe from bytes already read (unit tests / prefetched paths).
+    #[cfg(test)]
     pub(crate) fn from_bytes(mime: String, bytes: Vec<u8>) -> Self {
         Self {
             mime,
@@ -172,6 +174,7 @@ impl TransferReadPipe {
 impl Read for TransferReadPipe {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match &mut self.inner {
+            #[cfg(test)]
             TransferReadInner::Memory(cursor) => cursor.read(buffer),
             TransferReadInner::Stream(stream) => stream.read(buffer),
         }
@@ -207,5 +210,15 @@ mod tests {
     fn text_content_offers_common_wayland_text_mimes() {
         let content = TransferContent::text("hello");
         assert_eq!(content.mime_types().collect::<Vec<_>>(), TEXT_MIME_TYPES);
+    }
+
+    #[test]
+    fn memory_pipe_reads_prefetched_bytes_and_normalizes_text() {
+        let pipe = TransferReadPipe::from_bytes(
+            MIME_TEXT_PLAIN_UTF8.to_string(),
+            b"hello\r\nworld\r".to_vec(),
+        );
+        assert_eq!(pipe.mime(), MIME_TEXT_PLAIN_UTF8);
+        assert_eq!(pipe.read_text().unwrap(), "hello\nworld\n");
     }
 }

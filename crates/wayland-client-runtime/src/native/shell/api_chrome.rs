@@ -79,13 +79,20 @@ impl NativeShell {
 
     /// Enable / disable compositor background blur (ext-background-effect-v1).
     ///
-    /// Requires the manager to advertise the blur capability. Double-buffered —
-    /// commit the surface after changing.
+    /// The blur region is double-buffered and applied on the next
+    /// [`Self::commit_surface`]. This method commits immediately so startup and
+    /// settings toggles take effect without waiting for an unrelated redraw.
+    ///
+    /// If the compositor has not yet advertised the blur capability (common
+    /// right after bind), the request is remembered on the surface and applied
+    /// when [`NativeShellState::background_blur_capable`] becomes true.
     pub fn set_blur(
         &mut self,
         id: NativeSurfaceId,
         state: BlurState,
     ) -> Result<(), NativeError> {
+        // Pick up a late capabilities event before deciding unsupported.
+        let _ = self.dispatch_pending();
         match state {
             BlurState::Disabled => {
                 let record = self
@@ -93,69 +100,128 @@ impl NativeShell {
                     .toplevels
                     .get_mut(&id)
                     .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+                record.pending_blur = Some(BlurState::Disabled);
                 if let Some(effect) = record.blur_effect.take() {
                     effect.destroy();
                 }
+                // destroy is double-buffered: commit so blur clears now.
+                record.wl.commit();
                 self.connection.flush()?;
                 Ok(())
             }
             BlurState::Enabled(region) => {
                 if !self.state.background_blur_capable {
-                    return Err(NativeError::Protocol(
-                        "ext_background_effect blur capability missing".into(),
-                    ));
+                    // Remember without applying; capability handler will take it.
+                    let record = self
+                        .state
+                        .toplevels
+                        .get_mut(&id)
+                        .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+                    record.pending_blur = Some(BlurState::Enabled(region));
+                    return Ok(());
                 }
-                let manager = self
-                    .state
-                    .background_effect_manager
-                    .as_ref()
-                    .ok_or_else(|| {
-                        NativeError::Protocol("ext_background_effect_manager_v1 missing".into())
-                    })?
-                    .clone();
-                let compositor = self
-                    .state
-                    .compositor
-                    .as_ref()
-                    .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?
-                    .clone();
-                let qh = self.queue.handle();
-                let record = self
-                    .state
-                    .toplevels
-                    .get_mut(&id)
-                    .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-                if record.blur_effect.is_none() {
-                    let effect = manager.get_background_effect(&record.wl, &qh, ());
-                    record.blur_effect = Some(effect);
+                {
+                    let record = self
+                        .state
+                        .toplevels
+                        .get_mut(&id)
+                        .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+                    // Keep a copy for capability re-advertise; apply by move.
+                    record.pending_blur = Some(BlurState::Enabled(region.clone()));
                 }
-                let effect = record
-                    .blur_effect
-                    .as_ref()
-                    .expect("blur effect just set");
-                let wl_region = compositor.create_region(&qh, ());
-                match region {
-                    BlurRegion::EntireSurface => {
-                        // NULL disables blur in this protocol; use a huge region.
-                        wl_region.add(0, 0, i32::MAX, i32::MAX);
-                    }
-                    BlurRegion::Rectangles(rects) => {
-                        for rect in rects.into_iter().filter(|r| !r.is_empty()) {
-                            wl_region.add(
-                                rect.origin.x,
-                                rect.origin.y,
-                                rect.size.width.max(1) as i32,
-                                rect.size.height.max(1) as i32,
-                            );
-                        }
-                    }
-                }
-                effect.set_blur_region(Some(&wl_region));
-                wl_region.destroy();
-                self.connection.flush()?;
-                Ok(())
+                self.apply_blur_enabled(id, region)
             }
         }
+    }
+
+    /// Apply any remembered blur requests once the compositor is capable.
+    pub(crate) fn apply_pending_blur_all(&mut self) -> Result<(), NativeError> {
+        if !self.state.background_blur_capable {
+            return Ok(());
+        }
+        // Take ownership of each pending request (no clone of the whole table).
+        let pending: Vec<_> = self
+            .state
+            .toplevels
+            .iter_mut()
+            .filter_map(|(&id, record)| record.pending_blur.take().map(|state| (id, state)))
+            .collect();
+        for (id, state) in pending {
+            match state {
+                BlurState::Disabled => {}
+                BlurState::Enabled(region) => {
+                    // Keep desired state for capability flaps. EntireSurface is
+                    // the only region Fika uses today (clone is free); general
+                    // rectangles clone only the rect list.
+                    let desired = BlurState::Enabled(region.clone());
+                    if let Err(error) = self.apply_blur_enabled(id, region) {
+                        eprintln!("[fika-wayland] deferred blur apply failed: {error}");
+                    }
+                    if let Some(record) = self.state.toplevels.get_mut(&id) {
+                        record.pending_blur = Some(desired);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_blur_enabled(
+        &mut self,
+        id: NativeSurfaceId,
+        region: BlurRegion,
+    ) -> Result<(), NativeError> {
+        let manager = self
+            .state
+            .background_effect_manager
+            .as_ref()
+            .ok_or_else(|| {
+                NativeError::Protocol("ext_background_effect_manager_v1 missing".into())
+            })?
+            .clone();
+        let compositor = self
+            .state
+            .compositor
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?
+            .clone();
+        let qh = self.queue.handle();
+        let record = self
+            .state
+            .toplevels
+            .get_mut(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        if record.blur_effect.is_none() {
+            let effect = manager.get_background_effect(&record.wl, &qh, ());
+            record.blur_effect = Some(effect);
+        }
+        let effect = record
+            .blur_effect
+            .as_ref()
+            .expect("blur effect just set");
+        let wl_region = compositor.create_region(&qh, ());
+        match region {
+            BlurRegion::EntireSurface => {
+                // NULL disables blur in this protocol; use a huge region.
+                wl_region.add(0, 0, i32::MAX, i32::MAX);
+            }
+            BlurRegion::Rectangles(rects) => {
+                for rect in rects.into_iter().filter(|r| !r.is_empty()) {
+                    wl_region.add(
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width.max(1) as i32,
+                        rect.size.height.max(1) as i32,
+                    );
+                }
+            }
+        }
+        effect.set_blur_region(Some(&wl_region));
+        wl_region.destroy();
+        // Protocol: blur region is double-buffered; commit so it applies now.
+        record.wl.commit();
+        self.connection.flush()?;
+        Ok(())
     }
 
     /// Request server/client/none decorations via `zxdg_decoration_manager_v1`.

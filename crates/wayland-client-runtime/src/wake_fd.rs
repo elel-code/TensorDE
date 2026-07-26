@@ -7,6 +7,9 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rustix::event::{eventfd, EventfdFlags};
+use rustix::io::{read, write, Errno};
+
 /// Cross-thread wake via Linux `eventfd`.
 #[derive(Debug)]
 pub struct EventFdWake {
@@ -16,13 +19,8 @@ pub struct EventFdWake {
 
 impl EventFdWake {
     pub fn new() -> io::Result<Self> {
-        // SAFETY: eventfd is a pure syscall; we take ownership of the returned fd.
-        let raw = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: raw is a valid eventfd we own exclusively.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)
+            .map_err(io::Error::from)?;
         Ok(Self {
             fd,
             closed: AtomicBool::new(false),
@@ -33,41 +31,22 @@ impl EventFdWake {
         if self.closed.load(Ordering::Relaxed) {
             return;
         }
-        let one: u64 = 1;
         // Ignore EAGAIN (counter already non-zero) and other races on shutdown.
-        let _ = nix_write_u64(self.fd.as_raw_fd(), one);
+        let _ = write(self.fd.as_fd(), &1u64.to_ne_bytes());
     }
 
     /// Drain the eventfd counter after Compio reports the wake fd readable.
     pub fn drain(&self) {
         let mut buf = [0u8; 8];
         loop {
-            // SAFETY: read into stack buffer of exact eventfd size.
-            let n = unsafe {
-                libc::read(
-                    self.fd.as_raw_fd(),
-                    buf.as_mut_ptr().cast(),
-                    buf.len(),
-                )
-            };
-            if n < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::WouldBlock {
-                    break;
-                }
-                if err.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                break;
-            }
-            if n == 0 {
-                break;
+            match read(self.fd.as_fd(), &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(Errno::INTR) => continue,
+                // AGAIN / other: drained, would-block, or shutdown race.
+                Err(_) => break,
             }
         }
-    }
-
-    pub fn as_raw_fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
     }
 }
 
@@ -77,16 +56,8 @@ impl AsFd for EventFdWake {
     }
 }
 
-fn nix_write_u64(fd: RawFd, value: u64) -> io::Result<()> {
-    let bytes = value.to_ne_bytes();
-    // SAFETY: write of 8 bytes to eventfd.
-    let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-    if n < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+impl AsRawFd for EventFdWake {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
     }
 }
-
-// OwnedFd::from_raw_fd requires this import in scope for the unsafe block above.
-use std::os::fd::FromRawFd;

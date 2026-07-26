@@ -182,6 +182,7 @@ impl NativeShell {
                 fractional,
                 icon_shm: Vec::new(),
                 blur_effect: None,
+                pending_blur: None,
                 decoration: None,
                 decoration_mode: None,
                 decorations_preference: crate::surface::DecorationPreference::Server,

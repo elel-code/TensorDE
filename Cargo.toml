@@ -25,8 +25,9 @@ futures-channel = "0.3"
 futures-lite = "2"
 gio = "0.22"
 image = "0.25"
-libc = "0.2"
 notify = "8"
+# Safe syscall wrappers (access). Already in the graph via async-io / wayland.
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 pollster = "1"
 resvg = "0.47"
 tiny-skia = "0.12"

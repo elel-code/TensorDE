@@ -198,23 +198,13 @@ fn icon_emblem_kinds_for_path(path: &Path) -> Vec<IconEmblemKind> {
 
 #[cfg(unix)]
 fn path_is_readable(path: &Path, _metadata: &fs::Metadata) -> bool {
-    path_accessible(path, libc::R_OK)
+    use rustix::fs::{access, Access};
+    access(path, Access::READ_OK).is_ok()
 }
 
 #[cfg(not(unix))]
 fn path_is_readable(_path: &Path, _metadata: &fs::Metadata) -> bool {
     true
-}
-
-#[cfg(unix)]
-fn path_accessible(path: &Path, mode: libc::c_int) -> bool {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return false;
-    };
-    unsafe { libc::access(path.as_ptr(), mode) == 0 }
 }
 
 fn icon_emblem_rects(paint_area: ViewRect, scale: f32) -> [ViewRect; 4] {

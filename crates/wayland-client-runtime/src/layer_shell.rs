@@ -38,7 +38,7 @@ bitflags! {
 }
 
 impl LayerAnchor {
-    fn to_wire(self) -> zwlr_layer_surface_v1::Anchor {
+    pub(crate) fn to_wire(self) -> zwlr_layer_surface_v1::Anchor {
         zwlr_layer_surface_v1::Anchor::from_bits_truncate(u32::from(self.bits()))
     }
 }
@@ -53,7 +53,7 @@ pub enum LayerEdge {
 }
 
 impl LayerEdge {
-    fn anchor(self) -> LayerAnchor {
+    pub(crate) fn anchor(self) -> LayerAnchor {
         match self {
             Self::Top => LayerAnchor::TOP,
             Self::Bottom => LayerAnchor::BOTTOM,
@@ -62,7 +62,8 @@ impl LayerEdge {
         }
     }
 
-    fn to_wire(self) -> zwlr_layer_surface_v1::Anchor {
+    pub(crate) fn to_wire(self) -> zwlr_layer_surface_v1::Anchor {
+        // Exclusive-edge is a single bit; map via the anchor helpers.
         self.anchor().to_wire()
     }
 }
@@ -179,6 +180,91 @@ pub enum LayerSurfaceError {
     ExclusiveEdgeUnsupported,
     #[error("the layer surface was closed by the compositor")]
     Closed,
+}
+
+/// Validate layer state against protocol rules and the bound layer-shell version.
+pub(crate) fn validate_layer_state(
+    state: &LayerSurfaceState,
+    namespace: Option<&str>,
+    version: u32,
+) -> Result<(), LayerSurfaceError> {
+    if namespace.is_some_and(|ns| ns.contains('\0')) {
+        return Err(LayerSurfaceError::NamespaceContainsNul);
+    }
+    if state.size.width == 0
+        && !(state.anchor.contains(LayerAnchor::LEFT) && state.anchor.contains(LayerAnchor::RIGHT))
+    {
+        return Err(LayerSurfaceError::UnconstrainedWidthWithoutAnchors);
+    }
+    if state.size.height == 0
+        && !(state.anchor.contains(LayerAnchor::TOP) && state.anchor.contains(LayerAnchor::BOTTOM))
+    {
+        return Err(LayerSurfaceError::UnconstrainedHeightWithoutAnchors);
+    }
+    if state.exclusive_zone < -1 {
+        return Err(LayerSurfaceError::InvalidExclusiveZone);
+    }
+    if let Some(edge) = state.exclusive_edge {
+        if version < 5 {
+            return Err(LayerSurfaceError::ExclusiveEdgeUnsupported);
+        }
+        if !state.anchor.contains(edge.anchor()) {
+            return Err(LayerSurfaceError::ExclusiveEdgeNotAnchored);
+        }
+    }
+    if matches!(
+        state.keyboard_interactivity,
+        LayerKeyboardInteractivity::OnDemand
+    ) && version < 4
+    {
+        return Err(LayerSurfaceError::OnDemandKeyboardUnsupported);
+    }
+    // set_layer is version 2+; creation always sets the initial layer via
+    // get_layer_surface, so this only matters for dynamic updates (caller
+    // checks DynamicLayerUnsupported separately when layer changes).
+    let _ = version;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_zero_width_without_horizontal_anchors() {
+        let state = LayerSurfaceState {
+            size: LogicalSize::new(0, 32),
+            anchor: LayerAnchor::TOP,
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_layer_state(&state, Some("ok"), 5),
+            Err(LayerSurfaceError::UnconstrainedWidthWithoutAnchors)
+        ));
+    }
+
+    #[test]
+    fn validate_exclusive_edge_requires_v5_and_matching_anchor() {
+        let state = LayerSurfaceState {
+            exclusive_edge: Some(LayerEdge::Top),
+            anchor: LayerAnchor::BOTTOM,
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_layer_state(&state, None, 4),
+            Err(LayerSurfaceError::ExclusiveEdgeUnsupported)
+        ));
+        assert!(matches!(
+            validate_layer_state(&state, None, 5),
+            Err(LayerSurfaceError::ExclusiveEdgeNotAnchored)
+        ));
+        let ok = LayerSurfaceState {
+            exclusive_edge: Some(LayerEdge::Top),
+            anchor: LayerAnchor::TOP,
+            ..Default::default()
+        };
+        assert!(validate_layer_state(&ok, None, 5).is_ok());
+    }
 }
 
 

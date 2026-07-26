@@ -2,30 +2,23 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-use std::os::unix::io::AsRawFd;
+use std::os::fd::AsFd;
 
+use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
 use wayland_client::protocol::{wl_buffer, wl_shm, wl_shm_pool};
 use wayland_client::QueueHandle;
 
 /// Create a sealed memfd-backed file of at least `size` bytes.
 pub fn create_memfd(size: usize) -> io::Result<File> {
-    let name = c"fika-wl-shm";
-    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    let file = File::from(owned);
+    let fd = memfd_create(
+        c"fika-wl-shm",
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )
+    .map_err(io::Error::from)?;
+    let file = File::from(fd);
     file.set_len(size as u64)?;
     // Best-effort seals so the compositor can map safely.
-    let _ = unsafe {
-        libc::fcntl(
-            file.as_raw_fd(),
-            libc::F_ADD_SEALS,
-            libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
-        )
-    };
+    let _ = fcntl_add_seals(file.as_fd(), SealFlags::SHRINK | SealFlags::SEAL);
     Ok(file)
 }
 

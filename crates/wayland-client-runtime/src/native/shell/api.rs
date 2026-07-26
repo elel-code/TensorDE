@@ -226,7 +226,13 @@ impl NativeShell {
             queue,
             state,
         };
+        // Flush binds so the compositor can reply with capability events
+        // (e.g. ext-background-effect Capabilities) before the first set_blur.
+        shell.connection.flush()?;
         let _ = shell.dispatch_pending()?;
+        // One non-blocking drain is enough for in-socket replies; a full
+        // blocking roundtrip is intentionally avoided here (would stall if
+        // the compositor is silent). set_blur + pending_blur cover races.
         Ok(shell)
     }
 
@@ -245,6 +251,11 @@ impl NativeShell {
 
     pub fn has_cursor_shape(&self) -> bool {
         self.state.cursor_shape_manager.is_some()
+    }
+
+    /// Bound `zwlr_layer_shell_v1` interface version (0 if unbound).
+    pub fn layer_shell_version(&self) -> u32 {
+        self.state.layer_shell_version
     }
 
     pub fn capabilities(&self) -> NativeCapabilities {
@@ -447,6 +458,13 @@ impl NativeShell {
         output: Option<u32>,
         state: crate::layer_shell::LayerSurfaceState,
     ) -> Result<NativeSurfaceId, NativeError> {
+        let namespace = namespace.into();
+        crate::layer_shell::validate_layer_state(
+            &state,
+            Some(&namespace),
+            self.state.layer_shell_version,
+        )
+        .map_err(|e| NativeError::Protocol(e.to_string()))?;
         let qh = self.queue.handle();
         let compositor = self
             .state
@@ -473,7 +491,7 @@ impl NativeShell {
             &wl,
             output_proxy.as_ref(),
             state.layer.into(),
-            namespace.into(),
+            namespace,
             &qh,
             (),
         );
@@ -519,6 +537,8 @@ impl NativeShell {
         new_state: crate::layer_shell::LayerSurfaceState,
     ) -> Result<(), NativeError> {
         let version = self.state.layer_shell_version;
+        crate::layer_shell::validate_layer_state(&new_state, None, version)
+            .map_err(|e| NativeError::Protocol(e.to_string()))?;
         let record = self
             .state
             .layers
@@ -526,6 +546,11 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Protocol(format!("unknown layer {id:?}")))?;
         if record.state == new_state {
             return Ok(());
+        }
+        if record.state.layer != new_state.layer && version < 2 {
+            return Err(NativeError::Protocol(
+                crate::layer_shell::LayerSurfaceError::DynamicLayerUnsupported.to_string(),
+            ));
         }
         apply_layer_state_to_role(&record.layer, &new_state, version)?;
         record.state = new_state;
@@ -582,11 +607,14 @@ impl NativeShell {
     }
 
     /// Create a bufferless GPU-friendly popup (no solid SHM fill).
+    ///
+    /// When `grab` is `Some`, the popup is grabbed with that seat+serial.
+    /// When `None`, no grab is requested.
     pub fn create_popup_gpu(
         &mut self,
         parent: NativeSurfaceId,
         positioner: &NativePopupPositioner,
-        grab: bool,
+        grab: Option<&crate::InputSerial>,
     ) -> Result<NativeSurfaceId, NativeError> {
         if positioner.size.width == 0 || positioner.size.height == 0 {
             return Err(NativeError::Protocol("popup size must be non-zero".into()));
@@ -620,12 +648,8 @@ impl NativeShell {
         let popup = xdg.get_popup(Some(&parent_xdg), &pos, &qh, ());
         pos.destroy();
 
-        if grab {
-            if let (Some(serial), Some(seat)) =
-                (self.state.last_input_serial, self.state.seat.as_ref())
-            {
-                popup.grab(seat, serial);
-            }
+        if let Some(serial) = grab {
+            popup.grab(serial.seat(), serial.serial());
         }
 
         let w = positioner.size.width;
@@ -746,6 +770,10 @@ impl NativeShell {
 
     /// Apply deferred CSD work that cannot run inside `Dispatch` handlers.
     fn after_dispatch(&mut self) -> Result<(), NativeError> {
+        if self.state.pending_blur_replay {
+            self.state.pending_blur_replay = false;
+            let _ = self.apply_pending_blur_all();
+        }
         // Apply frame actions collected during pointer dispatch.
         let actions = std::mem::take(&mut self.state.pending_frame_actions);
         for (id, action) in actions {
@@ -983,12 +1011,12 @@ impl NativeShell {
 
     /// Create an `xdg_popup` child of a configured toplevel (or another popup).
     ///
-    /// When `grab` is true, uses the latest pointer/keyboard serial for popup grab.
+    /// When `grab` is `Some`, the popup is grabbed with that seat+serial.
     pub fn create_popup(
         &mut self,
         parent: NativeSurfaceId,
         positioner: &NativePopupPositioner,
-        grab: bool,
+        grab: Option<&crate::InputSerial>,
     ) -> Result<NativeSurfaceId, NativeError> {
         if positioner.size.width == 0 || positioner.size.height == 0 {
             return Err(NativeError::Protocol("popup size must be non-zero".into()));
@@ -1027,12 +1055,8 @@ impl NativeShell {
         let popup = xdg.get_popup(Some(&parent_xdg), &pos, &qh, ());
         pos.destroy();
 
-        if grab {
-            if let (Some(serial), Some(seat)) =
-                (self.state.last_input_serial, self.state.seat.as_ref())
-            {
-                popup.grab(seat, serial);
-            }
+        if let Some(serial) = grab {
+            popup.grab(serial.seat(), serial.serial());
         }
 
         let w = positioner.size.width;
@@ -1152,17 +1176,13 @@ impl NativeShell {
     }
 }
 
-fn layer_anchor_to_wire(anchor: LayerAnchor) -> zwlr_layer_surface_v1::Anchor {
-    zwlr_layer_surface_v1::Anchor::from_bits_truncate(u32::from(anchor.bits()))
-}
-
 fn apply_layer_state_to_role(
     role: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     state: &crate::layer_shell::LayerSurfaceState,
     version: u32,
 ) -> Result<(), NativeError> {
     role.set_size(state.size.width, state.size.height);
-    role.set_anchor(layer_anchor_to_wire(state.anchor));
+    role.set_anchor(state.anchor.to_wire());
     role.set_exclusive_zone(state.exclusive_zone);
     role.set_margin(
         state.margins.top,
@@ -1176,14 +1196,7 @@ fn apply_layer_state_to_role(
     }
     if version >= 5 {
         if let Some(edge) = state.exclusive_edge {
-            use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
-            let wire = match edge {
-                crate::layer_shell::LayerEdge::Top => Anchor::Top,
-                crate::layer_shell::LayerEdge::Bottom => Anchor::Bottom,
-                crate::layer_shell::LayerEdge::Left => Anchor::Left,
-                crate::layer_shell::LayerEdge::Right => Anchor::Right,
-            };
-            role.set_exclusive_edge(wire);
+            role.set_exclusive_edge(edge.to_wire());
         }
     }
     Ok(())

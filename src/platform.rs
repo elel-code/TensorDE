@@ -268,16 +268,18 @@ impl WaylandWindow {
     }
 
     pub fn set_min_surface_size(&self, size: Option<PhysicalSize<u32>>) {
+        let scale = self.scale_factor();
         self.shared.push(RuntimeCommand::SetMinSize(
             self.id,
-            size.map(physical_to_logical),
+            size.map(|s| physical_to_logical_rounded(s, scale)),
         ));
     }
 
     pub fn set_max_surface_size(&self, size: Option<PhysicalSize<u32>>) {
+        let scale = self.scale_factor();
         self.shared.push(RuntimeCommand::SetMaxSize(
             self.id,
-            size.map(physical_to_logical),
+            size.map(|s| physical_to_logical_rounded(s, scale)),
         ));
     }
 
@@ -381,9 +383,14 @@ impl ActiveEventLoop {
         } = attributes;
         let window_icon = RuntimeToplevelIcon::from_name(app_id.clone())
             .map_err(|error| RuntimeError::Protocol(error.to_string()))?;
-        let logical_size = physical_to_logical(surface_size);
-        let min_size = min_surface_size.map(physical_to_logical);
-        let max_size = max_surface_size.map(physical_to_logical);
+        // `surface_size` is physical (pixels). Convert to Wayland logical units
+        // with the best scale we know so far. Prefer the primary window's scale
+        // (dialogs inherit the main display scale); otherwise max output scale.
+        let scale_factor = self.best_initial_scale_factor();
+        let logical_size = physical_to_logical_rounded(surface_size, scale_factor);
+        let min_size = min_surface_size.map(|s| physical_to_logical_rounded(s, scale_factor));
+        let max_size = max_surface_size.map(|s| physical_to_logical_rounded(s, scale_factor));
+        let physical_size = logical_to_physical_rounded(logical_size, scale_factor);
         let toplevel = ToplevelAttributes {
             title,
             app_id,
@@ -436,8 +443,8 @@ impl ActiveEventLoop {
             handle,
             state: Mutex::new(WindowState {
                 logical_size,
-                physical_size: surface_size,
-                scale_factor: 1.0,
+                physical_size,
+                scale_factor,
                 configured: false,
                 redraw_requested: true,
                 frame_pending: false,
@@ -448,6 +455,31 @@ impl ActiveEventLoop {
             .borrow_mut()
             .insert(id, Arc::downgrade(&window));
         Ok(window)
+    }
+
+    /// Best-effort scale for a newly created surface before fractional-scale
+    /// events arrive. Dialogs inherit the primary window's scale; otherwise
+    /// use the highest advertised output scale (integer).
+    fn best_initial_scale_factor(&self) -> f64 {
+        if let Some(primary) = self.primary_surface.get() {
+            if let Some(window) = self
+                .windows
+                .borrow()
+                .get(&primary)
+                .and_then(|weak| weak.upgrade())
+            {
+                let scale = window.scale_factor();
+                if scale.is_finite() && scale > 0.0 {
+                    return scale;
+                }
+            }
+        }
+        self.runtime
+            .borrow()
+            .outputs()
+            .into_iter()
+            .map(|output| f64::from(output.scale_factor.max(1)))
+            .fold(1.0_f64, f64::max)
     }
 
     pub fn set_control_flow(&self, control_flow: ControlFlow) {
@@ -562,20 +594,27 @@ impl ActiveEventLoop {
         id: DataTransferId,
         actions: &[DndAction],
     ) -> Result<(), String> {
-        let transfer = self
-            .dnd_transfers
-            .borrow()
-            .get(&id)
-            .map(|transfer| (transfer.offer, transfer.hints.clone()))
-            .ok_or_else(|| format!("DnD transfer {} does not exist", id.into_raw()))?;
-        let accepted_mime = (!actions.is_empty())
-            .then(|| transfer.1.iter().find(|hint| **hint == TypeHint::UriList))
-            .flatten()
-            .map(TypeHint::mime);
+        let (offer, accepted_mime) = {
+            let transfers = self.dnd_transfers.borrow();
+            let transfer = transfers
+                .get(&id)
+                .ok_or_else(|| format!("DnD transfer {} does not exist", id.into_raw()))?;
+            // TypeHint::mime is &'static str — no Vec clone of hints.
+            let accepted_mime = (!actions.is_empty())
+                .then(|| {
+                    transfer
+                        .hints
+                        .iter()
+                        .find(|hint| **hint == TypeHint::UriList)
+                })
+                .flatten()
+                .map(TypeHint::mime);
+            (transfer.offer, accepted_mime)
+        };
         self.runtime
             .borrow_mut()
             .set_dnd_offer_actions(
-                transfer.0,
+                offer,
                 accepted_mime,
                 runtime_dnd_actions(actions),
                 preferred_runtime_dnd_action(actions),
@@ -589,9 +628,6 @@ pub struct EventLoop {
 }
 
 include!("platform_event_loop.rs");
-fn physical_to_logical(size: PhysicalSize<u32>) -> LogicalSize {
-    LogicalSize::new(size.width.max(1), size.height.max(1))
-}
 
 fn normalize_wayland_scale_factor(scale_factor: f64) -> f64 {
     if scale_factor.is_finite() && scale_factor > 0.0 {

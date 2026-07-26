@@ -351,4 +351,18 @@ mod tests {
             HitLocation::TopRight
         );
     }
+
+    #[test]
+    fn content_edge_hit_detects_ring_and_corners() {
+        let border = 5;
+        assert_eq!(
+            content_edge_hit(2.0, 50.0, 100, 100, border),
+            Some(HitLocation::Left)
+        );
+        assert_eq!(
+            content_edge_hit(2.0, 2.0, 100, 100, border),
+            Some(HitLocation::TopLeft)
+        );
+        assert_eq!(content_edge_hit(50.0, 50.0, 100, 100, border), None);
+    }
 }

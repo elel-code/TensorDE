@@ -48,6 +48,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                 state.incoming_mimes.clear();
                 if let Some(offer) = id {
                     let offer_id = offer.id().protocol_id();
+                    // Move mimes out of the map once; share with event via one clone.
                     let mimes = state.offer_mimes.remove(&offer_id).unwrap_or_default();
                     state.incoming_mimes = mimes.clone();
                     state.incoming_offer = Some(offer);
@@ -64,11 +65,16 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                 id,
             } => {
                 state.dnd_serial = Some(serial);
+                // A new enter supersedes any prior offer (including a dropped
+                // one that was never finished).
                 if let Some(old) = state.dnd_offer.take() {
+                    let old_id = old.id().protocol_id();
+                    state.offer_mimes.remove(&old_id);
                     old.destroy();
                 }
                 state.dnd_mimes.clear();
                 state.dnd_offer_id = None;
+                state.dnd_dropped = false;
                 let surface_id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -76,14 +82,11 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                 state.dnd_focus = surface_id;
                 if let Some(offer) = id {
                     let offer_obj = offer.id().protocol_id();
-                    let mimes = state
-                        .offer_mimes
-                        .get(&offer_obj)
-                        .cloned()
-                        .unwrap_or_default();
-                    state.dnd_mimes = mimes.clone();
-                    if let Some(mime) = mimes.first() {
-                        offer.accept(serial, Some(mime.clone()));
+                    // Own the mime list once: move into dnd_mimes, clone only for the
+                    // public event (and one string for accept if needed).
+                    let mimes = state.offer_mimes.remove(&offer_obj).unwrap_or_default();
+                    if let Some(mime) = mimes.first().cloned() {
+                        offer.accept(serial, Some(mime));
                     }
                     offer.set_actions(
                         wayland_client::protocol::wl_data_device_manager::DndAction::Copy
@@ -94,6 +97,8 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                     state.dnd_offer_id = Some(public_id);
                     state.dnd_offer = Some(offer);
                     if let Some(surface) = surface_id {
+                        // Event takes ownership; shell retains a clone for receive checks.
+                        state.dnd_mimes = mimes.clone();
                         state.push(NativeShellEvent::DndEnter {
                             offer: public_id,
                             surface,
@@ -101,22 +106,34 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
                             y,
                             mimes,
                         });
+                    } else {
+                        state.dnd_mimes = mimes;
                     }
                 }
             }
             wl_data_device::Event::Leave => {
                 let offer = state.dnd_offer_id.unwrap_or(0);
                 let surface = state.dnd_focus;
-                if let Some(old) = state.dnd_offer.take() {
-                    let old_id = old.id().protocol_id();
-                    state.offer_mimes.remove(&old_id);
-                    old.destroy();
+                if state.dnd_dropped {
+                    // Successful drop already happened. Keep the offer alive for
+                    // receive/finish; only clear surface focus. Compositors often
+                    // send leave after drop even though the transfer continues.
+                    state.dnd_focus = None;
+                    state.push(NativeShellEvent::DndLeave { offer, surface });
+                } else {
+                    // Cancel / leave-without-drop: destroy the offer now.
+                    if let Some(old) = state.dnd_offer.take() {
+                        let old_id = old.id().protocol_id();
+                        state.offer_mimes.remove(&old_id);
+                        old.destroy();
+                    }
+                    state.dnd_mimes.clear();
+                    state.dnd_focus = None;
+                    state.dnd_serial = None;
+                    state.dnd_offer_id = None;
+                    state.dnd_dropped = false;
+                    state.push(NativeShellEvent::DndLeave { offer, surface });
                 }
-                state.dnd_mimes.clear();
-                state.dnd_focus = None;
-                state.dnd_serial = None;
-                state.dnd_offer_id = None;
-                state.push(NativeShellEvent::DndLeave { offer, surface });
             }
             wl_data_device::Event::Motion { x, y, .. } => {
                 let offer = state.dnd_offer_id.unwrap_or(0);
@@ -124,6 +141,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
             }
             wl_data_device::Event::Drop => {
                 let offer = state.dnd_offer_id.unwrap_or(0);
+                state.dnd_dropped = true;
                 state.push(NativeShellEvent::DndDrop { offer });
             }
             _ => {}
@@ -144,25 +162,25 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for NativeShellState {
             wl_data_offer::Event::Offer { mime_type } => {
                 let offer_id = offer.id().protocol_id();
                 let mimes = state.offer_mimes.entry(offer_id).or_default();
-                if !mimes.iter().any(|m| m == &mime_type) {
-                    mimes.push(mime_type.clone());
+                if mimes.iter().any(|m| m == &mime_type) {
+                    return;
                 }
-                if state
+                let is_incoming = state
                     .incoming_offer
                     .as_ref()
-                    .is_some_and(|o| o.id() == offer.id())
-                    && !state.incoming_mimes.iter().any(|m| m == &mime_type)
-                {
-                    state.incoming_mimes.push(mime_type.clone());
-                }
-                if state
+                    .is_some_and(|o| o.id() == offer.id());
+                let is_dnd = state
                     .dnd_offer
                     .as_ref()
-                    .is_some_and(|o| o.id() == offer.id())
-                    && !state.dnd_mimes.iter().any(|m| m == &mime_type)
-                {
-                    state.dnd_mimes.push(mime_type);
+                    .is_some_and(|o| o.id() == offer.id());
+                // Clone only into live mirrors; map entry takes ownership last.
+                if is_incoming {
+                    state.incoming_mimes.push(mime_type.clone());
                 }
+                if is_dnd {
+                    state.dnd_mimes.push(mime_type.clone());
+                }
+                mimes.push(mime_type);
             }
             wl_data_offer::Event::SourceActions { .. }
             | wl_data_offer::Event::Action { .. } => {}
@@ -312,7 +330,7 @@ mod tests {
         let mut positioner = NativePopupPositioner::default();
         positioner.anchor_rect = crate::geometry::LogicalRect::new(0, 0, 100, 40);
         let popup = shell
-            .create_popup(parent, &positioner, false)
+            .create_popup(parent, &positioner, None)
             .expect("create popup");
         assert_eq!(shell.popup_count(), 1);
         let _ = shell.dispatch_pending();
@@ -474,24 +492,18 @@ mod tests {
             .expect("toplevel");
         // Drain capability events.
         let _ = shell.dispatch_pending();
+        // Always accept enable: if capability is not yet known, the request is
+        // remembered and applied when Capabilities arrives.
+        shell
+            .set_blur(
+                id,
+                crate::BlurState::Enabled(crate::BlurRegion::EntireSurface),
+            )
+            .expect("enable blur (or queue pending)");
         if shell.has_background_blur() {
-            shell
-                .set_blur(
-                    id,
-                    crate::BlurState::Enabled(crate::BlurRegion::EntireSurface),
-                )
-                .expect("enable blur");
             shell
                 .set_blur(id, crate::BlurState::Disabled)
                 .expect("disable blur");
-        } else {
-            let err = shell
-                .set_blur(
-                    id,
-                    crate::BlurState::Enabled(crate::BlurRegion::EntireSurface),
-                )
-                .expect_err("blur should fail without capability");
-            let _ = err;
         }
         let _ = shell.destroy_toplevel(id);
     }

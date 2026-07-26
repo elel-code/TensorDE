@@ -193,10 +193,15 @@ pub enum Event {
 }
 
 /// Contiguous pending-event storage optimized for append-and-drain batches.
+///
+/// Used by unit tests and as a pattern for batching; the live runtime maps
+/// shell events straight into the caller's `Vec` to avoid an extra hop.
+#[cfg(test)]
 pub(crate) struct EventBuffer {
     pending: Vec<Event>,
 }
 
+#[cfg(test)]
 impl EventBuffer {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -206,10 +211,6 @@ impl EventBuffer {
 
     pub(crate) fn push(&mut self, event: Event) {
         self.pending.push(event);
-    }
-
-    pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, Event> {
-        self.pending.drain(..)
     }
 
     pub(crate) fn drain_into(&mut self, target: &mut Vec<Event>) {

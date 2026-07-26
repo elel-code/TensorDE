@@ -14,8 +14,10 @@ categories = ["gui", "os::linux-apis"]
 [dependencies]
 bitflags = "2"
 compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"] }
-libc = "0.2"
 raw-window-handle = "0.6"
+# Safe syscall wrappers (eventfd, memfd, seals). Already in the graph via
+# wayland-backend / compio; declare explicitly for our direct use.
+rustix = { version = "1", default-features = false, features = ["event", "fs", "std"] }
 thiserror = "2"
 # `system` exposes ObjectId::as_ptr for raw-window-handle / wgpu.
 wayland-client = { version = "0.31", features = ["system"] }

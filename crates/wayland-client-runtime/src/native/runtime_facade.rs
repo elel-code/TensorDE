@@ -55,7 +55,6 @@ pub struct NativeRuntime {
     /// Owns the io_uring proactor used for display/wake waits.
     compio: compio::runtime::Runtime,
     capabilities: RuntimeCapabilities,
-    public_events: Vec<Event>,
 }
 
 impl NativeRuntime {
@@ -63,6 +62,7 @@ impl NativeRuntime {
         let shell = NativeShell::connect_to_env().map_err(map_native_error)?;
         let caps = shell.capabilities();
         let popup_reposition = shell.supports_popup_reposition();
+        let layer_ver = shell.layer_shell_version();
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
@@ -87,6 +87,10 @@ impl NativeRuntime {
                 cursor_shape: caps.cursor_shape,
                 text_input_v3: caps.text_input,
                 layer_shell_v1: caps.layer_shell,
+                // set_layer since v2; on_demand keyboard since v4; exclusive_edge since v5.
+                layer_shell_dynamic_layer: caps.layer_shell && layer_ver >= 2,
+                layer_shell_on_demand_keyboard: caps.layer_shell && layer_ver >= 4,
+                layer_shell_exclusive_edge: caps.layer_shell && layer_ver >= 5,
                 xdg_activation_v1: caps.activation,
                 pointer_gestures_v1: caps.pointer_gestures,
                 pointer_gesture_hold_v1: caps.pointer_gesture_hold,
@@ -100,7 +104,6 @@ impl NativeRuntime {
                 popup_reposition,
                 ..RuntimeCapabilities::default()
             },
-            public_events: Vec::with_capacity(128),
         })
     }
 
@@ -113,27 +116,33 @@ impl NativeRuntime {
     }
 
     pub fn drain_events_into(&mut self, target: &mut Vec<Event>) {
-        self.public_events.clear();
-        // Capture activation tokens with request correlation before generic map.
-        let mut raw = Vec::new();
-        self.shell.drain_events_into(&mut raw);
+        // Map shell events straight into `target` — no intermediate Vec / buffer.
         let seat = self.shell.seat().cloned();
         if let Some(serial) = self.shell.last_input_serial() {
             self.map_state.last_serial = serial;
         }
-        for event in raw {
-            if let crate::NativeShellEvent::ActivationToken { surface, token } = &event {
-                if let Some(request) = self.activation_pending.remove(surface) {
-                    let public = self.surfaces.intern(*surface);
-                    self.public_events.push(Event::Activation(
-                        crate::ActivationEvent::TokenDone {
-                            request,
-                            requesting_surface: public,
-                            token: ActivationToken::from_raw(token.clone()),
-                        },
-                    ));
+        for event in self.shell.drain_events() {
+            if let crate::NativeShellEvent::ActivationToken { surface, token } = event {
+                if let Some(request) = self.activation_pending.remove(&surface) {
+                    let public = self.surfaces.intern(surface);
+                    // Move the token string; no clone.
+                    target.push(Event::Activation(crate::ActivationEvent::TokenDone {
+                        request,
+                        requesting_surface: public,
+                        token: ActivationToken::from_raw(token),
+                    }));
                     continue;
                 }
+                // Uncorrelated token: fall through to the generic mapper.
+                if let Some(mapped) = crate::map_native_event_full(
+                    crate::NativeShellEvent::ActivationToken { surface, token },
+                    &mut self.surfaces,
+                    seat.as_ref(),
+                    &mut self.map_state,
+                ) {
+                    target.push(mapped);
+                }
+                continue;
             }
             if let Some(mapped) = crate::map_native_event_full(
                 event,
@@ -141,10 +150,9 @@ impl NativeRuntime {
                 seat.as_ref(),
                 &mut self.map_state,
             ) {
-                self.public_events.push(mapped);
+                target.push(mapped);
             }
         }
-        target.append(&mut self.public_events);
     }
 
     /// Drive Wayland I/O with Compio completion waits.
@@ -348,7 +356,7 @@ impl NativeRuntime {
     ) -> Result<SurfaceId, RuntimeError> {
         let parent_native = self.native(parent)?;
         let positioner = to_native_positioner(&attributes.positioner)?;
-        let grab = attributes.grab.is_some();
+        let grab = attributes.grab.as_ref().filter(|s| s.is_popup_grab());
         let native = self
             .shell
             .create_popup_gpu(parent_native, &positioner, grab)
@@ -890,14 +898,15 @@ impl NativeRuntime {
 
     pub fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
         if self.shell.dnd_offer_id() != Some(offer.get()) {
-            return Err(RuntimeError::DndOfferNotFound(offer));
+            // Idempotent: leave-after-drop, double-finish, or a superseded offer.
+            return Ok(());
         }
         self.shell.finish_dnd().map_err(map_native_error)
     }
 
     pub fn discard_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
         if self.shell.dnd_offer_id() != Some(offer.get()) {
-            // Idempotent: leave may race with finish.
+            // Idempotent: leave may race with finish/discard.
             return Ok(());
         }
         self.shell.discard_dnd().map_err(map_native_error)

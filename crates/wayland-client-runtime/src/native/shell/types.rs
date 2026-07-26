@@ -373,6 +373,9 @@ pub(crate) struct ToplevelRecord {
     pub(crate) blur_effect: Option<
         wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
     >,
+    /// Desired blur state. Re-applied when the compositor advertises the blur
+    /// capability after the first enable request (common on cold start).
+    pub(crate) pending_blur: Option<crate::blur::BlurState>,
     pub(crate) decoration: Option<
         wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
     >,
@@ -484,6 +487,8 @@ pub struct NativeShellState {
         wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
     >,
     pub(crate) background_blur_capable: bool,
+    /// Set when blur capability becomes true so after_dispatch can re-apply.
+    pub(crate) pending_blur_replay: bool,
     pub(crate) activation: Option<
         wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
     >,
@@ -549,6 +554,12 @@ pub struct NativeShellState {
     /// Active drag offer (incoming DnD).
     pub(crate) dnd_offer: Option<wl_data_offer::WlDataOffer>,
     pub(crate) dnd_offer_id: Option<u64>,
+    /// True after `wl_data_device.drop` until finish/discard.
+    ///
+    /// Compositors often send `leave` after a successful drop. Protocol says
+    /// the destination must keep the offer for `receive`/`finish` after drop,
+    /// so leave must not destroy the offer once this flag is set.
+    pub(crate) dnd_dropped: bool,
     pub(crate) dnd_mimes: Vec<String>,
     pub(crate) dnd_focus: Option<NativeSurfaceId>,
     pub(crate) dnd_serial: Option<u32>,
@@ -631,6 +642,7 @@ impl Default for NativeShellState {
             preferred_icon_sizes: Vec::new(),
             background_effect_manager: None,
             background_blur_capable: false,
+            pending_blur_replay: false,
             activation: None,
             activation_tokens: HashMap::new(),
             pointer_gestures: None,
@@ -663,6 +675,7 @@ impl Default for NativeShellState {
             offer_mimes: HashMap::new(),
             dnd_offer: None,
             dnd_offer_id: None,
+            dnd_dropped: false,
             dnd_mimes: Vec::new(),
             dnd_focus: None,
             dnd_serial: None,
