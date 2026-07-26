@@ -160,7 +160,9 @@ impl RuntimeState {
         );
         let output_id = descriptor.id;
         managed.descriptor = descriptor;
-        self.space.refresh_output_geometry(&managed.output);
+        let output = managed.output.clone();
+        self.space.refresh_output_geometry(&output);
+        self.arrange_layer_output(&output);
         // Mode replacement ends any in-flight flip; force a fresh first frame.
         self.set_redraw_state(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();
@@ -174,6 +176,7 @@ impl RuntimeState {
             return;
         };
         self.unregister_present_output(id);
+        self.remove_layer_output(&managed.output);
         self.space.unmap_output(&managed.output, &self.popups);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.unregister_output(RenderOutputId {

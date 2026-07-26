@@ -1,18 +1,21 @@
 //! wlr-layer-shell commit, exclusive-zone layout, input hit-test, and scene merge.
 //!
-//! Layer surfaces stay outside the ECS view graph: they are output-local Smithay
-//! state. The frame path only receives the same value-only surface content that
-//! tiled views use, so the renderer never sees a LayerMap or WlSurface.
+//! Layer surfaces stay outside the ECS view graph in output-local Tensor maps.
+//! The frame path only receives the same value-only surface content that tiled
+//! views use, so the renderer never sees a LayerMap or WlSurface.
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+mod map;
 
+#[cfg(feature = "tty")]
+use map::LayerMap;
+pub(super) use map::LayerMaps;
+#[cfg(feature = "tty")]
+pub(super) use map::LayerSurface;
+
+#[cfg(feature = "tty")]
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
-    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
         fractional_scale::with_fractional_scale,
@@ -20,20 +23,89 @@ use smithay::{
         shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer},
     },
 };
+#[cfg(feature = "tty")]
 use tensor_util::Rect;
 use tracing::warn;
+#[cfg(feature = "tty")]
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
+#[cfg(feature = "tty")]
 use crate::{
     ecs::ViewId,
     layout::LayoutPlacement,
     scene::{EffectStyle, SceneNode, SceneSnapshot, SurfaceLayer},
 };
 
-use super::{RuntimeState, find_popup_root_surface, tree::collect_surface_tree};
+use super::RuntimeState;
+#[cfg(feature = "tty")]
+use super::{find_popup_root_surface, tree::collect_surface_tree};
+#[cfg(feature = "tty")]
 use crate::protocol::focus::KeyboardFocusTarget;
 
+#[cfg(feature = "tty")]
+pub(super) struct LayerPopupContext {
+    pub(super) output: smithay::output::Output,
+    pub(super) geometry: smithay::utils::Rectangle<i32, Logical>,
+    pub(super) layer: WlrLayer,
+    pub(super) non_exclusive_zone: smithay::utils::Rectangle<i32, Logical>,
+}
+
 impl RuntimeState {
+    pub(crate) fn map_layer_surface(
+        &mut self,
+        output: &smithay::output::Output,
+        surface: smithay::wayland::shell::wlr_layer::LayerSurface,
+        namespace: String,
+    ) {
+        let (layer_maps, popups) = (&mut self.layer_maps, &self.popups);
+        if let Err(error) = layer_maps.map(output, surface, namespace, popups) {
+            warn!(%error, "failed to map layer surface");
+        }
+    }
+
+    pub(crate) fn unmap_layer_surface(
+        &mut self,
+        surface: &smithay::wayland::shell::wlr_layer::LayerSurface,
+    ) -> bool {
+        self.layer_maps.unmap(surface, &self.popups)
+    }
+
+    #[cfg(feature = "tty")]
+    pub(super) fn arrange_layer_output(&mut self, output: &smithay::output::Output) {
+        if let Some(map) = self.layer_maps.for_output_mut(output) {
+            map.arrange(&self.popups);
+        }
+    }
+
+    #[cfg(feature = "tty")]
+    pub(super) fn remove_layer_output(&mut self, output: &smithay::output::Output) {
+        self.layer_maps.remove_output(output, &self.popups);
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn clear_layer_on_demand_focus(&mut self) {
+        self.layer_shell_on_demand_focus = None;
+    }
+
+    #[cfg(all(test, feature = "tty"))]
+    pub(crate) fn layer_test_snapshot(
+        &self,
+        output: &smithay::output::Output,
+    ) -> Option<(usize, smithay::utils::Rectangle<i32, Logical>)> {
+        let output_geometry = self.space.output_geometry(output)?;
+        Some(
+            self.layer_maps
+                .for_output(output)
+                .map(|map| (map.layers().count(), map.non_exclusive_zone()))
+                .unwrap_or_else(|| {
+                    (
+                        0,
+                        smithay::utils::Rectangle::from_size(output_geometry.size),
+                    )
+                }),
+        )
+    }
+
     /// Handle a commit for a layer-shell surface tree.
     ///
     /// Returns `true` when the surface belonged to a layer map so the ordinary
@@ -56,15 +128,14 @@ impl RuntimeState {
 
         let mut newly_mapped_on_demand = None;
         {
-            let mut map = layer_map_for_output(&output);
-            map.arrange();
-            let Some(layer) = map
-                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                .cloned()
-            else {
+            let Some(map) = self.layer_maps.for_output_mut(&output) else {
+                return false;
+            };
+            map.arrange(&self.popups);
+            let Some(layer) = map.layer_for_root(&root).cloned() else {
                 return true;
             };
-            layer.layer_surface().send_pending_configure();
+            layer.protocol().send_pending_configure();
             with_states(layer.wl_surface(), |states| {
                 let scale = output.current_scale();
                 let transform = output.current_transform();
@@ -122,25 +193,26 @@ impl RuntimeState {
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         let (output, output_geo) = self.output_under_location(location)?;
         let pos_in_output = location - output_geo.loc.to_f64();
-        let map = layer_map_for_output(&output);
+        let map = self.layer_maps.for_output(&output);
 
-        if let Some(hit) = layer_surface_under(
-            &map,
-            pos_in_output,
-            output_geo,
-            [WlrLayer::Overlay, WlrLayer::Top],
-        ) {
+        if let Some(map) = map
+            && let Some(hit) = layer_surface_under(
+                map,
+                &self.popups,
+                pos_in_output,
+                output_geo,
+                [WlrLayer::Overlay, WlrLayer::Top],
+            )
+        {
             return Some(hit);
         }
-        drop(map);
-
         if let Some(hit) = self.window_pointer_focus(location) {
             return Some(hit);
         }
 
-        let map = layer_map_for_output(&output);
         layer_surface_under(
-            &map,
+            map?,
+            &self.popups,
             pos_in_output,
             output_geo,
             [WlrLayer::Bottom, WlrLayer::Background],
@@ -208,12 +280,32 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     fn layer_output_for_surface(&self, surface: &WlSurface) -> Option<smithay::output::Output> {
-        self.space.outputs().find_map(|output| {
-            let map = layer_map_for_output(output);
-            map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-                .is_some()
-                .then(|| output.clone())
+        self.layer_maps
+            .layer_and_output_for_root(surface)
+            .map(|(_, output)| output.clone())
+    }
+
+    #[cfg(feature = "tty")]
+    pub(super) fn layer_popup_context(&self, root: &WlSurface) -> Option<LayerPopupContext> {
+        let (layer, output) = self.layer_maps.layer_and_output_for_root(root)?;
+        let map = self.layer_maps.for_output(output)?;
+        Some(LayerPopupContext {
+            output: output.clone(),
+            geometry: map.layer_geometry(layer)?,
+            layer: layer.layer(),
+            non_exclusive_zone: map.non_exclusive_zone(),
         })
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn layer_surface_origin(&self, surface: &WlSurface) -> Option<Point<i32, Logical>> {
+        let (layer, output) = self.layer_maps.layer_and_output_for_root(surface)?;
+        let local = self
+            .layer_maps
+            .for_output(output)?
+            .layer_geometry(layer)?
+            .loc;
+        Some(self.space.output_geometry(output)?.loc + local)
     }
 
     #[cfg(feature = "tty")]
@@ -259,7 +351,9 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) fn layer_blocks_window_popup_grabs(&self) -> bool {
         for output in self.space.outputs() {
-            let map = layer_map_for_output(output);
+            let Some(map) = self.layer_maps.for_output(output) else {
+                continue;
+            };
             for band in [WlrLayer::Overlay, WlrLayer::Top] {
                 if map.layers_on(band).any(|layer| {
                     let interactive = matches!(
@@ -298,7 +392,9 @@ impl RuntimeState {
         output: &smithay::output::Output,
         logical: Rect,
     ) -> SceneSnapshot {
-        let map = layer_map_for_output(output);
+        let Some(map) = self.layer_maps.for_output(output) else {
+            return scene;
+        };
         let mut nodes = scene.nodes().to_vec();
         let mut contents = scene.contents().to_vec();
         let mut layer_index = 0u64;
@@ -331,7 +427,7 @@ impl RuntimeState {
             }
             let stacking = layer_stacking_order(layer.layer(), layer_index);
             layer_index = layer_index.saturating_add(1);
-            let view_id = ViewId::new(layer_view_id(layer));
+            let view_id = ViewId::new(layer.view_id());
             // Layer shells commonly request panel blur via ext-background-effect.
             let effects = Self::layer_surface_effects(layer.wl_surface());
             nodes.push(
@@ -344,7 +440,6 @@ impl RuntimeState {
                 .with_content(span),
             );
         }
-        drop(map);
         SceneSnapshot::with_content(scene.workspace_id, logical, nodes, contents)
     }
 
@@ -425,8 +520,11 @@ impl RuntimeState {
         output: &smithay::output::Output,
         geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     ) -> Option<Rect> {
-        let map = layer_map_for_output(output);
-        let zone = map.non_exclusive_zone();
+        let zone = self
+            .layer_maps
+            .for_output(output)
+            .map(LayerMap::non_exclusive_zone)
+            .unwrap_or_else(|| smithay::utils::Rectangle::from_size(geometry.size));
         let width = u32::try_from(zone.size.w).ok()?;
         let height = u32::try_from(zone.size.h).ok()?;
         (width > 0 && height > 0).then(|| {
@@ -470,16 +568,16 @@ impl RuntimeState {
     fn keyboard_layer_under(&self, location: Point<f64, Logical>) -> Option<LayerSurface> {
         let (output, output_geo) = self.output_under_location(location)?;
         let pos_in_output = location - output_geo.loc.to_f64();
-        let map = layer_map_for_output(&output);
+        let map = self.layer_maps.for_output(&output)?;
         for band in [
             WlrLayer::Overlay,
             WlrLayer::Top,
             WlrLayer::Bottom,
             WlrLayer::Background,
         ] {
-            if let Some(layer) = map.layer_under(band, pos_in_output)
+            if let Some(layer) = map.layer_under(&self.popups, band, pos_in_output)
                 && layer.can_receive_keyboard_focus()
-                && layer_has_surface_under(&map, layer, pos_in_output)
+                && layer_has_surface_under(map, &self.popups, layer, pos_in_output)
             {
                 return Some(layer.clone());
             }
@@ -527,9 +625,11 @@ impl RuntimeState {
         // the seat when no mapped window can receive ordinary keyboard focus.
         let workspace_empty = self.space.elements().next().is_none();
         for output in self.space.outputs() {
-            let map = layer_map_for_output(output);
+            let Some(map) = self.layer_maps.for_output(output) else {
+                continue;
+            };
             for band in [WlrLayer::Overlay, WlrLayer::Top] {
-                if let Some(layer) = exclusive_layer_on(&map, band) {
+                if let Some(layer) = exclusive_layer_on(map, band) {
                     return Some(layer);
                 }
             }
@@ -542,7 +642,7 @@ impl RuntimeState {
             }
             if workspace_empty {
                 for band in [WlrLayer::Bottom, WlrLayer::Background] {
-                    if let Some(layer) = exclusive_layer_on(&map, band) {
+                    if let Some(layer) = exclusive_layer_on(map, band) {
                         return Some(layer);
                     }
                 }
@@ -585,7 +685,7 @@ fn surface_has_buffer(surface: &WlSurface) -> bool {
 }
 
 #[cfg(feature = "tty")]
-fn exclusive_layer_on(map: &smithay::desktop::LayerMap, band: WlrLayer) -> Option<LayerSurface> {
+fn exclusive_layer_on(map: &LayerMap, band: WlrLayer) -> Option<LayerSurface> {
     map.layers_on(band).find_map(|layer| {
         (layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
             && layer.alive()
@@ -596,18 +696,17 @@ fn exclusive_layer_on(map: &smithay::desktop::LayerMap, band: WlrLayer) -> Optio
 
 #[cfg(feature = "tty")]
 fn layer_surface_under(
-    map: &smithay::desktop::LayerMap,
+    map: &LayerMap,
+    popups: &super::PopupManager,
     pos_in_output: Point<f64, Logical>,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
     bands: [WlrLayer; 2],
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
     for band in bands {
-        if let Some(layer) = map.layer_under(band, pos_in_output)
+        if let Some(layer) = map.layer_under(popups, band, pos_in_output)
             && let Some(layer_geo) = map.layer_geometry(layer)
-            && let Some((surface, surface_loc)) = layer.surface_under(
-                pos_in_output - layer_geo.loc.to_f64(),
-                WindowSurfaceType::ALL,
-            )
+            && let Some((surface, surface_loc)) =
+                layer.surface_under(popups, pos_in_output - layer_geo.loc.to_f64())
         {
             let global = surface_loc + layer_geo.loc + output_geo.loc;
             return Some((surface, global.to_f64()));
@@ -618,27 +717,16 @@ fn layer_surface_under(
 
 #[cfg(feature = "tty")]
 fn layer_has_surface_under(
-    map: &smithay::desktop::LayerMap,
+    map: &LayerMap,
+    popups: &super::PopupManager,
     layer: &LayerSurface,
     pos_in_output: Point<f64, Logical>,
 ) -> bool {
     map.layer_geometry(layer).is_some_and(|layer_geo| {
         layer
-            .surface_under(
-                pos_in_output - layer_geo.loc.to_f64(),
-                WindowSurfaceType::ALL,
-            )
+            .surface_under(popups, pos_in_output - layer_geo.loc.to_f64())
             .is_some()
     })
-}
-
-/// Synthetic view ids for layer surfaces. High-bit tags keep them out of the
-/// ordinary ECS view-id space that grows from 1.
-#[cfg(feature = "tty")]
-fn layer_view_id(layer: &LayerSurface) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    layer.wl_surface().id().hash(&mut hasher);
-    0xC000_0000_0000_0000 | (hasher.finish() & 0x0FFF_FFFF_FFFF_FFFF)
 }
 
 #[cfg(feature = "tty")]

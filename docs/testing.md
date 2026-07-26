@@ -127,6 +127,9 @@ and rendering itself.
   verifies Tensor's child-first borrowed iteration order, and tears it down without frame staging.
   A second tree destroys its parent first and must receive `not_the_topmost_popup` while Tensor
   removes the complete descendant topology immediately.
+- Layer-shell lifecycle coverage creates a real top-anchored client surface, verifies its configure
+  uses the fractional-scale logical output width, asserts its exclusive zone reshapes the workspace,
+  and confirms protocol destruction removes the Tensor layer map and restores the full output zone.
 - Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
   pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
   text-input, input-method, virtual-keyboard, session-lock, security-context,

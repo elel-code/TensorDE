@@ -16,6 +16,8 @@ mod completion;
 mod display;
 #[cfg(all(test, feature = "tty"))]
 mod focus_tests;
+#[cfg(all(test, feature = "tty"))]
+mod layer_tests;
 mod socket;
 #[cfg(test)]
 mod socket_tests;

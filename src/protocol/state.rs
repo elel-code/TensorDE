@@ -1,9 +1,9 @@
 mod background_effect;
 mod capture;
 mod capture_shm;
+mod client;
 mod display;
 mod event_loop;
-#[cfg(feature = "tty")]
 mod layer;
 #[cfg(feature = "tty")]
 mod output;
@@ -28,18 +28,17 @@ mod workspace_host;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 
+pub(crate) use client::WaylandClientState;
 pub(crate) use popup::{PopupKind, PopupManager, find_popup_root_surface};
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
 pub(crate) use window::ProtocolWindow;
 pub(crate) use workspace_host::WorkspaceHost;
 
 use event_loop::EventLoopState;
-use space::WindowSpace;
-
-use std::collections::HashMap;
+use layer::LayerMaps;
 #[cfg(feature = "tty")]
-use std::collections::HashSet;
-use std::sync::Arc;
+use layer::LayerSurface;
+use space::WindowSpace;
 
 use calloop::LoopHandle;
 #[cfg(feature = "tty")]
@@ -48,9 +47,7 @@ use smithay::{
     input::{Seat, SeatState},
     output::Scale,
     wayland::{
-        compositor::{
-            CompositorClientState, CompositorState, get_parent, send_surface_state, with_states,
-        },
+        compositor::{CompositorState, get_parent, send_surface_state, with_states},
         fractional_scale::with_fractional_scale,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
@@ -60,13 +57,14 @@ use smithay::{
 };
 #[cfg(feature = "xwayland")]
 use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
+use std::collections::HashMap;
+#[cfg(feature = "tty")]
+use std::collections::HashSet;
 use tracing::warn;
 #[cfg(feature = "tty")]
 use wayland_server::backend::GlobalId;
 use wayland_server::{
-    Display, DisplayHandle, Resource,
-    backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-    protocol::wl_surface::WlSurface,
+    Display, DisplayHandle, Resource, backend::ObjectId, protocol::wl_surface::WlSurface,
 };
 
 use crate::{
@@ -124,6 +122,7 @@ pub(crate) struct RuntimeState {
     pub(crate) seat: Seat<Self>,
     pub(crate) space: WindowSpace,
     pub(crate) popups: PopupManager,
+    layer_maps: LayerMaps,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
     pub(crate) renderer: Option<VulkanRenderer>,
@@ -167,7 +166,7 @@ pub(crate) struct RuntimeState {
     frame_stats: bool,
     /// On-demand layer surface that last received click or new-map focus.
     #[cfg(feature = "tty")]
-    pub(crate) layer_shell_on_demand_focus: Option<smithay::desktop::LayerSurface>,
+    layer_shell_on_demand_focus: Option<LayerSurface>,
     surface_views: HashMap<ObjectId, ViewId>,
     #[cfg(feature = "xwayland")]
     pub(crate) xwm: Option<X11Wm>,
@@ -221,6 +220,7 @@ impl RuntimeState {
             seat,
             space: WindowSpace::default(),
             popups: PopupManager::default(),
+            layer_maps: LayerMaps::default(),
             world: CompositorWorld::with_appearance(appearance),
             layout,
             renderer: None,
@@ -782,19 +782,6 @@ impl OutputRedrawState {
 /// Physical device capability bits (Smithay-free; from `tensor-input`).
 #[cfg(feature = "tty")]
 pub(crate) type InputDeviceCapabilities = tensor_input::DeviceCapabilities;
-
-#[derive(Debug, Default)]
-pub(crate) struct WaylandClientState {
-    pub(crate) compositor_state: CompositorClientState,
-    /// Immutable sandbox identity for clients accepted through `wp_security_context`.
-    pub(crate) security_context: Option<Arc<tensor_protocol::SecurityContextMetadata>>,
-}
-
-impl ClientData for WaylandClientState {
-    fn initialized(&self, _client_id: ClientId) {}
-
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
-}
 
 #[cfg(all(test, feature = "tty"))]
 mod tests;

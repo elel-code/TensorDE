@@ -537,8 +537,6 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
         _layer: smithay::wayland::shell::wlr_layer::Layer,
         namespace: String,
     ) {
-        use smithay::desktop::{LayerSurface as DesktopLayerSurface, layer_map_for_output};
-
         let output = output
             .as_ref()
             .and_then(|resource| {
@@ -553,34 +551,15 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
             surface.send_close();
             return;
         };
-        {
-            let mut map = layer_map_for_output(&output);
-            if let Err(error) = map.map_layer(&DesktopLayerSurface::new(surface, namespace)) {
-                warn!(%error, "failed to map layer surface");
-            } else {
-                map.arrange();
-            }
-        }
+        self.map_layer_surface(&output, surface, namespace);
         #[cfg(feature = "tty")]
         self.request_redraw_all();
     }
 
     fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
-        use smithay::desktop::layer_map_for_output;
-
         #[cfg(feature = "tty")]
         self.forget_layer_surface(surface.wl_surface());
-        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
-            let mut map = layer_map_for_output(&output);
-            let layer = map
-                .layers()
-                .find(|layer| layer.layer_surface() == &surface)
-                .cloned();
-            if let Some(layer) = layer {
-                map.unmap_layer(&layer);
-                map.arrange();
-            }
-        }
+        self.unmap_layer_surface(&surface);
         #[cfg(feature = "tty")]
         {
             let _ = self.reflow_default_workspace_layout();

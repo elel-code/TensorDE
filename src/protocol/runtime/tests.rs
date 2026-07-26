@@ -735,7 +735,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     client.join().unwrap();
 }
 
-fn install_test_output(runtime: &mut WaylandRuntime) {
+pub(super) fn install_test_output(runtime: &mut WaylandRuntime) {
     let mode = OutputMode {
         size: (1000, 800).into(),
         refresh: 60_000,

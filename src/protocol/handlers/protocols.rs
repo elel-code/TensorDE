@@ -259,14 +259,8 @@ impl PointerWarpHandler for RuntimeState {
             .map(|geo| geo.loc.to_f64());
         #[cfg(feature = "tty")]
         let origin = origin.or_else(|| {
-            use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
-            self.space.outputs().find_map(|output| {
-                let map = layer_map_for_output(output);
-                let layer = map.layer_for_surface(&surface, WindowSurfaceType::TOPLEVEL)?;
-                let layer_geo = map.layer_geometry(layer)?;
-                let output_geo = self.space.output_geometry(output)?;
-                Some((output_geo.loc + layer_geo.loc).to_f64())
-            })
+            self.layer_surface_origin(&surface)
+                .map(|point| point.to_f64())
         });
         let Some(origin) = origin else {
             return;

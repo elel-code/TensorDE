@@ -309,7 +309,7 @@ impl WaylandFocus for ProtocolWindow {
     }
 }
 
-fn surface_tree_bbox<P>(surface: &WlSurface, location: P) -> Rectangle<i32, Logical>
+pub(super) fn surface_tree_bbox<P>(surface: &WlSurface, location: P) -> Rectangle<i32, Logical>
 where
     P: Into<Point<i32, Logical>>,
 {
@@ -336,7 +336,7 @@ where
     bbox
 }
 
-fn surface_tree_under<P>(
+pub(super) fn surface_tree_under<P>(
     surface: &WlSurface,
     point: Point<f64, Logical>,
     location: P,

@@ -517,7 +517,7 @@ impl RuntimeState {
             return false;
         }
         // Window activation supersedes on-demand layer keyboard memory.
-        self.layer_shell_on_demand_focus = None;
+        self.clear_layer_on_demand_focus();
         self.publish_window_activation(Some(&window));
         // Match Niri and Hyprland's central focus-state early return: a seat
         // focus repair must not silently reorder Tensor's hit-test space

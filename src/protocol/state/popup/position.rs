@@ -4,10 +4,7 @@ use smithay::utils::{Logical, Rectangle};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "tty")]
-use smithay::{
-    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
-    wayland::shell::wlr_layer::Layer as WlrLayer,
-};
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use super::registry::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords};
 use crate::protocol::state::RuntimeState;
@@ -23,9 +20,7 @@ impl RuntimeState {
             return;
         }
         #[cfg(feature = "tty")]
-        if let Some((layer, output)) = self.layer_and_output_for_root(&root) {
-            self.unconstrain_layer_popup(popup, &layer, &output);
-        }
+        self.unconstrain_layer_popup(popup, &root);
     }
 
     fn unconstrain_window_popup(&self, popup: &PopupKind, root: &WlSurface) {
@@ -58,39 +53,20 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn unconstrain_layer_popup(
-        &self,
-        popup: &PopupKind,
-        layer: &LayerSurface,
-        output: &smithay::output::Output,
-    ) {
-        let Some(output_geo) = self.space.output_geometry(output) else {
+    fn unconstrain_layer_popup(&self, popup: &PopupKind, root: &WlSurface) {
+        let Some(context) = self.layer_popup_context(root) else {
             return;
         };
-        let map = layer_map_for_output(output);
-        let Some(layer_geo) = map.layer_geometry(layer) else {
+        let Some(output_geo) = self.space.output_geometry(&context.output) else {
             return;
         };
-        let mut target = match layer.layer() {
-            WlrLayer::Background | WlrLayer::Bottom => map.non_exclusive_zone(),
+        let mut target = match context.layer {
+            WlrLayer::Background | WlrLayer::Bottom => context.non_exclusive_zone,
             WlrLayer::Top | WlrLayer::Overlay => Rectangle::from_size(output_geo.size),
         };
-        target.loc -= layer_geo.loc;
+        target.loc -= context.geometry.loc;
         target.loc -= get_popup_toplevel_coords(popup);
         position_xdg_popup(popup, target);
-    }
-
-    #[cfg(feature = "tty")]
-    pub(super) fn layer_and_output_for_root(
-        &self,
-        root: &WlSurface,
-    ) -> Option<(LayerSurface, smithay::output::Output)> {
-        self.space.outputs().find_map(|output| {
-            let map = layer_map_for_output(output);
-            map.layer_for_surface(root, WindowSurfaceType::TOPLEVEL)
-                .cloned()
-                .map(|layer| (layer, output.clone()))
-        })
     }
 }
 

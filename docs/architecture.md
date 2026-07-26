@@ -228,10 +228,13 @@ a non-empty validated client-import format list. Protocol work follows wayland-p
 Smithay-style **tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
 higher tiers win for the same capability, and `zwlr_*` is community-only when no standard path
 exists (see `docs/protocol-surface.md`). Prefer Smithay Dispatch2 modules; Tensor-local ports stay
-value-only at the ECS/event boundary. Layer surfaces map through Smithay's per-output `LayerMap`. On commit, Tensor arranges exclusive
-zones, sends pending configures, and merges mapped layer content into the output frame as value-only
-scene nodes (outside the ECS view graph), including committed `ext-background-effect` blur flags.
-Workspace layout uses the non-exclusive zone so panels
+value-only at the ECS/event boundary. Layer surfaces map through compositor-thread Tensor state:
+one compact `Vec` per active output preserves creation/stacking order without Smithay output
+userdata, `Mutex`, `Arc`, or a hashed staging collection. On commit, Tensor arranges exclusive zones,
+sends pending configures, and merges mapped layer content into the output frame as value-only scene
+nodes (outside the ECS view graph), including committed `ext-background-effect` blur flags. Layer
+view IDs are computed once at creation rather than hashed per frame. Workspace layout uses the
+non-exclusive zone so panels
 reserve space. Pointer hit-testing prefers Overlay/Top layers, then windows, then Bottom/Background.
 Keyboard focus prefers exclusive Overlay/Top, then the last on-demand layer (click or new map), then
 exclusive Bottom/Background only when the workspace has no views. xdg popups unconstrain against the
