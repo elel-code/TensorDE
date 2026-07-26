@@ -36,6 +36,8 @@ pub(super) enum MainPointerButtonIntent {
     PropertiesOverlay,
     MouseNavigation(PathNavigationAction),
     ContextMenu,
+    /// Middle button: primary selection paste (when protocol available).
+    PrimaryPaste,
     Left,
     Ignore,
 }
@@ -62,6 +64,13 @@ pub(super) fn main_pointer_button_intent(
     if mouse_button == MouseButton::Right {
         return if state == ElementState::Pressed {
             MainPointerButtonIntent::ContextMenu
+        } else {
+            MainPointerButtonIntent::Ignore
+        };
+    }
+    if mouse_button == MouseButton::Middle {
+        return if state == ElementState::Pressed {
+            MainPointerButtonIntent::PrimaryPaste
         } else {
             MainPointerButtonIntent::Ignore
         };

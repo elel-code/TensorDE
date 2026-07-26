@@ -9,6 +9,7 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1;
 use wayland_protocols::wp::presentation_time::client::wp_presentation;
+use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
@@ -122,6 +123,14 @@ impl NativeShell {
         {
             state.presentation = Some(presentation);
         }
+        if let Ok(psm) = globals.bind::<
+            zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.primary_selection_manager = Some(psm);
+        }
         if let Ok(frac) = globals
             .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
                 &qh,
@@ -230,6 +239,13 @@ impl NativeShell {
         ) {
             state.data_device = Some(manager.get_data_device(seat, &qh, ()));
         }
+        // Primary selection device is seat-scoped (SCTK PrimarySelectionManagerState).
+        if let (Some(manager), Some(seat)) = (
+            state.primary_selection_manager.as_ref(),
+            state.seat.as_ref(),
+        ) {
+            state.primary_device = Some(manager.get_device(seat, &qh, ()));
+        }
         if let (Some(tim), Some(seat)) = (state.text_input_manager.as_ref(), state.seat.as_ref()) {
             state.text_input = Some(tim.get_text_input(seat, &qh, ()));
         }
@@ -328,11 +344,16 @@ impl NativeShell {
             pointer_constraints: self.state.pointer_constraints.is_some(),
             subcompositor: self.state.subcompositor.is_some(),
             presentation: self.state.presentation.is_some(),
+            primary_selection: self.state.primary_selection_manager.is_some(),
         }
     }
 
     pub fn has_presentation(&self) -> bool {
         self.state.presentation.is_some()
+    }
+
+    pub fn has_primary_selection(&self) -> bool {
+        self.state.primary_selection_manager.is_some()
     }
 
     /// Presentation clock id advertised by `wp_presentation.clock_id`, if any.

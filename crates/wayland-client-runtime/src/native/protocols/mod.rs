@@ -123,6 +123,12 @@ pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Stable,
         min_version: 1,
     },
+    // —— unstable (still widely deployed) ——
+    ProtocolSpec {
+        interface: "zwp_primary_selection_device_manager_v1",
+        class: ProtocolClass::Unstable,
+        min_version: 1,
+    },
     // —— staging ——
     ProtocolSpec {
         interface: "wp_fractional_scale_manager_v1",

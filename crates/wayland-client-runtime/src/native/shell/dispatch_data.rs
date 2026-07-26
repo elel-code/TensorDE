@@ -549,6 +549,25 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_primary_selection_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        if !shell.has_primary_selection() {
+            return;
+        }
+        assert!(shell.capabilities().primary_selection);
+        // Dual-write path: set_selection also arms primary when available.
+        // May fail without input serial on a fresh seat — that is OK.
+        let _ = shell.set_selection_text("primary-smoke");
+        let id = shell
+            .create_toplevel_gpu("ps", "dev.fika.Primary", 100, 100)
+            .expect("toplevel");
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_presentation_feedback_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

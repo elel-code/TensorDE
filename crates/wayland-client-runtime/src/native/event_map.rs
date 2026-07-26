@@ -730,13 +730,16 @@ pub fn map_native_event_full(
             })))
         }
         // ActivationToken is correlated in NativeRuntime::drain_events_into.
-        // Selection/clipboard mimes and surface-output enter/leave remain internal.
+        // Selection / primary selection mime lists remain internal until apps
+        // request a receive (same model as clipboard).
         NativeShellEvent::TouchFrame
         | NativeShellEvent::OutputMode { .. }
         | NativeShellEvent::SurfaceOutputEnter { .. }
         | NativeShellEvent::SurfaceOutputLeave { .. }
         | NativeShellEvent::Selection { .. }
         | NativeShellEvent::SelectionCancelled
+        | NativeShellEvent::PrimarySelection { .. }
+        | NativeShellEvent::PrimarySelectionCancelled
         | NativeShellEvent::ActivationToken { .. } => None,
     }
 }

@@ -12,13 +12,14 @@ impl WaylandClipboard {
     }
 
     pub fn backend(&self) -> &'static str {
-        "wayland-wl-data-device"
+        "wayland-wl-data-device+primary"
     }
 
     pub fn store_async(
         &self,
         content: TransferContent,
     ) -> Result<mpsc::Receiver<io::Result<()>>, String> {
+        // store_selection dual-writes primary selection when available.
         let result = self
             .runtime
             .borrow_mut()
@@ -50,6 +51,26 @@ impl WaylandClipboard {
         let (reply_tx, reply_rx) = mpsc::channel();
         thread::Builder::new()
             .name("fika-wayland-clipboard-read".to_string())
+            .spawn(move || {
+                let _ = reply_tx.send(pipe.read_text());
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(reply_rx)
+    }
+
+    /// Load primary selection (middle-click paste buffer).
+    pub fn load_primary_async(
+        &self,
+        preferred_mimes: &[&str],
+    ) -> Result<mpsc::Receiver<io::Result<String>>, String> {
+        let pipe = self
+            .runtime
+            .borrow_mut()
+            .receive_primary_selection(preferred_mimes)
+            .map_err(|error| error.to_string())?;
+        let (reply_tx, reply_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("fika-wayland-primary-read".to_string())
             .spawn(move || {
                 let _ = reply_tx.send(pipe.read_text());
             })

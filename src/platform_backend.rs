@@ -249,6 +249,13 @@ impl PlatformBackend {
         self.inner.receive_selection(preferred_mimes)
     }
 
+    fn receive_primary_selection(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<wayland_client_runtime::TransferReadPipe, RuntimeError> {
+        self.inner.receive_primary_selection(preferred_mimes)
+    }
+
     fn start_drag(
         &mut self,
         origin: SurfaceId,

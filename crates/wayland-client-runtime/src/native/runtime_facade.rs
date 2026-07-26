@@ -110,6 +110,7 @@ impl NativeRuntime {
                 // Client/None still use app chrome; no separate capability bit exists.
                 popup_reposition,
                 presentation: caps.presentation,
+                primary_selection: caps.primary_selection,
                 ..RuntimeCapabilities::default()
             },
         })
@@ -837,6 +838,44 @@ impl NativeRuntime {
                     RuntimeError::SelectionMimeNotFound
                 }
                 NativeError::Protocol(msg) if msg.contains("no selection") => {
+                    RuntimeError::SelectionUnavailable
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    /// Set primary selection only (middle-click paste buffer).
+    pub fn store_primary_selection(
+        &mut self,
+        content: TransferContent,
+    ) -> Result<(), RuntimeError> {
+        if !self.shell.has_primary_selection() {
+            return Err(RuntimeError::Unsupported(
+                "zwp_primary_selection_device_manager_v1",
+            ));
+        }
+        self.shell
+            .set_primary_selection_content(content)
+            .map_err(map_native_error)
+    }
+
+    /// Receive primary selection (middle-click paste).
+    pub fn receive_primary_selection(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<TransferReadPipe, RuntimeError> {
+        if !self.shell.has_primary_selection() {
+            return Err(RuntimeError::Unsupported(
+                "zwp_primary_selection_device_manager_v1",
+            ));
+        }
+        self.shell
+            .receive_primary_selection_preferred_pipe(preferred_mimes)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("mime not found") => {
+                    RuntimeError::SelectionMimeNotFound
+                }
+                NativeError::Protocol(msg) if msg.contains("no primary") => {
                     RuntimeError::SelectionUnavailable
                 }
                 other => map_native_error(other),

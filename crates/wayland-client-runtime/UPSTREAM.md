@@ -62,6 +62,15 @@ oversized region clipped by the compositor because a NULL region means
 "disable", while updates remain double-buffered until the next
 `wl_surface.commit`.
 
+## Primary selection
+
+- SCTK module: `primary_selection` in `smithay-client-toolkit` 0.21
+- Behavior retained: seat-scoped device, pending-offer then selection attach
+  (resist faulty compositors), async pipe receive, dual-write from regular
+  clipboard `set_selection` when the global exists so middle-click paste works.
+- Public API: `store_primary_selection` / `receive_primary_selection`; Fika
+  middle-click uses primary paste into the active pane.
+
 ## Core data-device and cursor behavior
 
 DnD source/offer negotiation follows the `wl_data_device` protocol and SCTK

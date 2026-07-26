@@ -166,6 +166,12 @@ pub enum NativeShellEvent {
     },
     /// Outgoing clipboard source was cancelled by the compositor.
     SelectionCancelled,
+    /// Primary selection (middle-click paste) offer updated.
+    PrimarySelection {
+        mimes: Vec<String>,
+    },
+    /// Outgoing primary selection source was cancelled.
+    PrimarySelectionCancelled,
     /// `xdg_popup.configure` (geometry relative to parent).
     PopupConfigure {
         surface: NativeSurfaceId,
@@ -356,6 +362,8 @@ pub struct NativeCapabilities {
     pub subcompositor: bool,
     /// `wp_presentation` bound (stable presentation-time).
     pub presentation: bool,
+    /// `zwp_primary_selection_device_manager_v1` (middle-click paste).
+    pub primary_selection: bool,
 }
 
 /// In-flight presentation feedback object metadata.
@@ -484,6 +492,26 @@ pub struct NativeShellState {
     pub(crate) touch: Option<wl_touch::WlTouch>,
     pub(crate) data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     pub(crate) data_device: Option<wl_data_device::WlDataDevice>,
+    /// Primary selection (X11-style middle-click paste), SCTK-compatible path.
+    pub(crate) primary_selection_manager: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    >,
+    pub(crate) primary_device: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+    >,
+    pub(crate) primary_offer: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
+    >,
+    pub(crate) primary_pending_offer: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
+    >,
+    pub(crate) primary_mimes: Vec<String>,
+    pub(crate) primary_source: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+    >,
+    pub(crate) primary_content: Option<crate::data_transfer::TransferContent>,
+    /// offer protocol id → mimes for primary offers (parallel to offer_mimes).
+    pub(crate) primary_offer_mimes: HashMap<u32, Vec<String>>,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
@@ -661,6 +689,14 @@ impl Default for NativeShellState {
             touch: None,
             data_device_manager: None,
             data_device: None,
+            primary_selection_manager: None,
+            primary_device: None,
+            primary_offer: None,
+            primary_pending_offer: None,
+            primary_mimes: Vec::new(),
+            primary_source: None,
+            primary_content: None,
+            primary_offer_mimes: HashMap::new(),
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,

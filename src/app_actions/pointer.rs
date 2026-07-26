@@ -114,6 +114,27 @@ impl FikaWgpuApp {
                         .open_context_menu_with_cache(point, size, &self.mime_applications);
                 ShellActionOutcome::redraw_if(changed).into()
             }
+            MainPointerButtonIntent::PrimaryPaste => {
+                // Middle-click: paste primary selection into the active pane
+                // (X11/Wayland desktop convention; SCTK primary_selection).
+                if let Some(clipboard) = self.clipboard.as_ref() {
+                    match clipboard.load_primary_text_async() {
+                        Ok(rx) => match rx.recv() {
+                            Ok(Ok(text)) if !text.trim().is_empty() => {
+                                let redraw = self.finish_paste_from_clipboard_text(
+                                    false, false, text,
+                                );
+                                return ShellActionOutcome::redraw_if(redraw).into();
+                            }
+                            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+                        },
+                        Err(error) => {
+                            fika_log!("[fika-wgpu] primary-paste: {error}");
+                        }
+                    }
+                }
+                ShellActionOutcome::None.into()
+            }
             MainPointerButtonIntent::Left => {
                 let route = main_left_pointer_button_route(
                     state,

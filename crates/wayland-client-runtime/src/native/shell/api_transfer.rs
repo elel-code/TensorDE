@@ -343,6 +343,9 @@ impl NativeShell {
     }
 
     /// Advertise multi-mime content on the clipboard.
+    ///
+    /// When primary selection is available, the same content is dual-written so
+    /// middle-click paste sees the latest copy (common desktop expectation).
     pub fn set_selection_content(
         &mut self,
         content: TransferContent,
@@ -371,9 +374,97 @@ impl NativeShell {
         }
         device.set_selection(Some(&source), serial);
         self.state.selection_source = Some(source);
-        self.state.selection_content = Some(content);
+        self.state.selection_content = Some(content.clone());
+        // Dual-write primary selection when the global exists (SCTK apps often
+        // keep both selections in sync for middle-click paste).
+        let _ = self.set_primary_selection_content_inner(content, serial);
         self.connection.flush()?;
         Ok(())
+    }
+
+    /// Set primary selection only (does not touch the regular clipboard).
+    pub fn set_primary_selection_content(
+        &mut self,
+        content: TransferContent,
+    ) -> Result<(), NativeError> {
+        let serial = self
+            .state
+            .last_input_serial
+            .ok_or_else(|| NativeError::Protocol("no input serial for primary selection".into()))?;
+        self.set_primary_selection_content_inner(content, serial)?;
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    fn set_primary_selection_content_inner(
+        &mut self,
+        content: TransferContent,
+        serial: u32,
+    ) -> Result<(), NativeError> {
+        let Some(manager) = self.state.primary_selection_manager.as_ref() else {
+            return Ok(());
+        };
+        let Some(device) = self.state.primary_device.as_ref() else {
+            return Ok(());
+        };
+        let qh = self.queue.handle();
+        if let Some(old) = self.state.primary_source.take() {
+            old.destroy();
+        }
+        let source = manager.create_source(&qh, ());
+        for mime in content.mime_types() {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.state.primary_source = Some(source);
+        self.state.primary_content = Some(content);
+        Ok(())
+    }
+
+    /// MIME types on the current primary selection offer.
+    pub fn primary_selection_mimes(&self) -> &[String] {
+        &self.state.primary_mimes
+    }
+
+    /// Begin a primary-selection receive (read off the display thread).
+    pub fn receive_primary_selection_pipe(
+        &mut self,
+        mime: &str,
+    ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
+        use std::os::fd::AsFd;
+        use std::os::unix::net::UnixStream;
+
+        let offer = self
+            .state
+            .primary_offer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no primary selection offer".into()))?;
+        if !self.state.primary_mimes.iter().any(|m| m == mime) {
+            return Err(NativeError::Protocol(format!(
+                "primary selection has no mime {mime}"
+            )));
+        }
+        let (reader, writer) = UnixStream::pair().map_err(NativeError::from)?;
+        writer.set_nonblocking(false).ok();
+        reader.set_nonblocking(false).ok();
+        let mime = mime.to_string();
+        offer.receive(mime.clone(), writer.as_fd());
+        drop(writer);
+        self.connection.flush()?;
+        let _ = self.dispatch_pending();
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
+    }
+
+    /// Open a pipe for the first preferred mime from primary selection.
+    pub fn receive_primary_selection_preferred_pipe(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
+        let mime = preferred_mimes
+            .iter()
+            .find(|m| self.state.primary_mimes.iter().any(|offered| offered == *m))
+            .ok_or_else(|| NativeError::Protocol("primary selection mime not found".into()))?;
+        self.receive_primary_selection_pipe(mime)
     }
 
     /// Advertise UTF-8 text on the clipboard (requires a recent input serial).

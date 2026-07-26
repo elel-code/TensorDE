@@ -69,6 +69,21 @@ impl ShellClipboard {
             ])
             .map_err(|error| error.to_string())
     }
+
+    /// Primary selection (middle-click paste) text load.
+    pub(crate) fn load_primary_text_async(
+        &self,
+    ) -> Result<mpsc::Receiver<IoResult<String>>, String> {
+        self.inner
+            .load_primary_async(&[
+                MIME_TEXT_PLAIN_UTF8,
+                MIME_UTF8_STRING,
+                MIME_TEXT_PLAIN,
+                MIME_STRING,
+                MIME_TEXT,
+            ])
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn file_clipboard_content(

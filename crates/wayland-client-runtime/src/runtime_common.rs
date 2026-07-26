@@ -40,6 +40,8 @@ pub struct RuntimeCapabilities {
     pub cursor_shape: bool,
     /// `wp_presentation` (stable presentation-time feedback).
     pub presentation: bool,
+    /// `zwp_primary_selection_device_manager_v1` (middle-click paste).
+    pub primary_selection: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
