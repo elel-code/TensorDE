@@ -624,11 +624,25 @@ mod tests {
         );
         // Frame + presentation arm on layers (Gilder present pacing).
         shell.request_frame(id).expect("layer frame");
+        assert!(shell.is_frame_pending(id));
+        // Coalesce: second arm is a no-op while pending.
+        shell.request_frame(id).expect("layer frame coalesced");
+        assert!(shell.is_frame_pending(id));
         shell
             .request_presentation_feedback(id)
             .expect("layer presentation");
+        assert_eq!(
+            shell.logical_size(id),
+            Some(crate::LogicalSize::new(320, 200))
+        );
+        assert!(shell.buffer_size(id).is_some());
+        assert_eq!(
+            shell.surface_kind(id),
+            Some(crate::surface::SurfaceKind::Layer)
+        );
         let _ = shell.destroy_layer_surface(id);
         assert!(shell.scale_factor(id).is_none());
+        assert!(!shell.is_frame_pending(id));
     }
 
     #[test]

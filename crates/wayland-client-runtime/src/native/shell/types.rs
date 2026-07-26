@@ -819,6 +819,11 @@ pub struct NativeShellState {
     pub(crate) seat_capabilities: wl_seat::Capability,
     /// wl_callback object id → surface.
     pub(crate) frame_callbacks: HashMap<u32, NativeSurfaceId>,
+    /// Surfaces that already have an outstanding `wl_surface.frame` callback.
+    ///
+    /// Used to coalesce duplicate [`NativeShell::request_frame`] calls before
+    /// the previous `Done` (common when the app arms every redraw).
+    pub(crate) frame_pending: HashSet<NativeSurfaceId>,
     /// `wp_presentation` global (presentation-time).
     pub(crate) presentation: Option<
         wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
@@ -953,6 +958,7 @@ impl Default for NativeShellState {
             events: Vec::with_capacity(64),
             seat_capabilities: wl_seat::Capability::empty(),
             frame_callbacks: HashMap::new(),
+            frame_pending: HashSet::new(),
             presentation: None,
             presentation_clock_id: None,
             presentation_feedbacks: HashMap::new(),
@@ -986,6 +992,7 @@ impl NativeShellState {
     /// records so destroy does not leave stale object-id maps.
     pub(crate) fn clear_surface_protocol_state(&mut self, id: NativeSurfaceId) {
         self.frame_callbacks.retain(|_, surface| *surface != id);
+        self.frame_pending.remove(&id);
         self.presentation_feedbacks
             .retain(|_, rec| rec.surface != id);
     }
@@ -1000,6 +1007,38 @@ impl NativeShellState {
             .map(|r| &r.wl)
             .or_else(|| self.popups.get(&id).map(|r| &r.wl))
             .or_else(|| self.layers.get(&id).map(|r| &r.wl))
+    }
+
+    /// Logical size tracked for the surface (configure / client set).
+    pub(crate) fn logical_size(
+        &self,
+        id: NativeSurfaceId,
+    ) -> Option<(u32, u32)> {
+        if let Some(t) = self.toplevels.get(&id) {
+            return Some((t.logical_w, t.logical_h));
+        }
+        if let Some(p) = self.popups.get(&id) {
+            return Some((p.logical_w, p.logical_h));
+        }
+        if let Some(l) = self.layers.get(&id) {
+            return Some((l.logical_w, l.logical_h));
+        }
+        None
+    }
+
+    /// Fractional / integer scale factor tracked for the surface.
+    pub(crate) fn scale_factor(&self, id: NativeSurfaceId) -> Option<f64> {
+        self.toplevels
+            .get(&id)
+            .map(|t| t.scale_factor)
+            .or_else(|| self.layers.get(&id).map(|l| l.scale_factor))
+            // Popups inherit parent scale; report 1.0 when mapped so callers
+            // can treat any live surface uniformly.
+            .or_else(|| self.popups.get(&id).map(|_| 1.0))
+    }
+
+    pub(crate) fn is_frame_pending(&self, id: NativeSurfaceId) -> bool {
+        self.frame_pending.contains(&id)
     }
 }
 

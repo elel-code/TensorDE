@@ -1260,7 +1260,13 @@ impl NativeShell {
     /// Request a `wl_surface.frame` callback; emits [`NativeShellEvent::Frame`].
     ///
     /// Works for toplevel, popup, and layer surfaces (needed for GPU present pacing).
+    ///
+    /// Coalesces: if a frame callback is already outstanding for `id`, this is
+    /// a no-op success (avoids stacking callbacks when the app arms every redraw).
     pub fn request_frame(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        if self.state.frame_pending.contains(&id) {
+            return Ok(());
+        }
         let qh = self.queue.handle();
         let wl = self
             .state
@@ -1270,8 +1276,22 @@ impl NativeShell {
         self.state
             .frame_callbacks
             .insert(callback.id().protocol_id(), id);
+        self.state.frame_pending.insert(id);
         self.connection.mark_dirty();
         Ok(())
+    }
+
+    /// Whether a `wl_surface.frame` callback is outstanding for `id`.
+    #[inline]
+    pub fn is_frame_pending(&self, id: NativeSurfaceId) -> bool {
+        self.state.is_frame_pending(id)
+    }
+
+    /// Logical size last known for the surface (configure / client updates).
+    pub fn logical_size(&self, id: NativeSurfaceId) -> Option<crate::geometry::LogicalSize> {
+        self.state
+            .logical_size(id)
+            .map(|(w, h)| crate::geometry::LogicalSize::new(w, h))
     }
 
     /// Request `wp_presentation.feedback` for the next commit on `id`.
@@ -1347,28 +1367,34 @@ impl NativeShell {
             let _ = self.apply_pending_blur_all();
         }
         // Apply frame actions collected during pointer dispatch.
-        let actions = std::mem::take(&mut self.state.pending_frame_actions);
-        for (id, action) in actions {
-            let _ = self.apply_frame_action(id, action);
+        if !self.state.pending_frame_actions.is_empty() {
+            let actions = std::mem::take(&mut self.state.pending_frame_actions);
+            for (id, action) in actions {
+                let _ = self.apply_frame_action(id, action);
+            }
         }
         if let Some(cursor) = self.state.pending_csd_cursor.take() {
             self.set_csd_cursor(cursor);
         }
         // Sync CSD after decoration mode / configure size changes.
-        let refresh: Vec<_> = self.state.pending_csd_refresh.drain().collect();
-        for id in refresh {
-            let _ = self.sync_csd_for(id);
+        if !self.state.pending_csd_refresh.is_empty() {
+            let refresh: Vec<_> = self.state.pending_csd_refresh.drain().collect();
+            for id in refresh {
+                let _ = self.sync_csd_for(id);
+            }
         }
-        // Redraw dirty frames (hover, title, state).
-        let dirty: Vec<_> = self
-            .state
-            .csd_frames
-            .iter()
-            .filter(|(_, f)| f.dirty())
-            .map(|(&id, _)| id)
-            .collect();
-        for id in dirty {
-            let _ = self.redraw_csd(id);
+        // Redraw dirty frames (hover, title, state). Skip scan when no CSD.
+        if !self.state.csd_frames.is_empty() {
+            let dirty: Vec<_> = self
+                .state
+                .csd_frames
+                .iter()
+                .filter(|(_, f)| f.dirty())
+                .map(|(&id, _)| id)
+                .collect();
+            for id in dirty {
+                let _ = self.redraw_csd(id);
+            }
         }
         Ok(())
     }
@@ -1491,11 +1517,38 @@ impl NativeShell {
     }
 
     pub fn scale_factor(&self, id: NativeSurfaceId) -> Option<f64> {
-        self.state
-            .toplevels
-            .get(&id)
-            .map(|t| t.scale_factor)
-            .or_else(|| self.state.layers.get(&id).map(|l| l.scale_factor))
+        self.state.scale_factor(id)
+    }
+
+    /// Suggested physical buffer size from logical size × scale (ceil).
+    ///
+    /// Useful for Vulkan / wgpu swapchain recreation without re-deriving
+    /// fractional scale math in every client.
+    pub fn buffer_size(&self, id: NativeSurfaceId) -> Option<(u32, u32)> {
+        let (w, h) = self.state.logical_size(id)?;
+        let scale = self.state.scale_factor(id).unwrap_or(1.0).max(0.01);
+        let bw = ((w as f64) * scale).ceil().max(1.0) as u32;
+        let bh = ((h as f64) * scale).ceil().max(1.0) as u32;
+        Some((bw, bh))
+    }
+
+    /// Role of a live surface, if known.
+    pub fn surface_kind(&self, id: NativeSurfaceId) -> Option<crate::surface::SurfaceKind> {
+        use crate::surface::SurfaceKind;
+        if let Some(record) = self.state.toplevels.get(&id) {
+            return Some(if record.parent.is_some() || record.dialog.is_some() {
+                SurfaceKind::Dialog
+            } else {
+                SurfaceKind::Toplevel
+            });
+        }
+        if self.state.popups.contains_key(&id) {
+            return Some(SurfaceKind::Popup);
+        }
+        if self.state.layers.contains_key(&id) {
+            return Some(SurfaceKind::Layer);
+        }
+        None
     }
 
     /// Renderer lease for wgpu / Vulkan (`VK_KHR_wayland_surface`).

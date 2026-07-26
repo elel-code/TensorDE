@@ -54,6 +54,8 @@ pub struct NativeRuntime {
     /// Pending activation export requests: native surface → public request id.
     activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
     next_activation_request_id: u64,
+    /// Reused scratch for shell → public event mapping (avoids per-dispatch alloc).
+    drain_scratch: Vec<crate::NativeShellEvent>,
     wake: std::sync::Arc<EventFdWake>,
     /// Compio readiness watch on a clone of the wake eventfd (long-lived).
     /// Display readiness reuses [`NativeShell::display_ready`].
@@ -85,6 +87,7 @@ impl NativeRuntime {
             native_ids: HashMap::new(),
             activation_pending: HashMap::new(),
             next_activation_request_id: 1,
+            drain_scratch: Vec::with_capacity(64),
             wake,
             wake_ready,
             wake_handle,
@@ -128,17 +131,18 @@ impl NativeRuntime {
     }
 
     pub fn drain_events_into(&mut self, target: &mut Vec<Event>) {
-        // Map shell events straight into `target` — no intermediate Vec / buffer.
+        // Map shell events into `target`. Scratch reuses capacity across pumps
+        // so a quiet frame does not allocate.
         let seat = self.shell.seat().cloned();
         if let Some(serial) = self.shell.last_input_serial() {
             self.map_state.last_serial = serial;
         }
-        // Collect first so we can still call `output_info` while mapping
-        // (drain iterator would hold a mutable borrow on the shell).
-        let mut native_events = Vec::new();
-        self.shell.drain_events_into(&mut native_events);
+        // Collect into a local buffer first so mapping can borrow `self.shell`
+        // (and other fields) without fighting a field-drain borrow.
+        self.shell.drain_events_into(&mut self.drain_scratch);
+        let mut native_events = std::mem::take(&mut self.drain_scratch);
         target.reserve(native_events.len());
-        for event in native_events {
+        for event in native_events.drain(..) {
             if let crate::NativeShellEvent::ActivationToken { surface, token } = event {
                 if let Some(request) = self.activation_pending.remove(&surface) {
                     let public = self.surfaces.intern(surface);
@@ -177,6 +181,8 @@ impl NativeRuntime {
                 target.push(mapped);
             }
         }
+        // Return capacity to the field for the next pump.
+        self.drain_scratch = native_events;
     }
 
     /// Drive Wayland I/O with Compio completion waits.
@@ -554,6 +560,13 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
+    /// Whether a `wl_surface.frame` callback is still outstanding.
+    pub fn is_frame_pending(&self, surface: SurfaceId) -> bool {
+        self.native(surface)
+            .map(|n| self.shell.is_frame_pending(n))
+            .unwrap_or(false)
+    }
+
     /// Arm `wp_presentation.feedback` for the next commit (no-op if unsupported).
     pub fn request_presentation_feedback(
         &mut self,
@@ -568,6 +581,30 @@ impl NativeRuntime {
     /// Presentation clock id from `wp_presentation.clock_id`, if advertised.
     pub fn presentation_clock_id(&self) -> Option<u32> {
         self.shell.presentation_clock_id()
+    }
+
+    /// Logical size last known for the surface.
+    pub fn logical_size(&self, surface: SurfaceId) -> Option<LogicalSize> {
+        let native = self.native(surface).ok()?;
+        self.shell.logical_size(native)
+    }
+
+    /// Fractional / integer scale factor for the surface.
+    pub fn scale_factor(&self, surface: SurfaceId) -> Option<f64> {
+        let native = self.native(surface).ok()?;
+        self.shell.scale_factor(native)
+    }
+
+    /// Physical buffer size suggestion (`ceil(logical × scale)`).
+    pub fn buffer_size(&self, surface: SurfaceId) -> Option<(u32, u32)> {
+        let native = self.native(surface).ok()?;
+        self.shell.buffer_size(native)
+    }
+
+    /// Surface role (toplevel / dialog / popup / layer).
+    pub fn surface_kind(&self, surface: SurfaceId) -> Option<crate::surface::SurfaceKind> {
+        let native = self.native(surface).ok()?;
+        self.shell.surface_kind(native)
     }
 
     /// Double-buffered opaque region (`wl_surface.set_opaque_region`).
@@ -1222,6 +1259,19 @@ mod tests {
             .set_title(surface, "native-runtime-retitled".into())
             .expect("set title");
         runtime.request_frame(surface).expect("frame");
+        assert!(runtime.is_frame_pending(surface));
+        // Coalesce while pending.
+        runtime.request_frame(surface).expect("frame again");
+        assert!(runtime.is_frame_pending(surface));
+        assert_eq!(
+            runtime.logical_size(surface),
+            Some(LogicalSize::new(320, 240))
+        );
+        assert!(runtime.buffer_size(surface).is_some());
+        assert_eq!(
+            runtime.surface_kind(surface),
+            Some(crate::surface::SurfaceKind::Toplevel)
+        );
         runtime.commit(surface).expect("commit");
         // Non-blocking poll should not hang.
         runtime

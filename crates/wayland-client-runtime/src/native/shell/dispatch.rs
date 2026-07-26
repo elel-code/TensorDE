@@ -820,6 +820,7 @@ impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
                 .frame_callbacks
                 .remove(&callback.id().protocol_id());
             if let Some(surface) = id {
+                state.frame_pending.remove(&surface);
                 state.push(NativeShellEvent::Frame {
                     surface,
                     time: callback_data,
