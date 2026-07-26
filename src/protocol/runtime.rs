@@ -222,9 +222,8 @@ impl WaylandRuntime {
             if self.state.backend.is_some() {
                 return Ok(());
             }
-            let backend =
-                crate::backend::TtyBackend::new(self.event_loop.handle(), config, completion_wake)
-                    .map_err(|error| ProtocolError::Backend(error.to_string()))?;
+            let backend = crate::backend::TtyBackend::new(config, completion_wake)
+                .map_err(|error| ProtocolError::Backend(error.to_string()))?;
             self.state.install_backend(backend);
             let events = self
                 .state

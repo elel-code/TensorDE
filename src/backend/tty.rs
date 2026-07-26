@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use calloop::LoopHandle;
 use rustix::fs::{OFlags, makedev};
 use smithay::{
     backend::{
@@ -25,9 +24,8 @@ use super::{
     },
     output::{ConnectorSnapshot, OutputPlan, OutputPolicy, diff_output_plans},
 };
-use crate::{
-    protocol::RuntimeState,
-    render::{GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats},
+use crate::render::{
+    GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats,
 };
 use tensor_host::{ConnectorState, DrmFormat};
 use tensor_runtime::{
@@ -57,7 +55,6 @@ const MAX_PENDING_LIBINPUT_COMPLETIONS: usize = 1;
 const MAX_PENDING_LIBINPUT_FAILURES: usize = 1;
 
 pub(crate) struct TtyBackend {
-    loop_handle: LoopHandle<'static, RuntimeState>,
     session: SeatSession,
     session_completions: WorkerRx<OpaqueFdCompletion>,
     session_failures: WorkerRx<String>,
@@ -97,7 +94,6 @@ struct OpenDevice {
 
 impl TtyBackend {
     pub(crate) fn new(
-        loop_handle: LoopHandle<'static, RuntimeState>,
         config: &BackendConfig,
         completion_wake: Arc<dyn WakeSink>,
     ) -> Result<Self, BackendError> {
@@ -166,7 +162,6 @@ impl TtyBackend {
         .map_err(|error| BackendError::LibinputCompletion(error.to_string()))?;
 
         let mut backend = Self {
-            loop_handle: loop_handle.clone(),
             session,
             session_completions,
             session_failures,
@@ -360,8 +355,6 @@ impl TtyBackend {
                     }
                 }
                 self.reset_outputs_after_session_resume();
-                self.loop_handle
-                    .insert_idle(|state| state.repaint_after_session_resume());
             }
         }
     }

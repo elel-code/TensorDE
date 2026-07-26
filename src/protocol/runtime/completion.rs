@@ -99,7 +99,7 @@ impl TurnCompletions {
 impl WaylandRuntime {
     /// Run the product completion loop on the compositor thread.
     ///
-    /// The legacy source is only the transitional calloop/XWM aggregate. It is
+    /// The legacy source is only the transitional Smithay XWM aggregate. It is
     /// awaited as one submitted Compio operation and dispatched nonblocking
     /// after its CQE; worker wakes are completed eventfd reads.
     pub fn run_with_completions<C>(
@@ -212,6 +212,8 @@ impl WaylandRuntime {
                             })?;
                     }
                 }
+                #[cfg(feature = "tty")]
+                self.state.finish_completion_turn();
                 self.state.on_loop_idle();
             }
 

@@ -622,6 +622,7 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     pub(crate) fn dispatch_session_event(&mut self, event: tensor_host::SessionEvent) {
+        let resumed = matches!(event, tensor_host::SessionEvent::Activated);
         if matches!(event, tensor_host::SessionEvent::Paused) {
             let discarded = self.discard_all_presentations();
             if discarded > 0 {
@@ -648,13 +649,18 @@ impl RuntimeState {
         if let Err(error) = self.apply_backend_output_events(events) {
             warn!(%error, "failed to apply session output event");
         }
+        if resumed {
+            self.event_loop.defer_session_resume_repaint();
+        }
     }
 
-    /// Repaint only after the session notifier and any already-ready DRM
-    /// events have run. The backend schedules this as a calloop idle callback
-    /// so a stale page-flip cannot be mistaken for the resumed frame.
-    pub(crate) fn repaint_after_session_resume(&mut self) {
-        self.force_redraw_all();
+    /// End the source-completion phase after every already-published DRM CQE
+    /// has been consumed. A stale page flip can therefore never be mistaken
+    /// for the first frame submitted after session activation.
+    pub(crate) fn finish_completion_turn(&mut self) {
+        if self.event_loop.take_session_resume_repaint() {
+            self.force_redraw_all();
+        }
     }
 
     pub(crate) fn handle_gpu_fence_completion(

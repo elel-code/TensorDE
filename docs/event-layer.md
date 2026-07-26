@@ -101,8 +101,11 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    Libseat, udev, and libinput completions are consumed incrementally: one
    decoded event is applied before the source advances, with no per-completion
    staging vector or udev path clone.
+   Session-resume repaint is an explicit completion-turn tail phase after DRM
+   CQEs, so the tty backend no longer owns a calloop handle or idle callback.
    One submitted wait on calloop's aggregate fd remains temporarily for
-   Smithay's XWM X11 events and idle callbacks. Next: remove that final adapter.
+   Smithay's internal XWM X11-event channel and focus-release ping. Next:
+   expose those two operations through the XWM adapter and remove the aggregate.
 6. Replace Smithay backends with native input/DRM open path; delete Smithay
    (see `docs/smithay-exit.md`).
 

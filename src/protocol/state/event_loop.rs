@@ -1,6 +1,6 @@
 //! Tensor event-layer ownership on [`RuntimeState`].
 //!
-//! Smithay/calloop still waits on fds; this module owns the **semantic** queue:
+//! The completion loop waits on fds; this module owns the **semantic** queue:
 //! value events, coalescing, phase order, and a single end-of-turn redraw
 //! latch. Heavy policy (seat, KMS submit) remains in existing handlers; they
 //! post intents here so the reactor can later move without rewriting policy.
@@ -44,6 +44,7 @@ pub(crate) struct EventLoopState {
     /// Coalesced redraw requested by drained events this turn.
     redraw_workspace: bool,
     redraw_all: bool,
+    session_resume_repaint: bool,
 }
 
 impl EventLoopState {
@@ -56,6 +57,7 @@ impl EventLoopState {
             present: PresentQueue::new(),
             redraw_workspace: false,
             redraw_all: false,
+            session_resume_repaint: false,
         }
     }
 
@@ -78,6 +80,14 @@ impl EventLoopState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn queue_stats(&self) -> tensor_event::QueueStats {
         self.queue.stats()
+    }
+
+    pub(crate) fn defer_session_resume_repaint(&mut self) {
+        self.session_resume_repaint = true;
+    }
+
+    pub(crate) fn take_session_resume_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.session_resume_repaint)
     }
 }
 
@@ -193,8 +203,7 @@ impl RuntimeState {
 
     /// One compositor turn over the Tensor event layer.
     ///
-    /// Called after I/O progress (calloop readiness idle today; target: after
-    /// **Compio completions** on the io_uring driver). Order matches
+    /// Called after **Compio completions** on the io_uring driver. Order matches
     /// [`tensor_runtime::run_turn`] (inject → drain → idle) with **zero
     /// allocation**. Seat/KMS side effects still run in adapters.
     pub(crate) fn dispatch_event_turn(&mut self) {
@@ -244,7 +253,7 @@ impl RuntimeState {
         }
     }
 
-    /// calloop idle: event turn then flush clients (Niri-style between-wait work).
+    /// Completion-turn tail: event dispatch, then flush clients.
     pub(crate) fn on_loop_idle(&mut self) {
         self.dispatch_event_turn();
         self.flush_wayland_clients();
@@ -348,5 +357,14 @@ mod tests {
         tx.try_send(Event::Timer(tensor_event::TimerId(7))).unwrap();
         state.dispatch_event_turn();
         assert_eq!(state.event_loop.queue_stats().drained, 1);
+    }
+
+    #[test]
+    fn session_resume_repaint_is_consumed_once_at_turn_end() {
+        let mut event_loop = EventLoopState::new();
+        event_loop.defer_session_resume_repaint();
+
+        assert!(event_loop.take_session_resume_repaint());
+        assert!(!event_loop.take_session_resume_repaint());
     }
 }
