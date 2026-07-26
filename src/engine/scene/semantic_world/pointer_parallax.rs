@@ -67,7 +67,11 @@ impl RetainedPointerParallaxSystem {
                     * (0.5 * (1.0 - self.camera.mouse_influence)
                         + normalized[1] * self.camera.mouse_influence),
         ];
-        let response = ((1.0 - self.camera.delay / 3.0) * 10.0 * frame_delta_seconds).min(1.0);
+        let response = if self.camera.delay <= 0.0 {
+            1.0
+        } else {
+            ((1.0 - self.camera.delay / 3.0) * 10.0 * frame_delta_seconds).min(1.0)
+        };
         for (current, target) in self.camera_position.iter_mut().zip(target) {
             *current += (target - *current) * response;
         }

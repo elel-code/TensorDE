@@ -728,3 +728,43 @@ fn pointer_parallax_uses_frame_delta_and_propagates_topmost_root_depth() {
     assert_close(root.render_world_matrix[12], 12.25);
     assert_close(root.render_world_matrix[13], 23.7);
 }
+
+#[test]
+fn pointer_parallax_zero_delay_reaches_target_on_zero_delta_frame() {
+    let mut document = semantic_document();
+    document.project.logical_width = 100;
+    document.project.logical_height = 100;
+    document.project.camera_eye = SceneVec3::default();
+    document.camera_parallax = SceneCameraParallaxRecord {
+        enabled: true,
+        amount: 0.5,
+        delay: 0.0,
+        mouse_influence: 1.0,
+    };
+    document.object_parallax_depths = vec![SceneObjectParallaxDepthRecord {
+        object: SceneObjectHandle(0),
+        depth: [-0.1, -0.2],
+    }];
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("resolver");
+    let events = crate::engine::scene::SceneFrameEvents {
+        pointer: crate::engine::scene::ScenePointerState {
+            source: crate::engine::scene::ScenePointerSource::Replay,
+            position: [100.0, 0.0],
+            surface_size: [100, 100],
+            inside: true,
+            ..crate::engine::scene::ScenePointerState::default()
+        },
+        ..crate::engine::scene::SceneFrameEvents::default()
+    };
+
+    let frame = resolver
+        .resolve_frame_with_events_at(&world, 0.0, 0.0, &events)
+        .expect("zero-delay first pointer frame");
+    let root = frame.object(SceneObjectHandle(0)).expect("root image");
+    assert_close(root.world_matrix[12], 10.0);
+    assert_close(root.world_matrix[13], 20.0);
+    assert_close(root.render_world_matrix[12], 14.5);
+    assert_close(root.render_world_matrix[13], 28.0);
+}
