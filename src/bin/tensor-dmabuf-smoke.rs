@@ -12,18 +12,28 @@ mod feedback;
 mod state;
 
 use std::{
+    io,
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use buffer_pool::{BufferPool, find_render_node};
-use calloop::EventLoop;
-use calloop_wayland_source::WaylandSource;
 use clap::Parser;
+use compio::runtime::{Runtime, fd::PollFd};
+use futures_util::{future::Either, pin_mut};
+use rustix::time::{
+    Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, timerfd_create,
+    timerfd_settime,
+};
 use state::SmokeState;
 use thiserror::Error;
-use wayland_client::{Connection, globals::registry_queue_init, protocol::wl_compositor};
+use wayland_client::{
+    Connection, EventQueue,
+    backend::{ReadEventsGuard, WaylandError},
+    globals::registry_queue_init,
+    protocol::wl_compositor,
+};
 use wayland_protocols::{
     wp::{
         linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1, presentation_time::client::wp_presentation,
@@ -132,26 +142,119 @@ fn run(args: Args) -> Result<(), SmokeError> {
     state.request_buffers(&dmabuf, &queue_handle, &pool)?;
     state.commit_initial_surface();
 
-    let deadline = Instant::now() + Duration::from_secs(args.timeout);
-    let mut event_loop = EventLoop::<SmokeState>::try_new()
-        .map_err(|error| SmokeError::EventLoop(error.to_string()))?;
-    WaylandSource::new(connection, queue)
-        .insert(event_loop.handle())
-        .map_err(|error| SmokeError::EventLoop(error.to_string()))?;
+    let timeout = timeout_fd(Duration::from_secs(args.timeout))?;
+    let runtime = Runtime::new().map_err(|error| SmokeError::Completion(error.to_string()))?;
+    let healthy = runtime.block_on(async {
+        let timeout =
+            PollFd::new(timeout).map_err(|error| SmokeError::Completion(error.to_string()))?;
+        let wayland = drive_wayland(connection, &mut queue, &mut state);
+        let deadline = timeout.read_ready();
+        pin_mut!(wayland, deadline);
+        match futures_util::future::select(wayland, deadline).await {
+            Either::Left((result, _)) => result.map(|()| true),
+            Either::Right((result, _)) => {
+                result.map_err(|error| SmokeError::Completion(error.to_string()))?;
+                Ok(false)
+            }
+        }
+    })?;
+    if !healthy {
+        return Err(SmokeError::Timeout(state.progress()));
+    }
+
+    println!("tensor-dmabuf-smoke: PASS {}", state.success_report());
+    Ok(())
+}
+
+fn timeout_fd(duration: Duration) -> Result<std::os::fd::OwnedFd, SmokeError> {
+    let timeout = timerfd_create(
+        TimerfdClockId::Monotonic,
+        TimerfdFlags::CLOEXEC | TimerfdFlags::NONBLOCK,
+    )
+    .map_err(|error| SmokeError::Completion(error.to_string()))?;
+    let value =
+        Timespec::try_from(duration).map_err(|error| SmokeError::Completion(error.to_string()))?;
+    timerfd_settime(
+        &timeout,
+        TimerfdTimerFlags::empty(),
+        &Itimerspec {
+            it_interval: Timespec::default(),
+            it_value: value,
+        },
+    )
+    .map_err(|error| SmokeError::Completion(error.to_string()))?;
+    Ok(timeout)
+}
+
+async fn drive_wayland(
+    connection: Connection,
+    queue: &mut EventQueue<SmokeState>,
+    state: &mut SmokeState,
+) -> Result<(), SmokeError> {
+    let socket =
+        PollFd::new(connection).map_err(|error| SmokeError::Completion(error.to_string()))?;
 
     loop {
+        while queue
+            .dispatch_pending(state)
+            .map_err(|error| SmokeError::Wayland(error.to_string()))?
+            != 0
+        {}
         state.check_failure()?;
         if state.is_healthy() {
-            println!("tensor-dmabuf-smoke: PASS {}", state.success_report());
             return Ok(());
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(SmokeError::Timeout(state.progress()));
+
+        let flush_blocked = flush_wayland(queue)?;
+        let Some(read_guard) = queue.prepare_read() else {
+            continue;
+        };
+        wait_for_socket_read(&socket, queue, read_guard, flush_blocked).await?;
+    }
+}
+
+async fn wait_for_socket_read(
+    socket: &PollFd<Connection>,
+    queue: &EventQueue<SmokeState>,
+    read_guard: ReadEventsGuard,
+    mut flush_blocked: bool,
+) -> Result<(), SmokeError> {
+    while flush_blocked {
+        let read = socket.read_ready();
+        let write = socket.write_ready();
+        pin_mut!(read, write);
+        match futures_util::future::select(read, write).await {
+            Either::Left((result, _)) => {
+                result.map_err(|error| SmokeError::Completion(error.to_string()))?;
+                return read_wayland(read_guard);
+            }
+            Either::Right((result, _)) => {
+                result.map_err(|error| SmokeError::Completion(error.to_string()))?;
+                flush_blocked = flush_wayland(queue)?;
+            }
         }
-        event_loop
-            .dispatch(Some(remaining.min(Duration::from_millis(100))), &mut state)
-            .map_err(|error| SmokeError::EventLoop(error.to_string()))?;
+    }
+
+    socket
+        .read_ready()
+        .await
+        .map_err(|error| SmokeError::Completion(error.to_string()))?;
+    read_wayland(read_guard)
+}
+
+fn flush_wayland(queue: &EventQueue<SmokeState>) -> Result<bool, SmokeError> {
+    match queue.flush() {
+        Ok(()) => Ok(false),
+        Err(WaylandError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+        Err(error) => Err(SmokeError::Wayland(error.to_string())),
+    }
+}
+
+fn read_wayland(read_guard: ReadEventsGuard) -> Result<(), SmokeError> {
+    match read_guard.read() {
+        Ok(_) => Ok(()),
+        Err(WaylandError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(error) => Err(SmokeError::Wayland(error.to_string())),
     }
 }
 
@@ -196,8 +299,8 @@ enum SmokeError {
     },
     #[error("Wayland operation failed: {0}")]
     Wayland(String),
-    #[error("failed to drive the Wayland event loop: {0}")]
-    EventLoop(String),
+    #[error("failed to drive a Wayland completion: {0}")]
+    Completion(String),
     #[error("failed to read DRM directory {path}: {source}")]
     ReadDrmDirectory {
         path: PathBuf,

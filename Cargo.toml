@@ -25,7 +25,6 @@ resolver = "3"
 default = ["tty", "xwayland"]
 systemd = ["dep:sd-notify", "dep:zbus"]
 tty = [
-    "dep:calloop-wayland-source",
     "dep:drm",
     "dep:drm-ffi",
     "dep:gbm",
@@ -40,7 +39,6 @@ xwayland = ["smithay/xwayland"]
 [dependencies]
 bevy_ecs = { version = "0.19", default-features = false, features = ["std", "multi_threaded"] }
 calloop = "0.14"
-calloop-wayland-source = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"] }
 # Compio = completion model; io-uring is the product driver; `polling` is Compio's host fallback only.
 compio = { version = "0.19", default-features = false, features = ["runtime", "async-fd", "io-uring", "polling", "fs", "net"] }
@@ -51,7 +49,7 @@ futures-util = "0.3"
 gbm = { version = "0.18", optional = true }
 input = { version = "0.10", default-features = false, optional = true, features = ["libinput_1_19", "udev"] }
 libseat = { version = "0.2", default-features = false, optional = true }
-rustix = { version = "1", features = ["fs", "net", "pipe", "process", "runtime", "thread"] }
+rustix = { version = "1", features = ["fs", "net", "pipe", "process", "runtime", "thread", "time"] }
 smithay = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, features = ["desktop", "wayland_frontend"] }
 sd-notify = { version = "0.5", optional = true }
 serde = { version = "1", features = ["derive"] }

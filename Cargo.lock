@@ -486,18 +486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calloop-wayland-source"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
-dependencies = [
- "calloop",
- "rustix 1.1.4",
- "wayland-backend",
- "wayland-client",
-]
-
-[[package]]
 name = "cc"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,7 +2032,6 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "calloop",
- "calloop-wayland-source",
  "clap",
  "compio",
  "drm",
