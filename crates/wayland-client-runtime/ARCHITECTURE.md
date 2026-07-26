@@ -17,22 +17,35 @@ winit, tokio, or a custom poll loop.
 │   try_read_and_dispatch / dispatch_pending / drain_*     │
 │   native/protocols/{core,stable,staging,unstable,ext,wlr}│
 ├──────────────────────────────────────────────────────────┤
-│ Event loop (feature = "compio", default ON)              │
-│   NativeRuntime · DisplayReadiness · WakeHandle waits    │
+│ Compio adapter (feature = "compio", default ON)          │
+│   NativeRuntime · CompioFdReady · WakeHandle             │
+│   (readiness only — not the Wayland read path)           │
 └──────────────────────────────────────────────────────────┘
 ```
+
+### Fds and readiness
+
+- The display socket is a **plain non-blocking fd** (`O_NONBLOCK` enforced at
+  connect). Protocol `read` always goes through `wayland-client`.
+- Compio does **not** need a special “PollFd protocol”. It only needs a
+  long-lived readiness watch (`CompioFdReady`) so the proactor can complete
+  when that ordinary fd becomes readable. Name history: Compio’s type is
+  `PollFd`; it submits io_uring poll-add style ops, not a userspace `poll`
+  loop.
+- Hot path: construct `CompioFdReady` **once** per fd (connect time), then
+  wait → protocol `try_read` / `prepare_read`+`read` → dispatch.
 
 ### Protocol vs event loop
 
 | API | Needs Compio? | Role |
 | --- | --- | --- |
 | `NativeShell::connect_to_env` | no | Bind globals, own surfaces/input |
-| `NativeShell::display_fd` | no | Register with *your* poll/epoll |
+| `NativeShell::display_fd` | no | Ordinary non-blocking fd for *your* loop |
 | `NativeShell::try_read_and_dispatch` | no | Non-blocking read + dispatch |
 | `NativeShell::dispatch_pending` | no | Drain already-queued messages |
 | `NativeShell::drain_events` | no | Consume protocol events |
 | `NativePump::pump_pending` | no | Registry-only pending pump |
-| `NativeShell::pump_once` / `NativePump::pump_once` | **yes** | Async wait + read |
+| `NativeShell::pump_once` / `NativePump::pump_once` | **yes** | Wait (reused watch) + read |
 | `NativeRuntime` / `Runtime` | **yes** | Full public API + Compio waits |
 
 Disable the loop dependency:

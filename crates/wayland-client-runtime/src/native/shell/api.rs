@@ -33,18 +33,23 @@ use wayland_client::EventQueue;
 /// Protocol-only native shell (no event-loop executor).
 ///
 /// Owns the Wayland connection, registry bindings, and surface/input state.
+/// The display socket is a **plain non-blocking fd** ([`Self::display_fd`]).
+///
 /// Drive I/O with:
 /// - [`Self::dispatch_pending`] / [`Self::try_read_and_dispatch`] (any loop)
-/// - [`Self::pump_once`] when the `compio` feature is enabled
+/// - [`Self::pump_once`] when `feature = "compio"` (reuses a long-lived
+///   Compio readiness watch; does not re-clone the fd every wait)
 ///
-/// Register [`Self::connection`]'s fd for readability in your own reactor if
-/// you do not use Compio.
+/// Register [`Self::display_fd`] with your own reactor if you do not use Compio.
 pub struct NativeShell {
     pub(crate) connection: NativeConnection,
     #[allow(dead_code)]
     pub(crate) globals: GlobalList,
     pub(crate) queue: EventQueue<NativeShellState>,
     pub(crate) state: NativeShellState,
+    /// Compio readiness watch on a clone of the display fd (created once).
+    #[cfg(feature = "compio")]
+    pub(crate) display_ready: crate::display_io::CompioFdReady,
 }
 
 impl NativeShell {
@@ -229,11 +234,17 @@ impl NativeShell {
             state.text_input = Some(tim.get_text_input(seat, &qh, ()));
         }
 
+        #[cfg(feature = "compio")]
+        let display_ready = crate::display_io::CompioFdReady::watch(connection.as_fd())
+            .map_err(NativeError::from)?;
+
         let mut shell = Self {
             connection,
             globals,
             queue,
             state,
+            #[cfg(feature = "compio")]
+            display_ready,
         };
         // Flush binds so the compositor can reply with capability events
         // (e.g. ext-background-effect Capabilities) before the first set_blur.
@@ -249,7 +260,10 @@ impl NativeShell {
         &self.connection
     }
 
-    /// Borrow the display socket for external event-loop registration.
+    /// Borrow the **non-blocking** display socket for external event loops.
+    ///
+    /// This is a normal fd: epoll/kqueue/calloop/tokio/`poll` all work. After
+    /// it reports readable, call [`Self::try_read_and_dispatch`].
     pub fn display_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.connection.as_fd()
     }
@@ -885,11 +899,10 @@ impl NativeShell {
 
     /// Compio-driven pump: wait until the display is readable, then dispatch.
     ///
-    /// Requires the `compio` feature and a Compio executor context.
+    /// Reuses the shell’s long-lived Compio readiness watch (no per-wait fd
+    /// clone). Requires `feature = "compio"` and a Compio executor.
     #[cfg(feature = "compio")]
     pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
-        use crate::display_io::DisplayReadiness;
-
         self.connection.flush()?;
         let mut n = self.dispatch_pending()?;
         match self.connection.connection().prepare_read() {
@@ -897,8 +910,7 @@ impl NativeShell {
                 n += self.dispatch_pending()?;
             }
             Some(guard) => {
-                let readiness = DisplayReadiness::from_as_fd(self.connection.as_fd())?;
-                readiness.wait_readable().await?;
+                self.display_ready.wait_readable().await?;
                 match guard.read() {
                     Ok(_) => {}
                     Err(wayland_client::backend::WaylandError::Io(err))

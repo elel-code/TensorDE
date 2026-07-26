@@ -8,12 +8,16 @@
 //! ├──────────────────────────────────────────────────────────┤
 //! │ Protocol layer (always available)                        │
 //! │   NativeShell · NativeConnection · NativePump            │
+//! │   plain non-blocking display_fd()                        │
 //! │   try_read_and_dispatch / dispatch_pending / drain_*     │
 //! ├──────────────────────────────────────────────────────────┤
-//! │ Event loop (feature = "compio", default)                 │
-//! │   NativeRuntime · DisplayReadiness · WakeHandle waits    │
+//! │ Compio adapter (feature = "compio", default)             │
+//! │   NativeRuntime · CompioFdReady (readiness only)         │
 //! └──────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! Protocol I/O always uses a **normal non-blocking Wayland fd**. Compio (or
+//! any other runtime) only waits for readiness; it does not replace `read`.
 //!
 //! ## Using without Compio
 //!
@@ -21,15 +25,12 @@
 //! wayland-client-runtime = { version = "0.1", default-features = false }
 //! ```
 //!
-//! Drive the shell yourself:
-//!
 //! ```no_run
 //! use wayland_client_runtime::NativeShell;
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut shell = NativeShell::connect_to_env()?;
-//! // Register shell.display_fd() with your poll/epoll/calloop/winit loop.
+//! // Register shell.display_fd() (non-blocking) with your reactor.
 //! loop {
-//!     // After the display fd is readable:
 //!     shell.try_read_and_dispatch()?;
 //!     for event in shell.drain_events() {
 //!         let _ = event;
@@ -40,8 +41,9 @@
 //!
 //! ## Using with Compio (default)
 //!
-//! [`NativeRuntime`] owns Compio waits on the display socket and a wake eventfd.
-//! Fika uses this path. Renderers take [`SurfaceHandle`] (raw-window-handle 0.6).
+//! [`NativeRuntime`] keeps long-lived [`CompioFdReady`] watches on the display
+//! and wake fds, then calls the same protocol read path. Fika uses this.
+//! Renderers take [`SurfaceHandle`] (raw-window-handle 0.6).
 
 mod activation {
     use crate::{InputSerial, SurfaceId};
@@ -113,7 +115,7 @@ pub use activation::{
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
 #[cfg(feature = "compio")]
-pub use display_io::DisplayReadiness;
+pub use display_io::{CompioFdReady, DisplayReadiness};
 pub use native::{
     list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
     native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,

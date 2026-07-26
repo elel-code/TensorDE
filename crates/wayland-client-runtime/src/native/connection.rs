@@ -1,12 +1,13 @@
 //! Direct `wayland-client` connection — **protocol I/O only**, no event-loop
-//! executor. Callers integrate with Compio (`feature = "compio"`), calloop,
-//! poll, or any other readiness source using [`NativeConnection::as_fd`].
+//! executor. Callers integrate with any readiness source using
+//! [`NativeConnection::as_fd`] (a plain non-blocking display socket).
 
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd};
 
-use wayland_client::Connection;
+use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
 use wayland_client::backend::WaylandError;
+use wayland_client::Connection;
 
 /// Errors from the native Wayland connection / protocol path.
 #[derive(Debug)]
@@ -69,6 +70,9 @@ impl NativeConnection {
     }
 
     pub fn from_connection(connection: Connection) -> Result<Self, NativeError> {
+        // Protocol reads use the classic prepare_read/read path and must not
+        // block the thread. Ensure O_NONBLOCK regardless of compositor/lib.
+        ensure_nonblocking(connection.as_fd())?;
         Ok(Self { connection })
     }
 
@@ -96,4 +100,17 @@ impl AsFd for NativeConnection {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.connection.as_fd()
     }
+}
+
+fn ensure_nonblocking(fd: BorrowedFd<'_>) -> Result<(), NativeError> {
+    let flags = fcntl_getfl(fd).map_err(io_from_errno)?;
+    if flags.contains(OFlags::NONBLOCK) {
+        return Ok(());
+    }
+    fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(io_from_errno)?;
+    Ok(())
+}
+
+fn io_from_errno(err: rustix::io::Errno) -> NativeError {
+    NativeError::from(std::io::Error::from(err))
 }

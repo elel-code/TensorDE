@@ -1,8 +1,11 @@
-//! Fika-facing facade over [`NativeShell`].
+//! Fika-facing Compio adapter over the protocol-only [`NativeShell`].
 //!
-//! I/O waits use Compio's completion model (io_uring via [`PollFd`]), not a
-//! blocking `poll(2)` loop. The public [`Self::dispatch`] API stays synchronous
-//! by driving a dedicated Compio runtime with `block_on`.
+//! Protocol I/O uses the ordinary non-blocking Wayland display fd. Compio only
+//! waits for **readiness** on cloned fds ([`CompioFdReady`]) via io_uring
+//! completions — it never performs the Wayland `read` itself.
+//!
+//! The public [`Self::dispatch`] API stays synchronous by driving a dedicated
+//! Compio runtime with `block_on`.
 
 use std::collections::HashMap;
 use std::future::poll_fn;
@@ -11,7 +14,7 @@ use std::time::Duration;
 
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 
-use crate::display_io::DisplayReadiness;
+use crate::display_io::CompioFdReady;
 use crate::event::Event;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::CursorIcon;
@@ -52,10 +55,10 @@ pub struct NativeRuntime {
     activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
     next_activation_request_id: u64,
     wake: std::sync::Arc<EventFdWake>,
-    /// Compio readiness on a clone of the display socket.
-    display_readiness: DisplayReadiness,
-    /// Compio readiness on a clone of the wake eventfd.
-    wake_readiness: DisplayReadiness,
+    /// Compio readiness watch on a clone of the display socket (long-lived).
+    display_ready: CompioFdReady,
+    /// Compio readiness watch on a clone of the wake eventfd (long-lived).
+    wake_ready: CompioFdReady,
     wake_handle: WakeHandle,
     /// Owns the io_uring proactor used for display/wake waits.
     compio: compio::runtime::Runtime,
@@ -68,12 +71,14 @@ impl NativeRuntime {
         let caps = shell.capabilities();
         let popup_reposition = shell.supports_popup_reposition();
         let layer_ver = shell.layer_shell_version();
-        let display_readiness = DisplayReadiness::from_as_fd(shell.display_fd())
+        // Prefer the shell’s already-built display watch when present (same fd
+        // clone semantics; constructed once at connect).
+        let display_ready = CompioFdReady::watch(shell.display_fd())
             .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
-        let wake_readiness = DisplayReadiness::from_as_fd(wake.as_ref())
+        let wake_ready = CompioFdReady::watch(wake.as_ref())
             .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake_handle = WakeHandle::from_event_fd(wake.clone());
         let compio = compio::runtime::Runtime::new()
@@ -86,8 +91,8 @@ impl NativeRuntime {
             activation_pending: HashMap::new(),
             next_activation_request_id: 1,
             wake,
-            display_readiness,
-            wake_readiness,
+            display_ready,
+            wake_ready,
             wake_handle,
             compio,
             capabilities: RuntimeCapabilities {
@@ -197,10 +202,10 @@ impl NativeRuntime {
             return Ok(());
         };
 
-        // Partial borrows: Compio runtime + readiness handles without aliasing.
+        // Partial borrows: Compio runtime + long-lived readiness watches.
         let source = {
-            let display = &self.display_readiness;
-            let wake = &self.wake_readiness;
+            let display = &self.display_ready;
+            let wake = &self.wake_ready;
             let compio = &self.compio;
             compio.block_on(async {
                 let race = race_display_or_wake(display, wake);
@@ -956,8 +961,8 @@ fn map_native_error(error: NativeError) -> RuntimeError {
 
 /// Race display readability against the wake eventfd on Compio's proactor.
 async fn race_display_or_wake(
-    display: &DisplayReadiness,
-    wake: &DisplayReadiness,
+    display: &CompioFdReady,
+    wake: &CompioFdReady,
 ) -> Result<WaitSource, RuntimeError> {
     poll_fn(|cx| {
         // Prefer display so we drain compositor traffic when both are ready.

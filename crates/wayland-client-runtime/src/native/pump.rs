@@ -1,7 +1,7 @@
 //! Protocol pump helpers.
 //!
-//! The core path is **executor-agnostic**: flush + read + dispatch.
-//! Async waiting on the display fd lives behind `feature = "compio"`.
+//! Core path is **executor-agnostic**: flush + non-blocking read + dispatch on
+//! the ordinary Wayland display fd. Async waiting lives behind `feature = "compio"`.
 
 use wayland_client::backend::WaylandError;
 
@@ -19,20 +19,27 @@ pub struct PumpStep {
 
 /// Owns connection + registry and advances protocol I/O.
 ///
-/// Without the `compio` feature, use [`Self::pump_pending`] and register
-/// [`NativeConnection::as_fd`] in your own event loop.
+/// Without Compio, use [`Self::pump_pending`] / [`Self::try_read_and_dispatch`]
+/// and register [`NativeConnection::as_fd`] in your own event loop.
 pub struct NativePump {
     connection: NativeConnection,
     registry: NativeRegistry,
+    #[cfg(feature = "compio")]
+    display_ready: crate::display_io::CompioFdReady,
 }
 
 impl NativePump {
     pub fn connect_to_env() -> Result<Self, NativeError> {
         let connection = NativeConnection::connect_to_env()?;
         let registry = NativeRegistry::bootstrap(&connection)?;
+        #[cfg(feature = "compio")]
+        let display_ready =
+            crate::display_io::CompioFdReady::watch(connection.as_fd()).map_err(NativeError::from)?;
         Ok(Self {
             connection,
             registry,
+            #[cfg(feature = "compio")]
+            display_ready,
         })
     }
 
@@ -80,11 +87,9 @@ impl NativePump {
 
     /// Flush, wait for display data if needed, read, and dispatch pending.
     ///
-    /// Must run on a Compio executor (io_uring completion waits).
+    /// Reuses a long-lived Compio readiness watch. Must run on a Compio executor.
     #[cfg(feature = "compio")]
     pub async fn pump_once(&mut self) -> Result<PumpStep, NativeError> {
-        use crate::display_io::DisplayReadiness;
-
         self.connection.flush()?;
         let mut dispatched = self.registry.dispatch_pending()?;
         let mut did_read = false;
@@ -93,8 +98,7 @@ impl NativePump {
                 dispatched += self.registry.dispatch_pending()?;
             }
             Some(guard) => {
-                let readiness = DisplayReadiness::from_as_fd(self.connection.as_fd())?;
-                readiness.wait_readable().await?;
+                self.display_ready.wait_readable().await?;
                 match guard.read() {
                     Ok(_) => {
                         did_read = true;
