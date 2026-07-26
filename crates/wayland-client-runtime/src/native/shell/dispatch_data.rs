@@ -5,7 +5,7 @@ use std::io::Write;
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
 };
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
 
 use super::types::{NativeShellEvent, NativeShellState};
 
@@ -22,6 +22,11 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for NativeShellSt
 }
 
 impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
+    // Opcode 0 = data_offer creates a new wl_data_offer child object.
+    event_created_child!(NativeShellState, wl_data_device::WlDataDevice, [
+        0 => (wl_data_offer::WlDataOffer, ())
+    ]);
+
     fn event(
         state: &mut Self,
         _: &wl_data_device::WlDataDevice,

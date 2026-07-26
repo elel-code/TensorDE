@@ -297,4 +297,77 @@ impl PlatformBackend {
             Self::Native(rt) => rt.receive_dnd(offer, mime),
         }
     }
+
+    fn set_pointer_capture_state(
+        &mut self,
+        surface: SurfaceId,
+        state: wayland_client_runtime::PointerCaptureState,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_pointer_capture_state(surface, state),
+            Self::Native(rt) => rt.set_pointer_capture_state(surface, state),
+        }
+    }
+
+    fn set_pointer_constraint(
+        &mut self,
+        surface: SurfaceId,
+        constraint: wayland_client_runtime::PointerConstraint,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_pointer_constraint(surface, constraint),
+            Self::Native(rt) => rt.set_pointer_constraint(surface, constraint),
+        }
+    }
+
+    fn set_relative_pointer_enabled(
+        &mut self,
+        surface: SurfaceId,
+        enabled: bool,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.set_relative_pointer_enabled(surface, enabled),
+            Self::Native(rt) => rt.set_relative_pointer_enabled(surface, enabled),
+        }
+    }
+
+    fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.begin_interactive_move(surface),
+            Self::Native(rt) => rt.begin_interactive_move(surface),
+        }
+    }
+
+    fn begin_interactive_resize(
+        &mut self,
+        surface: SurfaceId,
+        edge: wayland_client_runtime::ResizeEdge,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.begin_interactive_resize(surface, edge),
+            Self::Native(rt) => rt.begin_interactive_resize(surface, edge),
+        }
+    }
+
+    fn show_window_menu(
+        &mut self,
+        surface: SurfaceId,
+        position: LogicalPosition,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sctk(rt) => rt.show_window_menu(surface, position),
+            Self::Native(rt) => rt.show_window_menu(surface, position),
+        }
+    }
+
+    fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
+        match self {
+            Self::Sctk(rt) => rt.preferred_toplevel_icon_sizes(),
+            Self::Native(rt) => rt.preferred_toplevel_icon_sizes(),
+        }
+    }
+
+    fn is_native(&self) -> bool {
+        matches!(self, Self::Native(_))
+    }
 }

@@ -353,6 +353,16 @@ pub struct ActiveEventLoop {
 }
 
 impl ActiveEventLoop {
+    /// Whether the event loop is using the SCTK-free native backend.
+    pub fn uses_native_backend(&self) -> bool {
+        self.runtime.borrow().is_native()
+    }
+
+    /// Preferred square icon edge sizes advertised by the compositor, if any.
+    pub fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
+        self.runtime.borrow().preferred_toplevel_icon_sizes()
+    }
+
     pub fn create_window(
         &self,
         attributes: WindowAttributes,

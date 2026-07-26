@@ -659,3 +659,72 @@ fn map_native_error(error: NativeError) -> RuntimeError {
         NativeError::Io(msg) => RuntimeError::EventLoop(msg),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::LogicalSize;
+    use crate::surface::{DecorationPreference, ToplevelAttributes};
+
+    #[test]
+    fn native_runtime_connects_and_creates_toplevel_when_display_present() {
+        let Ok(mut runtime) = NativeRuntime::connect() else {
+            return;
+        };
+        let caps = runtime.capabilities();
+        // Core desktop stack should always be present on a real compositor.
+        let _ = (
+            caps.fractional_scale,
+            caps.cursor_shape,
+            caps.text_input_v3,
+            caps.pointer_gestures_v1,
+            caps.pointer_constraints_v1,
+            caps.xdg_dialog_v1,
+            caps.xdg_toplevel_icon_v1,
+            caps.ext_background_effect,
+        );
+
+        let surface = runtime
+            .create_toplevel(ToplevelAttributes {
+                title: "native-runtime-smoke".into(),
+                app_id: "dev.fika.NativeRuntimeSmoke".into(),
+                initial_size: Some(LogicalSize::new(320, 240)),
+                min_size: Some(LogicalSize::new(160, 120)),
+                max_size: None,
+                decorations: DecorationPreference::Server,
+            })
+            .expect("create toplevel");
+        assert!(runtime.surface_handle(surface).is_some());
+        runtime
+            .set_title(surface, "native-runtime-retitled".into())
+            .expect("set title");
+        runtime.request_frame(surface).expect("frame");
+        runtime.commit(surface).expect("commit");
+        // Non-blocking poll should not hang.
+        runtime
+            .dispatch(Some(Duration::from_millis(0)))
+            .expect("dispatch");
+        let mut events = Vec::new();
+        runtime.drain_events_into(&mut events);
+        runtime.destroy_surface(surface).expect("destroy");
+    }
+
+    #[test]
+    fn native_runtime_interactive_apis_require_serial() {
+        let Ok(mut runtime) = NativeRuntime::connect() else {
+            return;
+        };
+        let surface = runtime
+            .create_toplevel(ToplevelAttributes {
+                title: "serial".into(),
+                app_id: "dev.fika.Serial".into(),
+                ..Default::default()
+            })
+            .expect("toplevel");
+        assert!(runtime.begin_interactive_move(surface).is_err());
+        assert!(runtime
+            .begin_interactive_resize(surface, crate::ResizeEdge::Bottom)
+            .is_err());
+        let _ = runtime.destroy_surface(surface);
+    }
+}
