@@ -35,6 +35,13 @@ APIs for their own sake.
   surface rather than growing a second hot-reload dialect.
 - IPC is a versioned Unix-socket protocol with request IDs, bounded length-prefixed frames, and
   structured errors. It is a new protocol surface; do not add compatibility shims prematurely.
+- Wayland protocol selection prefers **standardized / `ext-*` / `wp-*` / `xdg-*` surfaces** over
+  **`zwlr_*` (wlr)** when both cover the same capability. Implement the ext path first and treat
+  wlr as optional only when no standard equivalent exists (for example `wlr-layer-shell` today) or
+  when a critical client ecosystem still cannot bind the ext global. Do not add a wlr twin solely
+  for parity with Hyprland/Niri if Tensor already advertises the ext protocol. Capture work should
+  target `ext-image-copy-capture` / `ext-image-capture-source` rather than `zwlr-screencopy`. See
+  `docs/protocol-surface.md`.
 - systemd readiness/activation is optional behind a Cargo feature. Core startup must work without
   systemd. Follow Niri's session lifecycle: a compiled `tensor-session` launcher, a user service,
   graphical-session targets, explicit environment publication, and readiness only after gates.
