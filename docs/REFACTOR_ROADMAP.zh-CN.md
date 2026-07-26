@@ -517,7 +517,7 @@ compio executor
 | 1 | Compio `DisplayReadiness` + `dispatch_pending` / `wait_display_readable` | 完成 |
 | 2 | Native 连接 + registry + Compio pump | 完成 |
 | 2b | `NativeShell`：compositor/shm/xdg toplevel + seat keyboard | 可用（继续丰富） |
-| 3 | data_device、fractional_scale、text_input、gestures… | 未开始 |
+| 3 | data_device、fractional_scale、text_input、gestures… | 进行中（核心已落地） |
 | 4 | 删除 SCTK/calloop；README/UPSTREAM 更新 | 未开始 |
 
 已完成：
@@ -540,9 +540,12 @@ compio executor
   - `create_toplevel` + memfd 实色 buffer；configure/close/scale/pointer/keyboard
   - Compio `pump_once`；example `native_toplevel_smoke`
   - `NativeSurfaceHandle`：`raw-window-handle` 0.6（可接 wgpu）
-  - clipboard：`set_selection_text/bytes` + `receive_selection` + Selection 事件
+  - **xkb**：`wl_keyboard.keymap` → libxkbcommon → `SeatKeyboardKey { keysym, text }`
+  - clipboard：mime 按 offer 追踪；`set_selection_*` / `receive_selection`
+  - **xdg_popup** + positioner；**text_input v3**；**DnD** enter/motion/drop + start_drag
+  - **layer-shell**；**xdg-activation** token 请求/activate
   - multi-output、touch、frame callback、cursor_shape、fractional scale
-  - 待丰富：popup/dialog、text_input v3、dnd、xkb 文本、与 Fika Runtime 合流
+  - 待丰富：xdg_dialog / toplevel icon / gestures / blur；**与 Fika Runtime 合流**
 
 完成标准：
 

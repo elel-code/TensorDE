@@ -11,9 +11,12 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 
-use crate::geometry::SuggestedSize;
+use crate::geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
+use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
 
 /// Opaque id for a native toplevel surface.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -64,8 +67,13 @@ pub enum NativeShellEvent {
         surface: Option<NativeSurfaceId>,
     },
     SeatKeyboardKey {
+        /// Linux evdev keycode (Wayland `wl_keyboard.key`).
         key: u32,
         pressed: bool,
+        /// XKB keysym when a keymap is available; otherwise 0.
+        keysym: u32,
+        /// UTF-8 text produced on press (empty/control keys → `None`).
+        text: Option<String>,
     },
     SeatModifiers {
         mods_depressed: u32,
@@ -131,6 +139,97 @@ pub enum NativeShellEvent {
     },
     /// Outgoing clipboard source was cancelled by the compositor.
     SelectionCancelled,
+    /// `xdg_popup.configure` (geometry relative to parent).
+    PopupConfigure {
+        surface: NativeSurfaceId,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    /// `xdg_popup.popup_done` — popup was dismissed.
+    PopupDone {
+        surface: NativeSurfaceId,
+    },
+    /// Incoming drag entered a surface.
+    DndEnter {
+        surface: NativeSurfaceId,
+        x: f64,
+        y: f64,
+        mimes: Vec<String>,
+    },
+    /// Drag left the surface (or was cancelled before drop).
+    DndLeave,
+    /// Drag motion over the focused surface.
+    DndMotion {
+        x: f64,
+        y: f64,
+    },
+    /// Drop performed; call [`crate::NativeShell::accept_dnd`] / receive as needed.
+    DndDrop,
+    /// Outgoing drag finished (source side).
+    DndFinished {
+        cancelled: bool,
+    },
+    /// text-input-v3 entered a surface.
+    TextInputEnter {
+        surface: NativeSurfaceId,
+    },
+    /// text-input-v3 left a surface.
+    TextInputLeave {
+        surface: NativeSurfaceId,
+    },
+    /// text-input-v3 `done` batch (commit / preedit / delete).
+    TextInputDone {
+        surface: NativeSurfaceId,
+        serial: u32,
+        commit: Option<String>,
+        preedit: Option<String>,
+        delete_before: u32,
+        delete_after: u32,
+    },
+    /// `zwlr_layer_surface_v1.configure`.
+    LayerConfigure {
+        surface: NativeSurfaceId,
+        suggested_size: SuggestedSize,
+        serial: u32,
+    },
+    /// `zwlr_layer_surface_v1.closed`.
+    LayerClosed {
+        surface: NativeSurfaceId,
+    },
+    /// Activation token ready (`xdg_activation_token_v1.done`).
+    ActivationToken {
+        surface: NativeSurfaceId,
+        token: String,
+    },
+}
+
+/// Positioner inputs for native `xdg_popup` creation.
+#[derive(Clone, Debug)]
+pub struct NativePopupPositioner {
+    pub size: LogicalSize,
+    pub anchor_rect: LogicalRect,
+    pub anchor: PopupAnchor,
+    pub gravity: Gravity,
+    pub constraints: ConstraintAdjustments,
+    pub offset: LogicalPosition,
+}
+
+impl Default for NativePopupPositioner {
+    fn default() -> Self {
+        Self {
+            size: LogicalSize::new(200, 120),
+            anchor_rect: LogicalRect::new(0, 0, 1, 1),
+            anchor: PopupAnchor::BottomLeft,
+            gravity: Gravity::BottomRight,
+            constraints: ConstraintAdjustments::SLIDE_X
+                | ConstraintAdjustments::SLIDE_Y
+                | ConstraintAdjustments::FLIP_X
+                | ConstraintAdjustments::FLIP_Y,
+            offset: LogicalPosition::ZERO,
+        }
+    }
 }
 
 /// Capability snapshot for the native shell connection.
@@ -145,6 +244,11 @@ pub struct NativeCapabilities {
     pub touch: bool,
     pub output_count: u32,
     pub data_device: bool,
+    /// Keymap received and compiled with libxkbcommon.
+    pub xkb: bool,
+    pub text_input: bool,
+    pub layer_shell: bool,
+    pub activation: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -172,6 +276,33 @@ pub(crate) struct ToplevelRecord {
     pub(crate) scale_factor: f64,
 }
 
+pub(crate) struct PopupRecord {
+    pub(crate) wl: wl_surface::WlSurface,
+    #[allow(dead_code)]
+    pub(crate) xdg: xdg_surface::XdgSurface,
+    pub(crate) popup: xdg_popup::XdgPopup,
+    pub(crate) parent: NativeSurfaceId,
+    pub(crate) buffer: Option<wl_buffer::WlBuffer>,
+    pub(crate) _pool: Option<wl_shm_pool::WlShmPool>,
+    pub(crate) _file: Option<File>,
+    pub(crate) configured: bool,
+    pub(crate) pending_geom: Option<(i32, i32, i32, i32)>,
+    pub(crate) logical_w: u32,
+    pub(crate) logical_h: u32,
+}
+
+pub(crate) struct LayerRecord {
+    pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) layer: wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    pub(crate) buffer: Option<wl_buffer::WlBuffer>,
+    pub(crate) _pool: Option<wl_shm_pool::WlShmPool>,
+    pub(crate) _file: Option<File>,
+    pub(crate) configured: bool,
+    pub(crate) pending_size: Option<(u32, u32)>,
+    pub(crate) logical_w: u32,
+    pub(crate) logical_h: u32,
+}
+
 /// Dispatch state for the native shell event queue.
 pub struct NativeShellState {
     pub(crate) compositor: Option<wl_compositor::WlCompositor>,
@@ -187,8 +318,37 @@ pub struct NativeShellState {
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
         Option<wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
+    pub(crate) text_input_manager: Option<
+        wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    >,
+    pub(crate) text_input: Option<
+        wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3,
+    >,
+    pub(crate) text_input_surface: Option<NativeSurfaceId>,
+    pub(crate) text_input_serial: u32,
+    pub(crate) text_input_pending_commit: Option<String>,
+    pub(crate) text_input_pending_preedit: Option<String>,
+    pub(crate) text_input_pending_delete: (u32, u32),
+    pub(crate) layer_shell: Option<
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    >,
+    pub(crate) activation: Option<
+        wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
+    >,
+    /// Pending activation token proxies (kept alive until `done`).
+    pub(crate) activation_tokens: HashMap<
+        u32,
+        (
+            NativeSurfaceId,
+            wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::XdgActivationTokenV1,
+        ),
+    >,
     pub(crate) toplevels: HashMap<NativeSurfaceId, ToplevelRecord>,
+    pub(crate) popups: HashMap<NativeSurfaceId, PopupRecord>,
+    pub(crate) layers: HashMap<NativeSurfaceId, LayerRecord>,
     pub(crate) toplevel_objects: HashMap<u32, NativeSurfaceId>,
+    pub(crate) popup_objects: HashMap<u32, NativeSurfaceId>,
+    pub(crate) layer_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) xdg_surface_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) wl_surface_objects: HashMap<u32, NativeSurfaceId>,
     pub(crate) fractional_objects: HashMap<u32, NativeSurfaceId>,
@@ -202,6 +362,19 @@ pub struct NativeShellState {
     pub(crate) selection_mimes: Vec<String>,
     pub(crate) incoming_offer: Option<wl_data_offer::WlDataOffer>,
     pub(crate) incoming_mimes: Vec<String>,
+    /// Mimes collected per offer object id before `Selection` / drag attach.
+    pub(crate) offer_mimes: HashMap<u32, Vec<String>>,
+    /// Active drag offer (incoming DnD).
+    pub(crate) dnd_offer: Option<wl_data_offer::WlDataOffer>,
+    pub(crate) dnd_mimes: Vec<String>,
+    pub(crate) dnd_focus: Option<NativeSurfaceId>,
+    pub(crate) dnd_serial: Option<u32>,
+    /// Outgoing drag source (if we started a drag).
+    pub(crate) dnd_source: Option<wl_data_source::WlDataSource>,
+    pub(crate) dnd_source_bytes: Option<std::sync::Arc<[u8]>>,
+    pub(crate) dnd_source_mimes: Vec<String>,
+    /// XKB state from the latest `wl_keyboard.keymap` (optional).
+    pub(crate) xkb: Option<crate::native::protocols::core::NativeXkb>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
     pub(crate) axis_h: f64,
     pub(crate) axis_v: f64,
@@ -229,8 +402,22 @@ impl Default for NativeShellState {
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,
+            text_input_manager: None,
+            text_input: None,
+            text_input_surface: None,
+            text_input_serial: 0,
+            text_input_pending_commit: None,
+            text_input_pending_preedit: None,
+            text_input_pending_delete: (0, 0),
+            layer_shell: None,
+            activation: None,
+            activation_tokens: HashMap::new(),
             toplevels: HashMap::new(),
+            popups: HashMap::new(),
+            layers: HashMap::new(),
             toplevel_objects: HashMap::new(),
+            popup_objects: HashMap::new(),
+            layer_objects: HashMap::new(),
             xdg_surface_objects: HashMap::new(),
             wl_surface_objects: HashMap::new(),
             fractional_objects: HashMap::new(),
@@ -243,6 +430,15 @@ impl Default for NativeShellState {
             selection_mimes: Vec::new(),
             incoming_offer: None,
             incoming_mimes: Vec::new(),
+            offer_mimes: HashMap::new(),
+            dnd_offer: None,
+            dnd_mimes: Vec::new(),
+            dnd_focus: None,
+            dnd_serial: None,
+            dnd_source: None,
+            dnd_source_bytes: None,
+            dnd_source_mimes: Vec::new(),
+            xkb: None,
             axis_h: 0.0,
             axis_v: 0.0,
             next_id: 1,

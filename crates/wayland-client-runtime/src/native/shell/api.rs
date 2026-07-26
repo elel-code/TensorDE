@@ -13,8 +13,14 @@ use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 use super::handle::NativeSurfaceHandle;
 use super::types::{
-    NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId, ToplevelRecord,
+    LayerRecord, NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeShellState,
+    NativeSurfaceId, PopupRecord, ToplevelRecord,
 };
+use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
+use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
+use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
+use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use crate::display_io::DisplayReadiness;
 use crate::native::connection::{NativeConnection, NativeError};
 use crate::native::display_readiness_from_conn;
@@ -24,12 +30,12 @@ use wayland_client::EventQueue;
 
 /// SCTK-free shell runtime.
 pub struct NativeShell {
-    connection: NativeConnection,
-    readiness: DisplayReadiness,
+    pub(crate) connection: NativeConnection,
+    pub(crate) readiness: DisplayReadiness,
     #[allow(dead_code)]
-    globals: GlobalList,
-    queue: EventQueue<NativeShellState>,
-    state: NativeShellState,
+    pub(crate) globals: GlobalList,
+    pub(crate) queue: EventQueue<NativeShellState>,
+    pub(crate) state: NativeShellState,
 }
 
 impl NativeShell {
@@ -96,6 +102,26 @@ impl NativeShell {
         ) {
             state.cursor_shape_manager = Some(cursor);
         }
+        if let Ok(tim) = globals.bind::<
+            wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.text_input_manager = Some(tim);
+        }
+        if let Ok(layer) = globals.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
+            &qh,
+            1..=4,
+            (),
+        ) {
+            state.layer_shell = Some(layer);
+        }
+        if let Ok(act) =
+            globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ())
+        {
+            state.activation = Some(act);
+        }
 
         if state.compositor.is_none() {
             return Err(NativeError::Registry("wl_compositor missing".into()));
@@ -112,6 +138,9 @@ impl NativeShell {
             state.seat.as_ref(),
         ) {
             state.data_device = Some(manager.get_data_device(seat, &qh, ()));
+        }
+        if let (Some(tim), Some(seat)) = (state.text_input_manager.as_ref(), state.seat.as_ref()) {
+            state.text_input = Some(tim.get_text_input(seat, &qh, ()));
         }
 
         let mut shell = Self {
@@ -160,93 +189,190 @@ impl NativeShell {
                     .contains(wayland_client::protocol::wl_seat::Capability::Touch),
             output_count: self.state.outputs.len() as u32,
             data_device: self.state.data_device.is_some(),
+            xkb: self.state.xkb.is_some(),
+            text_input: self.state.text_input.is_some(),
+            layer_shell: self.state.layer_shell.is_some(),
+            activation: self.state.activation.is_some(),
         }
     }
 
-    /// Advertise UTF-8 text on the clipboard (requires a recent input serial).
-    pub fn set_selection_text(&mut self, text: impl Into<String>) -> Result<(), NativeError> {
-        let bytes: std::sync::Arc<[u8]> = text.into().into_bytes().into();
-        self.set_selection_bytes(
-            bytes,
-            &[
-                "text/plain;charset=utf-8",
-                "text/plain",
-                "UTF8_STRING",
-            ],
-        )
+    pub fn has_layer_shell(&self) -> bool {
+        self.state.layer_shell.is_some()
     }
 
-    pub fn set_selection_bytes(
+    pub fn has_activation(&self) -> bool {
+        self.state.activation.is_some()
+    }
+
+    /// Request an `xdg_activation_v1` token for `surface`.
+    ///
+    /// Completes with [`NativeShellEvent::ActivationToken`].
+    pub fn request_activation_token(
         &mut self,
-        bytes: std::sync::Arc<[u8]>,
-        mimes: &[&str],
+        surface: NativeSurfaceId,
+        app_id: Option<&str>,
     ) -> Result<(), NativeError> {
-        let serial = self
+        let activation = self
             .state
-            .last_input_serial
-            .ok_or_else(|| NativeError::Protocol("no input serial for set_selection".into()))?;
-        let manager = self
-            .state
-            .data_device_manager
+            .activation
             .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
-        let device = self
+            .ok_or_else(|| NativeError::Protocol("xdg_activation_v1 missing".into()))?;
+        let wl = self
             .state
-            .data_device
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
+            .toplevels
+            .get(&surface)
+            .map(|t| t.wl.clone())
+            .or_else(|| self.state.popups.get(&surface).map(|p| p.wl.clone()))
+            .or_else(|| self.state.layers.get(&surface).map(|l| l.wl.clone()))
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {surface:?}")))?;
         let qh = self.queue.handle();
-        if let Some(old) = self.state.selection_source.take() {
-            old.destroy();
+        let token = activation.get_activation_token(&qh, ());
+        if let Some(app_id) = app_id {
+            token.set_app_id(app_id.to_string());
         }
-        let source = manager.create_data_source(&qh, ());
-        for mime in mimes {
-            source.offer((*mime).to_string());
+        if let (Some(serial), Some(seat)) =
+            (self.state.last_input_serial, self.state.seat.as_ref())
+        {
+            token.set_serial(serial, seat);
         }
-        device.set_selection(Some(&source), serial);
-        self.state.selection_source = Some(source);
-        self.state.selection_bytes = Some(bytes);
-        self.state.selection_mimes = mimes.iter().map(|m| (*m).to_string()).collect();
+        token.set_surface(&wl);
+        token.commit();
+        let obj_id = token.id().protocol_id();
+        self.state
+            .activation_tokens
+            .insert(obj_id, (surface, token));
         self.connection.flush()?;
         Ok(())
     }
 
-    /// MIME types advertised by the current incoming selection, if any.
-    pub fn selection_mimes(&self) -> &[String] {
-        &self.state.incoming_mimes
+    /// Activate `surface` with a previously obtained token string.
+    pub fn activate_with_token(
+        &mut self,
+        surface: NativeSurfaceId,
+        token: impl Into<String>,
+    ) -> Result<(), NativeError> {
+        let activation = self
+            .state
+            .activation
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("xdg_activation_v1 missing".into()))?;
+        let wl = self
+            .state
+            .toplevels
+            .get(&surface)
+            .map(|t| t.wl.clone())
+            .or_else(|| self.state.popups.get(&surface).map(|p| p.wl.clone()))
+            .or_else(|| self.state.layers.get(&surface).map(|l| l.wl.clone()))
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {surface:?}")))?;
+        activation.activate(token.into(), &wl);
+        self.connection.flush()?;
+        Ok(())
     }
 
-    /// Receive the current selection as bytes for `mime` (blocking pipe read).
-    pub fn receive_selection(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
-        use std::io::Read;
-        use std::os::fd::AsFd;
-        use std::os::unix::net::UnixStream;
-
-        let offer = self
+    /// Create a `zwlr_layer_surface_v1` (panel / bar / overlay).
+    pub fn create_layer_surface(
+        &mut self,
+        namespace: impl Into<String>,
+        layer: LayerSurfaceLayer,
+        width: u32,
+        height: u32,
+        anchor: LayerAnchor,
+        exclusive_zone: i32,
+        keyboard: LayerKeyboardInteractivity,
+    ) -> Result<NativeSurfaceId, NativeError> {
+        let qh = self.queue.handle();
+        let compositor = self
             .state
-            .incoming_offer
+            .compositor
             .as_ref()
-            .ok_or_else(|| NativeError::Protocol("no selection offer".into()))?;
-        if !self.state.incoming_mimes.iter().any(|m| m == mime) {
-            return Err(NativeError::Protocol(format!(
-                "selection has no mime {mime}"
-            )));
-        }
-        let (reader, writer) = UnixStream::pair().map_err(NativeError::from)?;
-        writer.set_nonblocking(false).ok();
-        reader.set_nonblocking(false).ok();
-        offer.receive(mime.to_string(), writer.as_fd());
-        // Drop writer so the peer sees EOF after compositor writes.
-        drop(writer);
+            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
+        let shm = self
+            .state
+            .shm
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
+        let shell = self
+            .state
+            .layer_shell
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("zwlr_layer_shell_v1 missing".into()))?;
+
+        let wl = compositor.create_surface(&qh, ());
+        wl.set_buffer_scale(1);
+        let layer_surface = shell.get_layer_surface(
+            &wl,
+            None,
+            layer.into(),
+            namespace.into(),
+            &qh,
+            (),
+        );
+        layer_surface.set_size(width, height);
+        layer_surface.set_anchor(layer_anchor_to_wire(anchor));
+        layer_surface.set_exclusive_zone(exclusive_zone);
+        layer_surface.set_keyboard_interactivity(keyboard.into());
+        wl.commit();
+
+        // Placeholder buffer; size may be 0xH for stretched panels — use at least 1×1.
+        let bw = width.max(1);
+        let bh = height.max(1);
+        let (file, pool, buffer) =
+            shm::create_solid_buffer(shm, &qh, bw, bh, [0xff, 0x18, 0x18, 0x22])
+                .map_err(|e| NativeError::Io(e.to_string()))?;
+
+        let id = self.state.alloc_id();
+        self.state
+            .layer_objects
+            .insert(layer_surface.id().protocol_id(), id);
+        self.state
+            .wl_surface_objects
+            .insert(wl.id().protocol_id(), id);
+        self.state.layers.insert(
+            id,
+            LayerRecord {
+                wl,
+                layer: layer_surface,
+                buffer: Some(buffer),
+                _pool: Some(pool),
+                _file: Some(file),
+                configured: false,
+                pending_size: Some((width, height)),
+                logical_w: width,
+                logical_h: height,
+            },
+        );
         self.connection.flush()?;
-        // Allow compositor to complete the transfer.
-        let _ = self.dispatch_pending();
-        let mut reader = reader;
-        let mut buf = Vec::new();
-        reader
-            .read_to_end(&mut buf)
-            .map_err(|e| NativeError::Io(e.to_string()))?;
-        Ok(buf)
+        Ok(id)
+    }
+
+    pub fn destroy_layer_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        let Some(record) = self.state.layers.remove(&id) else {
+            return Err(NativeError::Protocol(format!("unknown layer {id:?}")));
+        };
+        self.state
+            .layer_objects
+            .remove(&record.layer.id().protocol_id());
+        self.state
+            .wl_surface_objects
+            .remove(&record.wl.id().protocol_id());
+        record.layer.destroy();
+        if let Some(buffer) = record.buffer {
+            buffer.destroy();
+        }
+        if let Some(pool) = record._pool {
+            pool.destroy();
+        }
+        record.wl.destroy();
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn is_layer_configured(&self, id: NativeSurfaceId) -> bool {
+        self.state.layers.get(&id).is_some_and(|l| l.configured)
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.state.layers.len()
     }
 
     pub fn output_scale_factor(&self, output_name: u32) -> Option<i32> {
@@ -484,6 +610,18 @@ impl NativeShell {
     }
 
     pub fn destroy_toplevel(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        // Destroy child popups first (parent must outlive them for some compositors).
+        let child_popups: Vec<_> = self
+            .state
+            .popups
+            .iter()
+            .filter(|(_, p)| p.parent == id)
+            .map(|(&pid, _)| pid)
+            .collect();
+        for pid in child_popups {
+            let _ = self.destroy_popup(pid);
+        }
+
         let Some(record) = self.state.toplevels.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown surface {id:?}")));
         };
@@ -517,5 +655,199 @@ impl NativeShell {
         self.connection.flush()?;
         Ok(())
     }
+
+    /// Create an `xdg_popup` child of a configured toplevel (or another popup).
+    ///
+    /// When `grab` is true, uses the latest pointer/keyboard serial for popup grab.
+    pub fn create_popup(
+        &mut self,
+        parent: NativeSurfaceId,
+        positioner: &NativePopupPositioner,
+        grab: bool,
+    ) -> Result<NativeSurfaceId, NativeError> {
+        if positioner.size.width == 0 || positioner.size.height == 0 {
+            return Err(NativeError::Protocol("popup size must be non-zero".into()));
+        }
+        let parent_xdg = self
+            .state
+            .toplevels
+            .get(&parent)
+            .map(|t| t.xdg.clone())
+            .or_else(|| self.state.popups.get(&parent).map(|p| p.xdg.clone()))
+            .ok_or_else(|| NativeError::Protocol(format!("unknown parent {parent:?}")))?;
+
+        let qh = self.queue.handle();
+        let compositor = self
+            .state
+            .compositor
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
+        let shm = self
+            .state
+            .shm
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
+        let wm_base = self
+            .state
+            .wm_base
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("xdg_wm_base".into()))?;
+
+        let pos = wm_base.create_positioner(&qh, ());
+        apply_positioner(&pos, positioner);
+
+        let wl = compositor.create_surface(&qh, ());
+        wl.set_buffer_scale(1);
+        let xdg = wm_base.get_xdg_surface(&wl, &qh, ());
+        let popup = xdg.get_popup(Some(&parent_xdg), &pos, &qh, ());
+        pos.destroy();
+
+        if grab {
+            if let (Some(serial), Some(seat)) =
+                (self.state.last_input_serial, self.state.seat.as_ref())
+            {
+                popup.grab(seat, serial);
+            }
+        }
+
+        let w = positioner.size.width;
+        let h = positioner.size.height;
+        let (file, pool, buffer) =
+            shm::create_solid_buffer(shm, &qh, w, h, [0xff, 0x33, 0x33, 0x33])
+                .map_err(|e| NativeError::Io(e.to_string()))?;
+        wl.commit();
+
+        let id = self.state.alloc_id();
+        self.state
+            .popup_objects
+            .insert(popup.id().protocol_id(), id);
+        self.state
+            .xdg_surface_objects
+            .insert(xdg.id().protocol_id(), id);
+        self.state
+            .wl_surface_objects
+            .insert(wl.id().protocol_id(), id);
+        self.state.popups.insert(
+            id,
+            PopupRecord {
+                wl,
+                xdg,
+                popup,
+                parent,
+                buffer: Some(buffer),
+                _pool: Some(pool),
+                _file: Some(file),
+                configured: false,
+                pending_geom: None,
+                logical_w: w,
+                logical_h: h,
+            },
+        );
+        self.connection.flush()?;
+        Ok(id)
+    }
+
+    pub fn destroy_popup(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        let Some(record) = self.state.popups.remove(&id) else {
+            return Err(NativeError::Protocol(format!("unknown popup {id:?}")));
+        };
+        self.state
+            .popup_objects
+            .remove(&record.popup.id().protocol_id());
+        self.state
+            .xdg_surface_objects
+            .remove(&record.xdg.id().protocol_id());
+        self.state
+            .wl_surface_objects
+            .remove(&record.wl.id().protocol_id());
+        record.popup.destroy();
+        record.xdg.destroy();
+        if let Some(buffer) = record.buffer {
+            buffer.destroy();
+        }
+        if let Some(pool) = record._pool {
+            pool.destroy();
+        }
+        record.wl.destroy();
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn popup_count(&self) -> usize {
+        self.state.popups.len()
+    }
+
+    pub fn is_popup_configured(&self, id: NativeSurfaceId) -> bool {
+        self.state.popups.get(&id).is_some_and(|p| p.configured)
+    }
+}
+
+fn layer_anchor_to_wire(anchor: LayerAnchor) -> zwlr_layer_surface_v1::Anchor {
+    zwlr_layer_surface_v1::Anchor::from_bits_truncate(u32::from(anchor.bits()))
+}
+
+fn apply_positioner(pos: &xdg_positioner::XdgPositioner, value: &NativePopupPositioner) {
+    pos.set_size(value.size.width as i32, value.size.height as i32);
+    pos.set_anchor_rect(
+        value.anchor_rect.origin.x,
+        value.anchor_rect.origin.y,
+        value.anchor_rect.size.width as i32,
+        value.anchor_rect.size.height as i32,
+    );
+    pos.set_anchor(map_anchor(value.anchor));
+    pos.set_gravity(map_gravity(value.gravity));
+    pos.set_constraint_adjustment(map_constraints(value.constraints));
+    pos.set_offset(value.offset.x, value.offset.y);
+}
+
+fn map_anchor(value: PopupAnchor) -> xdg_positioner::Anchor {
+    match value {
+        PopupAnchor::None => xdg_positioner::Anchor::None,
+        PopupAnchor::Top => xdg_positioner::Anchor::Top,
+        PopupAnchor::Bottom => xdg_positioner::Anchor::Bottom,
+        PopupAnchor::Left => xdg_positioner::Anchor::Left,
+        PopupAnchor::Right => xdg_positioner::Anchor::Right,
+        PopupAnchor::TopLeft => xdg_positioner::Anchor::TopLeft,
+        PopupAnchor::BottomLeft => xdg_positioner::Anchor::BottomLeft,
+        PopupAnchor::TopRight => xdg_positioner::Anchor::TopRight,
+        PopupAnchor::BottomRight => xdg_positioner::Anchor::BottomRight,
+    }
+}
+
+fn map_gravity(value: Gravity) -> xdg_positioner::Gravity {
+    match value {
+        Gravity::None => xdg_positioner::Gravity::None,
+        Gravity::Top => xdg_positioner::Gravity::Top,
+        Gravity::Bottom => xdg_positioner::Gravity::Bottom,
+        Gravity::Left => xdg_positioner::Gravity::Left,
+        Gravity::Right => xdg_positioner::Gravity::Right,
+        Gravity::TopLeft => xdg_positioner::Gravity::TopLeft,
+        Gravity::BottomLeft => xdg_positioner::Gravity::BottomLeft,
+        Gravity::TopRight => xdg_positioner::Gravity::TopRight,
+        Gravity::BottomRight => xdg_positioner::Gravity::BottomRight,
+    }
+}
+
+fn map_constraints(value: ConstraintAdjustments) -> xdg_positioner::ConstraintAdjustment {
+    let mut result = xdg_positioner::ConstraintAdjustment::empty();
+    if value.contains(ConstraintAdjustments::SLIDE_X) {
+        result |= xdg_positioner::ConstraintAdjustment::SlideX;
+    }
+    if value.contains(ConstraintAdjustments::SLIDE_Y) {
+        result |= xdg_positioner::ConstraintAdjustment::SlideY;
+    }
+    if value.contains(ConstraintAdjustments::FLIP_X) {
+        result |= xdg_positioner::ConstraintAdjustment::FlipX;
+    }
+    if value.contains(ConstraintAdjustments::FLIP_Y) {
+        result |= xdg_positioner::ConstraintAdjustment::FlipY;
+    }
+    if value.contains(ConstraintAdjustments::RESIZE_X) {
+        result |= xdg_positioner::ConstraintAdjustment::ResizeX;
+    }
+    if value.contains(ConstraintAdjustments::RESIZE_Y) {
+        result |= xdg_positioner::ConstraintAdjustment::ResizeY;
+    }
+    result
 }
 

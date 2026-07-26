@@ -2,9 +2,8 @@
 
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
-    wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface, wl_touch,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -14,7 +13,9 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 
 use super::types::{NativeShellEvent, NativeShellState};
 use crate::geometry::SuggestedSize;
@@ -187,9 +188,81 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                         surface: id,
                         suggested_size: suggested,
                     });
+                } else if let Some(record) = state.popups.get_mut(&id) {
+                    record.configured = true;
+                    let (x, y, w, h) = record.pending_geom.unwrap_or((
+                        0,
+                        0,
+                        record.logical_w as i32,
+                        record.logical_h as i32,
+                    ));
+                    if w > 0 && h > 0 {
+                        record.logical_w = w as u32;
+                        record.logical_h = h as u32;
+                    }
+                    if let Some(buffer) = record.buffer.as_ref() {
+                        record.wl.attach(Some(buffer), 0, 0);
+                        record.wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
+                        record.wl.commit();
+                    }
+                    state.push(NativeShellEvent::PopupConfigure {
+                        surface: id,
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    });
                 }
             }
         }
+    }
+}
+
+impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        popup: &xdg_popup::XdgPopup,
+        event: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let id = state
+            .popup_objects
+            .get(&popup.id().protocol_id())
+            .copied();
+        match event {
+            xdg_popup::Event::Configure {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(id) = id {
+                    if let Some(record) = state.popups.get_mut(&id) {
+                        record.pending_geom = Some((x, y, width, height));
+                    }
+                }
+            }
+            xdg_popup::Event::PopupDone => {
+                if let Some(id) = id {
+                    state.push(NativeShellEvent::PopupDone { surface: id });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<xdg_positioner::XdgPositioner, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &xdg_positioner::XdgPositioner,
+        _: xdg_positioner::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
     }
 }
 
@@ -263,7 +336,22 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Enter { surface, .. } => {
+            wl_keyboard::Event::Keymap { format, fd, size } => {
+                match format {
+                    WEnum::Value(wl_keyboard::KeymapFormat::XkbV1) => {
+                        state.xkb =
+                            crate::native::protocols::core::NativeXkb::from_fd(fd, size);
+                    }
+                    WEnum::Value(wl_keyboard::KeymapFormat::NoKeymap) => {
+                        state.xkb = None;
+                    }
+                    _ => {
+                        state.xkb = None;
+                    }
+                }
+            }
+            wl_keyboard::Event::Enter { surface, serial, .. } => {
+                state.last_input_serial = Some(serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -288,7 +376,18 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
             } => {
                 state.last_input_serial = Some(serial);
                 let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
-                state.push(NativeShellEvent::SeatKeyboardKey { key, pressed });
+                let (keysym, text) = if let Some(xkb) = state.xkb.as_mut() {
+                    let lookup = xkb.key_event(key, pressed);
+                    (lookup.keysym, lookup.text)
+                } else {
+                    (0, None)
+                };
+                state.push(NativeShellEvent::SeatKeyboardKey {
+                    key,
+                    pressed,
+                    keysym,
+                    text,
+                });
             }
             wl_keyboard::Event::Modifiers {
                 mods_depressed,
@@ -297,6 +396,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                 group,
                 ..
             } => {
+                if let Some(xkb) = state.xkb.as_mut() {
+                    xkb.update_mask(mods_depressed, mods_latched, mods_locked, group);
+                }
                 state.push(NativeShellEvent::SeatModifiers {
                     mods_depressed,
                     mods_latched,
@@ -619,149 +721,5 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
             }
             _ => {}
         }
-    }
-}
-
-impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for NativeShellState {
-    fn event(
-        _: &mut Self,
-        _: &wl_data_device_manager::WlDataDeviceManager,
-        _: wl_data_device_manager::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
-    fn event(
-        state: &mut Self,
-        _: &wl_data_device::WlDataDevice,
-        event: wl_data_device::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_data_device::Event::DataOffer { id } => {
-                // New offer object created; mime list arrives via offer events on it.
-                // The proxy is already created by the dispatch machinery with () user data.
-                let _ = id;
-            }
-            wl_data_device::Event::Selection { id } => {
-                if let Some(old) = state.incoming_offer.take() {
-                    old.destroy();
-                }
-                state.incoming_mimes.clear();
-                if let Some(offer) = id {
-                    // Mimes were collected on this offer object as it was created.
-                    // We re-collect by storing mimes in a side map keyed by offer id —
-                    // for the simple path, read from pending_offer_mimes if present.
-                    state.incoming_offer = Some(offer);
-                    // Mimes may still arrive; Selection event often comes after offers.
-                    let mimes = state.incoming_mimes.clone();
-                    state.push(NativeShellEvent::Selection { mimes });
-                } else {
-                    state.push(NativeShellEvent::Selection { mimes: Vec::new() });
-                }
-            }
-            // Drag events ignored for now (clipboard-only path).
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<wl_data_offer::WlDataOffer, ()> for NativeShellState {
-    fn event(
-        state: &mut Self,
-        offer: &wl_data_offer::WlDataOffer,
-        event: wl_data_offer::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            // Track mimes for the active/incoming offer.
-            if state
-                .incoming_offer
-                .as_ref()
-                .is_some_and(|o| o.id() == offer.id())
-                || state.incoming_offer.is_none()
-            {
-                if !state.incoming_mimes.iter().any(|m| m == &mime_type) {
-                    state.incoming_mimes.push(mime_type);
-                }
-            }
-        }
-    }
-}
-
-impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
-    fn event(
-        state: &mut Self,
-        source: &wl_data_source::WlDataSource,
-        event: wl_data_source::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_data_source::Event::Send { mime_type, fd } => {
-                use std::io::Write;
-                if !state.selection_mimes.iter().any(|m| m == &mime_type) {
-                    return;
-                }
-                if let Some(bytes) = state.selection_bytes.as_ref() {
-                    let mut file = std::fs::File::from(fd);
-                    let _ = file.write_all(bytes);
-                }
-            }
-            wl_data_source::Event::Cancelled => {
-                if state
-                    .selection_source
-                    .as_ref()
-                    .is_some_and(|s| s.id() == source.id())
-                {
-                    state.selection_source = None;
-                    state.selection_bytes = None;
-                    state.selection_mimes.clear();
-                    state.push(NativeShellEvent::SelectionCancelled);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::native::shell::NativeShell;
-
-    #[test]
-    fn native_shell_creates_toplevel_when_compositor_present() {
-        let Ok(mut shell) = NativeShell::connect_to_env() else {
-            return;
-        };
-        let id = shell
-            .create_toplevel("fika-native-smoke", "dev.fika.NativeSmoke")
-            .expect("create toplevel");
-        assert_eq!(shell.toplevel_count(), 1);
-
-        compio::runtime::Runtime::new()
-            .expect("compio")
-            .block_on(async {
-                for _ in 0..32 {
-                    let _ = shell.pump_once().await;
-                    if shell.is_configured(id) {
-                        break;
-                    }
-                }
-            });
-
-        let mut events = Vec::new();
-        shell.drain_events_into(&mut events);
-        let _ = shell.destroy_toplevel(id);
     }
 }

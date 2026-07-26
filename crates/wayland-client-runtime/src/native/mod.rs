@@ -20,7 +20,8 @@ pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
 pub use shell::{
-    NativeCapabilities, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+    NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent, NativeSurfaceHandle,
+    NativeSurfaceId,
 };
 
 /// Shared helper for modules that already hold a `Connection`.

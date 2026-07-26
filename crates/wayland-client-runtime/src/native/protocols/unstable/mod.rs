@@ -4,7 +4,5 @@
 //! Fika still needs that have not fully moved (text-input-v3, pointer
 //! constraints/relative/gestures as currently deployed).
 //!
-//! Planned:
-//! - `text_input_v3`
-//! - `pointer_constraints` / `relative_pointer`
-//! - `pointer_gestures`
+//! - `text_input_v3` — wired in [`crate::native::NativeShell`]
+//! - Planned: `pointer_constraints` / `relative_pointer` / `pointer_gestures`

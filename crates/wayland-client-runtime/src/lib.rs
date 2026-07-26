@@ -41,8 +41,9 @@ pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferRea
 pub use display_io::DisplayReadiness;
 pub use native::{
     list_env_globals, GlobalAdvertisement, NativeCapabilities, NativeConnection, NativeError,
-    NativePump, NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
-    ProtocolClass, ProtocolSpec, PumpStep, FIKA_PROTOCOL_MATRIX, specs_in_class,
+    NativePopupPositioner, NativePump, NativeRegistry, NativeShell, NativeShellEvent,
+    NativeSurfaceHandle, NativeSurfaceId, ProtocolClass, ProtocolSpec, PumpStep,
+    FIKA_PROTOCOL_MATRIX, specs_in_class,
 };
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,

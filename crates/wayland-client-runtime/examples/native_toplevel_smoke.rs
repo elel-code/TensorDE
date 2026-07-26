@@ -22,7 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     compio::runtime::Runtime::new()?.block_on(async {
         while Instant::now() < deadline {
             let _ = shell.pump_once().await;
-            for event in shell.drain_events() {
+            let events: Vec<_> = shell.drain_events().collect();
+            for event in events {
                 match event {
                     NativeShellEvent::ToplevelConfigure {
                         surface: id,
@@ -37,12 +38,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("close {id:?}");
                         return;
                     }
-                    NativeShellEvent::SeatKeyboardKey { key, pressed } => {
-                        println!("key key={key} pressed={pressed}");
+                    NativeShellEvent::SeatKeyboardKey {
+                        key,
+                        pressed,
+                        keysym,
+                        text,
+                    } => {
+                        println!(
+                            "key key={key} pressed={pressed} keysym={keysym:#x} text={text:?}"
+                        );
                         if pressed && key == 1 {
                             // ESC
                             return;
                         }
+                    }
+                    NativeShellEvent::Selection { mimes } => {
+                        println!("selection mimes={mimes:?}");
+                    }
+                    NativeShellEvent::SelectionCancelled => {
+                        println!("selection cancelled");
+                    }
+                    NativeShellEvent::PopupConfigure {
+                        surface: id,
+                        x,
+                        y,
+                        width,
+                        height,
+                    } => {
+                        println!(
+                            "popup configure {id:?} @ ({x},{y}) {width}x{height}"
+                        );
+                    }
+                    NativeShellEvent::PopupDone { surface: id } => {
+                        println!("popup done {id:?}");
+                    }
+                    NativeShellEvent::DndEnter {
+                        surface: id,
+                        x,
+                        y,
+                        mimes,
+                    } => {
+                        println!("dnd enter {id:?} @ ({x:.1},{y:.1}) mimes={mimes:?}");
+                    }
+                    NativeShellEvent::DndLeave => println!("dnd leave"),
+                    NativeShellEvent::DndMotion { x, y } => {
+                        println!("dnd motion @ ({x:.1},{y:.1})");
+                    }
+                    NativeShellEvent::DndDrop => println!("dnd drop"),
+                    NativeShellEvent::DndFinished { cancelled } => {
+                        println!("dnd finished cancelled={cancelled}");
+                    }
+                    NativeShellEvent::TextInputEnter { surface: id } => {
+                        println!("text_input enter {id:?}");
+                    }
+                    NativeShellEvent::TextInputLeave { surface: id } => {
+                        println!("text_input leave {id:?}");
+                    }
+                    NativeShellEvent::TextInputDone {
+                        surface: id,
+                        serial,
+                        commit,
+                        preedit,
+                        delete_before,
+                        delete_after,
+                    } => {
+                        println!(
+                            "text_input done {id:?} serial={serial} commit={commit:?} preedit={preedit:?} del={delete_before}/{delete_after}"
+                        );
+                    }
+                    NativeShellEvent::LayerConfigure {
+                        surface: id,
+                        suggested_size,
+                        serial,
+                    } => {
+                        println!(
+                            "layer configure {id:?} size={suggested_size:?} serial={serial}"
+                        );
+                    }
+                    NativeShellEvent::LayerClosed { surface: id } => {
+                        println!("layer closed {id:?}");
+                    }
+                    NativeShellEvent::ActivationToken { surface: id, token } => {
+                        println!("activation token {id:?} token={token}");
                     }
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");

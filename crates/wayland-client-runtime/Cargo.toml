@@ -21,8 +21,10 @@ raw-window-handle = "0.6"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "system", "xkbcommon"] }
 thiserror = "2"
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# Native keyboard text (keymap fd → utf8). Feature `wayland` enables new_from_fd.
+xkbcommon = { version = "0.8", features = ["wayland"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
