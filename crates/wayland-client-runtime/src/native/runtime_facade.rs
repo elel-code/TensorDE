@@ -59,6 +59,8 @@ impl NativeRuntime {
                 pointer_gesture_hold_v1: caps.pointer_gesture_hold,
                 relative_pointer_v1: caps.relative_pointer,
                 xdg_dialog_v1: caps.xdg_dialog,
+                xdg_toplevel_icon_v1: caps.toplevel_icon,
+                ext_background_effect: caps.background_blur,
                 popup_reposition: false,
                 ..RuntimeCapabilities::default()
             },
@@ -368,16 +370,28 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-    pub fn set_blur(&mut self, _surface: SurfaceId, _state: BlurState) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Unsupported("ext_background_effect"))
+    pub fn set_blur(&mut self, surface: SurfaceId, state: BlurState) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell.set_blur(native, state).map_err(|e| match e {
+            NativeError::Protocol(msg) if msg.contains("blur capability") => {
+                RuntimeError::Unsupported("ext-background-effect-v1 blur")
+            }
+            other => map_native_error(other),
+        })
     }
 
     pub fn set_toplevel_icon(
         &mut self,
-        _surface: SurfaceId,
-        _icon: Option<ToplevelIcon>,
+        surface: SurfaceId,
+        icon: Option<ToplevelIcon>,
     ) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Unsupported("xdg_toplevel_icon_v1"))
+        if !self.shell.has_toplevel_icon() {
+            return Err(RuntimeError::Unsupported("xdg-toplevel-icon-v1"));
+        }
+        let native = self.native(surface)?;
+        self.shell
+            .set_toplevel_icon(native, icon)
+            .map_err(map_native_error)
     }
 
     pub fn set_pointer_gestures_enabled(

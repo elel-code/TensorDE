@@ -177,6 +177,8 @@ impl NativeShell {
                 _file: file,
                 viewport,
                 fractional,
+                icon_shm: Vec::new(),
+                blur_effect: None,
                 configured: false,
                 pending_size: Some((width as i32, height as i32)),
                 logical_w: width,

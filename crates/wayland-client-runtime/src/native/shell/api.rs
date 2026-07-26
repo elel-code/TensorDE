@@ -127,6 +127,22 @@ impl NativeShell {
         {
             state.xdg_wm_dialog = Some(dialog);
         }
+        if let Ok(icon_mgr) = globals.bind::<
+            wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.toplevel_icon_manager = Some(icon_mgr);
+        }
+        if let Ok(blur_mgr) = globals.bind::<
+            wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.background_effect_manager = Some(blur_mgr);
+        }
         if let Ok(act) =
             globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ())
         {
@@ -225,11 +241,25 @@ impl NativeShell {
                 .is_some_and(|g| g.version() >= 3),
             relative_pointer: self.state.relative_pointer_manager.is_some(),
             xdg_dialog: self.state.xdg_wm_dialog.is_some(),
+            toplevel_icon: self.state.toplevel_icon_manager.is_some(),
+            background_blur: self.state.background_blur_capable,
         }
     }
 
     pub fn has_xdg_dialog(&self) -> bool {
         self.state.xdg_wm_dialog.is_some()
+    }
+
+    pub fn has_toplevel_icon(&self) -> bool {
+        self.state.toplevel_icon_manager.is_some()
+    }
+
+    pub fn has_background_blur(&self) -> bool {
+        self.state.background_blur_capable
+    }
+
+    pub fn preferred_icon_sizes(&self) -> &[u32] {
+        &self.state.preferred_icon_sizes
     }
 
     /// Enable `zwp_relative_pointer_v1` for the seat pointer (unaccelerated motion).
@@ -648,6 +678,13 @@ impl NativeShell {
             .remove(&record.wl.id().protocol_id());
         if let Some(dialog) = record.dialog {
             dialog.destroy();
+        }
+        if let Some(effect) = record.blur_effect {
+            effect.destroy();
+        }
+        for (_file, pool, buffer) in record.icon_shm {
+            buffer.destroy();
+            pool.destroy();
         }
         if let Some(ref frac) = record.fractional {
             self.state

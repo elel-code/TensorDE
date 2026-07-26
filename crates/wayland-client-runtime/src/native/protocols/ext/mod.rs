@@ -1,6 +1,3 @@
-//! **ext** — `wayland-protocols` `ext/` (`ext_*`).
+//! **ext** — `wayland-protocols` `ext/` and staging `ext_*` modules.
 //!
-//! Cross-compositor extensions outside the classic stable/staging trees.
-//!
-//! Planned (Fika-used):
-//! - `background_effect` — `ext_background_effect_manager_v1` (blur)
+//! - `background_effect` — wired in [`crate::native::NativeShell::set_blur`]

@@ -72,3 +72,48 @@ where
     );
     Ok((file, pool, buffer))
 }
+
+/// Create an ARGB8888 SHM buffer from premultiplied RGBA source bytes.
+///
+/// `rgba` is tightly packed 8-bit RGBA (not premultiplied). Converted to
+/// premultiplied ARGB8888 native endian for `wl_shm::Format::Argb8888`.
+pub fn create_rgba_buffer<State: 'static>(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<State>,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> io::Result<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>
+where
+    State: wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+        + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+{
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rgba size overflow"))?;
+    if rgba.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rgba byte length mismatch",
+        ));
+    }
+    let stride = width.saturating_mul(4);
+    let size = expected;
+    let mut file = create_memfd(size.max(4))?;
+    let mut encoded = vec![0u8; size];
+    crate::shm_format::copy_rgba_to_premultiplied_argb8888(rgba, &mut encoded);
+    file.write_all(&encoded)?;
+    file.flush()?;
+    let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        stride as i32,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    );
+    Ok((file, pool, buffer))
+}

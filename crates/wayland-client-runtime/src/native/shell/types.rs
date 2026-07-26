@@ -315,6 +315,8 @@ pub struct NativeCapabilities {
     pub pointer_gesture_hold: bool,
     pub relative_pointer: bool,
     pub xdg_dialog: bool,
+    pub toplevel_icon: bool,
+    pub background_blur: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -339,6 +341,11 @@ pub(crate) struct ToplevelRecord {
     pub(crate) _file: Option<File>,
     pub(crate) viewport: Option<wp_viewport::WpViewport>,
     pub(crate) fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    /// Retained SHM icon buffers until replaced (compositor may read async).
+    pub(crate) icon_shm: Vec<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>,
+    pub(crate) blur_effect: Option<
+        wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+    >,
     pub(crate) configured: bool,
     pub(crate) pending_size: Option<(i32, i32)>,
     /// Logical destination size for viewporter (surface-local).
@@ -406,6 +413,14 @@ pub struct NativeShellState {
     pub(crate) xdg_wm_dialog: Option<
         wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1,
     >,
+    pub(crate) toplevel_icon_manager: Option<
+        wayland_protocols::xdg::toplevel_icon::v1::client::xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
+    >,
+    pub(crate) preferred_icon_sizes: Vec<u32>,
+    pub(crate) background_effect_manager: Option<
+        wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    >,
+    pub(crate) background_blur_capable: bool,
     pub(crate) activation: Option<
         wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
     >,
@@ -509,6 +524,10 @@ impl Default for NativeShellState {
             text_input_pending_delete: (0, 0),
             layer_shell: None,
             xdg_wm_dialog: None,
+            toplevel_icon_manager: None,
+            preferred_icon_sizes: Vec::new(),
+            background_effect_manager: None,
+            background_blur_capable: false,
             activation: None,
             activation_tokens: HashMap::new(),
             pointer_gestures: None,

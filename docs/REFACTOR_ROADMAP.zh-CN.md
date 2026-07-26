@@ -553,9 +553,9 @@ compio executor
     - `NativeRuntime` 门面：poll(display+eventfd)、create_toplevel_gpu、drain_public_events
     - `SurfaceHandle` 支持 SCTK / Native 双后端（wgpu 可接）
     - native 路径：主窗口 + 输入 + frame + scale + clipboard + DnD + text_input
-    - **min/max size**、**set_window_geometry**、**parented dialog**（`set_parent` + 可选 `xdg_dialog_v1` modal）
-    - blur / toplevel icon 仍 Unsupported
-  - 待丰富：native CSD / icon / blur；默认仍 SCTK
+    - min/max、window geometry、parented dialog（`xdg_dialog_v1` modal）
+    - **xdg_toplevel_icon**（name + SHM 像素）、**ext_background_effect blur**
+  - 待丰富：native CSD decorations、DnD 图标 surface；默认仍 SCTK
 
 完成标准：
 

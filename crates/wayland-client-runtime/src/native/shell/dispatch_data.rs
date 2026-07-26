@@ -314,6 +314,58 @@ mod tests {
     }
 
     #[test]
+    fn native_shell_set_icon_name_when_global_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("icon", "dev.fika.Icon", 200, 200)
+            .expect("toplevel");
+        if shell.has_toplevel_icon() {
+            let icon = crate::ToplevelIcon::from_name("fika").expect("icon name");
+            shell
+                .set_toplevel_icon(id, Some(icon))
+                .expect("set icon");
+            shell
+                .set_toplevel_icon(id, None)
+                .expect("clear icon");
+        }
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
+    fn native_shell_set_blur_when_capable() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("blur", "dev.fika.Blur", 200, 200)
+            .expect("toplevel");
+        // Drain capability events.
+        let _ = shell.dispatch_pending();
+        if shell.has_background_blur() {
+            shell
+                .set_blur(
+                    id,
+                    crate::BlurState::Enabled(crate::BlurRegion::EntireSurface),
+                )
+                .expect("enable blur");
+            shell
+                .set_blur(id, crate::BlurState::Disabled)
+                .expect("disable blur");
+        } else {
+            let err = shell
+                .set_blur(
+                    id,
+                    crate::BlurState::Enabled(crate::BlurRegion::EntireSurface),
+                )
+                .expect_err("blur should fail without capability");
+            let _ = err;
+        }
+        let _ = shell.destroy_toplevel(id);
+    }
+
+    #[test]
     fn native_shell_creates_parented_dialog_when_compositor_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

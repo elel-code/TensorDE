@@ -4,10 +4,12 @@
 //! linear async consumers.
 
 mod api;
+mod api_chrome;
 mod api_surface;
 mod api_transfer;
 mod dispatch;
 mod dispatch_activation;
+mod dispatch_chrome;
 mod dispatch_data;
 mod dispatch_dialog;
 mod dispatch_gestures;
