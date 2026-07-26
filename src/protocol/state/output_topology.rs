@@ -59,19 +59,19 @@ impl RuntimeState {
             scale = descriptor.scale.as_f64(),
             "Smithay output connected"
         );
-        let preferred = crate::backend::smithay_mode(descriptor.mode);
+        let preferred = crate::protocol::adapter::output_mode(descriptor.mode);
         let output = smithay::output::Output::new(
             descriptor.name.clone(),
             smithay::output::PhysicalProperties {
                 size: descriptor.physical_size.into(),
-                subpixel: crate::backend::smithay_subpixel(descriptor.subpixel),
+                subpixel: crate::protocol::adapter::output_subpixel(descriptor.subpixel),
                 make: "Unknown".to_owned(),
                 model: descriptor.name.clone(),
                 serial_number: "Unknown".to_owned(),
             },
         );
         for mode in &descriptor.modes {
-            output.add_mode(crate::backend::smithay_mode(*mode));
+            output.add_mode(crate::protocol::adapter::output_mode(*mode));
         }
         output.set_preferred(preferred);
         output.change_current_state(
@@ -134,7 +134,7 @@ impl RuntimeState {
                 "discarded presentation feedback for replaced output mode"
             );
         }
-        let preferred = crate::backend::smithay_mode(descriptor.mode);
+        let preferred = crate::protocol::adapter::output_mode(descriptor.mode);
         let managed = self
             .outputs
             .get_mut(&descriptor.id)
@@ -147,7 +147,9 @@ impl RuntimeState {
             managed.output.delete_mode(mode);
         }
         for mode in &descriptor.modes {
-            managed.output.add_mode(crate::backend::smithay_mode(*mode));
+            managed
+                .output
+                .add_mode(crate::protocol::adapter::output_mode(*mode));
         }
         managed.output.set_preferred(preferred);
         managed.output.change_current_state(

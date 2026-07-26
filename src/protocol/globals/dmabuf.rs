@@ -32,7 +32,7 @@ impl DmabufProtocol {
     ) -> Result<bool, String> {
         let formats = formats
             .into_iter()
-            .map(crate::backend::smithay_drm_format)
+            .map(crate::protocol::adapter::smithay_drm_format)
             .collect::<Vec<_>>();
         if formats.is_empty() {
             return Ok(false);

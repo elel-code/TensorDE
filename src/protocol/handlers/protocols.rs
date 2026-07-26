@@ -550,9 +550,12 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
     fn get_gamma_size(&mut self, output: &smithay::output::Output) -> Option<u32> {
         #[cfg(feature = "tty")]
         {
+            let id = *output
+                .user_data()
+                .get::<crate::backend::BackendOutputId>()?;
             self.backend
                 .as_ref()
-                .and_then(|backend| backend.gamma_size(output))
+                .and_then(|backend| backend.gamma_size(id))
         }
         #[cfg(not(feature = "tty"))]
         {
@@ -568,9 +571,12 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
     ) -> Option<()> {
         #[cfg(feature = "tty")]
         {
+            let id = *output
+                .user_data()
+                .get::<crate::backend::BackendOutputId>()?;
             self.backend
                 .as_mut()
-                .and_then(|backend| backend.set_gamma(output, ramp.as_deref()))
+                .and_then(|backend| backend.set_gamma(id, ramp.as_deref()))
         }
         #[cfg(not(feature = "tty"))]
         {

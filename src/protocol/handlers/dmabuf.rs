@@ -179,7 +179,7 @@ fn renderer_dmabuf<'a>(
         .collect();
     crate::render::Dmabuf {
         size,
-        format: crate::backend::host_drm_format(dmabuf.format()),
+        format: crate::protocol::adapter::host_drm_format(dmabuf.format()),
         node: None,
         planes,
     }

@@ -206,7 +206,7 @@ impl TtyBackend {
             native_format_candidates = status.native_format_candidates,
             primary_gbm_ready = status.primary_gbm_ready,
             session_active = status.session_active,
-            "Smithay tty backend initialized"
+            "Tensor tty backend initialized"
         );
         Ok(backend)
     }
@@ -240,9 +240,9 @@ impl TtyBackend {
         self.reconcile_outputs();
     }
 
-    /// Primary DRM fd shared with Smithay's syncobj protocol owner.  This is
-    /// the same primary/render identity selected by Vulkan; the backend never
-    /// performs an independent GPU choice.
+    /// Primary DRM fd shared with the syncobj protocol owner. This is the same
+    /// primary/render identity selected by Vulkan; the backend never performs
+    /// an independent GPU choice.
     pub(crate) fn syncobj_device(&self) -> Option<DrmDeviceFd> {
         if !self.session.is_active() {
             return None;
@@ -254,8 +254,7 @@ impl TtyBackend {
     }
 
     /// LUT size for `zwlr_gamma_control_v1`, when the CRTC exposes gamma.
-    pub(crate) fn gamma_size(&self, output: &smithay::output::Output) -> Option<u32> {
-        let id = *output.user_data().get::<super::BackendOutputId>()?;
+    pub(crate) fn gamma_size(&self, id: super::BackendOutputId) -> Option<u32> {
         let device = self.devices.get(&id.device_id)?;
         let state = device.gamma.get(&id)?;
         state.gamma_size(&device.drm)
@@ -267,10 +266,9 @@ impl TtyBackend {
     /// ioctl (or legacy gamma ioctl) proportional to the hardware LUT length.
     pub(crate) fn set_gamma(
         &mut self,
-        output: &smithay::output::Output,
+        id: super::BackendOutputId,
         ramp: Option<&[u16]>,
     ) -> Option<()> {
-        let id = *output.user_data().get::<super::BackendOutputId>()?;
         let session_active = self.session.is_active();
         let device = self.devices.get_mut(&id.device_id)?;
         let state = device.gamma.get_mut(&id)?;
@@ -278,7 +276,8 @@ impl TtyBackend {
             Ok(()) => Some(()),
             Err(error) => {
                 warn!(
-                    output = %output.name(),
+                    device_id = id.device_id,
+                    connector_id = id.connector_id,
                     %error,
                     "failed to apply gamma ramp"
                 );
