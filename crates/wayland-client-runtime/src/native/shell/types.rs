@@ -72,6 +72,22 @@ pub enum NativeShellEvent {
         mods_locked: u32,
         group: u32,
     },
+    /// `wl_surface.frame` callback fired (time is compositor milliseconds).
+    Frame {
+        surface: NativeSurfaceId,
+        time: u32,
+    },
+}
+
+/// Capability snapshot for the native shell connection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeCapabilities {
+    pub fractional_scale: bool,
+    pub viewporter: bool,
+    pub cursor_shape: bool,
+    pub seat: bool,
+    pub pointer: bool,
+    pub keyboard: bool,
 }
 
 pub(crate) struct ToplevelRecord {
@@ -118,6 +134,8 @@ pub struct NativeShellState {
     pub(crate) next_id: u32,
     pub(crate) events: Vec<NativeShellEvent>,
     pub(crate) seat_capabilities: wl_seat::Capability,
+    /// wl_callback object id → surface.
+    pub(crate) frame_callbacks: HashMap<u32, NativeSurfaceId>,
 }
 
 impl Default for NativeShellState {
@@ -145,6 +163,7 @@ impl Default for NativeShellState {
             next_id: 1,
             events: Vec::new(),
             seat_capabilities: wl_seat::Capability::empty(),
+            frame_callbacks: HashMap::new(),
         }
     }
 }

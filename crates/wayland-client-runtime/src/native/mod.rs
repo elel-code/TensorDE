@@ -19,7 +19,9 @@ pub use connection::{NativeConnection, NativeError};
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
-pub use shell::{NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId};
+pub use shell::{
+    NativeCapabilities, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+};
 
 /// Shared helper for modules that already hold a `Connection`.
 pub(crate) fn display_readiness_from_conn(

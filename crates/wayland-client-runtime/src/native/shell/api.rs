@@ -1,7 +1,7 @@
 //! NativeShell public methods.
 
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_compositor, wl_seat, wl_shm};
+use wayland_client::protocol::{wl_callback, wl_compositor, wl_seat, wl_shm};
 use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
@@ -10,7 +10,9 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 use super::handle::NativeSurfaceHandle;
-use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId, ToplevelRecord};
+use super::types::{
+    NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId, ToplevelRecord,
+};
 use crate::display_io::DisplayReadiness;
 use crate::native::connection::{NativeConnection, NativeError};
 use crate::native::display_readiness_from_conn;
@@ -101,6 +103,41 @@ impl NativeShell {
 
     pub fn has_cursor_shape(&self) -> bool {
         self.state.cursor_shape_manager.is_some()
+    }
+
+    pub fn capabilities(&self) -> NativeCapabilities {
+        NativeCapabilities {
+            fractional_scale: self.state.fractional_manager.is_some(),
+            viewporter: self.state.viewporter.is_some(),
+            cursor_shape: self.state.cursor_shape_manager.is_some(),
+            seat: self.state.seat.is_some(),
+            pointer: self.state.pointer.is_some()
+                || self
+                    .state
+                    .seat_capabilities
+                    .contains(wayland_client::protocol::wl_seat::Capability::Pointer),
+            keyboard: self.state.keyboard.is_some()
+                || self
+                    .state
+                    .seat_capabilities
+                    .contains(wayland_client::protocol::wl_seat::Capability::Keyboard),
+        }
+    }
+
+    /// Request a `wl_surface.frame` callback; emits [`NativeShellEvent::Frame`].
+    pub fn request_frame(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        let qh = self.queue.handle();
+        let record = self
+            .state
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        let callback = record.wl.frame(&qh, ());
+        self.state
+            .frame_callbacks
+            .insert(callback.id().protocol_id(), id);
+        self.connection.flush()?;
+        Ok(())
     }
 
     /// Set the pointer cursor via `wp_cursor_shape` when available.

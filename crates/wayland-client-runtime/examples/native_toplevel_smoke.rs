@@ -11,8 +11,10 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shell = NativeShell::connect_to_env()?;
+    println!("capabilities: {:?}", shell.capabilities());
     let surface = shell.create_toplevel("native-toplevel-smoke", "dev.fika.NativeToplevelSmoke")?;
     println!("created surface {surface:?}");
+    let _ = shell.request_frame(surface);
 
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut configured = false;

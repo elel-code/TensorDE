@@ -2,8 +2,8 @@
 
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -445,6 +445,29 @@ impl Dispatch<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1, ()> for NativeSh
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        callback: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { callback_data } = event {
+            let id = state
+                .frame_callbacks
+                .remove(&callback.id().protocol_id());
+            if let Some(surface) = id {
+                state.push(NativeShellEvent::Frame {
+                    surface,
+                    time: callback_data,
+                });
+            }
+        }
     }
 }
 

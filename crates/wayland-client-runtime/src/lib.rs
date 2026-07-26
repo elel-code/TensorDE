@@ -40,8 +40,8 @@ pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
 pub use display_io::DisplayReadiness;
 pub use native::{
-    list_env_globals, GlobalAdvertisement, NativeConnection, NativeError, NativePump,
-    NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+    list_env_globals, GlobalAdvertisement, NativeCapabilities, NativeConnection, NativeError,
+    NativePump, NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
     ProtocolClass, ProtocolSpec, PumpStep, FIKA_PROTOCOL_MATRIX, specs_in_class,
 };
 pub use dnd::{
