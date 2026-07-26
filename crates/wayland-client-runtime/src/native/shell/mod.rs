@@ -10,4 +10,4 @@ mod types;
 
 pub use api::NativeShell;
 pub use handle::NativeSurfaceHandle;
-pub use types::{NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId};
+pub use types::{NativeCapabilities, NativeShellEvent, NativeSurfaceId};

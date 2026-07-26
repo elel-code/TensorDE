@@ -84,6 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         println!("pointer axis h={horizontal:.2} v={vertical:.2}");
                     }
+                    NativeShellEvent::Frame { surface: id, time } => {
+                        println!("frame {id:?} time={time}");
+                        let _ = shell.request_frame(id);
+                    }
                 }
             }
             if configured {

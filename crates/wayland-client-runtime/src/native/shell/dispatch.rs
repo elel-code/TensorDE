@@ -15,7 +15,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId};
+use super::types::{NativeShellEvent, NativeShellState};
 use crate::geometry::SuggestedSize;
 
 

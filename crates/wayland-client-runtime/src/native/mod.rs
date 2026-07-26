@@ -2,8 +2,8 @@
 //!
 //! Phase 2 skeleton: own the connection, registry snapshot, and a Compio-driven
 //! read/dispatch pump using `wayland-client` wire bindings only. Shell/seat
-//! objects are not implemented here yet; the production [`crate::Runtime`] still
-//! uses SCTK until those land.
+//! Production Fika still uses SCTK [`crate::Runtime`] until native coverage is
+//! complete; [`NativeShell`] is already usable for toplevel + input + scale.
 //!
 //! Protocol implementations are split by upstream class under [`protocols`]
 //! (core / stable / staging / unstable / ext / community), following
