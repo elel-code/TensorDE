@@ -62,16 +62,52 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            if interface == "wl_seat" && state.seat.is_none() {
-                let v = version.min(9).max(1);
-                state.seat = Some(registry.bind(name, v, qh, ()));
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => {
+                if interface == "wl_seat" && state.seat.is_none() {
+                    let v = version.min(9).max(1);
+                    state.seat = Some(registry.bind(name, v, qh, ()));
+                }
+                // Hotplug: bind outputs advertised after the initial registry dump.
+                if interface == "wl_output" && !state.outputs.contains_key(&name) {
+                    let v = version.min(4).max(1);
+                    let output = registry.bind::<wl_output::WlOutput, _, _>(name, v, qh, ());
+                    state
+                        .output_objects
+                        .insert(output.id().protocol_id(), name);
+                    state.output_proxies.insert(name, output);
+                    state.outputs.insert(
+                        name,
+                        super::types::OutputRecord {
+                            scale: 1,
+                            make: String::new(),
+                            model: String::new(),
+                            name: None,
+                            description: None,
+                            x: 0,
+                            y: 0,
+                            physical_width: 0,
+                            physical_height: 0,
+                            mode_width: 0,
+                            mode_height: 0,
+                            mode_refresh_mhz: 0,
+                            done: false,
+                        },
+                    );
+                }
             }
+            wl_registry::Event::GlobalRemove { name } => {
+                if state.outputs.remove(&name).is_some() {
+                    state.output_proxies.remove(&name);
+                    state.output_objects.retain(|_, n| *n != name);
+                    state.push(NativeShellEvent::OutputRemoved { output: name });
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -729,6 +765,9 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for NativeShellSt
             if let Some(id) = id {
                 let factor = f64::from(scale) / 120.0;
                 if let Some(record) = state.toplevels.get_mut(&id) {
+                    record.scale_factor = factor;
+                }
+                if let Some(record) = state.layers.get_mut(&id) {
                     record.scale_factor = factor;
                 }
                 if let Some(frame) = state.csd_frames.get_mut(&id) {

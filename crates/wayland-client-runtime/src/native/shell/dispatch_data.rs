@@ -585,8 +585,8 @@ mod tests {
         }
         use crate::layer_shell::{LayerAnchor, LayerSurfaceLayer, LayerSurfaceState};
         let state = LayerSurfaceState {
-            size: crate::LogicalSize::new(0, 0),
-            anchor: LayerAnchor::TOP | LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            size: crate::LogicalSize::new(320, 200),
+            anchor: LayerAnchor::TOP | LayerAnchor::LEFT,
             exclusive_zone: 0,
             exclusive_edge: None,
             margins: Default::default(),
@@ -596,14 +596,19 @@ mod tests {
         let id = shell
             .create_layer_surface_gpu("fika-gpu-layer", None, state)
             .expect("gpu layer");
-        // Bufferless: no SHM buffer stored.
-        assert!(shell.is_layer_configured(id) || !shell.is_layer_configured(id));
+        // Bufferless GPU layer: scale starts at 1; fractional may update later.
+        assert_eq!(shell.scale_factor(id), Some(1.0));
+        // Viewporter destination is safe to set for fixed-size layers.
+        shell
+            .set_viewport_destination(id, 320, 200)
+            .expect("layer viewport");
         let handle = shell.public_surface_handle(id).expect("handle");
         assert!(
             handle.window_handle().is_ok() && handle.display_handle().is_ok(),
             "GPU layer must export RWH for Vulkan WSI"
         );
         let _ = shell.destroy_layer_surface(id);
+        assert!(shell.scale_factor(id).is_none());
     }
 
     #[test]

@@ -710,6 +710,9 @@ pub fn map_native_event_full(
                 refresh_mhz: None,
             })))
         }
+        NativeShellEvent::OutputRemoved { output } => {
+            Some(Event::Output(OutputEvent::Removed(OutputId::from_raw(output))))
+        }
         NativeShellEvent::OutputGeometry {
             output,
             x,

@@ -85,7 +85,12 @@ oversized region clipped by the compositor because a NULL region means
 - **GPU path**: `create_layer_surface_gpu` — bufferless initial commit, no SHM on
   configure; exports RWH for `VK_KHR_wayland_surface` / wgpu swapchain present
   (Gilder-style wallpaper hosts).
+- Layers bind `wp_viewporter` + `wp_fractional_scale_v1` when available (same
+  buffer_scale=1 rule as toplevels); `scale_factor` / `set_viewport_destination`
+  work for layer surfaces.
 - Outputs expose `refresh_mhz` / `refresh_hz()` for present pacing.
+- Hotplug: late `wl_output` globals are bound; `global_remove` emits
+  `OutputEvent::Removed`.
 
 ## Linux dmabuf
 

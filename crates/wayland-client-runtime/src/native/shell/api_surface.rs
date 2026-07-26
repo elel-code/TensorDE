@@ -234,22 +234,37 @@ impl NativeShell {
         width: i32,
         height: i32,
     ) -> Result<(), NativeError> {
-        let record = self
-            .state
-            .toplevels
-            .get_mut(&id)
-            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        if width > 0 {
-            record.logical_w = width as u32;
+        let w = width.max(1);
+        let h = height.max(1);
+        if let Some(record) = self.state.toplevels.get_mut(&id) {
+            if width > 0 {
+                record.logical_w = width as u32;
+            }
+            if height > 0 {
+                record.logical_h = height as u32;
+            }
+            if let Some(vp) = record.viewport.as_ref() {
+                vp.set_destination(w, h);
+            }
+            self.connection.flush()?;
+            return Ok(());
         }
-        if height > 0 {
-            record.logical_h = height as u32;
+        if let Some(record) = self.state.layers.get_mut(&id) {
+            if width > 0 {
+                record.logical_w = width as u32;
+                record.state.size.width = width as u32;
+            }
+            if height > 0 {
+                record.logical_h = height as u32;
+                record.state.size.height = height as u32;
+            }
+            if let Some(vp) = record.viewport.as_ref() {
+                vp.set_destination(w, h);
+            }
+            self.connection.flush()?;
+            return Ok(());
         }
-        if let Some(vp) = record.viewport.as_ref() {
-            vp.set_destination(width.max(1), height.max(1));
-        }
-        self.connection.flush()?;
-        Ok(())
+        Err(NativeError::Protocol(format!("unknown surface {id:?}")))
     }
 
     pub fn set_min_size(

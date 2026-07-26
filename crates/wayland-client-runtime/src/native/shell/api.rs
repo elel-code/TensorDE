@@ -860,7 +860,29 @@ impl NativeShell {
         let output_proxy = output.and_then(|name| self.state.output_proxies.get(&name).cloned());
 
         let wl = compositor.create_surface(&qh, ());
+        // Fractional-scale clients keep buffer_scale at 1 (same as toplevel GPU).
         wl.set_buffer_scale(1);
+
+        let viewport = self
+            .state
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(&wl, &qh, ()));
+        let dest_w = state.size.width.max(1) as i32;
+        let dest_h = state.size.height.max(1) as i32;
+        // Zero size means compositor-chosen; only set destination when both axes are fixed.
+        if state.size.width > 0 && state.size.height > 0 {
+            if let Some(vp) = viewport.as_ref() {
+                vp.set_destination(dest_w, dest_h);
+            }
+        }
+
+        let fractional = self
+            .state
+            .fractional_manager
+            .as_ref()
+            .map(|mgr| mgr.get_fractional_scale(&wl, &qh, ()));
+
         let layer_surface = shell.get_layer_surface(
             &wl,
             output_proxy.as_ref(),
@@ -897,6 +919,11 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .insert(wl.id().protocol_id(), id);
+        if let Some(ref frac) = fractional {
+            self.state
+                .fractional_objects
+                .insert(frac.id().protocol_id(), id);
+        }
         self.state.layers.insert(
             id,
             LayerRecord {
@@ -905,6 +932,9 @@ impl NativeShell {
                 buffer,
                 _pool: pool,
                 _file: file,
+                viewport,
+                fractional,
+                scale_factor: 1.0,
                 configured: false,
                 pending_size: Some((state.size.width, state.size.height)),
                 logical_w: state.size.width,
@@ -1087,6 +1117,15 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .remove(&record.wl.id().protocol_id());
+        if let Some(ref frac) = record.fractional {
+            self.state
+                .fractional_objects
+                .remove(&frac.id().protocol_id());
+            frac.destroy();
+        }
+        if let Some(vp) = record.viewport {
+            vp.destroy();
+        }
         record.layer.destroy();
         if let Some(buffer) = record.buffer {
             buffer.destroy();
@@ -1341,7 +1380,11 @@ impl NativeShell {
     }
 
     pub fn scale_factor(&self, id: NativeSurfaceId) -> Option<f64> {
-        self.state.toplevels.get(&id).map(|t| t.scale_factor)
+        self.state
+            .toplevels
+            .get(&id)
+            .map(|t| t.scale_factor)
+            .or_else(|| self.state.layers.get(&id).map(|l| l.scale_factor))
     }
 
     /// Renderer lease for wgpu / Vulkan (`VK_KHR_wayland_surface`).

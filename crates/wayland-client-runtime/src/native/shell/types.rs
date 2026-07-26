@@ -169,6 +169,10 @@ pub enum NativeShellEvent {
     OutputDone {
         output: u32,
     },
+    /// Registry `global_remove` for a previously bound `wl_output`.
+    OutputRemoved {
+        output: u32,
+    },
     SurfaceOutputEnter {
         surface: NativeSurfaceId,
         output: u32,
@@ -553,6 +557,9 @@ pub(crate) struct LayerRecord {
     pub(crate) buffer: Option<wl_buffer::WlBuffer>,
     pub(crate) _pool: Option<wl_shm_pool::WlShmPool>,
     pub(crate) _file: Option<File>,
+    pub(crate) viewport: Option<wp_viewport::WpViewport>,
+    pub(crate) fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    pub(crate) scale_factor: f64,
     pub(crate) configured: bool,
     pub(crate) pending_size: Option<(u32, u32)>,
     pub(crate) logical_w: u32,
