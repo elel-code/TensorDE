@@ -12,7 +12,7 @@ mod output_config;
 mod output_helpers;
 #[cfg(feature = "tty")]
 mod output_topology;
-mod popup;
+pub(super) mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
 mod protocol_side;
@@ -28,6 +28,7 @@ mod workspace_host;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 
+pub(crate) use popup::{PopupKind, PopupManager, find_popup_root_surface};
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
 pub(crate) use window::ProtocolWindow;
 pub(crate) use workspace_host::WorkspaceHost;
@@ -44,7 +45,6 @@ use calloop::LoopHandle;
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
-    desktop::PopupManager,
     input::{Seat, SeatState},
     output::Scale,
     wayland::{
@@ -417,7 +417,7 @@ impl RuntimeState {
             .find(|window| window.wl_surface().as_deref() == Some(surface))
             .cloned();
         if let Some(window) = window {
-            self.space.unmap_elem(&window);
+            self.space.unmap_elem(&window, &self.popups);
         }
 
         let removed_view_id = self.surface_views.remove(&surface.id())?;
@@ -570,7 +570,7 @@ impl RuntimeState {
 
     fn update_window_surface_state(&self, window: &ProtocolWindow) {
         let (scale, transform) = self.window_output_state(window);
-        window.with_surfaces(|surface, states| {
+        window.with_surfaces(&self.popups, |surface, states| {
             send_surface_state(surface, states, scale.integer_scale(), transform);
             with_fractional_scale(states, |fractional| {
                 fractional.set_preferred_scale(scale.fractional_scale());

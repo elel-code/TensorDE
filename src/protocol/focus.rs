@@ -2,7 +2,6 @@ use std::borrow::Cow;
 
 use smithay::{
     backend::input::KeyState,
-    desktop::PopupKind,
     input::{
         Seat,
         keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
@@ -15,7 +14,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::X11Surface;
 
-use super::state::RuntimeState;
+use super::state::{PopupKind, RuntimeState};
 
 /// Keyboard focus keeps X11's ICCCM focus handshake intact while retaining
 /// normal Wayland surfaces as the common protocol target.

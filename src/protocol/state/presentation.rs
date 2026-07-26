@@ -195,9 +195,12 @@ impl RuntimeState {
                 continue;
             };
             if submitted_views.contains(&view_id) {
-                window.take_presentation_feedback(&mut feedback, primary_output, |_, _| {
-                    wp_presentation_feedback::Kind::empty()
-                });
+                window.take_presentation_feedback(
+                    &self.popups,
+                    &mut feedback,
+                    primary_output,
+                    |_, _| wp_presentation_feedback::Kind::empty(),
+                );
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
                     take_presentation_feedback_surface_tree(
@@ -259,7 +262,7 @@ impl RuntimeState {
                 .view_for_surface(&root)
                 .is_some_and(|view_id| submitted_views.contains(&view_id))
             {
-                window.send_frame(output, time, None, primary_output);
+                window.send_frame(&self.popups, output, time, None, primary_output);
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
                     send_frames_surface_tree(&popup, output, time, None, primary_output);

@@ -169,10 +169,10 @@ impl RuntimeState {
                     self.space.map_element(window, loc, false);
                 }
             } else if self.space.element_geometry(&window).is_some() {
-                self.space.unmap_elem(&window);
+                self.space.unmap_elem(&window, &self.popups);
             }
         }
-        self.space.refresh();
+        self.space.refresh(&self.popups);
         // Restore keyboard focus to the active workspace's focused view.
         #[cfg(feature = "tty")]
         if let Some(view_id) = self.world.focused_view(active)
@@ -217,7 +217,7 @@ impl RuntimeState {
         }
         #[cfg(feature = "xwayland")]
         self.relocate_x11_popups();
-        self.space.refresh();
+        self.space.refresh(&self.popups);
 
         for (window, geometry) in windows {
             self.update_window_surface_state(&window);

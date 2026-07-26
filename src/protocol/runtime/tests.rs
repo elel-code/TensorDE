@@ -6,9 +6,9 @@ use smithay::{
     utils::{ClockSource, Monotonic},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_compositor, wl_registry, wl_subcompositor, wl_subsurface, wl_surface},
+    protocol::{wl_compositor, wl_registry, wl_seat, wl_subcompositor, wl_subsurface, wl_surface},
 };
 use wayland_protocols::{
     wp::{
@@ -23,9 +23,10 @@ use wayland_protocols::{
     xdg::{
         decoration::zv1::client::zxdg_decoration_manager_v1,
         decoration::zv1::client::zxdg_toplevel_decoration_v1,
-        shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+        shell::client::{xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base},
     },
 };
+use wayland_server::Resource;
 
 use super::*;
 
@@ -41,6 +42,13 @@ enum ClientEvent {
     SubsurfaceDestroyed,
     PresentationClock(u32),
     PresentationDiscarded,
+    PopupParentConfigured,
+    PopupConfigured {
+        parent: u32,
+        child: u32,
+    },
+    PopupDestroyed,
+    PopupParentRejected(bool),
     Destroyed,
 }
 
@@ -51,6 +59,7 @@ struct TestClient {
     client_side_decoration: bool,
     presentation_clock_id: Option<u32>,
     presentation_discarded: bool,
+    popup_configures: u8,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for TestClient {
@@ -69,6 +78,8 @@ delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
 delegate_noop!(TestClient: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(TestClient: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(TestClient: ignore wl_surface::WlSurface);
+delegate_noop!(TestClient: ignore wl_seat::WlSeat);
+delegate_noop!(TestClient: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(TestClient: ignore wp_viewporter::WpViewporter);
 delegate_noop!(TestClient: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 delegate_noop!(TestClient: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
@@ -152,6 +163,21 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
     }
 }
 
+impl Dispatch<xdg_popup::XdgPopup, ()> for TestClient {
+    fn event(
+        state: &mut Self,
+        _: &xdg_popup::XdgPopup,
+        event: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, xdg_popup::Event::Configure { .. }) {
+            state.popup_configures = state.popup_configures.saturating_add(1);
+        }
+    }
+}
+
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for TestClient {
     fn event(
         _: &mut Self,
@@ -218,6 +244,7 @@ fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
             client_side_decoration: false,
             presentation_clock_id: None,
             presentation_discarded: false,
+            popup_configures: 0,
         };
         while state.presentation_clock_id.is_none() {
             queue.blocking_dispatch(&mut state).unwrap();
@@ -245,6 +272,201 @@ fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
         dispatch_until(&mut runtime, &event_rx),
         ClientEvent::PresentationDiscarded
     );
+    client.join().unwrap();
+}
+
+#[test]
+fn xdg_popup_lifecycle_uses_tensor_registry_without_frame_staging() {
+    let mut runtime = WaylandRuntime::with_appearance(
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap();
+    install_test_output(&mut runtime);
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+    let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+
+    let (event_tx, event_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<TestClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+            .unwrap();
+        let wm_base = globals
+            .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
+            .unwrap();
+        let seat = globals
+            .bind::<wl_seat::WlSeat, _, _>(&handle, 1..=9, ())
+            .unwrap();
+
+        let root_surface = compositor.create_surface(&handle, ());
+        let root_xdg_surface = wm_base.get_xdg_surface(&root_surface, &handle, ());
+        let root_toplevel = root_xdg_surface.get_toplevel(&handle, ());
+        root_surface.commit();
+
+        let mut state = TestClient {
+            configured: false,
+            configured_size: None,
+            preferred_scale: None,
+            client_side_decoration: false,
+            presentation_clock_id: None,
+            presentation_discarded: false,
+            popup_configures: 0,
+        };
+        while !state.configured {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        event_tx.send(ClientEvent::PopupParentConfigured).unwrap();
+
+        let popup_surface = compositor.create_surface(&handle, ());
+        let popup_xdg_surface = wm_base.get_xdg_surface(&popup_surface, &handle, ());
+        let positioner = wm_base.create_positioner(&handle, ());
+        positioner.set_size(160, 90);
+        positioner.set_anchor_rect(20, 30, 1, 1);
+        let popup = popup_xdg_surface.get_popup(Some(&root_xdg_surface), &positioner, &handle, ());
+        popup.grab(&seat, 1);
+        popup_surface.commit();
+        while state.popup_configures < 1 {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+
+        let child_surface = compositor.create_surface(&handle, ());
+        let child_xdg_surface = wm_base.get_xdg_surface(&child_surface, &handle, ());
+        let child_positioner = wm_base.create_positioner(&handle, ());
+        child_positioner.set_size(80, 45);
+        child_positioner.set_anchor_rect(10, 15, 1, 1);
+        let child_popup =
+            child_xdg_surface.get_popup(Some(&popup_xdg_surface), &child_positioner, &handle, ());
+        child_popup.grab(&seat, 2);
+        child_surface.commit();
+        while state.popup_configures < 2 {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        event_tx
+            .send(ClientEvent::PopupConfigured {
+                parent: popup_surface.id().protocol_id(),
+                child: child_surface.id().protocol_id(),
+            })
+            .unwrap();
+        release_rx.recv().unwrap();
+
+        child_popup.destroy();
+        child_xdg_surface.destroy();
+        child_surface.destroy();
+        popup.destroy();
+        popup_xdg_surface.destroy();
+        popup_surface.destroy();
+        child_positioner.destroy();
+        positioner.destroy();
+        connection.roundtrip().unwrap();
+        event_tx.send(ClientEvent::PopupDestroyed).unwrap();
+        release_rx.recv().unwrap();
+
+        let rejected_surface = compositor.create_surface(&handle, ());
+        let rejected_xdg_surface = wm_base.get_xdg_surface(&rejected_surface, &handle, ());
+        let rejected_positioner = wm_base.create_positioner(&handle, ());
+        rejected_positioner.set_size(120, 70);
+        rejected_positioner.set_anchor_rect(15, 25, 1, 1);
+        let rejected_popup = rejected_xdg_surface.get_popup(
+            Some(&root_xdg_surface),
+            &rejected_positioner,
+            &handle,
+            (),
+        );
+        rejected_surface.commit();
+        while state.popup_configures < 3 {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+
+        let rejected_child_surface = compositor.create_surface(&handle, ());
+        let rejected_child_xdg_surface =
+            wm_base.get_xdg_surface(&rejected_child_surface, &handle, ());
+        let rejected_child_positioner = wm_base.create_positioner(&handle, ());
+        rejected_child_positioner.set_size(60, 35);
+        rejected_child_positioner.set_anchor_rect(5, 10, 1, 1);
+        let _rejected_child_popup = rejected_child_xdg_surface.get_popup(
+            Some(&rejected_xdg_surface),
+            &rejected_child_positioner,
+            &handle,
+            (),
+        );
+        rejected_child_surface.commit();
+        while state.popup_configures < 4 {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        event_tx
+            .send(ClientEvent::PopupConfigured {
+                parent: rejected_surface.id().protocol_id(),
+                child: rejected_child_surface.id().protocol_id(),
+            })
+            .unwrap();
+        release_rx.recv().unwrap();
+
+        rejected_popup.destroy();
+        event_tx
+            .send(ClientEvent::PopupParentRejected(
+                connection.roundtrip().is_err(),
+            ))
+            .unwrap();
+
+        drop(root_toplevel);
+    });
+
+    assert_eq!(
+        dispatch_until(&mut runtime, &event_rx),
+        ClientEvent::PopupParentConfigured
+    );
+    let (parent_id, child_id) = match dispatch_until(&mut runtime, &event_rx) {
+        ClientEvent::PopupConfigured { parent, child } => (parent, child),
+        event => panic!("expected popup configure event, got {event:?}"),
+    };
+    let root = runtime
+        .state
+        .space
+        .elements()
+        .next()
+        .and_then(|window| window.wl_surface())
+        .map(std::borrow::Cow::into_owned)
+        .expect("popup parent remains mapped");
+    let popup_ids = runtime
+        .state
+        .popups
+        .popups_for_surface(&root)
+        .map(|(popup, _)| popup.wl_surface().id().protocol_id())
+        .collect::<Vec<_>>();
+    assert_eq!(popup_ids, [child_id, parent_id]);
+    release_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until(&mut runtime, &event_rx),
+        ClientEvent::PopupDestroyed
+    );
+    assert_eq!(runtime.state.popups.popups_for_surface(&root).count(), 0);
+    release_tx.send(()).unwrap();
+
+    let (parent_id, child_id) = match dispatch_until(&mut runtime, &event_rx) {
+        ClientEvent::PopupConfigured { parent, child } => (parent, child),
+        event => panic!("expected rejected popup configure event, got {event:?}"),
+    };
+    let popup_ids = runtime
+        .state
+        .popups
+        .popups_for_surface(&root)
+        .map(|(popup, _)| popup.wl_surface().id().protocol_id())
+        .collect::<Vec<_>>();
+    assert_eq!(popup_ids, [child_id, parent_id]);
+    release_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until(&mut runtime, &event_rx),
+        ClientEvent::PopupParentRejected(true)
+    );
+    assert_eq!(runtime.state.popups.popups_for_surface(&root).count(), 0);
     client.join().unwrap();
 }
 
@@ -327,6 +549,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
             client_side_decoration: false,
             presentation_clock_id: None,
             presentation_discarded: false,
+            popup_configures: 0,
         };
         while !state.configured {
             queue.blocking_dispatch(&mut state).unwrap();
@@ -384,6 +607,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     let output = runtime.state.space.outputs().next().unwrap().clone();
     let mut feedback = OutputPresentationFeedback::new(&output);
     window.take_presentation_feedback(
+        &runtime.state.popups,
         &mut feedback,
         |_, _| Some(output.clone()),
         |_, _| {

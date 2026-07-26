@@ -379,8 +379,10 @@ impl SecurityContextHandler for RuntimeState {
 
 impl InputMethodHandler for RuntimeState {
     fn new_popup(&mut self, surface: ImPopupSurface) {
-        use smithay::desktop::PopupKind;
-        if let Err(error) = self.popups.track_popup(PopupKind::InputMethod(surface)) {
+        if let Err(error) = self
+            .popups
+            .track_popup(crate::protocol::state::PopupKind::InputMethod(surface))
+        {
             warn!(%error, "failed to track input-method popup");
         }
         #[cfg(feature = "tty")]
@@ -388,10 +390,12 @@ impl InputMethodHandler for RuntimeState {
     }
 
     fn dismiss_popup(&mut self, surface: ImPopupSurface) {
-        use smithay::desktop::{PopupKind, PopupManager};
         let parent = surface.get_parent().map(|parent| parent.surface.clone());
         if let Some(parent) = parent {
-            let _ = PopupManager::dismiss_popup(&parent, &PopupKind::InputMethod(surface));
+            let _ = self.popups.dismiss_popup(
+                &parent,
+                &crate::protocol::state::PopupKind::InputMethod(surface),
+            );
         }
         #[cfg(feature = "tty")]
         self.request_redraw_workspace();

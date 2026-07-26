@@ -6,14 +6,13 @@
 
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
-    desktop::PopupManager,
     output::Output,
     utils::{IsAlive, Logical, Point, Rectangle, Transform},
     wayland::compositor::{TraversalAction, with_surface_tree_downward},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
 
-use super::ProtocolWindow;
+use super::{PopupManager, ProtocolWindow};
 
 #[derive(Debug)]
 struct MappedOutput {
@@ -42,9 +41,9 @@ impl MappedWindow {
         geometry
     }
 
-    fn bbox(&self) -> Rectangle<i32, Logical> {
+    fn bbox(&self, popups: &PopupManager) -> Rectangle<i32, Logical> {
         let geometry = self.window.geometry();
-        let mut bbox = self.window.bbox_with_popups();
+        let mut bbox = self.window.bbox_with_popups(popups);
         bbox.loc += self.location - geometry.loc;
         bbox
     }
@@ -146,7 +145,7 @@ impl WindowSpace {
         }
     }
 
-    pub(crate) fn unmap_elem(&mut self, window: &ProtocolWindow) {
+    pub(crate) fn unmap_elem(&mut self, window: &ProtocolWindow, popups: &PopupManager) {
         let Some(position) = self
             .elements
             .iter()
@@ -156,7 +155,7 @@ impl WindowSpace {
         };
         let mapped = self.elements.remove(position);
         for overlap in &mapped.outputs {
-            leave_window_output(&mapped.window, &overlap.output);
+            leave_window_output(&mapped.window, &overlap.output, popups);
         }
     }
 
@@ -168,6 +167,7 @@ impl WindowSpace {
 
     pub(crate) fn element_under<P>(
         &self,
+        popups: &PopupManager,
         point: P,
     ) -> Option<(&ProtocolWindow, Point<i32, Logical>)>
     where
@@ -175,13 +175,13 @@ impl WindowSpace {
     {
         let point = point.into();
         self.elements.iter().rev().find_map(|entry| {
-            if !entry.bbox().to_f64().contains(point) {
+            if !entry.bbox(popups).to_f64().contains(point) {
                 return None;
             }
             let render_location = entry.render_location();
             entry
                 .window
-                .surface_under(point - render_location.to_f64())
+                .surface_under(popups, point - render_location.to_f64())
                 .is_some()
                 .then_some((&entry.window, render_location))
         })
@@ -240,7 +240,7 @@ impl WindowSpace {
         self.outputs.iter().map(|mapped| &mapped.output)
     }
 
-    pub(crate) fn unmap_output(&mut self, output: &Output) {
+    pub(crate) fn unmap_output(&mut self, output: &Output, popups: &PopupManager) {
         let Some(position) = self
             .outputs
             .iter()
@@ -256,7 +256,7 @@ impl WindowSpace {
                 .position(|overlap| overlap.output == *output)
             {
                 let overlap = mapped.outputs.remove(position);
-                leave_window_output(&mapped.window, &overlap.output);
+                leave_window_output(&mapped.window, &overlap.output, popups);
             }
         }
     }
@@ -294,11 +294,11 @@ impl WindowSpace {
         overlaps.iter().map(|overlap| &overlap.output)
     }
 
-    pub(crate) fn refresh(&mut self) {
+    pub(crate) fn refresh(&mut self, popups: &PopupManager) {
         self.elements.retain(|entry| entry.window.alive());
         let outputs = &self.outputs;
         for mapped in &mut self.elements {
-            let bbox = mapped.bbox();
+            let bbox = mapped.bbox(popups);
             for output in outputs {
                 let overlap = output
                     .geometry
@@ -319,7 +319,7 @@ impl WindowSpace {
                     }),
                     (Some(position), None) => {
                         let removed = mapped.outputs.remove(position);
-                        leave_window_output(&mapped.window, &removed.output);
+                        leave_window_output(&mapped.window, &removed.output, popups);
                     }
                     (None, None) => {}
                 }
@@ -327,11 +327,11 @@ impl WindowSpace {
             mapped.outputs.retain(|overlap| {
                 let retained = outputs.iter().any(|mapped| mapped.output == overlap.output);
                 if !retained {
-                    leave_window_output(&mapped.window, &overlap.output);
+                    leave_window_output(&mapped.window, &overlap.output, popups);
                 }
                 retained
             });
-            refresh_window_outputs(mapped);
+            refresh_window_outputs(mapped, popups);
         }
         for output in outputs {
             output.output.cleanup();
@@ -356,13 +356,13 @@ fn mapped_output_geometry(
     })
 }
 
-fn refresh_window_outputs(mapped: &MappedWindow) {
+fn refresh_window_outputs(mapped: &MappedWindow, popups: &PopupManager) {
     let Some(root) = mapped.window.wl_surface() else {
         return;
     };
     for overlap in &mapped.outputs {
         update_surface_tree_output(&overlap.output, Some(overlap.region), &root);
-        for (popup, location) in PopupManager::popups_for_surface(&root) {
+        for (popup, location) in popups.popups_for_surface(&root) {
             let mut region = overlap.region;
             region.loc -= location;
             update_surface_tree_output(&overlap.output, Some(region), popup.wl_surface());
@@ -370,12 +370,12 @@ fn refresh_window_outputs(mapped: &MappedWindow) {
     }
 }
 
-fn leave_window_output(window: &ProtocolWindow, output: &Output) {
+fn leave_window_output(window: &ProtocolWindow, output: &Output, popups: &PopupManager) {
     let Some(root) = window.wl_surface() else {
         return;
     };
     update_surface_tree_output(output, None, &root);
-    for (popup, _) in PopupManager::popups_for_surface(&root) {
+    for (popup, _) in popups.popups_for_surface(&root) {
         update_surface_tree_output(output, None, popup.wl_surface());
     }
 }
@@ -434,7 +434,7 @@ mod tests {
         utils::Transform,
     };
 
-    use super::WindowSpace;
+    use super::{PopupManager, WindowSpace};
 
     fn output(name: &str, size: (i32, i32), scale: f64) -> Output {
         let output = Output::new(
@@ -488,7 +488,7 @@ mod tests {
         space.map_output(&second, (0, 0));
 
         assert_eq!(space.output_under((5.0, 5.0)).next(), Some(&second));
-        space.unmap_output(&second);
+        space.unmap_output(&second, &PopupManager::default());
         assert_eq!(space.output_under((5.0, 5.0)).next(), Some(&first));
     }
 }

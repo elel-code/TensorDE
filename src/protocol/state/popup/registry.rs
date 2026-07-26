@@ -1,0 +1,499 @@
+// Derived from Smithay's popup manager implementation at commit c0aa71d.
+// Smithay's copyright notice and MIT terms are in LICENSES/Smithay-MIT.txt.
+
+use smithay::{
+    input::{Seat, SeatHandler},
+    utils::{DeadResource, IsAlive, Logical, Point, Rectangle, Serial},
+    wayland::{
+        compositor::{get_role, with_states},
+        input_method,
+        seat::WaylandFocus,
+        shell::xdg::{
+            self, PopupCachedState, SurfaceCachedState, XDG_POPUP_ROLE, XdgPopupSurfaceData,
+            XdgPopupSurfaceRoleAttributes,
+        },
+    },
+};
+use tracing::trace;
+use wayland_protocols::xdg::shell::server::xdg_wm_base;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
+
+use super::grab::{PopupGrab, PopupGrabError, PopupGrabHandler, PopupGrabInner};
+
+/// Protocol popup object retained by the compositor-thread topology owner.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PopupKind {
+    Xdg(xdg::PopupSurface),
+    InputMethod(input_method::PopupSurface),
+}
+
+impl IsAlive for PopupKind {
+    fn alive(&self) -> bool {
+        match self {
+            Self::Xdg(popup) => popup.alive(),
+            Self::InputMethod(popup) => popup.alive(),
+        }
+    }
+}
+
+impl PopupKind {
+    pub(crate) fn wl_surface(&self) -> &WlSurface {
+        match self {
+            Self::Xdg(popup) => popup.wl_surface(),
+            Self::InputMethod(popup) => popup.wl_surface(),
+        }
+    }
+
+    pub(super) fn parent(&self) -> Option<WlSurface> {
+        match self {
+            Self::Xdg(popup) => popup.get_parent_surface(),
+            Self::InputMethod(popup) => popup.get_parent().map(|parent| parent.surface.clone()),
+        }
+    }
+
+    pub(crate) fn geometry(&self) -> Rectangle<i32, Logical> {
+        match self {
+            Self::Xdg(_) => with_states(self.wl_surface(), |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceCachedState>()
+                    .current()
+                    .geometry
+                    .unwrap_or_default()
+            }),
+            Self::InputMethod(popup) => popup
+                .get_parent()
+                .map(|parent| parent.location)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn location(&self) -> Point<i32, Logical> {
+        match self {
+            Self::Xdg(popup) => popup.with_committed_state(|current| {
+                current.map(|state| state.geometry.loc).unwrap_or_default()
+            }),
+            Self::InputMethod(popup) => popup.location(),
+        }
+    }
+
+    fn send_done(&self) {
+        if let Self::Xdg(popup) = self {
+            popup.send_popup_done();
+        }
+    }
+}
+
+impl From<PopupKind> for WlSurface {
+    fn from(popup: PopupKind) -> Self {
+        popup.wl_surface().clone()
+    }
+}
+
+impl From<xdg::PopupSurface> for PopupKind {
+    fn from(popup: xdg::PopupSurface) -> Self {
+        Self::Xdg(popup)
+    }
+}
+
+impl From<input_method::PopupSurface> for PopupKind {
+    fn from(popup: input_method::PopupSurface) -> Self {
+        Self::InputMethod(popup)
+    }
+}
+
+#[derive(Debug)]
+struct PopupNode {
+    popup: PopupKind,
+    parent: WlSurface,
+    parent_index: Option<usize>,
+    remove: bool,
+}
+
+#[derive(Debug)]
+struct PopupTree {
+    root: WlSurface,
+    nodes: Vec<PopupNode>,
+    /// Topmost-to-bottom order; rebuilt only when topology changes.
+    order: Vec<usize>,
+}
+
+impl PopupTree {
+    fn new(root: WlSurface) -> Self {
+        Self {
+            root,
+            nodes: Vec::new(),
+            order: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, popup: PopupKind, parent: WlSurface) {
+        self.nodes.push(PopupNode {
+            popup,
+            parent,
+            parent_index: None,
+            remove: false,
+        });
+        self.rebuild_order();
+    }
+
+    fn rebuild_order(&mut self) {
+        for index in 0..self.nodes.len() {
+            let parent_index = self
+                .nodes
+                .iter()
+                .position(|candidate| candidate.popup.wl_surface() == &self.nodes[index].parent);
+            self.nodes[index].parent_index = parent_index;
+        }
+        self.order.clear();
+        append_popup_children(&self.root, &self.nodes, &mut self.order);
+    }
+
+    fn popup_location(&self, mut index: usize) -> Point<i32, Logical> {
+        let mut location = Point::default();
+        for _ in 0..self.nodes.len() {
+            let node = &self.nodes[index];
+            location += node.popup.location();
+            let Some(parent) = node.parent_index else {
+                break;
+            };
+            index = parent;
+        }
+        location
+    }
+
+    fn is_descendant_or_self(&self, mut index: usize, ancestor: &WlSurface) -> bool {
+        for _ in 0..=self.nodes.len() {
+            let node = &self.nodes[index];
+            if node.popup.wl_surface() == ancestor {
+                return true;
+            }
+            let Some(parent) = node.parent_index else {
+                return false;
+            };
+            index = parent;
+        }
+        false
+    }
+
+    fn dismiss(&mut self, popup: &PopupKind) {
+        let Some(target) = self.nodes.iter().position(|node| node.popup == *popup) else {
+            return;
+        };
+        let target_surface = self.nodes[target].popup.wl_surface().clone();
+        for index in self.order.iter().copied() {
+            if self.is_descendant_or_self(index, &target_surface) {
+                let node = &self.nodes[index];
+                node.popup.send_done();
+                self.nodes[index].remove = true;
+            }
+        }
+        self.nodes.retain(|node| !node.remove);
+        self.rebuild_order();
+    }
+
+    fn cleanup(&mut self) {
+        for index in 0..self.nodes.len() {
+            let popup = &self.nodes[index].popup;
+            if popup.alive()
+                && matches!(popup, PopupKind::Xdg(_))
+                && self.has_dead_xdg_ancestor(index)
+            {
+                self.nodes[index].popup.wl_surface().post_error(
+                    xdg_wm_base::Error::NotTheTopmostPopup,
+                    "xdg_popup was destroyed while it was not the topmost popup",
+                );
+            }
+            let remove = !popup.alive() || self.has_dead_ancestor(index);
+            self.nodes[index].remove = remove;
+        }
+        self.nodes.retain(|node| !node.remove);
+        self.rebuild_order();
+    }
+
+    fn has_dead_ancestor(&self, mut index: usize) -> bool {
+        for _ in 0..self.nodes.len() {
+            let Some(parent) = self.nodes[index].parent_index else {
+                return false;
+            };
+            if !self.nodes[parent].popup.alive() {
+                return true;
+            }
+            index = parent;
+        }
+        false
+    }
+
+    fn has_dead_xdg_ancestor(&self, mut index: usize) -> bool {
+        for _ in 0..self.nodes.len() {
+            let Some(parent) = self.nodes[index].parent_index else {
+                return false;
+            };
+            let parent_popup = &self.nodes[parent].popup;
+            if matches!(parent_popup, PopupKind::Xdg(_)) && !parent_popup.alive() {
+                return true;
+            }
+            index = parent;
+        }
+        false
+    }
+}
+
+fn append_popup_children(parent: &WlSurface, nodes: &[PopupNode], order: &mut Vec<usize>) {
+    for index in (0..nodes.len()).rev() {
+        let node = &nodes[index];
+        if node.parent != *parent || !node.popup.alive() {
+            continue;
+        }
+        append_popup_children(node.popup.wl_surface(), nodes, order);
+        order.push(index);
+    }
+}
+
+struct PopupIter<'a> {
+    tree: Option<&'a PopupTree>,
+    front: usize,
+    back: usize,
+}
+
+impl<'a> PopupIter<'a> {
+    fn new(tree: Option<&'a PopupTree>) -> Self {
+        let back = tree.map(|tree| tree.order.len()).unwrap_or_default();
+        Self {
+            tree,
+            front: 0,
+            back,
+        }
+    }
+
+    fn item(&self, order_index: usize) -> Option<(&'a PopupKind, Point<i32, Logical>)> {
+        let tree = self.tree?;
+        let node_index = *tree.order.get(order_index)?;
+        Some((
+            &tree.nodes[node_index].popup,
+            tree.popup_location(node_index),
+        ))
+    }
+}
+
+impl<'a> Iterator for PopupIter<'a> {
+    type Item = (&'a PopupKind, Point<i32, Logical>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front == self.back {
+            return None;
+        }
+        let index = self.front;
+        self.front += 1;
+        self.item(index)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.back - self.front;
+        (remaining, Some(remaining))
+    }
+}
+
+impl DoubleEndedIterator for PopupIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front == self.back {
+            return None;
+        }
+        self.back -= 1;
+        self.item(self.back)
+    }
+}
+
+impl ExactSizeIterator for PopupIter<'_> {}
+
+/// Compositor-thread popup topology and explicit-grab owner.
+#[derive(Debug, Default)]
+pub(crate) struct PopupManager {
+    unmapped: Vec<PopupKind>,
+    trees: Vec<PopupTree>,
+    popup_grabs: Vec<PopupGrabInner>,
+}
+
+impl PopupManager {
+    pub(crate) fn track_popup(&mut self, popup: PopupKind) -> Result<(), DeadResource> {
+        if popup.parent().is_some() {
+            self.add_popup(popup)
+        } else {
+            trace!(?popup, "tracking popup until its parent commit");
+            self.unmapped.push(popup);
+            Ok(())
+        }
+    }
+
+    pub(crate) fn commit(&mut self, surface: &WlSurface) {
+        if get_role(surface) != Some(XDG_POPUP_ROLE) {
+            return;
+        }
+        let Some(index) = self
+            .unmapped
+            .iter()
+            .position(|popup| popup.wl_surface() == surface)
+        else {
+            return;
+        };
+        let popup = self.unmapped.swap_remove(index);
+        let _ = self.add_popup(popup);
+    }
+
+    fn add_popup(&mut self, popup: PopupKind) -> Result<(), DeadResource> {
+        let parent = popup.parent().ok_or(DeadResource)?;
+        let root = find_popup_root_surface(&popup)?;
+        let tree = if let Some(index) = self.trees.iter().position(|tree| tree.root == root) {
+            &mut self.trees[index]
+        } else {
+            self.trees.push(PopupTree::new(root));
+            self.trees.last_mut().unwrap()
+        };
+        tree.insert(popup, parent);
+        Ok(())
+    }
+
+    pub(crate) fn find_popup(&self, surface: &WlSurface) -> Option<PopupKind> {
+        self.unmapped
+            .iter()
+            .find(|popup| popup.wl_surface() == surface && popup.alive())
+            .cloned()
+            .or_else(|| {
+                self.trees
+                    .iter()
+                    .flat_map(|tree| &tree.nodes)
+                    .find(|node| node.popup.wl_surface() == surface && node.popup.alive())
+                    .map(|node| node.popup.clone())
+            })
+    }
+
+    pub(crate) fn popups_for_surface<'a>(
+        &'a self,
+        surface: &WlSurface,
+    ) -> impl DoubleEndedIterator<Item = (&'a PopupKind, Point<i32, Logical>)> + ExactSizeIterator
+    {
+        PopupIter::new(self.trees.iter().find(|tree| tree.root == *surface))
+    }
+
+    pub(crate) fn dismiss_popup(
+        &mut self,
+        root: &WlSurface,
+        popup: &PopupKind,
+    ) -> Result<(), DeadResource> {
+        if !root.alive() {
+            return Err(DeadResource);
+        }
+        if let Some(tree) = self.trees.iter_mut().find(|tree| tree.root == *root) {
+            tree.dismiss(popup);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cleanup(&mut self) {
+        self.popup_grabs.retain_mut(|grabs| {
+            grabs.cleanup();
+            grabs.has_any_grabs()
+        });
+        for tree in &mut self.trees {
+            tree.cleanup();
+        }
+        self.trees.retain(|tree| !tree.nodes.is_empty());
+        self.unmapped.retain(IsAlive::alive);
+    }
+
+    pub(crate) fn grab_popup<D>(
+        &mut self,
+        root: <D as SeatHandler>::KeyboardFocus,
+        popup: PopupKind,
+        seat: &Seat<D>,
+        serial: Serial,
+    ) -> Result<PopupGrab<D>, PopupGrabError>
+    where
+        D: PopupGrabHandler + 'static,
+        <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<PopupKind>,
+        <D as SeatHandler>::PointerFocus: From<<D as SeatHandler>::KeyboardFocus> + WaylandFocus,
+    {
+        let root_surface = find_popup_root_surface(&popup)?;
+        assert_eq!(root.wl_surface().as_deref(), Some(&root_surface));
+        if matches!(popup, PopupKind::InputMethod(_)) {
+            return Err(PopupGrabError::InvalidGrab);
+        }
+
+        seat.user_data().insert_if_missing(PopupGrabInner::default);
+        let toplevel_popups = seat.user_data().get::<PopupGrabInner>().unwrap().clone();
+        if !toplevel_popups.has_any_grabs() {
+            self.popup_grabs.push(toplevel_popups.clone());
+        }
+
+        let previous_serial = match toplevel_popups.grab(&popup, serial) {
+            Ok(serial) => serial,
+            Err(error) => {
+                match error {
+                    PopupGrabError::ParentDismissed => {
+                        let _ = self.dismiss_popup(&root_surface, &popup);
+                    }
+                    PopupGrabError::NotTheTopmostPopup => popup.wl_surface().post_error(
+                        xdg_wm_base::Error::NotTheTopmostPopup,
+                        "xdg_popup was not created on the topmost popup",
+                    ),
+                    _ => {}
+                }
+                return Err(error);
+            }
+        };
+
+        Ok(PopupGrab::new(
+            toplevel_popups,
+            root,
+            serial,
+            previous_serial,
+            seat.get_keyboard(),
+        ))
+    }
+}
+
+/// Finds the non-popup surface at the root of a popup parent chain.
+pub(crate) fn find_popup_root_surface(popup: &PopupKind) -> Result<WlSurface, DeadResource> {
+    let mut parent = popup.parent().ok_or(DeadResource)?;
+    for _ in 0..256 {
+        if get_role(&parent) != Some(XDG_POPUP_ROLE) {
+            return Ok(parent);
+        }
+        parent = with_states(&parent, |states| {
+            states
+                .data_map
+                .get::<XdgPopupSurfaceData>()
+                .and_then(|data| data.lock().ok()?.parent.clone())
+        })
+        .ok_or(DeadResource)?;
+    }
+    Err(DeadResource)
+}
+
+pub(crate) fn get_popup_toplevel_coords(popup: &PopupKind) -> Point<i32, Logical> {
+    let Some(mut parent) = popup.parent() else {
+        return (0, 0).into();
+    };
+    let mut offset = Point::from((0, 0));
+    while get_role(&parent) == Some(XDG_POPUP_ROLE) {
+        offset += with_states(&parent, |states| {
+            states
+                .cached_state
+                .get::<PopupCachedState>()
+                .current()
+                .last_acked
+                .map(|configure| configure.state.geometry.loc)
+                .unwrap_or_default()
+        });
+        let Some(next) = with_states(&parent, |states| {
+            states
+                .data_map
+                .get::<std::sync::Mutex<XdgPopupSurfaceRoleAttributes>>()
+                .and_then(|attributes| attributes.lock().ok()?.parent.clone())
+        }) else {
+            break;
+        };
+        parent = next;
+    }
+    offset
+}

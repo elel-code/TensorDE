@@ -1,6 +1,5 @@
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
-    desktop::{PopupManager, find_popup_root_surface},
     utils::IsAlive,
     wayland::compositor::{
         SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
@@ -12,7 +11,7 @@ use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurfac
 
 use crate::scene::{SurfaceLayer, SurfaceTransform};
 
-use super::{RuntimeState, surfaces::SurfaceCommit};
+use super::{RuntimeState, find_popup_root_surface, surfaces::SurfaceCommit};
 
 impl RuntimeState {
     pub(crate) fn defer_surface_sync(
@@ -127,9 +126,7 @@ impl RuntimeState {
             &mut commits,
         );
 
-        let mut popups = PopupManager::popups_for_surface(root).collect::<Vec<_>>();
-        popups.reverse();
-        for (popup, offset) in popups {
+        for (popup, offset) in self.popups.popups_for_surface(root).rev() {
             let popup_geometry = popup.geometry();
             collect_surface_tree(
                 popup.wl_surface(),

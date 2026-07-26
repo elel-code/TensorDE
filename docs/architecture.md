@@ -87,7 +87,7 @@ commands recompute geometry. The resulting snapshot relocates Tensor `WindowSpac
 changing their stacking order and supplies both the XDG suggested size and output-relative bounds.
 `ProtocolWindow` owns stable window identity and cached surface-tree bounds on the compositor
 thread. Its `Rc` clones share state without copying geometry, while Smithay remains only the
-underlying XDG/XWayland object and popup/XDND adapter.
+underlying XDG/XWayland object plus the transitional layer/XDND adapters.
 
 Scene extraction is a separate once-per-frame boundary. Nodes are stored in stable `ViewId` order
 for linear snapshot comparison and carry an independent stacking-order index for drawing. Effect
@@ -129,6 +129,14 @@ policy into the flat ECS content table. Synchronized subsurface callbacks are de
 ancestor applies the complete Smithay transaction; explicit acquire/release points follow the same
 gate. Popup content remains owned by its toplevel but is clipped by the output rather than the
 layout tile, and its old/new bounds participate in scene damage.
+
+Popup topology and explicit grabs are compositor-thread Tensor state. A topology change rebuilds a
+compact topmost-to-bottom node index and parent indices; frame traversal borrows that index directly
+through an exact double-ended iterator, with no popup clones, mutex, or staging vector. Dynamic
+locations walk only the bounded popup parent chain. Destruction removes a complete descendant tree,
+and destroying a parent before its live XDG child reports the required `not_the_topmost_popup`
+protocol error immediately. Smithay remains the temporary XDG/input object adapter, not the popup
+policy or topology owner.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely

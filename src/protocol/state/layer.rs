@@ -11,7 +11,7 @@ use std::{
 
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,
-    desktop::{LayerSurface, PopupManager, WindowSurfaceType, layer_map_for_output},
+    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
@@ -30,7 +30,7 @@ use crate::{
     scene::{EffectStyle, SceneNode, SceneSnapshot, SurfaceLayer},
 };
 
-use super::{RuntimeState, tree::collect_surface_tree};
+use super::{RuntimeState, find_popup_root_surface, tree::collect_surface_tree};
 use crate::protocol::focus::KeyboardFocusTarget;
 
 impl RuntimeState {
@@ -46,7 +46,7 @@ impl RuntimeState {
         }
         // xdg popups parent through protocol state, not wl_subsurface.
         if let Some(popup) = self.popups.find_popup(&root)
-            && let Ok(popup_root) = smithay::desktop::find_popup_root_surface(&popup)
+            && let Ok(popup_root) = find_popup_root_surface(&popup)
         {
             root = popup_root;
         }
@@ -160,7 +160,7 @@ impl RuntimeState {
         }
         if let Some((window, _)) = self
             .space
-            .element_under(location)
+            .element_under(&self.popups, location)
             .map(|(window, loc)| (window.clone(), loc))
         {
             let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
@@ -222,9 +222,7 @@ impl RuntimeState {
         // Layer trees use Popup clipping so exclusive panels and their xdg
         // popups may extend to the full output, not a tile clip.
         collect_surface_tree(root, (0, 0), SurfaceLayer::Popup, &mut commits);
-        let mut popups = PopupManager::popups_for_surface(root).collect::<Vec<_>>();
-        popups.reverse();
-        for (popup, offset) in popups {
+        for (popup, offset) in self.popups.popups_for_surface(root).rev() {
             let popup_geometry = popup.geometry();
             collect_surface_tree(
                 popup.wl_surface(),
@@ -446,9 +444,9 @@ impl RuntimeState {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, window_location) = self.space.element_under(location)?;
+        let (window, window_location) = self.space.element_under(&self.popups, location)?;
         window
-            .surface_under(location - window_location.to_f64())
+            .surface_under(&self.popups, location - window_location.to_f64())
             .map(|(surface, surface_location)| {
                 (surface, (surface_location + window_location).to_f64())
             })

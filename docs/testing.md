@@ -123,6 +123,10 @@ and rendering itself.
   requires a compositor session. The same client lifecycle exercises Tensor `ProtocolWindow`
   commit-bbox caching, preferred output state traversal, frame callbacks, presentation feedback,
   activation, and teardown without `smithay::desktop::Window`.
+- Popup lifecycle coverage creates a real two-level XDG tree, establishes nested explicit grabs,
+  verifies Tensor's child-first borrowed iteration order, and tears it down without frame staging.
+  A second tree destroys its parent first and must receive `not_the_topmost_popup` while Tensor
+  removes the complete descendant topology immediately.
 - Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
   pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
   text-input, input-method, virtual-keyboard, session-lock, security-context,

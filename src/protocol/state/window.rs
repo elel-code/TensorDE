@@ -13,12 +13,9 @@ use std::{
 
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
-    desktop::{
-        PopupManager,
-        utils::{
-            OutputPresentationFeedback, send_frames_surface_tree,
-            take_presentation_feedback_surface_tree, with_surfaces_surface_tree,
-        },
+    desktop::utils::{
+        OutputPresentationFeedback, send_frames_surface_tree,
+        take_presentation_feedback_surface_tree, with_surfaces_surface_tree,
     },
     output::Output,
     utils::{IsAlive, Logical, Point, Rectangle},
@@ -38,6 +35,8 @@ use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "xwayland")]
 use smithay::{desktop::WindowSurfaceType, xwayland::X11Surface};
+
+use super::PopupManager;
 
 #[derive(Debug)]
 // The enum already lives inside one Rc allocation. Boxing X11 would add a
@@ -128,13 +127,13 @@ impl ProtocolWindow {
         }
     }
 
-    pub(crate) fn bbox_with_popups(&self) -> Rectangle<i32, Logical> {
+    pub(crate) fn bbox_with_popups(&self, popups: &PopupManager) -> Rectangle<i32, Logical> {
         let mut bbox = self.bbox();
         let Some(root) = self.wl_surface() else {
             return bbox;
         };
         let geometry_location = self.geometry().loc;
-        for (popup, location) in PopupManager::popups_for_surface(root.as_ref()) {
+        for (popup, location) in popups.popups_for_surface(root.as_ref()) {
             let offset = geometry_location + location - popup.geometry().loc;
             bbox = bbox.merge(surface_tree_bbox(popup.wl_surface(), offset));
         }
@@ -173,7 +172,7 @@ impl ProtocolWindow {
         }
     }
 
-    pub(crate) fn with_surfaces<F>(&self, mut processor: F)
+    pub(crate) fn with_surfaces<F>(&self, popups: &PopupManager, mut processor: F)
     where
         F: FnMut(&WlSurface, &SurfaceData),
     {
@@ -181,13 +180,14 @@ impl ProtocolWindow {
             return;
         };
         with_surfaces_surface_tree(root.as_ref(), &mut processor);
-        for (popup, _) in PopupManager::popups_for_surface(root.as_ref()) {
+        for (popup, _) in popups.popups_for_surface(root.as_ref()) {
             with_surfaces_surface_tree(popup.wl_surface(), &mut processor);
         }
     }
 
     pub(crate) fn send_frame<T, F>(
         &self,
+        popups: &PopupManager,
         output: &Output,
         time: T,
         throttle: Option<Duration>,
@@ -207,7 +207,7 @@ impl ProtocolWindow {
             throttle,
             primary_scanout_output,
         );
-        for (popup, _) in PopupManager::popups_for_surface(root.as_ref()) {
+        for (popup, _) in popups.popups_for_surface(root.as_ref()) {
             send_frames_surface_tree(
                 popup.wl_surface(),
                 output,
@@ -220,6 +220,7 @@ impl ProtocolWindow {
 
     pub(crate) fn take_presentation_feedback<F1, F2>(
         &self,
+        popups: &PopupManager,
         output_feedback: &mut OutputPresentationFeedback,
         primary_scanout_output: F1,
         presentation_feedback_flags: F2,
@@ -236,7 +237,7 @@ impl ProtocolWindow {
             primary_scanout_output,
             presentation_feedback_flags,
         );
-        for (popup, _) in PopupManager::popups_for_surface(root.as_ref()) {
+        for (popup, _) in popups.popups_for_surface(root.as_ref()) {
             take_presentation_feedback_surface_tree(
                 popup.wl_surface(),
                 output_feedback,
@@ -247,7 +248,11 @@ impl ProtocolWindow {
     }
 
     /// Finds the topmost toplevel, subsurface, or popup input surface.
-    pub(crate) fn surface_under<P>(&self, point: P) -> Option<(WlSurface, Point<i32, Logical>)>
+    pub(crate) fn surface_under<P>(
+        &self,
+        popups: &PopupManager,
+        point: P,
+    ) -> Option<(WlSurface, Point<i32, Logical>)>
     where
         P: Into<Point<f64, Logical>>,
     {
@@ -256,7 +261,7 @@ impl ProtocolWindow {
             ProtocolWindowSurface::Wayland(surface) => {
                 let root = surface.wl_surface();
                 let geometry_location = self.geometry().loc;
-                for (popup, location) in PopupManager::popups_for_surface(root) {
+                for (popup, location) in popups.popups_for_surface(root) {
                     let offset = geometry_location + location - popup.geometry().loc;
                     if let Some(hit) = surface_tree_under(popup.wl_surface(), point, offset) {
                         return Some(hit);

@@ -265,7 +265,7 @@ impl RuntimeState {
     pub(crate) fn x11_popup_unmapped(&mut self, x11: &X11Surface) {
         if let Some(attachment) = self.xwayland_popups.unmap(x11.window_id()) {
             self.unmap_x11_popup_window(&attachment.window);
-            self.space.refresh();
+            self.space.refresh(&self.popups);
             self.refresh_x11_popup_owner_content(&attachment.owner);
         }
     }
@@ -273,7 +273,7 @@ impl RuntimeState {
     pub(crate) fn x11_popup_destroyed(&mut self, x11: &X11Surface) {
         if let Some(attachment) = self.xwayland_popups.remove(x11.window_id()) {
             self.unmap_x11_popup_window(&attachment.window);
-            self.space.refresh();
+            self.space.refresh(&self.popups);
             self.refresh_x11_popup_owner_content(&attachment.owner);
         }
     }
@@ -285,7 +285,7 @@ impl RuntimeState {
         let attachment = self.xwayland_popups.surface_destroyed(&surface.id())?;
         let owner = self.mapped_surface_for_id(&attachment.owner);
         self.unmap_x11_popup_window(&attachment.window);
-        self.space.refresh();
+        self.space.refresh(&self.popups);
         owner
     }
 
@@ -359,7 +359,7 @@ impl RuntimeState {
         for attachment in attachments {
             self.unmap_x11_popup_window(&attachment.window);
         }
-        self.space.refresh();
+        self.space.refresh(&self.popups);
     }
 
     pub(crate) fn reconcile_x11_popups(&mut self) {
@@ -387,7 +387,7 @@ impl RuntimeState {
         {
             if let Some(attachment) = self.xwayland_popups.detach(window_id) {
                 self.unmap_x11_popup_window(&attachment.window);
-                self.space.refresh();
+                self.space.refresh(&self.popups);
                 self.refresh_x11_popup_owner_content(&attachment.owner);
                 return true;
             }
@@ -415,7 +415,7 @@ impl RuntimeState {
 
         self.place_x11_popup(&attachment);
         self.restack_x11_popups_for_owner(&attachment.owner);
-        self.space.refresh();
+        self.space.refresh(&self.popups);
         if let Some(window) = self.x11_window_element(window_id) {
             self.update_window_surface_state(&window);
         }
@@ -495,7 +495,7 @@ impl RuntimeState {
 
     fn unmap_x11_popup_window(&mut self, x11: &X11Surface) {
         if let Some(window) = self.x11_window_element(x11.window_id()) {
-            self.space.unmap_elem(&window);
+            self.space.unmap_elem(&window, &self.popups);
         }
     }
 

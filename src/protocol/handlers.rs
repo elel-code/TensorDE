@@ -7,10 +7,6 @@ mod xwayland;
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    desktop::{
-        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
-        find_popup_root_surface,
-    },
     input::{
         Seat, SeatHandler, SeatState,
         dnd::DndGrabHandler,
@@ -53,8 +49,22 @@ use smithay::xwayland::XWaylandClientData;
 
 use super::{
     focus::KeyboardFocusTarget,
-    state::{RuntimeState, WaylandClientState, xdg_size_constraints},
+    state::{
+        PopupKind, RuntimeState, WaylandClientState, find_popup_root_surface,
+        popup::{PopupGrabHandler, PopupKeyboardGrab, PopupPointerGrab},
+        xdg_size_constraints,
+    },
 };
+
+impl PopupGrabHandler for RuntimeState {
+    fn dismiss_grabbed_popup(
+        &mut self,
+        root: &WlSurface,
+        popup: &PopupKind,
+    ) -> Result<(), smithay::utils::DeadResource> {
+        self.popups.dismiss_popup(root, popup)
+    }
+}
 
 impl CompositorHandler for RuntimeState {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -279,6 +289,10 @@ impl XdgShellHandler for RuntimeState {
         }
     }
 
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        self.popups.cleanup();
+    }
+
     fn reposition_request(
         &mut self,
         surface: PopupSurface,
@@ -312,12 +326,12 @@ impl XdgShellHandler for RuntimeState {
         #[cfg(not(feature = "tty"))]
         let is_layer = false;
         if !is_view && !is_layer {
-            let _ = PopupManager::dismiss_popup(&root, &popup);
+            let _ = self.popups.dismiss_popup(&root, &popup);
             return;
         }
         #[cfg(feature = "tty")]
         if is_view && self.layer_blocks_window_popup_grabs() {
-            let _ = PopupManager::dismiss_popup(&root, &popup);
+            let _ = self.popups.dismiss_popup(&root, &popup);
             return;
         }
         let Ok(mut grab) = self.popups.grab_popup(root.into(), popup, &seat, serial) else {
@@ -329,7 +343,7 @@ impl XdgShellHandler for RuntimeState {
                 && !(keyboard.has_grab(serial)
                     || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
             {
-                grab.ungrab(PopupUngrabStrategy::All);
+                grab.ungrab(self);
                 return;
             }
             keyboard.set_focus(self, grab.current_grab(), serial);
@@ -340,7 +354,7 @@ impl XdgShellHandler for RuntimeState {
                 && !(pointer.has_grab(serial)
                     || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
             {
-                grab.ungrab(PopupUngrabStrategy::All);
+                grab.ungrab(self);
                 return;
             }
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
