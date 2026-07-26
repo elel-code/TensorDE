@@ -46,6 +46,7 @@ clap = { version = "4", features = ["derive"] }
 compio = { version = "0.19", default-features = false, features = ["runtime", "async-fd", "io-uring", "polling", "fs", "net"] }
 drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
+futures-util = "0.3"
 gbm = { version = "0.18", optional = true }
 libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }
@@ -68,7 +69,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
 zbus = { version = "5", optional = true }
 
 [[bin]]

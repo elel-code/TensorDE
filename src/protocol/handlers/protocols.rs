@@ -18,9 +18,6 @@ use smithay::{
         pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
         pointer_warp::PointerWarpHandler,
         seat::WaylandFocus,
-        security_context::{
-            SecurityContext, SecurityContextHandler, SecurityContextListenerSource,
-        },
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         xdg_foreign::XdgForeignHandler,
         xdg_system_bell::XdgSystemBellHandler,
@@ -28,6 +25,9 @@ use smithay::{
 };
 use tracing::{debug, info, warn};
 
+use crate::protocol::extensions::security_context::{
+    SecurityContextHandler, SecurityContextListener,
+};
 use crate::protocol::state::{ObjectKey, RuntimeState, SessionLockState};
 
 impl RuntimeState {
@@ -361,31 +361,22 @@ impl SessionLockHandler for RuntimeState {
 }
 
 impl SecurityContextHandler for RuntimeState {
-    fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
-        debug!(
-            sandbox = ?context.sandbox_engine,
-            app_id = ?context.app_id,
-            "security context listener ready"
-        );
-        use std::sync::Arc;
+    fn security_context_is_nested(
+        &self,
+        client: &smithay::reexports::wayland_server::Client,
+    ) -> bool {
+        client
+            .get_data::<crate::protocol::state::WaylandClientState>()
+            .is_some_and(|data| data.security_context.is_some())
+    }
 
-        use crate::protocol::state::WaylandClientState;
-        if let Err(error) = self
-            .loop_handle
-            .insert_source(source, move |stream, _, state| {
-                let client_data = WaylandClientState {
-                    from_security_context: true,
-                    ..Default::default()
-                };
-                if let Err(error) = state
-                    .display_handle
-                    .insert_client(stream, Arc::new(client_data))
-                {
-                    warn!(%error, ?context, "failed to insert sandboxed Wayland client");
-                }
-            })
-        {
-            warn!(%error, "failed to register security-context listener");
+    fn context_created(&mut self, listener: SecurityContextListener) {
+        let Some(submitter) = self.security_context_submitter() else {
+            warn!("security-context completion runtime is not installed");
+            return;
+        };
+        if let Err(error) = submitter.submit(listener) {
+            warn!(?error, "security-context listener queue rejected a request");
         }
     }
 }

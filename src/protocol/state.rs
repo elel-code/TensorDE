@@ -33,6 +33,7 @@ use event_loop::EventLoopState;
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
@@ -74,6 +75,7 @@ use tensor_util::Size;
 
 #[cfg(feature = "tty")]
 use super::cursor::CursorState;
+use super::extensions::security_context::SecurityContextSubmitter;
 use super::globals::ProtocolGlobals;
 #[cfg(feature = "tty")]
 use presentation::PendingPresentations;
@@ -104,8 +106,6 @@ struct DeferredSurfaceSync {
 
 pub(crate) struct RuntimeState {
     pub(crate) display_handle: DisplayHandle,
-    /// calloop handle for protocol listeners (security-context sockets, etc.).
-    pub(crate) loop_handle: LoopHandle<'static, Self>,
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
     pub(crate) shm_state: ShmState,
@@ -122,6 +122,7 @@ pub(crate) struct RuntimeState {
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
     pub(crate) renderer: Option<VulkanRenderer>,
+    pub(super) security_context_submitter: Option<SecurityContextSubmitter>,
     #[cfg(feature = "tty")]
     surface_buffers: SurfaceBufferRegistry,
     #[cfg(feature = "tty")]
@@ -195,7 +196,6 @@ impl RuntimeState {
 
         Self {
             display_handle,
-            loop_handle,
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -212,6 +212,7 @@ impl RuntimeState {
             world: CompositorWorld::with_appearance(appearance),
             layout,
             renderer: None,
+            security_context_submitter: None,
             #[cfg(feature = "tty")]
             surface_buffers: SurfaceBufferRegistry::default(),
             #[cfg(feature = "tty")]
@@ -773,8 +774,8 @@ pub(crate) type InputDeviceCapabilities = tensor_input::DeviceCapabilities;
 #[derive(Debug, Default)]
 pub(crate) struct WaylandClientState {
     pub(crate) compositor_state: CompositorClientState,
-    /// True when the client connected through a `wp_security_context` socket.
-    pub(crate) from_security_context: bool,
+    /// Immutable sandbox identity for clients accepted through `wp_security_context`.
+    pub(crate) security_context: Option<Arc<tensor_protocol::SecurityContextMetadata>>,
 }
 
 impl ClientData for WaylandClientState {

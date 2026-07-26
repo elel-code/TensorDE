@@ -25,7 +25,6 @@ use smithay::{
         pointer_warp::PointerWarpManager,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
-        security_context::SecurityContextState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
             primary_selection::PrimarySelectionState,
@@ -48,7 +47,8 @@ use smithay::{
 
 use super::extensions::{
     ext_workspace::ExtWorkspaceManagerState, gamma_control::GammaControlManagerState,
-    output_management::OutputManagementState, virtual_pointer::VirtualPointerManagerState,
+    output_management::OutputManagementState, security_context::SecurityContextManagerState,
+    virtual_pointer::VirtualPointerManagerState,
 };
 use super::state::RuntimeState;
 
@@ -85,7 +85,7 @@ pub(crate) struct ProtocolGlobals {
     input_method: InputMethodManagerState,
     virtual_keyboard: VirtualKeyboardManagerState,
     session_lock: SessionLockManagerState,
-    security_context: SecurityContextState,
+    security_context: SecurityContextManagerState,
     foreign_toplevel_list: ForeignToplevelListState,
     xdg_foreign: XdgForeignState,
     system_bell: XdgSystemBellState,
@@ -124,7 +124,7 @@ impl ProtocolGlobals {
         let unrestricted = |client: &smithay::reexports::wayland_server::Client| {
             client
                 .get_data::<crate::protocol::state::WaylandClientState>()
-                .is_none_or(|data| !data.from_security_context)
+                .is_none_or(|data| data.security_context.is_none())
         };
         let wlr_data_control = WlrDataControlState::new::<RuntimeState, _>(
             display,
@@ -163,11 +163,14 @@ impl ProtocolGlobals {
             }),
             session_lock: SessionLockManagerState::new::<RuntimeState, _>(display, |_| true),
             // Sandboxed clients must not re-bind security-context.
-            security_context: SecurityContextState::new::<RuntimeState, _>(display, |client| {
-                client
-                    .get_data::<crate::protocol::state::WaylandClientState>()
-                    .is_some_and(|data| !data.from_security_context)
-            }),
+            security_context: SecurityContextManagerState::new::<RuntimeState, _>(
+                display,
+                |client| {
+                    client
+                        .get_data::<crate::protocol::state::WaylandClientState>()
+                        .is_some_and(|data| data.security_context.is_none())
+                },
+            ),
             foreign_toplevel_list: ForeignToplevelListState::new::<RuntimeState>(display),
             xdg_foreign: XdgForeignState::new::<RuntimeState>(display),
             system_bell: XdgSystemBellState::new::<RuntimeState>(display),

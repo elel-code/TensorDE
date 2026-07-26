@@ -10,6 +10,7 @@ mod content;
 mod ids;
 mod output;
 mod registry;
+mod security_context;
 mod sync;
 
 pub use catalog::{
@@ -23,4 +24,5 @@ pub use output::{OutputHeadSnapshot, OutputHeadUpdate, configuration_keeps_head_
 pub use registry::{
     SurfaceBufferRegistry, SurfaceCommit, SurfaceTreeRemoval, SurfaceTreeUpdate, SurfaceUpdate,
 };
+pub use security_context::SecurityContextMetadata;
 pub use sync::{SurfaceSync, SurfaceSyncRegistry};

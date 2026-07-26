@@ -29,7 +29,11 @@ use crate::{
         MAX_PENDING_IPC_REQUESTS,
     },
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
-    protocol::{ProtocolError, WaylandRuntime},
+    protocol::{
+        MAX_PENDING_SECURITY_CONTEXT_EVENTS, ProtocolError, SecurityContextEvent,
+        SecurityContextRuntime, SecurityContextRuntimeError, WaylandRuntime,
+        drain_security_context_events,
+    },
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
     signals::{MAX_PENDING_SIGNAL_EVENTS, SignalEvent, SignalRuntime, SignalRuntimeError},
@@ -56,6 +60,8 @@ pub struct Compositor {
     signal_event_sender: WorkerTx<SignalEvent>,
     signal_events: WorkerRx<SignalEvent>,
     signal_runtime: SignalRuntime,
+    security_context_events: WorkerRx<SecurityContextEvent>,
+    security_context_runtime: SecurityContextRuntime,
     #[cfg(feature = "tty")]
     gpu_fence_event_sender: WorkerTx<GpuFenceEvent>,
     #[cfg(feature = "tty")]
@@ -126,6 +132,14 @@ impl Compositor {
         let (signal_event_sender, signal_events) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_SIGNAL_EVENTS, completion_relay.wake());
         let signal_runtime = SignalRuntime::start(signal_event_sender.clone())?;
+        let (security_context_sender, security_context_events) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_SECURITY_CONTEXT_EVENTS,
+            completion_relay.wake(),
+        );
+        let security_context_runtime = SecurityContextRuntime::start(security_context_sender)?;
+        protocol
+            .state_mut()
+            .install_security_context_submitter(security_context_runtime.submitter());
         #[cfg(feature = "tty")]
         let (gpu_fence_event_sender, gpu_fence_events) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_GPU_FENCES, completion_relay.wake());
@@ -150,6 +164,8 @@ impl Compositor {
             signal_event_sender,
             signal_events,
             signal_runtime,
+            security_context_events,
+            security_context_runtime,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -336,6 +352,8 @@ impl Compositor {
             signal_event_sender,
             signal_events,
             signal_runtime,
+            security_context_events,
+            security_context_runtime,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -360,6 +378,7 @@ impl Compositor {
             ipc_control_sender,
             signal_event_sender,
             signal_runtime,
+            security_context_runtime,
             completion_relay,
             startup_commands,
             environment,
@@ -375,6 +394,13 @@ impl Compositor {
         protocol.run_with_channel(completion_notifications, move |event, state| match event {
             ChannelEvent::Msg(()) => {
                 drain_signal_events(&signal_events, &callback_stop, &callback_failure);
+                if let Err(message) = drain_security_context_events(&security_context_events, state)
+                {
+                    error!(%message, "security-context completion runtime failed");
+                    callback_failure.borrow_mut().replace(message);
+                    callback_stop.stop();
+                    return;
+                }
                 #[cfg(feature = "tty")]
                 drain_gpu_fence_events(&gpu_fence_events, state, &callback_stop, &callback_failure);
                 drain_launch_outcomes(&launch_outcomes, state);
@@ -457,6 +483,8 @@ pub enum CompositorError {
     CompletionRelay(#[from] CompletionRelayError),
     #[error(transparent)]
     SignalRuntime(#[from] SignalRuntimeError),
+    #[error(transparent)]
+    SecurityContextRuntime(#[from] SecurityContextRuntimeError),
     #[cfg(feature = "tty")]
     #[error(transparent)]
     GpuFenceRuntime(#[from] GpuFenceRuntimeError),

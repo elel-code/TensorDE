@@ -2060,6 +2060,7 @@ dependencies = [
  "compio",
  "drm-ffi",
  "futures-channel",
+ "futures-util",
  "gbm",
  "libc",
  "rustix 1.1.4",
