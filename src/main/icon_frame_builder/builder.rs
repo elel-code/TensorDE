@@ -555,6 +555,7 @@ impl<'a> IconFrameBuilder<'a> {
             self.slots.push(IconGpuSlot {
                 key: raster_key.clone(),
                 raster: padded_raster.clone(),
+                dmabuf: None,
             });
             self.slot_by_raster.insert(raster_key, slot);
             slot

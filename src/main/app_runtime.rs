@@ -95,11 +95,12 @@ impl ApplicationHandler for FikaWgpuApp {
         event_loop: &ActiveEventLoop,
         surface: Option<WindowId>,
     ) {
-        let Some(renderer) = self.renderer.as_ref() else {
+        let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
         // Prefer the surface from the event; fall back to main window.
         let surface = surface.or_else(|| self.window.as_ref().map(|w| w.id()));
+        renderer.sync_icon_dmabuf_plan(event_loop, surface);
         renderer.log_dmabuf_readiness(event_loop, surface, "feedback");
     }
 
@@ -150,8 +151,8 @@ impl ApplicationHandler for FikaWgpuApp {
 
         self.scene.clamp_scroll(renderer.size);
         renderer.prewarm_scene_caches(&mut self.scene, "startup");
-        // Feedback may still be in-flight; log GPU-side capability now and
-        // again when the first feedback event arrives (see Event::Dmabuf).
+        // Feedback may still be in-flight; seed plan when available and log.
+        renderer.sync_icon_dmabuf_plan(event_loop, Some(window.id()));
         renderer.log_dmabuf_readiness(event_loop, Some(window.id()), "startup");
         self.renderer = Some(renderer);
         self.clipboard = Some(clipboard);

@@ -42,7 +42,9 @@ impl WgpuState {
         }))
         .map_err(|error| format!("request device: {error}"))?;
 
-        if dmabuf_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
+        let dmabuf_import_supported =
+            dmabuf_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+        if dmabuf_import_supported {
             fika_log!("[fika-wgpu] dmabuf-import enabled (VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
         } else {
             fika_log!("[fika-wgpu] dmabuf-import unavailable on this adapter");
@@ -140,6 +142,9 @@ impl WgpuState {
                     .features()
                     .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
 
+        let mut icon_renderer = icon_renderer;
+        icon_renderer.set_dmabuf_import_state(dmabuf_import_supported, None);
+
         Ok(Self {
             damage_clear_renderer,
             quad_renderer,
@@ -165,6 +170,19 @@ impl WgpuState {
             clean_redraw_skips: 0,
             dmabuf_import_supported,
         })
+    }
+
+    /// Push negotiated dmabuf plan into the icon renderer (scheme C import path).
+    pub(crate) fn sync_icon_dmabuf_plan(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+    ) {
+        let readiness = self.dmabuf_readiness(event_loop, surface);
+        self.icon_renderer.set_dmabuf_import_state(
+            readiness.vulkan_import,
+            readiness.plan,
+        );
     }
 
     /// Whether this renderer can wrap dmabuf fds as wgpu textures.

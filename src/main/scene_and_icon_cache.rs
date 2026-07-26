@@ -260,9 +260,10 @@ struct IconFrameStats {
 ///
 /// Unique rasters are slots; draws reference a slot and sample that texture
 /// with local UVs (no shared atlas packing). Upload creates/reuses one
-/// `wgpu::Texture` (+ bind group) per slot — ready for future dmabuf import.
+/// `wgpu::Texture` (+ bind group) per slot; optional `dmabuf` plane enables
+/// zero-copy import when a compositor plan is available.
 struct IconFrame {
-    /// Unique icon textures for this frame (CPU pixels today; dmabuf later).
+    /// Unique icon textures for this frame (CPU pixels and/or dmabuf plane).
     slots: Vec<IconGpuSlot>,
     /// Content-layer draws grouped by slot (each batch = one bind + draw).
     content_batches: Vec<IconSlotBatch>,
@@ -275,11 +276,30 @@ struct IconFrame {
     stats: IconFrameStats,
 }
 const ICON_ATLAS_GUARD_TEXELS: u32 = 1;
+/// Optional single-plane dmabuf for zero-copy GPU upload (scheme C + dmabuf).
+///
+/// Consumed once at `IconRenderer::upload`; not `Clone` (owns the fd).
+struct IconDmabufSource {
+    plane: crate::shell::render::dmabuf::DmabufImportPlane,
+}
+
 /// One unique raster that becomes its own GPU texture.
-#[derive(Clone, Debug)]
 struct IconGpuSlot {
     key: IconAtlasRasterKey,
     raster: IconRaster,
+    /// When set, upload prefers `texture_from_dmabuf_fd` over `write_texture`.
+    dmabuf: Option<IconDmabufSource>,
+}
+
+impl std::fmt::Debug for IconGpuSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IconGpuSlot")
+            .field("key", &self.key)
+            .field("raster_w", &self.raster.width)
+            .field("raster_h", &self.raster.height)
+            .field("has_dmabuf", &self.dmabuf.is_some())
+            .finish()
+    }
 }
 /// Draw range into a vertex buffer for a single icon texture.
 #[derive(Clone, Debug)]

@@ -409,6 +409,9 @@ struct IconGpuTexture {
     #[allow(dead_code)]
     texture: wgpu::Texture,
     last_used_frame: u64,
+    /// How this texture was created (dmabuf import vs CPU upload).
+    #[allow(dead_code)]
+    source: crate::shell::render::dmabuf::ExternalTextureSource,
 }
 struct IconRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -427,6 +430,13 @@ struct IconRenderer {
     overlay_vertex_count: usize,
     last_vertices_hash: Option<u64>,
     gpu_frame: u64,
+    /// Negotiated compositor/GPU import plan (updated from feedback).
+    dmabuf_plan: Option<crate::shell::render::dmabuf::DmabufImportPlan>,
+    /// Adapter supports Vulkan DMA-BUF import feature.
+    dmabuf_import_supported: bool,
+    /// Lifetime stats (reset never; useful for logs).
+    dmabuf_imports: u64,
+    cpu_uploads: u64,
     resolver: FileIconResolver,
     thumbnails: ThumbnailRasterResolver,
     icon_rasters: IconRasterResolver,

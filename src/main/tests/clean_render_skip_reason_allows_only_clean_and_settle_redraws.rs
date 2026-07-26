@@ -67,14 +67,17 @@
         let first = IconGpuSlot {
             key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 7)),
             raster: test_icon_raster(16, 7),
+            dmabuf: None,
         };
         let same = IconGpuSlot {
             key: first.key.clone(),
             raster: first.raster.clone(),
+            dmabuf: None,
         };
         let different_pixels = IconGpuSlot {
             key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 9)),
             raster: test_icon_raster(16, 9),
+            dmabuf: None,
         };
 
         assert_eq!(

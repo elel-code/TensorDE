@@ -83,12 +83,32 @@ impl IconRenderer {
             overlay_vertex_count: 0,
             last_vertices_hash: None,
             gpu_frame: 0,
+            dmabuf_plan: None,
+            dmabuf_import_supported: false,
+            dmabuf_imports: 0,
+            cpu_uploads: 0,
             resolver: FileIconResolver::new(),
             thumbnails: ThumbnailRasterResolver::new(),
             icon_rasters: IconRasterResolver::new(),
             raster_cache: IconRasterCache::new(ICON_CACHE_MAX_BYTES),
             role_raster_cache: IconRoleRasterCache::new(ICON_ROLE_RASTER_CACHE_MAX_BYTES),
         }
+    }
+
+    /// Update dmabuf import capability + negotiated plan (from compositor feedback).
+    fn set_dmabuf_import_state(
+        &mut self,
+        supported: bool,
+        plan: Option<crate::shell::render::dmabuf::DmabufImportPlan>,
+    ) {
+        self.dmabuf_import_supported = supported;
+        self.dmabuf_plan = plan;
+    }
+
+    /// Lifetime counters for scheme-C GPU uploads (diagnostics / tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn icon_upload_source_stats(&self) -> (u64, u64) {
+        (self.dmabuf_imports, self.cpu_uploads)
     }
 
     fn prewarm_common_file_icon_rasters(&mut self, icon_size: f32) -> usize {
@@ -210,43 +230,35 @@ impl IconRenderer {
         self.frame_slot_keys.clear();
         self.frame_slot_keys.reserve(frame.slots.len());
 
-        for slot in &frame.slots {
+        for slot in &mut frame.slots {
             let key = IconGpuUploadKey::from_slot(slot);
             self.frame_slot_keys.push(key.clone());
             if let Some(entry) = self.gpu_textures.get_mut(&key) {
                 entry.last_used_frame = self.gpu_frame;
                 upload_skips += 1;
+                // Drop unused plane if the texture is already cached.
+                let _ = slot.dmabuf.take();
                 continue;
             }
-            let texture = create_icon_texture(device, slot.raster.width, slot.raster.height);
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                slot.raster.pixels.as_ref(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(slot.raster.width * 4),
-                    rows_per_image: Some(slot.raster.height),
-                },
-                wgpu::Extent3d {
-                    width: slot.raster.width,
-                    height: slot.raster.height,
-                    depth_or_array_layers: 1,
-                },
-            );
+            let (texture, source) = self.upload_slot_texture(device, queue, slot);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group =
                 create_icon_bind_group(device, &self.bind_group_layout, &view, &self.sampler);
+            match source {
+                crate::shell::render::dmabuf::ExternalTextureSource::DmabufImport => {
+                    self.dmabuf_imports = self.dmabuf_imports.saturating_add(1);
+                }
+                crate::shell::render::dmabuf::ExternalTextureSource::CpuUpload => {
+                    self.cpu_uploads = self.cpu_uploads.saturating_add(1);
+                }
+            }
             self.gpu_textures.insert(
                 key,
                 IconGpuTexture {
                     texture,
                     bind_group,
                     last_used_frame: self.gpu_frame,
+                    source,
                 },
             );
             uploads += 1;
@@ -289,6 +301,73 @@ impl IconRenderer {
             writes: 1,
             skips: 0,
         }
+    }
+
+    /// Create a GPU texture for one slot: dmabuf import when possible, else CPU.
+    fn upload_slot_texture(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: &mut IconGpuSlot,
+    ) -> (
+        wgpu::Texture,
+        crate::shell::render::dmabuf::ExternalTextureSource,
+    ) {
+        use crate::shell::render::dmabuf::{ExternalTextureSource, acquire_external_texture};
+
+        let w = slot.raster.width;
+        let h = slot.raster.height;
+        let plane = slot.dmabuf.take().map(|s| s.plane);
+        let plan = if self.dmabuf_import_supported {
+            self.dmabuf_plan
+        } else {
+            None
+        };
+
+        // Prefer zero-copy when the producer attached a plane and we have a plan.
+        if plane.is_some() && plan.is_some() {
+            match acquire_external_texture(
+                device,
+                queue,
+                plan,
+                w,
+                h,
+                plane,
+                Some(slot.raster.pixels.as_ref()),
+                Some("fika-icon-dmabuf"),
+            ) {
+                Ok(ext) => return (ext.texture, ext.source),
+                Err(_) => {
+                    // Fall through to CPU path below.
+                }
+            }
+        } else {
+            // Ensure plane is dropped if we skipped import (no plan).
+            drop(plane);
+        }
+
+        // Default icon path: RGBA8 CPU upload (matches historical atlas format).
+        let texture = create_icon_texture(device, w, h);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            slot.raster.pixels.as_ref(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        (texture, ExternalTextureSource::CpuUpload)
     }
 
     fn evict_gpu_textures_if_needed(&mut self) {
