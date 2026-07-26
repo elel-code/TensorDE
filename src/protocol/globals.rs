@@ -41,6 +41,9 @@ use smithay::{
     },
 };
 
+use super::extensions::{
+    gamma_control::GammaControlManagerState, virtual_pointer::VirtualPointerManagerState,
+};
 use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
@@ -89,6 +92,8 @@ pub(crate) struct ProtocolGlobals {
     fifo: FifoManagerState,
     commit_timing: CommitTimingManagerState,
     xwayland_keyboard_grab: XWaylandKeyboardGrabState,
+    virtual_pointer: VirtualPointerManagerState,
+    gamma_control: GammaControlManagerState,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -161,6 +166,11 @@ impl ProtocolGlobals {
             fifo: FifoManagerState::new::<RuntimeState>(display),
             commit_timing: CommitTimingManagerState::new::<RuntimeState>(display),
             xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
+            virtual_pointer: VirtualPointerManagerState::new::<RuntimeState, _>(
+                display,
+                unrestricted,
+            ),
+            gamma_control: GammaControlManagerState::new::<RuntimeState, _>(display, unrestricted),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -239,6 +249,14 @@ impl ProtocolGlobals {
         &mut self.xdg_foreign
     }
 
+    pub(crate) fn virtual_pointer(&mut self) -> &mut VirtualPointerManagerState {
+        &mut self.virtual_pointer
+    }
+
+    pub(crate) fn gamma_control(&mut self) -> &mut GammaControlManagerState {
+        &mut self.gamma_control
+    }
+
     pub(crate) fn capabilities(&self) -> ProtocolCapabilities {
         let _global_owners = (
             &self.viewporter,
@@ -276,6 +294,8 @@ impl ProtocolGlobals {
             &self.fifo,
             &self.commit_timing,
             &self.xwayland_keyboard_grab,
+            &self.virtual_pointer,
+            &self.gamma_control,
         );
         ProtocolCapabilities {
             viewporter: true,
@@ -313,6 +333,8 @@ impl ProtocolGlobals {
             fifo: true,
             commit_timing: true,
             xwayland_keyboard_grab: true,
+            virtual_pointer: true,
+            gamma_control: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -360,6 +382,8 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) fifo: bool,
     pub(crate) commit_timing: bool,
     pub(crate) xwayland_keyboard_grab: bool,
+    pub(crate) virtual_pointer: bool,
+    pub(crate) gamma_control: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -424,6 +448,8 @@ mod tests {
                 fifo: true,
                 commit_timing: true,
                 xwayland_keyboard_grab: true,
+                virtual_pointer: true,
+                gamma_control: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

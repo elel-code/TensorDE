@@ -12,7 +12,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_pointer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+    Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId,
 };
 use smithay::reexports::{
     wayland_protocols_wlr::virtual_pointer::v1::server::{
@@ -20,6 +20,7 @@ use smithay::reexports::{
     },
     wayland_server::WEnum,
 };
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
@@ -42,7 +43,9 @@ pub struct VirtualPointer {
 
 #[derive(Debug)]
 pub struct VirtualPointerUserData {
+    #[allow(dead_code)]
     seat: Option<WlSeat>,
+    #[allow(dead_code)]
     output: Option<Output>,
 
     axis_frame: Mutex<Option<AxisFrame>>,
@@ -53,10 +56,12 @@ impl VirtualPointer {
         self.pointer.data().unwrap()
     }
 
+    #[allow(dead_code)]
     pub fn seat(&self) -> Option<&WlSeat> {
         self.data().seat.as_ref()
     }
 
+    #[allow(dead_code)]
     pub fn output(&self) -> Option<&Output> {
         self.data().output.as_ref()
     }
@@ -271,7 +276,7 @@ impl InputBackend for VirtualPointerInputBackend {
     type SpecialEvent = UnusedEvent;
 }
 
-pub trait VirtualPointerHandler {
+pub trait VirtualPointerHandler: 'static {
     fn virtual_pointer_manager_state(&mut self) -> &mut VirtualPointerManagerState;
 
     fn create_virtual_pointer(&mut self, pointer: VirtualPointer) {
@@ -290,8 +295,11 @@ pub trait VirtualPointerHandler {
 impl VirtualPointerManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
-        D: GlobalDispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData>,
-        D: Dispatch<ZwlrVirtualPointerManagerV1, ()>,
+        D: smithay::reexports::wayland_server::GlobalDispatch<
+                ZwlrVirtualPointerManagerV1,
+                VirtualPointerManagerGlobalData,
+            >,
+        D: Dispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData>,
         D: Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData>,
         D: VirtualPointerHandler,
         D: 'static,
@@ -301,51 +309,52 @@ impl VirtualPointerManagerState {
             filter: Box::new(filter),
         };
         display.create_global::<D, ZwlrVirtualPointerManagerV1, _>(VERSION, global_data);
-
         Self {
             virtual_pointers: HashSet::new(),
         }
     }
 }
 
-impl<D> GlobalDispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData, D>
-    for VirtualPointerManagerState
+impl<D> GlobalDispatch2<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
 where
-    D: GlobalDispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData>,
-    D: Dispatch<ZwlrVirtualPointerManagerV1, ()>,
-    D: Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData>,
-    D: VirtualPointerHandler,
+    D: Dispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData>,
     D: 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _handle: &DisplayHandle,
         _client: &Client,
-        manager: New<ZwlrVirtualPointerManagerV1>,
-        _manager_state: &VirtualPointerManagerGlobalData,
+        resource: New<ZwlrVirtualPointerManagerV1>,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(manager, ());
+        // Manager objects carry the same global data type so can_view stays consistent;
+        // filter is only used at GlobalDispatch2::can_view.
+        data_init.init(
+            resource,
+            VirtualPointerManagerGlobalData {
+                filter: Box::new(|_| true),
+            },
+        );
     }
 
-    fn can_view(client: Client, global_data: &VirtualPointerManagerGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrVirtualPointerManagerV1, (), D> for VirtualPointerManagerState
+impl<D> Dispatch2<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
 where
-    D: Dispatch<ZwlrVirtualPointerManagerV1, ()>,
     D: Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData>,
     D: VirtualPointerHandler,
     D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         _resource: &ZwlrVirtualPointerManagerV1,
         request: <ZwlrVirtualPointerManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -374,23 +383,21 @@ where
             .virtual_pointer_manager_state()
             .virtual_pointers
             .insert(pointer.clone());
-
         state.create_virtual_pointer(VirtualPointer { pointer });
     }
 }
 
-impl<D> Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData, D> for VirtualPointerManagerState
+impl<D> Dispatch2<ZwlrVirtualPointerV1, D> for VirtualPointerUserData
 where
-    D: Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData>,
     D: VirtualPointerHandler,
     D: 'static,
 {
     fn request(
+        &self,
         handler: &mut D,
         _client: &Client,
         resource: &ZwlrVirtualPointerV1,
         request: <ZwlrVirtualPointerV1 as Resource>::Request,
-        _data: &VirtualPointerUserData,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -399,13 +406,12 @@ where
         };
         match request {
             zwlr_virtual_pointer_v1::Request::Motion { time, dx, dy } => {
-                let event = VirtualPointerMotionEvent {
+                handler.on_virtual_pointer_motion(VirtualPointerMotionEvent {
                     pointer,
                     time,
                     dx,
                     dy,
-                };
-                handler.on_virtual_pointer_motion(event);
+                });
             }
             zwlr_virtual_pointer_v1::Request::MotionAbsolute {
                 time,
@@ -414,36 +420,30 @@ where
                 x_extent,
                 y_extent,
             } => {
-                let event = VirtualPointerMotionAbsoluteEvent {
+                handler.on_virtual_pointer_motion_absolute(VirtualPointerMotionAbsoluteEvent {
                     pointer,
                     time,
                     x,
                     y,
                     x_extent,
                     y_extent,
-                };
-                handler.on_virtual_pointer_motion_absolute(event);
+                });
             }
             zwlr_virtual_pointer_v1::Request::Button {
                 time,
                 button,
                 state,
             } => {
-                // state is an enum but wlroots treats it as a C boolean (zero or nonzero)
-                // so we emulate that behaviour too. ButtonState::Pressed and any invalid value
-                // counts as pressed.
-                // https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/3187479c07c34a4de82c06a316a763a36a0499da/types/wlr_virtual_pointer_v1.c#L74
                 let state = match state {
                     WEnum::Value(wl_pointer::ButtonState::Released) => ButtonState::Released,
                     _ => ButtonState::Pressed,
                 };
-                let event = VirtualPointerButtonEvent {
+                handler.on_virtual_pointer_button(VirtualPointerButtonEvent {
                     pointer,
                     time,
                     button,
                     state,
-                };
-                handler.on_virtual_pointer_button(event);
+                });
             }
             zwlr_virtual_pointer_v1::Request::Axis { time, axis, value } => {
                 let axis = match axis {
@@ -458,13 +458,11 @@ where
                         return;
                     }
                 };
-
                 pointer.mutate_axis_frame(Some(time), |frame| frame.value(axis, value));
             }
             zwlr_virtual_pointer_v1::Request::Frame => {
                 if let Some(frame) = pointer.finish_axis_frame() {
-                    let event = VirtualPointerAxisEvent { pointer, frame };
-                    handler.on_virtual_pointer_axis(event);
+                    handler.on_virtual_pointer_axis(VirtualPointerAxisEvent { pointer, frame });
                 }
             }
             zwlr_virtual_pointer_v1::Request::AxisSource { axis_source } => {
@@ -473,7 +471,6 @@ where
                     WEnum::Value(wl_pointer::AxisSource::Finger) => AxisSource::Finger,
                     WEnum::Value(wl_pointer::AxisSource::Continuous) => AxisSource::Continuous,
                     WEnum::Value(wl_pointer::AxisSource::WheelTilt) => AxisSource::WheelTilt,
-
                     _ => {
                         warn!("AxisSource: invalid axis source");
                         resource.post_error(
@@ -483,7 +480,6 @@ where
                         return;
                     }
                 };
-
                 pointer.mutate_axis_frame(None, |frame| frame.source(axis_source));
             }
             zwlr_virtual_pointer_v1::Request::AxisStop { time, axis } => {
@@ -499,7 +495,6 @@ where
                         return;
                     }
                 };
-
                 pointer.mutate_axis_frame(Some(time), |frame| frame.stop(axis));
             }
             zwlr_virtual_pointer_v1::Request::AxisDiscrete {
@@ -529,37 +524,14 @@ where
         }
     }
 
-    fn destroyed(
-        handler: &mut D,
-        _client: smithay::reexports::wayland_server::backend::ClientId,
-        resource: &ZwlrVirtualPointerV1,
-        _data: &VirtualPointerUserData,
-    ) {
+    fn destroyed(&self, handler: &mut D, _client: ClientId, resource: &ZwlrVirtualPointerV1) {
         let pointer = VirtualPointer {
             pointer: resource.clone(),
         };
-
         handler.destroy_virtual_pointer(pointer);
         handler
             .virtual_pointer_manager_state()
             .virtual_pointers
             .remove(resource);
     }
-}
-
-#[macro_export]
-macro_rules! delegate_virtual_pointer {
-    ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        smithay::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::server::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1: $crate::protocol::extensions::virtual_pointer::VirtualPointerManagerGlobalData
-            ] => $crate::protocol::extensions::virtual_pointer::VirtualPointerManagerState);
-
-        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::server::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1: ()
-        ] => $crate::protocol::extensions::virtual_pointer::VirtualPointerManagerState);
-
-        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::server::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1:  $crate::protocol::extensions::virtual_pointer::VirtualPointerUserData
-        ] => $crate::protocol::extensions::virtual_pointer::VirtualPointerManagerState);
-    };
 }

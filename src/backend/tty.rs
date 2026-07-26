@@ -223,7 +223,6 @@ impl TtyBackend {
     /// Request a libseat-mediated VT change. Smithay retains all DRM and
     /// session lifecycle ownership around the resulting pause/activation.
     /// LUT size for `zwlr_gamma_control_v1`, when the CRTC exposes gamma.
-    #[allow(dead_code)] // used once gamma-control Dispatch2 is wired
     pub(crate) fn gamma_size(&self, output: &smithay::output::Output) -> Option<u32> {
         let _ = (self, output);
         // Full KMS gamma LUT wiring follows Niri's GammaProps path; until then
@@ -232,7 +231,6 @@ impl TtyBackend {
     }
 
     /// Apply or reset a gamma ramp for an output (protocol boundary).
-    #[allow(dead_code)] // used once gamma-control Dispatch2 is wired
     pub(crate) fn set_gamma(
         &mut self,
         output: &smithay::output::Output,

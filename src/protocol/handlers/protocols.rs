@@ -474,3 +474,91 @@ impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for R
         }
     }
 }
+
+impl crate::protocol::extensions::virtual_pointer::VirtualPointerHandler for RuntimeState {
+    fn virtual_pointer_manager_state(
+        &mut self,
+    ) -> &mut crate::protocol::extensions::virtual_pointer::VirtualPointerManagerState {
+        self.protocol_globals.virtual_pointer()
+    }
+
+    fn on_virtual_pointer_motion(
+        &mut self,
+        event: crate::protocol::extensions::virtual_pointer::VirtualPointerMotionEvent,
+    ) {
+        #[cfg(feature = "tty")]
+        self.forward_virtual_pointer_motion(event);
+        #[cfg(not(feature = "tty"))]
+        let _ = event;
+    }
+
+    fn on_virtual_pointer_motion_absolute(
+        &mut self,
+        event: crate::protocol::extensions::virtual_pointer::VirtualPointerMotionAbsoluteEvent,
+    ) {
+        #[cfg(feature = "tty")]
+        self.forward_virtual_pointer_motion_absolute(event);
+        #[cfg(not(feature = "tty"))]
+        let _ = event;
+    }
+
+    fn on_virtual_pointer_button(
+        &mut self,
+        event: crate::protocol::extensions::virtual_pointer::VirtualPointerButtonEvent,
+    ) {
+        #[cfg(feature = "tty")]
+        self.forward_virtual_pointer_button(event);
+        #[cfg(not(feature = "tty"))]
+        let _ = event;
+    }
+
+    fn on_virtual_pointer_axis(
+        &mut self,
+        event: crate::protocol::extensions::virtual_pointer::VirtualPointerAxisEvent,
+    ) {
+        #[cfg(feature = "tty")]
+        self.forward_virtual_pointer_axis(event);
+        #[cfg(not(feature = "tty"))]
+        let _ = event;
+    }
+}
+
+impl crate::protocol::extensions::gamma_control::GammaControlHandler for RuntimeState {
+    fn gamma_control_manager_state(
+        &mut self,
+    ) -> &mut crate::protocol::extensions::gamma_control::GammaControlManagerState {
+        self.protocol_globals.gamma_control()
+    }
+
+    fn get_gamma_size(&mut self, output: &smithay::output::Output) -> Option<u32> {
+        #[cfg(feature = "tty")]
+        {
+            self.backend
+                .as_ref()
+                .and_then(|backend| backend.gamma_size(output))
+        }
+        #[cfg(not(feature = "tty"))]
+        {
+            let _ = output;
+            None
+        }
+    }
+
+    fn set_gamma(
+        &mut self,
+        output: &smithay::output::Output,
+        ramp: Option<Vec<u16>>,
+    ) -> Option<()> {
+        #[cfg(feature = "tty")]
+        {
+            self.backend
+                .as_mut()
+                .and_then(|backend| backend.set_gamma(output, ramp.as_deref()))
+        }
+        #[cfg(not(feature = "tty"))]
+        {
+            let _ = (output, ramp);
+            None
+        }
+    }
+}

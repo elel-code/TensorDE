@@ -31,9 +31,10 @@ Niri's Smithay-native globals (including data-control, fifo, commit-timing).
 **Niri custom (`src/protocols/`):** virtual-pointer, gamma-control, screencopy,
 output-management, ext-workspace, foreign-toplevel (wlr+ext), mutter-x11-interop.
 
-Tensor keeps Niri-style `virtual_pointer` / `gamma_control` sources under
-`src/protocol/extensions/` pending a `Dispatch2` port (Tensor uses
-`delegate_dispatch2!`; those ports still use legacy `Dispatch`).
+Tensor ports Niri-style `virtual_pointer` and `gamma_control` under
+`src/protocol/extensions/` on the modern `Dispatch2` / `GlobalDispatch2` path
+(compatible with `delegate_dispatch2!`). Gamma apply still returns unavailable
+until CRTC LUT wiring lands on the tty backend.
 
 ## Hyprland (`ProtocolManager.cpp`)
 
@@ -42,8 +43,8 @@ Hyprland additionally exposes (among proprietary globals):
 | Protocol | Tensor status |
 |----------|---------------|
 | tearing-control | not yet (no Smithay state machine; optional later) |
-| gamma-control | extension stub + tty hooks; Dispatch2 pending |
-| virtual-pointer | extension stub; Dispatch2 pending |
+| gamma-control | **advertised** (Dispatch2); KMS LUT apply pending |
+| virtual-pointer | **advertised** (Dispatch2) + seat forward |
 | output-management / output-power | not yet (policy + KMS) |
 | screencopy / image-copy-capture | not yet (value-only capture pipeline) |
 | wlr-foreign-toplevel (zwlr) | have **ext**-foreign-toplevel-list; wlr twin optional |
@@ -67,7 +68,7 @@ orchestration. Color-management and tablet-pad are follow-ups after capture/gamm
 
 ## Priority backlog (after current tree)
 
-1. Port `extensions/virtual_pointer` + `extensions/gamma_control` to Dispatch2
+1. KMS gamma LUT apply for `zwlr_gamma_control` (tty `GammaProps`-style)
 2. wlr-foreign-toplevel twin (bar ecosystem) if ext-list is insufficient
 3. output-management + config precedence
 4. value-only screencopy → optional portal

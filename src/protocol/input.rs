@@ -1,4 +1,7 @@
 mod tablet;
+#[cfg(feature = "tty")]
+mod virtual_pointer;
+
 use smithay::{
     backend::{
         input::{
