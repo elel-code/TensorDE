@@ -7,5 +7,8 @@ pub use message::{
     Command, IPC_PROTOCOL_VERSION, IpcErrorBody, OutputSnapshot, Request, Response, ResultBody,
     StateSnapshot, WorkspaceSnapshot,
 };
-pub(crate) use server::IpcReply;
+pub(crate) use server::{
+    IpcControlEvent, IpcEvent, IpcReply, IpcRuntime, MAX_PENDING_IPC_CONTROL_EVENTS,
+    MAX_PENDING_IPC_REQUESTS,
+};
 pub use server::{IpcError, IpcServer};

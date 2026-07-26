@@ -7,8 +7,8 @@
 //!   not a readiness poll loop. On Linux the product driver is **io_uring**.
 //!   Compio's `polling` feature is only an automatic host fallback when an
 //!   io_uring instance cannot be created — not a Tensor design goal.
-//! - **Workers** (log drain, spawn, future IPC) run on Compio and only exchange
-//!   value-only messages.
+//! - **Workers and I/O services** (log drain, launch notifications, IPC) use
+//!   Compio completions and exchange only value-only messages.
 //!
 //! This crate does **not** own DRM/KMS or Wayland objects. It provides:
 //!
@@ -31,11 +31,13 @@
 //!   and posts values only.
 
 mod bridge;
+mod completion;
 mod inject;
 mod reactor;
 mod worker;
 
 pub use bridge::{BridgeStats, TrySendError, WorkerBridge, WorkerRx, WorkerTx};
+pub use completion::{CompletionRelayError, EventfdCompletionRelay};
 pub use inject::{InjectSummary, inject_events};
 pub use reactor::{
     CompletionDriver, EventfdCompletion, EventfdWake, EventfdWakeError, NullWake, TurnBudget,

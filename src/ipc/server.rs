@@ -2,36 +2,45 @@ use std::{
     fs, io,
     os::unix::{
         fs::{MetadataExt, PermissionsExt},
-        net::{UnixListener, UnixStream},
+        net::UnixListener,
     },
     path::{Path, PathBuf},
 };
 
-use calloop::{LoopHandle, LoopSignal};
+use tensor_runtime::{EventfdWakeError, WorkerTx};
 use thiserror::Error;
 
-use super::message::{Request, Response};
+use super::message::Response;
 
-mod connection;
+mod runtime;
 
+pub(crate) use runtime::{
+    IpcControlEvent, IpcEvent, IpcRuntime, MAX_PENDING_IPC_CONTROL_EVENTS, MAX_PENDING_IPC_REQUESTS,
+};
+
+#[derive(Debug)]
 pub(crate) struct IpcReply {
     pub(crate) response: Response,
-    pub(crate) stop_after_flush: Option<LoopSignal>,
+    stop_after_flush: bool,
 }
 
 impl IpcReply {
     pub(crate) fn new(response: Response) -> Self {
         Self {
             response,
-            stop_after_flush: None,
+            stop_after_flush: false,
         }
     }
 
-    pub(crate) fn stop_after_flush(response: Response, signal: LoopSignal) -> Self {
+    pub(crate) fn stop_after_flush(response: Response) -> Self {
         Self {
             response,
-            stop_after_flush: Some(signal),
+            stop_after_flush: true,
         }
+    }
+
+    pub(super) const fn should_stop_after_flush(&self) -> bool {
+        self.stop_after_flush
     }
 }
 
@@ -75,30 +84,13 @@ impl IpcServer {
         &self.path
     }
 
-    pub fn accept(&self) -> Result<Option<UnixStream>, IpcError> {
-        match self.listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(true)
-                    .map_err(IpcError::Nonblocking)?;
-                Ok(Some(stream))
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(IpcError::Accept(error)),
-        }
-    }
-
-    pub(crate) fn register<T, H>(
+    pub(crate) fn start(
         &self,
-        handle: &LoopHandle<'static, T>,
-        handler: H,
-    ) -> Result<(), IpcError>
-    where
-        T: 'static,
-        H: FnMut(Request, &mut T) -> IpcReply + 'static,
-    {
+        requests: WorkerTx<IpcEvent>,
+        control: WorkerTx<IpcControlEvent>,
+    ) -> Result<IpcRuntime, IpcError> {
         let listener = self.listener.try_clone().map_err(IpcError::CloneListener)?;
-        connection::register_listener(handle, listener, handler).map_err(IpcError::Source)
+        IpcRuntime::start(listener, requests, control)
     }
 }
 
@@ -143,21 +135,32 @@ pub enum IpcError {
     Permissions(io::Error),
     #[error("failed to inspect IPC socket: {0}")]
     Identity(io::Error),
-    #[error("failed to accept IPC connection: {0}")]
-    Accept(io::Error),
     #[error("failed to clone IPC listener: {0}")]
     CloneListener(io::Error),
-    #[error("failed to register IPC source: {0}")]
-    Source(String),
+    #[error(transparent)]
+    StopWake(#[from] EventfdWakeError),
+    #[error("failed to spawn IPC completion runtime: {0}")]
+    RuntimeThread(io::Error),
+    #[error("failed to initialize IPC Compio runtime: {0}")]
+    Runtime(io::Error),
+    #[error("failed to attach IPC listener to Compio: {0}")]
+    AttachListener(io::Error),
+    #[error("failed to attach IPC stop eventfd to Compio: {0}")]
+    AttachStop(io::Error),
+    #[error("IPC completion runtime stopped during initialization")]
+    RuntimeStartupDisconnected,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ipc::{Command, FrameDecoder, Request, Response, ResultBody, encode};
-    use calloop::EventLoop;
-    use std::io::{Read, Write};
-    use std::time::Duration;
+    use std::{
+        io::{Read, Write},
+        os::unix::net::UnixStream,
+        time::Duration,
+    };
+    use tensor_runtime::WorkerBridge;
 
     #[test]
     fn socket_identity_is_stable_for_an_owned_path() {
@@ -172,39 +175,46 @@ mod tests {
     }
 
     #[test]
-    fn registered_server_processes_multiple_requests_on_one_connection() {
+    fn completion_runtime_processes_multiple_requests_on_one_connection() {
         let path = PathBuf::from(format!("target/tensor-ipc-{}", std::process::id()));
         let _ = fs::remove_file(&path);
         let server = IpcServer::bind(&path).unwrap();
-        let mut event_loop = EventLoop::<()>::try_new().unwrap();
-        server
-            .register(&event_loop.handle(), |request, _| {
-                let result = match request.command {
-                    Command::Ping => ResultBody::Pong,
-                    _ => ResultBody::Accepted,
-                };
-                IpcReply::new(Response::new(request.request_id, result))
-            })
-            .unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
 
         let mut client = UnixStream::connect(&path).unwrap();
         let mut outgoing = encode(&Request::new(1, Command::Ping)).unwrap();
         outgoing.extend(encode(&Request::new(2, Command::GetState)).unwrap());
         client.write_all(&outgoing).unwrap();
-        client.set_nonblocking(true).unwrap();
 
+        for expected_id in [1, 2] {
+            let event = received_requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("Compio IPC completion");
+            let IpcEvent {
+                request,
+                respond_to,
+            } = event;
+            assert_eq!(request.request_id, expected_id);
+            let result = match request.command {
+                Command::Ping => ResultBody::Pong,
+                _ => ResultBody::Accepted,
+            };
+            respond_to
+                .send(IpcReply::new(Response::new(request.request_id, result)))
+                .expect("client waits for response");
+        }
+
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let mut decoder = FrameDecoder::new();
         let mut received = Vec::new();
         let mut buffer = [0; 4096];
-        for _ in 0..32 {
-            event_loop
-                .dispatch(Duration::from_millis(2), &mut ())
-                .unwrap();
-            match client.read(&mut buffer) {
-                Ok(read) => received.extend(decoder.push::<Response>(&buffer[..read]).unwrap()),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => panic!("IPC client read failed: {error}"),
-            }
+        while received.len() < 2 {
+            let read = client.read(&mut buffer).expect("IPC response completion");
+            received.extend(decoder.push::<Response>(&buffer[..read]).unwrap());
             if received.len() == 2 {
                 break;
             }
@@ -214,7 +224,7 @@ mod tests {
         assert_eq!(received[0].request_id, 1);
         assert_eq!(received[1].request_id, 2);
         drop(client);
-        drop(event_loop);
+        drop(runtime);
         drop(server);
         assert!(!path.exists());
     }
@@ -224,37 +234,31 @@ mod tests {
         let path = PathBuf::from(format!("target/tensor-ipc-shutdown-{}", std::process::id()));
         let _ = fs::remove_file(&path);
         let server = IpcServer::bind(&path).unwrap();
-        let mut event_loop = EventLoop::<()>::try_new().unwrap();
-        let stop_signal = event_loop.get_signal();
-        server
-            .register(&event_loop.handle(), move |request, _| {
-                IpcReply::stop_after_flush(
-                    Response::new(request.request_id, ResultBody::Accepted),
-                    stop_signal.clone(),
-                )
-            })
-            .unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);
+        let (control, received_control) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
 
         let mut client = UnixStream::connect(&path).unwrap();
         client
             .write_all(&encode(&Request::new(3, Command::Quit)).unwrap())
             .unwrap();
         client
-            .set_read_timeout(Some(Duration::from_millis(100)))
+            .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
 
-        let fallback_signal = event_loop.get_signal();
-        let dispatches = std::rc::Rc::new(std::cell::Cell::new(0));
-        let callback_dispatches = dispatches.clone();
-        event_loop
-            .run(Some(Duration::from_millis(10)), &mut (), move |_| {
-                let next = callback_dispatches.get() + 1;
-                callback_dispatches.set(next);
-                if next == 10 {
-                    fallback_signal.stop();
-                }
-            })
-            .unwrap();
+        let event = received_requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Compio IPC request completion");
+        let IpcEvent {
+            request,
+            respond_to,
+        } = event;
+        respond_to
+            .send(IpcReply::stop_after_flush(Response::new(
+                request.request_id,
+                ResultBody::Accepted,
+            )))
+            .expect("client waits for response");
 
         let mut buffer = [0; 4096];
         let read = client.read(&mut buffer).unwrap();
@@ -264,8 +268,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].request_id, 3);
         assert!(matches!(responses[0].result, ResultBody::Accepted));
+        assert!(matches!(
+            received_control.recv_timeout(Duration::from_secs(1)),
+            Ok(IpcControlEvent::ShutdownFlushed)
+        ));
         drop(client);
-        drop(event_loop);
+        drop(runtime);
         drop(server);
         assert!(!path.exists());
     }

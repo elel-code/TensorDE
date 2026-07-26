@@ -120,7 +120,7 @@ pub fn run_turn(
 /// Product shape: write an eventfd; a **submitted** Compio/io_uring read (or
 /// equivalent completion-bearing op) on that fd completes and schedules
 /// [`run_turn`]. calloop's channel ping is only transitional.
-pub trait WakeSink: Send {
+pub trait WakeSink: Send + Sync {
     /// Non-blocking wake. May coalesce (eventfd counter is fine).
     fn wake(&self);
 }

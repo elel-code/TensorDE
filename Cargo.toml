@@ -43,8 +43,9 @@ calloop = { version = "0.14", features = ["signals"] }
 calloop-wayland-source = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive"] }
 # Compio = completion model; io-uring is the product driver; `polling` is Compio's host fallback only.
-compio = { version = "0.19", default-features = false, features = ["runtime", "io-uring", "polling", "fs"] }
+compio = { version = "0.19", default-features = false, features = ["runtime", "io-uring", "polling", "fs", "net"] }
 drm-ffi = { version = "0.9", optional = true }
+futures-channel = "0.3"
 gbm = { version = "0.18", optional = true }
 libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }

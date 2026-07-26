@@ -577,6 +577,7 @@ dependencies = [
  "compio-fs",
  "compio-io",
  "compio-log",
+ "compio-net",
  "compio-runtime",
 ]
 
@@ -660,9 +661,12 @@ checksum = "c3a354e085c4046dd8d2d9d514cf8c15c615eb8adf6c5f41dbf7899420457e9b"
 dependencies = [
  "compio-buf",
  "futures-util",
+ "libc",
  "pastey",
  "pin-project-lite",
+ "rustix 1.1.4",
  "synchrony",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -672,6 +676,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef39fff6341af7ab6c27fae9a3887e1ec618320d43f3b9c924c7a644f693a859"
 dependencies = [
  "tracing",
+]
+
+[[package]]
+name = "compio-net"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e940998522d9f78342b7ab5c663aefe888a504b74a7f933dcd058cdde26df392"
+dependencies = [
+ "compio-buf",
+ "compio-driver",
+ "compio-io",
+ "compio-runtime",
+ "either",
+ "futures-util",
+ "libc",
+ "once_cell",
+ "pin-project-lite",
+ "socket2",
+ "synchrony",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -868,6 +893,12 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.9.4",
 ]
+
+[[package]]
+name = "either"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "encoding_rs"
@@ -2041,6 +2072,7 @@ dependencies = [
  "clap",
  "compio",
  "drm-ffi",
+ "futures-channel",
  "gbm",
  "libc",
  "rustix 1.1.4",

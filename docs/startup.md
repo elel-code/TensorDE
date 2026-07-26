@@ -10,9 +10,10 @@ The startup sequence is a set of ordered gates:
    devices without `VK_EXT_descriptor_heap` or a usable exportable native format/modifier.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
-8. Register the Wayland display/socket, XWayland, signals, configuration watchers, IPC, libinput,
-   udev, libseat session notifications, and DRM notifier sources. Intersect every active output's
-   KMS/GBM formats with the Vulkan capability snapshot before this gate completes.
+8. Register the Wayland display/socket, XWayland, signals, configuration watchers, libinput, udev,
+   libseat session notifications, and DRM notifier sources; start the Compio IPC accept runtime.
+   Intersect every active output's KMS/GBM formats with the Vulkan capability snapshot before this
+   gate completes.
 9. Publish the session environment to the compositor-owned process launcher.
 10. When systemd integration is active, synchronously publish the same values to the user manager.
 11. Publish readiness after every required gate succeeds.
@@ -42,8 +43,9 @@ double-fork without a shell. In an active systemd scope it waits for the transie
 releasing the client, and it terminates the still-blocked child if `systemd "enabled"` cannot create
 that scope. `auto` reports the scope failure and permits a direct child; `disabled` always uses the
 direct path. Those waits run on a dedicated launch worker thread: the compositor only enqueues a
-value-only request and later observes a value-only outcome on the calloop channel, so fork setup
-and systemd job completion never stall Wayland, input, or presentation dispatch.
+value-only request and later observes a value-only outcome through a bounded Tensor bridge after a
+submitted Compio eventfd read completes. Fork setup and systemd job completion therefore never
+stall Wayland, input, or presentation dispatch.
 
 `--check` executes the Vulkan device gate as well as the other initialization gates, reports the
 selected physical device, and exits. It must never emit systemd readiness. Partial initialization

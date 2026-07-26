@@ -20,8 +20,9 @@ in `tensor_runtime::{run_turn, EventfdWake, CompletionDriver::IoUring}`. Compio 
 complete**, not a readiness poll loop. On Linux the product driver is **io_uring**; Compio's
 `polling` feature is only an automatic host fallback when io_uring cannot be created — not the
 architecture we design for. calloop still owns some Smithay fds as a **readiness** loop during
-migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, spawn)
-uses Compio completions and posts value-only messages across bounded bridges. Workers never own
+migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, IPC,
+and worker notifications) uses Compio completions and posts value-only messages across bounded
+bridges. Workers never own
 Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
 
@@ -36,13 +37,16 @@ submission. The worker has no Smithay, Vulkan, DRM/KMS, or ECS ownership.
 Application launch is the second. `ProcessLauncher` still owns double-fork and optional
 transient-systemd scope setup, but those waits never run inside a calloop callback. The
 compositor submits value-only `LaunchRequest` messages to a dedicated launch worker; the worker
-returns value-only `LaunchOutcome` results through a bounded calloop channel. Queue saturation
-rejects new submissions or drops late completion logs rather than blocking the compositor thread.
-The worker owns neither Smithay objects nor DRM/KMS descriptors.
+returns value-only `LaunchOutcome` results through a bounded Tensor bridge. A submitted Compio
+eventfd read must complete before the transitional calloop notification drains those outcomes.
+Queue saturation rejects new submissions or drops late completion logs rather than blocking the
+compositor thread. The worker owns neither Smithay objects nor DRM/KMS descriptors.
 
 IPC also carries runtime **workspace** and **output layout** commands
 (`set-workspace`, `set-output-position` / `enabled` / `scale`) that mutate value-only
-policy and replan through the tty backend without a second configuration language.
+policy and replan through the tty backend without a second configuration language. IPC accept,
+read, and response writes are submitted Compio operations. Decoded requests and critical runtime
+state cross separate bounded bridges; only the compositor thread touches policy state.
 
 Tensor intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.

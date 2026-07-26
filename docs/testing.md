@@ -112,7 +112,8 @@ and rendering itself.
   geometry ordering rather than Bevy internals.
 - TOML tests separate valid documents, malformed syntax, schema errors, and reload races.
 - IPC tests cover fragmented reads, multiple frames per read, malformed/oversized input, request-ID
-  round trips, permissions, and socket ownership.
+  round trips, permissions, socket ownership, fixed connection capacity, real Compio socket
+  completions, and response-before-shutdown ordering.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
   the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
@@ -187,7 +188,8 @@ cargo test --workspace --all-targets --no-default-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-The IPC tests cover fragmented and coalesced frames, multiple requests on one non-blocking client,
-version rejection, layout mutation, and graceful shutdown. A running session can be queried with
+The IPC tests cover fragmented and coalesced frames, multiple requests on one Compio-completed
+client, version rejection, layout mutation, and graceful response-before-stop shutdown. A running
+session can be queried with
 `tensor-msg --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensor-msg --socket "$TENSOR_IPC_SOCKET"
 quit` for a manual smoke-test shutdown.

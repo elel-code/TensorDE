@@ -10,11 +10,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::{
-    backend::BackendConfig,
-    ipc::{IpcReply, IpcServer, Request},
-    layout::LayoutEngine,
-    render::VulkanRenderer,
-    scene::SceneAppearance,
+    backend::BackendConfig, layout::LayoutEngine, render::VulkanRenderer, scene::SceneAppearance,
 };
 
 use super::state::{RuntimeState, WaylandClientState};
@@ -167,20 +163,15 @@ impl WaylandRuntime {
     }
 
     /// Run the compositor while dispatching a bounded value-only worker channel.
-    pub fn run_with_ipc_and_channel<H, T, C>(
+    pub fn run_with_channel<T, C>(
         &mut self,
-        ipc: &IpcServer,
         channel: Channel<T>,
         mut channel_handler: C,
-        handler: H,
     ) -> Result<(), ProtocolError>
     where
-        H: FnMut(Request, &mut RuntimeState) -> IpcReply + 'static,
         T: Send + 'static,
         C: FnMut(ChannelEvent<T>, &mut RuntimeState) + 'static,
     {
-        ipc.register(&self.event_loop.handle(), handler)
-            .map_err(|error| ProtocolError::IpcSource(error.to_string()))?;
         self.event_loop
             .handle()
             .insert_source(channel, move |event, _, state| {
@@ -231,8 +222,6 @@ pub enum ProtocolError {
     SocketSource(String),
     #[error("failed to register the Wayland display source: {0}")]
     DisplaySource(String),
-    #[error("failed to register the IPC source: {0}")]
-    IpcSource(String),
     #[error("failed to register the worker channel source: {0}")]
     ChannelSource(String),
     #[error("Wayland display was already moved into the event loop")]

@@ -3,8 +3,8 @@
 //! Process creation and transient-systemd scope setup can wait on fork setup,
 //! the user D-Bus, and a systemd job. They therefore never execute from a
 //! compositor wait callback. The compositor submits value-only requests, while
-//! this worker returns value-only outcomes through a bounded channel (calloop
-//! today; reactor-agnostic `SyncSender` so Compio can own the wait later).
+//! this worker returns value-only outcomes through a bounded Tensor runtime
+//! bridge. The bridge wake is observed as a Compio completion.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -13,13 +13,13 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use calloop::channel::SyncSender as OutcomeSender;
+use tensor_runtime::{TrySendError as OutcomeSendError, WorkerTx};
 use thiserror::Error;
 use tracing::warn;
 
 use super::{ProcessLauncher, SpawnError, SpawnedProcess};
 
-/// Bound for both the worker request queue and the calloop outcome channel.
+/// Bound for both the worker request queue and the outcome bridge.
 pub const MAX_PENDING_LAUNCHES: usize = 64;
 
 /// A fully resolved command that is safe to move off the compositor thread.
@@ -116,7 +116,7 @@ pub struct LaunchWorker {
 impl LaunchWorker {
     pub fn new(
         launcher: ProcessLauncher,
-        outcomes: OutcomeSender<LaunchOutcome>,
+        outcomes: WorkerTx<LaunchOutcome>,
     ) -> Result<Self, LaunchWorkerError> {
         let (requests, receiver) = mpsc::sync_channel(MAX_PENDING_LAUNCHES);
         let thread = thread::Builder::new()
@@ -143,7 +143,7 @@ impl LaunchWorker {
 fn run(
     launcher: ProcessLauncher,
     requests: Receiver<LaunchRequest>,
-    outcomes: OutcomeSender<LaunchOutcome>,
+    outcomes: WorkerTx<LaunchOutcome>,
 ) {
     while let Ok(request) = requests.recv() {
         let LaunchRequest {
@@ -165,16 +165,18 @@ fn run(
             program,
             result,
         };
+        let outcome_id = outcome.id;
+        let outcome_program = outcome.program.clone();
         match outcomes.try_send(outcome) {
             Ok(()) => {}
-            Err(TrySendError::Full(outcome)) => {
+            Err(OutcomeSendError::Full) => {
                 warn!(
-                    request_id = outcome.id,
-                    program = ?outcome.program,
+                    request_id = outcome_id,
+                    program = ?outcome_program,
                     "launch outcome queue saturated; dropping completion"
                 );
             }
-            Err(TrySendError::Disconnected(_)) => return,
+            Err(OutcomeSendError::Disconnected) => return,
         }
     }
 }
@@ -197,7 +199,7 @@ pub enum LaunchWorkerError {
 mod tests {
     use std::{fs, path::PathBuf, thread, time::Duration};
 
-    use calloop::channel::sync_channel;
+    use tensor_runtime::WorkerBridge;
 
     use super::*;
     use crate::service::SystemdMode;
@@ -209,7 +211,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
-        let (outcomes, receiver) = sync_channel(1);
+        let (outcomes, receiver) = WorkerBridge::bounded(1);
         let worker = LaunchWorker::new(
             ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
             outcomes,
@@ -219,7 +221,7 @@ mod tests {
         worker
             .submit(LaunchRequest::new(41, "touch", [path.as_os_str()]))
             .unwrap();
-        let outcome = receiver.recv().unwrap();
+        let outcome = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
 
         assert_eq!(outcome.id(), 41);
         assert_eq!(outcome.program(), OsStr::new("touch"));
@@ -235,8 +237,8 @@ mod tests {
     }
 
     #[test]
-    fn worker_returns_launch_failure_to_calloop() {
-        let (outcomes, receiver) = sync_channel(1);
+    fn worker_returns_launch_failure_to_tensor_bridge() {
+        let (outcomes, receiver) = WorkerBridge::bounded(1);
         let worker = LaunchWorker::new(
             ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
             outcomes,
@@ -251,7 +253,7 @@ mod tests {
                 Vec::<OsString>::new(),
             ))
             .unwrap();
-        let outcome = receiver.recv().unwrap();
+        let outcome = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
 
         assert_eq!(outcome.id(), 73);
         assert_eq!(outcome.program(), OsStr::new(&program));

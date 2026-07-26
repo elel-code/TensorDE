@@ -6,6 +6,7 @@
 //! completion model, not readiness registration.
 
 use std::{
+    fmt,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -15,6 +16,8 @@ use std::{
     },
     time::Duration,
 };
+
+use crate::reactor::WakeSink;
 
 /// Non-blocking send failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,10 +43,20 @@ pub struct BridgeStats {
 }
 
 /// Sending end used by workers (cloneable).
-#[derive(Clone, Debug)]
 pub struct WorkerTx<T> {
     tx: SyncSender<T>,
     counters: Arc<BridgeCounters>,
+    wake: Option<Arc<dyn WakeSink>>,
+}
+
+impl<T> Clone for WorkerTx<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            counters: Arc::clone(&self.counters),
+            wake: self.wake.clone(),
+        }
+    }
 }
 
 /// Receiving end owned by the compositor (or an adapter that injects events).
@@ -66,9 +79,34 @@ impl WorkerBridge {
             WorkerTx {
                 tx,
                 counters: Arc::clone(&counters),
+                wake: None,
             },
             WorkerRx { rx, counters },
         )
+    }
+
+    /// Create a bridge that signals `wake` after each successful enqueue.
+    ///
+    /// The wake is an operation trigger, not a readiness registration. The
+    /// product path uses [`crate::EventfdWake`], whose submitted Compio read
+    /// completes before the compositor drains this bridge.
+    pub fn bounded_with_wake<T>(
+        capacity: usize,
+        wake: Arc<dyn WakeSink>,
+    ) -> (WorkerTx<T>, WorkerRx<T>) {
+        let (mut tx, rx) = Self::bounded(capacity);
+        tx.wake = Some(wake);
+        (tx, rx)
+    }
+}
+
+impl<T> fmt::Debug for WorkerTx<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkerTx")
+            .field("stats", &self.stats())
+            .field("has_wake", &self.wake.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -78,6 +116,9 @@ impl<T> WorkerTx<T> {
         match self.tx.try_send(value) {
             Ok(()) => {
                 self.counters.sent.fetch_add(1, Ordering::Relaxed);
+                if let Some(wake) = &self.wake {
+                    wake.wake();
+                }
                 Ok(())
             }
             Err(StdTrySend::Full(_)) => {
@@ -142,6 +183,15 @@ fn stats(counters: &BridgeCounters) -> BridgeStats {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Default)]
+    struct CountingWake(AtomicU64);
+
+    impl WakeSink for CountingWake {
+        fn wake(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn bounded_drop_on_full() {
         let (tx, rx) = WorkerBridge::bounded::<u32>(1);
@@ -162,5 +212,15 @@ mod tests {
         assert_eq!(rx.drain(3, |v| sum += v), 3);
         assert_eq!(sum, 3);
         assert_eq!(rx.try_recv(), Some(3));
+    }
+
+    #[test]
+    fn wake_runs_only_after_successful_enqueue() {
+        let wake = Arc::new(CountingWake::default());
+        let (tx, rx) = WorkerBridge::bounded_with_wake::<u32>(1, wake.clone());
+        assert_eq!(tx.try_send(1), Ok(()));
+        assert_eq!(tx.try_send(2), Err(TrySendError::Full));
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
+        assert_eq!(rx.try_recv(), Some(1));
     }
 }
