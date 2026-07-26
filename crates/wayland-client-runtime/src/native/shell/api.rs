@@ -1,7 +1,9 @@
 //! NativeShell public methods.
 
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_compositor, wl_output, wl_seat, wl_shm};
+use wayland_client::protocol::{
+    wl_compositor, wl_data_device_manager, wl_output, wl_seat, wl_shm,
+};
 use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
@@ -52,6 +54,11 @@ impl NativeShell {
         if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=9, ()) {
             state.seat = Some(seat);
         }
+        if let Ok(ddm) =
+            globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(&qh, 1..=3, ())
+        {
+            state.data_device_manager = Some(ddm);
+        }
         // Bind every advertised wl_output (multi-instance).
         for global in globals.contents().clone_list() {
             if global.interface == "wl_output" {
@@ -100,6 +107,13 @@ impl NativeShell {
             return Err(NativeError::Registry("xdg_wm_base missing".into()));
         }
 
+        if let (Some(manager), Some(seat)) = (
+            state.data_device_manager.as_ref(),
+            state.seat.as_ref(),
+        ) {
+            state.data_device = Some(manager.get_data_device(seat, &qh, ()));
+        }
+
         let mut shell = Self {
             connection,
             readiness,
@@ -145,7 +159,94 @@ impl NativeShell {
                     .seat_capabilities
                     .contains(wayland_client::protocol::wl_seat::Capability::Touch),
             output_count: self.state.outputs.len() as u32,
+            data_device: self.state.data_device.is_some(),
         }
+    }
+
+    /// Advertise UTF-8 text on the clipboard (requires a recent input serial).
+    pub fn set_selection_text(&mut self, text: impl Into<String>) -> Result<(), NativeError> {
+        let bytes: std::sync::Arc<[u8]> = text.into().into_bytes().into();
+        self.set_selection_bytes(
+            bytes,
+            &[
+                "text/plain;charset=utf-8",
+                "text/plain",
+                "UTF8_STRING",
+            ],
+        )
+    }
+
+    pub fn set_selection_bytes(
+        &mut self,
+        bytes: std::sync::Arc<[u8]>,
+        mimes: &[&str],
+    ) -> Result<(), NativeError> {
+        let serial = self
+            .state
+            .last_input_serial
+            .ok_or_else(|| NativeError::Protocol("no input serial for set_selection".into()))?;
+        let manager = self
+            .state
+            .data_device_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
+        let device = self
+            .state
+            .data_device
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
+        let qh = self.queue.handle();
+        if let Some(old) = self.state.selection_source.take() {
+            old.destroy();
+        }
+        let source = manager.create_data_source(&qh, ());
+        for mime in mimes {
+            source.offer((*mime).to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.state.selection_source = Some(source);
+        self.state.selection_bytes = Some(bytes);
+        self.state.selection_mimes = mimes.iter().map(|m| (*m).to_string()).collect();
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    /// MIME types advertised by the current incoming selection, if any.
+    pub fn selection_mimes(&self) -> &[String] {
+        &self.state.incoming_mimes
+    }
+
+    /// Receive the current selection as bytes for `mime` (blocking pipe read).
+    pub fn receive_selection(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
+        use std::io::Read;
+        use std::os::fd::AsFd;
+        use std::os::unix::net::UnixStream;
+
+        let offer = self
+            .state
+            .incoming_offer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no selection offer".into()))?;
+        if !self.state.incoming_mimes.iter().any(|m| m == mime) {
+            return Err(NativeError::Protocol(format!(
+                "selection has no mime {mime}"
+            )));
+        }
+        let (reader, writer) = UnixStream::pair().map_err(NativeError::from)?;
+        writer.set_nonblocking(false).ok();
+        reader.set_nonblocking(false).ok();
+        offer.receive(mime.to_string(), writer.as_fd());
+        // Drop writer so the peer sees EOF after compositor writes.
+        drop(writer);
+        self.connection.flush()?;
+        // Allow compositor to complete the transfer.
+        let _ = self.dispatch_pending();
+        let mut reader = reader;
+        let mut buf = Vec::new();
+        reader
+            .read_to_end(&mut buf)
+            .map_err(|e| NativeError::Io(e.to_string()))?;
+        Ok(buf)
     }
 
     pub fn output_scale_factor(&self, output_name: u32) -> Option<i32> {

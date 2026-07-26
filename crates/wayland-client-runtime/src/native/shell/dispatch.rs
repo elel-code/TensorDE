@@ -2,8 +2,9 @@
 
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
-    wl_shm, wl_shm_pool, wl_surface, wl_touch,
+    wl_buffer, wl_callback, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
+    wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -280,10 +281,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                 state.push(NativeShellEvent::SeatKeyboardLeave { surface: id });
             }
             wl_keyboard::Event::Key {
+                serial,
                 key,
                 state: key_state,
                 ..
             } => {
+                state.last_input_serial = Some(serial);
                 let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
                 state.push(NativeShellEvent::SeatKeyboardKey { key, pressed });
             }
@@ -360,10 +363,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 }
             }
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: btn_state,
                 ..
             } => {
+                state.last_input_serial = Some(serial);
                 let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 state.push(NativeShellEvent::PointerButton {
                     surface: state.pointer_focus,
@@ -611,6 +616,118 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
             }
             wl_output::Event::Done => {
                 state.push(NativeShellEvent::OutputDone { output: name });
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &wl_data_device_manager::WlDataDeviceManager,
+        _: wl_data_device_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_device::WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::DataOffer { id } => {
+                // New offer object created; mime list arrives via offer events on it.
+                // The proxy is already created by the dispatch machinery with () user data.
+                let _ = id;
+            }
+            wl_data_device::Event::Selection { id } => {
+                if let Some(old) = state.incoming_offer.take() {
+                    old.destroy();
+                }
+                state.incoming_mimes.clear();
+                if let Some(offer) = id {
+                    // Mimes were collected on this offer object as it was created.
+                    // We re-collect by storing mimes in a side map keyed by offer id —
+                    // for the simple path, read from pending_offer_mimes if present.
+                    state.incoming_offer = Some(offer);
+                    // Mimes may still arrive; Selection event often comes after offers.
+                    let mimes = state.incoming_mimes.clone();
+                    state.push(NativeShellEvent::Selection { mimes });
+                } else {
+                    state.push(NativeShellEvent::Selection { mimes: Vec::new() });
+                }
+            }
+            // Drag events ignored for now (clipboard-only path).
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        offer: &wl_data_offer::WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            // Track mimes for the active/incoming offer.
+            if state
+                .incoming_offer
+                .as_ref()
+                .is_some_and(|o| o.id() == offer.id())
+                || state.incoming_offer.is_none()
+            {
+                if !state.incoming_mimes.iter().any(|m| m == &mime_type) {
+                    state.incoming_mimes.push(mime_type);
+                }
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
+    fn event(
+        state: &mut Self,
+        source: &wl_data_source::WlDataSource,
+        event: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                use std::io::Write;
+                if !state.selection_mimes.iter().any(|m| m == &mime_type) {
+                    return;
+                }
+                if let Some(bytes) = state.selection_bytes.as_ref() {
+                    let mut file = std::fs::File::from(fd);
+                    let _ = file.write_all(bytes);
+                }
+            }
+            wl_data_source::Event::Cancelled => {
+                if state
+                    .selection_source
+                    .as_ref()
+                    .is_some_and(|s| s.id() == source.id())
+                {
+                    state.selection_source = None;
+                    state.selection_bytes = None;
+                    state.selection_mimes.clear();
+                    state.push(NativeShellEvent::SelectionCancelled);
+                }
             }
             _ => {}
         }

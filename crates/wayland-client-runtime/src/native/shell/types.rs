@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fs::File;
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-    wl_touch,
+    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
+    wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
@@ -125,6 +125,12 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         output: u32,
     },
+    /// Clipboard selection offer updated (mime list may be empty when cleared).
+    Selection {
+        mimes: Vec<String>,
+    },
+    /// Outgoing clipboard source was cancelled by the compositor.
+    SelectionCancelled,
 }
 
 /// Capability snapshot for the native shell connection.
@@ -138,6 +144,7 @@ pub struct NativeCapabilities {
     pub keyboard: bool,
     pub touch: bool,
     pub output_count: u32,
+    pub data_device: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -174,6 +181,8 @@ pub struct NativeShellState {
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
     pub(crate) touch: Option<wl_touch::WlTouch>,
+    pub(crate) data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    pub(crate) data_device: Option<wl_data_device::WlDataDevice>,
     pub(crate) viewporter: Option<wp_viewporter::WpViewporter>,
     pub(crate) fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub(crate) cursor_shape_manager:
@@ -186,6 +195,13 @@ pub struct NativeShellState {
     pub(crate) pointer_focus: Option<NativeSurfaceId>,
     pub(crate) keyboard_focus: Option<NativeSurfaceId>,
     pub(crate) pointer_enter_serial: Option<u32>,
+    /// Latest serial usable for set_selection (keyboard key or pointer button).
+    pub(crate) last_input_serial: Option<u32>,
+    pub(crate) selection_source: Option<wl_data_source::WlDataSource>,
+    pub(crate) selection_bytes: Option<std::sync::Arc<[u8]>>,
+    pub(crate) selection_mimes: Vec<String>,
+    pub(crate) incoming_offer: Option<wl_data_offer::WlDataOffer>,
+    pub(crate) incoming_mimes: Vec<String>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
     pub(crate) axis_h: f64,
     pub(crate) axis_v: f64,
@@ -208,6 +224,8 @@ impl Default for NativeShellState {
             keyboard: None,
             pointer: None,
             touch: None,
+            data_device_manager: None,
+            data_device: None,
             viewporter: None,
             fractional_manager: None,
             cursor_shape_manager: None,
@@ -219,6 +237,12 @@ impl Default for NativeShellState {
             pointer_focus: None,
             keyboard_focus: None,
             pointer_enter_serial: None,
+            last_input_serial: None,
+            selection_source: None,
+            selection_bytes: None,
+            selection_mimes: Vec::new(),
+            incoming_offer: None,
+            incoming_mimes: Vec::new(),
             axis_h: 0.0,
             axis_v: 0.0,
             next_id: 1,
