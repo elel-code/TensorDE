@@ -1,6 +1,8 @@
 use std::{
+    cell::Cell,
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -16,13 +18,13 @@ use tracing::{debug, info, warn};
 
 use super::{
     BackendConfig, BackendOutputEvent,
-    host_map::{host_drm_format, physical_mode_from_drm, subpixel_from_drm},
+    host_map::{physical_mode_from_drm, subpixel_from_drm},
     output::{ConnectorSnapshot, OutputPlan, OutputPolicy, diff_output_plans},
 };
 use crate::render::{
     GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats,
 };
-use tensor_host::{ConnectorState, DrmFormat};
+use tensor_host::ConnectorState;
 use tensor_runtime::{
     OpaqueFdCompletion, OpaqueFdCompletionRuntime, WakeSink, WorkerBridge, WorkerRx,
 };
@@ -80,6 +82,7 @@ pub(crate) struct TtyBackend {
 
 struct OpenDevice {
     drm: DrmDevice,
+    active: Rc<Cell<bool>>,
     monotonic_timestamps: bool,
     gbm: GbmDevice<DrmDeviceFd>,
     scanner: DrmScanner,
@@ -88,6 +91,14 @@ struct OpenDevice {
     native_targets: BTreeMap<super::BackendOutputId, kms::KmsOutput>,
     /// Per-output gamma LUT state (atomic blob or legacy). Not on the flip path.
     gamma: BTreeMap<super::BackendOutputId, gamma::OutputGamma>,
+}
+
+impl Drop for OpenDevice {
+    fn drop(&mut self) {
+        // Clear Tensor surfaces while Smithay's transitional device snapshot is
+        // still alive. DrmDevice then restores the pre-compositor KMS state.
+        self.native_targets.clear();
+    }
 }
 
 impl TtyBackend {
@@ -242,6 +253,7 @@ impl TtyBackend {
         }
         self.devices
             .get(&self.primary_node.dev_id())
+            .filter(|device| device.active.get())
             .map(|device| device.drm.device_fd().clone())
     }
 
@@ -322,6 +334,7 @@ impl TtyBackend {
                 debug!("pausing tty session");
                 self.libinput.suspend();
                 for device in self.devices.values_mut() {
+                    device.active.set(false);
                     device.drm.pause();
                 }
             }
@@ -331,8 +344,13 @@ impl TtyBackend {
                     warn!("failed to resume libinput");
                 }
                 for device in self.devices.values_mut() {
-                    if let Err(error) = device.drm.activate(false) {
-                        warn!(%error, "failed to reactivate DRM device");
+                    match device.drm.activate(false) {
+                        Ok(()) => device.active.set(true),
+                        Err(error) => {
+                            device.active.set(false);
+                            warn!(%error, "failed to reactivate DRM device");
+                            continue;
+                        }
                     }
                     for gamma in device.gamma.values_mut() {
                         gamma.restore_after_session_resume(&device.drm);
@@ -424,6 +442,12 @@ impl TtyBackend {
                 path: path.to_owned(),
                 message: error.to_string(),
             })?;
+        if !drm.is_atomic() {
+            return Err(BackendError::Device {
+                path: path.to_owned(),
+                message: "Tensor requires atomic KMS; legacy modesetting is unsupported".to_owned(),
+            });
+        }
         let monotonic_timestamps =
             drm::Device::get_driver_capability(&drm, drm::DriverCapability::MonotonicTimestamp)
                 .unwrap_or(0)
@@ -437,6 +461,7 @@ impl TtyBackend {
             device_id,
             OpenDevice {
                 drm,
+                active: Rc::new(Cell::new(true)),
                 monotonic_timestamps,
                 gbm,
                 scanner: DrmScanner::new(),
@@ -583,25 +608,12 @@ fn negotiate_device_output_formats(
                 output: output.name.clone(),
                 message: format!("mapped CRTC {mapped_crtc} disappeared"),
             })?;
-        let planes = device
-            .drm
-            .planes(&crtc)
-            .map_err(|error| BackendError::OutputFormats {
+        let kms_scanout = kms::primary_plane_formats(&device.drm, crtc).map_err(|error| {
+            BackendError::OutputFormats {
                 output: output.name.clone(),
                 message: error.to_string(),
-            })?;
-        let mut kms_scanout = Vec::<DrmFormat>::new();
-        for format in planes
-            .primary
-            .iter()
-            .flat_map(|plane| plane.formats.iter())
-            .copied()
-        {
-            let host = host_drm_format(format);
-            if !kms_scanout.contains(&host) {
-                kms_scanout.push(host);
             }
-        }
+        })?;
 
         let usage = BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING;
         let gbm = kms_scanout

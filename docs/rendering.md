@@ -60,22 +60,21 @@ Registration now allocates three native output slots per target. Each slot is a 
 created with `DRM_FORMAT_MODIFIER_EXT`, dedicated exportable dma-buf memory, and an image view. The
 created modifier is queried back and must equal the negotiated modifier; every reported memory
 plane is exported with its offset and row pitch as Tensor's Smithay-free `ExportedDmabuf` value.
-Only the tty boundary converts that description into a Smithay dma-buf, imports it through the GBM
-device, and validates dimensions, fourcc, modifier, and plane count before retaining the GBM
-objects. Vulkan image resources replaced by a mode or format change remain in a retired queue until
-their last renderer timeline value completes.
+The tty boundary imports that description directly through GBM and validates dimensions, fourcc,
+modifier, and plane count before retaining the GBM objects. Vulkan image resources replaced by a
+mode or format change remain in a retired queue until their last renderer timeline value completes.
 
-GBM remains owned by Smithay and does not become a renderer. Its check validates the allocation and
-KMS-facing boundary; Vulkanalia remains the only component that creates and renders native output
-images.
+GBM remains owned by the tty adapter and does not become a renderer. Its check validates the
+allocation and KMS-facing boundary; Vulkanalia remains the only component that creates and renders
+native output images.
 
 ## Buffer Ownership
 
 Vulkanalia owns render images and their memory. A native render target is allocated with an
 explicit DRM modifier and exportable dma-buf memory. The renderer returns Tensor-owned
-`ExportedDmabuf` plane descriptions; the tty adapter converts them to Smithay only immediately
-before GBM/KMS use. Smithay currently owns DRM/KMS, its GBM device, framebuffer creation, atomic
-commits, page flips, and direct scanout decisions. Vulkan handles and DRM surface handles never
+`ExportedDmabuf` plane descriptions directly to the tty adapter. The tty adapter owns GBM import,
+DRM framebuffer lifetime,
+primary-plane selection, atomic commits, and page flips. Vulkan handles and DRM/KMS handles never
 cross into ECS or IPC.
 
 Before an image leaves Vulkan for KMS or another API, Tensor releases it to
@@ -203,7 +202,7 @@ The current command stream is deliberately limited to:
 3. run dynamic rendering and draw sampled client rectangles with transform, opacity, clip, and
    corner-radius data;
 4. draw the compositor-owned vector cursor over client content when the pointer is visible;
-5. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Smithay/KMS.
+5. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Tensor KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
 complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, and damage-driven partial
@@ -225,8 +224,9 @@ to the compositor's monotonic clock without claiming hardware clock accuracy.
 Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as
 `SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame also signals
 an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty backend consumes it
-as atomic KMS `IN_FENCE_FD`. Smithay owns commit/page-flip submission. One per-device operation on
-the compositor-thread Compio runtime completes for vblank, then drm-rs decodes one fixed stack
+as atomic KMS `IN_FENCE_FD`. Tensor's tty adapter owns commit/page-flip submission; steady-state
+flips update only `FB_ID` and `IN_FENCE_FD` through a fixed stack request. One per-device operation
+on the compositor-thread Compio runtime completes for vblank, then drm-rs decodes one fixed stack
 batch before explicit rearm. The bounded repaint queue
 waits for a free output slot before rendering another frame, so a current scanout buffer is never
 reused while it is still displayed. Renderer timeline retirement and KMS release are separate gates.
@@ -237,9 +237,10 @@ completes only when the sync-file fence signals, then a bounded `{output, timeli
 the compositor and retires renderer resources. This is a one-shot fence completion, not a timer
 poll, epoll registry, or generic readiness loop. KMS receives the original `SYNC_FD`, and KMS-owned
 slot waits remain driven by the next page flip.
-After VT/session resume, Smithay refreshes each DRM surface while Tensor quarantines the previously
-current and pending slots. A calloop idle repaint runs only after already-ready DRM events drain; the
-first new page flip releases the quarantine. If the old Vulkan submission is still completing, its
+After VT/session resume, Tensor rebuilds each property cache and mode blob, runs TEST_ONLY, and
+marks the next submit as a modeset while quarantining previously current and pending slots. A
+completion-turn tail requests repaint only after already-completed DRM events drain; the first new
+page flip releases the quarantine. If the old Vulkan submission is still completing, its
 submitted sync-file wait triggers recovery only after the GPU fence signals. If repeated
 interruption leaves every slot uncertain, Tensor resets that DRM device instead of risking writes
 into a scanned-out dma-buf.

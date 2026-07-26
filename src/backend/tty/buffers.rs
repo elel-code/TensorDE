@@ -85,12 +85,19 @@ impl TtyBackend {
             })?;
             imported.push((buffer.slot, buffer.dmabuf));
         }
+        let claimed_planes = device
+            .native_targets
+            .values()
+            .map(KmsOutput::plane)
+            .collect::<Vec<_>>();
         let target = KmsOutput::new(
             &mut device.drm,
             &device.gbm,
+            std::rc::Rc::clone(&device.active),
             &descriptor,
             drm_mode,
             imported,
+            &claimed_planes,
         )
         .map_err(|error| BackendError::OutputBuffers {
             output: descriptor.name.clone(),

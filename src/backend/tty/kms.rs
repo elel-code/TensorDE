@@ -1,14 +1,12 @@
 use std::{
     num::NonZeroU32,
-    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    os::fd::{AsFd, OwnedFd},
+    rc::Rc,
 };
 
-use drm::control::{Mode as DrmMode, connector, crtc};
+use drm::control::{Mode as DrmMode, connector, crtc, plane};
 use gbm::Device as GbmDevice;
-use smithay::{
-    backend::drm::{DrmDevice, DrmDeviceFd, DrmSurface, PlaneConfig, PlaneState},
-    utils::{Rectangle, Transform},
-};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use thiserror::Error;
 use tracing::warn;
 
@@ -19,8 +17,11 @@ use crate::{
 
 use super::{BackendError, TtyBackend};
 
+mod atomic;
 mod framebuffer;
 
+pub(super) use atomic::primary_plane_formats;
+use atomic::{AtomicError, AtomicSurface, select_primary_plane};
 use framebuffer::{ScanoutFramebuffer, framebuffer_from_dmabuf};
 
 impl TtyBackend {
@@ -53,7 +54,15 @@ impl TtyBackend {
                 match device.drm.reset_state() {
                     Ok(()) => {
                         for target in device.native_targets.values_mut() {
-                            target.reset_after_device_reset();
+                            if let Err(error) = target.reset_after_device_reset() {
+                                warn!(
+                                    device_id = *device_id,
+                                    output = %target.name,
+                                    %error,
+                                    "failed to rebuild KMS output after device reset"
+                                );
+                                target.mark_faulted();
+                            }
                         }
                     }
                     Err(error) => {
@@ -73,6 +82,7 @@ impl TtyBackend {
         }
         self.devices
             .get(&output.device_id)
+            .filter(|device| device.active.get())
             .and_then(|device| device.native_targets.get(&output))
             .is_some_and(|target| target.ready_for(slot))
     }
@@ -128,8 +138,7 @@ impl TtyBackend {
 pub(super) struct KmsOutput {
     id: BackendOutputId,
     name: String,
-    surface: DrmSurface,
-    size: (i32, i32),
+    surface: AtomicSurface,
     slots: Vec<KmsSlot>,
     scanout: ScanoutState,
 }
@@ -138,23 +147,22 @@ impl KmsOutput {
     pub(super) fn new(
         drm: &mut DrmDevice,
         gbm: &GbmDevice<DrmDeviceFd>,
+        active: Rc<std::cell::Cell<bool>>,
         descriptor: &OutputDescriptor,
         mode: DrmMode,
         buffers: Vec<(u8, ExportedDmabuf)>,
+        claimed_planes: &[plane::Handle],
     ) -> Result<Self, KmsError> {
         let crtc = crtc_handle(descriptor.crtc)?;
         let connector = connector_handle(descriptor.id.connector_id)?;
-        let surface = drm
-            .create_surface(crtc, mode, &[connector])
-            .map_err(|source| KmsError::CreateSurface(source.to_string()))?;
-        if surface.is_legacy() {
-            return Err(KmsError::LegacySurface);
-        }
+        let plane =
+            select_primary_plane(drm, crtc, descriptor.native_format.format, claimed_planes)?;
+        let device_fd = drm.device_fd().clone();
 
         let mut slots = Vec::with_capacity(buffers.len());
         for (slot, dmabuf) in buffers {
             let framebuffer =
-                framebuffer_from_dmabuf(surface.device_fd(), gbm, &dmabuf).map_err(|source| {
+                framebuffer_from_dmabuf(&device_fd, gbm, &dmabuf).map_err(|source| {
                     KmsError::CreateFramebuffer {
                         slot,
                         message: source.to_string(),
@@ -167,22 +175,28 @@ impl KmsOutput {
             });
         }
         slots.sort_by_key(|slot| slot.slot);
+        let first_framebuffer = slots
+            .first()
+            .ok_or(KmsError::NoFramebuffers)?
+            .framebuffer
+            .handle();
+        let surface = AtomicSurface::new(
+            device_fd,
+            active,
+            connector,
+            crtc,
+            plane,
+            mode,
+            first_framebuffer,
+        )?;
 
-        let output = Self {
+        Ok(Self {
             id: descriptor.id,
             name: descriptor.name.clone(),
             surface,
-            size: (descriptor.mode.width, descriptor.mode.height),
             slots,
             scanout: ScanoutState::default(),
-        };
-        let first_slot = output.slots.first().ok_or(KmsError::NoFramebuffers)?.slot;
-        let plane = output.plane_state(first_slot, None)?;
-        output
-            .surface
-            .test_state([plane], true)
-            .map_err(|source| KmsError::TestState(source.to_string()))?;
-        Ok(output)
+        })
     }
 
     pub(super) fn ready_for(&self, slot: u8) -> bool {
@@ -193,6 +207,10 @@ impl KmsOutput {
         self.surface.crtc()
     }
 
+    pub(super) fn plane(&self) -> plane::Handle {
+        self.surface.plane()
+    }
+
     pub(super) fn submit(
         &mut self,
         slot: u8,
@@ -200,15 +218,10 @@ impl KmsOutput {
         sync_fd: OwnedFd,
     ) -> Result<(), KmsError> {
         self.scanout.validate_queue(slot, timeline_value)?;
-        let plane = self.plane_state(slot, Some(sync_fd.as_fd()))?;
-        let result = if self.surface.commit_pending() {
-            self.surface.commit([plane], true)
-        } else {
-            self.surface.page_flip([plane], true)
-        };
-        if let Err(source) = result {
+        let framebuffer = self.framebuffer(slot)?;
+        if let Err(source) = self.surface.submit(framebuffer, sync_fd.as_fd()) {
             self.scanout.faulted = true;
-            return Err(KmsError::Commit(source.to_string()));
+            return Err(source.into());
         }
         self.scanout.queue(slot, timeline_value);
         Ok(())
@@ -229,9 +242,13 @@ impl KmsOutput {
     }
 
     pub(super) fn reset_after_session_resume(&mut self) -> Result<bool, KmsError> {
-        self.surface
-            .reset_state()
-            .map_err(|source| KmsError::ResetState(source.to_string()))?;
+        let framebuffer = self
+            .slots
+            .first()
+            .ok_or(KmsError::NoFramebuffers)?
+            .framebuffer
+            .handle();
+        self.surface.reset_after_session_resume(framebuffer)?;
         self.scanout.resume_after_session_loss();
         Ok(self
             .slots
@@ -239,34 +256,24 @@ impl KmsOutput {
             .any(|slot| self.scanout.ready_for(slot.slot)))
     }
 
-    pub(super) fn reset_after_device_reset(&mut self) {
+    pub(super) fn reset_after_device_reset(&mut self) -> Result<(), KmsError> {
+        let framebuffer = self
+            .slots
+            .first()
+            .ok_or(KmsError::NoFramebuffers)?
+            .framebuffer
+            .handle();
+        self.surface.reset_after_session_resume(framebuffer)?;
         self.scanout = ScanoutState::default();
+        Ok(())
     }
 
-    fn plane_state<'a>(
-        &'a self,
-        slot: u8,
-        fence: Option<BorrowedFd<'a>>,
-    ) -> Result<PlaneState<'a>, KmsError> {
-        let slot = self
-            .slots
+    fn framebuffer(&self, slot: u8) -> Result<drm::control::framebuffer::Handle, KmsError> {
+        self.slots
             .iter()
             .find(|candidate| candidate.slot == slot)
-            .ok_or(KmsError::UnknownSlot(slot))?;
-        let src = Rectangle::from_size(self.size.into()).to_f64();
-        let dst = Rectangle::from_size(self.size.into());
-        Ok(PlaneState {
-            handle: self.surface.plane(),
-            config: Some(PlaneConfig {
-                src,
-                dst,
-                transform: Transform::Normal,
-                alpha: 1.0,
-                damage_clips: None,
-                fb: *slot.framebuffer.as_ref(),
-                fence,
-            }),
-        })
+            .map(|slot| slot.framebuffer.handle())
+            .ok_or(KmsError::UnknownSlot(slot))
     }
 }
 
@@ -387,16 +394,12 @@ pub(super) enum KmsError {
     InvalidCrtc(u32),
     #[error("connector handle {0} is invalid")]
     InvalidConnector(u32),
-    #[error("failed to create Smithay DRM surface: {0}")]
-    CreateSurface(String),
-    #[error("legacy DRM surfaces cannot satisfy Tensor's explicit-sync contract")]
-    LegacySurface,
+    #[error(transparent)]
+    Atomic(#[from] AtomicError),
     #[error("failed to create framebuffer for output slot {slot}: {message}")]
     CreateFramebuffer { slot: u8, message: String },
     #[error("renderer supplied no native output framebuffers")]
     NoFramebuffers,
-    #[error("failed to test atomic KMS state: {0}")]
-    TestState(String),
     #[error("output scanout is waiting for timeline {0}")]
     Busy(u64),
     #[error("output scanout is faulted and requires reprobe")]
@@ -409,10 +412,6 @@ pub(super) enum KmsError {
     UnknownSlot(u8),
     #[error("timeline value zero is reserved")]
     InvalidTimeline,
-    #[error("atomic KMS commit/page-flip failed: {0}")]
-    Commit(String),
-    #[error("failed to refresh KMS surface state after session resume: {0}")]
-    ResetState(String),
 }
 
 #[cfg(test)]

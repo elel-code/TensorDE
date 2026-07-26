@@ -2,7 +2,8 @@
 
 Tensor is an early-stage Wayland compositor written in Rust. Its intended stack is:
 
-- Smithay for Wayland protocol state, input, DRM/KMS integration, and the event loop.
+- Smithay as a transitional Wayland/XWayland protocol adapter.
+- Tensor-owned Compio completion dispatch, input/session adapters, and atomic DRM/KMS submission.
 - Vulkanalia for a custom Vulkan renderer.
 - A bindless descriptor heap backed by `VK_EXT_descriptor_heap`.
 - Pluggable layouts: scrolling 1D, spatial 2D, and master-stack.
@@ -15,7 +16,7 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 The repository currently contains the long-lived Smithay protocol state machine (compositor,
 xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
 startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tty device/session
-ownership, Smithay-owned atomic KMS output submission, and a Vulkanalia renderer. The renderer
+ownership, Tensor-owned atomic KMS output submission, and a Vulkanalia renderer. The renderer
 allocates explicit-modifier output dma-bufs, samples imported one-plane RGB client buffers through
 the descriptor heap, and integrates `wp_linux_drm_syncobj_v1` acquire/release fences without a CPU
 wait or descriptor-set fallback. Toplevel, subsurface, and popup trees are flattened into the
@@ -111,12 +112,12 @@ Smithay protocol/input events
                        |
                 dma-buf + fence
                        |
-               Smithay DRM/KMS
+               Tensor DRM/KMS
 ```
 
 The module boundaries are deliberate ownership boundaries:
 
-- `src/protocol.rs`: Smithay/calloop ownership; `RuntimeState` serializes protocol, input, popup,
+- `src/protocol.rs`: Wayland/Smithay adapter ownership; `RuntimeState` serializes protocol, input, popup,
   and ECS lifecycle transitions.
 - `src/ipc.rs`: versioned compositor control protocol over a bounded Unix-socket framing layer.
 - `src/ecs.rs`: Bevy ECS components and deterministic scene/layout state.
@@ -135,7 +136,7 @@ The module boundaries are deliberate ownership boundaries:
 1. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
 2. Add damage-driven partial rendering and per-output redraw scheduling around the existing
    timeline/KMS presentation model.
-3. Add direct-scanout candidate selection without moving KMS ownership out of Smithay.
+3. Add direct-scanout candidate selection inside the Tensor tty/KMS adapter.
 4. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
    stable ECS view IDs.
 5. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal

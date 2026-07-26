@@ -60,6 +60,13 @@ pub(super) struct ScanoutFramebuffer {
     drm: DrmDeviceFd,
 }
 
+impl ScanoutFramebuffer {
+    #[inline]
+    pub(super) fn handle(&self) -> framebuffer::Handle {
+        self.handle
+    }
+}
+
 impl AsRef<framebuffer::Handle> for ScanoutFramebuffer {
     #[inline]
     fn as_ref(&self) -> &framebuffer::Handle {

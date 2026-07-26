@@ -99,7 +99,7 @@ allocation, three native output slots, and timeline retirement, and is connected
 output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
 client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports
 a Tensor-owned dma-buf description plus binary `SYNC_FD`, and hands both to the tty adapter for the
-current Smithay atomic KMS path. Renderer production code does not depend on Smithay types. The
+Tensor-owned atomic KMS path. Renderer production code does not depend on Smithay types. The
 current slice is intentionally limited to one-plane RGB; implicit dma-buf synchronization,
 multi-plane formats, and damage-driven partial rendering remain later gates. Explicit clients use Smithay's
 `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
@@ -265,8 +265,8 @@ libseat completion adapters. Compio completes each submitted source operation an
 thread performs reconciliation. The tty backend owns session activation, libinput seat assignment,
 compositor-thread DRM completion fds, GBM lifetime, and per-output native-format validation. It
 opens the primary/render pair selected during
-Vulkan probing and requires that pair to be available through the active libseat session. Future
-surface creation, modesetting, page flips, and direct scanout remain in this Smithay backend;
+Vulkan probing and requires that pair to be available through the active libseat session. Tensor
+owns atomic surface creation, modesetting, page flips, and strict explicit-modifier plane probing;
 Vulkanalia only produces renderable buffers and completion synchronization for it. Tensor's tty
 adapter scans connector resources in place and preserves connector-to-CRTC mappings across startup,
 udev hotplug, delayed mode discovery, DP-MST removal, and session resume.
@@ -296,11 +296,12 @@ ring, client tree, then later stacked nodes, with the cursor last; this is compo
 not a descriptor-set fallback for client or output resources.
 
 For each planned output, the renderer owns a bounded three-slot set of Vulkan images and exports
-Tensor-owned `ExportedDmabuf` descriptions. The tty adapter converts those descriptions to Smithay
-dma-bufs immediately before GBM import, creates framebuffers, and submits atomic/page-flip state
+Tensor-owned `ExportedDmabuf` descriptions. The tty adapter imports those descriptions directly
+through GBM, creates framebuffers, and submits atomic/page-flip state
 with the renderer's `IN_FENCE_FD`; vblank advances the scanout state. Initial output resource
 construction is a startup gate: failure aborts backend preparation before readiness.
 Hotplug resource failures are isolated to the affected output and do not invalidate already-live
-outputs. Session resume re-reads every live Smithay DRM surface, quarantines slots that may still be
-scanned out, drains already-ready DRM events, and then schedules a repaint. Exhausting all three
+outputs. Session resume rebuilds every live Tensor KMS surface's properties and mode blob,
+quarantines slots that may still be scanned out, drains completed DRM events, and then schedules a
+repaint. Exhausting all three
 slots escalates to a device state reset rather than reusing an uncertain buffer.
