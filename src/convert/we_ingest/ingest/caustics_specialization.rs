@@ -6,7 +6,10 @@ pub(super) const CAUSTICS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_
 pub(super) const CAUSTICS_CHROMATIC_ZERO_SHADER: &str =
     "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_CHROMATIC_ZERO_1";
 pub(super) const CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1";
+pub(super) const CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1__GILDER_COLOR_EQUAL_1";
 const CHROMATIC_ABERRATION: &str = "ui_editor_properties_chromatic_aberration";
+const COLOR_START: &str = "ui_editor_properties_color_start";
+const COLOR_END: &str = "ui_editor_properties_color_end";
 
 pub(super) fn specialize_caustics_shader(
     shader: &str,
@@ -18,11 +21,52 @@ pub(super) fn specialize_caustics_shader(
     {
         return shader.to_owned();
     }
-    if material_slots_bind_same_resource(textures, 2, 5) {
+    let shared = material_slots_bind_same_resource(textures, 2, 5);
+    let color_equal = material_static_rgb_equal(constants, COLOR_START, COLOR_END);
+    if shared && color_equal {
+        CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_SHADER.to_owned()
+    } else if shared {
         CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_SHADER.to_owned()
     } else {
         CAUSTICS_CHROMATIC_ZERO_SHADER.to_owned()
     }
+}
+
+fn material_static_rgb_equal(
+    constants: &[WeIrMaterialConstant],
+    left_name: &str,
+    right_name: &str,
+) -> bool {
+    let Some(left) = material_static_rgb(constants, left_name) else {
+        return false;
+    };
+    let Some(right) = material_static_rgb(constants, right_name) else {
+        return false;
+    };
+    left.iter().zip(right).all(|(a, b)| (a - b).abs() <= 1.0e-7)
+}
+
+fn material_static_rgb(constants: &[WeIrMaterialConstant], name: &str) -> Option<[f32; 3]> {
+    let raw = constants
+        .iter()
+        .find(|constant| constant.name == name)?
+        .value_json
+        .trim();
+    // Authored `"1 1 1"` or JSON array forms only; user-property objects reject.
+    if raw.starts_with('{') {
+        return None;
+    }
+    let cleaned = raw.trim_matches(|c| c == '"' || c == '[' || c == ']');
+    let mut parts = cleaned
+        .split(|c: char| c == ' ' || c == ',' || c == '\t')
+        .filter(|part| !part.is_empty());
+    let r = parts.next()?.parse::<f32>().ok()?;
+    let g = parts.next()?.parse::<f32>().ok()?;
+    let b = parts.next()?.parse::<f32>().ok()?;
+    if parts.next().is_some() || ![r, g, b].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    Some([r, g, b])
 }
 
 fn material_slots_bind_same_resource(
@@ -101,6 +145,34 @@ mod tests {
                 &[texture(2, 41), texture(5, 42)],
             ),
             CAUSTICS_CHROMATIC_ZERO_SHADER
+        );
+    }
+
+    #[test]
+    fn equal_static_color_ramp_selects_color_equal_shared_variant() {
+        assert_eq!(
+            specialize_caustics_shader(
+                CAUSTICS_SHADER,
+                &[
+                    constant(CHROMATIC_ABERRATION, "0"),
+                    constant(COLOR_START, "\"1 1 1\""),
+                    constant(COLOR_END, "\"1 1 1\""),
+                ],
+                &[texture(2, 41), texture(5, 41)],
+            ),
+            CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_SHADER
+        );
+        assert_eq!(
+            specialize_caustics_shader(
+                CAUSTICS_SHADER,
+                &[
+                    constant(CHROMATIC_ABERRATION, "0"),
+                    constant(COLOR_START, "1 0 0"),
+                    constant(COLOR_END, "0 1 0"),
+                ],
+                &[texture(2, 41), texture(5, 41)],
+            ),
+            CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_SHADER
         );
     }
 

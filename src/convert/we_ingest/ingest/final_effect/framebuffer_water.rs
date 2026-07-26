@@ -14,6 +14,7 @@ const CAUSTICS_PREPASS_SHADER: &str =
     "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
 const CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
 const CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1";
+const CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1__GILDER_COLOR_EQUAL_1";
 
 pub(super) fn source_is_supported(
     framebuffer_snapshot_available: bool,
@@ -112,13 +113,12 @@ pub(super) fn chain_is_supported(effects: &[WeEffectPassContract]) -> bool {
 }
 
 fn caustics_prepass_shader(input: &MaterialInput) -> &'static str {
-    if input
-        .pass
-        .shader_key
-        .contains("__GILDER_PATTERN_GLOW_SHARED_1")
-    {
+    let key = input.pass.shader_key.as_str();
+    if key.contains("__GILDER_PATTERN_GLOW_SHARED_1") && key.contains("__GILDER_COLOR_EQUAL_1") {
+        CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_PREPASS_SHADER
+    } else if key.contains("__GILDER_PATTERN_GLOW_SHARED_1") {
         CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER
-    } else if input.pass.shader_key.contains("__GILDER_CHROMATIC_ZERO_1") {
+    } else if key.contains("__GILDER_CHROMATIC_ZERO_1") {
         CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
     } else {
         CAUSTICS_PREPASS_SHADER

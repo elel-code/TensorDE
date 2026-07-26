@@ -310,6 +310,7 @@ fn caustics_effect_fragment_source(
     texture_slot_mask: u32,
     chromatic_zero: bool,
     pattern_glow_shared: bool,
+    color_equal: bool,
 ) -> String {
     assert_eq!(
         texture_slot_mask & 0x3d,
@@ -388,7 +389,7 @@ void main() {
 }
 "#
     .to_owned();
-    let source = if chromatic_zero {
+    let mut source = if chromatic_zero {
         source.replace(
             r#"    float chromatic = u_Effect.g_GlowDistortionChromaticBlur.z;
     vec2 leftCoords = causticsCoords - vec2(0.01 * chromatic, 0.0);
@@ -408,13 +409,35 @@ void main() {
             chromatic_zero,
             "shared caustics pattern/glow requires the chromatic-zero variant"
         );
-        source.replace(
-            "    float glowSample = texture(g_Texture5, causticsCoords).r;",
-            "    float glowSample = causticsPattern;",
-        )
-    } else {
-        source
+        // glowSample := causticsPattern and caustics is a broadcast of that
+        // pattern, so mix(caustics, glow, blur) is algebraically caustics for
+        // any blur weight. Drop the dead mix; keep glow for the smoothstep term.
+        source = source
+            .replace(
+                "    float glowSample = texture(g_Texture5, causticsCoords).r;",
+                "    float glowSample = causticsPattern;",
+            )
+            .replace(
+                r#"    caustics = mix(
+        caustics,
+        vec3(glowSample),
+        u_Effect.g_GlowDistortionChromaticBlur.w);
+"#,
+                "",
+            );
     }
+    if color_equal {
+        // Static equal color ramps: mix(start, end, t) == start for all t.
+        source = source.replace(
+            r#"    vec3 causticsColor = u_Effect.g_TimeSpeedScaleBrightness.w
+        * mix(u_Effect.g_ColorStart.rgb, u_Effect.g_ColorEnd.rgb, blendColor.x);
+    causticsColor *= caustics;"#,
+            r#"    vec3 causticsColor = u_Effect.g_TimeSpeedScaleBrightness.w
+        * u_Effect.g_ColorStart.rgb
+        * caustics;"#,
+        );
+    }
+    source
 }
 
 fn colorkey_effect_fragment_source(_texture_slot_mask: u32) -> String {

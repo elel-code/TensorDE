@@ -439,6 +439,7 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
             texture_slot_mask,
             chromatic_zero,
             key.contains("__GILDER_PATTERN_GLOW_SHARED_1"),
+            key.contains("__GILDER_COLOR_EQUAL_1"),
         );
     }
     if shader == "effects/cloudmotion" {
@@ -521,6 +522,7 @@ fn caustics_framebuffer_quantized_overlay_fragment_source(
         texture_slot_mask,
         key.contains("__GILDER_CHROMATIC_ZERO_1"),
         key.contains("__GILDER_PATTERN_GLOW_SHARED_1"),
+        key.contains("__GILDER_COLOR_EQUAL_1"),
     )
         .replacen(
             "layout(location = 0) in vec2 v_TexCoord;",
