@@ -97,10 +97,11 @@ oversized region clipped by the compositor because a NULL region means
   `wgpu_hal::vulkan::Device::texture_from_dmabuf_fd` +
   `Device::create_texture_from_hal` (`shell/render/dmabuf.rs`). Default and
   surface feedback are requested on main toplevel create; snapshots are cached
-  on `ActiveEventLoop` and can pick a wgpu-importable format via
-  `DmabufFeedback::pick_format` / `preferred_dmabuf_import_format`.
-  Export (wgpu texture → dmabuf → `wl_buffer`) is not implemented; that would
-  need a reverse path not yet in wgpu-hal.
+  on `ActiveEventLoop`. `DmabufImportPlan` / `DmabufReadiness` combine GPU
+  capability with feedback to pick a fourcc+modifier; startup logs readiness.
+  An optional `/dev/udmabuf` smoke test exercises real import when the node
+  is available. Export (wgpu texture → dmabuf → `wl_buffer`) is not
+  implemented; that would need a reverse path not yet in wgpu-hal.
 
 ## Core data-device and cursor behavior
 

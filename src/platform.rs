@@ -404,6 +404,11 @@ impl ActiveEventLoop {
         crate::shell::render::dmabuf::pick_import_format(&feedback)
     }
 
+    /// Whether `zwp_linux_dmabuf_v1` is bound on the connection.
+    pub fn has_linux_dmabuf(&self) -> bool {
+        self.runtime.borrow().has_linux_dmabuf()
+    }
+
     pub fn create_window(
         &self,
         attributes: WindowAttributes,

@@ -168,9 +168,37 @@ impl WgpuState {
     }
 
     /// Whether this renderer can wrap dmabuf fds as wgpu textures.
-    #[allow(dead_code)] // used by future thumbnail/video import paths
+    #[allow(dead_code)]
     pub(crate) fn dmabuf_import_supported(&self) -> bool {
         self.dmabuf_import_supported
+    }
+
+    /// Protocol + GPU readiness for external dmabuf import.
+    pub(crate) fn dmabuf_readiness(
+        &self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+    ) -> crate::shell::render::dmabuf::DmabufReadiness {
+        let wayland_global = event_loop.has_linux_dmabuf();
+        let feedback = match surface {
+            Some(id) => event_loop.dmabuf_feedback_for(id),
+            None => event_loop.dmabuf_default_feedback(),
+        };
+        crate::shell::render::dmabuf::assess_readiness(
+            self.dmabuf_import_supported,
+            wayland_global,
+            feedback.as_ref(),
+        )
+    }
+
+    /// Negotiated import plan (format/modifier) for a surface, if ready.
+    #[allow(dead_code)]
+    pub(crate) fn dmabuf_import_plan(
+        &self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+    ) -> Option<crate::shell::render::dmabuf::DmabufImportPlan> {
+        self.dmabuf_readiness(event_loop, surface).plan
     }
 
     /// Import a single-plane dmabuf as a sampleable wgpu texture.
@@ -186,6 +214,38 @@ impl WgpuState {
             return Err(crate::shell::render::dmabuf::DmabufImportError::FeatureUnavailable);
         }
         crate::shell::render::dmabuf::import_dmabuf_texture(&self.device, desc)
+    }
+
+    /// Import using a negotiated plan (fills fourcc from the plan).
+    #[allow(dead_code)]
+    pub(crate) fn import_dmabuf_with_plan(
+        &self,
+        plan: crate::shell::render::dmabuf::DmabufImportPlan,
+        width: u32,
+        height: u32,
+        plane: crate::shell::render::dmabuf::DmabufImportPlane,
+        usage: wgpu::TextureUsages,
+        label: Option<&'static str>,
+    ) -> Result<wgpu::Texture, crate::shell::render::dmabuf::DmabufImportError> {
+        let desc = crate::shell::render::dmabuf::import_desc_from_plan(
+            plan, width, height, plane, usage, label,
+        );
+        self.import_dmabuf_texture(desc)
+    }
+
+    /// Log one-line readiness after feedback may have arrived.
+    pub(crate) fn log_dmabuf_readiness(
+        &self,
+        event_loop: &ActiveEventLoop,
+        surface: Option<WindowId>,
+        reason: &'static str,
+    ) {
+        let r = self.dmabuf_readiness(event_loop, surface);
+        fika_log!(
+            "[fika-wgpu] dmabuf-status reason={reason} import_ready={} {}",
+            r.import_ready() as u8,
+            r.summary()
+        );
     }
 
     pub(crate) fn wait_idle(&self, reason: &'static str) {

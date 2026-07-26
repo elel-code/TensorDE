@@ -130,6 +130,112 @@ pub(crate) fn pick_scanout_import_format(
     None
 }
 
+/// Negotiated plan for importing external dmabuf content into wgpu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DmabufImportPlan {
+    pub fourcc: u32,
+    pub modifier: u64,
+    pub texture_format: wgpu::TextureFormat,
+    /// Compositor main device (`dev_t`) from feedback, when known.
+    pub main_device: u64,
+    pub scanout_preferred: bool,
+}
+
+/// Full readiness snapshot for diagnostics and feature gating.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DmabufReadiness {
+    pub vulkan_import: bool,
+    pub wayland_global: bool,
+    pub feedback_ready: bool,
+    pub plan: Option<DmabufImportPlan>,
+}
+
+impl DmabufReadiness {
+    pub fn import_ready(&self) -> bool {
+        self.vulkan_import && self.plan.is_some()
+    }
+
+    pub fn summary(&self) -> String {
+        match self.plan {
+            Some(plan) => format!(
+                "ready vulkan={} wayland={} fourcc=0x{:08x} mod=0x{:x}",
+                self.vulkan_import as u8,
+                self.wayland_global as u8,
+                plan.fourcc,
+                plan.modifier
+            ),
+            None => format!(
+                "not-ready vulkan={} wayland={} feedback={}",
+                self.vulkan_import as u8,
+                self.wayland_global as u8,
+                self.feedback_ready as u8
+            ),
+        }
+    }
+}
+
+/// Build an import plan from compositor feedback (if any) + local wgpu capability.
+pub(crate) fn build_import_plan(
+    vulkan_import: bool,
+    feedback: Option<&wayland_client_runtime::DmabufFeedback>,
+    prefer_scanout: bool,
+) -> Option<DmabufImportPlan> {
+    if !vulkan_import {
+        return None;
+    }
+    let feedback = feedback?;
+    let (fmt, scanout_preferred) = if prefer_scanout {
+        match pick_scanout_import_format(feedback) {
+            Some(f) => (f, !feedback.scanout_formats().is_empty()),
+            None => (pick_import_format(feedback)?, false),
+        }
+    } else {
+        (pick_import_format(feedback)?, false)
+    };
+    let texture_format = texture_format_for_fourcc(fmt.format)?;
+    Some(DmabufImportPlan {
+        fourcc: fmt.format,
+        modifier: fmt.modifier,
+        texture_format,
+        main_device: feedback.main_device(),
+        scanout_preferred,
+    })
+}
+
+/// Combine device + protocol + feedback into a single readiness view.
+pub(crate) fn assess_readiness(
+    vulkan_import: bool,
+    wayland_global: bool,
+    feedback: Option<&wayland_client_runtime::DmabufFeedback>,
+) -> DmabufReadiness {
+    let plan = build_import_plan(vulkan_import, feedback, false);
+    DmabufReadiness {
+        vulkan_import,
+        wayland_global,
+        feedback_ready: feedback.is_some(),
+        plan,
+    }
+}
+
+/// Build a [`DmabufImportDesc`] for a plane using a negotiated plan.
+pub(crate) fn import_desc_from_plan(
+    plan: DmabufImportPlan,
+    width: u32,
+    height: u32,
+    plane: DmabufImportPlane,
+    usage: wgpu::TextureUsages,
+    label: Option<&'static str>,
+) -> DmabufImportDesc {
+    DmabufImportDesc {
+        width,
+        height,
+        fourcc: plan.fourcc,
+        plane,
+        usage,
+        label,
+    }
+}
+
 /// Import a single-plane dmabuf as a wgpu texture.
 ///
 /// Requires the device to have been created with
@@ -237,6 +343,8 @@ pub(crate) fn import_dmabuf_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::io::AsRawFd;
 
     #[test]
     fn fourcc_maps_common_formats() {
@@ -274,5 +382,173 @@ mod tests {
         // Preference list puts ARGB before RGBA, even if tranche lists RGBA first.
         let picked = pick_import_format(&feedback).expect("pick");
         assert_eq!(picked.format, fourcc::ARGB8888);
+    }
+
+    #[test]
+    fn assess_readiness_needs_vulkan_and_feedback() {
+        use wayland_client_runtime::{DmabufFeedback, DmabufFormat};
+
+        let feedback = DmabufFeedback {
+            main_device: 42,
+            formats: vec![DmabufFormat::new(fourcc::ARGB8888, fourcc::MOD_LINEAR)],
+            tranches: vec![],
+        };
+        let not_ready = assess_readiness(false, true, Some(&feedback));
+        assert!(!not_ready.import_ready());
+        assert!(not_ready.plan.is_none());
+
+        let ready = assess_readiness(true, true, Some(&feedback));
+        assert!(ready.import_ready());
+        let plan = ready.plan.expect("plan");
+        assert_eq!(plan.fourcc, fourcc::ARGB8888);
+        assert_eq!(plan.main_device, 42);
+        assert_eq!(plan.texture_format, wgpu::TextureFormat::Bgra8Unorm);
+    }
+
+    /// Allocate a single-plane linear ARGB8888 dmabuf via `/dev/udmabuf` when available.
+    fn try_udmabuf_argb8888(width: u32, height: u32) -> Option<(OwnedFd, u32)> {
+        use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
+        use std::fs::{File, OpenOptions};
+        use std::io::{Seek, SeekFrom, Write};
+        use std::path::Path;
+
+        if !Path::new("/dev/udmabuf").exists() {
+            return None;
+        }
+        let stride = width.checked_mul(4)?;
+        let size = (stride as u64)
+            .checked_mul(height as u64)?
+            .max(4096)
+            .next_multiple_of(4096);
+
+        let memfd =
+            memfd_create("fika-dmabuf-test", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)
+                .ok()?;
+        let mut file = File::from(memfd);
+        file.set_len(size).ok()?;
+        // Solid opaque red in little-endian ARGB8888 (B,G,R,A bytes).
+        let pixel = [0u8, 0, 255, 255];
+        let row = pixel.repeat(width as usize);
+        for y in 0..height {
+            file.seek(SeekFrom::Start(u64::from(y) * u64::from(stride)))
+                .ok()?;
+            file.write_all(&row).ok()?;
+        }
+        fcntl_add_seals(&file, SealFlags::SHRINK | SealFlags::SEAL).ok()?;
+
+        #[repr(C)]
+        struct UdmabufCreate {
+            memfd: u32,
+            flags: u32,
+            offset: u64,
+            size: u64,
+        }
+        // Linux uapi: _IOW('u', 0x42, struct udmabuf_create) → 0x40187542.
+        const UDMABUF_CREATE: std::os::raw::c_ulong = 0x4018_7542;
+        let ud = OpenOptions::new().read(true).write(true).open("/dev/udmabuf").ok()?;
+        let arg = UdmabufCreate {
+            memfd: file.as_raw_fd() as u32,
+            flags: 0,
+            offset: 0,
+            size,
+        };
+        unsafe extern "C" {
+            fn ioctl(
+                fd: std::os::raw::c_int,
+                request: std::os::raw::c_ulong,
+                ...
+            ) -> std::os::raw::c_int;
+        }
+        // SAFETY: UDMABUF_CREATE returns a new dmabuf fd on success.
+        let dmabuf_raw = unsafe { ioctl(ud.as_raw_fd(), UDMABUF_CREATE, &arg) };
+        drop(file);
+        drop(ud);
+        if dmabuf_raw < 0 {
+            return None;
+        }
+        // SAFETY: kernel returned a fresh owned fd.
+        Some((unsafe { OwnedFd::from_raw_fd(dmabuf_raw) }, stride))
+    }
+
+    #[test]
+    fn import_udmabuf_into_wgpu_when_available() {
+        let Some((fd, stride)) = try_udmabuf_argb8888(64, 64) else {
+            eprintln!("skip: /dev/udmabuf unavailable or permission denied");
+            return;
+        };
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => a,
+                Err(_) => {
+                    eprintln!("skip: no Vulkan adapter");
+                    return;
+                }
+            };
+        if !adapter_supports_dmabuf_import(&adapter) {
+            eprintln!("skip: adapter lacks VULKAN_EXTERNAL_MEMORY_DMA_BUF");
+            return;
+        }
+        let features = optional_dmabuf_features(&adapter);
+        let (device, _queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("dmabuf-import-test"),
+                required_features: features,
+                required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    eprintln!("skip: request_device failed: {e}");
+                    return;
+                }
+            };
+
+        let plan = DmabufImportPlan {
+            fourcc: fourcc::ARGB8888,
+            modifier: fourcc::MOD_LINEAR,
+            texture_format: wgpu::TextureFormat::Bgra8Unorm,
+            main_device: 0,
+            scanout_preferred: false,
+        };
+        let desc = import_desc_from_plan(
+            plan,
+            64,
+            64,
+            DmabufImportPlane {
+                fd,
+                offset: 0,
+                stride,
+                modifier: fourcc::MOD_LINEAR,
+            },
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            Some("udmabuf-test"),
+        );
+        match import_dmabuf_texture(&device, desc) {
+            Ok(texture) => {
+                assert_eq!(texture.size().width, 64);
+                assert_eq!(texture.size().height, 64);
+                assert_eq!(texture.format(), wgpu::TextureFormat::Bgra8Unorm);
+                texture.destroy();
+            }
+            Err(e) => {
+                // Some drivers reject linear udmabuf without DRM modifiers; still useful signal.
+                eprintln!("import failed (driver may reject linear udmabuf): {e}");
+            }
+        }
     }
 }

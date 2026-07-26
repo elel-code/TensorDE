@@ -137,6 +137,9 @@ impl ApplicationHandler for FikaWgpuApp {
 
         self.scene.clamp_scroll(renderer.size);
         renderer.prewarm_scene_caches(&mut self.scene, "startup");
+        // Feedback may still be in-flight; log GPU-side capability now and
+        // again when the first feedback event arrives (see Event::Dmabuf).
+        renderer.log_dmabuf_readiness(event_loop, Some(window.id()), "startup");
         self.renderer = Some(renderer);
         self.clipboard = Some(clipboard);
         self.window = Some(window);
