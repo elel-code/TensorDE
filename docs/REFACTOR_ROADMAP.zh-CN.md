@@ -556,8 +556,10 @@ compio executor
     - min/max、window geometry、parented dialog（`xdg_dialog_v1` modal）
     - xdg_toplevel_icon、blur、zxdg_decoration、DnD 图标、pointer constraints
     - interactive move/resize/window_menu、locked pointer position hint、constraint region
-    - **`wl_data_device` `event_created_child`** 修复（clipboard/DnD offer 创建不再 panic）
-    - smoke：`scripts/check-native-wayland-smoke.sh`、`native_capabilities` example、`NativeRuntime` unit smoke
+    - `wl_data_device` `event_created_child` 修复；smoke 脚本 / `native_capabilities`
+    - **ToplevelState**（maximize/fullscreen/activated/tiled/suspended）+ configure serial
+    - **popup.reposition**（xdg_wm_base ≥ 3）+ reposition token 映射
+    - set_maximized / set_fullscreen / set_minimized
   - 待丰富：完整 CSD 绘制、默认切 native 的回归矩阵；默认仍 SCTK
 
 完成标准：

@@ -28,8 +28,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::ToplevelConfigure {
                         surface: id,
                         suggested_size,
+                        state,
+                        serial,
                     } => {
-                        println!("configure {id:?} size={suggested_size:?}");
+                        println!(
+                            "configure {id:?} size={suggested_size:?} state={state:?} serial={serial}"
+                        );
                         if id == surface {
                             configured = true;
                         }
@@ -64,9 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         y,
                         width,
                         height,
+                        serial,
+                        reposition_token,
                     } => {
                         println!(
-                            "popup configure {id:?} @ ({x},{y}) {width}x{height}"
+                            "popup configure {id:?} @ ({x},{y}) {width}x{height} serial={serial} reposition={reposition_token:?}"
                         );
                     }
                     NativeShellEvent::PopupDone { surface: id } => {

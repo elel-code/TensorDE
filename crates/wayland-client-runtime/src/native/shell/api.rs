@@ -57,6 +57,7 @@ impl NativeShell {
             state.shm = Some(shm);
         }
         if let Ok(wm_base) = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&qh, 1..=6, ()) {
+            state.wm_base_version = wm_base.version();
             state.wm_base = Some(wm_base);
         }
         if let Ok(seat) = globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=9, ()) {
@@ -821,12 +822,57 @@ impl NativeShell {
                 _file: Some(file),
                 configured: false,
                 pending_geom: None,
+                last_configure_serial: 0,
+                pending_reposition_token: None,
                 logical_w: w,
                 logical_h: h,
             },
         );
         self.connection.flush()?;
         Ok(id)
+    }
+
+    /// Reposition an existing popup (`xdg_popup.reposition`, requires xdg_wm_base ≥ 3).
+    pub fn reposition_popup(
+        &mut self,
+        id: NativeSurfaceId,
+        positioner: &NativePopupPositioner,
+        token: u32,
+    ) -> Result<(), NativeError> {
+        if self.state.wm_base_version < 3 {
+            return Err(NativeError::Protocol(
+                "xdg_popup.reposition requires xdg_wm_base version 3+".into(),
+            ));
+        }
+        if positioner.size.width == 0 || positioner.size.height == 0 {
+            return Err(NativeError::Protocol("popup size must be non-zero".into()));
+        }
+        let qh = self.queue.handle();
+        let wm_base = self
+            .state
+            .wm_base
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("xdg_wm_base".into()))?;
+        let record = self
+            .state
+            .popups
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown popup {id:?}")))?;
+        let pos = wm_base.create_positioner(&qh, ());
+        apply_positioner(&pos, positioner);
+        record.popup.reposition(&pos, token);
+        pos.destroy();
+        if let Some(record) = self.state.popups.get_mut(&id) {
+            record.pending_reposition_token = Some(token);
+            record.logical_w = positioner.size.width;
+            record.logical_h = positioner.size.height;
+        }
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn supports_popup_reposition(&self) -> bool {
+        self.state.wm_base_version >= 3
     }
 
     pub fn destroy_popup(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {

@@ -37,6 +37,7 @@ impl NativeRuntime {
     pub fn connect() -> Result<Self, RuntimeError> {
         let shell = NativeShell::connect_to_env().map_err(map_native_error)?;
         let caps = shell.capabilities();
+        let popup_reposition = shell.supports_popup_reposition();
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
@@ -63,7 +64,7 @@ impl NativeRuntime {
                 ext_background_effect: caps.background_blur,
                 // Server decorations available when zxdg_decoration_manager_v1 is bound.
                 // Client/None still use app chrome; no separate capability bit exists.
-                popup_reposition: false,
+                popup_reposition,
                 ..RuntimeCapabilities::default()
             },
             public_events: Vec::with_capacity(128),
@@ -545,6 +546,31 @@ impl NativeRuntime {
 
     pub fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
         self.shell.preferred_icon_sizes().to_vec()
+    }
+
+    pub fn set_maximized(&mut self, surface: SurfaceId, maximized: bool) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_maximized(native, maximized)
+            .map_err(map_native_error)
+    }
+
+    pub fn set_fullscreen(
+        &mut self,
+        surface: SurfaceId,
+        fullscreen: bool,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_fullscreen(native, fullscreen)
+            .map_err(map_native_error)
+    }
+
+    pub fn set_minimized(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_minimized(native)
+            .map_err(map_native_error)
     }
 
     pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {

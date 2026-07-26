@@ -21,7 +21,7 @@ use crate::geometry::LogicalPosition as GeoLogicalPosition;
 use crate::pointer_constraints::{PointerConstraint, PointerConstraintEvent};
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
-    RelativePointerEvent, ToplevelState,
+    RelativePointerEvent,
 };
 
 /// Bidirectional id map for native ↔ public surface identifiers.
@@ -92,13 +92,15 @@ pub fn map_native_event_full(
         NativeShellEvent::ToplevelConfigure {
             surface,
             suggested_size,
+            state,
+            serial,
         } => {
             let surface = surfaces.intern(surface);
             Some(Event::Surface(SurfaceEvent::Configure {
                 surface,
                 suggested_size,
-                state: ToplevelState::empty(),
-                serial: 0,
+                state,
+                serial,
             }))
         }
         NativeShellEvent::ToplevelClose { surface } => {
@@ -122,14 +124,20 @@ pub fn map_native_event_full(
             y,
             width,
             height,
+            serial,
+            reposition_token,
         } => {
             let surface = surfaces.intern(surface);
+            let kind = match reposition_token {
+                Some(token) => crate::event::PopupConfigureKind::Reposition { token },
+                None => crate::event::PopupConfigureKind::Initial,
+            };
             Some(Event::Surface(SurfaceEvent::PopupConfigure {
                 surface,
                 position: LogicalPosition::new(x, y),
                 size: LogicalSize::new(width.max(0) as u32, height.max(0) as u32),
-                serial: 0,
-                kind: crate::event::PopupConfigureKind::Initial,
+                serial,
+                kind,
             }))
         }
         NativeShellEvent::PopupDone { surface } => {
@@ -714,6 +722,7 @@ pub fn native_key_text_pressed(event: &NativeShellEvent) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::ToplevelState;
     use crate::SuggestedSize;
 
     #[test]
@@ -723,16 +732,21 @@ mod tests {
         let event = NativeShellEvent::ToplevelConfigure {
             surface: native,
             suggested_size: SuggestedSize::new(Some(800), Some(600)),
+            state: ToplevelState::ACTIVATED,
+            serial: 7,
         };
         let mapped = map_native_event(event, &mut map).expect("mapped");
         match mapped {
             Event::Surface(SurfaceEvent::Configure {
                 surface,
                 suggested_size,
-                ..
+                state,
+                serial,
             }) => {
                 assert_eq!(surface, map.get(native).unwrap());
                 assert_eq!(suggested_size.width, Some(800));
+                assert!(state.contains(ToplevelState::ACTIVATED));
+                assert_eq!(serial, 7);
             }
             other => panic!("unexpected {other:?}"),
         }

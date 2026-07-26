@@ -28,6 +28,10 @@ pub enum NativeShellEvent {
     ToplevelConfigure {
         surface: NativeSurfaceId,
         suggested_size: SuggestedSize,
+        /// Decoded `xdg_toplevel.configure` state bits.
+        state: crate::ToplevelState,
+        /// Configure serial from the matching `xdg_surface.configure`.
+        serial: u32,
     },
     ToplevelClose {
         surface: NativeSurfaceId,
@@ -149,6 +153,9 @@ pub enum NativeShellEvent {
         y: i32,
         width: i32,
         height: i32,
+        serial: u32,
+        /// Reposition token when this configure follows `xdg_popup.repositioned`.
+        reposition_token: Option<u32>,
     },
     /// `xdg_popup.popup_done` — popup was dismissed.
     PopupDone {
@@ -362,6 +369,8 @@ pub(crate) struct ToplevelRecord {
     pub(crate) pointer_capture: crate::PointerCaptureState,
     pub(crate) configured: bool,
     pub(crate) pending_size: Option<(i32, i32)>,
+    pub(crate) pending_states: crate::ToplevelState,
+    pub(crate) last_configure_serial: u32,
     /// Logical destination size for viewporter (surface-local).
     pub(crate) logical_w: u32,
     pub(crate) logical_h: u32,
@@ -379,6 +388,8 @@ pub(crate) struct PopupRecord {
     pub(crate) _file: Option<File>,
     pub(crate) configured: bool,
     pub(crate) pending_geom: Option<(i32, i32, i32, i32)>,
+    pub(crate) last_configure_serial: u32,
+    pub(crate) pending_reposition_token: Option<u32>,
     pub(crate) logical_w: u32,
     pub(crate) logical_h: u32,
 }
@@ -416,6 +427,8 @@ pub struct NativeShellState {
     pub(crate) compositor: Option<wl_compositor::WlCompositor>,
     pub(crate) shm: Option<wl_shm::WlShm>,
     pub(crate) wm_base: Option<xdg_wm_base::XdgWmBase>,
+    /// Bound `xdg_wm_base` version (for popup reposition etc.).
+    pub(crate) wm_base_version: u32,
     pub(crate) seat: Option<wl_seat::WlSeat>,
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
@@ -552,6 +565,7 @@ impl Default for NativeShellState {
             compositor: None,
             shm: None,
             wm_base: None,
+            wm_base_version: 0,
             seat: None,
             keyboard: None,
             pointer: None,

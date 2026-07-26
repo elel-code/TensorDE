@@ -183,6 +183,8 @@ impl NativeShell {
                 pointer_capture: crate::PointerCaptureState::default(),
                 configured: false,
                 pending_size: Some((width as i32, height as i32)),
+                pending_states: crate::ToplevelState::empty(),
+                last_configure_serial: 0,
                 logical_w: width,
                 logical_h: height,
                 scale_factor: 1.0,

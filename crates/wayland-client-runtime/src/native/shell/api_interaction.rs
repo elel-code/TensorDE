@@ -77,6 +77,51 @@ impl NativeShell {
         Ok(())
     }
 
+    pub fn set_maximized(&mut self, id: NativeSurfaceId, maximized: bool) -> Result<(), NativeError> {
+        let record = self
+            .state
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        if maximized {
+            record.toplevel.set_maximized();
+        } else {
+            record.toplevel.unset_maximized();
+        }
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn set_fullscreen(
+        &mut self,
+        id: NativeSurfaceId,
+        fullscreen: bool,
+    ) -> Result<(), NativeError> {
+        let record = self
+            .state
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        if fullscreen {
+            record.toplevel.set_fullscreen(None);
+        } else {
+            record.toplevel.unset_fullscreen();
+        }
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn set_minimized(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        let record = self
+            .state
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        record.toplevel.set_minimized();
+        self.connection.flush()?;
+        Ok(())
+    }
+
     fn grab_seat_serial(
         &self,
     ) -> Result<(wayland_client::protocol::wl_seat::WlSeat, u32), NativeError> {

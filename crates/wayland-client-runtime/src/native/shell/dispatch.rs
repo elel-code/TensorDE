@@ -18,7 +18,39 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 use super::types::{NativeShellEvent, NativeShellState};
+use crate::event::ToplevelState;
 use crate::geometry::SuggestedSize;
+
+/// Decode `xdg_toplevel.configure` states array (native-endian u32 words).
+fn decode_toplevel_states(states: &[u8]) -> ToplevelState {
+    // Wire values from xdg-shell: maximized=1 … suspended=9.
+    const MAXIMIZED: u32 = 1;
+    const FULLSCREEN: u32 = 2;
+    const RESIZING: u32 = 3;
+    const ACTIVATED: u32 = 4;
+    const TILED_LEFT: u32 = 5;
+    const TILED_RIGHT: u32 = 6;
+    const TILED_TOP: u32 = 7;
+    const TILED_BOTTOM: u32 = 8;
+    const SUSPENDED: u32 = 9;
+    let mut out = ToplevelState::empty();
+    for word in states.chunks_exact(4) {
+        let value = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+        match value {
+            MAXIMIZED => out.set(ToplevelState::MAXIMIZED, true),
+            FULLSCREEN => out.set(ToplevelState::FULLSCREEN, true),
+            RESIZING => out.set(ToplevelState::RESIZING, true),
+            ACTIVATED => out.set(ToplevelState::ACTIVATED, true),
+            TILED_LEFT => out.set(ToplevelState::TILED_LEFT, true),
+            TILED_RIGHT => out.set(ToplevelState::TILED_RIGHT, true),
+            TILED_TOP => out.set(ToplevelState::TILED_TOP, true),
+            TILED_BOTTOM => out.set(ToplevelState::TILED_BOTTOM, true),
+            SUSPENDED => out.set(ToplevelState::SUSPENDED, true),
+            _ => {}
+        }
+    }
+    out
+}
 
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState {
@@ -166,6 +198,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
             if let Some(id) = id {
                 if let Some(record) = state.toplevels.get_mut(&id) {
                     record.configured = true;
+                    record.last_configure_serial = serial;
                     if let Some((w, h)) = record.pending_size {
                         if w > 0 && h > 0 {
                             record.logical_w = w as u32;
@@ -179,6 +212,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                         Some(record.logical_w).filter(|&w| w > 0),
                         Some(record.logical_h).filter(|&h| h > 0),
                     );
+                    let toplevel_state = record.pending_states;
                     if let Some(buffer) = record.buffer.as_ref() {
                         record.wl.attach(Some(buffer), 0, 0);
                         record.wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
@@ -187,9 +221,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                     state.push(NativeShellEvent::ToplevelConfigure {
                         surface: id,
                         suggested_size: suggested,
+                        state: toplevel_state,
+                        serial,
                     });
                 } else if let Some(record) = state.popups.get_mut(&id) {
                     record.configured = true;
+                    record.last_configure_serial = serial;
                     let (x, y, w, h) = record.pending_geom.unwrap_or((
                         0,
                         0,
@@ -200,6 +237,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                         record.logical_w = w as u32;
                         record.logical_h = h as u32;
                     }
+                    let reposition_token = record.pending_reposition_token.take();
                     if let Some(buffer) = record.buffer.as_ref() {
                         record.wl.attach(Some(buffer), 0, 0);
                         record.wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
@@ -211,6 +249,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                         y,
                         width: w,
                         height: h,
+                        serial,
+                        reposition_token,
                     });
                 }
             }
@@ -249,6 +289,13 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
                     state.push(NativeShellEvent::PopupDone { surface: id });
                 }
             }
+            xdg_popup::Event::Repositioned { token } => {
+                if let Some(id) = id {
+                    if let Some(record) = state.popups.get_mut(&id) {
+                        record.pending_reposition_token = Some(token);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -280,12 +327,17 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for NativeShellState {
             .get(&toplevel.id().protocol_id())
             .copied();
         match event {
-            xdg_toplevel::Event::Configure { width, height, .. } => {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
                 if let Some(id) = id {
                     if let Some(record) = state.toplevels.get_mut(&id) {
                         if width > 0 && height > 0 {
                             record.pending_size = Some((width, height));
                         }
+                        record.pending_states = decode_toplevel_states(&states);
                     }
                 }
             }
