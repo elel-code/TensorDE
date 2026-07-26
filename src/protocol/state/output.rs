@@ -530,7 +530,20 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn dispatch_udev_event(&mut self, event: smithay::backend::udev::UdevEvent) {
+    pub(crate) fn drain_backend_completions(&mut self) -> Result<(), String> {
+        let Some(mut backend) = self.backend.take() else {
+            return Ok(());
+        };
+        let events = backend.drain_udev_completions();
+        self.backend = Some(backend);
+        for event in events? {
+            self.dispatch_udev_event(event);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn dispatch_udev_event(&mut self, event: crate::backend::UdevEvent) {
         let Some(mut backend) = self.backend.take() else {
             return;
         };

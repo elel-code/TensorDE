@@ -325,7 +325,8 @@ impl Compositor {
 
     pub fn prepare_runtime(&mut self) -> Result<(), CompositorError> {
         self.protocol.prepare(self.xwayland.enabled())?;
-        self.protocol.prepare_backend(&self.backend_config)?;
+        self.protocol
+            .prepare_backend(&self.backend_config, self.completion_relay.wake())?;
         self.ensure_ipc_runtime()?;
         Ok(())
     }
@@ -418,6 +419,13 @@ impl Compositor {
                 if let Err(message) = drain_security_context_events(&security_context_events, state)
                 {
                     error!(%message, "security-context completion runtime failed");
+                    callback_failure.borrow_mut().replace(message);
+                    callback_stop.stop();
+                    return;
+                }
+                #[cfg(feature = "tty")]
+                if let Err(message) = state.drain_backend_completions() {
+                    error!(%message, "tty completion runtime failed");
                     callback_failure.borrow_mut().replace(message);
                     callback_stop.stop();
                     return;

@@ -143,8 +143,9 @@ the `systemd` Cargo feature is present and `NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, 
 identifies a user-manager launch. Without that feature, `auto` resolves to the direct path while
 `enabled` fails startup. Explicit configuration never manufactures unavailable integration.
 
-`xwayland` defaults to `true`. It starts the rootless XWayland process and calloop source when the
-compositor enters its event loop, then attaches Smithay's XWM after XWayland reports readiness.
+`xwayland` defaults to `true`. It starts the rootless XWayland process, awaits the displayfd through
+a Compio completion, then attaches Smithay's XWM on the compositor thread. Smithay's internal X11
+event source remains a transitional calloop adapter.
 Normal rootless X11 windows enter the same Wayland surface, ECS, and Vulkan scene path as native
 clients. This is not an X11 backend: Tensor rejects primary X11 sessions, keeps layout coordinates
 authoritative, and does not provide an X11 session entry. Override-redirect X11 menus and tooltips

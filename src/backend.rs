@@ -12,7 +12,7 @@ pub(crate) use host_map::{
 #[cfg(feature = "tty")]
 pub(crate) use output::{BackendOutputEvent, BackendOutputId, OutputDescriptor};
 #[cfg(feature = "tty")]
-pub(crate) use tty::TtyBackend;
+pub(crate) use tty::{TtyBackend, UdevEvent};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BackendConfig {

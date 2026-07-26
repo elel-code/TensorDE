@@ -1,19 +1,19 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
+use input::Libinput;
 use smithay::{
     backend::{
         allocator::gbm::{GbmBufferFlags, GbmDevice},
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{UdevBackend, UdevEvent},
     },
     reexports::{
-        calloop::{Dispatcher, LoopHandle, RegistrationToken},
-        input::Libinput,
+        calloop::{LoopHandle, RegistrationToken},
         rustix::fs::{OFlags, makedev},
     },
     utils::DeviceFd,
@@ -34,17 +34,31 @@ use crate::{
     render::{GbmFormatCapability, OutputFormat, VulkanFormatCapability, negotiate_output_formats},
 };
 use tensor_host::{ConnectorState, DrmFormat};
+use tensor_runtime::{
+    OpaqueFdCompletion, OpaqueFdCompletionRuntime, WakeSink, WorkerBridge, WorkerRx,
+};
 
 mod buffers;
 mod gamma;
 mod kms;
 mod management;
+mod status;
+mod udev;
+
+pub(crate) use udev::UdevEvent;
+use udev::UdevMonitor;
+
+const MAX_PENDING_UDEV_COMPLETIONS: usize = 1;
+const MAX_PENDING_UDEV_FAILURES: usize = 1;
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
     session: LibSeatSession,
     libinput: Libinput,
-    udev: Dispatcher<'static, UdevBackend, RuntimeState>,
+    udev: UdevMonitor,
+    udev_completions: WorkerRx<OpaqueFdCompletion>,
+    udev_failures: WorkerRx<String>,
+    _udev_completion_runtime: OpaqueFdCompletionRuntime,
     primary_node: DrmNode,
     render_node: DrmNode,
     devices: HashMap<libc::dev_t, OpenDevice>,
@@ -67,29 +81,17 @@ struct OpenDevice {
     gamma: BTreeMap<super::BackendOutputId, gamma::OutputGamma>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BackendStatus {
-    pub(crate) seat: String,
-    pub(crate) primary_node: PathBuf,
-    pub(crate) render_node: PathBuf,
-    pub(crate) drm_devices: usize,
-    pub(crate) primary_gbm_ready: bool,
-    pub(crate) session_active: bool,
-    pub(crate) topology_generation: u64,
-    pub(crate) outputs: usize,
-    pub(crate) native_format_candidates: usize,
-}
-
 impl TtyBackend {
     pub(crate) fn new(
         loop_handle: LoopHandle<'static, RuntimeState>,
         config: &BackendConfig,
+        completion_wake: Arc<dyn WakeSink>,
     ) -> Result<Self, BackendError> {
         let (session, notifier) =
             LibSeatSession::new().map_err(|error| BackendError::Session(error.to_string()))?;
         let seat = session.seat();
-        let udev_backend = UdevBackend::new(&seat).map_err(BackendError::Udev)?;
-        let initial_devices = udev_backend
+        let udev = UdevMonitor::new(&seat).map_err(BackendError::Udev)?;
+        let initial_devices = udev
             .device_list()
             .map(|(device_id, path)| (device_id, path.to_owned()))
             .collect::<Vec<_>>();
@@ -102,9 +104,19 @@ impl TtyBackend {
         let selected_path = node_path(selected_node);
         let (primary_node, render_node) = resolve_node_pair(selected_node, &selected_path)?;
 
-        let udev = Dispatcher::new(udev_backend, |event, _, state: &mut RuntimeState| {
-            state.dispatch_udev_event(event);
-        });
+        let (udev_completion_sender, udev_completions) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_UDEV_COMPLETIONS,
+            Arc::clone(&completion_wake),
+        );
+        let (udev_failure_sender, udev_failures) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_UDEV_FAILURES, completion_wake);
+        let udev_completion_runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-udev-completions",
+            &udev,
+            udev_completion_sender,
+            udev_failure_sender,
+        )
+        .map_err(|error| BackendError::UdevCompletion(error.to_string()))?;
 
         let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
         libinput
@@ -119,7 +131,10 @@ impl TtyBackend {
             loop_handle: loop_handle.clone(),
             session,
             libinput,
-            udev: udev.clone(),
+            udev,
+            udev_completions,
+            udev_failures,
+            _udev_completion_runtime: udev_completion_runtime,
             primary_node,
             render_node,
             devices: HashMap::new(),
@@ -134,9 +149,6 @@ impl TtyBackend {
             backend.reconcile_devices(initial_devices, true)?;
         }
 
-        loop_handle
-            .register_dispatcher(udev)
-            .map_err(|error| BackendError::Source(error.to_string()))?;
         loop_handle
             .insert_source(input_backend, |event, _, state| {
                 state.process_input_event(event);
@@ -163,34 +175,22 @@ impl TtyBackend {
         Ok(backend)
     }
 
-    pub(crate) fn status(&self) -> BackendStatus {
-        let primary_gbm_ready =
-            self.devices
-                .get(&self.primary_node.dev_id())
-                .is_some_and(|device| {
-                    let _ = &device.gbm;
-                    true
-                });
-        BackendStatus {
-            seat: self.session.seat(),
-            primary_node: node_path(self.primary_node),
-            render_node: node_path(self.render_node),
-            drm_devices: self.devices.len(),
-            outputs: self.outputs.len(),
-            native_format_candidates: self
-                .devices
-                .values()
-                .flat_map(|device| device.output_formats.values())
-                .map(Vec::len)
-                .sum(),
-            primary_gbm_ready,
-            session_active: self.session.is_active(),
-            topology_generation: self.topology_generation,
-        }
-    }
-
     pub(crate) fn take_output_events(&mut self) -> Vec<BackendOutputEvent> {
         std::mem::take(&mut self.pending_outputs)
+    }
+
+    pub(crate) fn drain_udev_completions(&mut self) -> Result<Vec<UdevEvent>, String> {
+        let mut events = Vec::new();
+        while let Some(completion) = self.udev_completions.try_recv() {
+            events.extend(self.udev.drain());
+            completion
+                .rearm()
+                .map_err(|error| format!("udev completion rearm was rejected: {error:?}"))?;
+        }
+        if let Some(message) = self.udev_failures.try_recv() {
+            return Err(message);
+        }
+        Ok(events)
     }
 
     /// Runtime output policy table (for IPC introspection).
@@ -320,7 +320,6 @@ impl TtyBackend {
                 }
                 let devices = self
                     .udev
-                    .as_source_ref()
                     .device_list()
                     .map(|(device_id, path)| (device_id, path.to_owned()))
                     .collect::<Vec<_>>();
@@ -727,6 +726,8 @@ pub(crate) enum BackendError {
     Session(String),
     #[error("failed to enumerate DRM devices through udev: {0}")]
     Udev(std::io::Error),
+    #[error("failed to initialize the udev completion runtime: {0}")]
+    UdevCompletion(String),
     #[error("selected Vulkan DRM node {node} is unavailable to Smithay: {message}")]
     SelectedNode {
         node: crate::render::DrmNodeId,

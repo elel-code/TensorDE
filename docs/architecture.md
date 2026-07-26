@@ -21,8 +21,8 @@ complete**, not a readiness poll loop. On Linux the product driver is **io_uring
 `polling` feature is only an automatic host fallback when io_uring cannot be created — not the
 architecture we design for. calloop still owns some Smithay fds as a **readiness** loop during
 migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, IPC,
-blocked process signals, and worker notifications) uses Compio completions and posts value-only
-messages across bounded bridges. Workers never own
+udev hotplug waits, blocked process signals, and worker notifications) uses Compio completions and
+posts value-only messages across bounded bridges. Workers never own
 Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
 
@@ -244,9 +244,11 @@ blur pass samples the backdrop.
 
 A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Smithay's
 `Space<Window>` and ECS when either the shell or surface destruction callback fires.
-Tensor does not reimplement DRM/KMS, GBM, libinput, udev, or libseat. The tty backend owns session
-activation, udev hotplug reconciliation, libinput seat assignment, DRM notifier tokens, GBM
-lifetime, and per-output native-format validation. It opens the primary/render pair selected during
+Tensor does not reimplement DRM/KMS, GBM, libinput, or libseat. Its small udev adapter owns only
+enumeration, the monitor fd, and value-only hotplug events; Compio completes each submitted monitor
+wait and the compositor thread performs reconciliation. The tty backend owns session activation,
+libinput seat assignment, DRM notifier tokens, GBM lifetime, and per-output native-format
+validation. It opens the primary/render pair selected during
 Vulkan probing and requires that pair to be available through the active libseat session. Future
 surface creation, modesetting, page flips, and direct scanout remain in this Smithay backend;
 Vulkanalia only produces renderable buffers and completion synchronization for it. Connector discovery uses

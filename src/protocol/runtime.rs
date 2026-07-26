@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::{ffi::OsString, sync::Arc};
 
 use calloop::{
     EventLoop, LoopSignal,
@@ -216,14 +216,19 @@ impl WaylandRuntime {
         Ok(relay)
     }
 
-    pub(crate) fn prepare_backend(&mut self, config: &BackendConfig) -> Result<(), ProtocolError> {
+    pub(crate) fn prepare_backend(
+        &mut self,
+        config: &BackendConfig,
+        completion_wake: Arc<dyn tensor_runtime::WakeSink>,
+    ) -> Result<(), ProtocolError> {
         #[cfg(feature = "tty")]
         {
             if self.state.backend.is_some() {
                 return Ok(());
             }
-            let backend = crate::backend::TtyBackend::new(self.event_loop.handle(), config)
-                .map_err(|error| ProtocolError::Backend(error.to_string()))?;
+            let backend =
+                crate::backend::TtyBackend::new(self.event_loop.handle(), config, completion_wake)
+                    .map_err(|error| ProtocolError::Backend(error.to_string()))?;
             self.state.install_backend(backend);
             let events = self
                 .state
@@ -238,7 +243,7 @@ impl WaylandRuntime {
         }
         #[cfg(not(feature = "tty"))]
         {
-            let _ = config;
+            let _ = (config, completion_wake);
             Err(ProtocolError::TtyBackendDisabled)
         }
     }

@@ -28,12 +28,13 @@ tty = [
     "dep:calloop-wayland-source",
     "dep:drm-ffi",
     "dep:gbm",
+    "dep:input",
     "dep:smithay-drm-extras",
+    "dep:udev",
     "smithay/backend_drm",
     "smithay/backend_gbm",
     "smithay/backend_libinput",
     "smithay/backend_session_libseat",
-    "smithay/backend_udev",
 ]
 xwayland = ["smithay/xwayland"]
 
@@ -48,6 +49,7 @@ drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
 futures-util = "0.3"
 gbm = { version = "0.18", optional = true }
+input = { version = "0.10", default-features = false, optional = true, features = ["udev"] }
 libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "pipe", "process"] }
 smithay = { git = "https://github.com/Smithay/smithay.git", branch = "master", default-features = false, features = ["desktop", "wayland_frontend"] }
@@ -67,6 +69,7 @@ toml = "0.8"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+udev = { version = "0.9", optional = true }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
