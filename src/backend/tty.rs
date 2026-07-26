@@ -12,7 +12,6 @@ use smithay::{
     },
     utils::DeviceFd,
 };
-use smithay_drm_extras::drm_scanner::DrmScanner;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -37,12 +36,14 @@ mod gamma;
 mod kms;
 mod libinput;
 mod management;
+mod scanner;
 mod session;
 mod status;
 mod udev;
 
 pub(crate) use libinput::LibinputEvent;
 use libinput::LibinputSource;
+use scanner::DrmScanner;
 use session::SeatSession;
 pub(crate) use udev::UdevEvent;
 use udev::UdevMonitor;
