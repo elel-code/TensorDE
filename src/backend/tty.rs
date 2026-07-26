@@ -61,14 +61,17 @@ pub(crate) struct TtyBackend {
     session: SeatSession,
     session_completions: WorkerRx<OpaqueFdCompletion>,
     session_failures: WorkerRx<String>,
+    active_session_completion: Option<OpaqueFdCompletion>,
     _session_completion_runtime: OpaqueFdCompletionRuntime,
     libinput: LibinputSource,
     libinput_completions: WorkerRx<OpaqueFdCompletion>,
     libinput_failures: WorkerRx<String>,
+    active_libinput_completion: Option<OpaqueFdCompletion>,
     _libinput_completion_runtime: OpaqueFdCompletionRuntime,
     udev: UdevMonitor,
     udev_completions: WorkerRx<OpaqueFdCompletion>,
     udev_failures: WorkerRx<String>,
+    active_udev_completion: Option<OpaqueFdCompletion>,
     _udev_completion_runtime: OpaqueFdCompletionRuntime,
     primary_node: DrmNode,
     render_node: DrmNode,
@@ -167,14 +170,17 @@ impl TtyBackend {
             session,
             session_completions,
             session_failures,
+            active_session_completion: None,
             _session_completion_runtime: session_completion_runtime,
             libinput,
             libinput_completions,
             libinput_failures,
+            active_libinput_completion: None,
             _libinput_completion_runtime: libinput_completion_runtime,
             udev,
             udev_completions,
             udev_failures,
+            active_udev_completion: None,
             _udev_completion_runtime: udev_completion_runtime,
             primary_node,
             render_node,
@@ -288,13 +294,18 @@ impl TtyBackend {
 
     pub(crate) fn handle_udev_event(&mut self, event: UdevEvent) {
         match event {
-            UdevEvent::Added { device_id, path } => {
+            UdevEvent::Added { device_id } => {
                 if !self.session.is_active() {
                     return;
                 }
+                let Some(path) = self.udev.take_device_path(device_id) else {
+                    warn!(device_id, "udev added an untracked DRM device");
+                    return;
+                };
                 if let Err(error) = self.add_device(device_id, &path) {
                     warn!(%error, path = %path.display(), "failed to add DRM device");
                 }
+                self.udev.restore_device_path(device_id, path);
             }
             UdevEvent::Changed { device_id } => {
                 if self.session.is_active() && self.devices.contains_key(&device_id) {

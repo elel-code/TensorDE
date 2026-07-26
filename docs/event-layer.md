@@ -98,6 +98,9 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    its Compio runtime; the shared relay thread and calloop channel are gone.
    DRM page flips now use one compositor-thread Compio operation per device;
    each CQE is consumed as one fixed stack batch and explicitly rearmed.
+   Libseat, udev, and libinput completions are consumed incrementally: one
+   decoded event is applied before the source advances, with no per-completion
+   staging vector or udev path clone.
    One submitted wait on calloop's aggregate fd remains temporarily for
    Smithay's XWM X11 events and idle callbacks. Next: remove that final adapter.
 6. Replace Smithay backends with native input/DRM open path; delete Smithay

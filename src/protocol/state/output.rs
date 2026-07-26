@@ -570,29 +570,33 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     pub(crate) fn drain_backend_completions(&mut self) -> Result<(), String> {
-        let Some(backend) = self.backend.as_mut() else {
+        if self.backend.is_none() {
             return Ok(());
-        };
-        let session_events = backend.drain_session_completions();
-        for event in session_events? {
+        }
+        while let Some(event) = self
+            .backend
+            .as_mut()
+            .expect("tty backend exists during completion dispatch")
+            .next_session_completion_event()?
+        {
             self.dispatch_session_event(event);
         }
 
-        let udev_events = self
+        while let Some(event) = self
             .backend
             .as_mut()
             .expect("session dispatch restored the tty backend")
-            .drain_udev_completions();
-        for event in udev_events? {
+            .next_udev_completion_event()?
+        {
             self.dispatch_udev_event(event);
         }
 
-        let input_events = self
+        while let Some(event) = self
             .backend
             .as_mut()
             .expect("udev dispatch restored the tty backend")
-            .drain_libinput_completions();
-        for event in input_events? {
+            .next_libinput_completion_event()?
+        {
             self.process_input_event(event);
         }
         Ok(())

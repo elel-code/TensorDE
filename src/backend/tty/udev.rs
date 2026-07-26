@@ -13,9 +13,9 @@ use udev::{Device, Enumerator, EventType, MonitorBuilder, MonitorSocket};
 
 const MAX_EVENTS_PER_COMPLETION: usize = 64;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UdevEvent {
-    Added { device_id: Dev, path: PathBuf },
+    Added { device_id: Dev },
     Changed { device_id: Dev },
     Removed { device_id: Dev },
 }
@@ -23,6 +23,7 @@ pub(crate) enum UdevEvent {
 pub(super) struct UdevMonitor {
     devices: HashMap<Dev, PathBuf>,
     monitor: MonitorSocket,
+    events_in_completion: usize,
 }
 
 impl UdevMonitor {
@@ -39,7 +40,11 @@ impl UdevMonitor {
             })
             .collect();
         let monitor = MonitorBuilder::new()?.match_subsystem("drm")?.listen()?;
-        Ok(Self { devices, monitor })
+        Ok(Self {
+            devices,
+            monitor,
+            events_in_completion: 0,
+        })
     }
 
     pub(super) fn device_list(&self) -> impl Iterator<Item = (Dev, &Path)> {
@@ -48,9 +53,14 @@ impl UdevMonitor {
             .map(|(&device_id, path)| (device_id, path.as_path()))
     }
 
-    pub(super) fn drain(&mut self) -> Vec<UdevEvent> {
-        let mut events = Vec::with_capacity(MAX_EVENTS_PER_COMPLETION);
-        for event in self.monitor.iter().take(MAX_EVENTS_PER_COMPLETION) {
+    pub(super) fn begin_drain(&mut self) {
+        self.events_in_completion = 0;
+    }
+
+    pub(super) fn next_event(&mut self) -> Option<UdevEvent> {
+        while self.events_in_completion < MAX_EVENTS_PER_COMPLETION {
+            let event = self.monitor.iter().next()?;
+            self.events_in_completion += 1;
             let device_id = event.devnum().map(|device_id| device_id as Dev);
             if let Some(event) = apply_device_change(
                 &mut self.devices,
@@ -58,10 +68,18 @@ impl UdevMonitor {
                 device_id,
                 event.devnode(),
             ) {
-                events.push(event);
+                return Some(event);
             }
         }
-        events
+        None
+    }
+
+    pub(super) fn take_device_path(&mut self, device_id: Dev) -> Option<PathBuf> {
+        self.devices.remove(&device_id)
+    }
+
+    pub(super) fn restore_device_path(&mut self, device_id: Dev, path: PathBuf) {
+        self.devices.insert(device_id, path);
     }
 }
 
@@ -96,8 +114,8 @@ fn apply_device_change(
     match event_type {
         EventType::Add => {
             let (device_id, path) = (device_id?, path?.to_owned());
-            if devices.insert(device_id, path.clone()).is_none() {
-                Some(UdevEvent::Added { device_id, path })
+            if devices.insert(device_id, path).is_none() {
+                Some(UdevEvent::Added { device_id })
             } else {
                 None
             }
@@ -129,10 +147,7 @@ mod tests {
 
         assert_eq!(
             apply_device_change(&mut devices, EventType::Add, Some(7), Some(path)),
-            Some(UdevEvent::Added {
-                device_id: 7,
-                path: path.to_owned(),
-            })
+            Some(UdevEvent::Added { device_id: 7 })
         );
         assert_eq!(
             apply_device_change(&mut devices, EventType::Change, Some(7), None),

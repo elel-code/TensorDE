@@ -79,63 +79,103 @@ impl TtyBackend {
         Ok(batch)
     }
 
-    pub(crate) fn drain_session_completions(
+    /// Advance one libseat completion by at most one lifecycle event. The
+    /// completion token stays parked until the source is exhausted, allowing
+    /// the caller to apply each event before requesting the next one.
+    pub(crate) fn next_session_completion_event(
         &mut self,
-    ) -> Result<Vec<tensor_host::SessionEvent>, String> {
-        let mut events = Vec::new();
-        while let Some(completion) = self.session_completions.try_recv() {
-            match self.session.drain() {
-                Ok(completed) => events.extend(completed),
-                Err(error) => {
-                    let _ = completion.finish();
-                    return Err(format!(
-                        "failed to dispatch completed libseat events: {error}"
-                    ));
+    ) -> Result<Option<tensor_host::SessionEvent>, String> {
+        if self.active_session_completion.is_none() {
+            let Some(completion) = self.session_completions.try_recv() else {
+                return match self.session_failures.try_recv() {
+                    Some(message) => Err(message),
+                    None => Ok(None),
+                };
+            };
+            self.session.begin_drain();
+            self.active_session_completion = Some(completion);
+        }
+
+        match self.session.next_event() {
+            Ok(Some(event)) => Ok(Some(event)),
+            Ok(None) => {
+                self.active_session_completion
+                    .take()
+                    .expect("active libseat completion")
+                    .rearm()
+                    .map_err(|error| format!("libseat completion rearm was rejected: {error:?}"))?;
+                match self.session_failures.try_recv() {
+                    Some(message) => Err(message),
+                    None => Ok(None),
                 }
             }
-            completion
-                .rearm()
-                .map_err(|error| format!("libseat completion rearm was rejected: {error:?}"))?;
-        }
-        if let Some(message) = self.session_failures.try_recv() {
-            return Err(message);
-        }
-        Ok(events)
-    }
-
-    pub(crate) fn drain_udev_completions(&mut self) -> Result<Vec<UdevEvent>, String> {
-        let mut events = Vec::new();
-        while let Some(completion) = self.udev_completions.try_recv() {
-            events.extend(self.udev.drain());
-            completion
-                .rearm()
-                .map_err(|error| format!("udev completion rearm was rejected: {error:?}"))?;
-        }
-        if let Some(message) = self.udev_failures.try_recv() {
-            return Err(message);
-        }
-        Ok(events)
-    }
-
-    pub(crate) fn drain_libinput_completions(&mut self) -> Result<Vec<LibinputEvent>, String> {
-        let mut events = Vec::new();
-        while let Some(completion) = self.libinput_completions.try_recv() {
-            match self.libinput.drain() {
-                Ok(completed) => events.extend(completed),
-                Err(error) => {
+            Err(error) => {
+                if let Some(completion) = self.active_session_completion.take() {
                     let _ = completion.finish();
-                    return Err(format!(
-                        "failed to dispatch completed libinput events: {error}"
-                    ));
                 }
+                Err(format!(
+                    "failed to dispatch completed libseat events: {error}"
+                ))
             }
-            completion
-                .rearm()
-                .map_err(|error| format!("libinput completion rearm was rejected: {error:?}"))?;
         }
-        if let Some(message) = self.libinput_failures.try_recv() {
-            return Err(message);
+    }
+
+    pub(crate) fn next_udev_completion_event(&mut self) -> Result<Option<UdevEvent>, String> {
+        if self.active_udev_completion.is_none() {
+            let Some(completion) = self.udev_completions.try_recv() else {
+                return match self.udev_failures.try_recv() {
+                    Some(message) => Err(message),
+                    None => Ok(None),
+                };
+            };
+            self.udev.begin_drain();
+            self.active_udev_completion = Some(completion);
         }
-        Ok(events)
+
+        if let Some(event) = self.udev.next_event() {
+            return Ok(Some(event));
+        }
+        self.active_udev_completion
+            .take()
+            .expect("active udev completion")
+            .rearm()
+            .map_err(|error| format!("udev completion rearm was rejected: {error:?}"))?;
+        match self.udev_failures.try_recv() {
+            Some(message) => Err(message),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn next_libinput_completion_event(
+        &mut self,
+    ) -> Result<Option<LibinputEvent>, String> {
+        if self.active_libinput_completion.is_none() {
+            let Some(completion) = self.libinput_completions.try_recv() else {
+                return match self.libinput_failures.try_recv() {
+                    Some(message) => Err(message),
+                    None => Ok(None),
+                };
+            };
+            if let Err(error) = self.libinput.begin_drain() {
+                let _ = completion.finish();
+                return Err(format!(
+                    "failed to dispatch completed libinput events: {error}"
+                ));
+            }
+            self.active_libinput_completion = Some(completion);
+        }
+
+        if let Some(event) = self.libinput.next_event() {
+            return Ok(Some(event));
+        }
+        self.active_libinput_completion
+            .take()
+            .expect("active libinput completion")
+            .rearm()
+            .map_err(|error| format!("libinput completion rearm was rejected: {error:?}"))?;
+        match self.libinput_failures.try_recv() {
+            Some(message) => Err(message),
+            None => Ok(None),
+        }
     }
 }

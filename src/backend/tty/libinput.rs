@@ -20,6 +20,8 @@ pub(super) type LibinputEvent = SmithayInputEvent<LibinputInputBackend>;
 pub(super) struct LibinputSource {
     context: Libinput,
     dropped_events: u64,
+    events_in_completion: usize,
+    dropped_in_completion: u64,
 }
 
 impl LibinputSource {
@@ -32,6 +34,8 @@ impl LibinputSource {
         Ok(Self {
             context,
             dropped_events: 0,
+            events_in_completion: 0,
+            dropped_in_completion: 0,
         })
     }
 
@@ -43,29 +47,37 @@ impl LibinputSource {
         self.context.resume()
     }
 
-    pub(super) fn drain(&mut self) -> io::Result<Vec<LibinputEvent>> {
+    pub(super) fn begin_drain(&mut self) -> io::Result<()> {
         self.context.dispatch()?;
-        let mut events = Vec::with_capacity(MAX_EVENTS_PER_COMPLETION);
-        let mut dropped = 0u64;
+        self.events_in_completion = 0;
+        self.dropped_in_completion = 0;
+        Ok(())
+    }
+
+    pub(super) fn next_event(&mut self) -> Option<LibinputEvent> {
         for event in &mut self.context {
             let Some(event) = map_event(event) else {
                 continue;
             };
-            if events.len() < MAX_EVENTS_PER_COMPLETION {
-                events.push(event);
+            if self.events_in_completion < MAX_EVENTS_PER_COMPLETION {
+                self.events_in_completion += 1;
+                return Some(event);
             } else {
-                dropped = dropped.saturating_add(1);
+                self.dropped_in_completion = self.dropped_in_completion.saturating_add(1);
             }
         }
-        if dropped > 0 {
-            self.dropped_events = self.dropped_events.saturating_add(dropped);
+        if self.dropped_in_completion > 0 {
+            self.dropped_events = self
+                .dropped_events
+                .saturating_add(self.dropped_in_completion);
             tracing::warn!(
-                dropped,
+                dropped = self.dropped_in_completion,
                 dropped_total = self.dropped_events,
                 "libinput completion batch exceeded its fixed capacity"
             );
+            self.dropped_in_completion = 0;
         }
-        Ok(events)
+        None
     }
 }
 

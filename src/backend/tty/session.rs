@@ -2,7 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
     path::Path,
     rc::Rc,
@@ -26,32 +26,55 @@ enum SeatSignal {
 
 #[derive(Debug)]
 struct SignalQueue {
-    pending: VecDeque<SeatSignal>,
+    pending: [Option<SeatSignal>; MAX_PENDING_SIGNALS],
+    head: usize,
+    len: usize,
     overflowed: bool,
 }
 
 impl SignalQueue {
     fn new() -> Self {
         Self {
-            pending: VecDeque::with_capacity(MAX_PENDING_SIGNALS),
+            pending: [None; MAX_PENDING_SIGNALS],
+            head: 0,
+            len: 0,
             overflowed: false,
         }
     }
 
     fn push(&mut self, signal: SeatSignal) {
-        if self.pending.len() == MAX_PENDING_SIGNALS {
+        if self.len == MAX_PENDING_SIGNALS {
             self.overflowed = true;
         } else {
-            self.pending.push_back(signal);
+            let index = (self.head + self.len) % MAX_PENDING_SIGNALS;
+            self.pending[index] = Some(signal);
+            self.len += 1;
         }
     }
 
-    fn drain(&mut self) -> Result<Vec<SeatSignal>, SeatSessionError> {
+    fn pop_front(&mut self) -> Result<Option<SeatSignal>, SeatSessionError> {
         if std::mem::take(&mut self.overflowed) {
-            self.pending.clear();
+            self.clear();
             return Err(SeatSessionError::SignalOverflow);
         }
-        Ok(self.pending.drain(..).collect())
+        if self.len == 0 {
+            return Ok(None);
+        }
+        let signal = self.pending[self.head]
+            .take()
+            .expect("occupied libseat signal slot");
+        self.head = (self.head + 1) % MAX_PENDING_SIGNALS;
+        self.len -= 1;
+        Ok(Some(signal))
+    }
+
+    fn clear(&mut self) {
+        while self.len > 0 {
+            self.pending[self.head] = None;
+            self.head = (self.head + 1) % MAX_PENDING_SIGNALS;
+            self.len -= 1;
+        }
+        self.head = 0;
     }
 }
 
@@ -69,6 +92,8 @@ struct SeatState {
 #[derive(Clone, Debug)]
 pub(super) struct SeatSession {
     state: Rc<SeatState>,
+    dispatches_in_completion: usize,
+    events_in_completion: usize,
 }
 
 impl SeatSession {
@@ -87,7 +112,7 @@ impl SeatSession {
         seat.dispatch(0)
             .map_err(|error| SeatSessionError::Dispatch(errno(error)))?;
         let mut active = false;
-        for signal in signals.borrow_mut().drain()? {
+        while let Some(signal) = signals.borrow_mut().pop_front()? {
             match signal {
                 SeatSignal::Enable => active = true,
                 SeatSignal::Disable => {
@@ -114,52 +139,66 @@ impl SeatSession {
                 devices: RefCell::new(HashMap::new()),
                 signals,
             }),
+            dispatches_in_completion: 0,
+            events_in_completion: 0,
         })
     }
 
-    pub(super) fn drain(&mut self) -> Result<Vec<SessionEvent>, SeatSessionError> {
-        let mut events = Vec::with_capacity(2);
-        for _ in 0..MAX_DISPATCHES_PER_COMPLETION {
+    pub(super) fn begin_drain(&mut self) {
+        self.dispatches_in_completion = 0;
+        self.events_in_completion = 0;
+    }
+
+    pub(super) fn next_event(&mut self) -> Result<Option<SessionEvent>, SeatSessionError> {
+        if let Some(event) = self.pop_signal_event()? {
+            return Ok(Some(event));
+        }
+        while self.dispatches_in_completion < MAX_DISPATCHES_PER_COMPLETION {
             let dispatched = self
                 .state
                 .seat
                 .borrow_mut()
                 .dispatch(0)
                 .map_err(|error| SeatSessionError::Dispatch(errno(error)))?;
-            self.drain_signals(&mut events)?;
+            self.dispatches_in_completion += 1;
+            if let Some(event) = self.pop_signal_event()? {
+                return Ok(Some(event));
+            }
             if dispatched == 0 {
-                return Ok(events);
+                return Ok(None);
             }
         }
         tracing::warn!(
             limit = MAX_DISPATCHES_PER_COMPLETION,
             "libseat completion hit its nonblocking dispatch budget"
         );
-        Ok(events)
+        Ok(None)
     }
 
-    fn drain_signals(&self, events: &mut Vec<SessionEvent>) -> Result<(), SeatSessionError> {
-        for signal in self.state.signals.borrow_mut().drain()? {
-            if events.len() == MAX_EVENTS_PER_COMPLETION {
-                return Err(SeatSessionError::EventOverflow);
+    fn pop_signal_event(&mut self) -> Result<Option<SessionEvent>, SeatSessionError> {
+        let Some(signal) = self.state.signals.borrow_mut().pop_front()? else {
+            return Ok(None);
+        };
+        if self.events_in_completion == MAX_EVENTS_PER_COMPLETION {
+            self.state.signals.borrow_mut().clear();
+            return Err(SeatSessionError::EventOverflow);
+        }
+        self.events_in_completion += 1;
+        match signal {
+            SeatSignal::Enable => {
+                self.state.active.set(true);
+                Ok(Some(SessionEvent::Activated))
             }
-            match signal {
-                SeatSignal::Enable => {
-                    self.state.active.set(true);
-                    events.push(SessionEvent::Activated);
-                }
-                SeatSignal::Disable => {
-                    self.state.active.set(false);
-                    self.state
-                        .seat
-                        .borrow_mut()
-                        .disable()
-                        .map_err(|error| SeatSessionError::Disable(errno(error)))?;
-                    events.push(SessionEvent::Paused);
-                }
+            SeatSignal::Disable => {
+                self.state.active.set(false);
+                self.state
+                    .seat
+                    .borrow_mut()
+                    .disable()
+                    .map_err(|error| SeatSessionError::Disable(errno(error)))?;
+                Ok(Some(SessionEvent::Paused))
             }
         }
-        Ok(())
     }
 }
 
@@ -276,10 +315,9 @@ mod tests {
         queue.push(SeatSignal::Enable);
         queue.push(SeatSignal::Disable);
 
-        assert_eq!(
-            queue.drain().unwrap(),
-            vec![SeatSignal::Enable, SeatSignal::Disable]
-        );
+        assert_eq!(queue.pop_front().unwrap(), Some(SeatSignal::Enable));
+        assert_eq!(queue.pop_front().unwrap(), Some(SeatSignal::Disable));
+        assert_eq!(queue.pop_front().unwrap(), None);
     }
 
     #[test]
@@ -290,9 +328,31 @@ mod tests {
         }
 
         assert!(matches!(
-            queue.drain(),
+            queue.pop_front(),
             Err(SeatSessionError::SignalOverflow)
         ));
-        assert!(queue.drain().unwrap().is_empty());
+        assert_eq!(queue.pop_front().unwrap(), None);
+    }
+
+    #[test]
+    fn signal_queue_reuses_consumed_slots_without_reordering() {
+        let mut queue = SignalQueue::new();
+        for _ in 0..MAX_PENDING_SIGNALS {
+            queue.push(SeatSignal::Enable);
+        }
+        for _ in 0..3 {
+            assert_eq!(queue.pop_front().unwrap(), Some(SeatSignal::Enable));
+        }
+        queue.push(SeatSignal::Disable);
+        queue.push(SeatSignal::Disable);
+        queue.push(SeatSignal::Disable);
+
+        for _ in 0..MAX_PENDING_SIGNALS - 3 {
+            assert_eq!(queue.pop_front().unwrap(), Some(SeatSignal::Enable));
+        }
+        for _ in 0..3 {
+            assert_eq!(queue.pop_front().unwrap(), Some(SeatSignal::Disable));
+        }
+        assert_eq!(queue.pop_front().unwrap(), None);
     }
 }
