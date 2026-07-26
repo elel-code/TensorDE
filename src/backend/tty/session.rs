@@ -10,7 +10,6 @@ use std::{
 
 use libseat::{Seat, SeatEvent};
 use rustix::{fs::OFlags, io::Errno, io::fcntl_dupfd_cloexec};
-use smithay::backend::session::{AsErrno, Session};
 use tensor_host::SessionEvent;
 use thiserror::Error;
 
@@ -253,30 +252,6 @@ impl AsFd for SeatSession {
     }
 }
 
-impl Session for SeatSession {
-    type Error = SeatSessionError;
-
-    fn open(&mut self, path: &Path, flags: OFlags) -> Result<OwnedFd, Self::Error> {
-        SeatSession::open(self, path, flags)
-    }
-
-    fn close(&mut self, fd: OwnedFd) -> Result<(), Self::Error> {
-        SeatSession::close(self, fd)
-    }
-
-    fn change_vt(&mut self, vt: i32) -> Result<(), Self::Error> {
-        SeatSession::change_vt(self, vt)
-    }
-
-    fn is_active(&self) -> bool {
-        SeatSession::is_active(self)
-    }
-
-    fn seat(&self) -> String {
-        SeatSession::seat(self)
-    }
-}
-
 #[derive(Debug, Error)]
 pub(super) enum SeatSessionError {
     #[error("failed to open the libseat session: {0}")]
@@ -303,13 +278,6 @@ pub(super) enum SeatSessionError {
 
 impl SeatSessionError {
     pub(super) fn errno(&self) -> i32 {
-        self.as_errno()
-            .unwrap_or_else(|| rustix::io::Errno::PERM.raw_os_error())
-    }
-}
-
-impl AsErrno for SeatSessionError {
-    fn as_errno(&self) -> Option<i32> {
         match self {
             Self::Open(error)
             | Self::CompletionFd(error)
@@ -318,8 +286,8 @@ impl AsErrno for SeatSessionError {
             | Self::Disable(error)
             | Self::OpenDevice(error)
             | Self::CloseDevice(error)
-            | Self::ChangeVt(error) => Some(error.raw_os_error()),
-            Self::SignalOverflow | Self::EventOverflow => None,
+            | Self::ChangeVt(error) => error.raw_os_error(),
+            Self::SignalOverflow | Self::EventOverflow => Errno::PERM.raw_os_error(),
         }
     }
 }
@@ -332,7 +300,7 @@ fn errno(error: impl Into<i32>) -> Errno {
 fn own_libseat_device_fd(raw_fd: RawFd) -> OwnedFd {
     // `libseat::Device` deliberately does not close this valid fd on drop and
     // provides no safe ownership conversion. The matching `OwnedFd` is kept
-    // alive until `Session::close`, after `libseat_close_device` is called.
+    // alive until `SeatSession::close`, after `libseat_close_device` is called.
     unsafe { OwnedFd::from_raw_fd(raw_fd) }
 }
 
