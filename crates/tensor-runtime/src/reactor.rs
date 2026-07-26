@@ -293,8 +293,13 @@ mod tests {
                     wake.wake();
                 }
             });
-            assert_eq!(completion.completed().await.expect("read completion"), 2);
+            let completed = completion.completed().await.expect("read completion");
             writer.join().expect("wake writer");
+            // The first write may complete the submitted read before the
+            // second write reaches eventfd. Either CQE coalescing outcome is
+            // valid, but the completed and still-pending counters must sum to
+            // the two wakes without loss.
+            assert_eq!(completed + wake.drain().expect("drain trailing wake"), 2);
         });
     }
 
