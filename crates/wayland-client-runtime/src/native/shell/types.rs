@@ -20,7 +20,7 @@ use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
 
 /// Opaque id for a native toplevel surface.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct NativeSurfaceId(u32);
+pub struct NativeSurfaceId(pub(crate) u32);
 
 /// Events emitted by the native shell (grows toward the public crate Event model).
 #[derive(Clone, Debug)]
@@ -203,6 +203,48 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         token: String,
     },
+    /// Touchpad swipe (`zwp_pointer_gesture_swipe_v1`).
+    GestureSwipeBegin {
+        surface: NativeSurfaceId,
+        fingers: u32,
+        time: u32,
+    },
+    GestureSwipeUpdate {
+        dx: f64,
+        dy: f64,
+        time: u32,
+    },
+    GestureSwipeEnd {
+        cancelled: bool,
+        time: u32,
+    },
+    /// Touchpad pinch (`zwp_pointer_gesture_pinch_v1`).
+    GesturePinchBegin {
+        surface: NativeSurfaceId,
+        fingers: u32,
+        time: u32,
+    },
+    GesturePinchUpdate {
+        dx: f64,
+        dy: f64,
+        scale: f64,
+        rotation: f64,
+        time: u32,
+    },
+    GesturePinchEnd {
+        cancelled: bool,
+        time: u32,
+    },
+    /// Touchpad hold (`zwp_pointer_gesture_hold_v1`, v3+).
+    GestureHoldBegin {
+        surface: NativeSurfaceId,
+        fingers: u32,
+        time: u32,
+    },
+    GestureHoldEnd {
+        cancelled: bool,
+        time: u32,
+    },
 }
 
 /// Positioner inputs for native `xdg_popup` creation.
@@ -249,6 +291,8 @@ pub struct NativeCapabilities {
     pub text_input: bool,
     pub layer_shell: bool,
     pub activation: bool,
+    pub pointer_gestures: bool,
+    pub pointer_gesture_hold: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -343,6 +387,20 @@ pub struct NativeShellState {
             wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::XdgActivationTokenV1,
         ),
     >,
+    pub(crate) pointer_gestures: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
+    >,
+    pub(crate) swipe_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
+    >,
+    pub(crate) pinch_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+    >,
+    pub(crate) hold_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
+    >,
+    /// Surface that currently owns an in-progress swipe/pinch/hold (begin).
+    pub(crate) gesture_surface: Option<NativeSurfaceId>,
     pub(crate) toplevels: HashMap<NativeSurfaceId, ToplevelRecord>,
     pub(crate) popups: HashMap<NativeSurfaceId, PopupRecord>,
     pub(crate) layers: HashMap<NativeSurfaceId, LayerRecord>,
@@ -412,6 +470,11 @@ impl Default for NativeShellState {
             layer_shell: None,
             activation: None,
             activation_tokens: HashMap::new(),
+            pointer_gestures: None,
+            swipe_gesture: None,
+            pinch_gesture: None,
+            hold_gesture: None,
+            gesture_surface: None,
             toplevels: HashMap::new(),
             popups: HashMap::new(),
             layers: HashMap::new(),

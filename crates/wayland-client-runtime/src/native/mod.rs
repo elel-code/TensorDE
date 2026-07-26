@@ -10,12 +10,16 @@
 //! wayland-protocols and Smithay-style organization.
 
 mod connection;
+mod event_map;
 pub mod protocols;
 mod pump;
 mod registry;
 mod shell;
 
 pub use connection::{NativeConnection, NativeError};
+pub use event_map::{
+    map_native_event, map_native_key_text, native_key_text_pressed, SurfaceIdMap,
+};
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};

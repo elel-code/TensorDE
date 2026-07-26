@@ -18,6 +18,7 @@ use super::types::{
 };
 use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
+use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1;
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -122,6 +123,11 @@ impl NativeShell {
         {
             state.activation = Some(act);
         }
+        if let Ok(gestures) =
+            globals.bind::<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, _, _>(&qh, 1..=3, ())
+        {
+            state.pointer_gestures = Some(gestures);
+        }
 
         if state.compositor.is_none() {
             return Err(NativeError::Registry("wl_compositor missing".into()));
@@ -193,6 +199,12 @@ impl NativeShell {
             text_input: self.state.text_input.is_some(),
             layer_shell: self.state.layer_shell.is_some(),
             activation: self.state.activation.is_some(),
+            pointer_gestures: self.state.pointer_gestures.is_some(),
+            pointer_gesture_hold: self
+                .state
+                .pointer_gestures
+                .as_ref()
+                .is_some_and(|g| g.version() >= 3),
         }
     }
 

@@ -121,6 +121,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::ActivationToken { surface: id, token } => {
                         println!("activation token {id:?} token={token}");
                     }
+                    NativeShellEvent::GestureSwipeBegin {
+                        surface: id,
+                        fingers,
+                        time,
+                    } => println!("swipe begin {id:?} fingers={fingers} time={time}"),
+                    NativeShellEvent::GestureSwipeUpdate { dx, dy, time } => {
+                        println!("swipe update dx={dx:.2} dy={dy:.2} time={time}");
+                    }
+                    NativeShellEvent::GestureSwipeEnd { cancelled, time } => {
+                        println!("swipe end cancelled={cancelled} time={time}");
+                    }
+                    NativeShellEvent::GesturePinchBegin {
+                        surface: id,
+                        fingers,
+                        time,
+                    } => println!("pinch begin {id:?} fingers={fingers} time={time}"),
+                    NativeShellEvent::GesturePinchUpdate {
+                        dx,
+                        dy,
+                        scale,
+                        rotation,
+                        time,
+                    } => println!(
+                        "pinch update dx={dx:.2} dy={dy:.2} scale={scale:.3} rot={rotation:.1} time={time}"
+                    ),
+                    NativeShellEvent::GesturePinchEnd { cancelled, time } => {
+                        println!("pinch end cancelled={cancelled} time={time}");
+                    }
+                    NativeShellEvent::GestureHoldBegin {
+                        surface: id,
+                        fingers,
+                        time,
+                    } => println!("hold begin {id:?} fingers={fingers} time={time}"),
+                    NativeShellEvent::GestureHoldEnd { cancelled, time } => {
+                        println!("hold end cancelled={cancelled} time={time}");
+                    }
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");
                     }

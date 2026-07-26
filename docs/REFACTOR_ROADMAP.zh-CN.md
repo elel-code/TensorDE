@@ -544,8 +544,10 @@ compio executor
   - clipboard：mime 按 offer 追踪；`set_selection_*` / `receive_selection`
   - **xdg_popup** + positioner；**text_input v3**；**DnD** enter/motion/drop + start_drag
   - **layer-shell**；**xdg-activation** token 请求/activate
+  - **pointer-gestures** swipe/pinch/hold
   - multi-output、touch、frame callback、cursor_shape、fractional scale
-  - 待丰富：xdg_dialog / toplevel icon / gestures / blur；**与 Fika Runtime 合流**
+  - **event_map**：`SurfaceIdMap` + surface/layer 事件映射 + key text 提取（Fika 合流桥）
+  - 待丰富：xdg_dialog / toplevel icon / blur / seat serial 完整映射；**与 Fika Runtime 合流**
 
 完成标准：
 

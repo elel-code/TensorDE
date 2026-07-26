@@ -317,7 +317,21 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                 state.keyboard = Some(seat.get_keyboard(qh, ()));
             }
             if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                state.pointer = Some(seat.get_pointer(qh, ()));
+                let pointer = seat.get_pointer(qh, ());
+                if let Some(manager) = state.pointer_gestures.as_ref() {
+                    if state.swipe_gesture.is_none() {
+                        state.swipe_gesture =
+                            Some(manager.get_swipe_gesture(&pointer, qh, ()));
+                    }
+                    if state.pinch_gesture.is_none() {
+                        state.pinch_gesture =
+                            Some(manager.get_pinch_gesture(&pointer, qh, ()));
+                    }
+                    if manager.version() >= 3 && state.hold_gesture.is_none() {
+                        state.hold_gesture = Some(manager.get_hold_gesture(&pointer, qh, ()));
+                    }
+                }
+                state.pointer = Some(pointer);
             }
             if capabilities.contains(wl_seat::Capability::Touch) && state.touch.is_none() {
                 state.touch = Some(seat.get_touch(qh, ()));
