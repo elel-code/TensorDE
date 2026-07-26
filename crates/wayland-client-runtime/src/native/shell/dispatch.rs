@@ -606,7 +606,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                         rec.keyboard_focus = id;
                     }
                 }
-                state.push(NativeShellEvent::SeatKeyboardEnter { surface: id });
+                state.push(NativeShellEvent::SeatKeyboardEnter {
+                    surface: id,
+                    seat: seat_global,
+                });
             }
             wl_keyboard::Event::Leave { surface, .. } => {
                 let id = state
@@ -620,7 +623,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                         rec.keyboard_focus = None;
                     }
                 }
-                state.push(NativeShellEvent::SeatKeyboardLeave { surface: id });
+                state.push(NativeShellEvent::SeatKeyboardLeave {
+                    surface: id,
+                    seat: seat_global,
+                });
             }
             wl_keyboard::Event::Key {
                 serial,
@@ -641,6 +647,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                     pressed,
                     keysym,
                     text,
+                    seat: seat_global,
                 });
             }
             wl_keyboard::Event::Modifiers {
@@ -658,6 +665,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                     mods_latched,
                     mods_locked,
                     group,
+                    seat: seat_global,
                 });
             }
             _ => {}
@@ -721,6 +729,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         surface: id,
                         x: surface_x,
                         y: surface_y,
+                        seat: seat_global,
                     });
                 }
             }
@@ -756,7 +765,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     }
                 }
                 if let Some(id) = id {
-                    state.push(NativeShellEvent::PointerLeave { surface: id });
+                    state.push(NativeShellEvent::PointerLeave {
+                        surface: id,
+                        seat: seat_global,
+                    });
                 }
             }
             wl_pointer::Event::Motion {
@@ -774,6 +786,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         surface: id,
                         x: surface_x,
                         y: surface_y,
+                        seat: seat_global,
                     });
                 }
             }
@@ -797,6 +810,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     surface: state.pointer_focus,
                     button,
                     pressed,
+                    seat: seat_global,
                 });
             }
             wl_pointer::Event::Axis { axis, value, .. } => match axis {
@@ -825,6 +839,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         vertical: state.axis_v,
                         horizontal_value120: state.axis_h120,
                         vertical_value120: state.axis_v120,
+                        seat: seat_global,
                     });
                     state.axis_h = 0.0;
                     state.axis_v = 0.0;

@@ -47,9 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pressed,
                         keysym,
                         text,
+                        seat,
                     } => {
                         println!(
-                            "key key={key} pressed={pressed} keysym={keysym:#x} text={text:?}"
+                            "key key={key} pressed={pressed} keysym={keysym:#x} text={text:?} seat={seat:?}"
                         );
                         if pressed && key == 1 {
                             // ESC

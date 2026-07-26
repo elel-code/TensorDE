@@ -269,19 +269,6 @@ impl NativeShell {
             return Err(NativeError::Registry("xdg_wm_base missing".into()));
         }
 
-        if let (Some(manager), Some(seat)) = (
-            state.data_device_manager.as_ref(),
-            state.seat.as_ref(),
-        ) {
-            state.data_device = Some(manager.get_data_device(seat, &qh, ()));
-        }
-        // Primary selection device is seat-scoped (SCTK PrimarySelectionManagerState).
-        if let (Some(manager), Some(seat)) = (
-            state.primary_selection_manager.as_ref(),
-            state.seat.as_ref(),
-        ) {
-            state.primary_device = Some(manager.get_device(seat, &qh, ()));
-        }
         if let (Some(tim), Some(seat)) = (state.text_input_manager.as_ref(), state.seat.as_ref()) {
             state.text_input = Some(tim.get_text_input(seat, &qh, ()));
         }
@@ -298,6 +285,8 @@ impl NativeShell {
             #[cfg(feature = "compio")]
             display_ready,
         };
+        // Bind data-device / primary selection on every seat (multi-seat ready).
+        shell.ensure_all_seat_transfer_devices();
         // Flush binds so the compositor can reply with capability events
         // (e.g. ext-background-effect Capabilities) before the first set_blur.
         shell.connection.flush()?;
@@ -1151,6 +1140,22 @@ impl NativeShell {
             .map(crate::SeatId::from_raw)
     }
 
+    /// Whether `seat` has a bound `wl_data_device` (clipboard / DnD).
+    pub fn seat_has_data_device(&self, seat: crate::SeatId) -> bool {
+        self.state
+            .seats
+            .get(&seat.get())
+            .is_some_and(|s| s.data_device.is_some())
+    }
+
+    /// Whether `seat` has a bound primary selection device.
+    pub fn seat_has_primary_device(&self, seat: crate::SeatId) -> bool {
+        self.state
+            .seats
+            .get(&seat.get())
+            .is_some_and(|s| s.primary_device.is_some())
+    }
+
     /// Create a bufferless GPU-friendly popup (no solid SHM fill).
     ///
     /// When `grab` is `Some`, the popup is grabbed with that seat+serial.
@@ -1484,6 +1489,15 @@ impl NativeShell {
             self.state.pending_primary_seat_rebind = false;
             self.rebind_primary_seat_devices();
         }
+        // Hotplugged seats may still lack transfer devices.
+        if self
+            .state
+            .seats
+            .values()
+            .any(|s| s.data_device.is_none() && self.state.data_device_manager.is_some())
+        {
+            self.ensure_all_seat_transfer_devices();
+        }
         if self.state.pending_blur_replay {
             self.state.pending_blur_replay = false;
             let _ = self.apply_pending_blur_all();
@@ -1583,20 +1597,63 @@ impl NativeShell {
         self.state.events.len()
     }
 
+    /// Ensure every bound seat has data-device / primary selection proxies.
+    ///
+    /// Shell-wide `data_device` / `primary_device` mirror the primary seat for
+    /// single-seat APIs (`set_selection`, `start_drag`, …).
+    fn ensure_all_seat_transfer_devices(&mut self) {
+        let qh = self.queue.handle();
+        let seat_globals: Vec<u32> = self.state.seats.keys().copied().collect();
+        for global in seat_globals {
+            let Some(rec) = self.state.seats.get(&global) else {
+                continue;
+            };
+            let seat = rec.seat.clone();
+            let need_data = rec.data_device.is_none();
+            let need_primary = rec.primary_device.is_none();
+            if need_data {
+                if let Some(manager) = self.state.data_device_manager.as_ref() {
+                    let device = manager.get_data_device(&seat, &qh, ());
+                    if let Some(rec) = self.state.seats.get_mut(&global) {
+                        rec.data_device = Some(device);
+                    }
+                }
+            }
+            if need_primary {
+                if let Some(manager) = self.state.primary_selection_manager.as_ref() {
+                    let device = manager.get_device(&seat, &qh, ());
+                    if let Some(rec) = self.state.seats.get_mut(&global) {
+                        rec.primary_device = Some(device);
+                    }
+                }
+            }
+        }
+        // Mirror primary seat devices onto shell-wide fields.
+        if let Some(primary_id) = self.primary_seat_id() {
+            if let Some(rec) = self.state.seats.get(&primary_id.get()) {
+                if self.state.data_device.is_none() {
+                    self.state.data_device = rec.data_device.clone();
+                }
+                if self.state.primary_device.is_none() {
+                    self.state.primary_device = rec.primary_device.clone();
+                }
+            }
+        }
+        self.connection.mark_dirty();
+    }
+
     /// Re-create seat-scoped protocol objects after primary seat changes.
     fn rebind_primary_seat_devices(&mut self) {
         let qh = self.queue.handle();
+        self.ensure_all_seat_transfer_devices();
         let Some(seat) = self.state.seat.clone() else {
             return;
         };
-        if self.state.data_device.is_none() {
-            if let Some(manager) = self.state.data_device_manager.as_ref() {
-                self.state.data_device = Some(manager.get_data_device(&seat, &qh, ()));
-            }
-        }
-        if self.state.primary_device.is_none() {
-            if let Some(manager) = self.state.primary_selection_manager.as_ref() {
-                self.state.primary_device = Some(manager.get_device(&seat, &qh, ()));
+        // Prefer the primary seat's already-bound transfer devices.
+        if let Some(primary_id) = self.primary_seat_id() {
+            if let Some(rec) = self.state.seats.get(&primary_id.get()) {
+                self.state.data_device = rec.data_device.clone();
+                self.state.primary_device = rec.primary_device.clone();
             }
         }
         if self.state.text_input.is_none() {

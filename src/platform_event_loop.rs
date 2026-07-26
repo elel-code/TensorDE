@@ -228,7 +228,9 @@ impl EventLoop {
                             );
                         }
                     }
-                    KeyboardEvent::Modifiers { surface, modifiers } => {
+                    KeyboardEvent::Modifiers {
+                        surface, modifiers, ..
+                    } => {
                         if self.window(surface).is_some() {
                             app.window_event(
                                 &self.active,

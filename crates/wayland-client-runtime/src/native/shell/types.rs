@@ -46,19 +46,24 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         x: f64,
         y: f64,
+        /// Registry global name of the seat that owns this pointer, if known.
+        seat: Option<u32>,
     },
     PointerLeave {
         surface: NativeSurfaceId,
+        seat: Option<u32>,
     },
     PointerMotion {
         surface: NativeSurfaceId,
         x: f64,
         y: f64,
+        seat: Option<u32>,
     },
     PointerButton {
         surface: Option<NativeSurfaceId>,
         button: u32,
         pressed: bool,
+        seat: Option<u32>,
     },
     PointerAxis {
         surface: Option<NativeSurfaceId>,
@@ -67,12 +72,15 @@ pub enum NativeShellEvent {
         /// High-resolution wheel units (120 = one notch); 0 if not reported.
         horizontal_value120: i32,
         vertical_value120: i32,
+        seat: Option<u32>,
     },
     SeatKeyboardEnter {
         surface: Option<NativeSurfaceId>,
+        seat: Option<u32>,
     },
     SeatKeyboardLeave {
         surface: Option<NativeSurfaceId>,
+        seat: Option<u32>,
     },
     SeatKeyboardKey {
         /// Linux evdev keycode (Wayland `wl_keyboard.key`).
@@ -82,12 +90,14 @@ pub enum NativeShellEvent {
         keysym: u32,
         /// UTF-8 text produced on press (empty/control keys → `None`).
         text: Option<String>,
+        seat: Option<u32>,
     },
     SeatModifiers {
         mods_depressed: u32,
         mods_latched: u32,
         mods_locked: u32,
         group: u32,
+        seat: Option<u32>,
     },
     /// `wl_surface.frame` callback fired (time is compositor milliseconds).
     Frame {
@@ -453,6 +463,12 @@ pub(crate) struct SeatRecord {
     pub(crate) last_input_serial: Option<u32>,
     /// Serial from the latest pointer enter on this seat.
     pub(crate) pointer_enter_serial: Option<u32>,
+    /// Seat-scoped clipboard / DnD device (`wl_data_device`).
+    pub(crate) data_device: Option<wl_data_device::WlDataDevice>,
+    /// Seat-scoped primary selection device (middle-click paste).
+    pub(crate) primary_device: Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+    >,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1118,6 +1134,8 @@ impl NativeShellState {
                 pointer_focus: None,
                 last_input_serial: None,
                 pointer_enter_serial: None,
+                data_device: None,
+                primary_device: None,
             },
         );
         self.push(NativeShellEvent::SeatAdded {

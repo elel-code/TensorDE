@@ -398,6 +398,14 @@ impl NativeRuntime {
         self.shell.seat_input_serial(seat, source)
     }
 
+    pub fn seat_has_data_device(&self, seat: crate::SeatId) -> bool {
+        self.shell.seat_has_data_device(seat)
+    }
+
+    pub fn seat_has_primary_device(&self, seat: crate::SeatId) -> bool {
+        self.shell.seat_has_primary_device(seat)
+    }
+
     pub fn create_popup(
         &mut self,
         parent: SurfaceId,

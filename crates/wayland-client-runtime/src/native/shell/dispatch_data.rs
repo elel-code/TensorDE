@@ -654,6 +654,11 @@ mod tests {
                 let _ = shell.seat_pointer_focus(sid);
                 let _ = shell.seat_last_input_serial(sid);
                 let _ = shell.seat_input_serial(sid, crate::InputSerialSource::PointerPress);
+                // Transfer devices should be bound per seat at connect.
+                assert!(
+                    shell.seat_has_data_device(sid) || !shell.capabilities().data_device,
+                    "primary seat should have data_device when manager is present"
+                );
             }
         }
         // outputs_into reuses capacity.

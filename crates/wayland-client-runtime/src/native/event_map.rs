@@ -185,7 +185,10 @@ pub fn map_native_event_full(
                 surface: surfaces.intern(surface),
             }))
         }
-        NativeShellEvent::SeatKeyboardEnter { surface } => {
+        NativeShellEvent::SeatKeyboardEnter {
+            surface,
+            seat: event_seat,
+        } => {
             map_state.keyboard_focus = surface;
             let seat = seat?;
             let surface = surface.map(|s| surfaces.intern(s))?;
@@ -197,20 +200,28 @@ pub fn map_native_event_full(
                     InputSerialSource::KeyboardEnter,
                 ),
                 pressed_raw_codes: Vec::new(),
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::SeatKeyboardLeave { surface } => {
+        NativeShellEvent::SeatKeyboardLeave {
+            surface,
+            seat: event_seat,
+        } => {
             let surface = surface
                 .or(map_state.keyboard_focus)
                 .map(|s| surfaces.intern(s))?;
             map_state.keyboard_focus = None;
-            Some(Event::Keyboard(KeyboardEvent::Leave { surface }))
+            Some(Event::Keyboard(KeyboardEvent::Leave {
+                surface,
+                seat: event_seat.map(SeatId::from_raw),
+            }))
         }
         NativeShellEvent::SeatKeyboardKey {
             key,
             pressed,
             keysym,
             text,
+            seat: event_seat,
         } => {
             let seat = seat?;
             let surface = map_state
@@ -233,9 +244,15 @@ pub fn map_native_event_full(
                     map_state.last_serial,
                     InputSerialSource::KeyboardKey,
                 ),
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::PointerEnter { surface, x, y } => {
+        NativeShellEvent::PointerEnter {
+            surface,
+            x,
+            y,
+            seat: event_seat,
+        } => {
             map_state.pointer_focus = Some(surface);
             map_state.pointer_pos = (x, y);
             let seat = seat?;
@@ -249,23 +266,34 @@ pub fn map_native_event_full(
                         InputSerialSource::PointerEnter,
                     ),
                 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::PointerLeave { surface } => {
+        NativeShellEvent::PointerLeave {
+            surface,
+            seat: event_seat,
+        } => {
             map_state.pointer_focus = None;
             Some(Event::Pointer(PointerEvent {
                 surface: surfaces.intern(surface),
                 position: map_state.pointer_pos,
                 kind: PointerEventKind::Leave,
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::PointerMotion { surface, x, y } => {
+        NativeShellEvent::PointerMotion {
+            surface,
+            x,
+            y,
+            seat: event_seat,
+        } => {
             map_state.pointer_focus = Some(surface);
             map_state.pointer_pos = (x, y);
             Some(Event::Pointer(PointerEvent {
                 surface: surfaces.intern(surface),
                 position: (x, y),
                 kind: PointerEventKind::Motion { time: 0 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
         NativeShellEvent::PointerAxis {
@@ -274,6 +302,7 @@ pub fn map_native_event_full(
             vertical,
             horizontal_value120,
             vertical_value120,
+            seat: event_seat,
         } => {
             let surface = surface
                 .or(map_state.pointer_focus)
@@ -295,12 +324,14 @@ pub fn map_native_event_full(
                     },
                     source: None,
                 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
         NativeShellEvent::SeatModifiers {
             mods_depressed,
             mods_latched,
             mods_locked,
+            seat: event_seat,
             ..
         } => {
             let surface = map_state
@@ -311,12 +342,14 @@ pub fn map_native_event_full(
             Some(Event::Keyboard(KeyboardEvent::Modifiers {
                 surface,
                 modifiers: modifiers_from_xkb_mask(effective),
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
         NativeShellEvent::PointerButton {
             surface,
             button,
             pressed,
+            seat: event_seat,
         } => {
             let seat = seat?;
             let surface = surface
@@ -343,6 +376,7 @@ pub fn map_native_event_full(
                         serial: InputSerial::new(seat.clone(), map_state.last_serial, source),
                     }
                 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
         NativeShellEvent::TouchDown {
@@ -815,6 +849,7 @@ pub fn map_native_key_text(
             pressed,
             keysym,
             text,
+            ..
         } => Some((*key, *keysym, *pressed, text.as_deref())),
         _ => None,
     }
@@ -1024,6 +1059,7 @@ mod tests {
             pressed: true,
             keysym: 0x61,
             text: Some("a".into()),
+            seat: None,
         };
         assert_eq!(native_key_text_pressed(&event), Some("a"));
         let (key, keysym, pressed, text) = map_native_key_text(&event).unwrap();

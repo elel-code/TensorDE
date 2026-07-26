@@ -124,6 +124,8 @@ pub struct PointerEvent {
     pub surface: SurfaceId,
     pub position: (f64, f64),
     pub kind: PointerEventKind,
+    /// Seat that produced this event (`wl_seat` registry id), when known.
+    pub seat: Option<crate::SeatId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -149,9 +151,12 @@ pub enum KeyboardEvent {
         surface: SurfaceId,
         serial: InputSerial,
         pressed_raw_codes: Vec<u32>,
+        /// Seat that owns this keyboard, when known.
+        seat: Option<crate::SeatId>,
     },
     Leave {
         surface: SurfaceId,
+        seat: Option<crate::SeatId>,
     },
     Key {
         surface: SurfaceId,
@@ -161,10 +166,12 @@ pub enum KeyboardEvent {
         keysym: u32,
         text: Option<String>,
         serial: InputSerial,
+        seat: Option<crate::SeatId>,
     },
     Modifiers {
         surface: SurfaceId,
         modifiers: Modifiers,
+        seat: Option<crate::SeatId>,
     },
 }
 

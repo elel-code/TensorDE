@@ -43,8 +43,13 @@ loop {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-See `examples/native_layer_poll.rs` for a full layer-shell + `poll(2)` demo
-(`--no-default-features`).
+Examples (protocol-only, `--no-default-features` works):
+
+| Example | What it shows |
+| --- | --- |
+| `native_toplevel_poll` | xdg-toplevel + `poll(2)` + RWH (no layer-shell) |
+| `native_layer_poll` | layer-shell GPU surface + regions + frame pacing |
+| `native_capabilities` | seats / outputs / capability inventory |
 
 ## wgpu (Vulkan on Linux)
 
