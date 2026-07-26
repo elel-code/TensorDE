@@ -80,7 +80,7 @@ impl NativeShell {
         // the cursor rectangle is further applied on the next wl_surface.commit.
         ti.commit();
         wl.commit();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -99,7 +99,7 @@ impl NativeShell {
         ti.disable();
         ti.commit();
         self.state.text_input_surface = None;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -124,7 +124,7 @@ impl NativeShell {
             .as_ref()
             .ok_or_else(|| NativeError::Protocol("no dnd offer".into()))?;
         offer.accept(serial, mime.map(str::to_string));
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -165,7 +165,7 @@ impl NativeShell {
             DndAction::Copy
         };
         offer.set_actions(source, preferred);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -224,7 +224,7 @@ impl NativeShell {
         self.state.dnd_mimes.clear();
         self.state.dnd_focus = None;
         self.state.dnd_serial = None;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -240,7 +240,7 @@ impl NativeShell {
         self.state.dnd_mimes.clear();
         self.state.dnd_focus = None;
         self.state.dnd_serial = None;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -311,7 +311,7 @@ impl NativeShell {
         self.state.dnd_source_id = Some(id);
         self.state.dnd_source_content = Some(content);
         self.state.dnd_icon = icon_surface;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(id)
     }
 
@@ -378,7 +378,7 @@ impl NativeShell {
         // Dual-write primary selection when the global exists (SCTK apps often
         // keep both selections in sync for middle-click paste).
         let _ = self.set_primary_selection_content_inner(content, serial);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -392,7 +392,7 @@ impl NativeShell {
             .last_input_serial
             .ok_or_else(|| NativeError::Protocol("no input serial for primary selection".into()))?;
         self.set_primary_selection_content_inner(content, serial)?;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 

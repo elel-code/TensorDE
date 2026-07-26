@@ -18,7 +18,7 @@ impl NativeShell {
             .get(&id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record.toplevel._move(&seat, serial);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -35,7 +35,7 @@ impl NativeShell {
             .get(&id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record.toplevel.resize(&seat, serial, map_resize_edge(edge));
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -54,7 +54,7 @@ impl NativeShell {
         record
             .toplevel
             .show_window_menu(&seat, serial, position.x, position.y);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -73,7 +73,7 @@ impl NativeShell {
             ));
         }
         proxy.set_cursor_position_hint(position.0, position.1);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -88,7 +88,7 @@ impl NativeShell {
         } else {
             record.toplevel.unset_maximized();
         }
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -107,7 +107,7 @@ impl NativeShell {
         } else {
             record.toplevel.unset_fullscreen();
         }
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         // Best-effort: keep the display awake while fullscreen (media/viewers).
         // Missing manager or surface is ignored so fullscreen itself still works.
         let _ = self.set_idle_inhibit(id, fullscreen);
@@ -121,7 +121,7 @@ impl NativeShell {
             .get(&id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record.toplevel.set_minimized();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 

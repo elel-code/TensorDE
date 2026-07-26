@@ -49,7 +49,7 @@ impl NativeShell {
         } else {
             self.state.clear_live_constraints_for(id);
         }
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 

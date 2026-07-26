@@ -49,7 +49,7 @@ impl NativeShell {
 
         let Some(icon) = icon else {
             manager.set_icon(&record.toplevel, None);
-            self.connection.flush()?;
+            self.connection.mark_dirty();
             return Ok(());
         };
 
@@ -73,7 +73,7 @@ impl NativeShell {
         manager.set_icon(&record.toplevel, Some(&protocol_icon));
         protocol_icon.destroy();
         record.icon_shm = kept;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -106,7 +106,7 @@ impl NativeShell {
                 }
                 // destroy is double-buffered: commit so blur clears now.
                 record.wl.commit();
-                self.connection.flush()?;
+                self.connection.mark_dirty();
                 Ok(())
             }
             BlurState::Enabled(region) => {
@@ -220,7 +220,7 @@ impl NativeShell {
         wl_region.destroy();
         // Protocol: blur region is double-buffered; commit so it applies now.
         record.wl.commit();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl NativeShell {
         }
 
         self.sync_csd_for(id)?;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 }

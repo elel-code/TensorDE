@@ -199,7 +199,7 @@ impl NativeShell {
         );
         // Prepare CSD as fallback when compositor has no SSD / user later asks Client.
         let _ = self.sync_csd_for(id);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(id)
     }
 
@@ -209,7 +209,7 @@ impl NativeShell {
             .wl_surface(id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         wl.commit();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -224,7 +224,7 @@ impl NativeShell {
             .wl_surface(id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         wl.set_buffer_scale(factor);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -246,7 +246,7 @@ impl NativeShell {
             if let Some(vp) = record.viewport.as_ref() {
                 vp.set_destination(w, h);
             }
-            self.connection.flush()?;
+            self.connection.mark_dirty();
             return Ok(());
         }
         if let Some(record) = self.state.layers.get_mut(&id) {
@@ -261,7 +261,7 @@ impl NativeShell {
             if let Some(vp) = record.viewport.as_ref() {
                 vp.set_destination(w, h);
             }
-            self.connection.flush()?;
+            self.connection.mark_dirty();
             return Ok(());
         }
         Err(NativeError::Protocol(format!("unknown surface {id:?}")))
@@ -281,7 +281,7 @@ impl NativeShell {
             .map(|s| (s.width as i32, s.height as i32))
             .unwrap_or((0, 0));
         record.toplevel.set_min_size(w, h);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -299,7 +299,7 @@ impl NativeShell {
             .map(|s| (s.width as i32, s.height as i32))
             .unwrap_or((0, 0));
         record.toplevel.set_max_size(w, h);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -320,7 +320,7 @@ impl NativeShell {
             size.width.max(1) as i32,
             size.height.max(1) as i32,
         );
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -347,7 +347,7 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record.toplevel.set_parent(parent_toplevel.as_ref());
         record.parent = parent;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -371,7 +371,7 @@ impl NativeShell {
         } else {
             dialog.unset_modal();
         }
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 

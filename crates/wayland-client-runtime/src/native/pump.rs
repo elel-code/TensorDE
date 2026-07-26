@@ -55,15 +55,15 @@ impl NativePump {
         &mut self.registry
     }
 
-    /// Non-blocking: flush + dispatch only what is already available.
+    /// Non-blocking: flush dirty requests + dispatch only what is already available.
     pub fn pump_pending(&mut self) -> Result<usize, NativeError> {
-        self.connection.flush()?;
+        self.connection.flush_if_needed()?;
         self.registry.dispatch_pending()
     }
 
     /// Non-blocking read attempt + dispatch (for external readiness loops).
     pub fn try_read_and_dispatch(&mut self) -> Result<PumpStep, NativeError> {
-        self.connection.flush()?;
+        self.connection.flush_if_needed()?;
         let mut dispatched = self.registry.dispatch_pending()?;
         let mut did_read = false;
         match self.connection.connection().prepare_read() {
@@ -85,12 +85,12 @@ impl NativePump {
         })
     }
 
-    /// Flush, wait for display data if needed, read, and dispatch pending.
+    /// Flush dirty requests, wait for display data if needed, read, and dispatch.
     ///
     /// Reuses a long-lived Compio readiness watch. Must run on a Compio executor.
     #[cfg(feature = "compio")]
     pub async fn pump_once(&mut self) -> Result<PumpStep, NativeError> {
-        self.connection.flush()?;
+        self.connection.flush_if_needed()?;
         let mut dispatched = self.registry.dispatch_pending()?;
         let mut did_read = false;
         match self.connection.connection().prepare_read() {

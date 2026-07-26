@@ -44,6 +44,15 @@ use wayland_client::EventQueue;
 ///   Compio readiness watch; does not re-clone the fd every wait)
 ///
 /// Register [`Self::display_fd`] with your own reactor if you do not use Compio.
+///
+/// # Request flush batching
+///
+/// Shell mutators mark the connection dirty instead of writing the socket on
+/// every call. [`Self::dispatch_pending`], [`Self::try_read_and_dispatch`], and
+/// [`Self::pump_once`] flush when needed so a burst of API calls becomes one
+/// write. Paths that must be seen by the compositor before blocking pipe I/O
+/// (clipboard / DnD receive) still flush immediately. Call [`Self::flush`] to
+/// force a write outside the pump.
 pub struct NativeShell {
     pub(crate) connection: NativeConnection,
     #[allow(dead_code)]
@@ -296,6 +305,14 @@ impl NativeShell {
         &self.connection
     }
 
+    /// Force a display write of any queued requests (and clear the dirty flag).
+    ///
+    /// Prefer relying on the pump; use this when the next step blocks waiting
+    /// for the compositor without going through [`Self::dispatch_pending`].
+    pub fn flush(&self) -> Result<(), NativeError> {
+        self.connection.flush()
+    }
+
     /// Borrow the **non-blocking** display socket for external event loops.
     ///
     /// This is a normal fd: epoll/kqueue/calloop/tokio/`poll` all work. After
@@ -436,7 +453,7 @@ impl NativeShell {
         let qh = self.queue.handle();
         let feedback = dmabuf.get_default_feedback(&qh, ());
         self.state.dmabuf_default_feedback_obj = Some(feedback);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -474,7 +491,7 @@ impl NativeShell {
         let pid = feedback.id().protocol_id();
         self.state.dmabuf_feedback_surfaces.insert(pid, id);
         self.state.dmabuf_surface_feedback_objs.insert(id, feedback);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -495,7 +512,7 @@ impl NativeShell {
         proxy.create(params.width, params.height, params.format, flags);
         let pid = proxy.id().protocol_id();
         self.state.dmabuf_params.insert(pid, proxy);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -526,7 +543,7 @@ impl NativeShell {
         self.state.dmabuf_buffer_by_proto.insert(buffer_proto, id);
         // Params object is no longer needed after create_immed.
         proxy.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(crate::dmabuf::DmabufBufferId(id))
     }
 
@@ -608,7 +625,7 @@ impl NativeShell {
             .dmabuf_buffer_by_proto
             .remove(&record.buffer.id().protocol_id());
         record.buffer.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -624,7 +641,7 @@ impl NativeShell {
         if !inhibit {
             if let Some(inhibitor) = self.state.idle_inhibitors.remove(&id) {
                 inhibitor.destroy();
-                self.connection.flush()?;
+                self.connection.mark_dirty();
             }
             return Ok(());
         }
@@ -644,7 +661,7 @@ impl NativeShell {
         let qh = self.queue.handle();
         let inhibitor = manager.create_inhibitor(&wl, &qh, ());
         self.state.idle_inhibitors.insert(id, inhibitor);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -694,14 +711,14 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
         let qh = self.queue.handle();
         self.state.relative_pointer = Some(manager.get_relative_pointer(pointer, &qh, ()));
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
     pub fn disable_relative_pointer(&mut self) -> Result<(), NativeError> {
         if let Some(rel) = self.state.relative_pointer.take() {
             rel.destroy();
-            self.connection.flush()?;
+            self.connection.mark_dirty();
         }
         Ok(())
     }
@@ -751,7 +768,7 @@ impl NativeShell {
         self.state
             .activation_tokens
             .insert(obj_id, (surface, token));
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -775,7 +792,7 @@ impl NativeShell {
             .or_else(|| self.state.layers.get(&surface).map(|l| l.wl.clone()))
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {surface:?}")))?;
         activation.activate(token.into(), &wl);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -942,7 +959,7 @@ impl NativeShell {
                 state,
             },
         );
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(id)
     }
 
@@ -972,7 +989,7 @@ impl NativeShell {
         record.state = new_state;
         record.logical_w = new_state.size.width;
         record.logical_h = new_state.size.height;
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1107,7 +1124,7 @@ impl NativeShell {
                 logical_h: h,
             },
         );
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(id)
     }
 
@@ -1140,7 +1157,7 @@ impl NativeShell {
             pool.destroy();
         }
         record.wl.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1169,7 +1186,7 @@ impl NativeShell {
         self.state
             .frame_callbacks
             .insert(callback.id().protocol_id(), id);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1201,7 +1218,7 @@ impl NativeShell {
                 sync_output: None,
             },
         );
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1225,13 +1242,17 @@ impl NativeShell {
         let device = manager.get_pointer(pointer, &qh, ());
         device.set_shape(serial, shape);
         device.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
     pub fn dispatch_pending(&mut self) -> Result<usize, NativeError> {
+        // Coalesce any API requests queued since the last pump.
+        self.connection.flush_if_needed()?;
         let n = self.queue.dispatch_pending(&mut self.state)?;
         self.after_dispatch()?;
+        // CSD / blur work from after_dispatch may have marked dirty again.
+        self.connection.flush_if_needed()?;
         Ok(n)
     }
 
@@ -1268,12 +1289,12 @@ impl NativeShell {
         Ok(())
     }
 
-    /// Non-blocking: flush, optionally read if data is already available, dispatch.
+    /// Non-blocking: flush dirty requests, optionally read, and dispatch.
     ///
     /// Suitable for external event loops: call after the display fd is readable,
     /// or poll periodically. Returns the number of events dispatched.
     pub fn try_read_and_dispatch(&mut self) -> Result<usize, NativeError> {
-        self.connection.flush()?;
+        self.connection.flush_if_needed()?;
         let mut n = self.dispatch_pending()?;
         n += self.read_display_nonblocking()?;
         Ok(n)
@@ -1302,7 +1323,7 @@ impl NativeShell {
     /// clone). Requires `feature = "compio"` and a Compio executor.
     #[cfg(feature = "compio")]
     pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
-        self.connection.flush()?;
+        self.connection.flush_if_needed()?;
         let mut n = self.dispatch_pending()?;
         // If the queue is empty, wait once then read; otherwise drain only.
         match self.connection.connection().prepare_read() {
@@ -1448,7 +1469,7 @@ impl NativeShell {
             frame.set_title(title);
         }
         let _ = self.redraw_csd(id);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1463,7 +1484,7 @@ impl NativeShell {
             .get(&id)
             .ok_or(NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record.toplevel.set_app_id(app_id.into());
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1554,7 +1575,7 @@ impl NativeShell {
             pool.destroy();
         }
         record.wl.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1643,7 +1664,7 @@ impl NativeShell {
                 logical_h: h,
             },
         );
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(id)
     }
 
@@ -1682,7 +1703,7 @@ impl NativeShell {
             record.logical_w = positioner.size.width;
             record.logical_h = positioner.size.height;
         }
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -1714,7 +1735,7 @@ impl NativeShell {
             pool.destroy();
         }
         record.wl.destroy();
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 

@@ -115,7 +115,7 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
         frame.redraw(&shm, &qh)?;
         self.state.csd_frames.insert(id, frame);
-        self.connection.flush()?;
+        self.connection.mark_dirty();
         Ok(())
     }
 
@@ -129,7 +129,7 @@ impl NativeShell {
         let qh = self.queue.handle();
         if let Some(frame) = self.state.csd_frames.get_mut(&id) {
             frame.redraw(&shm, &qh)?;
-            self.connection.flush()?;
+            self.connection.mark_dirty();
         }
         Ok(())
     }
