@@ -277,6 +277,8 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
 
 #[cfg(test)]
 mod tests {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+
     use crate::native::shell::{NativePopupPositioner, NativeShell};
 
     #[test]
@@ -333,6 +335,19 @@ mod tests {
             .create_popup(parent, &positioner, None)
             .expect("create popup");
         assert_eq!(shell.popup_count(), 1);
+        let popup_handle = shell.surface_handle(popup).expect("popup renderer handle");
+        assert_eq!(
+            popup_handle.kind(),
+            crate::surface::SurfaceKind::Popup
+        );
+        let parent_handle = shell.surface_handle(parent).expect("toplevel handle");
+        assert_eq!(
+            parent_handle.kind(),
+            crate::surface::SurfaceKind::Toplevel
+        );
+        // RWH contracts: Vulkan / wgpu need both display and window handles.
+        assert!(popup_handle.window_handle().is_ok());
+        assert!(popup_handle.display_handle().is_ok());
         let _ = shell.dispatch_pending();
         let _ = shell.destroy_popup(popup);
         let _ = shell.destroy_toplevel(parent);

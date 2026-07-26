@@ -101,6 +101,9 @@ pub use pointer_gestures::{
     PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
 };
 pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions, WakeHandle};
+/// Production runtime (Compio + native shell). Alias kept for docs / examples
+/// that historically referred to a single `Runtime` type.
+pub type Runtime = NativeRuntime;
 pub use surface::{
     ConstraintAdjustments, DecorationPreference, DialogAttributes, Gravity, PopupAnchor,
     PopupAttributes, PopupPositioner, SurfaceHandle, SurfaceId, SurfaceKind, ToplevelAttributes,

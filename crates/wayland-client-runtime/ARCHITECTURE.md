@@ -109,32 +109,31 @@ Without SCTK, a client can:
 
 Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
 
-#### NativeShell capability matrix (vs SCTK Runtime)
+#### NativeShell capability matrix
 
-| Area | NativeShell | SCTK Runtime (Fika today) |
-| --- | --- | --- |
-| Compio display pump | yes | calloop + optional Compio wait |
-| xdg toplevel | yes | yes |
-| shm solid buffer | yes | via app/wgpu |
-| fractional scale + viewporter | yes | yes |
-| pointer / axis / button | yes | yes |
-| keyboard key/mod/focus | yes (raw keycodes) | yes (+ xkb text) |
-| touch | yes | yes |
-| cursor shape | yes | yes |
-| frame callback | yes | yes |
-| multi output + surface enter | yes | yes |
-| raw-window-handle | yes | yes |
-| popup / dialog | no | yes |
-| text input v3 | no | yes |
-| data device clipboard | yes (text/bytes selection) | yes |
-| dnd drag | no | yes |
-| layer shell | no | yes |
-| xkb composed text | no | yes |
-| blur / activation / icons | no | yes |
+| Area | Status |
+| --- | --- |
+| Compio display pump (io_uring) | yes |
+| xdg toplevel + dialog + CSD | yes |
+| popup + layer shell | yes |
+| fractional scale + viewporter | yes |
+| pointer / keyboard / touch / gestures | yes |
+| xkb composed text | yes |
+| text-input-v3 | yes |
+| clipboard + DnD (+ async Send) | yes |
+| blur / activation / icons | yes |
+| raw-window-handle 0.6 (wgpu **and** Vulkan) | yes (toplevel, dialog, popup, layer) |
 
-## SCTK surface (to eliminate)
+### Vulkan / wgpu
 
-Rough dependency map today:
+`NativeSurfaceHandle` / public `SurfaceHandle` expose Wayland display+surface
+pointers via raw-window-handle 0.6. No SCTK intermediate is required.
+
+## Historical SCTK notes
+
+SCTK / calloop have been removed from the production path. Older docs that
+mentioned dual backends are obsolete; the map below is retained only as
+migration context:
 
 - calloop + `WaylandSource` → Compio `DisplayReadiness` + native read loop
 - `CompositorState` / `XdgShell` / `Window` → native shell modules

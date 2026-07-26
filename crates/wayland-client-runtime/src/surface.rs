@@ -142,8 +142,11 @@ pub struct PopupAttributes {
 
 /// A renderer-facing lease on a live Wayland surface.
 ///
-/// The lease keeps the protocol role, its `wl_surface`, its connection and all
-/// ancestors alive. Suitable for wgpu / Vulkan Wayland surfaces.
+/// The lease keeps the protocol role, its `wl_surface`, and its connection
+/// alive. Suitable for **wgpu** and **direct Vulkan** (`VK_KHR_wayland_surface`)
+/// via [`HasWindowHandle`] / [`HasDisplayHandle`] (raw-window-handle 0.6).
+///
+/// Keep the handle (or a clone) alive for as long as the GPU surface exists.
 #[derive(Clone)]
 pub struct SurfaceHandle {
     native: crate::NativeSurfaceHandle,
@@ -159,9 +162,12 @@ impl SurfaceHandle {
     }
 
     pub fn kind(&self) -> SurfaceKind {
-        // Native leases currently expose toplevels for wgpu; dialog/popup/layer
-        // still share the same handle shape.
-        SurfaceKind::Toplevel
+        self.native.kind()
+    }
+
+    /// Access the underlying native lease (wl_surface / Connection).
+    pub fn native(&self) -> &crate::NativeSurfaceHandle {
+        &self.native
     }
 }
 

@@ -723,14 +723,19 @@ impl NativeShell {
     }
 
     /// Request a `wl_surface.frame` callback; emits [`NativeShellEvent::Frame`].
+    ///
+    /// Works for toplevel, popup, and layer surfaces (needed for GPU present pacing).
     pub fn request_frame(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         let qh = self.queue.handle();
-        let record = self
+        let wl = self
             .state
             .toplevels
             .get(&id)
+            .map(|r| &r.wl)
+            .or_else(|| self.state.popups.get(&id).map(|r| &r.wl))
+            .or_else(|| self.state.layers.get(&id).map(|r| &r.wl))
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        let callback = record.wl.frame(&qh, ());
+        let callback = wl.frame(&qh, ());
         self.state
             .frame_callbacks
             .insert(callback.id().protocol_id(), id);
@@ -879,21 +884,42 @@ impl NativeShell {
         self.state.toplevels.get(&id).map(|t| t.scale_factor)
     }
 
-    /// Borrow a renderer handle for wgpu / Vulkan Wayland surface creation.
+    /// Renderer lease for wgpu / Vulkan (`VK_KHR_wayland_surface`).
+    ///
+    /// Works for toplevels (including dialogs), popups, and layer surfaces.
+    /// The returned handle keeps `Connection` + `wl_surface` alive; keep it
+    /// for the lifetime of the GPU surface.
     pub fn surface_handle(
         &self,
         id: NativeSurfaceId,
     ) -> Result<NativeSurfaceHandle, NativeError> {
-        let record = self
-            .state
-            .toplevels
-            .get(&id)
-            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        Ok(NativeSurfaceHandle::new(
-            self.connection.connection().clone(),
-            record.wl.clone(),
-            id,
-        ))
+        use crate::surface::SurfaceKind;
+        let conn = self.connection.connection().clone();
+        if let Some(record) = self.state.toplevels.get(&id) {
+            let kind = if record.parent.is_some() || record.dialog.is_some() {
+                SurfaceKind::Dialog
+            } else {
+                SurfaceKind::Toplevel
+            };
+            return Ok(NativeSurfaceHandle::new(conn, record.wl.clone(), id, kind));
+        }
+        if let Some(record) = self.state.popups.get(&id) {
+            return Ok(NativeSurfaceHandle::new(
+                conn,
+                record.wl.clone(),
+                id,
+                SurfaceKind::Popup,
+            ));
+        }
+        if let Some(record) = self.state.layers.get(&id) {
+            return Ok(NativeSurfaceHandle::new(
+                conn,
+                record.wl.clone(),
+                id,
+                SurfaceKind::Layer,
+            ));
+        }
+        Err(NativeError::Protocol(format!("unknown surface {id:?}")))
     }
 
     pub fn set_title(

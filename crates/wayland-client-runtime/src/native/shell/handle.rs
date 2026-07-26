@@ -1,4 +1,8 @@
-//! raw-window-handle adapters for native toplevel surfaces (wgpu / Vulkan).
+//! raw-window-handle adapters for native surfaces (wgpu / Vulkan).
+//!
+//! Handles expose `wl_display` + `wl_surface` via raw-window-handle 0.6 so
+//! renderers can create `VK_KHR_wayland_surface` objects (or wgpu's Wayland
+//! backend) without depending on this crate's protocol types.
 
 use std::fmt;
 use std::ptr::NonNull;
@@ -11,27 +15,71 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy};
 
 use super::types::NativeSurfaceId;
+use crate::surface::SurfaceKind;
 
-/// Renderer lease for a native toplevel: owns connection + surface proxies long
-/// enough for wgpu surface creation.
+/// Renderer lease for a native surface: owns connection + surface proxies long
+/// enough for wgpu / Vulkan surface creation.
+///
+/// # Vulkan
+///
+/// With `ash` (or similar), create the surface from the raw handles:
+///
+/// ```ignore
+/// use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+///
+/// let display = handle.display_handle()?.as_raw();
+/// let window = handle.window_handle()?.as_raw();
+/// let (wl_display, wl_surface) = match (display, window) {
+///     (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(w)) => (d.display, w.surface),
+///     _ => unreachable!("native handle is always Wayland"),
+/// };
+/// // vkCreateWaylandSurfaceKHR(instance, &VkWaylandSurfaceCreateInfoKHR {
+/// //     display: wl_display.as_ptr(), surface: wl_surface.as_ptr(), ...
+/// // })
+/// ```
+///
+/// Keep this handle (or a clone) alive for as long as the Vulkan / wgpu
+/// surface exists — dropping it can destroy the underlying `wl_surface`.
 #[derive(Clone)]
 pub struct NativeSurfaceHandle {
     connection: Connection,
     surface: WlSurface,
     id: NativeSurfaceId,
+    kind: SurfaceKind,
 }
 
 impl NativeSurfaceHandle {
-    pub(crate) fn new(connection: Connection, surface: WlSurface, id: NativeSurfaceId) -> Self {
+    pub(crate) fn new(
+        connection: Connection,
+        surface: WlSurface,
+        id: NativeSurfaceId,
+        kind: SurfaceKind,
+    ) -> Self {
         Self {
             connection,
             surface,
             id,
+            kind,
         }
     }
 
     pub fn id(&self) -> NativeSurfaceId {
         self.id
+    }
+
+    pub fn kind(&self) -> SurfaceKind {
+        self.kind
+    }
+
+    /// Borrow the live `wl_surface` proxy (for protocol extensions the
+    /// renderer may need alongside Vulkan).
+    pub fn wl_surface(&self) -> &WlSurface {
+        &self.surface
+    }
+
+    /// Borrow the Wayland connection that owns this surface's display.
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
 }
 
@@ -39,6 +87,7 @@ impl fmt::Debug for NativeSurfaceHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NativeSurfaceHandle")
             .field("id", &self.id)
+            .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }

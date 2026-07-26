@@ -4,11 +4,9 @@
 layer. It intentionally models Wayland roles instead of imitating a
 cross-platform `Window` API.
 
-**Backend migration (in progress):** the long-term stack is **Compio + a native
-protocol implementation** (no SCTK/calloop callbacks). See
-[`ARCHITECTURE.md`](ARCHITECTURE.md) and Fika roadmap §6d. Today protocol state
-still uses SCTK; display-fd readiness already uses Compio
-(`Runtime::wait_display_readable` / `dispatch_pending`).
+**Stack:** **Compio + native protocol shell** (no SCTK / calloop). Display
+readiness and waits use Compio io_uring completions. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Native protocol code is organized like **wayland-protocols / Smithay**:
 `core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
@@ -16,6 +14,28 @@ Native protocol code is organized like **wayland-protocols / Smithay**:
 
 The crate is currently developed in the Fika workspace. Its public API is
 general-purpose and contains no Fika-specific model or renderer dependency.
+
+## Vulkan and wgpu
+
+Yes — this crate can feed **direct Vulkan** or **wgpu** without a second
+windowing library.
+
+| Need | API |
+| --- | --- |
+| `wl_display` + `wl_surface` pointers | `SurfaceHandle` implements `HasDisplayHandle` + `HasWindowHandle` (raw-window-handle **0.6**) |
+| Role (toplevel / dialog / popup / layer) | `SurfaceHandle::kind()` |
+| Raw proxies | `SurfaceHandle::native()` → `NativeSurfaceHandle::{connection, wl_surface}` |
+| Lifetime | Keep the handle (or a clone) alive for the whole GPU surface lifetime |
+
+Typical Vulkan path with `ash`:
+
+1. `NativeRuntime::connect()` / create toplevel (or popup / layer).
+2. `runtime.surface_handle(id)` after the surface exists.
+3. Read `RawDisplayHandle::Wayland` / `RawWindowHandle::Wayland`.
+4. `vkCreateWaylandSurfaceKHR` with those pointers.
+5. Present after configure; call `runtime.commit` / frame callbacks as usual.
+
+Fika uses the same handle through wgpu's Wayland backend.
 
 ## Implemented boundary
 
@@ -43,9 +63,9 @@ general-purpose and contains no Fika-specific model or renderer dependency.
 
 ```no_run
 use std::time::Duration;
-use wayland_client_runtime::{Runtime, RuntimeOptions, ToplevelAttributes};
+use wayland_client_runtime::{NativeRuntime, ToplevelAttributes};
 
-let mut runtime = Runtime::connect(RuntimeOptions::default())?;
+let mut runtime = NativeRuntime::connect()?;
 let surface = runtime.create_toplevel(ToplevelAttributes {
     title: "Wayland application".into(),
     app_id: "dev.example.Application".into(),
@@ -58,7 +78,9 @@ let renderer_handle = runtime.surface_handle(surface).unwrap();
 
 loop {
     runtime.dispatch(Some(Duration::from_millis(16)))?;
-    for event in runtime.drain_events() {
+    let mut events = Vec::new();
+    runtime.drain_events_into(&mut events);
+    for event in events {
         // Update application state. Handler calls never re-enter application code.
         let _ = event;
     }
