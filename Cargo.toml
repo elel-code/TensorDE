@@ -70,6 +70,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vulkanalia = { version = "0.35", features = ["libloading"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
+wayland-server = "0.31"
 zbus = { version = "5", optional = true }
 
 [[bin]]

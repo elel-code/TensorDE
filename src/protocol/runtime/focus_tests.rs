@@ -130,7 +130,7 @@ fn focused_toplevel_is_activated_and_receives_late_keyboard_enter() {
     install_test_output(&mut runtime);
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
     let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
-    runtime.prepare(false).unwrap();
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
 
     let (event_tx, event_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -315,7 +315,7 @@ fn close_time_focus_transfers_activation_keyboard_and_scene_selection() {
     install_test_output(&mut runtime);
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
     let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
-    runtime.prepare(false).unwrap();
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
 
     let (event_tx, event_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();

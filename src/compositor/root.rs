@@ -30,9 +30,10 @@ use crate::{
     },
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
     protocol::{
-        MAX_PENDING_SECURITY_CONTEXT_EVENTS, ProtocolError, SecurityContextEvent,
+        MAX_PENDING_SECURITY_CONTEXT_EVENTS, MAX_PENDING_WAYLAND_CLIENTS,
+        MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS, ProtocolError, SecurityContextEvent,
         SecurityContextRuntime, SecurityContextRuntimeError, WaylandRuntime,
-        drain_security_context_events,
+        WaylandSocketControlEvent, drain_security_context_events, drain_wayland_socket_events,
     },
     render::{DrmNodeError, DrmNodeId, RendererError, RendererTarget, VulkanRenderer},
     service::{EnvironmentValue, SystemdMode, session_environment},
@@ -62,6 +63,8 @@ pub struct Compositor {
     signal_runtime: SignalRuntime,
     security_context_events: WorkerRx<SecurityContextEvent>,
     security_context_runtime: SecurityContextRuntime,
+    wayland_clients: WorkerRx<std::os::unix::net::UnixStream>,
+    wayland_socket_control_events: WorkerRx<WaylandSocketControlEvent>,
     #[cfg(feature = "tty")]
     gpu_fence_event_sender: WorkerTx<GpuFenceEvent>,
     #[cfg(feature = "tty")]
@@ -121,6 +124,14 @@ impl Compositor {
                 // A pending notification already guarantees a compositor turn.
                 let _ = completion_sender.try_send(());
             })?;
+        let (wayland_client_sender, wayland_clients) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_WAYLAND_CLIENTS, completion_relay.wake());
+        let (wayland_socket_control_sender, wayland_socket_control_events) =
+            WorkerBridge::bounded_with_wake(
+                MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS,
+                completion_relay.wake(),
+            );
+        protocol.install_socket_runtime(wayland_client_sender, wayland_socket_control_sender)?;
         let (launch_outcome_sender, launch_outcomes) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_LAUNCHES, completion_relay.wake());
         let (ipc_event_sender, ipc_events) =
@@ -166,6 +177,8 @@ impl Compositor {
             signal_runtime,
             security_context_events,
             security_context_runtime,
+            wayland_clients,
+            wayland_socket_control_events,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -354,6 +367,8 @@ impl Compositor {
             signal_runtime,
             security_context_events,
             security_context_runtime,
+            wayland_clients,
+            wayland_socket_control_events,
             #[cfg(feature = "tty")]
             gpu_fence_event_sender,
             #[cfg(feature = "tty")]
@@ -368,7 +383,9 @@ impl Compositor {
             systemd,
             xwayland,
         } = self;
+        let wayland_socket_runtime = protocol.take_socket_runtime();
         let _runtime_owners = (
+            wayland_socket_runtime,
             ipc_runtime,
             ipc,
             launcher,
@@ -393,6 +410,16 @@ impl Compositor {
         let callback_failure = Rc::clone(&runtime_failure);
         protocol.run_with_channel(completion_notifications, move |event, state| match event {
             ChannelEvent::Msg(()) => {
+                if let Err(message) = drain_wayland_socket_events(
+                    &wayland_clients,
+                    &wayland_socket_control_events,
+                    state,
+                ) {
+                    error!(%message, "Wayland accept completion runtime failed");
+                    callback_failure.borrow_mut().replace(message);
+                    callback_stop.stop();
+                    return;
+                }
                 drain_signal_events(&signal_events, &callback_stop, &callback_failure);
                 if let Err(message) = drain_security_context_events(&security_context_events, state)
                 {

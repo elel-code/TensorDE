@@ -11,7 +11,7 @@ fn socket_name_survives_event_source_registration() {
     .unwrap();
     let socket_name = runtime.socket_name().to_os_string();
 
-    runtime.prepare(false).unwrap();
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
 
     assert_eq!(runtime.socket_name(), socket_name);
 }

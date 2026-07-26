@@ -193,7 +193,7 @@ fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
     .unwrap();
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
     let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
-    runtime.prepare(false).unwrap();
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
 
     let (event_tx, event_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -259,7 +259,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     install_test_output(&mut runtime);
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
     let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
-    runtime.prepare(false).unwrap();
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
 
     let (event_tx, event_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
