@@ -160,6 +160,7 @@ impl RuntimeState {
         );
         let output_id = descriptor.id;
         managed.descriptor = descriptor;
+        self.space.refresh_output_geometry(&managed.output);
         // Mode replacement ends any in-flight flip; force a fresh first frame.
         self.set_redraw_state(output_id, OutputRedrawState::Queued);
         self.reflow_outputs();

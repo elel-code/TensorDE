@@ -14,7 +14,7 @@ the reference projects are never linked into the build and their fixtures are no
 
 | Reference behavior | Tensor contract | Current tests |
 | --- | --- | --- |
-| Niri window opening, configure/ack and output removal | one configure size drives `Space`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
+| Niri window opening, configure/ack and output removal | one configure size drives `WindowSpace`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
 | Niri XWayland fractional scaling | rootless X11 surfaces reuse integer client-buffer scale, fractional output conversion, and the linear surface sampler without a parallel X11 coordinate path | `protocol::runtime`, `protocol::handlers::xwayland`, `protocol::state::xwayland`, `render::frame::plan`, `render::vulkan::pipeline` |
 | Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
 | Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
@@ -119,7 +119,7 @@ and rendering itself.
 - GPU fence tests require a submitted one-shot io_uring wait to remain pending until the sync-file
   test fd signals, then preserve its output and timeline value.
 - Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
-  the configure size, Smithay `Space` location, and retained ECS snapshot. Pure geometry never
+  the configure size, Tensor `WindowSpace` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session.
 - Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
   pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
@@ -174,7 +174,8 @@ and rendering itself.
 - Startup-gate tests prove that runtime preparation, process-environment publication, active
   user-manager publication, and readiness cannot be skipped or reordered before session autostart.
   Check and non-session modes must never receive an autostart permit.
-- Output lifecycle tests drive synthetic connector events through Smithay `Output`/`Space` state;
+- Output lifecycle tests drive synthetic connector events through Smithay `Output` objects and
+  Tensor `WindowSpace` state;
   they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
 - Output policy tests retain incomplete connector snapshots while excluding them from scanout, and
   verify deterministic planning and disconnect-before-connect reconciliation across DRM devices.

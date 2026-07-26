@@ -300,7 +300,7 @@ fn collect_shm_blits(state: &RuntimeState, kind: CaptureKind) -> Vec<ShmBlit> {
 
 /// Buffer-local rectangles and ARGB8888 colors for the software silhouette.
 ///
-/// Order is back-to-front: backdrop, then windows (stacking order from Space),
+/// Order is back-to-front: backdrop, then windows (WindowSpace stacking order),
 /// then a thin focus ring on the active view when capturing an output.
 fn silhouette_rects(state: &RuntimeState, kind: CaptureKind) -> Vec<(Rect, u32)> {
     let mut rects = Vec::new();

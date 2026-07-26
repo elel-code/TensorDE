@@ -63,7 +63,7 @@ impl RuntimeState {
     /// Value-only head list for `zwlr_output_management_v1` advertisement.
     ///
     /// Includes policy-disabled connectors so clients can re-enable them.
-    /// Geometry for active heads comes from Space; disabled heads report 0,0.
+    /// Geometry for active heads comes from WindowSpace; disabled heads report 0,0.
     pub(crate) fn output_management_heads(&self) -> Vec<HeadSnapshot> {
         #[cfg(feature = "tty")]
         {
@@ -93,7 +93,7 @@ impl RuntimeState {
                     );
                 }
             }
-            // Overlay live Space geometry / scale for currently mapped outputs.
+            // Overlay live WindowSpace geometry / scale for currently mapped outputs.
             for managed in self.outputs.values() {
                 let d = &managed.descriptor;
                 let loc = self

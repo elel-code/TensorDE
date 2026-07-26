@@ -62,7 +62,9 @@ area or move policy behind these crates is not exit work.
    - Tensor-local Dispatch2 extensions (gamma, virtual-pointer, workspace,
      output-management, capture) remain value-only at ECS/render edges.
    - Core shell either stays on a thin wayland-server stack **or** moves to a
-     Tensor protocol crate; Smithay `desktop::Space` is replaced by ECS + scene.
+     Tensor protocol crate. Tensor `WindowSpace` now owns protocol-window
+     mapping, stacking, hit testing, output overlap, and enter/leave; ECS +
+     scene own policy and rendering order.
 
 6. **Input / session**
    - libinput / libseat behind `tensor-input` / session adapter emitting
@@ -87,7 +89,7 @@ area or move policy behind these crates is not exit work.
 | 4 | **Done (partial)** | Submit path: policy readiness + `PresentIntent` push/pop before KMS; format negotiation and renderer dma-buf descriptions are Smithay-free. `smithay-drm-extras` is removed: the tty adapter now refreshes its connector/CRTC tables in place without constructing unused scan-event vectors or cloning connector snapshots |
 | 5 | **In progress** | `run_turn` + `EventfdWake` + `CompletionDriver::IoUring`; the compositor thread now runs a Compio completion loop directly, with no shared relay thread/channel. IPC, signalfd, GPU sync-file, security-context, Wayland listener/display, XWayland displayfd startup, udev hotplug, libinput, Tensor-owned libseat session waits, and per-device DRM page-flip waits are Compio-completed operations. DRM waits stay on the compositor thread, use one submitted op per device, decode one fixed stack batch after the CQE, and rearm explicitly. Libseat, udev, and libinput cursors apply one event at a time without per-completion staging vectors. Session-resume repaint is a completion-turn tail after DRM CQEs; tty no longer owns a calloop handle. The dma-buf client smoke also submits its Wayland socket operations directly through Compio, so `calloop-wayland-source` is gone. The aggregate remains only for Smithay's internal XWM event channel and focus-release ping |
 | 6 | **In progress** | Libinput CQEs normalize keyboard, relative/absolute pointer, button, axis, activity, device ID, and capabilities directly into compact `tensor-input` values. The hot path no longer carries Smithay backend events or allocates device-name keys. Smithay's `backend_libinput` and `backend_session` features and session wrapper are removed; raw tablet tools terminate at the protocol adapter, whose allocating device descriptor is cached once per hotplug rather than rebuilt per motion |
-| 7 | **In progress** | `tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy. All wire types now come directly from `wayland-server`, `wayland-protocols`, and `wayland-protocols-wlr`; Smithay reexports are gone. Wire shell still needs removal of Smithay `desktop` / Dispatch1 |
+| 7 | **In progress** | `tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy. All wire types now come directly from `wayland-server`, `wayland-protocols`, and `wayland-protocols-wlr`; Smithay reexports are gone. Tensor `WindowSpace` has replaced `smithay::desktop::Space` without per-refresh output snapshots or per-query output vectors. Smithay `Window`, popup/layer helpers, and Dispatch1 shell state remain |
 | 8 | Exit | Optional `tensor-smithay` removed; dependency deleted |
 
 ## Performance rules (unchanged)

@@ -39,10 +39,10 @@ impl RuntimeState {
         else {
             return;
         };
-        let Some(output) = self.space.outputs_for_element(window).into_iter().next() else {
+        let Some(output) = self.space.outputs_for_element(window).next() else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(&output) else {
+        let Some(output_geo) = self.space.output_geometry(output) else {
             return;
         };
         let Some(window_geo) = self.space.element_geometry(window) else {

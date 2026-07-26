@@ -49,7 +49,7 @@ fn output_geometry(
 }
 
 #[test]
-fn output_events_keep_smithay_space_stable_across_hotplug() {
+fn output_events_keep_tensor_window_space_stable_across_hotplug() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,

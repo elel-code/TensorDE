@@ -16,6 +16,7 @@ mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
 mod protocol_side;
+mod space;
 #[cfg(feature = "tty")]
 mod surfaces;
 #[cfg(feature = "tty")]
@@ -30,6 +31,7 @@ pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
 pub(crate) use workspace_host::WorkspaceHost;
 
 use event_loop::EventLoopState;
+use space::WindowSpace;
 
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
@@ -40,7 +42,7 @@ use calloop::LoopHandle;
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
-    desktop::{PopupManager, Space, Window},
+    desktop::{PopupManager, Window},
     input::{Seat, SeatState},
     output::Scale,
     wayland::{
@@ -119,7 +121,7 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "xwayland")]
     pub(crate) xwayland_shell_state: XWaylandShellState,
     pub(crate) seat: Seat<Self>,
-    pub(crate) space: Space<Window>,
+    pub(crate) space: WindowSpace,
     pub(crate) popups: PopupManager,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
@@ -216,7 +218,7 @@ impl RuntimeState {
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
             seat,
-            space: Space::default(),
+            space: WindowSpace::default(),
             popups: PopupManager::default(),
             world: CompositorWorld::with_appearance(appearance),
             layout,
@@ -578,9 +580,8 @@ impl RuntimeState {
     fn window_output_state(&self, window: &Window) -> (Scale, smithay::utils::Transform) {
         self.space
             .outputs_for_element(window)
-            .into_iter()
             .filter_map(|output| {
-                let geometry = self.space.output_geometry(&output)?;
+                let geometry = self.space.output_geometry(output)?;
                 Some((geometry.loc.x, geometry.loc.y, output.name(), output))
             })
             .min_by(|left, right| {

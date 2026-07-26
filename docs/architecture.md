@@ -242,24 +242,26 @@ state exists. Alpha-modifier surface values remain pending a dedicated Vulkan sa
 `ext-background-effect` blur is advertised and drives scene damage via `BackdropBlur` until the GPU
 blur pass samples the backdrop.
 
-A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Smithay's
-`Space<Window>` and ECS when either the shell or surface destruction callback fires.
-Tensor does not reimplement DRM/KMS, GBM, libinput, or libseat. Its small udev adapter owns only
-enumeration, the monitor fd, and value-only hotplug events; Compio completes each submitted monitor
-wait and the compositor thread performs reconciliation. The tty backend owns session activation,
-libinput seat assignment, compositor-thread DRM completion fds, GBM lifetime, and per-output native-format
-validation. It opens the primary/render pair selected during
+A toplevel is assigned a stable `ViewId` at creation and removed idempotently from both Tensor
+`WindowSpace` and ECS when either the shell or surface destruction callback fires. `WindowSpace`
+owns protocol mapping, stacking, hit testing, and output enter/leave without allocating a temporary
+output snapshot on refresh; ECS and scene values remain authoritative for policy and rendering.
+Tensor keeps DRM/KMS and GBM behind the tty adapter while directly owning udev, libinput, and
+libseat completion adapters. Compio completes each submitted source operation and the compositor
+thread performs reconciliation. The tty backend owns session activation, libinput seat assignment,
+compositor-thread DRM completion fds, GBM lifetime, and per-output native-format validation. It
+opens the primary/render pair selected during
 Vulkan probing and requires that pair to be available through the active libseat session. Future
 surface creation, modesetting, page flips, and direct scanout remain in this Smithay backend;
-Vulkanalia only produces renderable buffers and completion synchronization for it. Connector discovery uses
-Smithay master’s companion `smithay-drm-extras::DrmScanner`, from the same upstream revision as
-Smithay core. It preserves connector-to-CRTC mappings across startup, udev hotplug, delayed mode
-discovery, DP-MST removal, and session resume.
+Vulkanalia only produces renderable buffers and completion synchronization for it. Tensor's tty
+adapter scans connector resources in place and preserves connector-to-CRTC mappings across startup,
+udev hotplug, delayed mode discovery, DP-MST removal, and session resume.
 
 The scanner is an adapter, not Tensor's output model. Every connector is copied into a complete
 device-local snapshot, including connected connectors that do not yet have a mode or CRTC. One
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
-`OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and `Space` lifecycles. Future
+`OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and Tensor `WindowSpace`
+lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
 The plan also carries the selected progressive DRM mode, native fourcc, explicit modifier, plane
 count, and resolved output scale. Explicit TOML connector rules win; otherwise the policy preserves

@@ -352,7 +352,7 @@ impl RuntimeState {
     }
 
     /// Toplevel teardown owns the parent scene tree, so dependent popup
-    /// windows only need to leave the Smithay input/output space here.
+    /// windows only need to leave Tensor's input/output space here.
     pub(crate) fn detach_x11_popups_for_owner(&mut self, owner: &ObjectId) {
         let attachments = self.xwayland_popups.detach_owner(owner);
         if attachments.is_empty() {

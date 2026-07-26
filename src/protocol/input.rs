@@ -518,7 +518,7 @@ impl RuntimeState {
         self.layer_shell_on_demand_focus = None;
         self.publish_window_activation(Some(&window));
         // Match Niri and Hyprland's central focus-state early return: a seat
-        // focus repair must not silently reorder Smithay's hit-test space
+        // focus repair must not silently reorder Tensor's hit-test space
         // after ECS intentionally kept its scene order unchanged. Only a real
         // active-view transition raises the complete attachment family.
         if focus_changed {
@@ -574,7 +574,7 @@ impl RuntimeState {
         }
     }
 
-    /// Keep Smithay's input-space stacking aligned with the ECS scene when a
+    /// Keep Tensor's input-space stacking aligned with the ECS scene when a
     /// focused dialog is attached to a tiled owner. Rendering order is still
     /// value-only ECS state; this only ensures pointer hit-testing sees the
     /// same family above unrelated views.
