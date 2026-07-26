@@ -126,7 +126,8 @@ Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
 | raw-window-handle | yes | yes |
 | popup / dialog | no | yes |
 | text input v3 | no | yes |
-| data device clipboard/dnd | no | yes |
+| data device clipboard | yes (text/bytes selection) | yes |
+| dnd drag | no | yes |
 | layer shell | no | yes |
 | xkb composed text | no | yes |
 | blur / activation / icons | no | yes |

@@ -540,7 +540,9 @@ compio executor
   - `create_toplevel` + memfd 实色 buffer；configure/close/scale/pointer/keyboard
   - Compio `pump_once`；example `native_toplevel_smoke`
   - `NativeSurfaceHandle`：`raw-window-handle` 0.6（可接 wgpu）
-  - 待丰富：popup、text_input、data_device、与 Fika Runtime 合流
+  - clipboard：`set_selection_text/bytes` + `receive_selection` + Selection 事件
+  - multi-output、touch、frame callback、cursor_shape、fractional scale
+  - 待丰富：popup/dialog、text_input v3、dnd、xkb 文本、与 Fika Runtime 合流
 
 完成标准：
 
