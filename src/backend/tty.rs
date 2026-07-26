@@ -4,12 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use input::Libinput;
 use smithay::{
     backend::{
         allocator::gbm::{GbmBufferFlags, GbmDevice},
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType},
-        libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
     },
     reexports::{
@@ -39,22 +37,30 @@ use tensor_runtime::{
 };
 
 mod buffers;
+mod completion;
 mod gamma;
 mod kms;
+mod libinput;
 mod management;
 mod status;
 mod udev;
 
+use libinput::{LibinputEvent, LibinputSource};
 pub(crate) use udev::UdevEvent;
 use udev::UdevMonitor;
 
 const MAX_PENDING_UDEV_COMPLETIONS: usize = 1;
 const MAX_PENDING_UDEV_FAILURES: usize = 1;
+const MAX_PENDING_LIBINPUT_COMPLETIONS: usize = 1;
+const MAX_PENDING_LIBINPUT_FAILURES: usize = 1;
 
 pub(crate) struct TtyBackend {
     loop_handle: LoopHandle<'static, RuntimeState>,
     session: LibSeatSession,
-    libinput: Libinput,
+    libinput: LibinputSource,
+    libinput_completions: WorkerRx<OpaqueFdCompletion>,
+    libinput_failures: WorkerRx<String>,
+    _libinput_completion_runtime: OpaqueFdCompletionRuntime,
     udev: UdevMonitor,
     udev_completions: WorkerRx<OpaqueFdCompletion>,
     udev_failures: WorkerRx<String>,
@@ -104,12 +110,17 @@ impl TtyBackend {
         let selected_path = node_path(selected_node);
         let (primary_node, render_node) = resolve_node_pair(selected_node, &selected_path)?;
 
+        let libinput = LibinputSource::new(session.clone(), &seat, session.is_active())
+            .map_err(|()| BackendError::LibinputSeat(seat.clone()))?;
+
         let (udev_completion_sender, udev_completions) = WorkerBridge::bounded_with_wake(
             MAX_PENDING_UDEV_COMPLETIONS,
             Arc::clone(&completion_wake),
         );
-        let (udev_failure_sender, udev_failures) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_UDEV_FAILURES, completion_wake);
+        let (udev_failure_sender, udev_failures) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_UDEV_FAILURES,
+            Arc::clone(&completion_wake),
+        );
         let udev_completion_runtime = OpaqueFdCompletionRuntime::start(
             "tensor-udev-completions",
             &udev,
@@ -117,20 +128,27 @@ impl TtyBackend {
             udev_failure_sender,
         )
         .map_err(|error| BackendError::UdevCompletion(error.to_string()))?;
-
-        let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
-        libinput
-            .udev_assign_seat(&seat)
-            .map_err(|()| BackendError::LibinputSeat(seat.clone()))?;
-        if !session.is_active() {
-            libinput.suspend();
-        }
-        let input_backend = LibinputInputBackend::new(libinput.clone());
+        let (libinput_completion_sender, libinput_completions) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_LIBINPUT_COMPLETIONS,
+            Arc::clone(&completion_wake),
+        );
+        let (libinput_failure_sender, libinput_failures) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_LIBINPUT_FAILURES, completion_wake);
+        let libinput_completion_runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-libinput-completions",
+            &libinput,
+            libinput_completion_sender,
+            libinput_failure_sender,
+        )
+        .map_err(|error| BackendError::LibinputCompletion(error.to_string()))?;
 
         let mut backend = Self {
             loop_handle: loop_handle.clone(),
             session,
             libinput,
+            libinput_completions,
+            libinput_failures,
+            _libinput_completion_runtime: libinput_completion_runtime,
             udev,
             udev_completions,
             udev_failures,
@@ -149,11 +167,6 @@ impl TtyBackend {
             backend.reconcile_devices(initial_devices, true)?;
         }
 
-        loop_handle
-            .insert_source(input_backend, |event, _, state| {
-                state.process_input_event(event);
-            })
-            .map_err(|error| BackendError::Source(error.to_string()))?;
         loop_handle
             .insert_source(notifier, |event, _, state| {
                 state.dispatch_session_event(event);
@@ -177,20 +190,6 @@ impl TtyBackend {
 
     pub(crate) fn take_output_events(&mut self) -> Vec<BackendOutputEvent> {
         std::mem::take(&mut self.pending_outputs)
-    }
-
-    pub(crate) fn drain_udev_completions(&mut self) -> Result<Vec<UdevEvent>, String> {
-        let mut events = Vec::new();
-        while let Some(completion) = self.udev_completions.try_recv() {
-            events.extend(self.udev.drain());
-            completion
-                .rearm()
-                .map_err(|error| format!("udev completion rearm was rejected: {error:?}"))?;
-        }
-        if let Some(message) = self.udev_failures.try_recv() {
-            return Err(message);
-        }
-        Ok(events)
     }
 
     /// Runtime output policy table (for IPC introspection).
@@ -735,6 +734,8 @@ pub(crate) enum BackendError {
     },
     #[error("failed to assign seat {0} to libinput")]
     LibinputSeat(String),
+    #[error("failed to initialize the libinput completion runtime: {0}")]
+    LibinputCompletion(String),
     #[error("failed to initialize DRM device {path}: {message}")]
     Device { path: PathBuf, message: String },
     #[error("configured DRM node {path} has unsupported type {node_type}")]

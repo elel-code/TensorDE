@@ -534,10 +534,14 @@ impl RuntimeState {
         let Some(mut backend) = self.backend.take() else {
             return Ok(());
         };
-        let events = backend.drain_udev_completions();
+        let udev_events = backend.drain_udev_completions();
+        let input_events = backend.drain_libinput_completions();
         self.backend = Some(backend);
-        for event in events? {
+        for event in udev_events? {
             self.dispatch_udev_event(event);
+        }
+        for event in input_events? {
+            self.process_input_event(event);
         }
         Ok(())
     }

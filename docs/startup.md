@@ -10,9 +10,9 @@ The startup sequence is a set of ordered gates:
    devices without `VK_EXT_descriptor_heap` or a usable exportable native format/modifier.
 6. Bind the private IPC socket.
 7. Construct Bevy ECS resources, schedules, and the initial scene.
-8. Register the Wayland display/socket, XWayland, signals, configuration watchers, libinput,
-   libseat session notifications, and DRM notifier sources; submit the Compio IPC and Tensor-owned
-   udev completion services.
+8. Register the Wayland display/socket, XWayland, signals, configuration watchers, libseat session
+   notifications, and DRM notifier sources; submit the Compio IPC, udev, and libinput completion
+   services.
    Intersect every active output's KMS/GBM formats with the Vulkan capability snapshot before this
    gate completes.
 9. Publish the session environment to the compositor-owned process launcher.
