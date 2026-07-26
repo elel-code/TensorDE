@@ -518,6 +518,9 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             final_effect_composites_to_scene && index + 1 == contract.effect_passes.len();
         if is_final_effect_scene_composite {
             node.role = RenderPassRole::SceneComposite;
+            if composite_to_object_mesh {
+                node.draw_primitive = RenderPassDrawPrimitive::ObjectMesh;
+            }
             node.target = RenderTargetRole::SceneColor;
             node.target_name = None;
             node.state.pipeline_blend = PipelineBlendMode::Translucent;

@@ -617,6 +617,10 @@ fn framebuffer_cloudmotion_final_material_composites_directly_to_scene() {
     assert_eq!(graph.passes.len(), 2);
     assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
     assert_eq!(graph.passes[1].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[1].draw_primitive,
+        RenderPassDrawPrimitive::FullscreenTriangle
+    );
     assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
     assert_eq!(
         graph.passes[1].state.pipeline_blend,
@@ -695,6 +699,10 @@ fn composelayer_final_effect_material_composites_directly_to_scene() {
         PipelineBlendMode::Normal
     );
     assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[2].draw_primitive,
+        RenderPassDrawPrimitive::ObjectMesh
+    );
     assert_eq!(
         graph.passes[2].shader.as_deref(),
         Some("effects/opacity__SLOTS_1")
@@ -913,6 +921,10 @@ fn effect_only_explicit_final_target_keeps_a_separate_scene_composite() {
         Some("_rt_authored_output")
     );
     assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[3].draw_primitive,
+        RenderPassDrawPrimitive::FullscreenTriangle
+    );
     assert_eq!(
         graph.passes[3].shader.as_deref(),
         Some("we/objectcomposite")
