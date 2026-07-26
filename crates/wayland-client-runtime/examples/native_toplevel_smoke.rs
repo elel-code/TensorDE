@@ -204,9 +204,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::PointerAxis {
                         horizontal,
                         vertical,
+                        horizontal_value120,
+                        vertical_value120,
                         ..
                     } => {
-                        println!("pointer axis h={horizontal:.2} v={vertical:.2}");
+                        println!(
+                            "pointer axis h={horizontal:.2} v={vertical:.2} v120=({horizontal_value120},{vertical_value120})"
+                        );
                     }
                     NativeShellEvent::Frame { surface: id, time } => {
                         println!("frame {id:?} time={time}");

@@ -498,15 +498,32 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 WEnum::Value(wl_pointer::Axis::HorizontalScroll) => state.axis_h += value,
                 _ => {}
             },
+            wl_pointer::Event::AxisValue120 { axis, value120 } => match axis {
+                WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
+                    state.axis_v120 = state.axis_v120.saturating_add(value120);
+                }
+                WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
+                    state.axis_h120 = state.axis_h120.saturating_add(value120);
+                }
+                _ => {}
+            },
             wl_pointer::Event::Frame => {
-                if state.axis_h != 0.0 || state.axis_v != 0.0 {
+                if state.axis_h != 0.0
+                    || state.axis_v != 0.0
+                    || state.axis_h120 != 0
+                    || state.axis_v120 != 0
+                {
                     state.push(NativeShellEvent::PointerAxis {
                         surface: state.pointer_focus,
                         horizontal: state.axis_h,
                         vertical: state.axis_v,
+                        horizontal_value120: state.axis_h120,
+                        vertical_value120: state.axis_v120,
                     });
                     state.axis_h = 0.0;
                     state.axis_v = 0.0;
+                    state.axis_h120 = 0;
+                    state.axis_v120 = 0;
                 }
             }
             _ => {}

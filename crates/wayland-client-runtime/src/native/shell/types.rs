@@ -59,6 +59,9 @@ pub enum NativeShellEvent {
         surface: Option<NativeSurfaceId>,
         horizontal: f64,
         vertical: f64,
+        /// High-resolution wheel units (120 = one notch); 0 if not reported.
+        horizontal_value120: i32,
+        vertical_value120: i32,
     },
     SeatKeyboardEnter {
         surface: Option<NativeSurfaceId>,
@@ -451,6 +454,8 @@ pub struct NativeShellState {
     /// Accumulated axis values until frame (or immediate emit if no frame).
     pub(crate) axis_h: f64,
     pub(crate) axis_v: f64,
+    pub(crate) axis_h120: i32,
+    pub(crate) axis_v120: i32,
     pub(crate) next_id: u32,
     pub(crate) events: Vec<NativeShellEvent>,
     pub(crate) seat_capabilities: wl_seat::Capability,
@@ -521,6 +526,8 @@ impl Default for NativeShellState {
             xkb: None,
             axis_h: 0.0,
             axis_v: 0.0,
+            axis_h120: 0,
+            axis_v120: 0,
             next_id: 1,
             events: Vec::new(),
             seat_capabilities: wl_seat::Capability::empty(),

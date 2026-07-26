@@ -548,7 +548,8 @@ compio executor
   - multi-output、touch、frame callback、cursor_shape、fractional scale
   - **event_map**：`SurfaceIdMap` + `map_native_event_full`（surface/keyboard/pointer/touch/gesture/relative）
   - `NativeShell::drain_public_events` + 真实 `WlSeat` serial
-  - 待丰富：axis value120、outputs、clipboard/dnd/text_input 公共 Event、xdg_dialog / blur；**与 Fika Runtime 合流**
+  - axis continuous + **value120** 高精度滚轮
+  - 待丰富：outputs/clipboard/dnd/text_input 公共 Event、xdg_dialog / blur；**与 Fika Runtime 合流**（`drain_public_events` 已就绪，Fika `platform_event_loop` 仍走 SCTK Runtime）
 
 完成标准：
 

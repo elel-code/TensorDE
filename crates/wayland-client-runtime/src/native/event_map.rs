@@ -233,6 +233,8 @@ pub fn map_native_event_full(
             surface,
             horizontal,
             vertical,
+            horizontal_value120,
+            vertical_value120,
         } => {
             let surface = surface
                 .or(map_state.pointer_focus)
@@ -244,10 +246,12 @@ pub fn map_native_event_full(
                     time: 0,
                     horizontal: PointerAxisValue {
                         continuous: horizontal,
+                        value120: horizontal_value120,
                         ..PointerAxisValue::default()
                     },
                     vertical: PointerAxisValue {
                         continuous: vertical,
+                        value120: vertical_value120,
                         ..PointerAxisValue::default()
                     },
                     source: None,
