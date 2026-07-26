@@ -256,19 +256,37 @@ struct IconFrameStats {
     resolve_us: u128,
     raster_us: u128,
 }
+/// One frame of icon geometry for scheme-C per-icon GPU textures.
+///
+/// Unique rasters are slots; draws reference a slot and sample that texture
+/// with local UVs (no shared atlas packing). Upload creates/reuses one
+/// `wgpu::Texture` (+ bind group) per slot — ready for future dmabuf import.
 struct IconFrame {
-    vertices: Vec<TextVertex>,
+    /// Unique icon textures for this frame (CPU pixels today; dmabuf later).
+    slots: Vec<IconGpuSlot>,
+    /// Content-layer draws grouped by slot (each batch = one bind + draw).
+    content_batches: Vec<IconSlotBatch>,
+    /// Overlay-layer draws grouped by slot.
+    overlay_batches: Vec<IconSlotBatch>,
+    /// Packed vertex data for all content batches (ranges in batches).
+    content_vertices: Vec<TextVertex>,
+    /// Packed vertex data for all overlay batches.
     overlay_vertices: Vec<TextVertex>,
-    uploads: Vec<IconAtlasUpload>,
-    width: u32,
-    height: u32,
     stats: IconFrameStats,
 }
 const ICON_ATLAS_GUARD_TEXELS: u32 = 1;
+/// One unique raster that becomes its own GPU texture.
 #[derive(Clone, Debug)]
-struct IconAtlasUpload {
-    atlas: AtlasRect,
+struct IconGpuSlot {
+    key: IconAtlasRasterKey,
     raster: IconRaster,
+}
+/// Draw range into a vertex buffer for a single icon texture.
+#[derive(Clone, Debug)]
+struct IconSlotBatch {
+    slot: u32,
+    vertex_start: u32,
+    vertex_count: u32,
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct IconAtlasRasterKey {
@@ -285,26 +303,28 @@ impl IconAtlasRasterKey {
         }
     }
 }
+/// Identity for a GPU icon slot (raster content only; no atlas destination).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct IconAtlasUploadKey {
-    atlas_x: u32,
-    atlas_y: u32,
-    atlas_width: u32,
-    atlas_height: u32,
+struct IconGpuUploadKey {
     raster_width: u32,
     raster_height: u32,
     pixels_hash: u64,
 }
-impl IconAtlasUploadKey {
-    fn from_upload(upload: &IconAtlasUpload) -> Self {
+impl IconGpuUploadKey {
+    fn from_slot(slot: &IconGpuSlot) -> Self {
         Self {
-            atlas_x: upload.atlas.x as u32,
-            atlas_y: upload.atlas.y as u32,
-            atlas_width: upload.atlas.width as u32,
-            atlas_height: upload.atlas.height as u32,
-            raster_width: upload.raster.width,
-            raster_height: upload.raster.height,
-            pixels_hash: hash_bytes_with_len(upload.raster.pixels.as_ref()),
+            raster_width: slot.raster.width,
+            raster_height: slot.raster.height,
+            pixels_hash: slot.key.pixels_hash,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn from_raster(raster: &IconRaster) -> Self {
+        Self {
+            raster_width: raster.width,
+            raster_height: raster.height,
+            pixels_hash: hash_bytes_with_len(raster.pixels.as_ref()),
         }
     }
 }
@@ -337,7 +357,9 @@ fn padded_icon_atlas_raster(raster: &IconRaster) -> IconRaster {
 #[derive(Clone, Debug)]
 struct IconDraw {
     screen: ViewRect,
-    atlas: AtlasRect,
+    /// Index into the frame's per-icon GPU slots.
+    slot: u32,
+    /// Sample rect in the slot texture's pixel space (includes guard padding).
     source: ViewRect,
     alpha: f32,
 }

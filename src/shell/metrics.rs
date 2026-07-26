@@ -33,7 +33,11 @@ pub(crate) const TEXT_RASTER_MISS_BUDGET_PER_FRAME: usize = 256;
 pub(crate) const VISIBLE_TEXT_LABEL_PREWARM_BUDGET: Duration = Duration::from_millis(8);
 pub(crate) const TEXT_SWASH_IMAGE_CACHE_MAX_ENTRIES: usize = 1024;
 pub(crate) const TEXT_SWASH_OUTLINE_CACHE_MAX_ENTRIES: usize = 256;
+/// Legacy atlas packing constants (text still uses its own atlas; icons are
+/// scheme-C per-texture and no longer pack into a shared atlas).
+#[allow(dead_code)]
 pub(crate) const ICON_ATLAS_WIDTH: u32 = 1024;
+#[allow(dead_code)]
 pub(crate) const ICON_PADDING: u32 = 2;
 pub(crate) const ICON_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ICON_ROLE_RASTER_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;

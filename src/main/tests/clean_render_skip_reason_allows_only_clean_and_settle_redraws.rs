@@ -63,41 +63,32 @@
     }
 
     #[test]
-    fn icon_atlas_upload_key_tracks_destination_and_pixels() {
-        let atlas = AtlasRect {
-            x: 4.0,
-            y: 8.0,
-            width: 16.0,
-            height: 16.0,
-        };
-        let first = IconAtlasUpload {
-            atlas,
+    fn icon_gpu_upload_key_tracks_raster_content() {
+        let first = IconGpuSlot {
+            key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 7)),
             raster: test_icon_raster(16, 7),
         };
-        let same = IconAtlasUpload {
-            atlas,
+        let same = IconGpuSlot {
+            key: first.key.clone(),
             raster: first.raster.clone(),
         };
-        let different_pixels = IconAtlasUpload {
-            atlas,
+        let different_pixels = IconGpuSlot {
+            key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 9)),
             raster: test_icon_raster(16, 9),
-        };
-        let different_destination = IconAtlasUpload {
-            atlas: AtlasRect { x: 20.0, ..atlas },
-            raster: first.raster.clone(),
         };
 
         assert_eq!(
-            IconAtlasUploadKey::from_upload(&first),
-            IconAtlasUploadKey::from_upload(&same)
+            IconGpuUploadKey::from_slot(&first),
+            IconGpuUploadKey::from_slot(&same)
         );
         assert_ne!(
-            IconAtlasUploadKey::from_upload(&first),
-            IconAtlasUploadKey::from_upload(&different_pixels)
+            IconGpuUploadKey::from_slot(&first),
+            IconGpuUploadKey::from_slot(&different_pixels)
         );
-        assert_ne!(
-            IconAtlasUploadKey::from_upload(&first),
-            IconAtlasUploadKey::from_upload(&different_destination)
+        // Same pixels → same key regardless of slot identity.
+        assert_eq!(
+            IconGpuUploadKey::from_raster(&first.raster),
+            IconGpuUploadKey::from_slot(&first)
         );
     }
 

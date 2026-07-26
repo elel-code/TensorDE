@@ -30,10 +30,6 @@ impl IconRenderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let texture = create_icon_texture(device, 1, 1);
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group =
-            create_icon_bind_group(device, &bind_group_layout, &texture_view, &sampler);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fika-wgpu-icon-shader"),
@@ -76,18 +72,17 @@ impl IconRenderer {
             pipeline,
             bind_group_layout,
             sampler,
-            texture,
-            texture_view,
-            bind_group,
-            texture_width: 1,
-            texture_height: 1,
+            gpu_textures: HashMap::new(),
+            frame_slot_keys: Vec::new(),
+            content_batches: Vec::new(),
+            overlay_batches: Vec::new(),
             vertex_buffer,
             vertex_capacity,
-            vertex_count: 0,
+            content_vertex_count: 0,
             overlay_vertex_start: 0,
             overlay_vertex_count: 0,
             last_vertices_hash: None,
-            last_icon_upload_keys: HashSet::new(),
+            gpu_frame: 0,
             resolver: FileIconResolver::new(),
             thumbnails: ThumbnailRasterResolver::new(),
             icon_rasters: IconRasterResolver::new(),
@@ -209,73 +204,73 @@ impl IconRenderer {
         queue: &wgpu::Queue,
         frame: &mut IconFrame,
     ) -> VertexBufferUploadStats {
-        if frame.width != self.texture_width || frame.height != self.texture_height {
-            self.texture = create_icon_texture(device, frame.width, frame.height);
-            self.texture_view = self
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            self.bind_group = create_icon_bind_group(
-                device,
-                &self.bind_group_layout,
-                &self.texture_view,
-                &self.sampler,
-            );
-            self.texture_width = frame.width;
-            self.texture_height = frame.height;
-            self.last_vertices_hash = None;
-            self.last_icon_upload_keys.clear();
-        }
+        self.gpu_frame = self.gpu_frame.wrapping_add(1);
+        let mut uploads = 0usize;
+        let mut upload_skips = 0usize;
+        self.frame_slot_keys.clear();
+        self.frame_slot_keys.reserve(frame.slots.len());
 
-        let mut current_upload_keys = HashSet::with_capacity(frame.uploads.len());
-        let mut atlas_uploads = 0usize;
-        let mut atlas_upload_skips = 0usize;
-        for upload in &frame.uploads {
-            let key = IconAtlasUploadKey::from_upload(upload);
-            let skip_upload = self.last_icon_upload_keys.contains(&key);
-            current_upload_keys.insert(key);
-            if skip_upload {
-                atlas_upload_skips += 1;
+        for slot in &frame.slots {
+            let key = IconGpuUploadKey::from_slot(slot);
+            self.frame_slot_keys.push(key.clone());
+            if let Some(entry) = self.gpu_textures.get_mut(&key) {
+                entry.last_used_frame = self.gpu_frame;
+                upload_skips += 1;
                 continue;
             }
+            let texture = create_icon_texture(device, slot.raster.width, slot.raster.height);
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &self.texture,
+                    texture: &texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: upload.atlas.x as u32,
-                        y: upload.atlas.y as u32,
-                        z: 0,
-                    },
+                    origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                upload.raster.pixels.as_ref(),
+                slot.raster.pixels.as_ref(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(upload.raster.width * 4),
-                    rows_per_image: Some(upload.raster.height),
+                    bytes_per_row: Some(slot.raster.width * 4),
+                    rows_per_image: Some(slot.raster.height),
                 },
                 wgpu::Extent3d {
-                    width: upload.raster.width,
-                    height: upload.raster.height,
+                    width: slot.raster.width,
+                    height: slot.raster.height,
                     depth_or_array_layers: 1,
                 },
             );
-            atlas_uploads += 1;
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group =
+                create_icon_bind_group(device, &self.bind_group_layout, &view, &self.sampler);
+            self.gpu_textures.insert(
+                key,
+                IconGpuTexture {
+                    texture,
+                    bind_group,
+                    last_used_frame: self.gpu_frame,
+                },
+            );
+            uploads += 1;
         }
-        self.last_icon_upload_keys = current_upload_keys;
-        frame.stats.atlas_uploads = atlas_uploads;
-        frame.stats.atlas_upload_skips = atlas_upload_skips;
+        self.evict_gpu_textures_if_needed();
+        frame.stats.atlas_uploads = uploads;
+        frame.stats.atlas_upload_skips = upload_skips;
 
-        let total_vertices = frame.vertices.len() + frame.overlay_vertices.len();
+        self.content_batches = std::mem::take(&mut frame.content_batches);
+        self.overlay_batches = std::mem::take(&mut frame.overlay_batches);
+
+        let total_vertices =
+            frame.content_vertices.len() + frame.overlay_vertices.len();
         if total_vertices > self.vertex_capacity {
-            self.vertex_capacity = total_vertices.next_power_of_two();
+            self.vertex_capacity = total_vertices.next_power_of_two().max(6);
             self.vertex_buffer = create_text_vertex_buffer(device, self.vertex_capacity);
             self.last_vertices_hash = None;
         }
-        self.vertex_count = frame.vertices.len();
-        self.overlay_vertex_start = frame.vertices.len();
+        self.content_vertex_count = frame.content_vertices.len();
+        self.overlay_vertex_start = frame.content_vertices.len();
         self.overlay_vertex_count = frame.overlay_vertices.len();
-        let Some(hash) = vertex_pair_hash(&frame.vertices, &frame.overlay_vertices) else {
+        let Some(hash) =
+            vertex_pair_hash(&frame.content_vertices, &frame.overlay_vertices)
+        else {
             self.last_vertices_hash = None;
             return VertexBufferUploadStats::default();
         };
@@ -286,7 +281,7 @@ impl IconRenderer {
             };
         }
         let mut vertices = Vec::with_capacity(total_vertices);
-        vertices.extend_from_slice(&frame.vertices);
+        vertices.extend_from_slice(&frame.content_vertices);
         vertices.extend_from_slice(&frame.overlay_vertices);
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         self.last_vertices_hash = Some(hash);
@@ -296,30 +291,65 @@ impl IconRenderer {
         }
     }
 
-    fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
-        if self.vertex_count == 0 {
+    fn evict_gpu_textures_if_needed(&mut self) {
+        // Soft cap: keep GPU icon textures roughly in line with CPU raster cache budget.
+        const MAX_GPU_ICON_TEXTURES: usize = 512;
+        while self.gpu_textures.len() > MAX_GPU_ICON_TEXTURES {
+            let Some(victim) = self
+                .gpu_textures
+                .iter()
+                .min_by_key(|(_, e)| e.last_used_frame)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            // Do not evict textures still referenced by the current frame.
+            if self.frame_slot_keys.contains(&victim) {
+                break;
+            }
+            self.gpu_textures.remove(&victim);
+        }
+    }
+
+    fn draw_batches<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        batches: &'pass [IconSlotBatch],
+        vertex_base: u32,
+    ) {
+        if batches.is_empty() {
             return;
         }
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.draw(0..self.vertex_count as u32, 0..1);
+        for batch in batches {
+            let Some(key) = self.frame_slot_keys.get(batch.slot as usize) else {
+                continue;
+            };
+            let Some(entry) = self.gpu_textures.get(key) else {
+                continue;
+            };
+            pass.set_bind_group(0, &entry.bind_group, &[]);
+            let start = vertex_base + batch.vertex_start;
+            let end = start + batch.vertex_count;
+            pass.draw(start..end, 0..1);
+        }
+    }
+
+    fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
+        self.draw_batches(pass, &self.content_batches, 0);
     }
 
     fn draw_overlay<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
-        if self.overlay_vertex_count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        let start = self.overlay_vertex_start as u32;
-        let end = start + self.overlay_vertex_count as u32;
-        pass.draw(start..end, 0..1);
+        self.draw_batches(
+            pass,
+            &self.overlay_batches,
+            self.overlay_vertex_start as u32,
+        );
     }
 
     fn batch_count(&self) -> usize {
-        usize::from(self.vertex_count > 0) + usize::from(self.overlay_vertex_count > 0)
+        self.content_batches.len() + self.overlay_batches.len()
     }
 }
 #[derive(Clone, Copy, Debug, Default)]

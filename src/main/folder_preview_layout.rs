@@ -304,15 +304,11 @@ struct IconFrameBuilder<'a> {
     role_raster_cache: &'a mut IconRoleRasterCache,
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
-    atlas_rasters: HashMap<IconAtlasRasterKey, AtlasRect>,
-    uploads: Vec<IconAtlasUpload>,
+    /// Dedup unique rasters → slot index for this frame.
+    slot_by_raster: HashMap<IconAtlasRasterKey, u32>,
+    slots: Vec<IconGpuSlot>,
     draws: Vec<IconDraw>,
     overlay_draws: Vec<IconDraw>,
-    width: u32,
-    height: u32,
-    cursor_x: u32,
-    cursor_y: u32,
-    row_height: u32,
     icons: usize,
     fallbacks: usize,
     thumbnails_loaded: usize,
@@ -334,48 +330,103 @@ struct IconFrameBuilder<'a> {
     raster_us: u128,
 }
 include!("icon_frame_builder/builder.rs");
-include!("icon_frame_builder/atlas.rs");
-fn icon_draw_vertices(
-    draws: &[IconDraw],
-    atlas_width: u32,
-    atlas_height: u32,
+// Atlas packing removed (scheme C: per-icon GPU textures).
+/// Append NDC vertices for a draw that samples a per-icon texture.
+fn push_icon_draw_vertices(
+    out: &mut Vec<TextVertex>,
+    draw: &IconDraw,
+    tex_width: u32,
+    tex_height: u32,
     surface_size: PhysicalSize<u32>,
-) -> Vec<TextVertex> {
-    let mut vertices = Vec::with_capacity(draws.len() * 6);
-    for draw in draws {
-        push_textured_rect(
-            &mut vertices,
-            draw.screen,
-            AtlasRect {
-                x: draw.atlas.x + draw.source.x,
-                y: draw.atlas.y + draw.source.y,
-                width: draw.source.width,
-                height: draw.source.height,
-            },
-            atlas_width,
-            atlas_height,
-            surface_size,
-            [1.0, 1.0, 1.0, draw.alpha],
-        );
+) {
+    push_textured_rect(
+        out,
+        draw.screen,
+        AtlasRect {
+            x: draw.source.x,
+            y: draw.source.y,
+            width: draw.source.width,
+            height: draw.source.height,
+        },
+        tex_width,
+        tex_height,
+        surface_size,
+        [1.0, 1.0, 1.0, draw.alpha],
+    );
+}
+/// Pack draws into per-slot batches and a single vertex buffer range list.
+fn pack_icon_batches(
+    draws: &[IconDraw],
+    slots: &[IconGpuSlot],
+    surface_size: PhysicalSize<u32>,
+) -> (Vec<TextVertex>, Vec<IconSlotBatch>) {
+    if draws.is_empty() {
+        return (Vec::new(), Vec::new());
     }
-    vertices
+    // Group draw indices by slot while preserving first-seen slot order for locality.
+    let mut by_slot: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut slot_order: Vec<u32> = Vec::new();
+    for (i, draw) in draws.iter().enumerate() {
+        by_slot.entry(draw.slot).or_insert_with(|| {
+            slot_order.push(draw.slot);
+            Vec::new()
+        }).push(i);
+    }
+    let mut vertices = Vec::with_capacity(draws.len() * 6);
+    let mut batches = Vec::with_capacity(slot_order.len());
+    for slot in slot_order {
+        let Some(indices) = by_slot.get(&slot) else {
+            continue;
+        };
+        let Some(gpu_slot) = slots.get(slot as usize) else {
+            continue;
+        };
+        let start = vertices.len() as u32;
+        for &i in indices {
+            push_icon_draw_vertices(
+                &mut vertices,
+                &draws[i],
+                gpu_slot.raster.width,
+                gpu_slot.raster.height,
+                surface_size,
+            );
+        }
+        let count = vertices.len() as u32 - start;
+        if count > 0 {
+            batches.push(IconSlotBatch {
+                slot,
+                vertex_start: start,
+                vertex_count: count,
+            });
+        }
+    }
+    (vertices, batches)
+}
+/// GPU cache entry for one unique icon raster (scheme C).
+struct IconGpuTexture {
+    bind_group: wgpu::BindGroup,
+    /// Keeps the texture alive for the bind group.
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    last_used_frame: u64,
 }
 struct IconRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    texture_width: u32,
-    texture_height: u32,
+    /// Persistent per-raster GPU textures (scheme C).
+    gpu_textures: HashMap<IconGpuUploadKey, IconGpuTexture>,
+    /// Frame-local: slot index → cache key for draw.
+    frame_slot_keys: Vec<IconGpuUploadKey>,
+    content_batches: Vec<IconSlotBatch>,
+    overlay_batches: Vec<IconSlotBatch>,
     vertex_buffer: wgpu::Buffer,
     vertex_capacity: usize,
-    vertex_count: usize,
+    content_vertex_count: usize,
     overlay_vertex_start: usize,
     overlay_vertex_count: usize,
     last_vertices_hash: Option<u64>,
-    last_icon_upload_keys: HashSet<IconAtlasUploadKey>,
+    gpu_frame: u64,
     resolver: FileIconResolver,
     thumbnails: ThumbnailRasterResolver,
     icon_rasters: IconRasterResolver,

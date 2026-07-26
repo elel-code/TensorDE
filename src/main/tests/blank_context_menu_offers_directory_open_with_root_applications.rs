@@ -215,19 +215,23 @@
         );
 
         let frame = builder.finish();
-        let upload = &frame.uploads[0];
+        assert_eq!(frame.slots.len(), 1);
+        let slot = &frame.slots[0];
         let guard = ICON_ATLAS_GUARD_TEXELS as f32;
-        let u0 = frame.vertices[0].uv[0] * frame.width as f32;
-        let v0 = frame.vertices[0].uv[1] * frame.height as f32;
-        let u1 = frame.vertices[2].uv[0] * frame.width as f32;
-        let v1 = frame.vertices[2].uv[1] * frame.height as f32;
+        let tex_w = slot.raster.width as f32;
+        let tex_h = slot.raster.height as f32;
+        let u0 = frame.content_vertices[0].uv[0] * tex_w;
+        let v0 = frame.content_vertices[0].uv[1] * tex_h;
+        let u1 = frame.content_vertices[2].uv[0] * tex_w;
+        let v1 = frame.content_vertices[2].uv[1] * tex_h;
 
-        assert_eq!(upload.raster.width, 4);
-        assert_eq!(upload.raster.height, 4);
-        assert!((u0 - (upload.atlas.x + guard)).abs() < 0.001);
-        assert!((v0 - (upload.atlas.y + guard)).abs() < 0.001);
-        assert!((u1 - (upload.atlas.x + guard + 2.0)).abs() < 0.001);
-        assert!((v1 - (upload.atlas.y + guard + 2.0)).abs() < 0.001);
+        // Padded texture is content + 2*guard.
+        assert_eq!(slot.raster.width, 4);
+        assert_eq!(slot.raster.height, 4);
+        assert!((u0 - guard).abs() < 0.001);
+        assert!((v0 - guard).abs() < 0.001);
+        assert!((u1 - (guard + 2.0)).abs() < 0.001);
+        assert!((v1 - (guard + 2.0)).abs() < 0.001);
     }
 
     #[test]
@@ -281,9 +285,12 @@
 
         let frame = builder.finish();
 
-        assert_eq!(frame.vertices.len(), 6);
+        assert_eq!(frame.content_vertices.len(), 6);
         assert_eq!(frame.overlay_vertices.len(), 6);
-        assert_eq!(frame.uploads.len(), 1);
+        // Same raster → one GPU slot shared by content + overlay.
+        assert_eq!(frame.slots.len(), 1);
+        assert_eq!(frame.content_batches.len(), 1);
+        assert_eq!(frame.overlay_batches.len(), 1);
         assert_eq!(frame.stats.quads, 2);
     }
 

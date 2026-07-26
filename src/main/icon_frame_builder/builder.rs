@@ -105,15 +105,10 @@ impl<'a> IconFrameBuilder<'a> {
             role_raster_cache,
             surface_size,
             ui_scale: ui_scale.clamp(1.0, 2.0),
-            atlas_rasters: HashMap::new(),
-            uploads: Vec::with_capacity(64),
+            slot_by_raster: HashMap::new(),
+            slots: Vec::with_capacity(64),
             draws: Vec::with_capacity(64),
             overlay_draws: Vec::with_capacity(16),
-            width: ICON_ATLAS_WIDTH,
-            height: 1,
-            cursor_x: ICON_PADDING,
-            cursor_y: ICON_PADDING,
-            row_height: 0,
             icons: 0,
             fallbacks: 0,
             thumbnails_loaded: 0,
@@ -550,21 +545,23 @@ impl<'a> IconFrameBuilder<'a> {
         screen: ViewRect,
         layer: IconDrawLayer,
     ) {
-        let raster_key = IconAtlasRasterKey::from_raster(&raster);
-        let atlas = if let Some(atlas) = self.atlas_rasters.get(&raster_key).copied() {
-            atlas
+        // Scheme C: one GPU texture per unique raster (deduped within the frame).
+        let padded_raster = padded_icon_atlas_raster(&raster);
+        let raster_key = IconAtlasRasterKey::from_raster(&padded_raster);
+        let slot = if let Some(&slot) = self.slot_by_raster.get(&raster_key) {
+            slot
         } else {
-            let padded_raster = padded_icon_atlas_raster(&raster);
-            let atlas = self.allocate(padded_raster.width, padded_raster.height);
-            self.uploads.push(IconAtlasUpload {
-                atlas,
-                raster: padded_raster,
+            let slot = self.slots.len() as u32;
+            self.slots.push(IconGpuSlot {
+                key: raster_key.clone(),
+                raster: padded_raster.clone(),
             });
-            self.atlas_rasters.insert(raster_key, atlas);
-            atlas
+            self.slot_by_raster.insert(raster_key, slot);
+            slot
         };
 
         let guard = ICON_ATLAS_GUARD_TEXELS as f32;
+        // Source UV space is the *padded* texture; map from unpadded content rect.
         let scale_x = raster.width as f32 / rect.width.max(1.0);
         let scale_y = raster.height as f32 / rect.height.max(1.0);
         let source = ViewRect {
@@ -575,7 +572,7 @@ impl<'a> IconFrameBuilder<'a> {
         };
         let draw = IconDraw {
             screen,
-            atlas,
+            slot,
             source,
             alpha: 1.0,
         };
@@ -586,24 +583,41 @@ impl<'a> IconFrameBuilder<'a> {
     }
 
     fn finish(self) -> IconFrame {
-        let height = self.height.max(1);
-        let vertices = icon_draw_vertices(&self.draws, self.width, height, self.surface_size);
-        let overlay_vertices =
-            icon_draw_vertices(&self.overlay_draws, self.width, height, self.surface_size);
-        let atlas_bytes = (self.width * height) as usize;
+        let (content_vertices, content_batches) =
+            pack_icon_batches(&self.draws, &self.slots, self.surface_size);
+        let (overlay_vertices, overlay_batches) =
+            pack_icon_batches(&self.overlay_draws, &self.slots, self.surface_size);
         let cache_entries = self.raster_cache.len();
         let cache_bytes = self.raster_cache.bytes();
         let thumbnail_ready_entries = self.thumbnails.ready_len();
         let thumbnail_ready_bytes = self.thumbnails.ready_bytes();
         let folder_preview_ready_entries = self.folder_preview_ready_entries;
         let folder_preview_ready_bytes = self.folder_preview_ready_bytes;
-        let atlas_uploads = self.uploads.len();
+        // Stats: "atlas_*" fields now mean unique GPU icon slots this frame.
+        let slot_bytes: usize = self
+            .slots
+            .iter()
+            .map(|s| s.raster.pixels.len())
+            .sum();
+        let max_w = self
+            .slots
+            .iter()
+            .map(|s| s.raster.width)
+            .max()
+            .unwrap_or(0);
+        let max_h = self
+            .slots
+            .iter()
+            .map(|s| s.raster.height)
+            .max()
+            .unwrap_or(0);
+        let atlas_uploads = self.slots.len();
         IconFrame {
-            vertices,
+            slots: self.slots,
+            content_batches,
+            overlay_batches,
+            content_vertices,
             overlay_vertices,
-            uploads: self.uploads,
-            width: self.width,
-            height,
             stats: IconFrameStats {
                 icons: self.icons,
                 quads: self.draws.len() + self.overlay_draws.len(),
@@ -623,9 +637,9 @@ impl<'a> IconFrameBuilder<'a> {
                 folder_preview_ready_bytes,
                 atlas_uploads,
                 atlas_upload_skips: 0,
-                atlas_width: self.width,
-                atlas_height: height,
-                atlas_bytes,
+                atlas_width: max_w,
+                atlas_height: max_h,
+                atlas_bytes: slot_bytes,
                 cache_hits: self.cache_hits,
                 cache_misses: self.cache_misses,
                 raster_deferred: self.raster_deferred,
