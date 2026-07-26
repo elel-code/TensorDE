@@ -1,10 +1,9 @@
-// Dual Wayland backend: SCTK Runtime (default) or NativeRuntime.
-// Select with FIKA_WAYLAND_BACKEND=native (or sctk, default).
+// Fika uses NativeRuntime only (SCTK Runtime removed from the production path).
+// The crate still builds SCTK behind the `sctk` feature for examples / A/B.
 
 /// Active protocol backend for the Fika event loop.
-enum PlatformBackend {
-    Sctk(Runtime),
-    Native(NativeRuntime),
+struct PlatformBackend {
+    inner: NativeRuntime,
 }
 
 impl PlatformBackend {
@@ -12,63 +11,39 @@ impl PlatformBackend {
         let backend = std::env::var("FIKA_WAYLAND_BACKEND")
             .unwrap_or_default()
             .to_ascii_lowercase();
-        match backend.as_str() {
-            "native" | "nativeshell" | "compio" => {
-                eprintln!("[fika-wayland] backend=native (NativeShell, no SCTK)");
-                Ok(Self::Native(NativeRuntime::connect()?))
-            }
-            "" | "sctk" | "smithay" | "default" => {
-                Ok(Self::Sctk(Runtime::connect(
-                    wayland_client_runtime::RuntimeOptions::default(),
-                )?))
-            }
-            other => {
-                eprintln!(
-                    "[fika-wayland] unknown FIKA_WAYLAND_BACKEND={other:?}, using sctk"
-                );
-                Ok(Self::Sctk(Runtime::connect(
-                    wayland_client_runtime::RuntimeOptions::default(),
-                )?))
-            }
+        if matches!(backend.as_str(), "sctk" | "smithay" | "legacy") {
+            eprintln!(
+                "[fika-wayland] FIKA_WAYLAND_BACKEND={backend:?} ignored: SCTK path removed; using native"
+            );
+        } else {
+            eprintln!("[fika-wayland] backend=native (NativeShell, no SCTK)");
         }
+        Ok(Self {
+            inner: NativeRuntime::connect()?,
+        })
     }
 
     fn wake_handle(&self) -> WakeHandle {
-        match self {
-            Self::Sctk(rt) => rt.wake_handle(),
-            Self::Native(rt) => rt.wake_handle(),
-        }
+        self.inner.wake_handle()
     }
 
     fn capabilities(&self) -> wayland_client_runtime::RuntimeCapabilities {
-        match self {
-            Self::Sctk(rt) => rt.capabilities(),
-            Self::Native(rt) => rt.capabilities(),
-        }
+        self.inner.capabilities()
     }
 
     fn drain_events_into(&mut self, target: &mut Vec<Event>) {
-        match self {
-            Self::Sctk(rt) => rt.drain_events_into(target),
-            Self::Native(rt) => rt.drain_events_into(target),
-        }
+        self.inner.drain_events_into(target)
     }
 
     fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.dispatch(timeout),
-            Self::Native(rt) => rt.dispatch(timeout),
-        }
+        self.inner.dispatch(timeout)
     }
 
     fn create_toplevel(
         &mut self,
         attributes: ToplevelAttributes,
     ) -> Result<SurfaceId, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.create_toplevel(attributes),
-            Self::Native(rt) => rt.create_toplevel(attributes),
-        }
+        self.inner.create_toplevel(attributes)
     }
 
     fn create_dialog(
@@ -76,24 +51,91 @@ impl PlatformBackend {
         parent: SurfaceId,
         attributes: DialogAttributes,
     ) -> Result<SurfaceId, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.create_dialog(parent, attributes),
-            Self::Native(rt) => rt.create_dialog(parent, attributes),
-        }
+        self.inner.create_dialog(parent, attributes)
+    }
+
+    #[allow(dead_code)]
+    fn create_popup(
+        &mut self,
+        parent: SurfaceId,
+        attributes: wayland_client_runtime::PopupAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        self.inner.create_popup(parent, attributes)
+    }
+
+    #[allow(dead_code)]
+    fn reposition_popup(
+        &mut self,
+        surface: SurfaceId,
+        positioner: &wayland_client_runtime::PopupPositioner,
+        token: u32,
+    ) -> Result<(), RuntimeError> {
+        self.inner.reposition_popup(surface, positioner, token)
+    }
+
+    #[allow(dead_code)]
+    fn create_layer_surface(
+        &mut self,
+        attributes: wayland_client_runtime::LayerSurfaceAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        self.inner.create_layer_surface(attributes)
+    }
+
+    #[allow(dead_code)]
+    fn set_layer_surface_state(
+        &mut self,
+        surface: SurfaceId,
+        state: wayland_client_runtime::LayerSurfaceState,
+    ) -> Result<(), RuntimeError> {
+        self.inner.set_layer_surface_state(surface, state)
+    }
+
+    #[allow(dead_code)]
+    fn layer_surface_state(
+        &self,
+        surface: SurfaceId,
+    ) -> Result<wayland_client_runtime::LayerSurfaceState, RuntimeError> {
+        self.inner.layer_surface_state(surface)
+    }
+
+    #[allow(dead_code)]
+    fn outputs(&self) -> Vec<wayland_client_runtime::OutputInfo> {
+        self.inner.outputs()
+    }
+
+    #[allow(dead_code)]
+    fn set_app_id(
+        &mut self,
+        surface: SurfaceId,
+        app_id: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        self.inner.set_app_id(surface, app_id)
+    }
+
+    #[allow(dead_code)]
+    fn request_activation_token(
+        &mut self,
+        surface: SurfaceId,
+        attributes: wayland_client_runtime::ActivationTokenAttributes,
+    ) -> Result<wayland_client_runtime::ActivationRequestId, RuntimeError> {
+        self.inner.request_activation_token(surface, attributes)
+    }
+
+    #[allow(dead_code)]
+    fn activate_surface(
+        &mut self,
+        surface: SurfaceId,
+        token: wayland_client_runtime::ActivationToken,
+    ) -> Result<(), RuntimeError> {
+        self.inner.activate_surface(surface, token)
     }
 
     fn surface_handle(&self, surface: SurfaceId) -> Option<SurfaceHandle> {
-        match self {
-            Self::Sctk(rt) => rt.surface_handle(surface),
-            Self::Native(rt) => rt.surface_handle(surface),
-        }
+        self.inner.surface_handle(surface)
     }
 
     fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_title(surface, title),
-            Self::Native(rt) => rt.set_title(surface, title),
-        }
+        self.inner.set_title(surface, title)
     }
 
     fn set_min_size(
@@ -101,10 +143,7 @@ impl PlatformBackend {
         surface: SurfaceId,
         size: Option<LogicalSize>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_min_size(surface, size),
-            Self::Native(rt) => rt.set_min_size(surface, size),
-        }
+        self.inner.set_min_size(surface, size)
     }
 
     fn set_max_size(
@@ -112,24 +151,15 @@ impl PlatformBackend {
         surface: SurfaceId,
         size: Option<LogicalSize>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_max_size(surface, size),
-            Self::Native(rt) => rt.set_max_size(surface, size),
-        }
+        self.inner.set_max_size(surface, size)
     }
 
     fn set_blur(&mut self, surface: SurfaceId, state: BlurState) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_blur(surface, state),
-            Self::Native(rt) => rt.set_blur(surface, state),
-        }
+        self.inner.set_blur(surface, state)
     }
 
     fn set_cursor(&mut self, icon: RuntimeCursorIcon) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_cursor(icon),
-            Self::Native(rt) => rt.set_cursor(icon),
-        }
+        self.inner.set_cursor(icon)
     }
 
     fn set_text_input_state(
@@ -137,38 +167,23 @@ impl PlatformBackend {
         surface: SurfaceId,
         state: Option<RuntimeTextInputState>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_text_input_state(surface, state),
-            Self::Native(rt) => rt.set_text_input_state(surface, state.as_ref()),
-        }
+        self.inner.set_text_input_state(surface, state.as_ref())
     }
 
     fn request_user_attention(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.request_user_attention(surface),
-            Self::Native(rt) => rt.request_user_attention(surface),
-        }
+        self.inner.request_user_attention(surface)
     }
 
     fn request_frame(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.request_frame(surface),
-            Self::Native(rt) => rt.request_frame(surface),
-        }
+        self.inner.request_frame(surface)
     }
 
     fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.commit(surface),
-            Self::Native(rt) => rt.commit(surface),
-        }
+        self.inner.commit(surface)
     }
 
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<Vec<SurfaceId>, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.destroy_surface(surface),
-            Self::Native(rt) => rt.destroy_surface(surface),
-        }
+        self.inner.destroy_surface(surface)
     }
 
     fn set_toplevel_icon(
@@ -176,10 +191,7 @@ impl PlatformBackend {
         surface: SurfaceId,
         icon: Option<RuntimeToplevelIcon>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_toplevel_icon(surface, icon),
-            Self::Native(rt) => rt.set_toplevel_icon(surface, icon),
-        }
+        self.inner.set_toplevel_icon(surface, icon)
     }
 
     fn set_pointer_gestures_enabled(
@@ -187,10 +199,7 @@ impl PlatformBackend {
         surface: SurfaceId,
         enabled: bool,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_pointer_gestures_enabled(surface, enabled),
-            Self::Native(rt) => rt.set_pointer_gestures_enabled(surface, enabled),
-        }
+        self.inner.set_pointer_gestures_enabled(surface, enabled)
     }
 
     fn set_window_geometry(
@@ -199,17 +208,11 @@ impl PlatformBackend {
         origin: LogicalPosition,
         size: LogicalSize,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_window_geometry(surface, origin, size),
-            Self::Native(rt) => rt.set_window_geometry(surface, origin, size),
-        }
+        self.inner.set_window_geometry(surface, origin, size)
     }
 
     fn set_buffer_scale(&mut self, surface: SurfaceId, factor: i32) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_buffer_scale(surface, factor),
-            Self::Native(rt) => rt.set_buffer_scale(surface, factor),
-        }
+        self.inner.set_buffer_scale(surface, factor)
     }
 
     fn set_viewport_destination(
@@ -217,44 +220,26 @@ impl PlatformBackend {
         surface: SurfaceId,
         size: Option<LogicalSize>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_viewport_destination(surface, size),
-            Self::Native(rt) => rt.set_viewport_destination(surface, size),
-        }
+        self.inner.set_viewport_destination(surface, size)
     }
 
     fn discard_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.discard_dnd_offer(offer),
-            Self::Native(rt) => rt.discard_dnd_offer(offer),
-        }
+        self.inner.discard_dnd_offer(offer)
     }
 
     fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.finish_dnd_offer(offer),
-            Self::Native(rt) => rt.finish_dnd_offer(offer),
-        }
+        self.inner.finish_dnd_offer(offer)
     }
 
-    fn store_selection(
-        &mut self,
-        content: TransferContent,
-    ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.store_selection(content),
-            Self::Native(rt) => rt.store_selection(content),
-        }
+    fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {
+        self.inner.store_selection(content)
     }
 
     fn receive_selection(
         &mut self,
         preferred_mimes: &[&str],
     ) -> Result<wayland_client_runtime::TransferReadPipe, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.receive_selection(preferred_mimes),
-            Self::Native(rt) => rt.receive_selection(preferred_mimes),
-        }
+        self.inner.receive_selection(preferred_mimes)
     }
 
     fn start_drag(
@@ -264,10 +249,7 @@ impl PlatformBackend {
         actions: RuntimeDndActions,
         icon: Option<RuntimeDndIcon>,
     ) -> Result<DndSourceId, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.start_drag(origin, content, actions, icon),
-            Self::Native(rt) => rt.start_drag(origin, content, actions, icon),
-        }
+        self.inner.start_drag(origin, content, actions, icon)
     }
 
     fn set_dnd_offer_actions(
@@ -277,14 +259,8 @@ impl PlatformBackend {
         actions: RuntimeDndActions,
         preferred: Option<RuntimeDndAction>,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => {
-                rt.set_dnd_offer_actions(offer, accepted_mime, actions, preferred)
-            }
-            Self::Native(rt) => {
-                rt.set_dnd_offer_actions(offer, accepted_mime, actions, preferred)
-            }
-        }
+        self.inner
+            .set_dnd_offer_actions(offer, accepted_mime, actions, preferred)
     }
 
     fn receive_dnd(
@@ -292,24 +268,16 @@ impl PlatformBackend {
         offer: DndOfferId,
         mime: &str,
     ) -> Result<wayland_client_runtime::DndReadPipe, RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.receive_dnd(offer, mime),
-            Self::Native(rt) => rt.receive_dnd(offer, mime),
-        }
+        self.inner.receive_dnd(offer, mime)
     }
 
-    // Shell interaction / capture APIs — available for both backends; Fika will
-    // wire them as window chrome and games paths land.
     #[allow(dead_code)]
     fn set_pointer_capture_state(
         &mut self,
         surface: SurfaceId,
         state: wayland_client_runtime::PointerCaptureState,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_pointer_capture_state(surface, state),
-            Self::Native(rt) => rt.set_pointer_capture_state(surface, state),
-        }
+        self.inner.set_pointer_capture_state(surface, state)
     }
 
     #[allow(dead_code)]
@@ -318,10 +286,7 @@ impl PlatformBackend {
         surface: SurfaceId,
         constraint: wayland_client_runtime::PointerConstraint,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_pointer_constraint(surface, constraint),
-            Self::Native(rt) => rt.set_pointer_constraint(surface, constraint),
-        }
+        self.inner.set_pointer_constraint(surface, constraint)
     }
 
     #[allow(dead_code)]
@@ -330,18 +295,12 @@ impl PlatformBackend {
         surface: SurfaceId,
         enabled: bool,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.set_relative_pointer_enabled(surface, enabled),
-            Self::Native(rt) => rt.set_relative_pointer_enabled(surface, enabled),
-        }
+        self.inner.set_relative_pointer_enabled(surface, enabled)
     }
 
     #[allow(dead_code)]
     fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.begin_interactive_move(surface),
-            Self::Native(rt) => rt.begin_interactive_move(surface),
-        }
+        self.inner.begin_interactive_move(surface)
     }
 
     #[allow(dead_code)]
@@ -350,10 +309,7 @@ impl PlatformBackend {
         surface: SurfaceId,
         edge: wayland_client_runtime::ResizeEdge,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.begin_interactive_resize(surface, edge),
-            Self::Native(rt) => rt.begin_interactive_resize(surface, edge),
-        }
+        self.inner.begin_interactive_resize(surface, edge)
     }
 
     #[allow(dead_code)]
@@ -362,21 +318,15 @@ impl PlatformBackend {
         surface: SurfaceId,
         position: LogicalPosition,
     ) -> Result<(), RuntimeError> {
-        match self {
-            Self::Sctk(rt) => rt.show_window_menu(surface, position),
-            Self::Native(rt) => rt.show_window_menu(surface, position),
-        }
+        self.inner.show_window_menu(surface, position)
     }
 
     #[allow(dead_code)]
     fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
-        match self {
-            Self::Sctk(rt) => rt.preferred_toplevel_icon_sizes(),
-            Self::Native(rt) => rt.preferred_toplevel_icon_sizes(),
-        }
+        self.inner.preferred_toplevel_icon_sizes()
     }
 
     fn is_native(&self) -> bool {
-        matches!(self, Self::Native(_))
+        true
     }
 }

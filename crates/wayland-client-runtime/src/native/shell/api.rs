@@ -16,6 +16,7 @@ use super::types::{
     LayerRecord, NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeShellState,
     NativeSurfaceId, PopupRecord,
 };
+use crate::geometry::LogicalSize;
 use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1;
@@ -80,13 +81,25 @@ impl NativeShell {
                 let output = globals
                     .registry()
                     .bind::<wl_output::WlOutput, _, _>(global.name, version, &qh, ());
-                state.output_objects.insert(output.id().protocol_id(), global.name);
+                state
+                    .output_objects
+                    .insert(output.id().protocol_id(), global.name);
+                state.output_proxies.insert(global.name, output);
                 state.outputs.insert(
                     global.name,
                     super::types::OutputRecord {
                         scale: 1,
                         make: String::new(),
                         model: String::new(),
+                        name: None,
+                        description: None,
+                        x: 0,
+                        y: 0,
+                        physical_width: 0,
+                        physical_height: 0,
+                        mode_width: 0,
+                        mode_height: 0,
+                        done: false,
                     },
                 );
             }
@@ -120,9 +133,10 @@ impl NativeShell {
         }
         if let Ok(layer) = globals.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
             &qh,
-            1..=4,
+            1..=5,
             (),
         ) {
+            state.layer_shell_version = layer.version();
             state.layer_shell = Some(layer);
         }
         if let Ok(dialog) = globals.bind::<
@@ -408,6 +422,26 @@ impl NativeShell {
         exclusive_zone: i32,
         keyboard: LayerKeyboardInteractivity,
     ) -> Result<NativeSurfaceId, NativeError> {
+        use crate::layer_shell::{LayerMargins, LayerSurfaceState};
+        let initial = LayerSurfaceState {
+            size: LogicalSize::new(width.max(1), height.max(1)),
+            anchor,
+            exclusive_zone,
+            exclusive_edge: None,
+            margins: LayerMargins::default(),
+            keyboard_interactivity: keyboard,
+            layer,
+        };
+        self.create_layer_surface_full(namespace, None, initial)
+    }
+
+    /// Create a layer surface from full attributes (optional output binding).
+    pub fn create_layer_surface_full(
+        &mut self,
+        namespace: impl Into<String>,
+        output: Option<u32>,
+        state: crate::layer_shell::LayerSurfaceState,
+    ) -> Result<NativeSurfaceId, NativeError> {
         let qh = self.queue.handle();
         let compositor = self
             .state
@@ -425,25 +459,24 @@ impl NativeShell {
             .as_ref()
             .ok_or_else(|| NativeError::Protocol("zwlr_layer_shell_v1 missing".into()))?;
 
+        // Output proxies are keyed by registry global name.
+        let output_proxy = output.and_then(|name| self.state.output_proxies.get(&name).cloned());
+
         let wl = compositor.create_surface(&qh, ());
         wl.set_buffer_scale(1);
         let layer_surface = shell.get_layer_surface(
             &wl,
-            None,
-            layer.into(),
+            output_proxy.as_ref(),
+            state.layer.into(),
             namespace.into(),
             &qh,
             (),
         );
-        layer_surface.set_size(width, height);
-        layer_surface.set_anchor(layer_anchor_to_wire(anchor));
-        layer_surface.set_exclusive_zone(exclusive_zone);
-        layer_surface.set_keyboard_interactivity(keyboard.into());
+        apply_layer_state_to_role(&layer_surface, &state, self.state.layer_shell_version)?;
         wl.commit();
 
-        // Placeholder buffer; size may be 0xH for stretched panels — use at least 1×1.
-        let bw = width.max(1);
-        let bh = height.max(1);
+        let bw = state.size.width.max(1);
+        let bh = state.size.height.max(1);
         let (file, pool, buffer) =
             shm::create_solid_buffer(shm, &qh, bw, bh, [0xff, 0x18, 0x18, 0x22])
                 .map_err(|e| NativeError::Io(e.to_string()))?;
@@ -464,9 +497,162 @@ impl NativeShell {
                 _pool: Some(pool),
                 _file: Some(file),
                 configured: false,
-                pending_size: Some((width, height)),
-                logical_w: width,
-                logical_h: height,
+                pending_size: Some((state.size.width, state.size.height)),
+                logical_w: state.size.width,
+                logical_h: state.size.height,
+                state,
+            },
+        );
+        self.connection.flush()?;
+        Ok(id)
+    }
+
+    /// Apply double-buffered layer surface state (call commit after).
+    pub fn set_layer_surface_state(
+        &mut self,
+        id: NativeSurfaceId,
+        new_state: crate::layer_shell::LayerSurfaceState,
+    ) -> Result<(), NativeError> {
+        let version = self.state.layer_shell_version;
+        let record = self
+            .state
+            .layers
+            .get_mut(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown layer {id:?}")))?;
+        if record.state == new_state {
+            return Ok(());
+        }
+        apply_layer_state_to_role(&record.layer, &new_state, version)?;
+        record.state = new_state;
+        record.logical_w = new_state.size.width;
+        record.logical_h = new_state.size.height;
+        self.connection.flush()?;
+        Ok(())
+    }
+
+    pub fn layer_surface_state(
+        &self,
+        id: NativeSurfaceId,
+    ) -> Result<crate::layer_shell::LayerSurfaceState, NativeError> {
+        self.state
+            .layers
+            .get(&id)
+            .map(|l| l.state)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown layer {id:?}")))
+    }
+
+    /// Snapshot of currently known outputs.
+    pub fn outputs(&self) -> Vec<crate::output::OutputInfo> {
+        use crate::geometry::{LogicalPosition, LogicalSize};
+        use crate::output::{OutputId, OutputInfo};
+        let mut list: Vec<_> = self
+            .state
+            .outputs
+            .iter()
+            .map(|(&name, rec)| OutputInfo {
+                id: OutputId::from_raw(name),
+                name: rec.name.clone(),
+                description: rec.description.clone(),
+                make: rec.make.clone(),
+                model: rec.model.clone(),
+                logical_position: Some(LogicalPosition::new(rec.x, rec.y)),
+                logical_size: if rec.mode_width > 0 && rec.mode_height > 0 {
+                    Some(LogicalSize::new(
+                        rec.mode_width as u32,
+                        rec.mode_height as u32,
+                    ))
+                } else if rec.physical_width > 0 && rec.physical_height > 0 {
+                    Some(LogicalSize::new(
+                        rec.physical_width as u32,
+                        rec.physical_height as u32,
+                    ))
+                } else {
+                    None
+                },
+                scale_factor: rec.scale,
+            })
+            .collect();
+        list.sort_by_key(|o| o.id.get());
+        list
+    }
+
+    /// Create a bufferless GPU-friendly popup (no solid SHM fill).
+    pub fn create_popup_gpu(
+        &mut self,
+        parent: NativeSurfaceId,
+        positioner: &NativePopupPositioner,
+        grab: bool,
+    ) -> Result<NativeSurfaceId, NativeError> {
+        if positioner.size.width == 0 || positioner.size.height == 0 {
+            return Err(NativeError::Protocol("popup size must be non-zero".into()));
+        }
+        let parent_xdg = self
+            .state
+            .toplevels
+            .get(&parent)
+            .map(|t| t.xdg.clone())
+            .or_else(|| self.state.popups.get(&parent).map(|p| p.xdg.clone()))
+            .ok_or_else(|| NativeError::Protocol(format!("unknown parent {parent:?}")))?;
+
+        let qh = self.queue.handle();
+        let compositor = self
+            .state
+            .compositor
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
+        let wm_base = self
+            .state
+            .wm_base
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("xdg_wm_base".into()))?;
+
+        let pos = wm_base.create_positioner(&qh, ());
+        apply_positioner(&pos, positioner);
+
+        let wl = compositor.create_surface(&qh, ());
+        wl.set_buffer_scale(1);
+        let xdg = wm_base.get_xdg_surface(&wl, &qh, ());
+        let popup = xdg.get_popup(Some(&parent_xdg), &pos, &qh, ());
+        pos.destroy();
+
+        if grab {
+            if let (Some(serial), Some(seat)) =
+                (self.state.last_input_serial, self.state.seat.as_ref())
+            {
+                popup.grab(seat, serial);
+            }
+        }
+
+        let w = positioner.size.width;
+        let h = positioner.size.height;
+        wl.commit();
+
+        let id = self.state.alloc_id();
+        self.state
+            .popup_objects
+            .insert(popup.id().protocol_id(), id);
+        self.state
+            .xdg_surface_objects
+            .insert(xdg.id().protocol_id(), id);
+        self.state
+            .wl_surface_objects
+            .insert(wl.id().protocol_id(), id);
+        self.state.popups.insert(
+            id,
+            PopupRecord {
+                wl,
+                xdg,
+                popup,
+                parent,
+                buffer: None,
+                _pool: None,
+                _file: None,
+                configured: false,
+                pending_geom: None,
+                last_configure_serial: 0,
+                pending_reposition_token: None,
+                logical_w: w,
+                logical_h: h,
             },
         );
         self.connection.flush()?;
@@ -642,6 +828,10 @@ impl NativeShell {
     /// Borrow the seat proxy (for building [`crate::InputSerial`] outside the shell).
     pub fn seat(&self) -> Option<&wayland_client::protocol::wl_seat::WlSeat> {
         self.state.seat.as_ref()
+    }
+
+    pub fn last_input_serial(&self) -> Option<u32> {
+        self.state.last_input_serial
     }
 
     pub fn toplevel_count(&self) -> usize {
@@ -959,6 +1149,39 @@ impl NativeShell {
 
 fn layer_anchor_to_wire(anchor: LayerAnchor) -> zwlr_layer_surface_v1::Anchor {
     zwlr_layer_surface_v1::Anchor::from_bits_truncate(u32::from(anchor.bits()))
+}
+
+fn apply_layer_state_to_role(
+    role: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    state: &crate::layer_shell::LayerSurfaceState,
+    version: u32,
+) -> Result<(), NativeError> {
+    role.set_size(state.size.width, state.size.height);
+    role.set_anchor(layer_anchor_to_wire(state.anchor));
+    role.set_exclusive_zone(state.exclusive_zone);
+    role.set_margin(
+        state.margins.top,
+        state.margins.right,
+        state.margins.bottom,
+        state.margins.left,
+    );
+    role.set_keyboard_interactivity(state.keyboard_interactivity.into());
+    if version >= 2 {
+        role.set_layer(state.layer.into());
+    }
+    if version >= 5 {
+        if let Some(edge) = state.exclusive_edge {
+            use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
+            let wire = match edge {
+                crate::layer_shell::LayerEdge::Top => Anchor::Top,
+                crate::layer_shell::LayerEdge::Bottom => Anchor::Bottom,
+                crate::layer_shell::LayerEdge::Left => Anchor::Left,
+                crate::layer_shell::LayerEdge::Right => Anchor::Right,
+            };
+            role.set_exclusive_edge(wire);
+        }
+    }
+    Ok(())
 }
 
 fn apply_positioner(pos: &xdg_positioner::XdgPositioner, value: &NativePopupPositioner) {

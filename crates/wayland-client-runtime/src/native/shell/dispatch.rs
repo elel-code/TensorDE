@@ -838,6 +838,10 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                 if let Some(record) = state.outputs.get_mut(&name) {
                     record.make = make.clone();
                     record.model = model.clone();
+                    record.x = x;
+                    record.y = y;
+                    record.physical_width = physical_width;
+                    record.physical_height = physical_height;
                 }
                 state.push(NativeShellEvent::OutputGeometry {
                     output: name,
@@ -859,6 +863,12 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                     WEnum::Value(f) => f.contains(wl_output::Mode::Current),
                     _ => false,
                 };
+                if current {
+                    if let Some(record) = state.outputs.get_mut(&name) {
+                        record.mode_width = width;
+                        record.mode_height = height;
+                    }
+                }
                 state.push(NativeShellEvent::OutputMode {
                     output: name,
                     width,
@@ -876,7 +886,20 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                     factor,
                 });
             }
+            wl_output::Event::Name { name: output_name } => {
+                if let Some(record) = state.outputs.get_mut(&name) {
+                    record.name = Some(output_name);
+                }
+            }
+            wl_output::Event::Description { description } => {
+                if let Some(record) = state.outputs.get_mut(&name) {
+                    record.description = Some(description);
+                }
+            }
             wl_output::Event::Done => {
+                if let Some(record) = state.outputs.get_mut(&name) {
+                    record.done = true;
+                }
                 state.push(NativeShellEvent::OutputDone { output: name });
             }
             _ => {}

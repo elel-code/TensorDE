@@ -19,7 +19,7 @@ use wayland_client_runtime::{
     DndAction as RuntimeDndAction, DndActions as RuntimeDndActions, DndEvent,
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
     LogicalPosition, LogicalSize, MimePayload, NativeRuntime, PointerAxisValue, PointerEventKind,
-    PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, Runtime, RuntimeError,
+    PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, RuntimeError,
     SurfaceEvent, SurfaceHandle, SurfaceId,
     TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,

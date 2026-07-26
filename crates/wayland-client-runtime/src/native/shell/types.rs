@@ -341,6 +341,16 @@ pub(crate) struct OutputRecord {
     pub(crate) scale: i32,
     pub(crate) make: String,
     pub(crate) model: String,
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) physical_width: i32,
+    pub(crate) physical_height: i32,
+    /// Current mode size when advertised.
+    pub(crate) mode_width: i32,
+    pub(crate) mode_height: i32,
+    pub(crate) done: bool,
 }
 
 pub(crate) struct ToplevelRecord {
@@ -410,6 +420,8 @@ pub(crate) struct LayerRecord {
     pub(crate) pending_size: Option<(u32, u32)>,
     pub(crate) logical_w: u32,
     pub(crate) logical_h: u32,
+    /// Last applied double-buffered layer state (client-side mirror).
+    pub(crate) state: crate::layer_shell::LayerSurfaceState,
 }
 
 /// Temporary role-less SHM surface used as a drag icon.
@@ -459,6 +471,8 @@ pub struct NativeShellState {
     pub(crate) layer_shell: Option<
         wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1,
     >,
+    /// Bound `zwlr_layer_shell_v1` version.
+    pub(crate) layer_shell_version: u32,
     pub(crate) xdg_wm_dialog: Option<
         wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1,
     >,
@@ -581,7 +595,10 @@ pub struct NativeShellState {
     /// wl_callback object id → surface.
     pub(crate) frame_callbacks: HashMap<u32, NativeSurfaceId>,
     pub(crate) outputs: HashMap<u32, OutputRecord>,
+    /// protocol_id → registry global name
     pub(crate) output_objects: HashMap<u32, u32>,
+    /// registry global name → live `wl_output` proxy
+    pub(crate) output_proxies: HashMap<u32, wayland_client::protocol::wl_output::WlOutput>,
 }
 
 impl Default for NativeShellState {
@@ -608,6 +625,7 @@ impl Default for NativeShellState {
             text_input_pending_preedit: None,
             text_input_pending_delete: (0, 0),
             layer_shell: None,
+            layer_shell_version: 0,
             xdg_wm_dialog: None,
             toplevel_icon_manager: None,
             preferred_icon_sizes: Vec::new(),
@@ -674,6 +692,7 @@ impl Default for NativeShellState {
             frame_callbacks: HashMap::new(),
             outputs: HashMap::new(),
             output_objects: HashMap::new(),
+            output_proxies: HashMap::new(),
         }
     }
 }

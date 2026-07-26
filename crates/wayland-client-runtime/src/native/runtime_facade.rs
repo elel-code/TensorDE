@@ -12,14 +12,21 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 use crate::event::Event;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::CursorIcon;
+use crate::layer_shell::{LayerSurfaceAttributes, LayerSurfaceState};
 use crate::native::event_map::{NativeEventMapState, SurfaceIdMap};
-use crate::native::shell::{NativeShell, NativeSurfaceId};
-use crate::runtime::{RuntimeCapabilities, RuntimeError, WakeHandle};
-use crate::surface::{SurfaceHandle, SurfaceId, ToplevelAttributes};
+use crate::native::shell::{NativePopupPositioner, NativeShell, NativeSurfaceId};
+use crate::output::OutputInfo;
+use crate::runtime_common::{RuntimeCapabilities, RuntimeError, WakeHandle};
+use crate::surface::{
+    PopupAttributes, PopupPositioner, SurfaceHandle, SurfaceId, ToplevelAttributes,
+};
 use crate::data_transfer::{TransferContent, TransferReadPipe};
 use crate::dnd::{DndAction, DndActions, DndOfferId, DndReadPipe, DndSourceId};
 use crate::wake_fd::EventFdWake;
-use crate::{BlurState, NativeError, TextInputState, ToplevelIcon};
+use crate::{
+    ActivationRequestId, ActivationToken, ActivationTokenAttributes, BlurState, NativeError,
+    TextInputState, ToplevelIcon,
+};
 
 /// Native Compio-free shell wrapped for Fika's event loop.
 pub struct NativeRuntime {
@@ -27,6 +34,9 @@ pub struct NativeRuntime {
     surfaces: SurfaceIdMap,
     map_state: NativeEventMapState,
     native_ids: HashMap<SurfaceId, NativeSurfaceId>,
+    /// Pending activation export requests: native surface → public request id.
+    activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
+    next_activation_request_id: u64,
     wake: std::sync::Arc<EventFdWake>,
     wake_handle: WakeHandle,
     capabilities: RuntimeCapabilities,
@@ -47,6 +57,8 @@ impl NativeRuntime {
             surfaces: SurfaceIdMap::new(),
             map_state: NativeEventMapState::default(),
             native_ids: HashMap::new(),
+            activation_pending: HashMap::new(),
+            next_activation_request_id: 1,
             wake,
             wake_handle,
             capabilities: RuntimeCapabilities {
@@ -81,11 +93,36 @@ impl NativeRuntime {
 
     pub fn drain_events_into(&mut self, target: &mut Vec<Event>) {
         self.public_events.clear();
-        self.shell.drain_public_events(
-            &mut self.surfaces,
-            &mut self.map_state,
-            &mut self.public_events,
-        );
+        // Capture activation tokens with request correlation before generic map.
+        let mut raw = Vec::new();
+        self.shell.drain_events_into(&mut raw);
+        let seat = self.shell.seat().cloned();
+        if let Some(serial) = self.shell.last_input_serial() {
+            self.map_state.last_serial = serial;
+        }
+        for event in raw {
+            if let crate::NativeShellEvent::ActivationToken { surface, token } = &event {
+                if let Some(request) = self.activation_pending.remove(surface) {
+                    let public = self.surfaces.intern(*surface);
+                    self.public_events.push(Event::Activation(
+                        crate::ActivationEvent::TokenDone {
+                            request,
+                            requesting_surface: public,
+                            token: ActivationToken::from_raw(token.clone()),
+                        },
+                    ));
+                    continue;
+                }
+            }
+            if let Some(mapped) = crate::map_native_event_full(
+                event,
+                &mut self.surfaces,
+                seat.as_ref(),
+                &mut self.map_state,
+            ) {
+                self.public_events.push(mapped);
+            }
+        }
         target.append(&mut self.public_events);
     }
 
@@ -246,11 +283,138 @@ impl NativeRuntime {
         self.shell.public_surface_handle(native).ok()
     }
 
+    pub fn outputs(&self) -> Vec<OutputInfo> {
+        self.shell.outputs()
+    }
+
+    pub fn create_popup(
+        &mut self,
+        parent: SurfaceId,
+        attributes: PopupAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        let parent_native = self.native(parent)?;
+        let positioner = to_native_positioner(&attributes.positioner)?;
+        let grab = attributes.grab.is_some();
+        let native = self
+            .shell
+            .create_popup_gpu(parent_native, &positioner, grab)
+            .map_err(map_native_error)?;
+        let public = self.surfaces.intern(native);
+        self.native_ids.insert(public, native);
+        Ok(public)
+    }
+
+    pub fn reposition_popup(
+        &mut self,
+        surface: SurfaceId,
+        positioner: &PopupPositioner,
+        token: u32,
+    ) -> Result<(), RuntimeError> {
+        if !self.capabilities.popup_reposition {
+            return Err(RuntimeError::Unsupported("xdg-popup reposition"));
+        }
+        let native = self.native(surface)?;
+        let pos = to_native_positioner(positioner)?;
+        self.shell
+            .reposition_popup(native, &pos, token)
+            .map_err(map_native_error)
+    }
+
+    pub fn create_layer_surface(
+        &mut self,
+        attributes: LayerSurfaceAttributes,
+    ) -> Result<SurfaceId, RuntimeError> {
+        if !self.shell.has_layer_shell() {
+            return Err(RuntimeError::Unsupported("layer-shell-v1"));
+        }
+        let output = attributes.output.map(|o| o.get());
+        let native = self
+            .shell
+            .create_layer_surface_full(attributes.namespace, output, attributes.state)
+            .map_err(map_native_error)?;
+        let public = self.surfaces.intern(native);
+        self.native_ids.insert(public, native);
+        Ok(public)
+    }
+
+    pub fn set_layer_surface_state(
+        &mut self,
+        surface: SurfaceId,
+        state: LayerSurfaceState,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_layer_surface_state(native, state)
+            .map_err(|e| match e {
+                NativeError::Protocol(msg) if msg.contains("unknown layer") => {
+                    RuntimeError::InvalidLayerSurfaceTarget(surface)
+                }
+                other => map_native_error(other),
+            })
+    }
+
+    pub fn layer_surface_state(
+        &self,
+        surface: SurfaceId,
+    ) -> Result<LayerSurfaceState, RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .layer_surface_state(native)
+            .map_err(|_| RuntimeError::InvalidLayerSurfaceTarget(surface))
+    }
+
     pub fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
             .set_title(native, title)
             .map_err(map_native_error)
+    }
+
+    pub fn set_app_id(
+        &mut self,
+        surface: SurfaceId,
+        app_id: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_app_id(native, app_id)
+            .map_err(map_native_error)
+    }
+
+    pub fn request_activation_token(
+        &mut self,
+        surface: SurfaceId,
+        attributes: ActivationTokenAttributes,
+    ) -> Result<ActivationRequestId, RuntimeError> {
+        if !self.shell.has_activation() {
+            return Err(RuntimeError::Unsupported("xdg_activation_v1"));
+        }
+        let native = self.native(surface)?;
+        self.shell
+            .request_activation_token(native, attributes.app_id.as_deref())
+            .map_err(map_native_error)?;
+        let request = ActivationRequestId(self.next_activation_request_id);
+        self.next_activation_request_id = self.next_activation_request_id.saturating_add(1).max(1);
+        self.activation_pending.insert(native, request);
+        Ok(request)
+    }
+
+    pub fn activate_surface(
+        &mut self,
+        surface: SurfaceId,
+        token: ActivationToken,
+    ) -> Result<(), RuntimeError> {
+        if !self.shell.has_activation() {
+            return Err(RuntimeError::Unsupported("xdg_activation_v1"));
+        }
+        let native = self.native(surface)?;
+        self.shell
+            .activate_with_token(native, token.into_raw())
+            .map_err(map_native_error)
+    }
+
+    pub fn pointer_gestures_enabled(&self, _surface: SurfaceId) -> Result<bool, RuntimeError> {
+        Ok(self.capabilities.pointer_gestures_v1)
     }
 
     pub fn set_min_size(
@@ -352,8 +516,16 @@ impl NativeRuntime {
             return Err(RuntimeError::SurfaceNotFound(surface));
         };
         self.surfaces.remove(native);
+        self.activation_pending.remove(&native);
+        // Try role-specific destroy: toplevel, popup, then layer.
+        if self.shell.destroy_toplevel(native).is_ok() {
+            return Ok(vec![surface]);
+        }
+        if self.shell.destroy_popup(native).is_ok() {
+            return Ok(vec![surface]);
+        }
         self.shell
-            .destroy_toplevel(native)
+            .destroy_layer_surface(native)
             .map_err(map_native_error)?;
         Ok(vec![surface])
     }
@@ -694,6 +866,22 @@ fn map_native_error(error: NativeError) -> RuntimeError {
     }
 }
 
+fn to_native_positioner(p: &PopupPositioner) -> Result<NativePopupPositioner, RuntimeError> {
+    if p.size.width == 0 || p.size.height == 0 {
+        return Err(RuntimeError::Protocol(
+            "popup positioner size must be non-zero".into(),
+        ));
+    }
+    Ok(NativePopupPositioner {
+        size: p.size,
+        anchor_rect: p.anchor_rect,
+        anchor: p.anchor,
+        gravity: p.gravity,
+        constraints: p.constraints,
+        offset: p.offset,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,5 +948,70 @@ mod tests {
             .begin_interactive_resize(surface, crate::ResizeEdge::Bottom)
             .is_err());
         let _ = runtime.destroy_surface(surface);
+    }
+
+    #[test]
+    fn native_runtime_popup_layer_outputs_and_app_id() {
+        use crate::layer_shell::{LayerSurfaceAttributes, LayerSurfaceState};
+        use crate::surface::{PopupAttributes, PopupPositioner};
+
+        let Ok(mut runtime) = NativeRuntime::connect() else {
+            return;
+        };
+        let _ = runtime.outputs();
+        let parent = runtime
+            .create_toplevel(ToplevelAttributes {
+                title: "parent".into(),
+                app_id: "dev.fika.Parent".into(),
+                initial_size: Some(LogicalSize::new(400, 300)),
+                ..Default::default()
+            })
+            .expect("parent");
+        runtime
+            .set_app_id(parent, "dev.fika.ParentRenamed")
+            .expect("app_id");
+
+        let mut positioner = PopupPositioner::default();
+        positioner.size = LogicalSize::new(120, 80);
+        positioner.anchor_rect =
+            crate::geometry::LogicalRect::new(0, 0, 40, 20);
+        let popup = runtime
+            .create_popup(
+                parent,
+                PopupAttributes {
+                    positioner: positioner.clone(),
+                    grab: None,
+                },
+            )
+            .expect("popup");
+        if runtime.capabilities().popup_reposition {
+            let _ = runtime.reposition_popup(popup, &positioner, 1);
+        }
+        runtime.destroy_surface(popup).expect("destroy popup");
+
+        if runtime.capabilities().layer_shell_v1 {
+            let layer = runtime
+                .create_layer_surface(LayerSurfaceAttributes {
+                    namespace: "fika-native-layer".into(),
+                    output: None,
+                    state: LayerSurfaceState {
+                        size: LogicalSize::new(200, 32),
+                        ..Default::default()
+                    },
+                })
+                .expect("layer");
+            let st = runtime.layer_surface_state(layer).expect("state");
+            assert_eq!(st.size.width, 200);
+            runtime.destroy_surface(layer).expect("destroy layer");
+        }
+
+        if runtime.capabilities().xdg_activation_v1 {
+            let _ = runtime.request_activation_token(
+                parent,
+                crate::ActivationTokenAttributes::default(),
+            );
+        }
+
+        runtime.destroy_surface(parent).expect("destroy parent");
     }
 }

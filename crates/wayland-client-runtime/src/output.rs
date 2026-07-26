@@ -1,6 +1,3 @@
-use smithay_client_toolkit::output::{OutputInfo as SctkOutputInfo, OutputState};
-use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
-
 use crate::{LogicalPosition, LogicalSize};
 
 /// Runtime-local identifier for a currently advertised Wayland output.
@@ -10,6 +7,11 @@ pub struct OutputId(u32);
 impl OutputId {
     pub const fn get(self) -> u32 {
         self.0
+    }
+
+    /// Construct from a compositor registry / native shell output name.
+    pub const fn from_raw(id: u32) -> Self {
+        Self(id)
     }
 }
 
@@ -34,24 +36,34 @@ pub enum OutputEvent {
     Removed(OutputId),
 }
 
-pub(crate) fn output_info(state: &OutputState, output: &WlOutput) -> Option<OutputInfo> {
-    let info = state.info(output)?;
-    Some(map_output_info(info))
-}
+#[cfg(feature = "sctk")]
+mod sctk_map {
+    use super::*;
+    use smithay_client_toolkit::output::{OutputInfo as SctkOutputInfo, OutputState};
+    use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
 
-fn map_output_info(info: SctkOutputInfo) -> OutputInfo {
-    OutputInfo {
-        id: OutputId(info.id),
-        name: info.name,
-        description: info.description,
-        make: info.make,
-        model: info.model,
-        logical_position: info
-            .logical_position
-            .map(|(x, y)| LogicalPosition::new(x, y)),
-        logical_size: info.logical_size.and_then(|(width, height)| {
-            (width >= 0 && height >= 0).then(|| LogicalSize::new(width as u32, height as u32))
-        }),
-        scale_factor: info.scale_factor,
+    pub(crate) fn output_info(state: &OutputState, output: &WlOutput) -> Option<OutputInfo> {
+        let info = state.info(output)?;
+        Some(map_output_info(info))
+    }
+
+    fn map_output_info(info: SctkOutputInfo) -> OutputInfo {
+        OutputInfo {
+            id: OutputId(info.id),
+            name: info.name,
+            description: info.description,
+            make: info.make,
+            model: info.model,
+            logical_position: info
+                .logical_position
+                .map(|(x, y)| LogicalPosition::new(x, y)),
+            logical_size: info.logical_size.and_then(|(width, height)| {
+                (width >= 0 && height >= 0).then(|| LogicalSize::new(width as u32, height as u32))
+            }),
+            scale_factor: info.scale_factor,
+        }
     }
 }
+
+#[cfg(feature = "sctk")]
+pub(crate) use sctk_map::output_info;

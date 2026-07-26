@@ -29,4 +29,14 @@ if [[ "$status" -ne 0 && "$status" -ne 124 ]]; then
     exit "$status"
 fi
 
+echo "check-native-wayland-smoke: native_csd_smoke"
+set +e
+timeout 8s cargo run -q -p wayland-client-runtime --example native_csd_smoke
+status=$?
+set -e
+if [[ "$status" -ne 0 && "$status" -ne 124 ]]; then
+    echo "check-native-wayland-smoke: native_csd_smoke failed (exit $status)" >&2
+    exit "$status"
+fi
+
 echo "check-native-wayland-smoke: ok"

@@ -19,6 +19,7 @@ use crate::surface::SurfaceId;
 use crate::dnd::{DndAction, DndActions, DndEvent, DndOfferId, DndSourceId};
 use crate::geometry::LogicalPosition as GeoLogicalPosition;
 use crate::pointer_constraints::{PointerConstraint, PointerConstraintEvent};
+use crate::output::{OutputEvent, OutputId, OutputInfo};
 use crate::{
     LayerSurfaceEvent, PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
     RelativePointerEvent,
@@ -657,12 +658,55 @@ pub fn map_native_event_full(
                 active,
             }))
         }
-        // Still deferred: outputs, clipboard Selection events, activation.
+        NativeShellEvent::OutputDone { output } => {
+            // Emit Updated with a minimal snapshot; full fields live in NativeShell::outputs().
+            Some(Event::Output(OutputEvent::Updated(OutputInfo {
+                id: OutputId::from_raw(output),
+                name: None,
+                description: None,
+                make: String::new(),
+                model: String::new(),
+                logical_position: None,
+                logical_size: None,
+                scale_factor: 1,
+            })))
+        }
+        NativeShellEvent::OutputGeometry {
+            output,
+            x,
+            y,
+            physical_width,
+            physical_height,
+            make,
+            model,
+        } => Some(Event::Output(OutputEvent::Updated(OutputInfo {
+            id: OutputId::from_raw(output),
+            name: None,
+            description: None,
+            make,
+            model,
+            logical_position: Some(LogicalPosition::new(x, y)),
+            logical_size: (physical_width > 0 && physical_height > 0).then(|| {
+                LogicalSize::new(physical_width as u32, physical_height as u32)
+            }),
+            scale_factor: 1,
+        }))),
+        NativeShellEvent::OutputScale { output, factor } => {
+            Some(Event::Output(OutputEvent::Updated(OutputInfo {
+                id: OutputId::from_raw(output),
+                name: None,
+                description: None,
+                make: String::new(),
+                model: String::new(),
+                logical_position: None,
+                logical_size: None,
+                scale_factor: factor,
+            })))
+        }
+        // ActivationToken is correlated in NativeRuntime::drain_events_into.
+        // Selection/clipboard mimes and surface-output enter/leave remain internal.
         NativeShellEvent::TouchFrame
-        | NativeShellEvent::OutputGeometry { .. }
         | NativeShellEvent::OutputMode { .. }
-        | NativeShellEvent::OutputScale { .. }
-        | NativeShellEvent::OutputDone { .. }
         | NativeShellEvent::SurfaceOutputEnter { .. }
         | NativeShellEvent::SurfaceOutputLeave { .. }
         | NativeShellEvent::Selection { .. }
