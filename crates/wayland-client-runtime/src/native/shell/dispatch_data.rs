@@ -223,6 +223,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     state.dnd_source = None;
                     state.dnd_source_id = None;
                     state.dnd_source_content = None;
+                    state.dnd_icon = None;
                     state.push(NativeShellEvent::DndFinished {
                         source: source_id,
                         cancelled: true,
@@ -239,6 +240,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     state.dnd_source = None;
                     state.dnd_source_id = None;
                     state.dnd_source_content = None;
+                    state.dnd_icon = None;
                     state.push(NativeShellEvent::DndFinished {
                         source: source_id,
                         cancelled: false,
@@ -311,6 +313,32 @@ mod tests {
         let _ = shell.dispatch_pending();
         let _ = shell.destroy_popup(popup);
         let _ = shell.destroy_toplevel(parent);
+    }
+
+    #[test]
+    fn native_shell_set_decorations_and_dnd_icon_smoke() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let id = shell
+            .create_toplevel_gpu("deco", "dev.fika.Deco", 200, 200)
+            .expect("toplevel");
+        let _ = shell.set_decorations(id, crate::DecorationPreference::Server);
+        let _ = shell.set_decorations(id, crate::DecorationPreference::Client);
+        // DnD without serial is expected to fail; with a synthetic path we only
+        // verify the icon helper builds when a serial exists after input.
+        let icon = crate::DndIcon::new(
+            vec![0u8; 4 * 16 * 16],
+            16,
+            16,
+            1,
+            crate::geometry::LogicalPosition::new(0, 0),
+        )
+        .expect("icon");
+        let content = crate::TransferContent::text("drag");
+        // May fail without input serial — that is fine for this smoke.
+        let _ = shell.start_drag_content_with_icon(id, content, Some(icon));
+        let _ = shell.destroy_toplevel(id);
     }
 
     #[test]

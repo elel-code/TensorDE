@@ -11,6 +11,7 @@ mod dispatch;
 mod dispatch_activation;
 mod dispatch_chrome;
 mod dispatch_data;
+mod dispatch_decoration;
 mod dispatch_dialog;
 mod dispatch_gestures;
 mod dispatch_layer;

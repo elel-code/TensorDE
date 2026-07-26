@@ -554,8 +554,8 @@ compio executor
     - `SurfaceHandle` 支持 SCTK / Native 双后端（wgpu 可接）
     - native 路径：主窗口 + 输入 + frame + scale + clipboard + DnD + text_input
     - min/max、window geometry、parented dialog（`xdg_dialog_v1` modal）
-    - **xdg_toplevel_icon**（name + SHM 像素）、**ext_background_effect blur**
-  - 待丰富：native CSD decorations、DnD 图标 surface；默认仍 SCTK
+    - xdg_toplevel_icon、background blur、**zxdg_decoration**、**DnD 拖放图标 surface**
+  - 待丰富：pointer constraints、完整 CSD 绘制；默认仍 SCTK
 
 完成标准：
 

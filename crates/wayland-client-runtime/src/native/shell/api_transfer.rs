@@ -6,6 +6,7 @@ use super::api::NativeShell;
 use super::types::NativeSurfaceId;
 use crate::data_transfer::TransferContent;
 use crate::native::connection::NativeError;
+use crate::native::protocols::core::shm;
 
 impl NativeShell {
     pub fn has_text_input(&self) -> bool {
@@ -169,26 +170,25 @@ impl NativeShell {
         Ok(())
     }
 
-    /// Start an outgoing drag with multi-mime content.
+    /// Start an outgoing drag with multi-mime content and optional drag icon.
     pub fn start_drag_content(
         &mut self,
         origin: NativeSurfaceId,
         content: TransferContent,
     ) -> Result<u64, NativeError> {
+        self.start_drag_content_with_icon(origin, content, None)
+    }
+
+    pub fn start_drag_content_with_icon(
+        &mut self,
+        origin: NativeSurfaceId,
+        content: TransferContent,
+        icon: Option<crate::DndIcon>,
+    ) -> Result<u64, NativeError> {
         let serial = self
             .state
             .last_input_serial
             .ok_or_else(|| NativeError::Protocol("no input serial for start_drag".into()))?;
-        let manager = self
-            .state
-            .data_device_manager
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
-        let device = self
-            .state
-            .data_device
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
         let origin_wl = self
             .state
             .toplevels
@@ -200,6 +200,24 @@ impl NativeShell {
         if let Some(old) = self.state.dnd_source.take() {
             old.destroy();
         }
+        // Drop previous icon before creating a new one.
+        self.state.dnd_icon = None;
+
+        let icon_surface = match icon {
+            Some(icon) => Some(prepare_native_dnd_icon(self, &qh, icon)?),
+            None => None,
+        };
+
+        let manager = self
+            .state
+            .data_device_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
+        let device = self
+            .state
+            .data_device
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
         let source = manager.create_data_source(&qh, ());
         for mime in content.mime_types() {
             source.offer(mime.to_string());
@@ -208,11 +226,17 @@ impl NativeShell {
             wayland_client::protocol::wl_data_device_manager::DndAction::Copy
                 | wayland_client::protocol::wl_data_device_manager::DndAction::Move,
         );
-        device.start_drag(Some(&source), &origin_wl, None, serial);
+        let icon_wl = icon_surface.as_ref().map(|i| &i.wl);
+        device.start_drag(Some(&source), &origin_wl, icon_wl, serial);
+        // Match winit/KDE: commit icon after start_drag so offset applies.
+        if let Some(icon) = icon_surface.as_ref() {
+            icon.wl.commit();
+        }
         let id = self.state.alloc_transfer_id();
         self.state.dnd_source = Some(source);
         self.state.dnd_source_id = Some(id);
         self.state.dnd_source_content = Some(content);
+        self.state.dnd_icon = icon_surface;
         self.connection.flush()?;
         Ok(id)
     }
@@ -353,4 +377,47 @@ impl NativeShell {
         let bytes = self.receive_selection(mime)?;
         Ok(((*mime).to_string(), bytes))
     }
+}
+
+fn prepare_native_dnd_icon(
+    shell: &mut NativeShell,
+    qh: &wayland_client::QueueHandle<super::types::NativeShellState>,
+    icon: crate::DndIcon,
+) -> Result<super::types::NativeDndIconSurface, NativeError> {
+    use wayland_client::Proxy;
+
+    let (rgba, width, height, buffer_scale, offset) = icon.into_parts();
+    let compositor = shell
+        .state
+        .compositor
+        .as_ref()
+        .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
+    let shm = shell
+        .state
+        .shm
+        .as_ref()
+        .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
+    let (file, pool, buffer) =
+        shm::create_rgba_buffer(shm, qh, width, height, &rgba).map_err(|e| {
+            NativeError::Io(e.to_string())
+        })?;
+    let wl = compositor.create_surface(qh, ());
+    wl.set_buffer_scale(buffer_scale.max(1));
+    if offset != crate::geometry::LogicalPosition::ZERO {
+        if wl.version() >= 5 {
+            wl.offset(offset.x, offset.y);
+            wl.attach(Some(&buffer), 0, 0);
+        } else {
+            wl.attach(Some(&buffer), offset.x, offset.y);
+        }
+    } else {
+        wl.attach(Some(&buffer), 0, 0);
+    }
+    wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
+    Ok(super::types::NativeDndIconSurface {
+        wl,
+        buffer,
+        pool,
+        _file: file,
+    })
 }

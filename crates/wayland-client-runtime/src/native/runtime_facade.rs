@@ -61,6 +61,8 @@ impl NativeRuntime {
                 xdg_dialog_v1: caps.xdg_dialog,
                 xdg_toplevel_icon_v1: caps.toplevel_icon,
                 ext_background_effect: caps.background_blur,
+                // Server decorations available when zxdg_decoration_manager_v1 is bound.
+                // Client/None still use app chrome; no separate capability bit exists.
                 popup_reposition: false,
                 ..RuntimeCapabilities::default()
             },
@@ -170,7 +172,9 @@ impl NativeRuntime {
         if let Some(max) = attributes.max_size {
             let _ = self.shell.set_max_size(native, Some(max));
         }
-        let _ = attributes.decorations; // CSD not on native path yet.
+        let _ = self
+            .shell
+            .set_decorations(native, attributes.decorations);
         let public = self.surfaces.intern(native);
         self.native_ids.insert(public, native);
         Ok(public)
@@ -228,6 +232,9 @@ impl NativeRuntime {
         if let Some(max) = attributes.toplevel.max_size {
             let _ = self.shell.set_max_size(native, Some(max));
         }
+        let _ = self
+            .shell
+            .set_decorations(native, attributes.toplevel.decorations);
         let public = self.surfaces.intern(native);
         self.native_ids.insert(public, native);
         Ok(public)
@@ -436,12 +443,12 @@ impl NativeRuntime {
         origin: SurfaceId,
         content: TransferContent,
         _actions: DndActions,
-        _icon: Option<crate::DndIcon>,
+        icon: Option<crate::DndIcon>,
     ) -> Result<DndSourceId, RuntimeError> {
         let native = self.native(origin)?;
         let id = self
             .shell
-            .start_drag_content(native, content)
+            .start_drag_content_with_icon(native, content, icon)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("serial") => {
                     RuntimeError::InvalidDragSerial

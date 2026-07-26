@@ -169,6 +169,11 @@ pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Unstable,
         min_version: 1,
     },
+    ProtocolSpec {
+        interface: "zxdg_decoration_manager_v1",
+        class: ProtocolClass::Unstable,
+        min_version: 1,
+    },
     // —— ext ——
     ProtocolSpec {
         interface: "ext_background_effect_manager_v1",

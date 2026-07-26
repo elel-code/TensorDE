@@ -1,10 +1,13 @@
 //! Toplevel icon and background blur for [`NativeShell`].
 
+use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+
 use super::api::NativeShell;
 use super::types::NativeSurfaceId;
 use crate::blur::{BlurRegion, BlurState};
 use crate::native::connection::NativeError;
 use crate::native::protocols::core::shm;
+use crate::surface::DecorationPreference;
 use crate::toplevel_icon::ToplevelIcon;
 
 impl NativeShell {
@@ -152,5 +155,43 @@ impl NativeShell {
                 Ok(())
             }
         }
+    }
+
+    /// Request server/client/none decorations via `zxdg_decoration_manager_v1`.
+    ///
+    /// When the global is missing, returns Ok and leaves compositor defaults.
+    /// Double-buffered with the next surface commit.
+    pub fn set_decorations(
+        &mut self,
+        id: NativeSurfaceId,
+        preference: DecorationPreference,
+    ) -> Result<(), NativeError> {
+        let Some(manager) = self.state.decoration_manager.clone() else {
+            return Ok(());
+        };
+        let qh = self.queue.handle();
+        let record = self
+            .state
+            .toplevels
+            .get_mut(&id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        if record.decoration.is_none() {
+            let deco = manager.get_toplevel_decoration(&record.toplevel, &qh, ());
+            record.decoration = Some(deco);
+        }
+        let deco = record
+            .decoration
+            .as_ref()
+            .expect("decoration just created");
+        match preference {
+            DecorationPreference::Server => {
+                deco.set_mode(DecorationMode::ServerSide);
+            }
+            DecorationPreference::Client | DecorationPreference::None => {
+                deco.set_mode(DecorationMode::ClientSide);
+            }
+        }
+        self.connection.flush()?;
+        Ok(())
     }
 }

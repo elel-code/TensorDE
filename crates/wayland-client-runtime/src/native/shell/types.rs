@@ -317,6 +317,7 @@ pub struct NativeCapabilities {
     pub xdg_dialog: bool,
     pub toplevel_icon: bool,
     pub background_blur: bool,
+    pub xdg_decoration: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -345,6 +346,9 @@ pub(crate) struct ToplevelRecord {
     pub(crate) icon_shm: Vec<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>,
     pub(crate) blur_effect: Option<
         wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+    >,
+    pub(crate) decoration: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
     >,
     pub(crate) configured: bool,
     pub(crate) pending_size: Option<(i32, i32)>,
@@ -379,6 +383,22 @@ pub(crate) struct LayerRecord {
     pub(crate) pending_size: Option<(u32, u32)>,
     pub(crate) logical_w: u32,
     pub(crate) logical_h: u32,
+}
+
+/// Temporary role-less SHM surface used as a drag icon.
+pub(crate) struct NativeDndIconSurface {
+    pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) buffer: wl_buffer::WlBuffer,
+    pub(crate) pool: wl_shm_pool::WlShmPool,
+    pub(crate) _file: File,
+}
+
+impl Drop for NativeDndIconSurface {
+    fn drop(&mut self) {
+        self.buffer.destroy();
+        self.pool.destroy();
+        self.wl.destroy();
+    }
 }
 
 /// Dispatch state for the native shell event queue.
@@ -482,8 +502,13 @@ pub struct NativeShellState {
     pub(crate) dnd_source: Option<wl_data_source::WlDataSource>,
     pub(crate) dnd_source_id: Option<u64>,
     pub(crate) dnd_source_content: Option<crate::data_transfer::TransferContent>,
+    /// Drag icon surface kept alive until the drag finishes/cancels.
+    pub(crate) dnd_icon: Option<NativeDndIconSurface>,
     /// Monotonic ids for public DndOfferId / DndSourceId.
     pub(crate) next_transfer_id: u64,
+    pub(crate) decoration_manager: Option<
+        wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    >,
     /// XKB state from the latest `wl_keyboard.keymap` (optional).
     pub(crate) xkb: Option<crate::native::protocols::core::NativeXkb>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
@@ -563,7 +588,9 @@ impl Default for NativeShellState {
             dnd_source: None,
             dnd_source_id: None,
             dnd_source_content: None,
+            dnd_icon: None,
             next_transfer_id: 1,
+            decoration_manager: None,
             xkb: None,
             axis_h: 0.0,
             axis_v: 0.0,

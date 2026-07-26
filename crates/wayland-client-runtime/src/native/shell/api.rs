@@ -143,6 +143,14 @@ impl NativeShell {
         {
             state.background_effect_manager = Some(blur_mgr);
         }
+        if let Ok(deco) = globals.bind::<
+            wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.decoration_manager = Some(deco);
+        }
         if let Ok(act) =
             globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ())
         {
@@ -243,7 +251,12 @@ impl NativeShell {
             xdg_dialog: self.state.xdg_wm_dialog.is_some(),
             toplevel_icon: self.state.toplevel_icon_manager.is_some(),
             background_blur: self.state.background_blur_capable,
+            xdg_decoration: self.state.decoration_manager.is_some(),
         }
+    }
+
+    pub fn has_xdg_decoration(&self) -> bool {
+        self.state.decoration_manager.is_some()
     }
 
     pub fn has_xdg_dialog(&self) -> bool {
@@ -681,6 +694,9 @@ impl NativeShell {
         }
         if let Some(effect) = record.blur_effect {
             effect.destroy();
+        }
+        if let Some(deco) = record.decoration {
+            deco.destroy();
         }
         for (_file, pool, buffer) in record.icon_shm {
             buffer.destroy();
