@@ -163,11 +163,12 @@ impl NativeRuntime {
             .flush()
             .map_err(map_native_error)?;
         let _ = self.shell.dispatch_pending().map_err(map_native_error)?;
+        // Drain any already-buffered socket data before sleeping (important for
+        // edge-triggered io_uring POLL_ADD readiness).
+        self.try_read_display()?;
 
         // Zero-timeout: only process already-queued protocol state.
         if matches!(timeout, Some(d) if d.is_zero()) {
-            // Still try a non-blocking socket drain in case data is already buffered.
-            self.try_read_display()?;
             return Ok(());
         }
 
@@ -816,9 +817,11 @@ impl NativeRuntime {
         &mut self,
         preferred_mimes: &[&str],
     ) -> Result<TransferReadPipe, RuntimeError> {
-        let (mime, bytes) = self
-            .shell
-            .receive_selection_preferred(preferred_mimes)
+        // Returns a live pipe immediately; callers (clipboard worker threads)
+        // perform the blocking read so the display loop can still handle
+        // data-source Send events.
+        self.shell
+            .receive_selection_preferred_pipe(preferred_mimes)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("mime not found") => {
                     RuntimeError::SelectionMimeNotFound
@@ -827,8 +830,7 @@ impl NativeRuntime {
                     RuntimeError::SelectionUnavailable
                 }
                 other => map_native_error(other),
-            })?;
-        Ok(TransferReadPipe::from_bytes(mime, bytes))
+            })
     }
 
     pub fn start_drag(
@@ -880,11 +882,10 @@ impl NativeRuntime {
             return Err(RuntimeError::DndOfferNotFound(offer));
         }
         let mime = mime.into();
-        let bytes = self
-            .shell
-            .receive_dnd(&mime)
-            .map_err(map_native_error)?;
-        Ok(TransferReadPipe::from_bytes(mime, bytes))
+        // Non-blocking setup; Fika reads the pipe on a worker thread.
+        self.shell
+            .receive_dnd_pipe(&mime)
+            .map_err(map_native_error)
     }
 
     pub fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {

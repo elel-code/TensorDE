@@ -1,8 +1,9 @@
 //! MIME payloads and pipes shared by clipboard and drag-and-drop transfers.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-
+use std::thread;
 
 pub const MIME_TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
 pub const MIME_UTF8_STRING: &str = "UTF8_STRING";
@@ -121,17 +122,30 @@ pub struct TransferReadPipe {
 
 #[derive(Debug)]
 enum TransferReadInner {
-    /// Native path: bytes already transferred (or pre-buffered).
+    /// Bytes already fully buffered (tests / prefetched paths).
     Memory(io::Cursor<Vec<u8>>),
+    /// Live pipe from `wl_data_offer.receive` — read off the event-loop thread.
+    Stream(UnixStream),
 }
 
 impl TransferReadPipe {
-
     /// Build a pipe from bytes already read on the native data-device path.
     pub(crate) fn from_bytes(mime: String, bytes: Vec<u8>) -> Self {
         Self {
             mime,
             inner: TransferReadInner::Memory(io::Cursor::new(bytes)),
+        }
+    }
+
+    /// Build a pipe around the read end of a `wl_data_offer.receive` transfer.
+    ///
+    /// The caller must flush the Wayland connection after creating the offer
+    /// receive. Reading may block until the source writes; never do that on
+    /// the display thread.
+    pub(crate) fn from_stream(mime: String, stream: UnixStream) -> Self {
+        Self {
+            mime,
+            inner: TransferReadInner::Stream(stream),
         }
     }
 
@@ -159,8 +173,19 @@ impl Read for TransferReadPipe {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match &mut self.inner {
             TransferReadInner::Memory(cursor) => cursor.read(buffer),
+            TransferReadInner::Stream(stream) => stream.read(buffer),
         }
     }
+}
+
+/// Write offer payload to a compositor-supplied fd without blocking the
+/// Wayland dispatch thread (pipe buffer back-pressure / peer readiness).
+pub(crate) fn spawn_write_fd(name: &str, fd: std::os::fd::OwnedFd, bytes: Arc<[u8]>) {
+    let _ = thread::Builder::new().name(name.to_string()).spawn(move || {
+        let mut file = std::fs::File::from(fd);
+        let _ = file.write_all(&bytes);
+        let _ = file.flush();
+    });
 }
 
 

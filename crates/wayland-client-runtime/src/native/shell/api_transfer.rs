@@ -114,9 +114,12 @@ impl NativeShell {
         Ok(())
     }
 
-    /// Receive bytes from the current drag offer (blocking pipe read).
-    pub fn receive_dnd(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
-        use std::io::Read;
+    /// Begin a drag-offer receive; returns a pipe the caller must read **off**
+    /// the display thread (source `Send` needs the event loop to keep running).
+    pub fn receive_dnd_pipe(
+        &mut self,
+        mime: &str,
+    ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
         use std::os::fd::AsFd;
         use std::os::unix::net::UnixStream;
 
@@ -129,16 +132,26 @@ impl NativeShell {
             return Err(NativeError::Protocol(format!("dnd has no mime {mime}")));
         }
         let (reader, writer) = UnixStream::pair().map_err(NativeError::from)?;
+        // Keep the write end blocking for the source; reader may block off-thread.
         writer.set_nonblocking(false).ok();
         reader.set_nonblocking(false).ok();
         offer.receive(mime.to_string(), writer.as_fd());
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        let mut reader = reader;
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(
+            mime.to_string(),
+            reader,
+        ))
+    }
+
+    /// Receive drag-offer bytes (blocks). Prefer [`Self::receive_dnd_pipe`] on
+    /// the UI thread and read the pipe in a worker.
+    pub fn receive_dnd(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
+        use std::io::Read;
+        let mut pipe = self.receive_dnd_pipe(mime)?;
         let mut buf = Vec::new();
-        reader
-            .read_to_end(&mut buf)
+        pipe.read_to_end(&mut buf)
             .map_err(|e| NativeError::Io(e.to_string()))?;
         Ok(buf)
     }
@@ -334,9 +347,11 @@ impl NativeShell {
         self.state.xkb.is_some()
     }
 
-    /// Receive the current selection as bytes for `mime` (blocking pipe read).
-    pub fn receive_selection(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
-        use std::io::Read;
+    /// Begin a clipboard receive; returns a pipe read **off** the display thread.
+    pub fn receive_selection_pipe(
+        &mut self,
+        mime: &str,
+    ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
         use std::os::fd::AsFd;
         use std::os::unix::net::UnixStream;
 
@@ -357,25 +372,46 @@ impl NativeShell {
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        let mut reader = reader;
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(
+            mime.to_string(),
+            reader,
+        ))
+    }
+
+    /// Receive the current selection as bytes for `mime` (blocks on the pipe).
+    pub fn receive_selection(&mut self, mime: &str) -> Result<Vec<u8>, NativeError> {
+        use std::io::Read;
+        let mut pipe = self.receive_selection_pipe(mime)?;
         let mut buf = Vec::new();
-        reader
-            .read_to_end(&mut buf)
+        pipe.read_to_end(&mut buf)
             .map_err(|e| NativeError::Io(e.to_string()))?;
         Ok(buf)
     }
 
-    /// Receive the first preferred mime from the current selection.
-    pub fn receive_selection_preferred(
+    /// Open a pipe for the first preferred mime from the current selection.
+    pub fn receive_selection_preferred_pipe(
         &mut self,
         preferred_mimes: &[&str],
-    ) -> Result<(String, Vec<u8>), NativeError> {
+    ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
         let mime = preferred_mimes
             .iter()
             .find(|m| self.state.incoming_mimes.iter().any(|offered| offered == *m))
             .ok_or_else(|| NativeError::Protocol("selection mime not found".into()))?;
-        let bytes = self.receive_selection(mime)?;
-        Ok(((*mime).to_string(), bytes))
+        self.receive_selection_pipe(mime)
+    }
+
+    /// Receive the first preferred mime from the current selection (blocks).
+    pub fn receive_selection_preferred(
+        &mut self,
+        preferred_mimes: &[&str],
+    ) -> Result<(String, Vec<u8>), NativeError> {
+        use std::io::Read;
+        let mut pipe = self.receive_selection_preferred_pipe(preferred_mimes)?;
+        let mime = pipe.mime().to_string();
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)
+            .map_err(|e| NativeError::Io(e.to_string()))?;
+        Ok((mime, bytes))
     }
 }
 

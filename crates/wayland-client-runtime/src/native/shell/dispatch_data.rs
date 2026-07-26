@@ -1,13 +1,12 @@
 //! Data device (clipboard + drag-and-drop) dispatch for the native shell.
 
-use std::io::Write;
-
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
 };
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
 
 use super::types::{NativeShellEvent, NativeShellState};
+use crate::data_transfer::spawn_write_fd;
 
 impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for NativeShellState {
     fn event(
@@ -205,8 +204,9 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     None
                 };
                 if let Some(bytes) = bytes {
-                    let mut file = std::fs::File::from(fd);
-                    let _ = file.write_all(&bytes);
+                    // Never write on the dispatch thread: large payloads or a
+                    // peer that is itself blocked on our event loop will hang.
+                    spawn_write_fd("fika-wl-data-source-send", fd, bytes);
                 }
             }
             wl_data_source::Event::Cancelled => {
