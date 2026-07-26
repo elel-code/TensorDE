@@ -570,6 +570,37 @@ impl NativeRuntime {
         self.shell.presentation_clock_id()
     }
 
+    /// Double-buffered opaque region (`wl_surface.set_opaque_region`).
+    pub fn set_opaque_region(
+        &mut self,
+        surface: SurfaceId,
+        region: crate::SurfaceRegion,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_opaque_region(native, region)
+            .map_err(map_native_error)
+    }
+
+    /// Double-buffered input region (`wl_surface.set_input_region`).
+    ///
+    /// [`crate::SurfaceRegion::Empty`] enables pointer passthrough.
+    pub fn set_input_region(
+        &mut self,
+        surface: SurfaceId,
+        region: crate::SurfaceRegion,
+    ) -> Result<(), RuntimeError> {
+        let native = self.native(surface)?;
+        self.shell
+            .set_input_region(native, region)
+            .map_err(map_native_error)
+    }
+
+    /// Look up an output by compositor-advertised name (`wl_output.name`).
+    pub fn find_output_by_name(&self, name: &str) -> Option<OutputInfo> {
+        self.shell.find_output_by_name(name)
+    }
+
     pub fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell

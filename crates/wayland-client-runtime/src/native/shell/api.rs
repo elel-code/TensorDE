@@ -1169,8 +1169,92 @@ impl NativeShell {
         self.state.layers.len()
     }
 
+    /// Set `wl_surface.set_opaque_region` (double-buffered; commit to apply).
+    ///
+    /// Wallpaper / fullscreen GPU layers typically use
+    /// [`crate::SurfaceRegion::full`] so the compositor can skip blending.
+    pub fn set_opaque_region(
+        &mut self,
+        id: NativeSurfaceId,
+        region: crate::SurfaceRegion,
+    ) -> Result<(), NativeError> {
+        self.apply_surface_region(id, region, SurfaceRegionKind::Opaque)
+    }
+
+    /// Set `wl_surface.set_input_region` (double-buffered; commit to apply).
+    ///
+    /// [`crate::SurfaceRegion::Empty`] is pointer passthrough (clicks fall
+    /// through to surfaces below) — the usual wallpaper policy.
+    pub fn set_input_region(
+        &mut self,
+        id: NativeSurfaceId,
+        region: crate::SurfaceRegion,
+    ) -> Result<(), NativeError> {
+        self.apply_surface_region(id, region, SurfaceRegionKind::Input)
+    }
+
+    fn apply_surface_region(
+        &mut self,
+        id: NativeSurfaceId,
+        region: crate::SurfaceRegion,
+        kind: SurfaceRegionKind,
+    ) -> Result<(), NativeError> {
+        let qh = self.queue.handle();
+        let compositor = self
+            .state
+            .compositor
+            .as_ref()
+            .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?
+            .clone();
+        let wl = self
+            .state
+            .wl_surface(id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?
+            .clone();
+
+        match region {
+            crate::SurfaceRegion::Default => match kind {
+                SurfaceRegionKind::Opaque => wl.set_opaque_region(None),
+                SurfaceRegionKind::Input => wl.set_input_region(None),
+            },
+            crate::SurfaceRegion::Empty | crate::SurfaceRegion::Rectangles(_) => {
+                let wl_region = compositor.create_region(&qh, ());
+                if let crate::SurfaceRegion::Rectangles(rects) = region {
+                    for rect in rects.into_iter().filter(|r| !r.is_empty()) {
+                        wl_region.add(
+                            rect.origin.x,
+                            rect.origin.y,
+                            rect.size.width.max(1) as i32,
+                            rect.size.height.max(1) as i32,
+                        );
+                    }
+                }
+                // Empty: created region with no rects → no hits.
+                match kind {
+                    SurfaceRegionKind::Opaque => wl.set_opaque_region(Some(&wl_region)),
+                    SurfaceRegionKind::Input => wl.set_input_region(Some(&wl_region)),
+                }
+                wl_region.destroy();
+            }
+        }
+        self.connection.mark_dirty();
+        Ok(())
+    }
+
     pub fn output_scale_factor(&self, output_name: u32) -> Option<i32> {
         self.state.outputs.get(&output_name).map(|o| o.scale)
+    }
+
+    /// Find an output by compositor-advertised name (`wl_output.name`, v4+).
+    ///
+    /// Comparison is case-sensitive and exact. Useful for binding a layer
+    /// surface to a specific monitor (Gilder `output_name` option).
+    pub fn find_output_by_name(&self, name: &str) -> Option<crate::output::OutputInfo> {
+        self.state
+            .outputs
+            .iter()
+            .find(|(_, rec)| rec.name.as_deref() == Some(name))
+            .and_then(|(&global_name, _)| self.output_info(global_name))
     }
 
     /// Request a `wl_surface.frame` callback; emits [`NativeShellEvent::Frame`].
@@ -1746,6 +1830,11 @@ impl NativeShell {
     pub fn is_popup_configured(&self, id: NativeSurfaceId) -> bool {
         self.state.popups.get(&id).is_some_and(|p| p.configured)
     }
+}
+
+enum SurfaceRegionKind {
+    Opaque,
+    Input,
 }
 
 fn apply_layer_state_to_role(

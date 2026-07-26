@@ -602,11 +602,31 @@ mod tests {
         shell
             .set_viewport_destination(id, 320, 200)
             .expect("layer viewport");
+        // Wallpaper-style regions: full opaque + empty input (passthrough).
+        shell
+            .set_opaque_region(id, crate::SurfaceRegion::full(320, 200))
+            .expect("opaque region");
+        shell
+            .set_input_region(id, crate::SurfaceRegion::Empty)
+            .expect("input passthrough");
+        shell.commit_surface(id).expect("commit regions");
+        // Output name lookup is best-effort (needs wl_output v4 name event).
+        for out in shell.outputs() {
+            if let Some(ref name) = out.name {
+                let found = shell.find_output_by_name(name);
+                assert_eq!(found.as_ref().map(|o| o.id), Some(out.id));
+            }
+        }
         let handle = shell.public_surface_handle(id).expect("handle");
         assert!(
             handle.window_handle().is_ok() && handle.display_handle().is_ok(),
             "GPU layer must export RWH for Vulkan WSI"
         );
+        // Frame + presentation arm on layers (Gilder present pacing).
+        shell.request_frame(id).expect("layer frame");
+        shell
+            .request_presentation_feedback(id)
+            .expect("layer presentation");
         let _ = shell.destroy_layer_surface(id);
         assert!(shell.scale_factor(id).is_none());
     }

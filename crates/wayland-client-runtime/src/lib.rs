@@ -160,7 +160,8 @@ pub use runtime_common::WakeHandle;
 pub type Runtime = NativeRuntime;
 pub use surface::{
     ConstraintAdjustments, DecorationPreference, DialogAttributes, Gravity, PopupAnchor,
-    PopupAttributes, PopupPositioner, SurfaceHandle, SurfaceId, SurfaceKind, ToplevelAttributes,
+    PopupAttributes, PopupPositioner, SurfaceHandle, SurfaceId, SurfaceKind, SurfaceRegion,
+    ToplevelAttributes,
 };
 pub use text_input::{
     TextInputChangeCause, TextInputContentHint, TextInputContentPurpose, TextInputContentType,

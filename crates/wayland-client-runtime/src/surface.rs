@@ -7,6 +7,37 @@ use raw_window_handle::{
 
 use crate::{InputSerial, LogicalPosition, LogicalRect, LogicalSize};
 
+/// Region applied to a `wl_surface` (opaque or input hit-test area).
+///
+/// Double-buffered with the next `wl_surface.commit`. Used by layer-shell
+/// wallpaper clients (opaque for compositor optimization; empty input for
+/// pointer passthrough).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SurfaceRegion {
+    /// Restore the default (full-surface) region for the property.
+    ///
+    /// Protocol: `set_opaque_region(NULL)` / `set_input_region(NULL)`.
+    #[default]
+    Default,
+    /// Empty region — no pixels match.
+    ///
+    /// For input, this is pointer passthrough (Gilder wallpaper default).
+    Empty,
+    /// Explicit union of surface-local rectangles.
+    Rectangles(Vec<LogicalRect>),
+}
+
+impl SurfaceRegion {
+    /// Full-surface rectangle covering `width` × `height` (logical pixels).
+    pub fn full(width: u32, height: u32) -> Self {
+        if width == 0 || height == 0 {
+            Self::Empty
+        } else {
+            Self::Rectangles(vec![LogicalRect::new(0, 0, width, height)])
+        }
+    }
+}
+
 /// Stable runtime identifier for a Wayland surface role.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SurfaceId(pub(crate) u64);
@@ -209,5 +240,17 @@ mod tests {
         let positioner = PopupPositioner::default();
         assert!(!positioner.size.is_empty());
         assert!(!positioner.anchor_rect.is_empty());
+    }
+
+    #[test]
+    fn surface_region_full_and_empty() {
+        assert_eq!(SurfaceRegion::full(0, 10), SurfaceRegion::Empty);
+        match SurfaceRegion::full(100, 50) {
+            SurfaceRegion::Rectangles(r) => {
+                assert_eq!(r.len(), 1);
+                assert_eq!(r[0], LogicalRect::new(0, 0, 100, 50));
+            }
+            other => panic!("expected rectangles, got {other:?}"),
+        }
     }
 }
