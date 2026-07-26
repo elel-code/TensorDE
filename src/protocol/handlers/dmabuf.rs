@@ -5,7 +5,6 @@ use smithay::{
     wayland::{
         compositor::{BufferAssignment, SurfaceAttributes, with_states},
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
-        drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
     },
 };
 use tracing::warn;
@@ -14,7 +13,10 @@ use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_s
 };
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
-use crate::protocol::state::{ExplicitSyncPoints, RuntimeState};
+use crate::protocol::{
+    globals::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
+    state::{ExplicitSyncPoints, RuntimeState},
+};
 
 pub(super) enum ExplicitSyncCommit {
     None,

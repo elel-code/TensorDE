@@ -91,9 +91,9 @@ impl TtyBackend {
             .map(KmsOutput::plane)
             .collect::<Vec<_>>();
         let target = KmsOutput::new(
-            &mut device.drm,
+            &device.drm,
             &device.gbm,
-            std::rc::Rc::clone(&device.active),
+            device.drm.active_handle(),
             &descriptor,
             drm_mode,
             imported,

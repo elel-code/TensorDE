@@ -14,10 +14,11 @@ use drm::control::{
     AtomicCommitFlags, Device as ControlDevice, Mode, ResourceHandle, connector, crtc, framebuffer,
     plane, property,
 };
-use smithay::backend::drm::DrmDeviceFd;
 use tensor_host::DrmFormat;
 use thiserror::Error;
 use tracing::warn;
+
+use super::super::DrmDeviceFd;
 
 const NO_INPUT_FENCE: u64 = u64::MAX;
 

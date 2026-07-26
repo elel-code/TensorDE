@@ -1,18 +1,12 @@
 use std::{
-    cell::Cell,
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    rc::Rc,
     sync::Arc,
 };
 
 use drm::node::{DrmNode, NodeType};
 use gbm::{BufferObjectFlags, Device as GbmDevice};
 use rustix::fs::{OFlags, makedev};
-use smithay::{
-    backend::drm::{DrmDevice, DrmDeviceFd},
-    utils::DeviceFd,
-};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -31,6 +25,7 @@ use tensor_runtime::{
 
 mod buffers;
 mod completion;
+mod device;
 mod gamma;
 mod kms;
 mod libinput;
@@ -40,6 +35,8 @@ mod session;
 mod status;
 mod udev;
 
+use device::DrmDevice;
+pub(crate) use device::{DrmDeviceFd, WeakDrmDeviceFd};
 pub(crate) use libinput::LibinputEvent;
 use libinput::LibinputSource;
 use scanner::DrmScanner;
@@ -82,7 +79,6 @@ pub(crate) struct TtyBackend {
 
 struct OpenDevice {
     drm: DrmDevice,
-    active: Rc<Cell<bool>>,
     monotonic_timestamps: bool,
     gbm: GbmDevice<DrmDeviceFd>,
     scanner: DrmScanner,
@@ -95,8 +91,8 @@ struct OpenDevice {
 
 impl Drop for OpenDevice {
     fn drop(&mut self) {
-        // Clear Tensor surfaces while Smithay's transitional device snapshot is
-        // still alive. DrmDevice then restores the pre-compositor KMS state.
+        // Clear Tensor surfaces before DrmDevice restores the pre-compositor
+        // KMS snapshot.
         self.native_targets.clear();
     }
 }
@@ -253,7 +249,7 @@ impl TtyBackend {
         }
         self.devices
             .get(&self.primary_node.dev_id())
-            .filter(|device| device.active.get())
+            .filter(|device| device.drm.is_active())
             .map(|device| device.drm.device_fd().clone())
     }
 
@@ -334,7 +330,6 @@ impl TtyBackend {
                 debug!("pausing tty session");
                 self.libinput.suspend();
                 for device in self.devices.values_mut() {
-                    device.active.set(false);
                     device.drm.pause();
                 }
             }
@@ -344,10 +339,9 @@ impl TtyBackend {
                     warn!("failed to resume libinput");
                 }
                 for device in self.devices.values_mut() {
-                    match device.drm.activate(false) {
-                        Ok(()) => device.active.set(true),
+                    match device.drm.activate() {
+                        Ok(()) => {}
                         Err(error) => {
-                            device.active.set(false);
                             warn!(%error, "failed to reactivate DRM device");
                             continue;
                         }
@@ -436,18 +430,11 @@ impl TtyBackend {
                 path: path.to_owned(),
                 message: format!("libseat open failed: {error:?}"),
             })?;
-        let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-        let (drm, _notifier) =
-            DrmDevice::new(device_fd.clone(), false).map_err(|error| BackendError::Device {
-                path: path.to_owned(),
-                message: error.to_string(),
-            })?;
-        if !drm.is_atomic() {
-            return Err(BackendError::Device {
-                path: path.to_owned(),
-                message: "Tensor requires atomic KMS; legacy modesetting is unsupported".to_owned(),
-            });
-        }
+        let drm = DrmDevice::new(fd).map_err(|error| BackendError::Device {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+        let device_fd = drm.device_fd().clone();
         let monotonic_timestamps =
             drm::Device::get_driver_capability(&drm, drm::DriverCapability::MonotonicTimestamp)
                 .unwrap_or(0)
@@ -461,7 +448,6 @@ impl TtyBackend {
             device_id,
             OpenDevice {
                 drm,
-                active: Rc::new(Cell::new(true)),
                 monotonic_timestamps,
                 gbm,
                 scanner: DrmScanner::new(),

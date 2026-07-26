@@ -61,7 +61,11 @@ mod syncobj;
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
 #[cfg(feature = "tty")]
+pub(crate) use syncobj::DrmSyncPoint;
+#[cfg(feature = "tty")]
 use syncobj::DrmSyncobjProtocol;
+#[cfg(feature = "tty")]
+pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 
 pub(crate) struct ProtocolGlobals {
     viewporter: ViewporterState,
@@ -227,15 +231,13 @@ impl ProtocolGlobals {
     pub(crate) fn update_syncobj(
         &mut self,
         display: &DisplayHandle,
-        device: Option<smithay::backend::drm::DrmDeviceFd>,
+        device: Option<crate::backend::DrmDeviceFd>,
     ) {
         self.syncobj.update(display, device);
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn drm_syncobj_state(
-        &mut self,
-    ) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
+    pub(super) fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
         self.syncobj.state.as_mut()
     }
 

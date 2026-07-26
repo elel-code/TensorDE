@@ -4,11 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use smithay::wayland::drm_syncobj::DrmSyncPoint;
 use tracing::warn;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
-use crate::{ecs::SurfaceId, render::ClientReleaseFence};
+use crate::{ecs::SurfaceId, protocol::globals::DrmSyncPoint, render::ClientReleaseFence};
 
 use super::RuntimeState;
 

@@ -10,11 +10,12 @@ use drm::{
     control::{Device as _, FbCmd2Flags, framebuffer},
 };
 use gbm::{BufferObject, BufferObjectFlags, Device as GbmDevice, Format, Modifier};
-use smithay::backend::drm::DrmDeviceFd;
 use thiserror::Error;
 use tracing::{trace, warn};
 
 use crate::render::ExportedDmabuf;
+
+use super::super::DrmDeviceFd;
 
 const MAX_PLANES: usize = 4;
 

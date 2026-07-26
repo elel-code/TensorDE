@@ -31,7 +31,6 @@ tty = [
     "dep:input",
     "dep:libseat",
     "dep:udev",
-    "smithay/backend_drm",
 ]
 xwayland = ["smithay/xwayland"]
 

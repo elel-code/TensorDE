@@ -521,8 +521,6 @@ fn shm_constraints(size: Size<i32, BufferCoords>) -> BufferConstraints {
     BufferConstraints {
         size,
         shm: vec![wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888],
-        #[cfg(feature = "tty")]
-        dma: None,
     }
 }
 

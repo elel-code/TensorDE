@@ -6,7 +6,6 @@ use std::{
 
 use drm::control::{Mode as DrmMode, connector, crtc, plane};
 use gbm::Device as GbmDevice;
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use thiserror::Error;
 use tracing::warn;
 
@@ -15,7 +14,7 @@ use crate::{
     render::ExportedDmabuf,
 };
 
-use super::{BackendError, TtyBackend};
+use super::{BackendError, DrmDeviceFd, TtyBackend, device::DrmDevice};
 
 mod atomic;
 mod framebuffer;
@@ -82,7 +81,7 @@ impl TtyBackend {
         }
         self.devices
             .get(&output.device_id)
-            .filter(|device| device.active.get())
+            .filter(|device| device.drm.is_active())
             .and_then(|device| device.native_targets.get(&output))
             .is_some_and(|target| target.ready_for(slot))
     }
@@ -145,7 +144,7 @@ pub(super) struct KmsOutput {
 
 impl KmsOutput {
     pub(super) fn new(
-        drm: &mut DrmDevice,
+        drm: &DrmDevice,
         gbm: &GbmDevice<DrmDeviceFd>,
         active: Rc<std::cell::Cell<bool>>,
         descriptor: &OutputDescriptor,
