@@ -37,6 +37,7 @@ mod bridge;
 mod completion;
 mod fd_completion;
 mod inject;
+mod local;
 mod reactor;
 mod worker;
 
@@ -44,8 +45,9 @@ pub use bridge::{BridgeStats, TrySendError, WorkerBridge, WorkerRx, WorkerTx};
 pub use completion::{CompletionRelayError, EventfdCompletionRelay};
 pub use fd_completion::{OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime};
 pub use inject::{InjectSummary, inject_events};
+pub use local::{LocalCompletionQueue, LocalQueueOverflow};
 pub use reactor::{
-    CompletionDriver, EventfdCompletion, EventfdWake, EventfdWakeError, NullWake, TurnBudget,
-    TurnSummary, WakeSink, run_turn,
+    CompletionDriver, EventfdCompletion, EventfdWake, EventfdWakeError, NullWake, RuntimeStop,
+    TurnBudget, TurnSummary, WakeSink, run_turn,
 };
 pub use worker::{CompioWorker, WorkerError};

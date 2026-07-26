@@ -23,6 +23,10 @@
 //! compositor thread. Workers never hold DRM/Wayland objects.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use compio::{io::AsyncReadExt, runtime::fd::AsyncFd};
 use tensor_event::{Event, EventQueue};
@@ -123,6 +127,24 @@ pub fn run_turn(
 pub trait WakeSink: Send + Sync {
     /// Non-blocking wake. May coalesce (eventfd counter is fine).
     fn wake(&self);
+}
+
+/// Cloneable stop flag checked between compositor completion turns.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeStop {
+    stopped: Arc<AtomicBool>,
+}
+
+impl RuntimeStop {
+    #[inline]
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
 }
 
 /// No-op wake (pure unit tests that never block on the OS).

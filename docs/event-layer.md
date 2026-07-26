@@ -94,9 +94,11 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    its CQE. The owner drains a bounded amount of source work and rearms only
    after compositor-thread consumption; Tensor does not create a second
    readiness registry.
-   calloop still owns the shared completion relay plus Smithay's XWM X11-event
-   and DRM notification adapters. Next: express those sources as
-   Compio-completed ops (io_uring driver).
+   The compositor thread now receives worker eventfd completions directly from
+   its Compio runtime; the shared relay thread and calloop channel are gone.
+   One submitted wait on calloop's aggregate fd remains temporarily for
+   Smithay's XWM X11-event and DRM notification adapters. Next: express those
+   sources as direct Compio-completed ops (io_uring driver).
 6. Replace Smithay backends with native input/DRM open path; delete Smithay
    (see `docs/smithay-exit.md`).
 

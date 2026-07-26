@@ -2,8 +2,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use calloop::LoopSignal;
-use tensor_runtime::WorkerRx;
+use tensor_runtime::{RuntimeStop, WorkerRx};
 use tracing::error;
 
 use crate::{
@@ -14,7 +13,7 @@ use crate::{
 pub(super) fn drain_gpu_fence_events(
     events: &WorkerRx<GpuFenceEvent>,
     state: &mut RuntimeState,
-    stop_signal: &LoopSignal,
+    stop_signal: &RuntimeStop,
     runtime_failure: &Rc<RefCell<Option<String>>>,
 ) {
     events.drain(MAX_PENDING_GPU_FENCES, |event| match event {
@@ -45,7 +44,7 @@ pub(super) fn drain_gpu_fence_events(
     });
 }
 
-fn fail(message: String, stop_signal: &LoopSignal, runtime_failure: &Rc<RefCell<Option<String>>>) {
+fn fail(message: String, stop_signal: &RuntimeStop, runtime_failure: &Rc<RefCell<Option<String>>>) {
     error!(%message);
     runtime_failure
         .borrow_mut()

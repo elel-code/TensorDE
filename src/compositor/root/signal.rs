@@ -2,15 +2,14 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use calloop::LoopSignal;
-use tensor_runtime::WorkerRx;
+use tensor_runtime::{RuntimeStop, WorkerRx};
 use tracing::error;
 
 use crate::signals::{MAX_PENDING_SIGNAL_EVENTS, SignalEvent};
 
 pub(super) fn drain_signal_events(
     events: &WorkerRx<SignalEvent>,
-    stop_signal: &LoopSignal,
+    stop_signal: &RuntimeStop,
     runtime_failure: &Rc<RefCell<Option<String>>>,
 ) {
     events.drain(MAX_PENDING_SIGNAL_EVENTS, |event| match event {

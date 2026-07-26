@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ffi::OsString, rc::Rc};
+use std::{cell::RefCell, ffi::OsString, rc::Rc, sync::Arc};
 
 #[cfg(feature = "tty")]
 mod gpu;
@@ -7,9 +7,8 @@ mod launch;
 mod signal;
 mod wayland_completion;
 
-use calloop::channel::{Channel as CalloopChannel, Event as ChannelEvent, sync_channel};
 use tensor_runtime::{
-    CompletionRelayError, EventfdCompletionRelay, WorkerBridge, WorkerRx, WorkerTx,
+    EventfdWake, EventfdWakeError, RuntimeStop, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
 };
 use thiserror::Error;
 use tracing::{error, info, warn};
@@ -71,8 +70,7 @@ pub struct Compositor {
     gpu_fence_events: WorkerRx<GpuFenceEvent>,
     #[cfg(feature = "tty")]
     gpu_fence_runtime: GpuFenceRuntime,
-    completion_notifications: CalloopChannel<()>,
-    completion_relay: EventfdCompletionRelay,
+    completion_wake: Arc<EventfdWake>,
     launch_worker: Option<LaunchWorker>,
     startup_commands: Vec<StartupCommand>,
     environment: EnvironmentConfig,
@@ -117,29 +115,26 @@ impl Compositor {
         };
         protocol.install_renderer(renderer);
         let ipc = IpcServer::bind(ipc_socket)?;
-        let (completion_sender, completion_notifications) = sync_channel(1);
-        let completion_relay =
-            EventfdCompletionRelay::start("tensor-compositor-completions", move |_| {
-                // Transitional adapter only: payloads stay in WorkerBridge.
-                // A pending notification already guarantees a compositor turn.
-                let _ = completion_sender.try_send(());
-            })?;
+        let completion_wake = Arc::new(EventfdWake::new()?);
+        let completion_sink = Arc::clone(&completion_wake) as Arc<dyn WakeSink>;
         let wayland_completions =
-            WaylandCompletionBridges::install(&mut protocol, completion_relay.wake())?;
+            WaylandCompletionBridges::install(&mut protocol, Arc::clone(&completion_sink))?;
         let (launch_outcome_sender, launch_outcomes) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_LAUNCHES, completion_relay.wake());
+            WorkerBridge::bounded_with_wake(MAX_PENDING_LAUNCHES, Arc::clone(&completion_sink));
         let (ipc_event_sender, ipc_events) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_IPC_REQUESTS, completion_relay.wake());
+            WorkerBridge::bounded_with_wake(MAX_PENDING_IPC_REQUESTS, Arc::clone(&completion_sink));
         let (ipc_control_sender, ipc_control_events) = WorkerBridge::bounded_with_wake(
             MAX_PENDING_IPC_CONTROL_EVENTS,
-            completion_relay.wake(),
+            Arc::clone(&completion_sink),
         );
-        let (signal_event_sender, signal_events) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_SIGNAL_EVENTS, completion_relay.wake());
+        let (signal_event_sender, signal_events) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_SIGNAL_EVENTS,
+            Arc::clone(&completion_sink),
+        );
         let signal_runtime = SignalRuntime::start(signal_event_sender.clone())?;
         let (security_context_sender, security_context_events) = WorkerBridge::bounded_with_wake(
             MAX_PENDING_SECURITY_CONTEXT_EVENTS,
-            completion_relay.wake(),
+            Arc::clone(&completion_sink),
         );
         let security_context_runtime = SecurityContextRuntime::start(security_context_sender)?;
         protocol
@@ -147,7 +142,7 @@ impl Compositor {
             .install_security_context_submitter(security_context_runtime.submitter());
         #[cfg(feature = "tty")]
         let (gpu_fence_event_sender, gpu_fence_events) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_GPU_FENCES, completion_relay.wake());
+            WorkerBridge::bounded_with_wake(MAX_PENDING_GPU_FENCES, completion_sink);
         #[cfg(feature = "tty")]
         let gpu_fence_runtime = GpuFenceRuntime::start(gpu_fence_event_sender.clone())?;
         #[cfg(feature = "tty")]
@@ -178,8 +173,7 @@ impl Compositor {
             gpu_fence_events,
             #[cfg(feature = "tty")]
             gpu_fence_runtime,
-            completion_notifications,
-            completion_relay,
+            completion_wake,
             launch_worker: None,
             startup_commands,
             environment,
@@ -325,8 +319,10 @@ impl Compositor {
 
     pub fn prepare_runtime(&mut self) -> Result<(), CompositorError> {
         self.protocol.prepare(self.xwayland.enabled())?;
-        self.protocol
-            .prepare_backend(&self.backend_config, self.completion_relay.wake())?;
+        self.protocol.prepare_backend(
+            &self.backend_config,
+            Arc::clone(&self.completion_wake) as Arc<dyn WakeSink>,
+        )?;
         self.ensure_ipc_runtime()?;
         Ok(())
     }
@@ -368,8 +364,7 @@ impl Compositor {
             gpu_fence_events,
             #[cfg(feature = "tty")]
             gpu_fence_runtime,
-            completion_notifications,
-            completion_relay,
+            completion_wake,
             launch_worker,
             startup_commands,
             environment,
@@ -393,7 +388,6 @@ impl Compositor {
             signal_event_sender,
             signal_runtime,
             security_context_runtime,
-            completion_relay,
             startup_commands,
             environment,
             systemd,
@@ -403,51 +397,42 @@ impl Compositor {
         let _xwayland_completion_runtime_owner = xwayland_completion_runtime;
         #[cfg(feature = "tty")]
         let _gpu_fence_runtime_owners = (gpu_fence_event_sender, gpu_fence_runtime);
-        let stop_signal = protocol.stop_signal();
+        let stop_signal = RuntimeStop::default();
         let callback_stop = stop_signal.clone();
         let runtime_failure = Rc::new(RefCell::new(None));
         let callback_failure = Rc::clone(&runtime_failure);
-        protocol.run_with_channel(completion_notifications, move |event, state| match event {
-            ChannelEvent::Msg(()) => {
-                if let Err(message) = wayland_completions.drain(state) {
-                    error!(%message, "Wayland completion runtime failed");
-                    callback_failure.borrow_mut().replace(message);
-                    callback_stop.stop();
-                    return;
-                }
-                drain_signal_events(&signal_events, &callback_stop, &callback_failure);
-                if let Err(message) = drain_security_context_events(&security_context_events, state)
-                {
-                    error!(%message, "security-context completion runtime failed");
-                    callback_failure.borrow_mut().replace(message);
-                    callback_stop.stop();
-                    return;
-                }
-                #[cfg(feature = "tty")]
-                if let Err(message) = state.drain_backend_completions() {
-                    error!(%message, "tty completion runtime failed");
-                    callback_failure.borrow_mut().replace(message);
-                    callback_stop.stop();
-                    return;
-                }
-                #[cfg(feature = "tty")]
-                drain_gpu_fence_events(&gpu_fence_events, state, &callback_stop, &callback_failure);
-                drain_launch_outcomes(&launch_outcomes, state);
-                drain_ipc_events(
-                    &ipc_events,
-                    &ipc_control_events,
-                    state,
-                    &callback_stop,
-                    &launch_submitter,
-                    &callback_failure,
-                );
-            }
-            ChannelEvent::Closed => {
-                let message = "Compio completion relay disconnected".to_owned();
-                error!(%message);
+        protocol.run_with_completions(&completion_wake, &stop_signal, move |state| {
+            if let Err(message) = wayland_completions.drain(state) {
+                error!(%message, "Wayland completion runtime failed");
                 callback_failure.borrow_mut().replace(message);
                 callback_stop.stop();
+                return;
             }
+            drain_signal_events(&signal_events, &callback_stop, &callback_failure);
+            if let Err(message) = drain_security_context_events(&security_context_events, state) {
+                error!(%message, "security-context completion runtime failed");
+                callback_failure.borrow_mut().replace(message);
+                callback_stop.stop();
+                return;
+            }
+            #[cfg(feature = "tty")]
+            if let Err(message) = state.drain_backend_completions() {
+                error!(%message, "tty completion runtime failed");
+                callback_failure.borrow_mut().replace(message);
+                callback_stop.stop();
+                return;
+            }
+            #[cfg(feature = "tty")]
+            drain_gpu_fence_events(&gpu_fence_events, state, &callback_stop, &callback_failure);
+            drain_launch_outcomes(&launch_outcomes, state);
+            drain_ipc_events(
+                &ipc_events,
+                &ipc_control_events,
+                state,
+                &callback_stop,
+                &launch_submitter,
+                &callback_failure,
+            );
         })?;
         if let Some(message) = runtime_failure.borrow_mut().take() {
             return Err(CompositorError::CompletionRuntime(message));
@@ -509,7 +494,7 @@ pub enum CompositorError {
     #[error(transparent)]
     LaunchWorker(#[from] LaunchWorkerError),
     #[error(transparent)]
-    CompletionRelay(#[from] CompletionRelayError),
+    CompletionWake(#[from] EventfdWakeError),
     #[error(transparent)]
     SignalRuntime(#[from] SignalRuntimeError),
     #[error(transparent)]

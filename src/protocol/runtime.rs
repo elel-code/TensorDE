@@ -1,9 +1,8 @@
 use std::{ffi::OsString, sync::Arc};
 
-use calloop::{
-    EventLoop, LoopSignal,
-    channel::{Channel, Event as ChannelEvent},
-};
+use calloop::EventLoop;
+#[cfg(test)]
+use calloop::channel::Event as ChannelEvent;
 use thiserror::Error;
 use wayland_server::{Display, ListeningSocket};
 
@@ -13,6 +12,7 @@ use crate::{
 
 use super::state::RuntimeState;
 
+mod completion;
 mod display;
 #[cfg(all(test, feature = "tty"))]
 mod focus_tests;
@@ -83,15 +83,11 @@ impl WaylandRuntime {
 
     pub fn backend_name(&self) -> &'static str {
         let _ = &self.event_loop;
-        "smithay/calloop"
+        "smithay/compio-main"
     }
 
     pub fn socket_name(&self) -> &std::ffi::OsStr {
         &self.socket_name
-    }
-
-    pub fn stop_signal(&self) -> LoopSignal {
-        self.event_loop.get_signal()
     }
 
     pub fn xwayland_display(&self) -> Option<OsString> {
@@ -266,36 +262,6 @@ impl WaylandRuntime {
         self.prepared = true;
         Ok(())
     }
-
-    pub fn run(&mut self) -> Result<(), ProtocolError> {
-        if !self.prepared {
-            return Err(ProtocolError::RuntimeNotPrepared);
-        }
-        // Between waits: Tensor event turn (inject/drain/coalesced redraw), then
-        // flush Wayland clients — same slot calloop used for idle work.
-        self.event_loop
-            .run(None, &mut self.state, RuntimeState::on_loop_idle)
-            .map_err(ProtocolError::Run)
-    }
-
-    /// Run the compositor while dispatching a bounded value-only worker channel.
-    pub fn run_with_channel<T, C>(
-        &mut self,
-        channel: Channel<T>,
-        mut channel_handler: C,
-    ) -> Result<(), ProtocolError>
-    where
-        T: Send + 'static,
-        C: FnMut(ChannelEvent<T>, &mut RuntimeState) + 'static,
-    {
-        self.event_loop
-            .handle()
-            .insert_source(channel, move |event, _, state| {
-                channel_handler(event, state);
-            })
-            .map_err(|error| ProtocolError::ChannelSource(error.to_string()))?;
-        self.run()
-    }
 }
 
 #[cfg(test)]
@@ -348,6 +314,8 @@ pub enum ProtocolError {
     RuntimeNotPrepared,
     #[error("failed to run the Smithay event loop: {0}")]
     Run(calloop::Error),
+    #[error("compositor-thread completion loop failed: {0}")]
+    MainCompletion(String),
     #[error("failed to spawn XWayland: {0}")]
     XWayland(std::io::Error),
     #[error("failed to start the XWayland completion runtime: {0}")]

@@ -2,8 +2,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use calloop::LoopSignal;
-use tensor_runtime::WorkerRx;
+use tensor_runtime::{RuntimeStop, WorkerRx};
 use tracing::{error, info};
 
 use crate::{
@@ -20,7 +19,7 @@ pub(super) fn drain_ipc_events(
     requests: &WorkerRx<IpcEvent>,
     control: &WorkerRx<IpcControlEvent>,
     state: &mut RuntimeState,
-    stop_signal: &LoopSignal,
+    stop_signal: &RuntimeStop,
     launch_submitter: &LaunchSubmitter,
     runtime_failure: &Rc<RefCell<Option<String>>>,
 ) {
