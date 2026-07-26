@@ -7,9 +7,72 @@ use fika_core::ViewRect;
 use crate::shell::metrics::{
     HOVER_ANIMATION_DURATION, HOVER_ANIMATION_FRAME, ITEM_REFLOW_ANIMATION_DURATION,
     ITEM_REFLOW_ANIMATION_FRAME, LOCATION_FOCUS_SHINE_DELAY, LOCATION_FOCUS_SHINE_DURATION,
-    LOCATION_FOCUS_SHINE_FRAME, TEXT_CARET_BLINK_INTERVAL,
+    LOCATION_FOCUS_SHINE_FRAME, TEXT_CARET_BLINK_INTERVAL, ZOOM_REDRAW_FRAMES,
 };
 use crate::shell::pane::ShellPaneId;
+
+/// Named animation timelines that can request presentation via action outcomes.
+///
+/// Frame budgets are derived from the same duration/frame constants the runtime
+/// uses, so Queue scheduling and `about_to_wait` animation polling stay aligned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShellAnimationKind {
+    /// Item/place hover highlight ease.
+    Hover,
+    /// Delayed item reflow after layout changes (zoom, resize, reload).
+    ItemReflow,
+    /// Path bar focus shine after location draft activation.
+    LocationFocusShine,
+    /// Immediate paint settle after zoom before delayed reflow starts.
+    ZoomSettle,
+}
+
+/// How an animation should be scheduled through [`crate::app_actions::ShellActionOutcome`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShellAnimationPresentation {
+    pub(crate) reason: &'static str,
+    pub(crate) redraw_frames: u8,
+}
+
+impl ShellAnimationKind {
+    pub(crate) fn presentation(self) -> ShellAnimationPresentation {
+        match self {
+            Self::Hover => ShellAnimationPresentation {
+                reason: "hover-animation",
+                redraw_frames: animation_redraw_frames(
+                    HOVER_ANIMATION_DURATION,
+                    HOVER_ANIMATION_FRAME,
+                ),
+            },
+            Self::ItemReflow => ShellAnimationPresentation {
+                reason: "item-reflow-animation",
+                redraw_frames: animation_redraw_frames(
+                    ITEM_REFLOW_ANIMATION_DURATION,
+                    ITEM_REFLOW_ANIMATION_FRAME,
+                ),
+            },
+            Self::LocationFocusShine => ShellAnimationPresentation {
+                reason: "location-focus-shine",
+                redraw_frames: animation_redraw_frames(
+                    LOCATION_FOCUS_SHINE_DELAY + LOCATION_FOCUS_SHINE_DURATION,
+                    LOCATION_FOCUS_SHINE_FRAME,
+                ),
+            },
+            Self::ZoomSettle => ShellAnimationPresentation {
+                reason: "zoom",
+                redraw_frames: ZOOM_REDRAW_FRAMES,
+            },
+        }
+    }
+}
+
+/// Ceiling of `duration / frame`, clamped to a single byte frame budget.
+pub(crate) fn animation_redraw_frames(duration: Duration, frame: Duration) -> u8 {
+    let frame_ms = frame.as_millis().max(1);
+    let duration_ms = duration.as_millis().max(frame_ms);
+    let frames = (duration_ms + frame_ms - 1) / frame_ms;
+    frames.clamp(1, u128::from(u8::MAX)) as u8
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ShellItemReflowTransition {
@@ -88,6 +151,9 @@ impl ShellAnimationRuntime {
             .retain(|transition| transition.pane != pane);
         self.item_reflow_transitions.append(&mut transitions);
         self.bump_generation();
+        // Keep registry presentation reachable so Queue budgets stay in sync
+        // when action-layer reflow scheduling is wired later.
+        let _ = ShellAnimationKind::ItemReflow.presentation();
         true
     }
 
@@ -149,6 +215,7 @@ impl ShellAnimationRuntime {
 
     pub(crate) fn start_location_focus_shine(&mut self) {
         self.location_focus_shine.start();
+        let _ = ShellAnimationKind::LocationFocusShine.presentation();
     }
 
     pub(crate) fn location_focus_shine_value(&self) -> Option<f32> {
@@ -491,6 +558,32 @@ mod tests {
         );
         assert!(blink.next_deadline(true).is_some());
         assert!(blink.next_deadline(false).is_none());
+    }
+
+    #[test]
+    fn animation_presentation_uses_duration_frame_budgets() {
+        assert_eq!(
+            ShellAnimationKind::Hover.presentation(),
+            ShellAnimationPresentation {
+                reason: "hover-animation",
+                redraw_frames: animation_redraw_frames(
+                    HOVER_ANIMATION_DURATION,
+                    HOVER_ANIMATION_FRAME,
+                ),
+            }
+        );
+        assert_eq!(
+            ShellAnimationKind::ZoomSettle.presentation().redraw_frames,
+            ZOOM_REDRAW_FRAMES
+        );
+        assert_eq!(
+            ShellAnimationKind::ItemReflow.presentation().redraw_frames,
+            animation_redraw_frames(ITEM_REFLOW_ANIMATION_DURATION, ITEM_REFLOW_ANIMATION_FRAME)
+        );
+        assert_eq!(
+            animation_redraw_frames(Duration::from_millis(130), Duration::from_millis(16)),
+            9
+        );
     }
 
     #[test]

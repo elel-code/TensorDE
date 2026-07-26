@@ -11,6 +11,7 @@ use super::pointer_route::{
     MainPointerMoveSnapshot, main_left_pointer_button_route, main_pointer_button_intent,
     main_pointer_move_intent,
 };
+use crate::shell::animation::ShellAnimationKind;
 use crate::shell::selection::SelectionClick;
 use crate::{
     FikaWgpuApp, ShellItemActivation, ShellPlaceActivation, view_point_from_physical_position,
@@ -82,7 +83,11 @@ impl FikaWgpuApp {
             MainPointerMoveIntent::ScenePointer => {
                 let changed = self.scene.set_pointer(point, size);
                 self.update_window_cursor_for_scene(size);
+                // Hover (and other pointer-driven motion) may start hover ease;
+                // queue the registry budget so presentation survives until the
+                // animation runtime is polled again in about_to_wait.
                 ShellActionOutcome::redraw_if(changed)
+                    .with_animation_if(changed, ShellAnimationKind::Hover)
             }
         }
     }

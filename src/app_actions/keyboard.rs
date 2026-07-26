@@ -9,7 +9,8 @@ use crate::shell::shortcuts::{
     navigation_action_for_key, path_navigation_action_for_key, reload_requested_for_key_event,
     selection_command_for_key_event, view_mode_for_key_event, zoom_action_for_key_event,
 };
-use crate::{FikaWgpuApp, ZOOM_REDRAW_FRAMES};
+use crate::shell::animation::ShellAnimationKind;
+use crate::FikaWgpuApp;
 
 impl FikaWgpuApp {
     pub(crate) fn handle_main_keyboard_input(
@@ -65,8 +66,12 @@ impl FikaWgpuApp {
                 self.commit_location_draft(event_loop);
                 return ShellActionOutcome::None.into();
             } else {
+                let shine = matches!(command, LocationCommand::Activate);
                 let changed = self.scene.apply_location_command(command, size);
-                return ShellActionOutcome::redraw_if(changed).into();
+                // Activate starts location focus shine; keep presentation queued.
+                return ShellActionOutcome::redraw_if(changed)
+                    .with_animation_if(shine && changed, ShellAnimationKind::LocationFocusShine)
+                    .into();
             }
         }
         if let Some(command) =
@@ -85,11 +90,7 @@ impl FikaWgpuApp {
         }
         if shortcut && let Some(zoom_action) = zoom_action_for_key_event(event) {
             if self.scene.zoom(zoom_action, size) {
-                return ShellActionOutcome::Queue {
-                    reason: "zoom",
-                    redraw_frames: ZOOM_REDRAW_FRAMES,
-                }
-                .into();
+                return ShellActionOutcome::queue_animation(ShellAnimationKind::ZoomSettle).into();
             }
             return ShellActionOutcome::None.into();
         }

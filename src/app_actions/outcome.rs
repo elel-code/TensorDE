@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::platform::ActiveEventLoop;
 
 use crate::FikaWgpuApp;
+use crate::shell::animation::ShellAnimationKind;
 use crate::shell::pane::ShellPaneId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,24 @@ impl ShellActionOutcome {
             Self::Present(reason)
         } else {
             Self::None
+        }
+    }
+
+    /// Queue presentation frames for a named animation timeline.
+    pub(crate) fn queue_animation(kind: ShellAnimationKind) -> Self {
+        let presentation = kind.presentation();
+        Self::Queue {
+            reason: presentation.reason,
+            redraw_frames: presentation.redraw_frames,
+        }
+    }
+
+    /// When `started` is true, merge this outcome with the animation's Queue budget.
+    pub(crate) fn with_animation_if(self, started: bool, kind: ShellAnimationKind) -> Self {
+        if started {
+            self.merge(Self::queue_animation(kind))
+        } else {
+            self
         }
     }
 
@@ -146,6 +165,26 @@ mod tests {
             }
             .merge(ShellActionOutcome::Present("view-mode")),
             ShellActionOutcome::Present("view-mode")
+        );
+    }
+
+    #[test]
+    fn outcome_queue_animation_uses_registry_presentation() {
+        let hover = ShellAnimationKind::Hover.presentation();
+        assert_eq!(
+            ShellActionOutcome::queue_animation(ShellAnimationKind::Hover),
+            ShellActionOutcome::Queue {
+                reason: hover.reason,
+                redraw_frames: hover.redraw_frames,
+            }
+        );
+        assert_eq!(
+            ShellActionOutcome::None.with_animation_if(true, ShellAnimationKind::ZoomSettle),
+            ShellActionOutcome::queue_animation(ShellAnimationKind::ZoomSettle)
+        );
+        assert_eq!(
+            ShellActionOutcome::Redraw.with_animation_if(false, ShellAnimationKind::Hover),
+            ShellActionOutcome::Redraw
         );
     }
 

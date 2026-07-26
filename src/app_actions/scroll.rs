@@ -1,10 +1,11 @@
 use crate::platform::{ActiveEventLoop, MouseScrollDelta, PinchGesture, SwipeGesture};
 
 use super::outcome::ShellActionOutcome;
+use crate::shell::animation::ShellAnimationKind;
 use crate::shell::shortcuts::{
     PinchZoomTracker, SwipeNavigationTracker, zoom_action_for_scroll_delta,
 };
-use crate::{FikaWgpuApp, SCROLL_REDRAW_FRAMES, ZOOM_REDRAW_FRAMES, scroll_delta_xy};
+use crate::{FikaWgpuApp, SCROLL_REDRAW_FRAMES, scroll_delta_xy};
 
 impl FikaWgpuApp {
     pub(crate) fn handle_main_mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -18,10 +19,9 @@ impl FikaWgpuApp {
             if let Some(zoom_action) = zoom_action_for_scroll_delta(delta_y)
                 && self.scene.zoom(zoom_action, size)
             {
-                self.apply_window_action_outcome(ShellActionOutcome::Queue {
-                    reason: "wheel-zoom",
-                    redraw_frames: ZOOM_REDRAW_FRAMES,
-                });
+                self.apply_window_action_outcome(ShellActionOutcome::queue_animation(
+                    ShellAnimationKind::ZoomSettle,
+                ));
             }
             return;
         }
@@ -53,10 +53,9 @@ impl FikaWgpuApp {
                     changed |= self.scene.zoom(action, size);
                 }
                 if changed {
-                    self.apply_window_action_outcome(ShellActionOutcome::Queue {
-                        reason: "pinch-zoom",
-                        redraw_frames: ZOOM_REDRAW_FRAMES,
-                    });
+                    self.apply_window_action_outcome(ShellActionOutcome::queue_animation(
+                        ShellAnimationKind::ZoomSettle,
+                    ));
                 }
             }
             PinchGesture::End { .. } => {

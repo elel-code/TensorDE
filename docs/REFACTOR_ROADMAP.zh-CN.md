@@ -265,6 +265,12 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   `ShellActionOutcome` 增加 `merge` / `with_redraw_if`，用明确优先级合并 `Redraw`、
   `Queue` 和 `Present`；pointer effect 已开始使用组合式 redraw，后续 async
   completion、动画 timeline 和局部 dirty 可以继续返回 outcome 而不是立即触发表现。
+- Animation registry 初始挂载：
+  `ShellAnimationKind` + `ShellAnimationPresentation` 登记 hover / item reflow /
+  location focus shine / zoom settle 的 Queue reason 与帧预算；
+  `ShellActionOutcome::queue_animation` / `with_animation_if` 供 action 层调度。
+  键盘/滚轮/pinch zoom 与 pointer hover 已走 registry；runtime 仍在
+  `about_to_wait` 轮询 `animation_active` 与 deadline。
 - Pointer effect outcome 返回：
   主窗口 pointer button 入口统一 apply `ShellActionOutcome`；trash conflict、task
   detail、properties、context/drop menu fallback、left-button route、pane pointer 和
@@ -501,8 +507,8 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
    planner，并开始把 effect 返回值统一成 action outcome。
 2. Async operation dispatcher：优先承接 trash / paste / drop / create / rename 等文件
    操作，把 completion 也映射为 action outcome；runtime 已是 Compio-first（见 6b）。
-3. Animation registry：将 delete/reflow/hover 等 timeline 挂到 outcome 的 Queue /
-   Present 调度后面。
+3. Animation registry 后续：delete 动画、reflow 启动点返回 outcome、location shine
+   经 action 层调度；继续收缩直接 `request_redraw` 旁路。
 4. Render surface / frame pipeline。
 5. ShellScene hit testing 模块化。
 6. Test fixture builder 穿插进行。
