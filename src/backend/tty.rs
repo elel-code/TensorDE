@@ -72,7 +72,7 @@ pub(crate) struct TtyBackend {
     _udev_completion_runtime: OpaqueFdCompletionRuntime,
     primary_node: DrmNode,
     render_node: DrmNode,
-    devices: HashMap<libc::dev_t, OpenDevice>,
+    devices: HashMap<u64, OpenDevice>,
     output_policy: OutputPolicy,
     renderer_formats: Vec<VulkanFormatCapability>,
     outputs: OutputPlan,
@@ -250,7 +250,7 @@ impl TtyBackend {
     /// LUT size for `zwlr_gamma_control_v1`, when the CRTC exposes gamma.
     pub(crate) fn gamma_size(&self, output: &smithay::output::Output) -> Option<u32> {
         let id = *output.user_data().get::<super::BackendOutputId>()?;
-        let device = self.devices.get(&(id.device_id as libc::dev_t))?;
+        let device = self.devices.get(&id.device_id)?;
         let state = device.gamma.get(&id)?;
         state.gamma_size(&device.drm)
     }
@@ -266,7 +266,7 @@ impl TtyBackend {
     ) -> Option<()> {
         let id = *output.user_data().get::<super::BackendOutputId>()?;
         let session_active = self.session.is_active();
-        let device = self.devices.get_mut(&(id.device_id as libc::dev_t))?;
+        let device = self.devices.get_mut(&id.device_id)?;
         let state = device.gamma.get_mut(&id)?;
         match state.set_gamma(&device.drm, ramp, session_active) {
             Ok(()) => Some(()),
@@ -361,7 +361,7 @@ impl TtyBackend {
 
     fn reconcile_devices(
         &mut self,
-        mut available: Vec<(libc::dev_t, PathBuf)>,
+        mut available: Vec<(u64, PathBuf)>,
         require_primary: bool,
     ) -> Result<(), BackendError> {
         let available_ids = available
@@ -403,7 +403,7 @@ impl TtyBackend {
         Ok(())
     }
 
-    fn add_device(&mut self, device_id: libc::dev_t, path: &Path) -> Result<(), BackendError> {
+    fn add_device(&mut self, device_id: u64, path: &Path) -> Result<(), BackendError> {
         let node = DrmNode::from_dev_id(device_id).map_err(|error| BackendError::Device {
             path: path.to_owned(),
             message: error.to_string(),
@@ -457,7 +457,7 @@ impl TtyBackend {
         Ok(())
     }
 
-    fn remove_device(&mut self, device_id: libc::dev_t) {
+    fn remove_device(&mut self, device_id: u64) {
         let Some(_device) = self.devices.remove(&device_id) else {
             return;
         };
@@ -466,7 +466,7 @@ impl TtyBackend {
         info!(device_id, "DRM/GBM device removed");
     }
 
-    fn rescan_device(&mut self, device_id: libc::dev_t) -> Result<(), BackendError> {
+    fn rescan_device(&mut self, device_id: u64) -> Result<(), BackendError> {
         let renderer_formats = &self.renderer_formats;
         let changed = {
             let device = self
@@ -541,7 +541,7 @@ impl TtyBackend {
     /// Bind gamma state for every planned output (cheap: property probe once).
     fn ensure_gamma_for_plan(&mut self, plan: &OutputPlan) {
         for descriptor in plan.values() {
-            let device_id = descriptor.id.device_id as libc::dev_t;
+            let device_id = descriptor.id.device_id;
             let Some(device) = self.devices.get_mut(&device_id) else {
                 continue;
             };
@@ -561,7 +561,7 @@ impl TtyBackend {
 }
 
 fn negotiate_device_output_formats(
-    device_id: libc::dev_t,
+    device_id: u64,
     device: &OpenDevice,
     connectors: &BTreeMap<super::BackendOutputId, ConnectorSnapshot>,
     renderer_formats: &[VulkanFormatCapability],
@@ -643,7 +643,7 @@ fn negotiate_device_output_formats(
 }
 
 fn describe_connector(
-    device_id: libc::dev_t,
+    device_id: u64,
     connector: &drm::control::connector::Info,
     crtc: Option<drm::control::crtc::Handle>,
 ) -> ConnectorSnapshot {
@@ -748,14 +748,11 @@ pub(crate) enum BackendError {
     #[error("primary DRM device {path} is unavailable")]
     PrimaryUnavailable { path: PathBuf },
     #[error("unknown DRM device {device_id}")]
-    UnknownDevice { device_id: libc::dev_t },
+    UnknownDevice { device_id: u64 },
     #[error("unknown output {0:?}")]
     UnknownOutput(super::BackendOutputId),
     #[error("failed to scan DRM connectors for device {device_id}: {message}")]
-    ConnectorScan {
-        device_id: libc::dev_t,
-        message: String,
-    },
+    ConnectorScan { device_id: u64, message: String },
     #[error("failed to negotiate a native output format for {output}: {message}")]
     OutputFormats { output: String, message: String },
     #[error("failed to install native output buffers for {output}: {message}")]

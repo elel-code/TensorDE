@@ -17,11 +17,14 @@ pub(crate) enum TerminationSignal {
 impl TerminationSignal {
     #[cfg(target_os = "linux")]
     fn from_raw(raw: i32) -> Option<Self> {
-        match raw {
-            libc::SIGHUP => Some(Self::Hangup),
-            libc::SIGINT => Some(Self::Interrupt),
-            libc::SIGTERM => Some(Self::Terminate),
-            _ => None,
+        if raw == rustix::process::Signal::HUP.as_raw() {
+            Some(Self::Hangup)
+        } else if raw == rustix::process::Signal::INT.as_raw() {
+            Some(Self::Interrupt)
+        } else if raw == rustix::process::Signal::TERM.as_raw() {
+            Some(Self::Terminate)
+        } else {
+            None
         }
     }
 }
@@ -53,7 +56,7 @@ pub enum SignalRuntimeError {
 #[allow(unsafe_code)]
 mod platform {
     use std::{
-        mem,
+        ffi::c_int,
         os::fd::{FromRawFd, OwnedFd},
         sync::Arc,
         thread::{self, JoinHandle},
@@ -63,11 +66,18 @@ mod platform {
         io::AsyncReadExt,
         runtime::{Runtime, fd::AsyncFd},
     };
+    use rustix::{fs::OFlags, runtime::KernelSigSet};
     use tensor_runtime::{EventfdWake, WakeSink, WorkerTx};
 
     use super::{SignalEvent, SignalRuntimeError, TerminationSignal};
 
-    const SIGNAL_INFO_SIZE: usize = mem::size_of::<libc::signalfd_siginfo>();
+    // `signalfd_siginfo` is a fixed 128-byte Linux userspace ABI record.
+    const SIGNAL_INFO_SIZE: usize = 128;
+
+    unsafe extern "C" {
+        #[link_name = "signalfd"]
+        fn create_linux_signal_fd(fd: c_int, mask: *const KernelSigSet, flags: c_int) -> c_int;
+    }
 
     pub(crate) struct SignalRuntime {
         stop: Arc<EventfdWake>,
@@ -175,8 +185,12 @@ mod platform {
     }
 
     fn create_signal_fd() -> std::io::Result<OwnedFd> {
-        let set = crate::signals::termination_signal_set()?;
-        let raw = unsafe { libc::signalfd(-1, &set, libc::SFD_NONBLOCK | libc::SFD_CLOEXEC) };
+        let set = crate::signals::termination_signal_set();
+        let flags = (OFlags::NONBLOCK | OFlags::CLOEXEC).bits() as c_int;
+        // Rustix intentionally does not expose signalfd construction. Its
+        // KernelSigSet is layout-compatible with the kernel prefix consumed
+        // by the C ABI wrapper; all later I/O is a submitted Compio operation.
+        let raw = unsafe { create_linux_signal_fd(-1, &set, flags) };
         if raw < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -203,9 +217,9 @@ mod platform {
             let runtime = Runtime::new().unwrap();
             let received = runtime.block_on(async {
                 let mut signal_fd = AsyncFd::new(create_signal_fd().unwrap()).unwrap();
-                let target = unsafe { libc::pthread_self() };
-                let sender = std::thread::spawn(move || {
-                    assert_eq!(unsafe { libc::pthread_kill(target, libc::SIGTERM) }, 0);
+                let target = rustix::thread::gettid();
+                let sender = std::thread::spawn(move || unsafe {
+                    rustix::runtime::tkill(target, rustix::process::Signal::TERM).unwrap();
                 });
                 let signal = read_signal(&mut signal_fd).await.unwrap();
                 sender.join().unwrap();

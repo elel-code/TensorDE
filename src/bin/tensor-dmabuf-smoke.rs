@@ -204,7 +204,7 @@ enum SmokeError {
         source: std::io::Error,
     },
     #[error("linux-dmabuf feedback device {0} does not resolve to a /dev/dri/renderD* node")]
-    RenderNodeNotFound(libc::dev_t),
+    RenderNodeNotFound(u64),
     #[error("failed to open render node {path}: {source}")]
     OpenRenderNode {
         path: PathBuf,

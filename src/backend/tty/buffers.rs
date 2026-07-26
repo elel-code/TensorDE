@@ -26,7 +26,7 @@ impl TtyBackend {
         let output_name = descriptor.name.clone();
         let expected_size = (descriptor.mode.width, descriptor.mode.height);
         let expected_format = descriptor.native_format;
-        let device_id = output_id.device_id as libc::dev_t;
+        let device_id = output_id.device_id;
         let device = self
             .devices
             .get_mut(&device_id)
@@ -110,7 +110,7 @@ impl TtyBackend {
     }
 
     pub(crate) fn remove_output_buffers(&mut self, output_id: BackendOutputId) {
-        if let Some(device) = self.devices.get_mut(&(output_id.device_id as libc::dev_t)) {
+        if let Some(device) = self.devices.get_mut(&output_id.device_id) {
             device.native_targets.remove(&output_id);
         }
     }

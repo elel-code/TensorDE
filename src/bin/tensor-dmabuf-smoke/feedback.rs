@@ -17,7 +17,7 @@ pub(super) struct FeedbackState {
     table: Vec<DmabufFormat>,
     pending: FeedbackTranche,
     tranches: Vec<FeedbackTranche>,
-    main_device: Option<libc::dev_t>,
+    main_device: Option<u64>,
     done: bool,
     error: Option<String>,
 }
@@ -29,7 +29,7 @@ pub(super) struct FeedbackTranche {
 
 #[derive(Debug)]
 pub(super) struct ReadyFeedback {
-    pub(super) main_device: libc::dev_t,
+    pub(super) main_device: u64,
     table: Vec<DmabufFormat>,
     tranches: Vec<FeedbackTranche>,
 }
@@ -148,15 +148,15 @@ fn read_format_table(fd: OwnedFd, size: u32) -> Result<Vec<DmabufFormat>, String
         .collect())
 }
 
-fn parse_device(bytes: &[u8]) -> Result<libc::dev_t, String> {
-    let expected = std::mem::size_of::<libc::dev_t>();
-    let raw: [u8; std::mem::size_of::<libc::dev_t>()] = bytes.try_into().map_err(|_| {
+fn parse_device(bytes: &[u8]) -> Result<u64, String> {
+    let expected = std::mem::size_of::<u64>();
+    let raw: [u8; std::mem::size_of::<u64>()] = bytes.try_into().map_err(|_| {
         format!(
             "DRM device array has {} bytes, expected {expected}",
             bytes.len()
         )
     })?;
-    Ok(libc::dev_t::from_ne_bytes(raw))
+    Ok(u64::from_ne_bytes(raw))
 }
 
 fn parse_indices(bytes: &[u8]) -> Result<Vec<u16>, String> {

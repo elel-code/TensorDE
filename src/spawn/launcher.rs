@@ -10,11 +10,15 @@ use std::{
 use std::thread;
 
 use rustix::{
-    io::{read, retry_on_intr, write},
+    io::{close, read, retry_on_intr, write},
     pipe::{PipeFlags, pipe_with},
+    process::{Pid, getpid},
+    runtime::{Fork, exit_group, kernel_fork},
 };
 use thiserror::Error;
 
+#[cfg(feature = "systemd")]
+use rustix::process::{Signal, kill_process};
 #[cfg(feature = "systemd")]
 use tracing::warn;
 
@@ -353,17 +357,16 @@ fn prepare_double_fork(command: &mut Command, pipes: &ForkPipes) {
             let pid_write = pid_write.take().map(|fd| OwnedFd::from_raw_fd(fd));
             let gate_read = gate_read.take().map(|fd| OwnedFd::from_raw_fd(fd));
 
-            let intermediate_pid = libc::getpid();
-            match libc::fork() {
-                -1 => Err(io::Error::last_os_error()),
-                0 => {
+            let intermediate_pid = getpid();
+            match kernel_fork().map_err(io::Error::from)? {
+                Fork::Child(_) => {
                     drop(pid_write);
                     if let Some(fd) = gate_read.as_ref() {
                         wait_for_release(fd)?;
                     }
                     Ok(())
                 }
-                client_pid => {
+                Fork::ParentOf(client_pid) => {
                     let message = encode_pids(intermediate_pid, client_pid)?;
                     if let Some(fd) = pid_write.as_ref() {
                         write_all(fd, &message)?;
@@ -372,17 +375,17 @@ fn prepare_double_fork(command: &mut Command, pipes: &ForkPipes) {
                     if let Some(fd) = gate_read.as_ref() {
                         wait_for_release(fd)?;
                     }
-                    libc::_exit(0)
+                    exit_group(0)
                 }
             }
         });
     }
 }
 
-fn encode_pids(intermediate: libc::pid_t, client: libc::pid_t) -> io::Result<[u8; 8]> {
-    let intermediate = u32::try_from(intermediate)
+fn encode_pids(intermediate: Pid, client: Pid) -> io::Result<[u8; 8]> {
+    let intermediate = u32::try_from(intermediate.as_raw_pid())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid intermediate PID"))?;
-    let client = u32::try_from(client)
+    let client = u32::try_from(client.as_raw_pid())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid client PID"))?;
     let mut message = [0; 8];
     message[..4].copy_from_slice(&intermediate.to_ne_bytes());
@@ -417,16 +420,15 @@ fn pipe_cloexec() -> io::Result<(OwnedFd, OwnedFd)> {
 #[allow(unsafe_code)]
 fn close_fd(fd: RawFd) {
     unsafe {
-        libc::close(fd);
+        close(fd);
     }
 }
 
 #[cfg(feature = "systemd")]
-#[allow(unsafe_code)]
 fn terminate_blocked_client(pid: u32) {
-    unsafe {
+    if let Some(pid) = Pid::from_raw(pid as i32) {
         // The client is still blocked before exec while its transient scope is created.
-        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        let _ = kill_process(pid, Signal::KILL);
     }
 }
 

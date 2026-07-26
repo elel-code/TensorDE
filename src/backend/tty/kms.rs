@@ -70,7 +70,7 @@ impl TtyBackend {
             return false;
         }
         self.devices
-            .get(&(output.device_id as libc::dev_t))
+            .get(&output.device_id)
             .and_then(|device| device.native_targets.get(&output))
             .is_some_and(|target| target.ready_for(slot))
     }
@@ -82,7 +82,7 @@ impl TtyBackend {
         timeline_value: u64,
         sync_fd: OwnedFd,
     ) -> Result<(), BackendError> {
-        let device_id = output.device_id as libc::dev_t;
+        let device_id = output.device_id;
         let device = self
             .devices
             .get_mut(&device_id)
@@ -102,7 +102,7 @@ impl TtyBackend {
     pub(crate) fn mark_output_faulted(&mut self, output: BackendOutputId) {
         if let Some(target) = self
             .devices
-            .get_mut(&(output.device_id as libc::dev_t))
+            .get_mut(&output.device_id)
             .and_then(|device| device.native_targets.get_mut(&output))
         {
             target.mark_faulted();

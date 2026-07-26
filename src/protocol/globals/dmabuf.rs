@@ -27,7 +27,7 @@ impl DmabufProtocol {
     pub(crate) fn install(
         &mut self,
         display: &DisplayHandle,
-        main_device: libc::dev_t,
+        main_device: u64,
         formats: impl IntoIterator<Item = tensor_host::DrmFormat>,
     ) -> Result<bool, String> {
         let formats = formats

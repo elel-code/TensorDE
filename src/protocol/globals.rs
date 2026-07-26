@@ -212,7 +212,7 @@ impl ProtocolGlobals {
     pub(crate) fn install_dmabuf(
         &mut self,
         display: &DisplayHandle,
-        main_device: libc::dev_t,
+        main_device: u64,
         formats: impl IntoIterator<Item = tensor_host::DrmFormat>,
     ) -> Result<bool, String> {
         self.dmabuf.install(display, main_device, formats)

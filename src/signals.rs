@@ -34,58 +34,41 @@ pub(crate) fn report_termination(signal: TerminationSignal) {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn termination_signal_set() -> io::Result<libc::sigset_t> {
+pub(super) fn termination_signal_set() -> rustix::runtime::KernelSigSet {
     platform::termination_signal_set()
 }
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod platform {
-    use std::{io, mem};
+    use std::io;
+
+    use rustix::{
+        process::Signal,
+        runtime::{How, KernelSigSet, kernel_sigprocmask},
+    };
 
     pub(super) fn block_early() -> io::Result<()> {
-        set_signal_mask(&termination_signal_set()?)
+        set_signal_mask(&termination_signal_set())
     }
 
     pub(super) fn unblock_all_for_child() -> io::Result<()> {
-        set_signal_mask(&empty_signal_set()?)
+        set_signal_mask(&KernelSigSet::empty())
     }
 
-    fn empty_signal_set() -> io::Result<libc::sigset_t> {
-        let mut set = mem::MaybeUninit::uninit();
-        if unsafe { libc::sigemptyset(set.as_mut_ptr()) } == 0 {
-            Ok(unsafe { set.assume_init() })
-        } else {
-            Err(io::Error::last_os_error())
-        }
+    pub(super) fn termination_signal_set() -> KernelSigSet {
+        let mut set = KernelSigSet::empty();
+        set.insert(Signal::INT);
+        set.insert(Signal::TERM);
+        set.insert(Signal::HUP);
+        set
     }
 
-    pub(super) fn termination_signal_set() -> io::Result<libc::sigset_t> {
-        let mut set = empty_signal_set()?;
-        unsafe {
-            add_signal(&mut set, libc::SIGINT)?;
-            add_signal(&mut set, libc::SIGTERM)?;
-            add_signal(&mut set, libc::SIGHUP)?;
-        }
-        Ok(set)
-    }
-
-    // SAFETY: callers pass one of libc's valid signal constants.
-    unsafe fn add_signal(set: &mut libc::sigset_t, signal: libc::c_int) -> io::Result<()> {
-        if unsafe { libc::sigaddset(set, signal) } == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    fn set_signal_mask(set: &libc::sigset_t) -> io::Result<()> {
-        let result = unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, set, std::ptr::null_mut()) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::from_raw_os_error(result))
-        }
+    fn set_signal_mask(set: &KernelSigSet) -> io::Result<()> {
+        // These are ordinary application signals, never runtime-reserved RT signals.
+        unsafe { kernel_sigprocmask(How::SETMASK, Some(set)) }
+            .map(drop)
+            .map_err(io::Error::from)
     }
 }
 

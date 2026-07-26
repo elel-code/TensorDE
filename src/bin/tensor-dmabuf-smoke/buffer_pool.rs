@@ -8,7 +8,7 @@ use gbm::{BufferObject, BufferObjectFlags, Device as GbmDevice, Format as GbmFor
 
 use super::{SmokeError, feedback::DmabufFormat};
 
-pub(super) fn find_render_node(device: libc::dev_t) -> Result<PathBuf, SmokeError> {
+pub(super) fn find_render_node(device: u64) -> Result<PathBuf, SmokeError> {
     let directory = Path::new("/dev/dri");
     for entry in fs::read_dir(directory).map_err(|source| SmokeError::ReadDrmDirectory {
         path: directory.to_owned(),
