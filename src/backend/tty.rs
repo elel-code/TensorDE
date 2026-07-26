@@ -4,12 +4,10 @@ use std::{
     sync::Arc,
 };
 
+use gbm::{BufferObjectFlags, Device as GbmDevice};
 use rustix::fs::{OFlags, makedev};
 use smithay::{
-    backend::{
-        allocator::gbm::{GbmBufferFlags, GbmDevice},
-        drm::{DrmDevice, DrmDeviceFd, DrmNode, NodeType},
-    },
+    backend::drm::{DrmDevice, DrmDeviceFd, DrmNode, NodeType},
     utils::DeviceFd,
 };
 use thiserror::Error;
@@ -17,9 +15,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     BackendConfig, BackendOutputEvent,
-    host_map::{
-        host_drm_format, physical_mode_from_smithay, smithay_drm_format, subpixel_from_smithay,
-    },
+    host_map::{host_drm_format, physical_mode_from_smithay, subpixel_from_smithay},
     output::{ConnectorSnapshot, OutputPlan, OutputPolicy, diff_output_plans},
 };
 use crate::render::{
@@ -606,19 +602,20 @@ fn negotiate_device_output_formats(
             }
         }
 
-        let usage = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING;
+        let usage = BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING;
         let gbm = kms_scanout
             .iter()
             .copied()
-            .map(|format| {
-                let smithay = smithay_drm_format(format);
-                GbmFormatCapability {
+            .filter_map(|format| {
+                let code = gbm::Format::try_from(format.code.raw()).ok()?;
+                Some(GbmFormatCapability {
                     format,
-                    scanout: device.gbm.is_format_supported(smithay.code, usage),
-                    plane_count: device
-                        .gbm
-                        .format_modifier_plane_count(smithay.code, smithay.modifier),
-                }
+                    scanout: device.gbm.is_format_supported(code, usage),
+                    plane_count: device.gbm.format_modifier_plane_count(
+                        code,
+                        gbm::Modifier::from(format.modifier.raw()),
+                    ),
+                })
             })
             .collect::<Vec<_>>();
         let candidates =

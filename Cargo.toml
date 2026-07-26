@@ -32,7 +32,6 @@ tty = [
     "dep:libseat",
     "dep:udev",
     "smithay/backend_drm",
-    "smithay/backend_gbm",
 ]
 xwayland = ["smithay/xwayland"]
 
@@ -46,7 +45,7 @@ drm = { version = "0.14", optional = true }
 drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
 futures-util = "0.3"
-gbm = { version = "0.18", optional = true }
+gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
 input = { version = "0.10", default-features = false, optional = true, features = ["libinput_1_19", "udev"] }
 libseat = { version = "0.2", default-features = false, optional = true }
 rustix = { version = "1", features = ["fs", "net", "pipe", "process", "runtime", "thread", "time"] }

@@ -1,13 +1,6 @@
-use std::collections::BTreeMap;
-
-use smithay::backend::{
-    allocator::dmabuf::{Dmabuf, DmabufFlags},
-    drm::DrmNode,
-};
-
 use crate::{
     backend::BackendOutputId,
-    render::{ExportedDmabuf, NativeOutputBuffer, OutputFormat},
+    render::{DrmNodeId, ExportedDmabuf, NativeOutputBuffer, OutputFormat},
 };
 
 use super::{BackendError, TtyBackend, kms::KmsOutput};
@@ -26,6 +19,8 @@ impl TtyBackend {
         let output_name = descriptor.name.clone();
         let expected_size = (descriptor.mode.width, descriptor.mode.height);
         let expected_format = descriptor.native_format;
+        let expected_render_node =
+            DrmNodeId::new(self.render_node.major(), self.render_node.minor());
         let device_id = output_id.device_id;
         let device = self
             .devices
@@ -67,39 +62,37 @@ impl TtyBackend {
                 ),
             });
         }
-        let mut imported = BTreeMap::new();
-        for buffer in buffers {
-            if usize::from(buffer.slot) >= NativeOutputBuffer::COUNT {
+        let mut buffers = buffers;
+        buffers.sort_unstable_by_key(|buffer| buffer.slot);
+        let mut imported = Vec::with_capacity(buffers.len());
+        for (expected_slot, buffer) in buffers.into_iter().enumerate() {
+            if usize::from(buffer.slot) != expected_slot {
                 return Err(BackendError::OutputBuffers {
                     output: output_name.clone(),
-                    message: format!("renderer returned invalid slot {}", buffer.slot),
+                    message: format!(
+                        "renderer returned non-contiguous or duplicate slot {}; expected {expected_slot}",
+                        buffer.slot
+                    ),
                 });
             }
-            if imported.contains_key(&buffer.slot) {
-                return Err(BackendError::OutputBuffers {
-                    output: output_name.clone(),
-                    message: format!("renderer returned duplicate slot {}", buffer.slot),
-                });
-            }
-            validate_output_dmabuf(&buffer.dmabuf, expected_size, expected_format).map_err(
-                |message| BackendError::OutputBuffers {
-                    output: output_name.clone(),
-                    message,
-                },
-            )?;
-            let dmabuf =
-                smithay_dmabuf(&buffer.dmabuf).map_err(|message| BackendError::OutputBuffers {
-                    output: output_name.clone(),
-                    message,
-                })?;
-            imported.insert(buffer.slot, (buffer.slot, dmabuf));
+            validate_output_dmabuf(
+                &buffer.dmabuf,
+                expected_size,
+                expected_format,
+                expected_render_node,
+            )
+            .map_err(|message| BackendError::OutputBuffers {
+                output: output_name.clone(),
+                message,
+            })?;
+            imported.push((buffer.slot, buffer.dmabuf));
         }
         let target = KmsOutput::new(
             &mut device.drm,
             &device.gbm,
             &descriptor,
             drm_mode,
-            imported.into_values().collect(),
+            imported,
         )
         .map_err(|error| BackendError::OutputBuffers {
             output: descriptor.name.clone(),
@@ -120,6 +113,7 @@ fn validate_output_dmabuf(
     dmabuf: &ExportedDmabuf,
     expected_size: (i32, i32),
     expected_format: OutputFormat,
+    expected_render_node: DrmNodeId,
 ) -> Result<(), String> {
     let expected_width = u32::try_from(expected_size.0).unwrap_or(u32::MAX);
     let expected_height = u32::try_from(expected_size.1).unwrap_or(u32::MAX);
@@ -142,35 +136,16 @@ fn validate_output_dmabuf(
             expected_format.plane_count
         ));
     }
-    Ok(())
-}
-
-fn smithay_dmabuf(dmabuf: &ExportedDmabuf) -> Result<Dmabuf, String> {
-    let width = i32::try_from(dmabuf.size.width)
-        .map_err(|_| "dma-buf width exceeds Smithay buffer coordinates".to_owned())?;
-    let height = i32::try_from(dmabuf.size.height)
-        .map_err(|_| "dma-buf height exceeds Smithay buffer coordinates".to_owned())?;
-    let format = crate::backend::smithay_drm_format(dmabuf.format);
-    let mut builder = Dmabuf::builder(
-        (width, height),
-        format.code,
-        format.modifier,
-        DmabufFlags::empty(),
-    );
-    for plane in &dmabuf.planes {
-        if !builder.add_plane(plane.fd.clone(), plane.offset, plane.stride) {
-            return Err("dma-buf has too many planes for the Smithay adapter".to_owned());
+    match dmabuf.node {
+        Some(node) if node == expected_render_node => {}
+        Some(node) => {
+            return Err(format!(
+                "dma-buf render node {node} does not match the Vulkan-selected node {expected_render_node}"
+            ));
         }
+        None => return Err("dma-buf has no Vulkan render-node identity".to_owned()),
     }
-    if let Some(node) = dmabuf.node {
-        let device_id = rustix::fs::makedev(node.major(), node.minor());
-        let node = DrmNode::from_dev_id(device_id)
-            .map_err(|error| format!("invalid dma-buf render node: {error}"))?;
-        builder.set_node(node);
-    }
-    builder
-        .build()
-        .ok_or_else(|| "dma-buf has no planes".to_owned())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -198,7 +173,7 @@ mod tests {
         ExportedDmabuf {
             size,
             format: output_format.format,
-            node: None,
+            node: Some(DrmNodeId::new(226, 128)),
             planes: vec![DmabufPlane {
                 fd: Arc::new(fd),
                 offset: 0,
@@ -210,11 +185,13 @@ mod tests {
     #[test]
     fn output_dmabuf_validation_accepts_the_negotiated_contract() {
         let output_format = format();
+        let render_node = DrmNodeId::new(226, 128);
         assert!(
             validate_output_dmabuf(
                 &dmabuf(Size::new(1920, 1080), output_format),
                 (1920, 1080),
                 output_format,
+                render_node,
             )
             .is_ok()
         );
@@ -223,13 +200,25 @@ mod tests {
     #[test]
     fn output_dmabuf_validation_rejects_size_format_and_plane_mismatches() {
         let output_format = format();
+        let render_node = DrmNodeId::new(226, 128);
         let buffer = dmabuf(Size::new(1280, 720), output_format);
-        assert!(validate_output_dmabuf(&buffer, (1920, 1080), output_format).is_err());
+        assert!(validate_output_dmabuf(&buffer, (1920, 1080), output_format, render_node).is_err());
         let mut different = output_format;
         different.format.code = Fourcc::ARGB8888;
-        assert!(validate_output_dmabuf(&buffer, (1280, 720), different).is_err());
+        assert!(validate_output_dmabuf(&buffer, (1280, 720), different, render_node).is_err());
         let mut different_planes = output_format;
         different_planes.plane_count = 2;
-        assert!(validate_output_dmabuf(&buffer, (1280, 720), different_planes).is_err());
+        assert!(
+            validate_output_dmabuf(&buffer, (1280, 720), different_planes, render_node).is_err()
+        );
+        assert!(
+            validate_output_dmabuf(
+                &buffer,
+                (1280, 720),
+                output_format,
+                DrmNodeId::new(226, 129),
+            )
+            .is_err()
+        );
     }
 }

@@ -4,22 +4,24 @@ use std::{
 };
 
 use drm::control::{Mode as DrmMode, connector, crtc};
+use gbm::Device as GbmDevice;
 use smithay::{
-    backend::{
-        allocator::{dmabuf::Dmabuf, gbm::GbmDevice},
-        drm::{
-            DrmDevice, DrmDeviceFd, DrmSurface, PlaneConfig, PlaneState,
-            gbm::{GbmFramebuffer, framebuffer_from_dmabuf},
-        },
-    },
+    backend::drm::{DrmDevice, DrmDeviceFd, DrmSurface, PlaneConfig, PlaneState},
     utils::{Rectangle, Transform},
 };
 use thiserror::Error;
 use tracing::warn;
 
-use crate::backend::{BackendOutputId, OutputDescriptor};
+use crate::{
+    backend::{BackendOutputId, OutputDescriptor},
+    render::ExportedDmabuf,
+};
 
 use super::{BackendError, TtyBackend};
+
+mod framebuffer;
+
+use framebuffer::{ScanoutFramebuffer, framebuffer_from_dmabuf};
 
 impl TtyBackend {
     pub(crate) fn reset_outputs_after_session_resume(&mut self) {
@@ -138,7 +140,7 @@ impl KmsOutput {
         gbm: &GbmDevice<DrmDeviceFd>,
         descriptor: &OutputDescriptor,
         mode: DrmMode,
-        buffers: Vec<(u8, Dmabuf)>,
+        buffers: Vec<(u8, ExportedDmabuf)>,
     ) -> Result<Self, KmsError> {
         let crtc = crtc_handle(descriptor.crtc)?;
         let connector = connector_handle(descriptor.id.connector_id)?;
@@ -152,16 +154,16 @@ impl KmsOutput {
         let mut slots = Vec::with_capacity(buffers.len());
         for (slot, dmabuf) in buffers {
             let framebuffer =
-                framebuffer_from_dmabuf(surface.device_fd(), gbm, &dmabuf, true, false).map_err(
-                    |source| KmsError::CreateFramebuffer {
+                framebuffer_from_dmabuf(surface.device_fd(), gbm, &dmabuf).map_err(|source| {
+                    KmsError::CreateFramebuffer {
                         slot,
                         message: source.to_string(),
-                    },
-                )?;
+                    }
+                })?;
             slots.push(KmsSlot {
                 slot,
-                _dmabuf: dmabuf,
                 framebuffer,
+                _dmabuf: dmabuf,
             });
         }
         slots.sort_by_key(|slot| slot.slot);
@@ -276,8 +278,8 @@ impl Drop for KmsOutput {
 
 struct KmsSlot {
     slot: u8,
-    _dmabuf: Dmabuf,
-    framebuffer: GbmFramebuffer,
+    framebuffer: ScanoutFramebuffer,
+    _dmabuf: ExportedDmabuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
