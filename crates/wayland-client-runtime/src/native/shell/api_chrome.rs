@@ -1,5 +1,6 @@
 //! Toplevel icon and background blur for [`NativeShell`].
 
+use wayland_client::Proxy;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 
 use super::api::NativeShell;
@@ -159,38 +160,54 @@ impl NativeShell {
 
     /// Request server/client/none decorations via `zxdg_decoration_manager_v1`.
     ///
-    /// When the global is missing, returns Ok and leaves compositor defaults.
+    /// When the preference is [`DecorationPreference::Client`] (or the
+    /// compositor refuses SSD), the native shell draws a full CSD frame
+    /// (titlebar, borders, buttons, move/resize/menu hit-testing).
+    ///
+    /// When the global is missing, Client/None still enable the CSD path.
     /// Double-buffered with the next surface commit.
     pub fn set_decorations(
         &mut self,
         id: NativeSurfaceId,
         preference: DecorationPreference,
     ) -> Result<(), NativeError> {
-        let Some(manager) = self.state.decoration_manager.clone() else {
-            return Ok(());
-        };
-        let qh = self.queue.handle();
-        let record = self
-            .state
-            .toplevels
-            .get_mut(&id)
-            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        if record.decoration.is_none() {
-            let deco = manager.get_toplevel_decoration(&record.toplevel, &qh, ());
-            record.decoration = Some(deco);
+        {
+            let record = self
+                .state
+                .toplevels
+                .get_mut(&id)
+                .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+            record.decorations_preference = preference;
         }
-        let deco = record
-            .decoration
-            .as_ref()
-            .expect("decoration just created");
-        match preference {
-            DecorationPreference::Server => {
-                deco.set_mode(DecorationMode::ServerSide);
+
+        if let Some(manager) = self.state.decoration_manager.clone() {
+            let qh = self.queue.handle();
+            let record = self
+                .state
+                .toplevels
+                .get_mut(&id)
+                .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+            if record.decoration.is_none() {
+                let deco = manager.get_toplevel_decoration(&record.toplevel, &qh, ());
+                record.decoration = Some(deco);
             }
-            DecorationPreference::Client | DecorationPreference::None => {
-                deco.set_mode(DecorationMode::ClientSide);
+            let deco = record
+                .decoration
+                .as_ref()
+                .expect("decoration just created");
+            match preference {
+                DecorationPreference::Server => {
+                    deco.set_mode(DecorationMode::ServerSide);
+                }
+                DecorationPreference::Client | DecorationPreference::None => {
+                    deco.set_mode(DecorationMode::ClientSide);
+                }
             }
+            let deco_id = deco.id().protocol_id();
+            self.state.decoration_objects.insert(deco_id, id);
         }
+
+        self.sync_csd_for(id)?;
         self.connection.flush()?;
         Ok(())
     }

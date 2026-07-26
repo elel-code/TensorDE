@@ -158,6 +158,8 @@ mod tests {
             map_cursor_icon(CursorIcon::ColResize),
             SctkCursorIcon::ColResize
         );
+        assert_eq!(map_cursor_icon(CursorIcon::NResize), SctkCursorIcon::NResize);
+        assert_eq!(map_cursor_icon(CursorIcon::NwResize), SctkCursorIcon::NwResize);
     }
 
     #[test]

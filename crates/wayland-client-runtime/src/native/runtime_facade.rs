@@ -284,6 +284,14 @@ impl NativeRuntime {
             CursorIcon::Pointer => CursorShape::Pointer,
             CursorIcon::Text => CursorShape::Text,
             CursorIcon::ColResize => CursorShape::ColResize,
+            CursorIcon::NResize => CursorShape::NResize,
+            CursorIcon::SResize => CursorShape::SResize,
+            CursorIcon::EResize => CursorShape::EResize,
+            CursorIcon::WResize => CursorShape::WResize,
+            CursorIcon::NeResize => CursorShape::NeResize,
+            CursorIcon::NwResize => CursorShape::NwResize,
+            CursorIcon::SeResize => CursorShape::SeResize,
+            CursorIcon::SwResize => CursorShape::SwResize,
         };
         self.shell
             .set_cursor_shape(shape)

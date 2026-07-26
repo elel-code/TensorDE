@@ -88,6 +88,9 @@ impl NativeShell {
             .as_ref()
             .ok_or_else(|| NativeError::Registry("xdg_wm_base".into()))?;
 
+        let title_str = title.into();
+        let app_id_str = app_id.into();
+
         let wl = compositor.create_surface(&qh, ());
         // Fractional-scale clients keep buffer_scale at 1.
         wl.set_buffer_scale(1);
@@ -121,8 +124,8 @@ impl NativeShell {
         };
         let xdg = wm_base.get_xdg_surface(&wl, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_title(title.into());
-        toplevel.set_app_id(app_id.into());
+        toplevel.set_title(title_str.clone());
+        toplevel.set_app_id(app_id_str);
 
         if let Some(parent_id) = parent {
             if let Some(parent_rec) = self.state.toplevels.get(&parent_id) {
@@ -180,6 +183,8 @@ impl NativeShell {
                 icon_shm: Vec::new(),
                 blur_effect: None,
                 decoration: None,
+                decoration_mode: None,
+                decorations_preference: crate::surface::DecorationPreference::Server,
                 pointer_capture: crate::PointerCaptureState::default(),
                 configured: false,
                 pending_size: Some((width as i32, height as i32)),
@@ -188,8 +193,11 @@ impl NativeShell {
                 logical_w: width,
                 logical_h: height,
                 scale_factor: 1.0,
+                title: title_str,
             },
         );
+        // Prepare CSD as fallback when compositor has no SSD / user later asks Client.
+        let _ = self.sync_csd_for(id);
         self.connection.flush()?;
         Ok(id)
     }

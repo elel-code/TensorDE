@@ -8,6 +8,22 @@ pub enum CursorIcon {
     Default,
     Pointer,
     Text,
+    /// North (top edge) resize.
+    NResize,
+    /// South (bottom edge) resize.
+    SResize,
+    /// East (right edge) resize.
+    EResize,
+    /// West (left edge) resize.
+    WResize,
+    /// North-east corner resize.
+    NeResize,
+    /// North-west corner resize.
+    NwResize,
+    /// South-east corner resize.
+    SeResize,
+    /// South-west corner resize.
+    SwResize,
 }
 
 /// The kind of input event that produced a Wayland serial.

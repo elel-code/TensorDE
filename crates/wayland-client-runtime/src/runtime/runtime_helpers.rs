@@ -98,6 +98,14 @@ fn map_cursor_icon(icon: CursorIcon) -> SctkCursorIcon {
         CursorIcon::Default => SctkCursorIcon::Default,
         CursorIcon::Pointer => SctkCursorIcon::Pointer,
         CursorIcon::Text => SctkCursorIcon::Text,
+        CursorIcon::NResize => SctkCursorIcon::NResize,
+        CursorIcon::SResize => SctkCursorIcon::SResize,
+        CursorIcon::EResize => SctkCursorIcon::EResize,
+        CursorIcon::WResize => SctkCursorIcon::WResize,
+        CursorIcon::NeResize => SctkCursorIcon::NeResize,
+        CursorIcon::NwResize => SctkCursorIcon::NwResize,
+        CursorIcon::SeResize => SctkCursorIcon::SeResize,
+        CursorIcon::SwResize => SctkCursorIcon::SwResize,
     }
 }
 

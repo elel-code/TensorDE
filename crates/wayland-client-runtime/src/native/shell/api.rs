@@ -2,7 +2,7 @@
 
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
-    wl_compositor, wl_data_device_manager, wl_output, wl_seat, wl_shm,
+    wl_compositor, wl_data_device_manager, wl_output, wl_seat, wl_shm, wl_subcompositor,
 };
 use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
@@ -52,6 +52,11 @@ impl NativeShell {
 
         if let Ok(compositor) = globals.bind::<wl_compositor::WlCompositor, _, _>(&qh, 1..=6, ()) {
             state.compositor = Some(compositor);
+        }
+        if let Ok(sub) =
+            globals.bind::<wl_subcompositor::WlSubcompositor, _, _>(&qh, 1..=1, ())
+        {
+            state.subcompositor = Some(sub);
         }
         if let Ok(shm) = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ()) {
             state.shm = Some(shm);
@@ -262,6 +267,7 @@ impl NativeShell {
             background_blur: self.state.background_blur_capable,
             xdg_decoration: self.state.decoration_manager.is_some(),
             pointer_constraints: self.state.pointer_constraints.is_some(),
+            subcompositor: self.state.subcompositor.is_some(),
         }
     }
 
@@ -542,7 +548,38 @@ impl NativeShell {
     }
 
     pub fn dispatch_pending(&mut self) -> Result<usize, NativeError> {
-        Ok(self.queue.dispatch_pending(&mut self.state)?)
+        let n = self.queue.dispatch_pending(&mut self.state)?;
+        self.after_dispatch()?;
+        Ok(n)
+    }
+
+    /// Apply deferred CSD work that cannot run inside `Dispatch` handlers.
+    fn after_dispatch(&mut self) -> Result<(), NativeError> {
+        // Apply frame actions collected during pointer dispatch.
+        let actions = std::mem::take(&mut self.state.pending_frame_actions);
+        for (id, action) in actions {
+            let _ = self.apply_frame_action(id, action);
+        }
+        if let Some(cursor) = self.state.pending_csd_cursor.take() {
+            self.set_csd_cursor(cursor);
+        }
+        // Sync CSD after decoration mode / configure size changes.
+        let refresh: Vec<_> = self.state.pending_csd_refresh.drain().collect();
+        for id in refresh {
+            let _ = self.sync_csd_for(id);
+        }
+        // Redraw dirty frames (hover, title, state).
+        let dirty: Vec<_> = self
+            .state
+            .csd_frames
+            .iter()
+            .filter(|(_, f)| f.dirty())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in dirty {
+            let _ = self.redraw_csd(id);
+        }
+        Ok(())
     }
 
     pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
@@ -641,12 +678,18 @@ impl NativeShell {
         id: NativeSurfaceId,
         title: impl Into<String>,
     ) -> Result<(), NativeError> {
+        let title = title.into();
         let record = self
             .state
             .toplevels
-            .get(&id)
+            .get_mut(&id)
             .ok_or(NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        record.toplevel.set_title(title.into());
+        record.title = title.clone();
+        record.toplevel.set_title(title.clone());
+        if let Some(frame) = self.state.csd_frames.get_mut(&id) {
+            frame.set_title(title);
+        }
+        let _ = self.redraw_csd(id);
         self.connection.flush()?;
         Ok(())
     }
@@ -691,6 +734,7 @@ impl NativeShell {
             let _ = self.destroy_toplevel(cid);
         }
 
+        self.destroy_csd(id);
         let Some(record) = self.state.toplevels.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown surface {id:?}")));
         };
@@ -711,6 +755,9 @@ impl NativeShell {
             effect.destroy();
         }
         if let Some(deco) = record.decoration {
+            self.state
+                .decoration_objects
+                .remove(&deco.id().protocol_id());
             deco.destroy();
         }
         for (_file, pool, buffer) in record.icon_shm {

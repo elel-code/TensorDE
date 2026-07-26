@@ -3,7 +3,7 @@
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
     wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
-    wl_shm, wl_shm_pool, wl_surface, wl_touch,
+    wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::{
@@ -165,6 +165,30 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for NativeShellState {
     }
 }
 
+impl Dispatch<wl_subcompositor::WlSubcompositor, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &wl_subcompositor::WlSubcompositor,
+        _: wl_subcompositor::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_subsurface::WlSubsurface, ()> for NativeShellState {
+    fn event(
+        _: &mut Self,
+        _: &wl_subsurface::WlSubsurface,
+        _: wl_subsurface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for NativeShellState {
     fn event(
         _: &mut Self,
@@ -213,11 +237,20 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                         Some(record.logical_h).filter(|&h| h > 0),
                     );
                     let toplevel_state = record.pending_states;
+                    let scale = record.scale_factor;
+                    let logical_w = record.logical_w;
+                    let logical_h = record.logical_h;
                     if let Some(buffer) = record.buffer.as_ref() {
                         record.wl.attach(Some(buffer), 0, 0);
                         record.wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
                         record.wl.commit();
                     }
+                    if let Some(frame) = state.csd_frames.get_mut(&id) {
+                        frame.set_content_size(logical_w, logical_h);
+                        frame.set_toplevel_state(toplevel_state);
+                        frame.set_scale(scale);
+                    }
+                    state.pending_csd_refresh.insert(id);
                     state.push(NativeShellEvent::ToplevelConfigure {
                         surface: id,
                         suggested_size: suggested,
@@ -501,6 +534,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .copied();
                 if let Some(id) = id {
                     state.pointer_enter_serial = Some(serial);
+                    // CSD decoration parts: handle chrome input, map focus to parent.
+                    if let Some(&(parent, kind)) = state.csd_part_owners.get(&id) {
+                        state.csd_pointer_part = Some((parent, kind));
+                        state.on_pointer_focus_changed(Some(parent), qh);
+                        if let Some(frame) = state.csd_frames.get_mut(&parent) {
+                            let cursor = frame.on_pointer_enter(kind, surface_x, surface_y);
+                            state.pending_csd_cursor = Some(cursor);
+                        }
+                        return;
+                    }
+                    state.csd_pointer_part = None;
                     state.on_pointer_focus_changed(Some(id), qh);
                     state.push(NativeShellEvent::PointerEnter {
                         surface: id,
@@ -515,6 +559,20 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .get(&surface.id().protocol_id())
                     .copied()
                     .or(state.pointer_focus);
+                if let Some(id) = id {
+                    if state.csd_part_owners.contains_key(&id)
+                        || state.csd_pointer_part.is_some()
+                    {
+                        if let Some((parent, _)) = state.csd_pointer_part.take() {
+                            if let Some(frame) = state.csd_frames.get_mut(&parent) {
+                                frame.on_pointer_leave();
+                            }
+                        }
+                        state.on_pointer_focus_changed(None, qh);
+                        return;
+                    }
+                }
+                state.csd_pointer_part = None;
                 state.on_pointer_focus_changed(None, qh);
                 if let Some(id) = id {
                     state.push(NativeShellEvent::PointerLeave { surface: id });
@@ -523,6 +581,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
             wl_pointer::Event::Motion {
                 surface_x, surface_y, ..
             } => {
+                if let Some((parent, kind)) = state.csd_pointer_part {
+                    if let Some(frame) = state.csd_frames.get_mut(&parent) {
+                        let cursor = frame.on_pointer_motion(kind, surface_x, surface_y);
+                        state.pending_csd_cursor = Some(cursor);
+                    }
+                    return;
+                }
                 if let Some(id) = state.pointer_focus {
                     state.push(NativeShellEvent::PointerMotion {
                         surface: id,
@@ -539,6 +604,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
             } => {
                 state.last_input_serial = Some(serial);
                 let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
+                if let Some((parent, _)) = state.csd_pointer_part {
+                    if let Some(frame) = state.csd_frames.get_mut(&parent) {
+                        if let Some(action) = frame.on_pointer_button(button, pressed) {
+                            state.pending_frame_actions.push((parent, action));
+                        }
+                    }
+                    return;
+                }
                 state.push(NativeShellEvent::PointerButton {
                     surface: state.pointer_focus,
                     button,
@@ -637,6 +710,9 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for NativeShellSt
                 let factor = f64::from(scale) / 120.0;
                 if let Some(record) = state.toplevels.get_mut(&id) {
                     record.scale_factor = factor;
+                }
+                if let Some(frame) = state.csd_frames.get_mut(&id) {
+                    frame.set_scale(factor);
                 }
                 state.push(NativeShellEvent::ScaleFactorChanged {
                     surface: id,

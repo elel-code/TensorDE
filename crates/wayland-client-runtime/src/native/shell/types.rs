@@ -1,6 +1,6 @@
 //! Native shell types and dispatch state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 
 use wayland_client::protocol::{
@@ -333,6 +333,7 @@ pub struct NativeCapabilities {
     pub background_blur: bool,
     pub xdg_decoration: bool,
     pub pointer_constraints: bool,
+    pub subcompositor: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -365,6 +366,10 @@ pub(crate) struct ToplevelRecord {
     pub(crate) decoration: Option<
         wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
     >,
+    /// Last mode from `zxdg_toplevel_decoration_v1.configure` (if any).
+    pub(crate) decoration_mode: Option<crate::surface::DecorationPreference>,
+    /// User preference for decorations (drives CSD enable/hide).
+    pub(crate) decorations_preference: crate::surface::DecorationPreference,
     /// Desired pointer capture while this surface has pointer focus.
     pub(crate) pointer_capture: crate::PointerCaptureState,
     pub(crate) configured: bool,
@@ -375,6 +380,7 @@ pub(crate) struct ToplevelRecord {
     pub(crate) logical_w: u32,
     pub(crate) logical_h: u32,
     pub(crate) scale_factor: f64,
+    pub(crate) title: String,
 }
 
 pub(crate) struct PopupRecord {
@@ -543,6 +549,25 @@ pub struct NativeShellState {
     pub(crate) decoration_manager: Option<
         wayland_protocols::xdg::decoration::zv1::client::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     >,
+    /// `zxdg_toplevel_decoration_v1` object id → content surface.
+    pub(crate) decoration_objects: HashMap<u32, NativeSurfaceId>,
+    pub(crate) subcompositor: Option<
+        wayland_client::protocol::wl_subcompositor::WlSubcompositor,
+    >,
+    /// Client-side decoration frames keyed by content toplevel id.
+    pub(crate) csd_frames: HashMap<NativeSurfaceId, super::csd::ClientSideFrame>,
+    /// CSD part surface id → (parent toplevel, part kind).
+    pub(crate) csd_part_owners: HashMap<NativeSurfaceId, (NativeSurfaceId, super::csd::FramePartKind)>,
+    /// CSD part surface id → parent toplevel (for focus rewrite).
+    pub(crate) csd_surface_to_parent: HashMap<NativeSurfaceId, NativeSurfaceId>,
+    /// Pointer is currently over a CSD part of this parent (if any).
+    pub(crate) csd_pointer_part: Option<(NativeSurfaceId, super::csd::FramePartKind)>,
+    /// Frame actions deferred until after dispatch (move/resize/close/…).
+    pub(crate) pending_frame_actions: Vec<(NativeSurfaceId, super::csd::FrameAction)>,
+    /// Cursor shape requested by CSD hover.
+    pub(crate) pending_csd_cursor: Option<super::csd::FrameCursor>,
+    /// Surfaces whose CSD must be re-synced after dispatch.
+    pub(crate) pending_csd_refresh: HashSet<NativeSurfaceId>,
     /// XKB state from the latest `wl_keyboard.keymap` (optional).
     pub(crate) xkb: Option<crate::native::protocols::core::NativeXkb>,
     /// Accumulated axis values until frame (or immediate emit if no frame).
@@ -629,6 +654,15 @@ impl Default for NativeShellState {
             dnd_icon: None,
             next_transfer_id: 1,
             decoration_manager: None,
+            decoration_objects: HashMap::new(),
+            subcompositor: None,
+            csd_frames: HashMap::new(),
+            csd_part_owners: HashMap::new(),
+            csd_surface_to_parent: HashMap::new(),
+            csd_pointer_part: None,
+            pending_frame_actions: Vec::new(),
+            pending_csd_cursor: None,
+            pending_csd_refresh: HashSet::new(),
             xkb: None,
             axis_h: 0.0,
             axis_v: 0.0,

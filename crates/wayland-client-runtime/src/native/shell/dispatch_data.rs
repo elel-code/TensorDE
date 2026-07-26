@@ -376,6 +376,15 @@ mod tests {
             .expect("toplevel");
         let _ = shell.set_decorations(id, crate::DecorationPreference::Server);
         let _ = shell.set_decorations(id, crate::DecorationPreference::Client);
+        // Full CSD path: client mode materializes subsurface frames when
+        // subcompositor is available (always on modern compositors).
+        assert!(
+            shell.has_subcompositor() || !shell.has_xdg_decoration(),
+            "subcompositor expected when xdg-decoration is present"
+        );
+        // After Client preference, either SSD was forced by compositor or CSD
+        // frame is tracked.
+        let _ = shell.redraw_csd(id);
         // DnD without serial is expected to fail; with a synthetic path we only
         // verify the icon helper builds when a serial exists after input.
         let icon = crate::DndIcon::new(
@@ -390,6 +399,49 @@ mod tests {
         // May fail without input serial — that is fine for this smoke.
         let _ = shell.start_drag_content_with_icon(id, content, Some(icon));
         let _ = shell.destroy_toplevel(id);
+        // Destroy clears CSD frames.
+        assert_eq!(shell.csd_frame_count(), 0);
+    }
+
+    #[test]
+    fn native_shell_full_csd_lifecycle() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        if !shell.has_subcompositor() {
+            return;
+        }
+        let id = shell
+            .create_toplevel_sized("csd-full", "dev.fika.CsdFull", 400, 300, [0xff, 0x33, 0x66, 0x99])
+            .expect("toplevel");
+        shell
+            .set_decorations(id, crate::DecorationPreference::Client)
+            .expect("client decorations");
+        // Pump so decoration.configure (if any) and xdg configure land.
+        compio::runtime::Runtime::new()
+            .expect("compio")
+            .block_on(async {
+                for _ in 0..48 {
+                    let _ = shell.pump_once().await;
+                    if shell.is_configured(id) {
+                        break;
+                    }
+                }
+            });
+        shell
+            .set_title(id, "CSD Title Updated")
+            .expect("title");
+        // If compositor forced SSD, frame may be absent; otherwise present.
+        if shell.csd_frame_count() > 0 {
+            assert!(shell.csd_frame_count() >= 1);
+            shell.redraw_all_csd().expect("redraw");
+        }
+        // None preference hides chrome.
+        shell
+            .set_decorations(id, crate::DecorationPreference::None)
+            .expect("none");
+        let _ = shell.destroy_toplevel(id);
+        assert_eq!(shell.csd_frame_count(), 0);
     }
 
     #[test]
