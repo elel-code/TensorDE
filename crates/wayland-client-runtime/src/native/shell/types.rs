@@ -142,7 +142,6 @@ pub struct NativeCapabilities {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OutputRecord {
-    pub(crate) name: u32,
     pub(crate) scale: i32,
     pub(crate) make: String,
     pub(crate) model: String,

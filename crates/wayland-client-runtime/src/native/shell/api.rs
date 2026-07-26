@@ -63,7 +63,6 @@ impl NativeShell {
                 state.outputs.insert(
                     global.name,
                     super::types::OutputRecord {
-                        name: global.name,
                         scale: 1,
                         make: String::new(),
                         model: String::new(),

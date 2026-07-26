@@ -102,10 +102,34 @@ Without SCTK, a client can:
 
 1. `NativeShell::connect_to_env()`
 2. `create_toplevel(title, app_id)` — solid ARGB buffer via memfd `wl_shm`
-3. `pump_once().await` on Compio — configure/close/key events
+3. `pump_once().await` on Compio
 4. `drain_events()` — linear handling
+5. `surface_handle(id)` — wgpu / Vulkan via raw-window-handle 0.6
+6. `request_frame` / `set_cursor_shape` / `capabilities()`
 
 Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
+
+#### NativeShell capability matrix (vs SCTK Runtime)
+
+| Area | NativeShell | SCTK Runtime (Fika today) |
+| --- | --- | --- |
+| Compio display pump | yes | calloop + optional Compio wait |
+| xdg toplevel | yes | yes |
+| shm solid buffer | yes | via app/wgpu |
+| fractional scale + viewporter | yes | yes |
+| pointer / axis / button | yes | yes |
+| keyboard key/mod/focus | yes (raw keycodes) | yes (+ xkb text) |
+| touch | yes | yes |
+| cursor shape | yes | yes |
+| frame callback | yes | yes |
+| multi output + surface enter | yes | yes |
+| raw-window-handle | yes | yes |
+| popup / dialog | no | yes |
+| text input v3 | no | yes |
+| data device clipboard/dnd | no | yes |
+| layer shell | no | yes |
+| xkb composed text | no | yes |
+| blur / activation / icons | no | yes |
 
 ## SCTK surface (to eliminate)
 
