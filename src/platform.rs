@@ -111,7 +111,6 @@ struct WindowState {
     scale_factor: f64,
     configured: bool,
     redraw_requested: bool,
-    frame_pending: bool,
 }
 
 enum RuntimeCommand {
@@ -232,21 +231,10 @@ impl WaylandWindow {
     }
 
     pub fn pre_present_notify(&self) {
-        let should_arm = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("Wayland window state mutex poisoned");
-            if state.frame_pending {
-                false
-            } else {
-                state.frame_pending = true;
-                true
-            }
-        };
-        if should_arm {
-            self.shared.push(RuntimeCommand::ArmFrame(self.id));
-        }
+        // Protocol-side frame coalesce lives in the runtime (`is_frame_pending` /
+        // `request_frame`). Always queue ArmFrame; the runtime no-ops while a
+        // callback is already outstanding.
+        self.shared.push(RuntimeCommand::ArmFrame(self.id));
     }
 
     pub fn set_title(&self, title: &str) {
@@ -517,7 +505,6 @@ impl ActiveEventLoop {
                 scale_factor,
                 configured: false,
                 redraw_requested: true,
-                frame_pending: false,
             }),
             shared: self.shared.clone(),
         });

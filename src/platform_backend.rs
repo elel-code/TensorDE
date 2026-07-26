@@ -178,11 +178,20 @@ impl PlatformBackend {
         self.inner.request_frame(surface)
     }
 
+    fn is_frame_pending(&self, surface: SurfaceId) -> bool {
+        self.inner.is_frame_pending(surface)
+    }
+
     fn request_presentation_feedback(
         &mut self,
         surface: SurfaceId,
     ) -> Result<(), RuntimeError> {
         self.inner.request_presentation_feedback(surface)
+    }
+
+    #[allow(dead_code)] // available for present-path diagnostics / future pacing
+    fn is_presentation_pending(&self, surface: SurfaceId) -> bool {
+        self.inner.is_presentation_pending(surface)
     }
 
     fn request_dmabuf_default_feedback(&mut self) -> Result<(), RuntimeError> {

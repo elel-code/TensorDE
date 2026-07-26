@@ -665,15 +665,13 @@ impl EventLoop {
             SurfaceEvent::Frame { surface, .. }
             | SurfaceEvent::Presented { surface, .. }
             | SurfaceEvent::PresentationDiscarded { surface } => {
+                // Runtime clears protocol-side pending flags; wake so the loop
+                // re-evaluates `has_ready_redraw` under ControlFlow::Wait.
                 if let Some(window) = self.window(surface) {
-                    let mut state = window
+                    let state = window
                         .state
                         .lock()
                         .expect("Wayland window state mutex poisoned");
-                    state.frame_pending = false;
-                    // A frame / presentation feedback often unblocks a deferred
-                    // redraw; wake so the loop re-evaluates `has_ready_redraw`
-                    // instead of sleeping forever under ControlFlow::Wait.
                     if state.configured && state.redraw_requested {
                         drop(state);
                         self.active.shared.wake.wake();
@@ -688,33 +686,41 @@ impl EventLoop {
     }
 
     fn dispatch_ready_redraws<A: ApplicationHandler>(&self, app: &mut A) {
-        let windows = self
-            .active
-            .windows
-            .borrow()
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect::<Vec<_>>();
-        for window in windows {
-            let ready = {
+        // Collect ready surface ids while holding the runtime borrow, then
+        // drop it before delivering RedrawRequested (handlers may command the
+        // runtime).
+        let ready_ids = {
+            let runtime = self.active.runtime.borrow();
+            let windows = self
+                .active
+                .windows
+                .borrow()
+                .values()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>();
+            let mut ready = Vec::new();
+            for window in windows {
                 let mut state = window
                     .state
                     .lock()
                     .expect("Wayland window state mutex poisoned");
-                if state.configured && state.redraw_requested && !state.frame_pending {
+                if state.configured
+                    && state.redraw_requested
+                    && !runtime.is_frame_pending(window.id())
+                {
                     state.redraw_requested = false;
-                    true
-                } else {
-                    false
+                    ready.push(window.id());
                 }
-            };
-            if ready {
-                app.window_event(&self.active, window.id(), WindowEvent::RedrawRequested);
             }
+            ready
+        };
+        for id in ready_ids {
+            app.window_event(&self.active, id, WindowEvent::RedrawRequested);
         }
     }
 
     fn has_ready_redraw(&self) -> bool {
+        let runtime = self.active.runtime.borrow();
         self.active
             .windows
             .borrow()
@@ -725,7 +731,9 @@ impl EventLoop {
                     .state
                     .lock()
                     .expect("Wayland window state mutex poisoned");
-                state.configured && state.redraw_requested && !state.frame_pending
+                state.configured
+                    && state.redraw_requested
+                    && !runtime.is_frame_pending(window.id())
             })
     }
 
