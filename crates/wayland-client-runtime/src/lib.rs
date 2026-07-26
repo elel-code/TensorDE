@@ -1,7 +1,47 @@
-//! A Wayland-native client runtime.
+//! A Wayland-native client protocol stack (optional Compio event loop).
 //!
-//! Protocol stack is [`NativeRuntime`] / [`NativeShell`] (no SCTK).
-//! Renderers receive [`SurfaceHandle`] values (raw-window-handle 0.6).
+//! # Architecture
+//!
+//! ```text
+//! ┌──────────────────────────────────────────────────────────┐
+//! │ Public types (Event, SurfaceId, TransferContent, …)      │
+//! ├──────────────────────────────────────────────────────────┤
+//! │ Protocol layer (always available)                        │
+//! │   NativeShell · NativeConnection · NativePump            │
+//! │   try_read_and_dispatch / dispatch_pending / drain_*     │
+//! ├──────────────────────────────────────────────────────────┤
+//! │ Event loop (feature = "compio", default)                 │
+//! │   NativeRuntime · DisplayReadiness · WakeHandle waits    │
+//! └──────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Using without Compio
+//!
+//! ```toml
+//! wayland-client-runtime = { version = "0.1", default-features = false }
+//! ```
+//!
+//! Drive the shell yourself:
+//!
+//! ```no_run
+//! use wayland_client_runtime::NativeShell;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut shell = NativeShell::connect_to_env()?;
+//! // Register shell.display_fd() with your poll/epoll/calloop/winit loop.
+//! loop {
+//!     // After the display fd is readable:
+//!     shell.try_read_and_dispatch()?;
+//!     for event in shell.drain_events() {
+//!         let _ = event;
+//!     }
+//! }
+//! # }
+//! ```
+//!
+//! ## Using with Compio (default)
+//!
+//! [`NativeRuntime`] owns Compio waits on the display socket and a wake eventfd.
+//! Fika uses this path. Renderers take [`SurfaceHandle`] (raw-window-handle 0.6).
 
 mod activation {
     use crate::{InputSerial, SurfaceId};
@@ -46,6 +86,7 @@ mod activation {
 mod blur;
 pub mod clipboard;
 pub mod data_transfer;
+#[cfg(feature = "compio")]
 mod display_io;
 mod dnd;
 mod event;
@@ -63,6 +104,7 @@ mod surface;
 mod text_input;
 mod toplevel_icon;
 mod toplevel_interaction;
+#[cfg(feature = "compio")]
 mod wake_fd;
 
 pub use activation::{
@@ -70,14 +112,17 @@ pub use activation::{
 };
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
+#[cfg(feature = "compio")]
 pub use display_io::DisplayReadiness;
 pub use native::{
     list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
     native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,
     NativeError, NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry,
-    NativeRuntime, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
-    ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
+    NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, ProtocolClass,
+    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, specs_in_class,
 };
+#[cfg(feature = "compio")]
+pub use native::NativeRuntime;
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,
 };
@@ -100,9 +145,11 @@ pub use pointer_constraints::{
 pub use pointer_gestures::{
     PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
 };
-pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions, WakeHandle};
-/// Production runtime (Compio + native shell). Alias kept for docs / examples
-/// that historically referred to a single `Runtime` type.
+pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions};
+#[cfg(feature = "compio")]
+pub use runtime_common::WakeHandle;
+/// Production runtime (Compio + native shell). Available with `feature = "compio"`.
+#[cfg(feature = "compio")]
 pub type Runtime = NativeRuntime;
 pub use surface::{
     ConstraintAdjustments, DecorationPreference, DialogAttributes, Gravity, PopupAnchor,

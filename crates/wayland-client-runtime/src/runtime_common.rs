@@ -101,9 +101,14 @@ pub enum RuntimeError {
 }
 
 /// Thread-safe handle for interrupting a Compio-driven native wait.
+///
+/// Available when the `compio` feature is enabled (default). Protocol-only
+/// embeds use their own wake mechanism.
+#[cfg(feature = "compio")]
 #[derive(Clone, Debug)]
 pub struct WakeHandle(std::sync::Arc<crate::wake_fd::EventFdWake>);
 
+#[cfg(feature = "compio")]
 impl WakeHandle {
     pub(crate) fn from_event_fd(wake: std::sync::Arc<crate::wake_fd::EventFdWake>) -> Self {
         Self(wake)

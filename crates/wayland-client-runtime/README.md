@@ -1,41 +1,58 @@
 # wayland-client-runtime
 
-`wayland-client-runtime` is a Wayland-only client protocol, surface and event
-layer. It intentionally models Wayland roles instead of imitating a
-cross-platform `Window` API.
-
-**Stack:** **Compio + native protocol shell** (no SCTK / calloop). Display
-readiness and waits use Compio io_uring completions. See
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+`wayland-client-runtime` is a Wayland-only client **protocol stack** with an
+**optional Compio event loop**. It models Wayland roles instead of a
+cross-platform `Window` API. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Native protocol code is organized like **wayland-protocols / Smithay**:
 `core` · `stable` · `staging` · `unstable` · `ext` · `community/wlr`
 (`src/native/protocols/`).
 
-The crate is currently developed in the Fika workspace. Its public API is
-general-purpose and contains no Fika-specific model or renderer dependency.
+The crate is developed in the Fika workspace but is general-purpose: no
+Fika-specific model or renderer dependency.
 
-## Vulkan and wgpu
+## Features
 
-Yes — this crate can feed **direct Vulkan** or **wgpu** without a second
-windowing library.
+| Feature | Default | Purpose |
+| --- | --- | --- |
+| `compio` | **on** | `NativeRuntime` / `Runtime`, Compio io_uring waits, async `pump_once` |
+
+```toml
+# Protocol only — bring your own event loop
+wayland-client-runtime = { version = "0.1", default-features = false }
+
+# Fika-style Compio integration (default)
+wayland-client-runtime = { version = "0.1" }
+```
+
+### Protocol-only loop sketch
+
+```no_run
+use wayland_client_runtime::NativeShell;
+
+let mut shell = NativeShell::connect_to_env()?;
+// Register shell.display_fd() with poll / epoll / calloop / winit / …
+loop {
+    shell.try_read_and_dispatch()?;
+    for event in shell.drain_events() {
+        let _ = event;
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## wgpu (Vulkan on Linux)
+
+Fika's wgpu instance uses `Backends::VULKAN | GL`. The same
+[`SurfaceHandle`](crate::SurfaceHandle) implements raw-window-handle **0.6**
+and is passed to `wgpu::Instance::create_surface`.
 
 | Need | API |
 | --- | --- |
-| `wl_display` + `wl_surface` pointers | `SurfaceHandle` implements `HasDisplayHandle` + `HasWindowHandle` (raw-window-handle **0.6**) |
-| Role (toplevel / dialog / popup / layer) | `SurfaceHandle::kind()` |
-| Raw proxies | `SurfaceHandle::native()` → `NativeSurfaceHandle::{connection, wl_surface}` |
-| Lifetime | Keep the handle (or a clone) alive for the whole GPU surface lifetime |
-
-Typical Vulkan path with `ash`:
-
-1. `NativeRuntime::connect()` / create toplevel (or popup / layer).
-2. `runtime.surface_handle(id)` after the surface exists.
-3. Read `RawDisplayHandle::Wayland` / `RawWindowHandle::Wayland`.
-4. `vkCreateWaylandSurfaceKHR` with those pointers.
-5. Present after configure; call `runtime.commit` / frame callbacks as usual.
-
-Fika uses the same handle through wgpu's Wayland backend.
+| `wl_display` + `wl_surface` | `HasDisplayHandle` + `HasWindowHandle` |
+| Role | `SurfaceHandle::kind()` |
+| Raw proxies | `SurfaceHandle::native()` |
+| Lifetime | Keep the handle alive for the GPU surface |
 
 ## Implemented boundary
 

@@ -32,7 +32,8 @@ pollster = "1"
 resvg = "0.47"
 tiny-skia = "0.12"
 usvg = "0.47"
-wayland-client-runtime = { path = "crates/wayland-client-runtime" }
+# Default features include Compio event-loop integration.
+wayland-client-runtime = { path = "crates/wayland-client-runtime", features = ["compio"] }
 wgpu = "30"
 xkeysym = "0.2"
 # zbus 5 default executor is async-io; avoid the optional tokio feature so the

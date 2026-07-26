@@ -4,19 +4,25 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
-description = "A Wayland-native client protocol, surface, and event runtime (Compio + native stack)"
+description = "Wayland-native client protocol stack with an optional Compio event loop"
 readme = "README.md"
 repository = "https://github.com/elel-code/fika"
 documentation = "https://docs.rs/wayland-client-runtime"
-keywords = ["wayland", "compio", "windowing", "wgpu", "vulkan"]
+keywords = ["wayland", "windowing", "wgpu", "vulkan", "compio"]
 categories = ["gui", "os::linux-apis"]
+
+[features]
+default = ["compio"]
+# Compio io_uring readiness + NativeRuntime::dispatch waits.
+# Disable for embedding into another event loop (calloop, winit, tokio, …):
+#   wayland-client-runtime = { version = "…", default-features = false }
+compio = ["dep:compio"]
 
 [dependencies]
 bitflags = "2"
-compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"] }
+compio = { version = "0.19", default-features = false, features = ["io", "io-uring", "macros", "runtime", "time"], optional = true }
 raw-window-handle = "0.6"
-# Safe syscall wrappers (eventfd, memfd, seals). Already in the graph via
-# wayland-backend / compio; declare explicitly for our direct use.
+# Safe syscall wrappers (eventfd, memfd, seals, poll).
 rustix = { version = "1", default-features = false, features = ["event", "fs", "std"] }
 thiserror = "2"
 # `system` exposes ObjectId::as_ptr for raw-window-handle / wgpu.

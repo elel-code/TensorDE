@@ -1,19 +1,31 @@
-//! Native Wayland backend (the only backend).
+//! Native Wayland backend.
 //!
-//! Owns the connection, registry, Compio-driven display pump, and
-//! [`NativeShell`] / [`NativeRuntime`] used by Fika.
+//! # Layering
 //!
-//! Protocol implementations are split by upstream class under [`protocols`]
-//! (core / stable / staging / unstable / ext / community), following
-//! wayland-protocols and Smithay-style organization.
+//! | Module | Responsibility | Event-loop free? |
+//! | --- | --- | --- |
+//! | [`connection`] | `wayland_client::Connection` wrapper | yes |
+//! | [`registry`] | Global list snapshot | yes |
+//! | [`shell`] | Protocol state + surfaces + input | yes |
+//! | [`event_map`] | Map shell events → public [`crate::Event`] | yes |
+//! | [`pump`] | Sync flush/read/dispatch helpers | yes |
+//! | [`runtime_facade`] | Compio waits + public `NativeRuntime` | **no** (`feature = "compio"`) |
+//! | [`protocols`] | Protocol class matrix / docs | yes |
+//!
+//! Protocol consumers that bring their own loop only need
+//! [`NativeShell`] + [`NativeShell::try_read_and_dispatch`] (or
+//! [`NativePump`]). Enable `feature = "compio"` for
+//! [`NativeRuntime::dispatch`] and async `pump_once`.
 
 mod connection;
 mod event_map;
 pub mod protocols;
 mod pump;
 mod registry;
-mod runtime_facade;
 mod shell;
+
+#[cfg(feature = "compio")]
+mod runtime_facade;
 
 pub use connection::{NativeConnection, NativeError};
 pub use event_map::{
@@ -23,15 +35,10 @@ pub use event_map::{
 pub use protocols::{ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
-pub use runtime_facade::NativeRuntime;
 pub use shell::{
     NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent, NativeSurfaceHandle,
     NativeSurfaceId,
 };
 
-/// Shared helper for modules that already hold a `Connection`.
-pub(crate) fn display_readiness_from_conn(
-    connection: &wayland_client::Connection,
-) -> Result<crate::DisplayReadiness, NativeError> {
-    crate::DisplayReadiness::from_as_fd(connection).map_err(NativeError::from)
-}
+#[cfg(feature = "compio")]
+pub use runtime_facade::NativeRuntime;

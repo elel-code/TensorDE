@@ -1,14 +1,14 @@
-//! Direct `wayland-client` connection owned by the native backend.
+//! Direct `wayland-client` connection — **protocol I/O only**, no event-loop
+//! executor. Callers integrate with Compio (`feature = "compio"`), calloop,
+//! poll, or any other readiness source using [`NativeConnection::as_fd`].
 
 use std::fmt;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 
 use wayland_client::Connection;
 use wayland_client::backend::WaylandError;
 
-use crate::display_io::DisplayReadiness;
-
-/// Errors from the native Wayland connection path.
+/// Errors from the native Wayland connection / protocol path.
 #[derive(Debug)]
 pub enum NativeError {
     Connect(String),
@@ -48,13 +48,16 @@ impl From<wayland_client::DispatchError> for NativeError {
     }
 }
 
-/// Native connection + Compio display readiness (io_uring completion).
+/// Owned Wayland display connection (no async runtime dependency).
 ///
-/// Readiness is awaited on Compio; protocol reads use
-/// `Connection::prepare_read` / `read`.
+/// # Integrating with an external event loop
+///
+/// 1. Register [`Self::as_fd`] for readability.
+/// 2. On readable: [`Self::flush`], then the shell's `try_read_and_dispatch`
+///    / `dispatch_pending`.
+/// 3. After sending requests: [`Self::flush`] again.
 pub struct NativeConnection {
     connection: Connection,
-    readiness: DisplayReadiness,
 }
 
 impl NativeConnection {
@@ -66,18 +69,14 @@ impl NativeConnection {
     }
 
     pub fn from_connection(connection: Connection) -> Result<Self, NativeError> {
-        let readiness = DisplayReadiness::from_as_fd(&connection)?;
-        Ok(Self {
-            connection,
-            readiness,
-        })
+        Ok(Self { connection })
     }
 
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
 
-    pub fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.connection.as_fd()
     }
 
@@ -87,14 +86,14 @@ impl NativeConnection {
         Ok(())
     }
 
-    /// Await display readability on the Compio executor.
-    pub async fn wait_readable(&self) -> Result<(), NativeError> {
-        self.readiness.wait_readable().await?;
-        Ok(())
-    }
-
     /// Blocking roundtrip (sync helper for init / tests).
     pub fn roundtrip(&self) -> Result<usize, NativeError> {
         Ok(self.connection.roundtrip()?)
+    }
+}
+
+impl AsFd for NativeConnection {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.connection.as_fd()
     }
 }

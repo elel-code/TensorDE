@@ -25,17 +25,22 @@ use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_m
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
-use crate::display_io::DisplayReadiness;
 use crate::native::connection::{NativeConnection, NativeError};
-use crate::native::display_readiness_from_conn;
 use crate::native::protocols::core::shm;
 use wayland_client::globals::GlobalList;
 use wayland_client::EventQueue;
 
-/// SCTK-free shell runtime.
+/// Protocol-only native shell (no event-loop executor).
+///
+/// Owns the Wayland connection, registry bindings, and surface/input state.
+/// Drive I/O with:
+/// - [`Self::dispatch_pending`] / [`Self::try_read_and_dispatch`] (any loop)
+/// - [`Self::pump_once`] when the `compio` feature is enabled
+///
+/// Register [`Self::connection`]'s fd for readability in your own reactor if
+/// you do not use Compio.
 pub struct NativeShell {
     pub(crate) connection: NativeConnection,
-    pub(crate) readiness: DisplayReadiness,
     #[allow(dead_code)]
     pub(crate) globals: GlobalList,
     pub(crate) queue: EventQueue<NativeShellState>,
@@ -46,7 +51,6 @@ impl NativeShell {
     /// Connect and bind core + xdg + optional seat/scale globals.
     pub fn connect_to_env() -> Result<Self, NativeError> {
         let connection = NativeConnection::connect_to_env()?;
-        let readiness = display_readiness_from_conn(connection.connection())?;
         let (globals, queue) = registry_queue_init::<NativeShellState>(connection.connection())
             .map_err(|error| NativeError::Registry(error.to_string()))?;
         let qh = queue.handle();
@@ -227,7 +231,6 @@ impl NativeShell {
 
         let mut shell = Self {
             connection,
-            readiness,
             globals,
             queue,
             state,
@@ -246,9 +249,9 @@ impl NativeShell {
         &self.connection
     }
 
-    /// Compio readiness for the display connection (io_uring completion).
-    pub fn readiness(&self) -> &DisplayReadiness {
-        &self.readiness
+    /// Borrow the display socket for external event-loop registration.
+    pub fn display_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.connection.as_fd()
     }
 
     pub fn has_fractional_scale(&self) -> bool {
@@ -857,16 +860,45 @@ impl NativeShell {
         Ok(())
     }
 
-    pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
+    /// Non-blocking: flush, optionally read if data is already available, dispatch.
+    ///
+    /// Suitable for external event loops: call after the display fd is readable,
+    /// or poll periodically. Returns the number of events dispatched.
+    pub fn try_read_and_dispatch(&mut self) -> Result<usize, NativeError> {
         self.connection.flush()?;
         let mut n = self.dispatch_pending()?;
+        match self.connection.connection().prepare_read() {
+            None => {
+                n += self.dispatch_pending()?;
+            }
+            Some(guard) => match guard.read() {
+                Ok(_) => {
+                    n += self.dispatch_pending()?;
+                }
+                Err(wayland_client::backend::WaylandError::Io(err))
+                    if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
+            },
+        }
+        Ok(n)
+    }
 
+    /// Compio-driven pump: wait until the display is readable, then dispatch.
+    ///
+    /// Requires the `compio` feature and a Compio executor context.
+    #[cfg(feature = "compio")]
+    pub async fn pump_once(&mut self) -> Result<usize, NativeError> {
+        use crate::display_io::DisplayReadiness;
+
+        self.connection.flush()?;
+        let mut n = self.dispatch_pending()?;
         match self.connection.connection().prepare_read() {
             None => {
                 n += self.dispatch_pending()?;
             }
             Some(guard) => {
-                self.readiness.wait_readable().await?;
+                let readiness = DisplayReadiness::from_as_fd(self.connection.as_fd())?;
+                readiness.wait_readable().await?;
                 match guard.read() {
                     Ok(_) => {}
                     Err(wayland_client::backend::WaylandError::Io(err))

@@ -291,16 +291,13 @@ mod tests {
             .expect("create toplevel");
         assert_eq!(shell.toplevel_count(), 1);
 
-        compio::runtime::Runtime::new()
-            .expect("compio")
-            .block_on(async {
-                for _ in 0..32 {
-                    let _ = shell.pump_once().await;
-                    if shell.is_configured(id) {
-                        break;
-                    }
-                }
-            });
+        for _ in 0..32 {
+            let _ = shell.try_read_and_dispatch();
+            if shell.is_configured(id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
 
         let mut events = Vec::new();
         shell.drain_events_into(&mut events);
@@ -315,16 +312,13 @@ mod tests {
         let parent = shell
             .create_toplevel("fika-native-popup-parent", "dev.fika.NativePopup")
             .expect("create toplevel");
-        compio::runtime::Runtime::new()
-            .expect("compio")
-            .block_on(async {
-                for _ in 0..32 {
-                    let _ = shell.pump_once().await;
-                    if shell.is_configured(parent) {
-                        break;
-                    }
-                }
-            });
+        for _ in 0..32 {
+            let _ = shell.try_read_and_dispatch();
+            if shell.is_configured(parent) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
         if !shell.is_configured(parent) {
             let _ = shell.destroy_toplevel(parent);
             return;
@@ -451,16 +445,13 @@ mod tests {
             .set_decorations(id, crate::DecorationPreference::Client)
             .expect("client decorations");
         // Pump so decoration.configure (if any) and xdg configure land.
-        compio::runtime::Runtime::new()
-            .expect("compio")
-            .block_on(async {
-                for _ in 0..48 {
-                    let _ = shell.pump_once().await;
-                    if shell.is_configured(id) {
-                        break;
-                    }
-                }
-            });
+        for _ in 0..48 {
+            let _ = shell.try_read_and_dispatch();
+            if shell.is_configured(id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
         shell
             .set_title(id, "CSD Title Updated")
             .expect("title");

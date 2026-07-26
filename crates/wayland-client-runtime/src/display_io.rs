@@ -1,7 +1,7 @@
 //! Compio (io_uring completion) readiness for Wayland-related file descriptors.
 //!
-//! [`DisplayReadiness`] wraps [`compio::runtime::fd::PollFd`] so waits complete
-//! through the Compio proactor rather than a blocking `poll(2)` loop.
+//! Only compiled with `feature = "compio"`. Protocol code never depends on this
+//! module; external loops should register the display fd themselves.
 
 use std::io;
 use std::os::fd::AsFd;

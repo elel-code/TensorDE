@@ -39,7 +39,10 @@ enum WaitSource {
     Timeout,
 }
 
-/// Native shell wrapped for Fika's event loop, driven by Compio.
+/// Compio event-loop adapter over the protocol-only [`NativeShell`].
+///
+/// Other projects can ignore this type and drive [`NativeShell`] with their own
+/// reactor (`default-features = false`).
 pub struct NativeRuntime {
     shell: NativeShell,
     surfaces: SurfaceIdMap,
@@ -49,6 +52,8 @@ pub struct NativeRuntime {
     activation_pending: HashMap<NativeSurfaceId, ActivationRequestId>,
     next_activation_request_id: u64,
     wake: std::sync::Arc<EventFdWake>,
+    /// Compio readiness on a clone of the display socket.
+    display_readiness: DisplayReadiness,
     /// Compio readiness on a clone of the wake eventfd.
     wake_readiness: DisplayReadiness,
     wake_handle: WakeHandle,
@@ -63,6 +68,8 @@ impl NativeRuntime {
         let caps = shell.capabilities();
         let popup_reposition = shell.supports_popup_reposition();
         let layer_ver = shell.layer_shell_version();
+        let display_readiness = DisplayReadiness::from_as_fd(shell.display_fd())
+            .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake = std::sync::Arc::new(
             EventFdWake::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?,
         );
@@ -79,6 +86,7 @@ impl NativeRuntime {
             activation_pending: HashMap::new(),
             next_activation_request_id: 1,
             wake,
+            display_readiness,
             wake_readiness,
             wake_handle,
             compio,
@@ -191,7 +199,7 @@ impl NativeRuntime {
 
         // Partial borrows: Compio runtime + readiness handles without aliasing.
         let source = {
-            let display = self.shell.readiness();
+            let display = &self.display_readiness;
             let wake = &self.wake_readiness;
             let compio = &self.compio;
             compio.block_on(async {

@@ -1,150 +1,111 @@
 # Architecture
 
-Performance-first, architecture-first. The long-term goal is a **native Wayland
-client stack on Compio**, without Smithay Client Toolkit (SCTK) callback
-handlers and without a second reactor (calloop/Tokio).
-
-## North star
-
-Applications write **linear async code**:
-
-```rust
-// Pseudocode target shape (Phase 2+)
-loop {
-    runtime.wait_display_readable().await?;
-    runtime.dispatch_pending()?;
-    for event in runtime.drain_events() {
-        // handle Event
-    }
-}
-```
-
-Wayland remains message-oriented on a socket. Compio owns readiness and
-scheduling; this crate owns protocol state and the public event model.
+Performance-first, architecture-first. The crate is a **native Wayland client
+protocol stack** with an **optional Compio event loop**. Protocol state never
+depends on a specific reactor so other projects can embed it under calloop,
+winit, tokio, or a custom poll loop.
 
 ## Layering
 
 ```text
-┌─────────────────────────────────────────────┐
-│ Public API                                  │
-│ Runtime, SurfaceId, Event, capabilities     │
-├─────────────────────────────────────────────┤
-│ Protocol state by class (native/protocols)  │  ← replace SCTK Handlers
-│   core | stable | staging | unstable        │
-│   ext  | community/wlr                      │
-├─────────────────────────────────────────────┤
-│ Wire / object map                           │  ← wayland-client + protocols*
-├─────────────────────────────────────────────┤
-│ Display I/O                                 │  ← Compio PollFd
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Public types                                             │
+│ Event, SurfaceId, TransferContent, capabilities, …       │
+├──────────────────────────────────────────────────────────┤
+│ Protocol layer (always on; no async runtime)             │
+│   NativeConnection · NativeShell · NativePump            │
+│   try_read_and_dispatch / dispatch_pending / drain_*     │
+│   native/protocols/{core,stable,staging,unstable,ext,wlr}│
+├──────────────────────────────────────────────────────────┤
+│ Event loop (feature = "compio", default ON)              │
+│   NativeRuntime · DisplayReadiness · WakeHandle waits    │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Protocol vs event loop
+
+| API | Needs Compio? | Role |
+| --- | --- | --- |
+| `NativeShell::connect_to_env` | no | Bind globals, own surfaces/input |
+| `NativeShell::display_fd` | no | Register with *your* poll/epoll |
+| `NativeShell::try_read_and_dispatch` | no | Non-blocking read + dispatch |
+| `NativeShell::dispatch_pending` | no | Drain already-queued messages |
+| `NativeShell::drain_events` | no | Consume protocol events |
+| `NativePump::pump_pending` | no | Registry-only pending pump |
+| `NativeShell::pump_once` / `NativePump::pump_once` | **yes** | Async wait + read |
+| `NativeRuntime` / `Runtime` | **yes** | Full public API + Compio waits |
+
+Disable the loop dependency:
+
+```toml
+wayland-client-runtime = { version = "0.1", default-features = false }
 ```
 
 ### Protocol classes (Smithay / wayland-protocols style)
 
 | Class | Upstream tree | Policy |
 | --- | --- | --- |
-| **core** | `wayland.xml` (`wl_*`) | Required; missing = cannot run shell |
-| **stable** | `wayland-protocols` `stable/` | Baseline desktop (xdg-shell, viewporter) |
-| **staging** | `wayland-protocols` `staging/` | Optional capability; version-cap binds |
-| **unstable** | `wayland-protocols` `unstable/` | Legacy only; prefer staging replacements |
-| **ext** | `wayland-protocols` `ext/` | Optional (`ext_*`) |
-| **community** | wlr / plasma / … | Optional; never block core startup |
+| **core** | `wayland.xml` (`wl_*`) | Required |
+| **stable** | `wayland-protocols` `stable/` | Baseline desktop |
+| **staging** | `wayland-protocols` `staging/` | Optional capability |
+| **unstable** | `wayland-protocols` `unstable/` | Legacy |
+| **ext** | `wayland-protocols` `ext/` | Optional |
+| **community** | wlr / … | Optional |
 
-Code layout: `src/native/protocols/{core,stable,staging,unstable,ext,community/wlr}/`.
+Layout: `src/native/protocols/{core,stable,staging,unstable,ext,community/wlr}/`.
 
-`ProtocolClass`, `ProtocolSpec`, and `FIKA_PROTOCOL_MATRIX` document which globals
-Fika needs and how hard they are. Implementations land module-by-module in the
-matching class directory (not a flat `handlers_*.rs` dump).
+`ProtocolClass`, `ProtocolSpec`, and `FIKA_PROTOCOL_MATRIX` document which
+globals Fika needs. Implementations live under `native/shell` with dispatch
+split by concern (`dispatch_*.rs`).
 
-| Module (target) | Responsibility |
-| --- | --- |
-| `display_io` | Dup of `wl_display` fd, Compio readable/writable wait |
-| `native/connection` | Connect, flush, readiness |
-| `native/registry` | Global list + late add/remove |
-| `native/pump` | Compio read/dispatch loop |
-| `native/protocols/*` | State machines per protocol class |
-| `transfer` (public) | Clipboard + DnD MIME model |
-| `runtime` (SCTK→native) | Orchestration, event buffer, capabilities |
+## North star (with Compio)
 
-## Migration rules
+```rust
+// Fika / default feature path
+loop {
+    runtime.dispatch(timeout)?;
+    runtime.drain_events_into(&mut events);
+    for event in events.drain(..) { /* … */ }
+}
+```
 
-1. **Do not break the public event vocabulary** without a Fika-side migration.
-2. **One executor**: Compio. No Tokio island; calloop is transitional only.
-3. **No permanent dual API**: SCTK path is deleted once native covers Fika.
-4. **Prefer ownership of serials, surfaces, and seats** in this crate’s types.
-5. **Hot path**: reusable event drain buffers, minimal allocs in dispatch.
+## North star (without Compio)
 
-## Phase status
+```rust
+// External loop owns readiness
+loop {
+    // wait until shell.display_fd() is readable (or a wake fd)
+    shell.try_read_and_dispatch()?;
+    for event in shell.drain_events() { /* … */ }
+}
+```
 
-| Phase | Goal | Status |
-| --- | --- | --- |
-| 0 | This document + roadmap §6d | Done |
-| 1 | Compio display readiness + non-blocking dispatch helpers | Done |
-| 2 | Native connection + registry + Compio pump | Done |
-| 2b | NativeShell: compositor/shm/xdg toplevel + seat keyboard | In progress (usable) |
-| 3 | Extended protocols | Planned |
-| 4 | Remove SCTK/calloop | Planned |
-
-### Phase 2 modules (`src/native/`)
-
-| Module | Role |
-| --- | --- |
-| `connection` | `wayland_client::Connection` + `DisplayReadiness` |
-| `registry` | `registry_queue_init`, global snapshot, late global tracking |
-| `pump` | `flush → prepare_read → await readable → read → dispatch_pending` |
-
-Public types: `NativeConnection`, `NativeRegistry`, `NativePump`, `GlobalAdvertisement`,
-`NativeShell`, `NativeShellEvent`, `NativeSurfaceId`.
-
-### Usable native shell (`NativeShell`)
-
-Without SCTK, a client can:
-
-1. `NativeShell::connect_to_env()`
-2. `create_toplevel(title, app_id)` — solid ARGB buffer via memfd `wl_shm`
-3. `pump_once().await` on Compio
-4. `drain_events()` — linear handling
-5. `surface_handle(id)` — wgpu / Vulkan via raw-window-handle 0.6
-6. `request_frame` / `set_cursor_shape` / `capabilities()`
-
-Example: `cargo run -p wayland-client-runtime --example native_toplevel_smoke`
-
-#### NativeShell capability matrix
+## NativeShell capability matrix
 
 | Area | Status |
 | --- | --- |
-| Compio display pump (io_uring) | yes |
+| Protocol shell without Compio | yes |
+| Compio display pump (optional) | yes (`feature = "compio"`) |
 | xdg toplevel + dialog + CSD | yes |
 | popup + layer shell | yes |
 | fractional scale + viewporter | yes |
 | pointer / keyboard / touch / gestures | yes |
 | xkb composed text | yes |
-| text-input-v3 | yes |
-| clipboard + DnD (+ async Send) | yes |
+| text-input-v3 (full state + cursor rect) | yes |
+| clipboard + DnD | yes |
 | blur / activation / icons | yes |
-| wp_presentation (presentation-time) | yes |
-| raw-window-handle 0.6 (wgpu Wayland → Vulkan) | yes (toplevel, dialog, popup, layer) |
+| wp_presentation | yes |
+| raw-window-handle 0.6 (wgpu → Vulkan) | yes |
 
-### Vulkan / wgpu
+### wgpu
 
-`NativeSurfaceHandle` / public `SurfaceHandle` expose Wayland display+surface
-pointers via raw-window-handle 0.6. No SCTK intermediate is required.
-
-## Historical SCTK notes
-
-SCTK / calloop have been removed from the production path. Older docs that
-mentioned dual backends are obsolete; the map below is retained only as
-migration context:
-
-- calloop + `WaylandSource` → Compio `DisplayReadiness` + native read loop
-- `CompositorState` / `XdgShell` / `Window` → native shell modules
-- `SeatState` / pointer / keyboard handlers → native seats + xkbcommon
-- data device manager → existing transfer model + native protocol objects
-- fractional scale, text input, gestures, constraints → protocol modules already
-  partially isolated under `src/*.rs`
+Fika uses wgpu with `Backends::VULKAN` (GL fallback). The same
+`SurfaceHandle` feeds wgpu's Wayland surface creation; no separate ash path
+is required for the app.
 
 ## Testing
 
-- Unit tests: pure helpers (`DisplayReadiness` with pipes, axis mapping, …).
-- Examples: capabilities / toplevel / gestures when a compositor is present.
-- Fika: workspace `cargo test` and file line gate after each phase.
+- Unit tests: pure helpers and protocol smokes (headless OK when no display).
+- Examples: `native_toplevel_smoke` (Compio), capabilities listing.
+- `cargo test -p wayland-client-runtime --no-default-features` must stay green.
+- Fika: workspace `cargo test` / release run with default `compio` feature.
