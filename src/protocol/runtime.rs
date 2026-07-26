@@ -30,6 +30,11 @@ pub(crate) use socket::{
     MAX_PENDING_WAYLAND_CLIENTS, MAX_PENDING_WAYLAND_SOCKET_CONTROL_EVENTS,
     WaylandSocketControlEvent, WaylandSocketRuntime, drain_wayland_socket_events,
 };
+#[cfg(feature = "xwayland")]
+pub(crate) use xwayland::{
+    MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
+    XWaylandStartupControlEvent, XWaylandStartupEvent, drain_xwayland_startup_events,
+};
 
 pub struct WaylandRuntime {
     event_loop: EventLoop<'static, RuntimeState>,
@@ -41,7 +46,9 @@ pub struct WaylandRuntime {
     prepared: bool,
     xwayland_display: Option<OsString>,
     #[cfg(feature = "xwayland")]
-    xwayland_client: Option<smithay::reexports::wayland_server::Client>,
+    xwayland_completion_channels: Option<xwayland::XWaylandCompletionChannels>,
+    #[cfg(feature = "xwayland")]
+    xwayland_completion_runtime: Option<tensor_runtime::OpaqueFdCompletionRuntime>,
 }
 
 impl WaylandRuntime {
@@ -68,7 +75,9 @@ impl WaylandRuntime {
             prepared: false,
             xwayland_display: None,
             #[cfg(feature = "xwayland")]
-            xwayland_client: None,
+            xwayland_completion_channels: None,
+            #[cfg(feature = "xwayland")]
+            xwayland_completion_runtime: None,
         })
     }
 
@@ -170,6 +179,19 @@ impl WaylandRuntime {
                 relay.wake(),
             );
         self.install_display_runtime(display_sender, display_control_sender)?;
+        #[cfg(feature = "xwayland")]
+        let (xwayland_sender, xwayland_events) = tensor_runtime::WorkerBridge::bounded_with_wake(
+            MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
+            relay.wake(),
+        );
+        #[cfg(feature = "xwayland")]
+        let (xwayland_control_sender, xwayland_control) =
+            tensor_runtime::WorkerBridge::bounded_with_wake(
+                MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS,
+                relay.wake(),
+            );
+        #[cfg(feature = "xwayland")]
+        self.install_xwayland_completion_channels(xwayland_sender, xwayland_control_sender);
         self.event_loop
             .handle()
             .insert_source(notifications, move |event, _, state| {
@@ -183,6 +205,10 @@ impl WaylandRuntime {
                         drain_wayland_display_events(&display_events, &display_control, state)
                 {
                     panic!("Wayland display completion runtime failed: {message}");
+                }
+                #[cfg(feature = "xwayland")]
+                if matches!(event, ChannelEvent::Msg(())) {
+                    drain_xwayland_startup_events(&xwayland_events, &xwayland_control, state);
                 }
             })
             .map_err(|error| ProtocolError::ChannelSource(error.to_string()))?;
@@ -319,8 +345,10 @@ pub enum ProtocolError {
     Run(calloop::Error),
     #[error("failed to spawn XWayland: {0}")]
     XWayland(std::io::Error),
-    #[error("failed to register XWayland with the event loop: {0}")]
-    XWaylandSource(String),
+    #[error("failed to start the XWayland completion runtime: {0}")]
+    XWaylandCompletion(String),
+    #[error("XWayland completion channels are not installed")]
+    XWaylandCompletionRuntimeMissing,
     #[error("XWayland support was not compiled in")]
     #[allow(dead_code)]
     XWaylandDisabled,

@@ -3,9 +3,12 @@ mod transient;
 
 use smithay::{
     desktop::Window,
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    reexports::{
+        calloop::LoopHandle,
+        wayland_server::{Client, Resource, protocol::wl_surface::WlSurface},
+    },
     utils::{Logical, Rectangle},
-    xwayland::{X11Surface, X11Wm, xwm::XwmId},
+    xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData, xwm::XwmId},
 };
 use tracing::warn;
 
@@ -19,6 +22,12 @@ use super::{RuntimeState, xdg_size_constraints};
 
 pub(super) use popup::XWaylandPopupRegistry;
 pub(super) use transient::XWaylandTransientRegistry;
+
+pub(super) struct XWaylandProcess {
+    instance: XWayland,
+    client: Client,
+    loop_handle: LoopHandle<'static, RuntimeState>,
+}
 
 /// The two independent signals needed before an X11 window can become a
 /// rootless Wayland view. Smithay can report them in either order.
@@ -62,6 +71,63 @@ impl XWaylandWindowLifecycle {
 }
 
 impl RuntimeState {
+    pub(crate) fn has_xwayland_process(&self) -> bool {
+        self.xwayland_process.is_some()
+    }
+
+    pub(crate) fn install_xwayland_process(
+        &mut self,
+        instance: XWayland,
+        client: Client,
+        loop_handle: LoopHandle<'static, Self>,
+    ) {
+        assert!(
+            self.xwayland_process.is_none(),
+            "XWayland process was installed more than once"
+        );
+        self.xwayland_process = Some(XWaylandProcess {
+            instance,
+            client,
+            loop_handle,
+        });
+    }
+
+    /// Consume one completed XWayland displayfd notification on this thread.
+    ///
+    /// `Ok(None)` means a partial/spurious notification and requires rearming;
+    /// `Ok(Some(display))` means the XWM was installed and the watcher can end.
+    pub(crate) fn complete_xwayland_startup(&mut self) -> Result<Option<u32>, String> {
+        let (socket, display_number, client, loop_handle) = {
+            let process = self
+                .xwayland_process
+                .as_mut()
+                .ok_or_else(|| "XWayland completion arrived without a process".to_owned())?;
+            let socket = process
+                .instance
+                .take_socket()
+                .map_err(|error| error.to_string())?;
+            (
+                socket,
+                process.instance.display_number(),
+                process.client.clone(),
+                process.loop_handle.clone(),
+            )
+        };
+        let Some(socket) = socket else {
+            return Ok(None);
+        };
+        let client_data = client
+            .get_data::<XWaylandClientData>()
+            .ok_or_else(|| "XWayland client lost its Smithay client data".to_owned())?;
+
+        // wl_output and fractional-scale state remain the only X11 coordinate authority.
+        client_data.compositor_state.set_client_scale(1.0);
+        let xwm = X11Wm::start_wm(loop_handle, &self.display_handle, socket, client)
+            .map_err(|error| error.to_string())?;
+        self.install_xwm(xwm);
+        Ok(Some(display_number))
+    }
+
     pub(crate) fn install_xwm(&mut self, xwm: X11Wm) {
         if self.xwm.replace(xwm).is_some() {
             warn!("replacing a live XWayland XWM after a second ready event");

@@ -21,6 +21,11 @@ pub(crate) use runtime::{
     WaylandDisplayControlEvent, WaylandDisplayEvent, WaylandSocketControlEvent,
     drain_wayland_display_events, drain_wayland_socket_events,
 };
+#[cfg(feature = "xwayland")]
+pub(crate) use runtime::{
+    MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
+    XWaylandStartupControlEvent, XWaylandStartupEvent, drain_xwayland_startup_events,
+};
 pub use runtime::{ProtocolError, WaylandRuntime};
 pub(crate) use state::RuntimeState;
 pub(crate) use tensor_protocol::{PROTOCOL_CATALOG, ProtocolTier};

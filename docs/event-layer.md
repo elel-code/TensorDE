@@ -86,13 +86,15 @@ write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.
    `EventfdCompletion`, `CompletionDriver::IoUring`); submitted Compio reads
    now complete worker eventfd wakes; IPC accept/read/write, Linux signalfd
    reads, one-shot GPU sync-file waits, security-context accept/close, Wayland
-   listener accepts, and aggregate-display dispatch waits are Compio completion
-   services. The display adapter submits one `PollOnce` operation against the
-   backend-owned aggregate fd and rearms only after compositor-thread dispatch;
-   it does not create a second client-fd readiness registry.
-   calloop still owns the shared completion relay plus XWayland, libinput,
-   session, and DRM notification adapters. Next: express those sources as
-   Compio-completed ops (io_uring driver).
+   listener accepts, aggregate-display dispatch waits, and the XWayland
+   displayfd startup handshake are Compio completion services. Compio names the
+   wrapper `PollFd`, but each wait submits one `PollOnce` operation (one
+   `IORING_OP_POLL_ADD` on io_uring) and resolves from its CQE. The owner rearms
+   only after compositor-thread consumption; Tensor does not create a second
+   readiness registry.
+   calloop still owns the shared completion relay plus Smithay's XWM X11-event,
+   libinput, session, and DRM notification adapters. Next: express those
+   sources as Compio-completed ops (io_uring driver).
 6. Replace Smithay backends with native input/DRM open path; delete Smithay
    (see `docs/smithay-exit.md`).
 

@@ -2144,6 +2144,7 @@ name = "tensor-runtime"
 version = "0.1.0"
 dependencies = [
  "compio",
+ "futures-util",
  "rustix 1.1.4",
  "tensor-event",
  "thiserror",

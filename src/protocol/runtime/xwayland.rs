@@ -2,20 +2,92 @@
 use std::{ffi::OsString, process::Stdio};
 
 #[cfg(feature = "xwayland")]
-use smithay::xwayland::{X11Wm, XWayland, XWaylandClientData, XWaylandEvent};
+use smithay::xwayland::XWayland;
+#[cfg(feature = "xwayland")]
+use tensor_runtime::{OpaqueFdCompletion, OpaqueFdCompletionRuntime, WorkerRx, WorkerTx};
 #[cfg(feature = "xwayland")]
 use tracing::{info, warn};
 
 #[cfg(feature = "xwayland")]
 use super::{ProtocolError, WaylandRuntime};
+#[cfg(feature = "xwayland")]
+use crate::protocol::state::RuntimeState;
+
+#[cfg(feature = "xwayland")]
+pub(crate) const MAX_PENDING_XWAYLAND_STARTUP_EVENTS: usize = 1;
+#[cfg(feature = "xwayland")]
+pub(crate) const MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS: usize = 1;
+
+#[cfg(feature = "xwayland")]
+pub(crate) type XWaylandStartupEvent = OpaqueFdCompletion;
+#[cfg(feature = "xwayland")]
+pub(crate) type XWaylandStartupControlEvent = String;
+
+#[cfg(feature = "xwayland")]
+pub(super) struct XWaylandCompletionChannels {
+    events: WorkerTx<XWaylandStartupEvent>,
+    control: WorkerTx<XWaylandStartupControlEvent>,
+}
+
+#[cfg(feature = "xwayland")]
+pub(crate) fn drain_xwayland_startup_events(
+    events: &WorkerRx<XWaylandStartupEvent>,
+    control: &WorkerRx<XWaylandStartupControlEvent>,
+    state: &mut RuntimeState,
+) {
+    while let Some(completion) = events.try_recv() {
+        match state.complete_xwayland_startup() {
+            Ok(Some(display_number)) => {
+                if let Err(error) = completion.finish() {
+                    warn!(
+                        ?error,
+                        "failed to finish the XWayland startup completion service"
+                    );
+                }
+                info!(display_number, "XWayland rootless XWM is ready");
+            }
+            Ok(None) => {
+                if let Err(error) = completion.rearm() {
+                    warn!(?error, "failed to rearm the XWayland startup completion");
+                }
+            }
+            Err(error) => {
+                let _ = completion.finish();
+                warn!(%error, "failed to attach rootless XWayland XWM");
+            }
+        }
+    }
+    while let Some(error) = control.try_recv() {
+        warn!(%error, "XWayland startup completion runtime failed");
+    }
+}
 
 #[cfg(feature = "xwayland")]
 impl WaylandRuntime {
+    pub(crate) fn install_xwayland_completion_channels(
+        &mut self,
+        events: WorkerTx<XWaylandStartupEvent>,
+        control: WorkerTx<XWaylandStartupControlEvent>,
+    ) {
+        if self.xwayland_completion_channels.is_none() {
+            self.xwayland_completion_channels =
+                Some(XWaylandCompletionChannels { events, control });
+        }
+    }
+
+    pub(crate) fn take_xwayland_completion_runtime(&mut self) -> Option<OpaqueFdCompletionRuntime> {
+        self.xwayland_completion_runtime.take()
+    }
+
     pub(super) fn start_xwayland(&mut self) -> Result<(), ProtocolError> {
-        if self.xwayland_client.is_some() {
+        if self.state.has_xwayland_process() {
             return Ok(());
         }
 
+        let channels = self
+            .xwayland_completion_channels
+            .as_ref()
+            .ok_or(ProtocolError::XWaylandCompletionRuntimeMissing)?;
         let display_handle = self.state.display_handle.clone();
         let loop_handle = self.event_loop.handle();
         let (xwayland, client) = XWayland::spawn(
@@ -30,45 +102,17 @@ impl WaylandRuntime {
         )
         .map_err(ProtocolError::XWayland)?;
         let display_number = xwayland.display_number();
-        let xwm_client = client.clone();
-        self.event_loop
-            .handle()
-            .insert_source(xwayland, move |event, _, state| match event {
-                XWaylandEvent::Ready {
-                    x11_socket,
-                    display_number,
-                } => {
-                    let Some(client_data) = xwm_client.get_data::<XWaylandClientData>() else {
-                        warn!(
-                            display_number,
-                            "XWayland client lost its Smithay client data"
-                        );
-                        return;
-                    };
-
-                    // wl_output and fractional-scale state drive XWayland buffers. This must
-                    // remain one so X11 cannot acquire a second coordinate system.
-                    client_data.compositor_state.set_client_scale(1.0);
-                    match X11Wm::start_wm(
-                        loop_handle.clone(),
-                        &display_handle,
-                        x11_socket,
-                        xwm_client.clone(),
-                    ) {
-                        Ok(xwm) => {
-                            state.install_xwm(xwm);
-                            info!(display_number, "XWayland rootless XWM is ready");
-                        }
-                        Err(error) => {
-                            warn!(%error, display_number, "failed to attach rootless XWayland XWM");
-                        }
-                    }
-                }
-                XWaylandEvent::Error => warn!("XWayland exited before becoming ready"),
-            })
-            .map_err(|error| ProtocolError::XWaylandSource(error.to_string()))?;
+        let completion_runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-xwayland-startup-completions",
+            xwayland.poll_fd(),
+            channels.events.clone(),
+            channels.control.clone(),
+        )
+        .map_err(|error| ProtocolError::XWaylandCompletion(error.to_string()))?;
+        self.state
+            .install_xwayland_process(xwayland, client, loop_handle);
+        self.xwayland_completion_runtime = Some(completion_runtime);
         self.xwayland_display = Some(OsString::from(format!(":{display_number}")));
-        self.xwayland_client = Some(client);
         Ok(())
     }
 }
@@ -77,5 +121,39 @@ impl WaylandRuntime {
 impl super::WaylandRuntime {
     pub(super) fn start_xwayland(&mut self) -> Result<(), super::ProtocolError> {
         Err(super::ProtocolError::XWaylandDisabled)
+    }
+}
+
+#[cfg(all(test, feature = "xwayland"))]
+mod tests {
+    use std::time::Duration;
+
+    use crate::{
+        layout::{LayoutEngine, LayoutKind},
+        scene::SceneAppearance,
+    };
+
+    use super::WaylandRuntime;
+
+    #[test]
+    #[ignore = "requires an installed Xwayland executable"]
+    fn startup_displayfd_completion_installs_the_xwm() {
+        let mut runtime = WaylandRuntime::with_appearance(
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
+        )
+        .unwrap();
+        let _relay = runtime.prepare_for_test(true).unwrap();
+
+        for _ in 0..400 {
+            runtime
+                .event_loop
+                .dispatch(Duration::from_millis(5), &mut runtime.state)
+                .unwrap();
+            if runtime.state.xwm.is_some() {
+                return;
+            }
+        }
+        panic!("XWayland did not complete its displayfd startup handshake");
     }
 }

@@ -167,6 +167,8 @@ pub(crate) struct RuntimeState {
     #[cfg(feature = "xwayland")]
     pub(crate) xwm: Option<X11Wm>,
     #[cfg(feature = "xwayland")]
+    xwayland_process: Option<xwayland::XWaylandProcess>,
+    #[cfg(feature = "xwayland")]
     xwayland_windows: HashMap<u32, xwayland::XWaylandWindowLifecycle>,
     #[cfg(feature = "xwayland")]
     xwayland_popups: xwayland::XWaylandPopupRegistry,
@@ -251,6 +253,8 @@ impl RuntimeState {
             surface_views: HashMap::new(),
             #[cfg(feature = "xwayland")]
             xwm: None,
+            #[cfg(feature = "xwayland")]
+            xwayland_process: None,
             #[cfg(feature = "xwayland")]
             xwayland_windows: HashMap::new(),
             #[cfg(feature = "xwayland")]

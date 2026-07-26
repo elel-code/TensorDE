@@ -21,6 +21,9 @@
 //! 4. [`EventfdWake`] — eventfd that workers write; the compositor **submits**
 //!    a read (or equivalent) so the wake arrives as a **completion**, not as a
 //!    readiness edge in a poll registry.
+//! 5. [`OpaqueFdCompletionRuntime`] — a transitional one-source adapter for
+//!    libraries that expose only an opaque notifier fd. It submits one
+//!    `PollOnce`, publishes its CQE, and requires explicit rearm or finish.
 //!
 //! # Performance
 //!
@@ -32,12 +35,14 @@
 
 mod bridge;
 mod completion;
+mod fd_completion;
 mod inject;
 mod reactor;
 mod worker;
 
 pub use bridge::{BridgeStats, TrySendError, WorkerBridge, WorkerRx, WorkerTx};
 pub use completion::{CompletionRelayError, EventfdCompletionRelay};
+pub use fd_completion::{OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime};
 pub use inject::{InjectSummary, inject_events};
 pub use reactor::{
     CompletionDriver, EventfdCompletion, EventfdWake, EventfdWakeError, NullWake, TurnBudget,
