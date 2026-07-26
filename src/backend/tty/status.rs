@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use smithay::backend::session::Session;
-
 use super::{TtyBackend, node_path};
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -11,7 +11,6 @@ use smithay::{
             DrmDevice, DrmDeviceFd, DrmSurface, PlaneConfig, PlaneState,
             gbm::{GbmFramebuffer, framebuffer_from_dmabuf},
         },
-        session::Session,
     },
     utils::{Rectangle, Transform},
 };

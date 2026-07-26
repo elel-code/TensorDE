@@ -120,7 +120,7 @@ impl RuntimeState {
                 }
                 self.reconcile_seat_capabilities();
                 if let Some(device) = tablet {
-                    self.process_tablet_device(device, event.change);
+                    self.process_tablet_device(event.id, device, event.change);
                 }
             }
             LibinputEvent::Input(BackendInputEvent::Keyboard(event)) => {
@@ -139,7 +139,7 @@ impl RuntimeState {
                 self.forward_pointer_axis(event)
             }
             LibinputEvent::Input(BackendInputEvent::Activity) => {}
-            LibinputEvent::Tablet(event) => self.process_tablet_event(event),
+            LibinputEvent::Tablet { device, event } => self.process_tablet_event(device, event),
         }
         if activity {
             self.protocol_globals

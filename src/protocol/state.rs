@@ -152,6 +152,9 @@ pub(crate) struct RuntimeState {
     /// Physical devices discovered by the input adapter (value-only caps).
     pub(crate) input_devices: HashMap<tensor_input::DeviceId, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
+    pub(super) tablet_devices:
+        HashMap<tensor_input::DeviceId, smithay::wayland::tablet_manager::TabletDescriptor>,
+    #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
     /// When true, every redraw path fans out to all CRTCs (debug only).
     #[cfg(feature = "tty")]
@@ -241,6 +244,8 @@ impl RuntimeState {
             backend: None,
             #[cfg(feature = "tty")]
             input_devices: HashMap::new(),
+            #[cfg(feature = "tty")]
+            tablet_devices: HashMap::new(),
             #[cfg(feature = "tty")]
             cursor: CursorState::default(),
             #[cfg(feature = "tty")]

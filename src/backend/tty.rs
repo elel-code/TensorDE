@@ -9,7 +9,6 @@ use smithay::{
     backend::{
         allocator::gbm::{GbmBufferFlags, GbmDevice},
         drm::{DrmDevice, DrmDeviceFd, DrmNode, NodeType},
-        session::Session,
     },
     utils::DeviceFd,
 };

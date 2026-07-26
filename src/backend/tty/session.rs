@@ -200,18 +200,12 @@ impl SeatSession {
             }
         }
     }
-}
 
-impl AsFd for SeatSession {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.state.completion_fd.as_fd()
-    }
-}
-
-impl Session for SeatSession {
-    type Error = SeatSessionError;
-
-    fn open(&mut self, path: &Path, _flags: OFlags) -> Result<OwnedFd, Self::Error> {
+    pub(super) fn open(
+        &mut self,
+        path: &Path,
+        _flags: OFlags,
+    ) -> Result<OwnedFd, SeatSessionError> {
         let device = self
             .state
             .seat
@@ -224,7 +218,7 @@ impl Session for SeatSession {
         Ok(own_libseat_device_fd(raw_fd))
     }
 
-    fn close(&mut self, fd: OwnedFd) -> Result<(), Self::Error> {
+    pub(super) fn close(&mut self, fd: OwnedFd) -> Result<(), SeatSessionError> {
         let raw_fd = fd.as_raw_fd();
         if let Some(device) = self.state.devices.borrow_mut().remove(&raw_fd) {
             self.state
@@ -236,7 +230,7 @@ impl Session for SeatSession {
         Ok(())
     }
 
-    fn change_vt(&mut self, vt: i32) -> Result<(), Self::Error> {
+    pub(super) fn change_vt(&mut self, vt: i32) -> Result<(), SeatSessionError> {
         self.state
             .seat
             .borrow_mut()
@@ -244,12 +238,42 @@ impl Session for SeatSession {
             .map_err(|error| SeatSessionError::ChangeVt(errno(error)))
     }
 
-    fn is_active(&self) -> bool {
+    pub(super) fn is_active(&self) -> bool {
         self.state.active.get()
     }
 
-    fn seat(&self) -> String {
+    pub(super) fn seat(&self) -> String {
         self.state.seat_name.clone()
+    }
+}
+
+impl AsFd for SeatSession {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.state.completion_fd.as_fd()
+    }
+}
+
+impl Session for SeatSession {
+    type Error = SeatSessionError;
+
+    fn open(&mut self, path: &Path, flags: OFlags) -> Result<OwnedFd, Self::Error> {
+        SeatSession::open(self, path, flags)
+    }
+
+    fn close(&mut self, fd: OwnedFd) -> Result<(), Self::Error> {
+        SeatSession::close(self, fd)
+    }
+
+    fn change_vt(&mut self, vt: i32) -> Result<(), Self::Error> {
+        SeatSession::change_vt(self, vt)
+    }
+
+    fn is_active(&self) -> bool {
+        SeatSession::is_active(self)
+    }
+
+    fn seat(&self) -> String {
+        SeatSession::seat(self)
     }
 }
 
@@ -275,6 +299,13 @@ pub(super) enum SeatSessionError {
     SignalOverflow,
     #[error("libseat completion produced too many lifecycle events")]
     EventOverflow,
+}
+
+impl SeatSessionError {
+    pub(super) fn errno(&self) -> i32 {
+        self.as_errno()
+            .unwrap_or_else(|| rustix::io::Errno::PERM.raw_os_error())
+    }
 }
 
 impl AsErrno for SeatSessionError {

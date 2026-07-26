@@ -1921,7 +1921,6 @@ dependencies = [
  "gbm",
  "glam 0.33.2",
  "indexmap",
- "input",
  "libc",
  "pkg-config",
  "portable-atomic",

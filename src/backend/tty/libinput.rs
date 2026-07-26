@@ -3,7 +3,8 @@
 use std::{
     collections::HashMap,
     io,
-    os::fd::{AsFd, BorrowedFd},
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    path::Path,
 };
 
 use input::{
@@ -14,7 +15,7 @@ use input::{
         pointer::{PointerEventTrait as _, PointerScrollEvent as _},
     },
 };
-use smithay::backend::libinput::LibinputSessionInterface;
+use rustix::fs::OFlags;
 use tensor_host::AxisSource;
 use tensor_input::{
     AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceCapabilities, DeviceChange,
@@ -27,6 +28,27 @@ use super::session::SeatSession;
 const MAX_EVENTS_PER_COMPLETION: usize = 256;
 
 #[derive(Debug)]
+struct LibinputSessionInterface(SeatSession);
+
+impl From<SeatSession> for LibinputSessionInterface {
+    fn from(session: SeatSession) -> Self {
+        Self(session)
+    }
+}
+
+impl input::LibinputInterface for LibinputSessionInterface {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
+        self.0
+            .open(path, OFlags::from_bits_truncate(flags as u32))
+            .map_err(|error| error.errno())
+    }
+
+    fn close_restricted(&mut self, fd: OwnedFd) {
+        let _ = self.0.close(fd);
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum LibinputEvent {
     Device {
         event: DeviceEvent,
@@ -34,7 +56,10 @@ pub(crate) enum LibinputEvent {
         tablet: Option<input::Device>,
     },
     Input(BackendInputEvent),
-    Tablet(event::TabletToolEvent),
+    Tablet {
+        device: DeviceId,
+        event: event::TabletToolEvent,
+    },
 }
 
 pub(super) struct LibinputSource {
@@ -125,7 +150,18 @@ impl LibinputSource {
             }
             input::Event::Keyboard(_) => None,
             input::Event::Pointer(event) => self.map_pointer_event(event),
-            input::Event::Tablet(event) => Some(LibinputEvent::Tablet(event)),
+            input::Event::Tablet(event) => {
+                let device = event.device();
+                let raw = device.as_raw() as usize;
+                let Some(device) = self.device_ids.get(&raw).copied() else {
+                    tracing::warn!(
+                        device = %device.sysname(),
+                        "ignored tablet event from an unknown libinput device"
+                    );
+                    return None;
+                };
+                Some(LibinputEvent::Tablet { device, event })
+            }
             _ => None,
         }
     }
