@@ -546,8 +546,9 @@ compio executor
   - **layer-shell**；**xdg-activation** token 请求/activate
   - **pointer-gestures** swipe/pinch/hold
   - multi-output、touch、frame callback、cursor_shape、fractional scale
-  - **event_map**：`SurfaceIdMap` + surface/layer 事件映射 + key text 提取（Fika 合流桥）
-  - 待丰富：xdg_dialog / toplevel icon / blur / seat serial 完整映射；**与 Fika Runtime 合流**
+  - **event_map**：`SurfaceIdMap` + `map_native_event_full`（surface/keyboard/pointer/touch/gesture/relative）
+  - `NativeShell::drain_public_events` + 真实 `WlSeat` serial
+  - 待丰富：axis value120、outputs、clipboard/dnd/text_input 公共 Event、xdg_dialog / blur；**与 Fika Runtime 合流**
 
 完成标准：
 

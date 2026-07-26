@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use wayland_client::protocol::wl_seat::WlSeat;
 
 use crate::event::{
-    Event, KeyState, KeyboardEvent, PointerEvent, PointerEventKind, SurfaceEvent, TouchEvent,
-    TouchEventKind,
+    Event, KeyState, KeyboardEvent, Modifiers, PointerEvent, PointerEventKind, SurfaceEvent,
+    TouchEvent, TouchEventKind,
 };
+use crate::pointer_axis::PointerAxisValue;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::{InputSerial, InputSerialSource};
 use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
@@ -226,6 +227,47 @@ pub fn map_native_event_full(
                 surface: surfaces.intern(surface),
                 position: (x, y),
                 kind: PointerEventKind::Motion { time: 0 },
+            }))
+        }
+        NativeShellEvent::PointerAxis {
+            surface,
+            horizontal,
+            vertical,
+        } => {
+            let surface = surface
+                .or(map_state.pointer_focus)
+                .map(|s| surfaces.intern(s))?;
+            Some(Event::Pointer(PointerEvent {
+                surface,
+                position: map_state.pointer_pos,
+                kind: PointerEventKind::Axis {
+                    time: 0,
+                    horizontal: PointerAxisValue {
+                        continuous: horizontal,
+                        ..PointerAxisValue::default()
+                    },
+                    vertical: PointerAxisValue {
+                        continuous: vertical,
+                        ..PointerAxisValue::default()
+                    },
+                    source: None,
+                },
+            }))
+        }
+        NativeShellEvent::SeatModifiers {
+            mods_depressed,
+            mods_latched,
+            mods_locked,
+            ..
+        } => {
+            let surface = map_state
+                .keyboard_focus
+                .map(|s| surfaces.intern(s))
+                .unwrap_or(SurfaceId(0));
+            let effective = mods_depressed | mods_latched | mods_locked;
+            Some(Event::Keyboard(KeyboardEvent::Modifiers {
+                surface,
+                modifiers: modifiers_from_xkb_mask(effective),
             }))
         }
         NativeShellEvent::PointerButton {
@@ -480,10 +522,8 @@ pub fn map_native_event_full(
                 delta_unaccelerated: (dx_unaccel, dy_unaccel),
             }))
         }
-        // Still deferred: axis detail, modifiers flags, outputs, clipboard, dnd, text_input, activation.
-        NativeShellEvent::PointerAxis { .. }
-        | NativeShellEvent::SeatModifiers { .. }
-        | NativeShellEvent::TouchFrame
+        // Still deferred: outputs, clipboard, dnd, text_input, activation; axis value120.
+        NativeShellEvent::TouchFrame
         | NativeShellEvent::OutputGeometry { .. }
         | NativeShellEvent::OutputMode { .. }
         | NativeShellEvent::OutputScale { .. }
@@ -517,6 +557,26 @@ pub fn map_native_key_text(
             text,
         } => Some((*key, *keysym, *pressed, text.as_deref())),
         _ => None,
+    }
+}
+
+/// Decode a Wayland/XKB modifier mask into public [`Modifiers`].
+///
+/// Bits follow the common libxkbcommon core mod indices (Shift/Caps/Ctrl/Alt/Num/Logo).
+fn modifiers_from_xkb_mask(mask: u32) -> Modifiers {
+    const SHIFT: u32 = 1 << 0;
+    const CAPS: u32 = 1 << 1;
+    const CTRL: u32 = 1 << 2;
+    const ALT: u32 = 1 << 3;
+    const NUM: u32 = 1 << 4;
+    const LOGO: u32 = 1 << 6;
+    Modifiers {
+        shift: mask & SHIFT != 0,
+        caps_lock: mask & CAPS != 0,
+        ctrl: mask & CTRL != 0,
+        alt: mask & ALT != 0,
+        num_lock: mask & NUM != 0,
+        logo: mask & LOGO != 0,
     }
 }
 
