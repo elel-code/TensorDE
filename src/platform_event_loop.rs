@@ -263,27 +263,38 @@ impl EventLoop {
                                 None
                             }
                         };
-                        let pick = crate::shell::render::dmabuf::pick_import_format(&feedback);
-                        let scope = match surface_id {
-                            Some(id) => format!("surface={id:?}"),
-                            None => "default".to_string(),
-                        };
-                        eprintln!(
-                            "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
-                            feedback.main_device(),
-                            feedback.formats().len(),
-                            feedback.tranches().len(),
-                        );
+                        // Verbose format table only when FIKA_LOG / FIKA_WGPU_LOG is set.
+                        // App-level readiness still logs via dmabuf_feedback_updated.
+                        if platform_verbose_log_enabled() {
+                            let pick =
+                                crate::shell::render::dmabuf::pick_import_format(&feedback);
+                            let scope = match surface_id {
+                                Some(id) => format!("surface={id:?}"),
+                                None => "default".to_string(),
+                            };
+                            eprintln!(
+                                "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
+                                feedback.main_device(),
+                                feedback.formats().len(),
+                                feedback.tranches().len(),
+                            );
+                        }
                         app.dmabuf_feedback_updated(&self.active, surface_id);
                     }
                     wayland_client_runtime::DmabufEvent::BufferCreated { id } => {
-                        eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");
+                        if platform_verbose_log_enabled() {
+                            eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");
+                        }
                     }
                     wayland_client_runtime::DmabufEvent::BufferFailed => {
-                        eprintln!("[fika-wgpu] dmabuf-buffer-failed");
+                        if platform_verbose_log_enabled() {
+                            eprintln!("[fika-wgpu] dmabuf-buffer-failed");
+                        }
                     }
                     wayland_client_runtime::DmabufEvent::BufferReleased { id } => {
-                        eprintln!("[fika-wgpu] dmabuf-buffer-released id={id:?}");
+                        if platform_verbose_log_enabled() {
+                            eprintln!("[fika-wgpu] dmabuf-buffer-released id={id:?}");
+                        }
                     }
                 }
                 Ok(())
@@ -719,4 +730,21 @@ impl EventLoop {
     fn window(&self, id: SurfaceId) -> Option<Arc<WaylandWindow>> {
         self.active.windows.borrow().get(&id).and_then(Weak::upgrade)
     }
+}
+
+/// Verbose platform diagnostics (`FIKA_LOG` / `FIKA_WGPU_LOG`), same policy as
+/// the main binary's `fika_log!` but usable from the platform module.
+fn platform_verbose_log_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let on = |name: &str| {
+            std::env::var_os(name).is_some_and(|value| {
+                let value = value.to_string_lossy();
+                let value = value.trim().to_ascii_lowercase();
+                !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+            })
+        };
+        on("FIKA_LOG") || on("FIKA_WGPU_LOG")
+    })
 }

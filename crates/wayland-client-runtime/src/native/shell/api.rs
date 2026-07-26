@@ -487,38 +487,9 @@ impl NativeShell {
         &mut self,
         params: crate::dmabuf::DmabufBufferParams,
     ) -> Result<(), NativeError> {
-        use std::os::fd::AsFd;
         use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::Flags;
 
-        let dmabuf = self
-            .state
-            .linux_dmabuf
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("zwp_linux_dmabuf_v1 missing".into()))?;
-        if params.planes.is_empty() {
-            return Err(NativeError::Protocol(
-                "dmabuf buffer requires at least one plane".into(),
-            ));
-        }
-        if params.width <= 0 || params.height <= 0 {
-            return Err(NativeError::Protocol(
-                "dmabuf buffer dimensions must be positive".into(),
-            ));
-        }
-        let qh = self.queue.handle();
-        let proxy = dmabuf.create_params(&qh, ());
-        for plane in &params.planes {
-            let modifier_hi = (plane.modifier >> 32) as u32;
-            let modifier_lo = (plane.modifier & 0xffff_ffff) as u32;
-            proxy.add(
-                plane.fd.as_fd(),
-                plane.plane_idx,
-                plane.offset,
-                plane.stride,
-                modifier_hi,
-                modifier_lo,
-            );
-        }
+        let proxy = self.begin_dmabuf_params(&params)?;
         let flags = Flags::from_bits_truncate(params.flags.bits());
         proxy.create(params.width, params.height, params.format, flags);
         let pid = proxy.id().protocol_id();
@@ -535,38 +506,10 @@ impl NativeShell {
         &mut self,
         params: crate::dmabuf::DmabufBufferParams,
     ) -> Result<crate::dmabuf::DmabufBufferId, NativeError> {
-        use std::os::fd::AsFd;
         use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::Flags;
 
-        let dmabuf = self
-            .state
-            .linux_dmabuf
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("zwp_linux_dmabuf_v1 missing".into()))?;
-        if params.planes.is_empty() {
-            return Err(NativeError::Protocol(
-                "dmabuf buffer requires at least one plane".into(),
-            ));
-        }
-        if params.width <= 0 || params.height <= 0 {
-            return Err(NativeError::Protocol(
-                "dmabuf buffer dimensions must be positive".into(),
-            ));
-        }
+        let proxy = self.begin_dmabuf_params(&params)?;
         let qh = self.queue.handle();
-        let proxy = dmabuf.create_params(&qh, ());
-        for plane in &params.planes {
-            let modifier_hi = (plane.modifier >> 32) as u32;
-            let modifier_lo = (plane.modifier & 0xffff_ffff) as u32;
-            proxy.add(
-                plane.fd.as_fd(),
-                plane.plane_idx,
-                plane.offset,
-                plane.stride,
-                modifier_hi,
-                modifier_lo,
-            );
-        }
         let flags = Flags::from_bits_truncate(params.flags.bits());
         let buffer = proxy.create_immed(params.width, params.height, params.format, flags, &qh, ());
         let id = self.state.next_dmabuf_buffer_id;
@@ -584,6 +527,48 @@ impl NativeShell {
         proxy.destroy();
         self.connection.flush()?;
         Ok(crate::dmabuf::DmabufBufferId(id))
+    }
+
+    /// Validate params and create a populated `zwp_linux_buffer_params_v1`.
+    fn begin_dmabuf_params(
+        &self,
+        params: &crate::dmabuf::DmabufBufferParams,
+    ) -> Result<
+        wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        NativeError,
+    > {
+        use std::os::fd::AsFd;
+
+        let dmabuf = self
+            .state
+            .linux_dmabuf
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("zwp_linux_dmabuf_v1 missing".into()))?;
+        if params.planes.is_empty() {
+            return Err(NativeError::Protocol(
+                "dmabuf buffer requires at least one plane".into(),
+            ));
+        }
+        if params.width <= 0 || params.height <= 0 {
+            return Err(NativeError::Protocol(
+                "dmabuf buffer dimensions must be positive".into(),
+            ));
+        }
+        let qh = self.queue.handle();
+        let proxy = dmabuf.create_params(&qh, ());
+        for plane in &params.planes {
+            let modifier_hi = (plane.modifier >> 32) as u32;
+            let modifier_lo = (plane.modifier & 0xffff_ffff) as u32;
+            proxy.add(
+                plane.fd.as_fd(),
+                plane.plane_idx,
+                plane.offset,
+                plane.stride,
+                modifier_hi,
+                modifier_lo,
+            );
+        }
+        Ok(proxy)
     }
 
     /// Attach a previously imported dmabuf buffer to a surface (no commit).
@@ -1056,6 +1041,7 @@ impl NativeShell {
 
     pub fn destroy_layer_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         self.state.cancel_touch_for_surface(id);
+        self.state.clear_surface_protocol_state(id);
         let Some(record) = self.state.layers.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown layer {id:?}")));
         };
@@ -1257,11 +1243,18 @@ impl NativeShell {
         Ok(n)
     }
 
+    /// Number of queued shell events waiting to be drained.
+    #[inline]
+    pub fn pending_event_count(&self) -> usize {
+        self.state.events.len()
+    }
+
     pub fn drain_events(&mut self) -> impl Iterator<Item = NativeShellEvent> + '_ {
         self.state.events.drain(..)
     }
 
     pub fn drain_events_into(&mut self, target: &mut Vec<NativeShellEvent>) {
+        // `append` reuses both buffers' capacity (no per-event realloc dance).
         target.append(&mut self.state.events);
     }
 
@@ -1280,6 +1273,8 @@ impl NativeShell {
         if let Some(serial) = self.state.last_input_serial {
             map_state.last_serial = serial;
         }
+        // Reserve once for the common 1:1 map case (avoids grow mid-batch).
+        out.reserve(self.state.events.len());
         for event in self.state.events.drain(..) {
             if let Some(mapped) = crate::native::event_map::map_native_event_full(
                 event,
@@ -1392,6 +1387,7 @@ impl NativeShell {
         let _ = self.set_idle_inhibit(id, false);
         // Cancel any live touch points on this surface before proxies die.
         self.state.cancel_touch_for_surface(id);
+        self.state.clear_surface_protocol_state(id);
         // Drop surface-scoped dmabuf feedback.
         if let Some(fb) = self.state.dmabuf_surface_feedback_objs.remove(&id) {
             let pid = fb.id().protocol_id();
@@ -1611,6 +1607,7 @@ impl NativeShell {
 
     pub fn destroy_popup(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         self.state.cancel_touch_for_surface(id);
+        self.state.clear_surface_protocol_state(id);
         let Some(record) = self.state.popups.remove(&id) else {
             return Err(NativeError::Protocol(format!("unknown popup {id:?}")));
         };

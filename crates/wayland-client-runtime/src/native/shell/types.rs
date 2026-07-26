@@ -971,6 +971,16 @@ impl NativeShellState {
         self.events.push(event);
     }
 
+    /// Drop protocol bookkeeping that references a destroyed content surface.
+    ///
+    /// Clears pending `wl_surface.frame` callbacks and presentation-feedback
+    /// records so destroy does not leave stale object-id maps.
+    pub(crate) fn clear_surface_protocol_state(&mut self, id: NativeSurfaceId) {
+        self.frame_callbacks.retain(|_, surface| *surface != id);
+        self.presentation_feedbacks
+            .retain(|_, rec| rec.surface != id);
+    }
+
     /// Borrow the content `wl_surface` for any role (toplevel / popup / layer).
     pub(crate) fn wl_surface(
         &self,

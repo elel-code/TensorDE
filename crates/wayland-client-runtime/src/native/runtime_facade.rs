@@ -133,6 +133,9 @@ impl NativeRuntime {
         if let Some(serial) = self.shell.last_input_serial() {
             self.map_state.last_serial = serial;
         }
+        // Hint capacity for the common 1:1 native→public mapping.
+        let pending = self.shell.pending_event_count();
+        target.reserve(pending);
         for event in self.shell.drain_events() {
             if let crate::NativeShellEvent::ActivationToken { surface, token } = event {
                 if let Some(request) = self.activation_pending.remove(&surface) {
