@@ -9,6 +9,7 @@ mod api_chrome;
 mod api_constraints;
 mod api_csd;
 mod api_dmabuf;
+mod api_dnd;
 mod api_interaction;
 mod api_layer;
 mod api_output;

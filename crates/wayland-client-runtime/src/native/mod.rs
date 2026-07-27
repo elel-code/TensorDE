@@ -33,6 +33,10 @@ mod runtime_dmabuf;
 #[cfg(feature = "compio")]
 mod runtime_interaction;
 #[cfg(feature = "compio")]
+mod runtime_layer;
+#[cfg(feature = "compio")]
+mod runtime_chrome;
+#[cfg(feature = "compio")]
 mod runtime_seats;
 #[cfg(feature = "compio")]
 mod runtime_transfer;

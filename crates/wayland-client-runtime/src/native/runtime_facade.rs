@@ -15,7 +15,6 @@ use std::time::Duration;
 use crate::display_io::CompioFdReady;
 use crate::event::Event;
 use crate::geometry::{LogicalPosition, LogicalSize};
-use crate::layer_shell::{LayerSurfaceAttributes, LayerSurfaceState};
 use crate::native::event_map::{NativeEventMapState, SurfaceIdMap};
 use crate::native::shell::{NativePopupPositioner, NativeShell, NativeSurfaceId};
 use crate::output::OutputInfo;
@@ -25,8 +24,7 @@ use crate::surface::{
 };
 use crate::wake_fd::EventFdWake;
 use crate::{
-    ActivationRequestId, ActivationToken, ActivationTokenAttributes, BlurState, NativeError,
-    TextInputState, ToplevelIcon,
+    ActivationRequestId, ActivationToken, ActivationTokenAttributes, NativeError,
 };
 
 /// Which readiness source completed a Compio wait.
@@ -390,69 +388,6 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-    pub fn create_layer_surface(
-        &mut self,
-        attributes: LayerSurfaceAttributes,
-    ) -> Result<SurfaceId, RuntimeError> {
-        if !self.shell.has_layer_shell() {
-            return Err(RuntimeError::Unsupported("layer-shell-v1"));
-        }
-        let output = attributes.output.map(|o| o.get());
-        let native = self
-            .shell
-            .create_layer_surface_full(attributes.namespace, output, attributes.state)
-            .map_err(map_native_error)?;
-        let public = self.surfaces.intern(native);
-        self.native_ids.insert(public, native);
-        Ok(public)
-    }
-
-    /// Bufferless layer surface for Vulkan / wgpu swapchain present (no SHM fill).
-    ///
-    /// Prefer this over [`Self::create_layer_surface`] when the client owns
-    /// GPU present (e.g. wallpaper engines, custom Vulkan WSI).
-    pub fn create_layer_surface_gpu(
-        &mut self,
-        attributes: LayerSurfaceAttributes,
-    ) -> Result<SurfaceId, RuntimeError> {
-        if !self.shell.has_layer_shell() {
-            return Err(RuntimeError::Unsupported("layer-shell-v1"));
-        }
-        let output = attributes.output.map(|o| o.get());
-        let native = self
-            .shell
-            .create_layer_surface_gpu(attributes.namespace, output, attributes.state)
-            .map_err(map_native_error)?;
-        let public = self.surfaces.intern(native);
-        self.native_ids.insert(public, native);
-        Ok(public)
-    }
-
-    pub fn set_layer_surface_state(
-        &mut self,
-        surface: SurfaceId,
-        state: LayerSurfaceState,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_layer_surface_state(native, state)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("unknown layer") => {
-                    RuntimeError::InvalidLayerSurfaceTarget(surface)
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn layer_surface_state(
-        &self,
-        surface: SurfaceId,
-    ) -> Result<LayerSurfaceState, RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .layer_surface_state(native)
-            .map_err(|_| RuntimeError::InvalidLayerSurfaceTarget(surface))
-    }
 
     pub fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
@@ -681,57 +616,6 @@ impl NativeRuntime {
         Ok(vec![surface])
     }
 
-    pub fn set_text_input_state(
-        &mut self,
-        surface: SurfaceId,
-        state: Option<&TextInputState>,
-    ) -> Result<(), RuntimeError> {
-        if !self.shell.has_text_input() {
-            return Err(RuntimeError::Unsupported("text_input_v3"));
-        }
-        let native = self.native(surface)?;
-        match state {
-            Some(state) => self
-                .shell
-                .set_text_input_state(native, state)
-                .map_err(map_native_error),
-            None => self.shell.disable_text_input().map_err(map_native_error),
-        }
-    }
-
-    pub fn request_user_attention(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        if !self.shell.has_activation() {
-            return Err(RuntimeError::Unsupported("xdg_activation_v1"));
-        }
-        let native = self.native(surface)?;
-        self.shell
-            .request_activation_token(native, None)
-            .map_err(map_native_error)
-    }
-
-    pub fn set_blur(&mut self, surface: SurfaceId, state: BlurState) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell.set_blur(native, state).map_err(|e| match e {
-            NativeError::Protocol(msg) if msg.contains("blur capability") => {
-                RuntimeError::Unsupported("ext-background-effect-v1 blur")
-            }
-            other => map_native_error(other),
-        })
-    }
-
-    pub fn set_toplevel_icon(
-        &mut self,
-        surface: SurfaceId,
-        icon: Option<ToplevelIcon>,
-    ) -> Result<(), RuntimeError> {
-        if !self.shell.has_toplevel_icon() {
-            return Err(RuntimeError::Unsupported("xdg-toplevel-icon-v1"));
-        }
-        let native = self.native(surface)?;
-        self.shell
-            .set_toplevel_icon(native, icon)
-            .map_err(map_native_error)
-    }
 
 
 
