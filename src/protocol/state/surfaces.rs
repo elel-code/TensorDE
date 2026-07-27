@@ -16,7 +16,9 @@ use wayland_server::{
 use crate::protocol::globals::dmabuf::dmabuf_buffer;
 use crate::protocol::globals::shm::shm_buffer;
 use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
-use crate::protocol::globals::viewporter::{CommittedViewport, committed_viewport};
+use crate::protocol::globals::viewporter::{
+    CommittedViewport, committed_viewport, pending_viewport_size,
+};
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -208,8 +210,7 @@ pub(in crate::protocol) fn surface_contains_point(surface: &WlSurface, point: (f
     })
 }
 
-#[cfg(feature = "tty")]
-pub(super) fn surface_has_buffer(surface: &WlSurface) -> bool {
+pub(in crate::protocol) fn surface_has_buffer(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
         states
             .data_map
@@ -306,6 +307,20 @@ pub(crate) fn test_surface_tree_states(root: &WlSurface) -> Vec<TestSurfaceState
         |_, _, _| true,
     );
     snapshots
+}
+
+pub(in crate::protocol) fn pending_buffer_logical_size(
+    states: &SurfaceData,
+    buffer: &WlBuffer,
+) -> Option<(u32, u32)> {
+    let buffer_size = wire_buffer_size(buffer)?;
+    let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+    let pending = attributes.pending();
+    let scale = u32::try_from(pending.buffer_scale).unwrap_or(1).max(1);
+    let transform = surface_transform(pending.buffer_transform);
+    let logical = logical_buffer_size(buffer_size, scale, transform);
+    let size = pending_viewport_size(states).unwrap_or(logical);
+    Some((u32::try_from(size.0).ok()?, u32::try_from(size.1).ok()?))
 }
 
 fn wire_buffer_size(buffer: &WlBuffer) -> Option<(i32, i32)> {

@@ -31,7 +31,7 @@ mod xwayland;
 
 pub(crate) use client::WaylandClientState;
 pub(crate) use popup::{PopupKind, PopupManager, find_popup_root_surface};
-pub(crate) use protocol_side::{ObjectKey, ProtocolSideState, SessionLockState};
+pub(crate) use protocol_side::{ObjectKey, ProtocolSideState};
 pub(crate) use window::ProtocolWindow;
 pub(crate) use workspace_host::WorkspaceHost;
 
@@ -85,12 +85,15 @@ use presentation::PendingPresentations;
 use surfaces::SurfaceBufferRegistry;
 pub(in crate::protocol) use surfaces::surface_contains_point;
 pub(crate) use surfaces::{apply_surface_alpha, destroy_surface_state, on_commit_surface_handler};
+pub(in crate::protocol) use surfaces::{pending_buffer_logical_size, surface_has_buffer};
 #[cfg(test)]
 pub(crate) use surfaces::{test_surface_buffer, test_surface_tree_states};
 #[cfg(feature = "tty")]
 pub(super) use sync::ExplicitSyncPoints;
 #[cfg(feature = "tty")]
 use sync::{PendingClientRelease, SurfaceSyncRegistry};
+#[cfg(feature = "tty")]
+pub(in crate::protocol) use window::surface_tree_under;
 
 #[cfg(all(test, feature = "tty"))]
 use crate::backend::BackendOutputEvent;
@@ -454,7 +457,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
+    pub(crate) fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };

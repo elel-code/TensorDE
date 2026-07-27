@@ -2,12 +2,9 @@
 
 use smithay::{
     utils::Logical,
-    wayland::{
-        input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
-        session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
-    },
+    wayland::input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use wayland_server::{
     Resource,
     protocol::{wl_output::WlOutput, wl_surface::WlSurface},
@@ -16,7 +13,7 @@ use wayland_server::{
 use crate::protocol::extensions::security_context::{
     SecurityContextHandler, SecurityContextListener,
 };
-use crate::protocol::state::{ObjectKey, RuntimeState, SessionLockState};
+use crate::protocol::state::{ObjectKey, RuntimeState};
 
 impl RuntimeState {
     pub(crate) fn publish_foreign_toplevel_from_surface(&mut self, surface: &WlSurface) {
@@ -79,68 +76,6 @@ impl RuntimeState {
         if let Some(handle) = self.protocol_side.foreign_toplevels.remove(&key) {
             handle.send_closed();
         }
-    }
-
-    pub(crate) fn session_is_locked(&self) -> bool {
-        self.protocol_side.session_lock.is_some()
-    }
-}
-
-impl SessionLockHandler for RuntimeState {
-    fn lock_state(&mut self) -> &mut SessionLockManagerState {
-        self.protocol_globals.session_lock()
-    }
-
-    fn lock(&mut self, confirmation: SessionLocker) {
-        if self.protocol_side.session_lock.is_some() {
-            return;
-        }
-        confirmation.lock();
-        self.protocol_side.session_lock = Some(SessionLockState {
-            surfaces: std::collections::HashMap::new(),
-        });
-        info!("session locked");
-        #[cfg(feature = "tty")]
-        self.request_redraw_all();
-    }
-
-    fn unlock(&mut self) {
-        self.protocol_side.session_lock = None;
-        info!("session unlocked");
-        #[cfg(feature = "tty")]
-        {
-            self.restore_keyboard_focus();
-            self.request_redraw_all();
-        }
-    }
-
-    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
-        let Some(lock) = self.protocol_side.session_lock.as_mut() else {
-            return;
-        };
-        let name = self
-            .space
-            .outputs()
-            .find(|candidate| candidate.owns(&output))
-            .map(|output| output.name().to_owned())
-            .unwrap_or_else(|| "unknown".to_owned());
-        if let Some(output_obj) = self.space.outputs().find(|o| o.owns(&output))
-            && let Some(geometry) = self.space.output_geometry(output_obj)
-        {
-            surface.with_pending_state(|state| {
-                state.size = Some(
-                    (
-                        u32::try_from(geometry.size.w).unwrap_or(1).max(1),
-                        u32::try_from(geometry.size.h).unwrap_or(1).max(1),
-                    )
-                        .into(),
-                );
-            });
-            surface.send_configure();
-        }
-        lock.surfaces.insert(name, surface);
-        #[cfg(feature = "tty")]
-        self.request_redraw_all();
     }
 }
 

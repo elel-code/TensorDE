@@ -9,7 +9,6 @@ use smithay::{
             primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState as WlrDataControlState,
         },
-        session_lock::SessionLockManagerState,
         shell::wlr_layer::WlrLayerShellState,
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
@@ -43,6 +42,7 @@ pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
 mod random_handle;
 pub(in crate::protocol) mod relative_pointer;
+pub(in crate::protocol) mod session_lock;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod shortcut_inhibit;
 pub(in crate::protocol) mod single_pixel_buffer;
@@ -71,6 +71,7 @@ use pointer_constraints::PointerConstraintsProtocol;
 use pointer_gestures::PointerGesturesProtocol;
 use presentation::PresentationProtocol;
 use relative_pointer::RelativePointerProtocol;
+use session_lock::SessionLockProtocol;
 use shm::ShmProtocol;
 use shortcut_inhibit::ShortcutInhibitProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
@@ -110,7 +111,7 @@ pub(crate) struct ProtocolGlobals {
     text_input: TextInputManagerState,
     input_method: InputMethodManagerState,
     virtual_keyboard: VirtualKeyboardManagerState,
-    session_lock: SessionLockManagerState,
+    pub(super) session_lock: SessionLockProtocol,
     security_context: SecurityContextManagerState,
     foreign_toplevel_list: ForeignToplevelListState,
     pub(super) xdg_foreign: XdgForeignProtocol,
@@ -177,7 +178,7 @@ impl ProtocolGlobals {
             virtual_keyboard: VirtualKeyboardManagerState::new::<RuntimeState, _>(display, |_| {
                 true
             }),
-            session_lock: SessionLockManagerState::new::<RuntimeState, _>(display, |_| true),
+            session_lock: SessionLockProtocol::new(display),
             // Sandboxed clients must not re-bind security-context.
             security_context: SecurityContextManagerState::new::<RuntimeState, _>(
                 display,
@@ -289,10 +290,6 @@ impl ProtocolGlobals {
 
     pub(crate) fn foreign_toplevel_list(&mut self) -> &mut ForeignToplevelListState {
         &mut self.foreign_toplevel_list
-    }
-
-    pub(crate) fn session_lock(&mut self) -> &mut SessionLockManagerState {
-        &mut self.session_lock
     }
 
     pub(crate) fn xdg_toplevel_destroyed(

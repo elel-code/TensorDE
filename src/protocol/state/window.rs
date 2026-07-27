@@ -318,7 +318,7 @@ where
     bbox
 }
 
-pub(super) fn surface_tree_under<P>(
+pub(in crate::protocol) fn surface_tree_under<P>(
     surface: &WlSurface,
     point: Point<f64, Logical>,
     location: P,

@@ -196,7 +196,18 @@ Tensor-owned `zxdg_exporter_v2` / `zxdg_importer_v2` replace Smithay's xdg-forei
 Handles use the same kernel CSPRNG and an O(1) map instead of a handle scan. Every imported object
 owns its own parent relationship, invalidation is exact, destroying an export notifies all live
 importers, and surface teardown uses reverse indices rather than scanning unrelated exports. No
-compatibility implementation remains. Tensor-owned
+compatibility implementation remains. Tensor owns `ext-session-lock-v1` directly too: lock and
+surface identity use exact O(1) indices, configure backlog is fixed-capacity, output changes are
+coalesced without an unbounded queue, and no output-name copy is retained. Output-global instance
+identity is distinct from connector identity, so a reconnect cannot inherit a retired lock surface;
+inactive surfaces never remain in the configure index. A lock becomes visible to the client only
+after the exact protected frame submitted for every live output returns through the KMS page-flip
+completion path; an older in-flight frame cannot satisfy the gate. Pending and confirmed locks blank
+outputs without extracting/copying the ordinary scene, normal seat grabs and client cursors are
+cleared, and input-region/subsurface hit testing routes input only to active lock surfaces (apart
+from VT recovery). Unlock, cancellation, output removal, and surface teardown clear the lock seat
+before focus can move. The Smithay session-lock state, handler, wrapper types, and
+immediate-confirmation path are deleted, not retained as an adapter. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

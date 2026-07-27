@@ -187,7 +187,11 @@ impl RuntimeState {
             .outputs
             .get(&output_id)
             .is_some_and(|managed| managed.has_presented);
-        if has_presented && scene.nodes().is_empty() && cursor.is_none() {
+        if has_presented
+            && !self.session_is_locked()
+            && scene.nodes().is_empty()
+            && cursor.is_none()
+        {
             self.set_redraw_state(output_id, OutputRedrawState::Idle);
             debug!(
                 output_device = output_id.device_id,
@@ -388,6 +392,9 @@ impl RuntimeState {
                 if let Some(ready) = self.event_loop.present_queue().readiness_mut(output_id) {
                     ready.mark_waiting_vblank(queued.slot);
                 }
+                self.protocol_globals
+                    .session_lock
+                    .frame_submitted(output_id, frame.timeline_value);
                 // Atomic KMS has latched ownership of the submitted client
                 // buffers. Let clients prepare their next frame immediately;
                 // presentation feedback remains pending until vblank.
@@ -452,6 +459,13 @@ impl RuntimeState {
         logical: Rect,
     ) -> SceneSnapshot {
         let workspace = self.active_workspace();
+        if self.session_is_locked() {
+            return self.merge_session_lock_surfaces(
+                SceneSnapshot::new(workspace, logical, Vec::new()),
+                output,
+                logical,
+            );
+        }
         let base = match self.world.extract_scene(workspace) {
             Some(scene) if scene.viewport == logical => scene,
             Some(scene) if scene.viewport.intersection(logical).is_some() => {
@@ -464,12 +478,7 @@ impl RuntimeState {
             }
             _ => SceneSnapshot::new(workspace, logical, Vec::new()),
         };
-        let with_layers = self.merge_layer_surfaces(base, output, logical);
-        if self.session_is_locked() {
-            self.merge_session_lock_surfaces(with_layers, output, logical)
-        } else {
-            with_layers
-        }
+        self.merge_layer_surfaces(base, output, logical)
     }
 
     fn defer_output_repaint(&mut self, output: BackendOutputId) {
@@ -536,6 +545,14 @@ impl RuntimeState {
             "atomic KMS page flip completed"
         );
         self.push_vblank(presentation.output, u64::from(sequence));
+        if let Some(lock) = self
+            .protocol_globals
+            .session_lock
+            .frame_completed(presentation.output, presentation.timeline_value)
+        {
+            lock.locked();
+            info!("session locked after protected frames completed");
+        }
         // Free the present slot for the next triple-buffer cycle.
         if let Some(ready) = self
             .event_loop

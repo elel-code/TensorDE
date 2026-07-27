@@ -54,6 +54,8 @@ mod pointer_constraints;
 mod pointer_gestures;
 #[cfg(feature = "tty")]
 mod relative_pointer;
+#[cfg(feature = "tty")]
+mod session_lock;
 mod surface_callbacks;
 #[cfg(feature = "tty")]
 mod surface_metadata;

@@ -214,6 +214,7 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.remove_session_lock_surface(surface);
         self.remove_xdg_foreign_surface(surface);
         let released = self.protocol_globals.remove_surface(surface);
         let notify_destroyed_client = !released.is_empty();

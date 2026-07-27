@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use smithay::wayland::session_lock::LockSurface;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::capture::CaptureSessions;
@@ -12,7 +11,6 @@ use crate::protocol::globals::foreign_toplevel::ForeignToplevelHandle;
 #[derive(Default)]
 pub(crate) struct ProtocolSideState {
     pub(crate) foreign_toplevels: HashMap<ObjectKey, ForeignToplevelHandle>,
-    pub(crate) session_lock: Option<SessionLockState>,
     pub(crate) capture: CaptureSessions,
 }
 
@@ -29,8 +27,4 @@ impl ObjectKey {
     pub(crate) const fn from_protocol_id(id: u32) -> Self {
         Self(id)
     }
-}
-
-pub(crate) struct SessionLockState {
-    pub(crate) surfaces: HashMap<String, LockSurface>,
 }

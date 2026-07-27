@@ -1,4 +1,5 @@
 mod pointer_geometry;
+mod session_lock;
 mod tablet;
 #[cfg(test)]
 mod tests;
@@ -36,7 +37,7 @@ use crate::backend::LibinputEvent;
 use super::{
     focus::KeyboardFocusTarget,
     globals::pointer_constraints::ConstraintMotion,
-    state::{ProtocolWindow, RuntimeState},
+    state::{ProtocolWindow, RuntimeState, surface_tree_under},
 };
 
 #[inline]
@@ -82,48 +83,20 @@ fn smithay_axis_direction(direction: AxisDirection) -> AxisRelativeDirection {
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: LibinputEvent) {
-        // Session lock captures the seat: only VT recovery remains compositor-owned.
+        if let LibinputEvent::Device { event, tablet } = event {
+            self.process_input_device_change(event, tablet);
+            return;
+        }
+        // A confirmed or pending lock owns client input. Compositor shortcuts
+        // are disabled except VT recovery, and normal surface hit-testing is
+        // never consulted.
         if self.session_is_locked() {
-            if let LibinputEvent::Input(BackendInputEvent::Keyboard(event)) = event {
-                let key_state = smithay_key_state(event.pressed);
-                if let Some(keyboard) = self.seat.get_keyboard() {
-                    keyboard.input::<(), _>(
-                        self,
-                        xkb_keycode(event.key),
-                        key_state,
-                        SERIAL_COUNTER.next_serial(),
-                        event.time_msec(),
-                        move |state, _, handle| {
-                            let Some(vt) = virtual_terminal_for_keysym(handle.modified_sym().raw())
-                            else {
-                                return FilterResult::Intercept(());
-                            };
-                            if key_state == SmithayKeyState::Pressed {
-                                state.request_virtual_terminal(vt);
-                            }
-                            FilterResult::Intercept(())
-                        },
-                    );
-                }
-            }
+            self.process_session_lock_input(event);
             return;
         }
         let activity = matches!(&event, LibinputEvent::Input(event) if event.is_activity());
         match event {
-            LibinputEvent::Device { event, tablet } => {
-                match event.change {
-                    DeviceChange::Added => {
-                        self.input_devices.insert(event.id, event.capabilities);
-                    }
-                    DeviceChange::Removed => {
-                        self.input_devices.remove(&event.id);
-                    }
-                }
-                self.reconcile_seat_capabilities();
-                if let Some(device) = tablet {
-                    self.process_tablet_device(event.id, device, event.change);
-                }
-            }
+            LibinputEvent::Device { .. } => unreachable!("device changes returned above"),
             LibinputEvent::Input(BackendInputEvent::Keyboard(event)) => {
                 self.forward_keyboard(event)
             }
@@ -150,6 +123,25 @@ impl RuntimeState {
         }
     }
 
+    fn process_input_device_change(
+        &mut self,
+        event: tensor_input::DeviceEvent,
+        tablet: Option<input::Device>,
+    ) {
+        match event.change {
+            DeviceChange::Added => {
+                self.input_devices.insert(event.id, event.capabilities);
+            }
+            DeviceChange::Removed => {
+                self.input_devices.remove(&event.id);
+            }
+        }
+        self.reconcile_seat_capabilities();
+        if let Some(device) = tablet {
+            self.process_tablet_device(event.id, device, event.change);
+        }
+    }
+
     /// Publish the aggregate libinput capabilities on the single Wayland
     /// seat. A keyboard can arrive after an application has mapped, so a
     /// successful keyboard creation must also restore the compositor-selected
@@ -173,6 +165,12 @@ impl RuntimeState {
 
         if keyboard_count > 0 && self.seat.get_keyboard().is_none() {
             match self.seat.add_keyboard(Default::default(), 200, 25) {
+                Ok(_) if self.session_is_locked() => {
+                    if let Some(surface) = self.protocol_globals.session_lock.first_active_surface()
+                    {
+                        self.focus_session_lock_surface(&surface);
+                    }
+                }
                 Ok(_) => self.restore_keyboard_focus(),
                 Err(error) => warn!(%error, "failed to publish keyboard capability"),
             }

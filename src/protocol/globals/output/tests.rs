@@ -33,3 +33,25 @@ fn fractional_scale_rounds_xdg_size_without_allocating() {
         (864, 1536)
     );
 }
+
+#[test]
+fn reconnecting_a_connector_gets_a_new_protocol_instance() {
+    let mode = PhysicalMode::new(1920, 1080, 60_000);
+    let make_output = || {
+        Output::new(
+            ConnectorId::new(7, 11),
+            "DP-1".to_owned(),
+            (600, 340),
+            SubpixelLayout::Unknown,
+            vec![mode],
+            mode,
+            mode,
+            OutputScale::ONE,
+        )
+    };
+    let first = make_output();
+    let second = make_output();
+    assert_eq!(first.id(), second.id());
+    assert_ne!(first.instance_id(), second.instance_id());
+    assert_eq!(first.logical_size(), (1920, 1080));
+}

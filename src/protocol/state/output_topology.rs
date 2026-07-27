@@ -73,6 +73,7 @@ impl RuntimeState {
         let global = output.create_global(&self.display_handle);
         self.space.map_output(&output, (0, 0));
         let output_id = descriptor.id;
+        let lock_size = output.logical_size();
         self.outputs.insert(
             output_id,
             ManagedOutput {
@@ -82,6 +83,10 @@ impl RuntimeState {
                 has_presented: false,
             },
         );
+        self.protocol_globals.session_lock.output_added(output_id);
+        self.protocol_globals
+            .session_lock
+            .configure_output(output_id, lock_size);
         self.set_redraw_state(output_id, OutputRedrawState::Queued);
         self.register_present_output(output_id);
         self.reflow_outputs();
@@ -135,7 +140,12 @@ impl RuntimeState {
         let output_id = descriptor.id;
         managed.descriptor = descriptor;
         let output = managed.output.clone();
+        self.protocol_globals.session_lock.output_added(output_id);
         self.space.refresh_output_geometry(&output);
+        let size = output.logical_size();
+        self.protocol_globals
+            .session_lock
+            .configure_output(output_id, size);
         self.arrange_layer_output(&output);
         // Mode replacement ends any in-flight flip; force a fresh first frame.
         self.set_redraw_state(output_id, OutputRedrawState::Queued);
@@ -149,6 +159,7 @@ impl RuntimeState {
         let Some(managed) = self.outputs.remove(&id) else {
             return;
         };
+        self.session_lock_output_removed(id);
         managed.output.deactivate();
         self.unregister_present_output(id);
         self.remove_layer_output(&managed.output);

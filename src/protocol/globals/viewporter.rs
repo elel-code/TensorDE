@@ -127,6 +127,16 @@ pub(in crate::protocol) fn committed_viewport(
     }
 }
 
+pub(in crate::protocol) fn pending_viewport_size(states: &SurfaceData) -> Option<(i32, i32)> {
+    let viewport = {
+        let mut cached = states.cached_state.get::<ViewportCachedState>();
+        *cached.pending()
+    };
+    viewport
+        .destination
+        .or_else(|| viewport.source.map(SurfaceSourceRect::integer_size))
+}
+
 pub(in crate::protocol) trait ViewporterHandler: 'static {
     fn viewport_client_scale(&self, client: &Client) -> f64;
 }

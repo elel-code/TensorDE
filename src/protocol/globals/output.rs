@@ -1,5 +1,7 @@
 //! Tensor-owned `wl_output` and `zxdg_output_v1` wire state.
 
+mod geometry;
+
 use std::sync::{
     Arc, Mutex, Weak as ArcWeak,
     atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
@@ -29,8 +31,22 @@ use crate::protocol::{
     state::RuntimeState,
 };
 
+use geometry::{
+    integer_scale, logical_length_round, subpixel_code, subpixel_from_code, transform_code,
+    transform_from_code, transformed_dimensions, wl_subpixel, wl_transform,
+};
+
 const WL_OUTPUT_VERSION: u32 = 4;
 const XDG_OUTPUT_VERSION: u32 = 3;
+static NEXT_OUTPUT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+/// One compositor-side `wl_output` global lifetime.
+///
+/// A connector can disappear and later return with the same `ConnectorId`.
+/// Protocol roles attached to the retired global must not migrate to the new
+/// global, so wire identity is deliberately distinct from hardware identity.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct OutputInstanceId(u64);
 
 pub(crate) struct OutputProtocol {
     _xdg_output_manager: GlobalId,
@@ -174,6 +190,7 @@ struct OutputResources {
 #[derive(Debug)]
 struct OutputInner {
     id: ConnectorId,
+    instance: OutputInstanceId,
     name: Arc<str>,
     description: Arc<str>,
     live: AtomicBool,
@@ -217,8 +234,11 @@ impl Output {
         scale: OutputScale,
     ) -> Self {
         let name: Arc<str> = name.into();
+        let instance = NEXT_OUTPUT_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(instance, 0, "wl_output instance token exhausted");
         Self(Arc::new(OutputInner {
             id,
+            instance: OutputInstanceId(instance),
             description: Arc::clone(&name),
             name,
             live: AtomicBool::new(true),
@@ -256,6 +276,11 @@ impl Output {
     }
 
     #[inline]
+    pub(crate) fn instance_id(&self) -> OutputInstanceId {
+        self.0.instance
+    }
+
+    #[inline]
     pub(crate) fn name(&self) -> &str {
         &self.0.name
     }
@@ -287,7 +312,28 @@ impl Output {
     }
 
     pub(crate) fn from_resource(resource: &WlOutput) -> Option<Self> {
-        resource.data::<WlOutputData>()?.output.upgrade()
+        let output = resource.data::<WlOutputData>()?.output.clone();
+        output.is_live().then_some(output)
+    }
+
+    pub(crate) fn from_resource_including_inactive(resource: &WlOutput) -> Option<Self> {
+        Some(resource.data::<WlOutputData>()?.output.clone())
+    }
+
+    pub(crate) fn logical_size(&self) -> (u32, u32) {
+        let snapshot = self.snapshot();
+        let Some(mode) = snapshot.mode else {
+            return (0, 0);
+        };
+        let (width, height) = transformed_dimensions(
+            logical_length_round(mode.width, snapshot.scale),
+            logical_length_round(mode.height, snapshot.scale),
+            snapshot.transform,
+        );
+        (
+            u32::try_from(width).unwrap_or(0),
+            u32::try_from(height).unwrap_or(0),
+        )
     }
 
     pub(crate) fn owns(&self, resource: &WlOutput) -> bool {
@@ -334,6 +380,10 @@ impl Output {
         if !self.0.live.swap(false, Ordering::AcqRel) {
             return;
         }
+        // `WlOutputData` retains this protocol object until the client
+        // releases its resource. Drop the RCU resource snapshot first so the
+        // output and its `WlOutput` handles cannot retain each other.
+        self.0.wl_resource_snapshot.store(Arc::new(Vec::new()));
         let mut resources = self.0.resources.lock().unwrap();
         let surfaces = std::mem::take(&mut resources.surfaces);
         for surface in surfaces {
@@ -418,7 +468,7 @@ impl Output {
         }
     }
 
-    fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         self.0.live.load(Ordering::Acquire)
     }
 
@@ -439,6 +489,10 @@ impl Output {
     }
 
     fn publish_wl_resources(&self, resources: &OutputResources) {
+        if !self.is_live() {
+            self.0.wl_resource_snapshot.store(Arc::new(Vec::new()));
+            return;
+        }
         let live = resources
             .wl_outputs
             .iter()
@@ -455,7 +509,7 @@ pub(in crate::protocol) struct WlOutputGlobalData {
 
 #[derive(Debug)]
 pub(in crate::protocol) struct WlOutputData {
-    output: WeakOutput,
+    output: Output,
 }
 
 #[derive(Debug)]
@@ -481,11 +535,16 @@ where
         resource: New<WlOutput>,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let weak = self.output.clone();
-        let output_resource = data_init.init(resource, WlOutputData { output: weak });
-        let Some(output) = self.output.upgrade() else {
-            return;
-        };
+        let output = self
+            .output
+            .upgrade()
+            .expect("a published wl_output global retains a live output");
+        let output_resource = data_init.init(
+            resource,
+            WlOutputData {
+                output: output.clone(),
+            },
+        );
         let mut resources = output.0.resources.lock().unwrap();
         send_wl_state(
             &output_resource,
@@ -523,13 +582,11 @@ where
     }
 
     fn destroyed(&self, _state: &mut D, _client: ClientId, resource: &WlOutput) {
-        if let Some(output) = self.output.upgrade() {
-            let mut resources = output.0.resources.lock().unwrap();
-            resources
-                .wl_outputs
-                .retain(|entry| entry.id() != resource.id());
-            output.publish_wl_resources(&resources);
-        }
+        let mut resources = self.output.0.resources.lock().unwrap();
+        resources
+            .wl_outputs
+            .retain(|entry| entry.id() != resource.id());
+        self.output.publish_wl_resources(&resources);
     }
 }
 
@@ -670,102 +727,6 @@ fn send_xdg_state(resource: &ZxdgOutputV1, output: &Output, snapshot: OutputSnap
     }
     if resource.version() < 3 {
         resource.done();
-    }
-}
-
-fn integer_scale(scale: OutputScale) -> i32 {
-    i32::try_from(scale.units().div_ceil(OutputScale::DENOMINATOR))
-        .unwrap_or(i32::MAX)
-        .max(1)
-}
-
-fn logical_length_round(value: i32, scale: OutputScale) -> i32 {
-    (f64::from(value) / scale.as_f64()).round() as i32
-}
-
-pub(crate) fn transformed_dimensions(
-    width: i32,
-    height: i32,
-    transform: SurfaceTransform,
-) -> (i32, i32) {
-    match transform {
-        SurfaceTransform::Rotate90
-        | SurfaceTransform::Rotate270
-        | SurfaceTransform::Flipped90
-        | SurfaceTransform::Flipped270 => (height, width),
-        _ => (width, height),
-    }
-}
-
-fn wl_subpixel(subpixel: SubpixelLayout) -> wl_output::Subpixel {
-    match subpixel {
-        SubpixelLayout::Unknown => wl_output::Subpixel::Unknown,
-        SubpixelLayout::None => wl_output::Subpixel::None,
-        SubpixelLayout::HorizontalRgb => wl_output::Subpixel::HorizontalRgb,
-        SubpixelLayout::HorizontalBgr => wl_output::Subpixel::HorizontalBgr,
-        SubpixelLayout::VerticalRgb => wl_output::Subpixel::VerticalRgb,
-        SubpixelLayout::VerticalBgr => wl_output::Subpixel::VerticalBgr,
-    }
-}
-
-fn wl_transform(transform: SurfaceTransform) -> wl_output::Transform {
-    match transform {
-        SurfaceTransform::Normal => wl_output::Transform::Normal,
-        SurfaceTransform::Rotate90 => wl_output::Transform::_90,
-        SurfaceTransform::Rotate180 => wl_output::Transform::_180,
-        SurfaceTransform::Rotate270 => wl_output::Transform::_270,
-        SurfaceTransform::Flipped => wl_output::Transform::Flipped,
-        SurfaceTransform::Flipped90 => wl_output::Transform::Flipped90,
-        SurfaceTransform::Flipped180 => wl_output::Transform::Flipped180,
-        SurfaceTransform::Flipped270 => wl_output::Transform::Flipped270,
-    }
-}
-
-const fn subpixel_code(subpixel: SubpixelLayout) -> u32 {
-    match subpixel {
-        SubpixelLayout::Unknown => 0,
-        SubpixelLayout::None => 1,
-        SubpixelLayout::HorizontalRgb => 2,
-        SubpixelLayout::HorizontalBgr => 3,
-        SubpixelLayout::VerticalRgb => 4,
-        SubpixelLayout::VerticalBgr => 5,
-    }
-}
-
-const fn subpixel_from_code(code: u32) -> SubpixelLayout {
-    match code {
-        1 => SubpixelLayout::None,
-        2 => SubpixelLayout::HorizontalRgb,
-        3 => SubpixelLayout::HorizontalBgr,
-        4 => SubpixelLayout::VerticalRgb,
-        5 => SubpixelLayout::VerticalBgr,
-        _ => SubpixelLayout::Unknown,
-    }
-}
-
-const fn transform_code(transform: SurfaceTransform) -> u32 {
-    match transform {
-        SurfaceTransform::Normal => 0,
-        SurfaceTransform::Rotate90 => 1,
-        SurfaceTransform::Rotate180 => 2,
-        SurfaceTransform::Rotate270 => 3,
-        SurfaceTransform::Flipped => 4,
-        SurfaceTransform::Flipped90 => 5,
-        SurfaceTransform::Flipped180 => 6,
-        SurfaceTransform::Flipped270 => 7,
-    }
-}
-
-const fn transform_from_code(code: u32) -> SurfaceTransform {
-    match code {
-        1 => SurfaceTransform::Rotate90,
-        2 => SurfaceTransform::Rotate180,
-        3 => SurfaceTransform::Rotate270,
-        4 => SurfaceTransform::Flipped,
-        5 => SurfaceTransform::Flipped90,
-        6 => SurfaceTransform::Flipped180,
-        7 => SurfaceTransform::Flipped270,
-        _ => SurfaceTransform::Normal,
     }
 }
 
