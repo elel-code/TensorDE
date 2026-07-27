@@ -1,4 +1,4 @@
-//! `ext-workspace-v1` (staging / tier-2) on Dispatch2.
+//! `ext-workspace-v1` (staging / tier-2) protocol adapter.
 //!
 //! Mapping (Niri-inspired, simplified for Tensor):
 //! - One workspace group for the session (all heads share the pool).
@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::trace;
 use wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -20,10 +19,14 @@ use wayland_server::{
 };
 
 use crate::ecs::WorkspaceId;
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
+use crate::protocol::state::RuntimeState;
 
 const VERSION: u32 = 1;
 
-/// User data for the manager object (local type for Dispatch2).
+/// User data for the manager object.
 #[derive(Debug, Default)]
 pub struct ManagerUserData;
 
@@ -209,7 +212,7 @@ fn workspace_state(active: bool) -> ext_workspace_handle_v1::State {
     }
 }
 
-impl<D> GlobalDispatch2<ExtWorkspaceManagerV1, D> for ExtWorkspaceGlobalData
+impl<D> GlobalDispatchDelegate<ExtWorkspaceManagerV1, D> for ExtWorkspaceGlobalData
 where
     D: Dispatch<ExtWorkspaceManagerV1, ManagerUserData>,
     D: Dispatch<ExtWorkspaceHandleV1, WorkspaceUserData>,
@@ -238,7 +241,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ExtWorkspaceManagerV1, D> for ManagerUserData
+impl<D> DispatchDelegate<ExtWorkspaceManagerV1, D> for ManagerUserData
 where
     D: ExtWorkspaceHandler,
     D: 'static,
@@ -281,7 +284,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ExtWorkspaceHandleV1, D> for WorkspaceUserData
+impl<D> DispatchDelegate<ExtWorkspaceHandleV1, D> for WorkspaceUserData
 where
     D: ExtWorkspaceHandler,
     D: 'static,
@@ -314,7 +317,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ExtWorkspaceGroupHandleV1, D> for GroupUserData
+impl<D> DispatchDelegate<ExtWorkspaceGroupHandleV1, D> for GroupUserData
 where
     D: ExtWorkspaceHandler,
     D: 'static,
@@ -338,3 +341,8 @@ where
             .retain(|g| g != resource);
     }
 }
+
+delegate_global_dispatch!(RuntimeState, ExtWorkspaceManagerV1, ExtWorkspaceGlobalData);
+delegate_dispatch!(RuntimeState, ExtWorkspaceManagerV1, ManagerUserData);
+delegate_dispatch!(RuntimeState, ExtWorkspaceHandleV1, WorkspaceUserData);
+delegate_dispatch!(RuntimeState, ExtWorkspaceGroupHandleV1, GroupUserData);

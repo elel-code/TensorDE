@@ -1,4 +1,4 @@
-//! `zwlr_gamma_control_manager_v1` (Dispatch2).
+//! `zwlr_gamma_control_manager_v1` protocol adapter.
 //!
 //! Ported from Niri/Hyprland-style wlr gamma control. The compositor supplies
 //! LUT size and apply/reset through [`GammaControlHandler`].
@@ -9,7 +9,6 @@ use std::{
     io::{self, Read},
 };
 
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tensor_host::ConnectorId;
 use tracing::{trace, warn};
 use wayland_protocols_wlr::gamma_control::v1::server::{
@@ -20,6 +19,11 @@ use wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId,
     protocol::wl_output::WlOutput,
 };
+
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
+use crate::protocol::state::RuntimeState;
 
 const VERSION: u32 = 1;
 
@@ -98,7 +102,7 @@ impl GammaControlManagerState {
     }
 }
 
-impl<D> GlobalDispatch2<ZwlrGammaControlManagerV1, D> for GammaControlManagerGlobalData
+impl<D> GlobalDispatchDelegate<ZwlrGammaControlManagerV1, D> for GammaControlManagerGlobalData
 where
     D: Dispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData>,
     D: 'static,
@@ -124,7 +128,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrGammaControlManagerV1, D> for GammaControlManagerGlobalData
+impl<D> DispatchDelegate<ZwlrGammaControlManagerV1, D> for GammaControlManagerGlobalData
 where
     D: Dispatch<ZwlrGammaControlV1, GammaControlState>,
     D: GammaControlHandler,
@@ -178,7 +182,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrGammaControlV1, D> for GammaControlState
+impl<D> DispatchDelegate<ZwlrGammaControlV1, D> for GammaControlState
 where
     D: GammaControlHandler,
     D: 'static,
@@ -263,6 +267,18 @@ where
         }
     }
 }
+
+delegate_global_dispatch!(
+    RuntimeState,
+    ZwlrGammaControlManagerV1,
+    GammaControlManagerGlobalData
+);
+delegate_dispatch!(
+    RuntimeState,
+    ZwlrGammaControlManagerV1,
+    GammaControlManagerGlobalData
+);
+delegate_dispatch!(RuntimeState, ZwlrGammaControlV1, GammaControlState);
 
 #[cfg(test)]
 mod tests {

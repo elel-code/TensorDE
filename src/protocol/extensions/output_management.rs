@@ -1,4 +1,4 @@
-//! `zwlr_output_management_v1` (community tier-4) on Dispatch2.
+//! `zwlr_output_management_v1` (community tier-4) protocol adapter.
 //!
 //! Performance: only mutates value-only [`OutputRule`] tables and emits
 //! topology events. No modeset / buffer reallocation on the page-flip path;
@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::{debug, warn};
 use wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
@@ -24,6 +23,11 @@ use wayland_server::{
 };
 
 pub use tensor_protocol::{OutputHeadSnapshot as HeadSnapshot, OutputHeadUpdate};
+
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
+use crate::protocol::state::RuntimeState;
 
 const VERSION: u32 = 2;
 
@@ -181,7 +185,7 @@ impl OutputManagementState {
     }
 }
 
-impl<D> GlobalDispatch2<ZwlrOutputManagerV1, D> for OutputManagementGlobalData
+impl<D> GlobalDispatchDelegate<ZwlrOutputManagerV1, D> for OutputManagementGlobalData
 where
     D: Dispatch<ZwlrOutputManagerV1, ManagerUserData>,
     D: Dispatch<ZwlrOutputHeadV1, HeadUserData>,
@@ -210,7 +214,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputManagerV1, D> for ManagerUserData
+impl<D> DispatchDelegate<ZwlrOutputManagerV1, D> for ManagerUserData
 where
     D: Dispatch<ZwlrOutputConfigurationV1, ConfigurationUserData>,
     D: OutputManagementHandler,
@@ -255,7 +259,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputConfigurationV1, D> for ConfigurationUserData
+impl<D> DispatchDelegate<ZwlrOutputConfigurationV1, D> for ConfigurationUserData
 where
     D: Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadUserData>,
     D: OutputManagementHandler,
@@ -357,7 +361,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputConfigurationHeadV1, D> for ConfigurationHeadUserData
+impl<D> DispatchDelegate<ZwlrOutputConfigurationHeadV1, D> for ConfigurationHeadUserData
 where
     D: OutputManagementHandler,
     D: 'static,
@@ -422,7 +426,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputHeadV1, D> for HeadUserData
+impl<D> DispatchDelegate<ZwlrOutputHeadV1, D> for HeadUserData
 where
     D: 'static,
 {
@@ -439,7 +443,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputModeV1, D> for ModeUserData
+impl<D> DispatchDelegate<ZwlrOutputModeV1, D> for ModeUserData
 where
     D: 'static,
 {
@@ -455,3 +459,22 @@ where
         let _ = request;
     }
 }
+
+delegate_global_dispatch!(
+    RuntimeState,
+    ZwlrOutputManagerV1,
+    OutputManagementGlobalData
+);
+delegate_dispatch!(RuntimeState, ZwlrOutputManagerV1, ManagerUserData);
+delegate_dispatch!(
+    RuntimeState,
+    ZwlrOutputConfigurationV1,
+    ConfigurationUserData
+);
+delegate_dispatch!(
+    RuntimeState,
+    ZwlrOutputConfigurationHeadV1,
+    ConfigurationHeadUserData
+);
+delegate_dispatch!(RuntimeState, ZwlrOutputHeadV1, HeadUserData);
+delegate_dispatch!(RuntimeState, ZwlrOutputModeV1, ModeUserData);

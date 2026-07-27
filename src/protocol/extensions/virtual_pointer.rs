@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use tracing::warn;
 
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tensor_host::AxisSource;
 use tensor_input::{
     AbsoluteMotionEvent, AxisDirection, PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
@@ -18,6 +17,11 @@ use wayland_server::{
 };
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
+
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
+use crate::protocol::state::RuntimeState;
 
 const VERSION: u32 = 2;
 
@@ -191,7 +195,7 @@ impl VirtualPointerManagerState {
     }
 }
 
-impl<D> GlobalDispatch2<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
+impl<D> GlobalDispatchDelegate<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
 where
     D: Dispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData>,
     D: 'static,
@@ -205,7 +209,7 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         // Manager objects carry the same global data type so can_view stays consistent;
-        // filter is only used at GlobalDispatch2::can_view.
+        // filter is only used at GlobalDispatchDelegate::can_view.
         data_init.init(
             resource,
             VirtualPointerManagerGlobalData {
@@ -219,7 +223,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
+impl<D> DispatchDelegate<ZwlrVirtualPointerManagerV1, D> for VirtualPointerManagerGlobalData
 where
     D: Dispatch<ZwlrVirtualPointerV1, VirtualPointerUserData>,
     D: VirtualPointerHandler,
@@ -263,7 +267,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrVirtualPointerV1, D> for VirtualPointerUserData
+impl<D> DispatchDelegate<ZwlrVirtualPointerV1, D> for VirtualPointerUserData
 where
     D: VirtualPointerHandler,
     D: 'static,
@@ -403,6 +407,18 @@ where
             .remove(resource);
     }
 }
+
+delegate_global_dispatch!(
+    RuntimeState,
+    ZwlrVirtualPointerManagerV1,
+    VirtualPointerManagerGlobalData
+);
+delegate_dispatch!(
+    RuntimeState,
+    ZwlrVirtualPointerManagerV1,
+    VirtualPointerManagerGlobalData
+);
+delegate_dispatch!(RuntimeState, ZwlrVirtualPointerV1, VirtualPointerUserData);
 
 #[cfg(test)]
 mod tests {

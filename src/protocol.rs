@@ -2,6 +2,7 @@
 mod adapter;
 #[cfg(feature = "tty")]
 mod cursor;
+mod dispatch;
 mod extensions;
 mod focus;
 mod globals;

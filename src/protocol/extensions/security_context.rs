@@ -33,7 +33,6 @@ use rustix::{
         sockopt::{socket_acceptconn, socket_type},
     },
 };
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tensor_protocol::SecurityContextMetadata;
 use tensor_runtime::{
     EventfdWake, EventfdWakeError, TrySendError, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
@@ -45,6 +44,11 @@ use wayland_protocols::wp::security_context::v1::server::{
     wp_security_context_v1::{self, WpSecurityContextV1},
 };
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::GlobalId};
+
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
+use crate::protocol::state::RuntimeState;
 
 const VERSION: u32 = 1;
 const MAX_ACTIVE_LISTENERS: usize = 64;
@@ -120,7 +124,7 @@ impl SecurityContextManagerState {
     }
 }
 
-impl<D> GlobalDispatch2<WpSecurityContextManagerV1, D> for SecurityContextGlobalData
+impl<D> GlobalDispatchDelegate<WpSecurityContextManagerV1, D> for SecurityContextGlobalData
 where
     D: Dispatch<WpSecurityContextManagerV1, SecurityContextManagerUserData>,
     D: 'static,
@@ -141,7 +145,7 @@ where
     }
 }
 
-impl<D> Dispatch2<WpSecurityContextManagerV1, D> for SecurityContextManagerUserData
+impl<D> DispatchDelegate<WpSecurityContextManagerV1, D> for SecurityContextManagerUserData
 where
     D: Dispatch<WpSecurityContextV1, SecurityContextUserData>,
     D: SecurityContextHandler,
@@ -193,7 +197,7 @@ where
     }
 }
 
-impl<D> Dispatch2<WpSecurityContextV1, D> for SecurityContextUserData
+impl<D> DispatchDelegate<WpSecurityContextV1, D> for SecurityContextUserData
 where
     D: SecurityContextHandler,
     D: 'static,
@@ -260,6 +264,18 @@ where
         }
     }
 }
+
+delegate_global_dispatch!(
+    RuntimeState,
+    WpSecurityContextManagerV1,
+    SecurityContextGlobalData
+);
+delegate_dispatch!(
+    RuntimeState,
+    WpSecurityContextManagerV1,
+    SecurityContextManagerUserData
+);
+delegate_dispatch!(RuntimeState, WpSecurityContextV1, SecurityContextUserData);
 
 fn set_once(
     resource: &WpSecurityContextV1,
