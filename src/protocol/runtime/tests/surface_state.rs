@@ -32,6 +32,8 @@ enum Step {
     ChildDeferred { surface: u32, buffer: u32 },
     ChildApplied,
     SinglePixelAttached { buffer: u32 },
+    ViewportRemoved,
+    ViewportRecreated,
     RootDetached { releases: u8 },
 }
 
@@ -232,6 +234,19 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
             .unwrap();
         release_rx.recv().unwrap();
 
+        viewport.destroy();
+        root.commit();
+        queue.roundtrip(&mut state).unwrap();
+        event_tx.send(Step::ViewportRemoved).unwrap();
+        release_rx.recv().unwrap();
+
+        let replacement_viewport = viewporter.get_viewport(&root, &handle, ());
+        replacement_viewport.set_destination(5, 4);
+        root.commit();
+        queue.roundtrip(&mut state).unwrap();
+        event_tx.send(Step::ViewportRecreated).unwrap();
+        release_rx.recv().unwrap();
+
         root.attach(None, 0, 0);
         root.commit();
         queue.roundtrip(&mut state).unwrap();
@@ -243,7 +258,7 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
 
         subsurface.destroy();
         child.destroy();
-        viewport.destroy();
+        replacement_viewport.destroy();
         root_toplevel.destroy();
         root_xdg.destroy();
         root.destroy();
@@ -327,11 +342,153 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
 
     assert_eq!(
         dispatch_until_step(&mut runtime, &event_rx),
+        Step::ViewportRemoved
+    );
+    let state = test_surface_tree_states(&root)
+        .into_iter()
+        .find(|state| state.surface == root_id)
+        .expect("root remains mapped after viewport removal");
+    assert_eq!(state.size, (1, 1));
+    release_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_step(&mut runtime, &event_rx),
+        Step::ViewportRecreated
+    );
+    let state = test_surface_tree_states(&root)
+        .into_iter()
+        .find(|state| state.surface == root_id)
+        .expect("root remains mapped after viewport recreation");
+    assert_eq!(state.size, (5, 4));
+    release_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_step(&mut runtime, &event_rx),
         Step::RootDetached { releases: 2 }
     );
     let states = test_surface_tree_states(&root);
     assert!(states.iter().all(|state| state.surface != root_id));
     client.join().unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ViewportViolation {
+    Duplicate,
+    BadValue,
+    BadSize,
+    OutOfBuffer,
+    NoSurface,
+}
+
+#[test]
+fn viewporter_reports_wire_errors_on_the_owning_protocol_objects() {
+    let cases = [
+        (
+            ViewportViolation::Duplicate,
+            "wp_viewporter",
+            u32::from(wp_viewporter::Error::ViewportExists),
+        ),
+        (
+            ViewportViolation::BadValue,
+            "wp_viewport",
+            u32::from(wp_viewport::Error::BadValue),
+        ),
+        (
+            ViewportViolation::BadSize,
+            "wp_viewport",
+            u32::from(wp_viewport::Error::BadSize),
+        ),
+        (
+            ViewportViolation::OutOfBuffer,
+            "wp_viewport",
+            u32::from(wp_viewport::Error::OutOfBuffer),
+        ),
+        (
+            ViewportViolation::NoSurface,
+            "wp_viewport",
+            u32::from(wp_viewport::Error::NoSurface),
+        ),
+    ];
+
+    for (violation, expected_interface, expected_code) in cases {
+        let (interface, code) = viewport_protocol_error(violation);
+        assert_eq!(interface, expected_interface, "{violation:?}");
+        assert_eq!(code, expected_code, "{violation:?}");
+    }
+}
+
+fn viewport_protocol_error(violation: ViewportViolation) -> (String, u32) {
+    let mut runtime = WaylandRuntime::with_appearance(
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap();
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+    let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<SurfaceClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+            .unwrap();
+        let viewporter = globals
+            .bind::<wp_viewporter::WpViewporter, _, _>(&handle, 1..=1, ())
+            .unwrap();
+        let single_pixel = globals
+            .bind::<wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1, _, _>(
+                &handle,
+                1..=1,
+                (),
+            )
+            .unwrap();
+        let surface = compositor.create_surface(&handle, ());
+        let viewport = viewporter.get_viewport(&surface, &handle, ());
+
+        match violation {
+            ViewportViolation::Duplicate => {
+                let _duplicate = viewporter.get_viewport(&surface, &handle, ());
+            }
+            ViewportViolation::BadValue => viewport.set_destination(0, 1),
+            ViewportViolation::BadSize => {
+                viewport.set_source(0.0, 0.0, 1.5, 1.0);
+                surface.commit();
+            }
+            ViewportViolation::OutOfBuffer => {
+                let buffer = single_pixel.create_u32_rgba_buffer(
+                    u32::MAX,
+                    u32::MAX,
+                    u32::MAX,
+                    u32::MAX,
+                    &handle,
+                    (),
+                );
+                viewport.set_source(0.0, 0.0, 2.0, 1.0);
+                surface.attach(Some(&buffer), 0, 0);
+                surface.commit();
+            }
+            ViewportViolation::NoSurface => {
+                surface.destroy();
+                viewport.set_destination(1, 1);
+            }
+        }
+
+        assert!(queue.roundtrip(&mut SurfaceClient::default()).is_err());
+        let error = connection
+            .protocol_error()
+            .expect("expected protocol error");
+        result_tx
+            .send((error.object_interface, error.code))
+            .unwrap();
+    });
+
+    let result = dispatch_until_viewport_error(&mut runtime, &result_rx);
+    client.join().unwrap();
+    result
 }
 
 fn create_shm_buffer(
@@ -382,4 +539,20 @@ fn dispatch_until_step(runtime: &mut WaylandRuntime, events: &mpsc::Receiver<Ste
         }
     }
     panic!("Wayland surface client did not complete before the dispatch limit");
+}
+
+fn dispatch_until_viewport_error(
+    runtime: &mut WaylandRuntime,
+    results: &mpsc::Receiver<(String, u32)>,
+) -> (String, u32) {
+    for _ in 0..200 {
+        runtime
+            .event_loop
+            .dispatch(Duration::from_millis(5), &mut runtime.state)
+            .unwrap();
+        if let Ok(result) = results.try_recv() {
+            return result;
+        }
+    }
+    panic!("Wayland viewporter client did not complete before the dispatch limit");
 }

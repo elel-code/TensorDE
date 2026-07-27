@@ -34,7 +34,6 @@ use smithay::{
         shell::{wlr_layer::WlrLayerShellState, xdg::decoration::XdgDecorationState},
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
-        viewporter::ViewporterState,
         virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
@@ -57,6 +56,7 @@ pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod single_pixel_buffer;
 #[cfg(feature = "tty")]
 mod syncobj;
+pub(in crate::protocol) mod viewporter;
 
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
@@ -67,9 +67,10 @@ pub(crate) use syncobj::DrmSyncPoint;
 use syncobj::DrmSyncobjProtocol;
 #[cfg(feature = "tty")]
 pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
+use viewporter::ViewporterProtocol;
 
 pub(crate) struct ProtocolGlobals {
-    viewporter: ViewporterState,
+    viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleManagerState,
     xdg_decoration: XdgDecorationState,
     primary_selection: PrimarySelectionState,
@@ -143,7 +144,7 @@ impl ProtocolGlobals {
             unrestricted,
         );
         Self {
-            viewporter: ViewporterState::new::<RuntimeState>(display),
+            viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
             xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
             primary_selection,

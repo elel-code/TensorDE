@@ -8,7 +8,6 @@ use smithay::wayland::{
         SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
     },
     shm,
-    viewporter::{self, ViewportCachedState},
 };
 use tensor_protocol::SurfaceTransform;
 use wayland_server::{
@@ -19,6 +18,7 @@ use wayland_server::{
 #[cfg(feature = "tty")]
 use crate::protocol::globals::dmabuf::dmabuf_buffer;
 use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
+use crate::protocol::globals::viewporter::committed_viewport_size;
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -303,17 +303,7 @@ fn logical_buffer_size(
 }
 
 fn view_snapshot(states: &SurfaceData, logical_size: (i32, i32)) -> SurfaceViewSnapshot {
-    viewporter::ensure_viewport_valid(states, logical_size.into());
-    let mut viewport = states.cached_state.get::<ViewportCachedState>();
-    let viewport = viewport.current();
-    let size = viewport
-        .dst
-        .map(|size| (size.w, size.h))
-        .or_else(|| {
-            viewport
-                .src
-                .map(|source| (source.size.w as i32, source.size.h as i32))
-        })
+    let size = committed_viewport_size(states, logical_size)
         .and_then(valid_size)
         .unwrap_or(logical_size);
     let offset = if states.role == Some(SUBSURFACE_ROLE) {
