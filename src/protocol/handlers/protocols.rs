@@ -40,14 +40,14 @@ impl RuntimeState {
     }
 
     /// Activate a pointer constraint when focus matches the constrained surface.
-    pub(crate) fn maybe_activate_pointer_constraint(&mut self) {
+    pub(crate) fn maybe_activate_pointer_constraint(&mut self, focus: Option<&WlSurface>) {
+        let Some(focus) = focus else {
+            return;
+        };
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let Some(focus) = pointer.current_focus() else {
-            return;
-        };
-        with_pointer_constraint(&focus, &pointer, |constraint| {
+        with_pointer_constraint(focus, &pointer, |constraint| {
             if let Some(constraint) = constraint {
                 constraint.activate();
             }

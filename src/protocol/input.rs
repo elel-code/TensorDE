@@ -23,7 +23,7 @@ use smithay::{
     wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
-use wayland_server::protocol::wl_surface::WlSurface;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use tensor_host::AxisSource;
 use tensor_input::{
@@ -282,7 +282,7 @@ impl RuntimeState {
         let Some(location) = location else {
             return;
         };
-        self.forward_pointer_location(location, event.time_ns);
+        self.forward_pointer_location(location, event.time_ns, Some(event));
     }
 
     /// Follow the same absolute-coordinate conversion used by Niri: libinput
@@ -302,10 +302,19 @@ impl RuntimeState {
             event.y * f64::from(bounds.size.h),
         )) + bounds.loc.to_f64();
         let location = replace_non_finite_pointer_location(location, current);
-        self.forward_pointer_location(constrain_pointer_location(location, bounds), event.time_ns);
+        self.forward_pointer_location(
+            constrain_pointer_location(location, bounds),
+            event.time_ns,
+            None,
+        );
     }
 
-    fn forward_pointer_location(&mut self, location: Point<f64, Logical>, time_ns: u64) {
+    fn forward_pointer_location(
+        &mut self,
+        location: Point<f64, Logical>,
+        time_ns: u64,
+        relative: Option<RelativeMotionEvent>,
+    ) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -321,8 +330,21 @@ impl RuntimeState {
                 time,
             },
         );
+        let current_focus = pointer.current_focus();
+        if let Some(event) = relative
+            && let Some(client) = current_focus.as_ref().and_then(Resource::client)
+        {
+            let client_scale =
+                <Self as smithay::wayland::compositor::CompositorHandler>::client_compositor_state(
+                    self, &client,
+                )
+                .client_scale();
+            self.protocol_globals
+                .relative_pointer
+                .motion(&client.id(), client_scale, event);
+        }
         pointer.frame(self);
-        self.maybe_activate_pointer_constraint();
+        self.maybe_activate_pointer_constraint(current_focus.as_ref());
         // Value bus: coalesce motion samples for the event layer (device Hz
         // must not expand the queue). Seat path already applied the sample.
         let _ = self.push_event(

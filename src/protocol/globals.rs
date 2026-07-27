@@ -7,7 +7,6 @@ use smithay::{
         input_method::InputMethodManagerState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
-        relative_pointer::RelativePointerManagerState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
             primary_selection::PrimarySelectionState,
@@ -43,6 +42,7 @@ pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod presentation;
+pub(in crate::protocol) mod relative_pointer;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod shortcut_inhibit;
 pub(in crate::protocol) mod single_pixel_buffer;
@@ -65,6 +65,7 @@ use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
 use presentation::PresentationProtocol;
+use relative_pointer::RelativePointerProtocol;
 use shm::ShmProtocol;
 use shortcut_inhibit::ShortcutInhibitProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
@@ -88,7 +89,7 @@ pub(crate) struct ProtocolGlobals {
     primary_selection: PrimarySelectionState,
     wlr_data_control: WlrDataControlState,
     ext_data_control: ExtDataControlState,
-    relative_pointer: RelativePointerManagerState,
+    pub(super) relative_pointer: RelativePointerProtocol,
     pointer_gestures: PointerGesturesState,
     pointer_constraints: PointerConstraintsState,
     presentation: PresentationProtocol,
@@ -152,7 +153,7 @@ impl ProtocolGlobals {
             primary_selection,
             wlr_data_control,
             ext_data_control,
-            relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
+            relative_pointer: RelativePointerProtocol::new(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
             pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),

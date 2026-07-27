@@ -160,7 +160,13 @@ aggregate inhibitor count returns to zero. Idle inhibition preserves multiple li
 surface without scanning them on input activity. Shortcut inhibitors
 are keyed by stable surface identity, reject duplicates, and add one allocation-free hash lookup to
 the key path only while resolving the focused surface; VT recovery remains compositor-owned. Only
-the core compositor cached-state boundary remains Smithay-backed for surface commits. Tensor-owned
+the core compositor cached-state boundary remains Smithay-backed for surface commits. Tensor now
+owns `zwp_relative_pointer_v1` wire state as well; physical relative motion reaches the protocol
+instead of merely advertising its global. Resources are indexed by focused client, so a motion
+performs one hash lookup and visits only that client's listeners, without a global scan, lock,
+allocation, or Wayland-resource clone. The accelerated delta is converted through the client's
+logical scale while the unaccelerated delta remains device-native, and the target reuses the
+post-grab focus read already required by pointer constraints. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

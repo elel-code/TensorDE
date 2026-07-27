@@ -44,6 +44,8 @@ mod foreign_toplevel;
 mod idle_notify;
 mod inhibitors;
 mod output;
+#[cfg(feature = "tty")]
+mod relative_pointer;
 mod surface_callbacks;
 #[cfg(feature = "tty")]
 mod surface_metadata;
