@@ -3,9 +3,8 @@ use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
-        input_method::InputMethodManagerState, shell::wlr_layer::WlrLayerShellState,
-        tablet_manager::TabletManagerState, text_input::TextInputManagerState,
-        virtual_keyboard::VirtualKeyboardManagerState,
+        input_method::InputMethodManagerState, tablet_manager::TabletManagerState,
+        text_input::TextInputManagerState, virtual_keyboard::VirtualKeyboardManagerState,
     },
 };
 use wayland_server::{Client, DisplayHandle};
@@ -29,6 +28,7 @@ pub(in crate::protocol) mod idle_inhibit;
 pub(in crate::protocol) mod idle_notify;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
+pub(in crate::protocol) mod layer_shell;
 pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod pointer_constraints;
 pub(in crate::protocol) mod pointer_gestures;
@@ -60,6 +60,7 @@ use idle_inhibit::IdleInhibitProtocol;
 use idle_notify::IdleNotifyProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
+use layer_shell::LayerShellProtocol;
 use output::OutputProtocol;
 use pointer_constraints::PointerConstraintsProtocol;
 use pointer_gestures::PointerGesturesProtocol;
@@ -97,7 +98,7 @@ pub(crate) struct ProtocolGlobals {
     pub(super) activation: ActivationProtocol,
     pub(super) idle_notify: IdleNotifyProtocol,
     idle_inhibit: IdleInhibitProtocol,
-    layer_shell: WlrLayerShellState,
+    pub(super) layer_shell: LayerShellProtocol,
     single_pixel_buffer: SinglePixelBufferProtocol,
     shortcut_inhibit: ShortcutInhibitProtocol,
     tablet: TabletManagerState,
@@ -148,7 +149,7 @@ impl ProtocolGlobals {
             activation: ActivationProtocol::new(display),
             idle_notify: IdleNotifyProtocol::new(display),
             idle_inhibit: IdleInhibitProtocol::new(display),
-            layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
+            layer_shell: LayerShellProtocol::new(display),
             single_pixel_buffer: SinglePixelBufferProtocol::new(display),
             shortcut_inhibit: ShortcutInhibitProtocol::new(display),
             tablet: TabletManagerState::new::<RuntimeState>(display),
@@ -250,10 +251,6 @@ impl ProtocolGlobals {
     #[cfg(feature = "tty")]
     pub(super) fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
         self.syncobj.state.as_mut()
-    }
-
-    pub(crate) fn layer_shell(&mut self) -> &mut WlrLayerShellState {
-        &mut self.layer_shell
     }
 
     pub(crate) fn foreign_toplevel_list(&mut self) -> &mut ForeignToplevelListState {

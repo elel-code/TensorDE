@@ -336,10 +336,6 @@ impl Output {
         )
     }
 
-    pub(crate) fn owns(&self, resource: &WlOutput) -> bool {
-        Self::from_resource(resource).is_some_and(|output| output == *self)
-    }
-
     pub(crate) fn reconfigure(
         &self,
         physical_size: (i32, i32),

@@ -4,7 +4,7 @@ use smithay::utils::{Logical, Rectangle};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "tty")]
-use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
+use crate::protocol::state::layer::WlrLayer;
 
 use super::registry::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords};
 use crate::protocol::state::RuntimeState;

@@ -130,6 +130,11 @@ and rendering itself.
 - Layer-shell lifecycle coverage creates a real top-anchored client surface, verifies its configure
   uses the fractional-scale logical output width, asserts its exclusive zone reshapes the workspace,
   and confirms protocol destruction removes the Tensor layer map and restores the full output zone.
+  Failure coverage rejects a buffer before the first configure ACK, zero dimensions without
+  opposite anchors, invalid exclusive edges, and zones below `-1` on the owning wire object. A
+  remap test proves an old-generation ACK cannot authorize the new buffer and that detach itself
+  does not emit the next initial configure. Output removal sends `closed`, and a real parentless
+  xdg-popup is transferred into the Tensor layer tree before its initial commit.
 - Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
   pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
   text-input, input-method, virtual-keyboard, session-lock, security-context,

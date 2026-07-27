@@ -206,6 +206,7 @@ impl CompositorHandler for RuntimeState {
 
     fn destroyed(&mut self, surface: &WlSurface) {
         self.selection_surface_destroyed(surface);
+        self.layer_surface_wl_destroyed(surface);
         self.remove_session_lock_surface(surface);
         self.remove_xdg_foreign_surface(surface);
         let released = self.protocol_globals.remove_surface(surface);
@@ -419,61 +420,6 @@ impl SeatHandler for RuntimeState {
 
 impl smithay::input::tablet::TabletSeatHandler for RuntimeState {
     type ToolFocus = WlSurface;
-}
-
-impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
-    fn shell_state(&mut self) -> &mut smithay::wayland::shell::wlr_layer::WlrLayerShellState {
-        self.protocol_globals.layer_shell()
-    }
-
-    fn new_layer_surface(
-        &mut self,
-        surface: smithay::wayland::shell::wlr_layer::LayerSurface,
-        output: Option<wayland_server::protocol::wl_output::WlOutput>,
-        _layer: smithay::wayland::shell::wlr_layer::Layer,
-        namespace: String,
-    ) {
-        let output = output
-            .as_ref()
-            .and_then(|resource| {
-                self.space
-                    .outputs()
-                    .find(|candidate| candidate.owns(resource))
-                    .cloned()
-            })
-            .or_else(|| self.space.outputs().next().cloned());
-        let Some(output) = output else {
-            warn!(%namespace, "layer surface created without a mapped output");
-            surface.send_close();
-            return;
-        };
-        self.map_layer_surface(&output, surface, namespace);
-        #[cfg(feature = "tty")]
-        self.request_redraw_all();
-    }
-
-    fn layer_destroyed(&mut self, surface: smithay::wayland::shell::wlr_layer::LayerSurface) {
-        #[cfg(feature = "tty")]
-        self.forget_layer_surface(surface.wl_surface());
-        self.unmap_layer_surface(&surface);
-        #[cfg(feature = "tty")]
-        {
-            let _ = self.reflow_default_workspace_layout();
-            self.request_redraw_all();
-        }
-    }
-
-    fn new_popup(
-        &mut self,
-        _parent: smithay::wayland::shell::wlr_layer::LayerSurface,
-        popup: PopupSurface,
-    ) {
-        let kind = PopupKind::Xdg(popup);
-        self.unconstrain_popup(&kind);
-        if let Err(error) = self.popups.track_popup(kind) {
-            warn!(%error, "failed to track layer-shell xdg popup");
-        }
-    }
 }
 
 impl DndGrabHandler for RuntimeState {

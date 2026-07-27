@@ -6,13 +6,17 @@
 
 #[cfg(feature = "tty")]
 mod dnd;
+mod lifecycle;
 mod map;
+mod surface;
 
 #[cfg(feature = "tty")]
 use map::LayerMap;
 pub(super) use map::LayerMaps;
-#[cfg(feature = "tty")]
-pub(super) use map::LayerSurface;
+pub(in crate::protocol) use surface::{
+    Anchor, ExclusiveZone, KeyboardInteractivity, Layer as WlrLayer, LayerSurface,
+    LayerSurfaceState, Margins,
+};
 
 #[cfg(feature = "tty")]
 use smithay::{
@@ -20,15 +24,16 @@ use smithay::{
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
         seat::WaylandFocus,
-        shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer},
     },
 };
 #[cfg(feature = "tty")]
 use tensor_util::Rect;
+#[cfg(feature = "tty")]
 use tracing::warn;
 #[cfg(feature = "tty")]
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
+#[cfg(feature = "tty")]
 use crate::protocol::globals::output::Output;
 #[cfg(feature = "tty")]
 use crate::{
@@ -52,25 +57,6 @@ pub(super) struct LayerPopupContext {
 }
 
 impl RuntimeState {
-    pub(crate) fn map_layer_surface(
-        &mut self,
-        output: &Output,
-        surface: smithay::wayland::shell::wlr_layer::LayerSurface,
-        namespace: String,
-    ) {
-        let (layer_maps, popups) = (&mut self.layer_maps, &self.popups);
-        if let Err(error) = layer_maps.map(output, surface, namespace, popups) {
-            warn!(%error, "failed to map layer surface");
-        }
-    }
-
-    pub(crate) fn unmap_layer_surface(
-        &mut self,
-        surface: &smithay::wayland::shell::wlr_layer::LayerSurface,
-    ) -> bool {
-        self.layer_maps.unmap(surface, &self.popups)
-    }
-
     #[cfg(feature = "tty")]
     pub(super) fn arrange_layer_output(&mut self, output: &Output) {
         if let Some(map) = self.layer_maps.for_output_mut(output) {
@@ -79,8 +65,14 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(super) fn remove_layer_output(&mut self, output: &Output) {
-        self.layer_maps.remove_output(output, &self.popups);
+    pub(crate) fn remove_layer_output(&mut self, output: &Output) {
+        let removed = self.layer_maps.remove_output(output, &self.popups);
+        for surface in removed {
+            surface.close();
+            self.clear_layer_surface_content(surface.wl_surface());
+            self.clear_on_demand_if_surface(surface.wl_surface());
+        }
+        self.reconcile_layer_keyboard_focus();
     }
 
     #[cfg(feature = "tty")]
@@ -123,20 +115,13 @@ impl RuntimeState {
         {
             root = popup_root;
         }
-        let Some(output) = self.layer_output_for_surface(&root) else {
-            return false;
-        };
-
         let mut newly_mapped_on_demand = None;
         {
-            let Some(map) = self.layer_maps.for_output_mut(&output) else {
+            let Some((layer, output)) = self.layer_maps.arrange_for_root(&root, &self.popups)
+            else {
                 return false;
             };
-            map.arrange(&self.popups);
-            let Some(layer) = map.layer_for_root(&root).cloned() else {
-                return true;
-            };
-            layer.protocol().send_pending_configure();
+            layer.send_pending_configure();
             let snapshot = output.snapshot();
             let scale = snapshot.scale;
             let transform = snapshot.transform;
@@ -150,21 +135,26 @@ impl RuntimeState {
             });
             self.protocol_globals
                 .set_preferred_fractional_scale(layer.wl_surface(), scale);
-            let mapped = surface_has_buffer(&root);
+            let mapped = layer.mapped() && surface_has_buffer(&root);
             let had_content = !self
                 .surface_buffers
                 .view_tree_contents(&root.id())
                 .is_empty();
             if mapped && !had_content {
                 let on_demand =
-                    layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand;
+                    layer.current().keyboard_interactivity == KeyboardInteractivity::OnDemand;
                 if on_demand {
-                    newly_mapped_on_demand = Some(layer);
+                    newly_mapped_on_demand = Some(layer.clone());
                 }
             }
         }
 
-        if surface_has_buffer(&root) {
+        if self
+            .layer_maps
+            .layer_and_output_for_root(&root)
+            .is_some_and(|(layer, _)| layer.mapped())
+            && surface_has_buffer(&root)
+        {
             let _ = self.update_layer_surface_content(&root);
         } else {
             self.clear_layer_surface_content(&root);
@@ -288,10 +278,10 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn layer_output_for_surface(&self, surface: &WlSurface) -> Option<Output> {
+    fn layer_output_for_surface(&self, surface: &WlSurface) -> Option<&Output> {
         self.layer_maps
             .layer_and_output_for_root(surface)
-            .map(|(_, output)| output.clone())
+            .map(|(_, output)| output)
     }
 
     #[cfg(feature = "tty")]
@@ -366,7 +356,7 @@ impl RuntimeState {
             for band in [WlrLayer::Overlay, WlrLayer::Top] {
                 if map.layers_on(band).any(|layer| {
                     let interactive = matches!(
-                        layer.cached_state().keyboard_interactivity,
+                        layer.current().keyboard_interactivity,
                         KeyboardInteractivity::Exclusive
                     ) || self.layer_shell_on_demand_focus.as_ref() == Some(layer);
                     interactive && layer.alive() && surface_has_buffer(layer.wl_surface())
@@ -624,7 +614,7 @@ impl RuntimeState {
         {
             return;
         }
-        match layer.cached_state().keyboard_interactivity {
+        match layer.current().keyboard_interactivity {
             KeyboardInteractivity::OnDemand => {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
             }
@@ -663,7 +653,7 @@ impl RuntimeState {
             if let Some(layer) = self.layer_shell_on_demand_focus.as_ref()
                 && layer.alive()
                 && map.layers().any(|candidate| candidate == layer)
-                && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand
+                && layer.current().keyboard_interactivity == KeyboardInteractivity::OnDemand
             {
                 return Some(layer.clone());
             }
@@ -685,8 +675,7 @@ impl RuntimeState {
             .as_ref()
             .is_some_and(|layer| {
                 layer.alive()
-                    && layer.cached_state().keyboard_interactivity
-                        == KeyboardInteractivity::OnDemand
+                    && layer.current().keyboard_interactivity == KeyboardInteractivity::OnDemand
                     && surface_has_buffer(layer.wl_surface())
             });
         if !keep {
@@ -709,7 +698,7 @@ impl RuntimeState {
 #[cfg(feature = "tty")]
 fn exclusive_layer_on(map: &LayerMap, band: WlrLayer) -> Option<LayerSurface> {
     map.layers_on(band).find_map(|layer| {
-        (layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+        (layer.current().keyboard_interactivity == KeyboardInteractivity::Exclusive
             && layer.alive()
             && surface_has_buffer(layer.wl_surface()))
         .then(|| layer.clone())

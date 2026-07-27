@@ -217,6 +217,17 @@ uses the same single-use source records and strict accept/action/finish state ma
 the pre-v3 copy action and cancellation rules; pointer and touch motion neither scan source tables
 nor read MIME metadata. Smithay selection state, handler traits, focus setters, and wire delegates
 are deleted rather than kept as a compatibility implementation. Tensor-owned
+`wlr-layer-shell-v1` v5 now owns the global, layer resources, double-buffered role state, configure
+queue, output selection, popup parenting, and teardown directly. Smithay's layer-shell state,
+handler trait, wrapper types, cached state, and wire delegate are deleted. Layer resources and
+roots have exact object indices; root-to-output lookup on commit is O(1), while each output retains
+one contiguous creation-order vector for hit testing and frame merge. Configure backlogs are fixed
+at 16 entries, and every unmap advances a generation so an old configure ACK can be consumed but
+can never authorize a buffer in the new mapping. The detach commit does not configure the next
+mapping; the client must first issue the required empty initial commit. Output removal sends
+`closed`, further requests become inert, and transfer to xdg-popup state occurs once without a
+parallel layer adapter. These paths add no lock, allocation, table scan, or resource clone to
+input, vblank, present, or frame traversal. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

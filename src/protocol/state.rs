@@ -4,7 +4,7 @@ mod capture_shm;
 mod client;
 mod display;
 mod event_loop;
-mod layer;
+pub(in crate::protocol) mod layer;
 #[cfg(feature = "tty")]
 mod output;
 mod output_config;
