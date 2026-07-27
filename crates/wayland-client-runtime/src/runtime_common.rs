@@ -44,6 +44,12 @@ pub struct RuntimeCapabilities {
     pub primary_selection: bool,
     /// `zwp_idle_inhibit_manager_v1` (screensaver / idle inhibit).
     pub idle_inhibit: bool,
+    /// `ext_idle_notifier_v1` (user idle / resume notifications).
+    pub idle_notify: bool,
+    /// `ext_idle_notifier_v1` v2 input-only idle tracking.
+    pub idle_notify_input: bool,
+    /// `zxdg_exporter_v2` + `zxdg_importer_v2`.
+    pub xdg_foreign: bool,
     /// `zwp_linux_dmabuf_v1` (GPU zero-copy buffers).
     pub linux_dmabuf: bool,
     /// Bound linux-dmabuf protocol version (0 if unbound).

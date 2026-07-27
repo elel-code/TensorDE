@@ -126,10 +126,11 @@ pub use dmabuf::{
 pub use display_io::{CompioFdReady, DisplayReadiness};
 pub use native::{
     list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
-    native_key_text_pressed, GlobalAdvertisement, NativeCapabilities, NativeConnection,
-    NativeError, NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry,
-    NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, ProtocolClass,
-    ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX, specs_in_class,
+    native_key_text_pressed, GlobalAdvertisement, IdleNotifyKind, NativeCapabilities,
+    NativeConnection, NativeError, NativeEventMapState, NativePopupPositioner, NativePump,
+    NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+    ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX,
+    specs_in_class,
 };
 #[cfg(feature = "compio")]
 pub use native::NativeRuntime;
@@ -137,8 +138,8 @@ pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,
 };
 pub use event::{
-    Event, KeyState, KeyboardEvent, Modifiers, PointerEvent, PointerEventKind, PopupConfigureKind,
-    SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind,
+    Event, ForeignEvent, IdleNotifyEvent, KeyState, KeyboardEvent, Modifiers, PointerEvent,
+    PointerEventKind, PopupConfigureKind, SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind,
 };
 pub use geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
 pub use input::{CursorIcon, InputSerial, InputSerialSource, SeatEvent, SeatId, SeatInfo};

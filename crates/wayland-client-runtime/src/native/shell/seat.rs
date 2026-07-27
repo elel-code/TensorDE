@@ -95,6 +95,7 @@ impl NativeShellState {
                 pinch_gesture: None,
                 hold_gesture: None,
                 axis: crate::pointer_axis::PointerAxisFrameAccum::default(),
+                relative_pointer: None,
             },
         );
         self.push(NativeShellEvent::SeatAdded {
@@ -118,6 +119,8 @@ impl NativeShellState {
         self.swipe_objects.retain(|_, name| *name != global_name);
         self.pinch_objects.retain(|_, name| *name != global_name);
         self.hold_objects.retain(|_, name| *name != global_name);
+        self.relative_pointer_objects
+            .retain(|_, name| *name != global_name);
 
         let was_primary = self
             .seat
@@ -131,6 +134,16 @@ impl NativeShellState {
         drop(rec.swipe_gesture);
         drop(rec.pinch_gesture);
         drop(rec.hold_gesture);
+        if let Some(rel) = rec.relative_pointer {
+            if self
+                .relative_pointer
+                .as_ref()
+                .is_some_and(|r| r.id() == rel.id())
+            {
+                self.relative_pointer = None;
+            }
+            rel.destroy();
+        }
 
         if was_primary {
             // Promote another seat if available, else clear primary fields.
@@ -262,10 +275,26 @@ impl NativeShellState {
                     }
                     g.destroy();
                 }
+                // Drop per-seat relative pointer with the pointer.
+                let rel = self
+                    .seats
+                    .get_mut(&global)
+                    .and_then(|rec| rec.relative_pointer.take());
+                if let Some(rel) = rel {
+                    self.relative_pointer_objects
+                        .remove(&rel.id().protocol_id());
+                    if self
+                        .relative_pointer
+                        .as_ref()
+                        .is_some_and(|r| r.id() == rel.id())
+                    {
+                        self.relative_pointer = None;
+                    }
+                    rel.destroy();
+                }
                 if is_primary && self.pointer.as_ref().is_some_and(|p| p.id() == ptr.id()) {
                     self.pointer = None;
-                    // Relative/constraints were bound to the primary pointer.
-                    self.relative_pointer = None;
+                    // Constraints were bound to the primary pointer.
                     self.locked_pointer = None;
                     self.confined_pointer = None;
                     self.gesture_surface = None;
@@ -328,6 +357,7 @@ impl NativeShellState {
             self.swipe_gesture = rec.swipe_gesture.clone();
             self.pinch_gesture = rec.pinch_gesture.clone();
             self.hold_gesture = rec.hold_gesture.clone();
+            self.relative_pointer = rec.relative_pointer.clone();
         }
         if self.touch.is_none() {
             self.touch = self.seats.values().find_map(|rec| rec.touch.clone());

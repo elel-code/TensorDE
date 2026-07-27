@@ -458,6 +458,55 @@
     }
 
     #[test]
+    fn native_shell_idle_notify_and_foreign_api_when_present() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        let caps = shell.capabilities();
+        if caps.idle_notify {
+            assert!(shell.has_idle_notify());
+            let kind = if caps.idle_notify_input {
+                crate::IdleNotifyKind::InputOnly
+            } else {
+                crate::IdleNotifyKind::WithInhibitors
+            };
+            let id = shell
+                .create_idle_notification(60_000, None, kind)
+                .expect("idle notification");
+            shell
+                .destroy_idle_notification(id)
+                .expect("destroy idle notification");
+        }
+        if caps.xdg_foreign {
+            assert!(shell.has_xdg_foreign());
+            let id = shell
+                .create_toplevel_gpu("foreign", "dev.fika.Foreign", 120, 120)
+                .expect("toplevel");
+            shell.export_toplevel(id).expect("export");
+            // Handle arrives asynchronously; unexport must still be safe.
+            shell.unexport_toplevel(id).expect("unexport");
+            let _ = shell.destroy_toplevel(id);
+        }
+    }
+
+    #[test]
+    fn native_shell_relative_pointer_enable_is_multiseat_safe() {
+        let Ok(mut shell) = NativeShell::connect_to_env() else {
+            return;
+        };
+        let _ = shell.dispatch_pending();
+        if !shell.capabilities().relative_pointer {
+            return;
+        }
+        // Enabling before/after seats exist must not error; streams bind per seat.
+        shell.enable_relative_pointer().expect("enable relative");
+        shell.enable_relative_pointer().expect("enable idempotent");
+        let _ = shell.dispatch_pending();
+        shell.disable_relative_pointer().expect("disable relative");
+    }
+
+    #[test]
     fn native_shell_presentation_feedback_api_when_present() {
         let Ok(mut shell) = NativeShell::connect_to_env() else {
             return;

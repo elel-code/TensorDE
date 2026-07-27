@@ -1,6 +1,6 @@
 //! relative-pointer-v1 dispatch for the native shell.
 
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::wp::relative_pointer::zv1::client::{
     zwp_relative_pointer_manager_v1, zwp_relative_pointer_v1,
 };
@@ -24,7 +24,7 @@ impl Dispatch<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1, ()>
 impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        rel: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
         event: zwp_relative_pointer_v1::Event,
         _: &(),
         _: &Connection,
@@ -40,11 +40,16 @@ impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for NativeShell
         } = event
         {
             let utime = (u64::from(utime_hi) << 32) | u64::from(utime_lo);
-            // Relative pointer is bound to one seat pointer (shell-wide stream).
-            let seat = state
-                .pointer
-                .as_ref()
-                .and_then(|p| state.seat_for_pointer(p));
+            let seat = state.seat_for_relative_pointer(rel).or_else(|| {
+                // Compat: shell-wide primary stream without object map entry.
+                state
+                    .relative_pointer
+                    .as_ref()
+                    .filter(|r| r.id() == rel.id())
+                    .and_then(|_| {
+                        state.pointer.as_ref().and_then(|p| state.seat_for_pointer(p))
+                    })
+            });
             state.push(NativeShellEvent::RelativePointer {
                 utime,
                 dx,

@@ -31,6 +31,8 @@ mod runtime_constraints;
 #[cfg(feature = "compio")]
 mod runtime_dmabuf;
 #[cfg(feature = "compio")]
+mod runtime_idle_foreign;
+#[cfg(feature = "compio")]
 mod runtime_interaction;
 #[cfg(feature = "compio")]
 mod runtime_layer;
@@ -52,8 +54,8 @@ pub use protocols::{
 pub use pump::{NativePump, PumpStep};
 pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
 pub use shell::{
-    NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent, NativeSurfaceHandle,
-    NativeSurfaceId,
+    IdleNotifyKind, NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent,
+    NativeSurfaceHandle, NativeSurfaceId,
 };
 
 #[cfg(feature = "compio")]

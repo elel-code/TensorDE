@@ -215,6 +215,29 @@ pub struct TouchEvent {
     pub seat: Option<crate::SeatId>,
 }
 
+/// `ext_idle_notification_v1` idle / resume.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct IdleNotifyEvent {
+    /// Client-local id from [`crate::NativeShell::create_idle_notification`].
+    pub id: u64,
+    /// `true` after `idled`, `false` after `resumed`.
+    pub idle: bool,
+}
+
+/// Cross-client surface handle lifecycle (`xdg-foreign-v2`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForeignEvent {
+    /// Local export completed; share `handle` out-of-band (D-Bus, …).
+    Exported {
+        surface: SurfaceId,
+        handle: String,
+    },
+    /// A previously imported remote surface was destroyed / revoked.
+    ImportedDestroyed {
+        id: u64,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Surface(SurfaceEvent),
@@ -233,6 +256,10 @@ pub enum Event {
     Dnd(DndEvent),
     /// Linux dmabuf feedback / buffer lifecycle (`zwp_linux_dmabuf_v1`).
     Dmabuf(crate::dmabuf::DmabufEvent),
+    /// User idle / resume (`ext-idle-notify-v1`).
+    IdleNotify(IdleNotifyEvent),
+    /// Cross-client surface handles (`xdg-foreign-v2`).
+    Foreign(ForeignEvent),
 }
 
 /// Contiguous pending-event storage optimized for append-and-drain batches.

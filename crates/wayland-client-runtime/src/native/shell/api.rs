@@ -151,6 +151,30 @@ impl NativeShell {
         {
             state.idle_inhibit_manager = Some(idle);
         }
+        if let Ok(notifier) = globals.bind::<
+            wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1,
+            _,
+            _,
+        >(&qh, 1..=2, ())
+        {
+            state.idle_notifier = Some(notifier);
+        }
+        if let Ok(exporter) = globals.bind::<
+            wayland_protocols::xdg::foreign::zv2::client::zxdg_exporter_v2::ZxdgExporterV2,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.xdg_exporter = Some(exporter);
+        }
+        if let Ok(importer) = globals.bind::<
+            wayland_protocols::xdg::foreign::zv2::client::zxdg_importer_v2::ZxdgImporterV2,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.xdg_importer = Some(importer);
+        }
         // Mesa requires version ≥3; feedback needs ≥4. Prefer highest available.
         if let Ok(dmabuf) = globals.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(
             &qh,
@@ -376,6 +400,13 @@ impl NativeShell {
             presentation: self.state.presentation.is_some(),
             primary_selection: self.state.primary_selection_manager.is_some(),
             idle_inhibit: self.state.idle_inhibit_manager.is_some(),
+            idle_notify: self.state.idle_notifier.is_some(),
+            idle_notify_input: self
+                .state
+                .idle_notifier
+                .as_ref()
+                .is_some_and(|n| n.version() >= 2),
+            xdg_foreign: self.state.xdg_exporter.is_some() && self.state.xdg_importer.is_some(),
             linux_dmabuf: self.state.linux_dmabuf.is_some(),
             linux_dmabuf_version: self.state.linux_dmabuf_version,
         }

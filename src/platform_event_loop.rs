@@ -157,6 +157,7 @@ impl EventLoop {
             Event::Surface(event) => self.dispatch_surface_event(app, event),
             Event::LayerSurface(_) | Event::Output(_) | Event::Seat(_) => Ok(()),
             Event::Activation(_) => Ok(()),
+            Event::IdleNotify(_) | Event::Foreign(_) => Ok(()),
             Event::PointerConstraint(_) | Event::RelativePointer(_) => Ok(()),
             Event::PointerGesture(event) => {
                 self.dispatch_pointer_gesture_event(app, event);

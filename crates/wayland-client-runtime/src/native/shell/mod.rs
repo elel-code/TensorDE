@@ -10,6 +10,8 @@ mod api_constraints;
 mod api_csd;
 mod api_dmabuf;
 mod api_dnd;
+mod api_foreign;
+mod api_idle_notify;
 mod api_interaction;
 mod api_layer;
 mod api_output;
@@ -27,8 +29,10 @@ mod dispatch_data;
 mod dispatch_decoration;
 mod dispatch_dialog;
 mod dispatch_dmabuf;
+mod dispatch_foreign;
 mod dispatch_gestures;
 mod dispatch_idle;
+mod dispatch_idle_notify;
 mod dispatch_layer;
 mod dispatch_output;
 mod dispatch_presentation;
@@ -42,6 +46,7 @@ mod types;
 
 pub use api::NativeShell;
 pub use handle::NativeSurfaceHandle;
+pub use api_idle_notify::IdleNotifyKind;
 pub use types::{
     NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeSurfaceId,
 };

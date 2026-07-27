@@ -1,6 +1,7 @@
 //! Pointer constraints (lock / confine) for [`NativeShell`].
 
 use wayland_client::protocol::wl_compositor;
+use wayland_client::Proxy;
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::Lifetime;
 
 use super::api::NativeShell;
@@ -41,7 +42,8 @@ impl NativeShell {
         let want_relative =
             state.relative_motion || state.constraint == PointerConstraint::Locked;
         if want_relative {
-            let _ = self.enable_relative_pointer();
+            self.state.relative_pointer_wanted = true;
+            let _ = self.ensure_all_seat_relative_pointers();
         }
 
         if self.state.pointer_focus == Some(id) {
@@ -83,40 +85,128 @@ impl NativeShell {
         self.set_pointer_capture_state(id, state)
     }
 
-    /// Enable `zwp_relative_pointer_v1` for the active seat pointer.
+    /// Enable `zwp_relative_pointer_v1` on every seat that has a pointer.
     ///
-    /// Still a single stream (protocol + API surface); multi-seat clients that
-    /// need per-seat relative motion can extend this later.
+    /// Events are tagged with the owning seat via
+    /// [`NativeShellEvent::RelativePointer::seat`].
     pub fn enable_relative_pointer(&mut self) -> Result<(), NativeError> {
-        if self.state.relative_pointer.is_some() {
-            return Ok(());
-        }
-        let manager = self
-            .state
-            .relative_pointer_manager
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("relative_pointer_manager missing".into()))?;
-        let pointer = self
-            .state
-            .pointer
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
-        let qh = self.queue.handle();
-        self.state.relative_pointer = Some(manager.get_relative_pointer(pointer, &qh, ()));
+        self.state.relative_pointer_wanted = true;
+        self.ensure_all_seat_relative_pointers()
+    }
+
+    /// Destroy all per-seat relative pointer objects.
+    pub fn disable_relative_pointer(&mut self) -> Result<(), NativeError> {
+        self.state.relative_pointer_wanted = false;
+        self.state.clear_all_relative_pointers();
         self.connection.mark_dirty();
         Ok(())
     }
 
-    pub fn disable_relative_pointer(&mut self) -> Result<(), NativeError> {
-        if let Some(rel) = self.state.relative_pointer.take() {
-            rel.destroy();
-            self.connection.mark_dirty();
+    /// Bind relative-pointer objects for every seat pointer that lacks one.
+    pub(crate) fn ensure_all_seat_relative_pointers(&mut self) -> Result<(), NativeError> {
+        if !self.state.relative_pointer_wanted {
+            return Ok(());
         }
+        let Some(manager) = self.state.relative_pointer_manager.clone() else {
+            return Err(NativeError::Protocol(
+                "relative_pointer_manager missing".into(),
+            ));
+        };
+        let qh = self.queue.handle();
+        let primary = self.primary_seat_id().map(|id| id.get());
+        let seats: Vec<(u32, wayland_client::protocol::wl_pointer::WlPointer)> = self
+            .state
+            .seats
+            .iter()
+            .filter_map(|(g, rec)| {
+                if rec.relative_pointer.is_some() {
+                    return None;
+                }
+                rec.pointer.as_ref().map(|p| (*g, p.clone()))
+            })
+            .collect();
+        if seats.is_empty() && self.state.relative_pointer.is_none() {
+            // No pointers yet; succeed so callers can enable before seats arrive.
+            return Ok(());
+        }
+        for (global, pointer) in seats {
+            let rel = manager.get_relative_pointer(&pointer, &qh, ());
+            self.state
+                .relative_pointer_objects
+                .insert(rel.id().protocol_id(), global);
+            if primary == Some(global) {
+                self.state.relative_pointer = Some(rel.clone());
+            }
+            if let Some(rec) = self.state.seats.get_mut(&global) {
+                rec.relative_pointer = Some(rel);
+            }
+        }
+        // Keep shell-wide mirror on primary if still empty.
+        if self.state.relative_pointer.is_none()
+            && let Some(primary_id) = primary
+            && let Some(rec) = self.state.seats.get(&primary_id)
+        {
+            self.state.relative_pointer = rec.relative_pointer.clone();
+        }
+        self.connection.mark_dirty();
         Ok(())
     }
 }
 
 impl NativeShellState {
+    pub(crate) fn clear_all_relative_pointers(&mut self) {
+        for rec in self.seats.values_mut() {
+            if let Some(rel) = rec.relative_pointer.take() {
+                self.relative_pointer_objects
+                    .remove(&rel.id().protocol_id());
+                rel.destroy();
+            }
+        }
+        self.relative_pointer = None;
+        self.relative_pointer_objects.clear();
+    }
+
+    pub(crate) fn seat_for_relative_pointer(
+        &self,
+        rel: &wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1,
+    ) -> Option<u32> {
+        self.relative_pointer_objects
+            .get(&rel.id().protocol_id())
+            .copied()
+    }
+
+    /// Bind relative pointer for one seat when `relative_pointer_wanted`.
+    pub(crate) fn bind_relative_for_seat(
+        &mut self,
+        global: u32,
+        pointer: &wayland_client::protocol::wl_pointer::WlPointer,
+        qh: &wayland_client::QueueHandle<NativeShellState>,
+        is_primary: bool,
+    ) {
+        if !self.relative_pointer_wanted {
+            return;
+        }
+        if self
+            .seats
+            .get(&global)
+            .is_some_and(|rec| rec.relative_pointer.is_some())
+        {
+            return;
+        }
+        let Some(manager) = self.relative_pointer_manager.clone() else {
+            return;
+        };
+        let rel = manager.get_relative_pointer(pointer, qh, ());
+        self.relative_pointer_objects
+            .insert(rel.id().protocol_id(), global);
+        if is_primary {
+            self.relative_pointer = Some(rel.clone());
+        }
+        if let Some(rec) = self.seats.get_mut(&global) {
+            rec.relative_pointer = Some(rel);
+        }
+    }
+
     pub(crate) fn clear_live_constraints_for(&mut self, id: NativeSurfaceId) {
         if self
             .locked_pointer

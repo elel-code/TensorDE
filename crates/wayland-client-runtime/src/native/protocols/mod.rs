@@ -142,6 +142,16 @@ pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Unstable,
         min_version: 1,
     },
+    ProtocolSpec {
+        interface: "zxdg_exporter_v2",
+        class: ProtocolClass::Unstable,
+        min_version: 1,
+    },
+    ProtocolSpec {
+        interface: "zxdg_importer_v2",
+        class: ProtocolClass::Unstable,
+        min_version: 1,
+    },
     // —— staging ——
     ProtocolSpec {
         interface: "wp_fractional_scale_manager_v1",
@@ -199,6 +209,11 @@ pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Ext,
         min_version: 1,
     },
+    ProtocolSpec {
+        interface: "ext_idle_notifier_v1",
+        class: ProtocolClass::Ext,
+        min_version: 1,
+    },
     // —— community / wlr ——
     ProtocolSpec {
         interface: "zwlr_layer_shell_v1",
@@ -235,6 +250,12 @@ mod tests {
         assert!(PROTOCOL_MATRIX
             .iter()
             .any(|s| s.interface == "zwlr_layer_shell_v1" && s.class == ProtocolClass::Community));
+        assert!(PROTOCOL_MATRIX
+            .iter()
+            .any(|s| s.interface == "ext_idle_notifier_v1" && s.class == ProtocolClass::Ext));
+        assert!(PROTOCOL_MATRIX
+            .iter()
+            .any(|s| s.interface == "zxdg_exporter_v2" && s.class == ProtocolClass::Unstable));
         // Alias stays in lockstep.
         assert_eq!(PROTOCOL_MATRIX.len(), FIKA_PROTOCOL_MATRIX.len());
     }

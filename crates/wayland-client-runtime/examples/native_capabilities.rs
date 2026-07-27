@@ -25,7 +25,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "protocols: dialog={} activation={} icon={} layer={} text_input={} \
          constraints={} relative={} gestures={} hold={} blur={} \
-         fractional={} cursor_shape={} presentation={} dmabuf={} idle={}",
+         fractional={} cursor_shape={} presentation={} dmabuf={} idle={} \
+         idle_notify={} foreign={}",
         c.xdg_dialog_v1,
         c.xdg_activation_v1,
         c.xdg_toplevel_icon_v1,
@@ -41,6 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         c.presentation,
         c.linux_dmabuf,
         c.idle_inhibit,
+        c.idle_notify,
+        c.xdg_foreign,
     );
     println!("seats ({}):", runtime.seat_count());
     for seat in runtime.seats() {

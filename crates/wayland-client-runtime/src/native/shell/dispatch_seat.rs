@@ -77,7 +77,6 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                                 .pointer_objects
                                 .insert(pointer.id().protocol_id(), global);
                         }
-                        // Relative pointer remains primary-only (single stream API).
                         if is_primary || state.pointer.is_none() {
                             state.pointer = Some(pointer.clone());
                         }
@@ -85,8 +84,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                             if let Some(rec) = state.seats.get_mut(&global) {
                                 rec.pointer = Some(pointer.clone());
                             }
-                            // Per-seat gesture objects (multi-seat compositors).
+                            // Per-seat gesture + relative-pointer objects.
                             state.bind_gestures_for_seat(global, &pointer, qh, is_primary);
+                            state.bind_relative_for_seat(global, &pointer, qh, is_primary);
                         }
                         devices_changed = true;
                     }

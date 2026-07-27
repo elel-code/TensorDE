@@ -84,9 +84,11 @@ and is passed to `wgpu::Instance::create_surface`.
 | Input | Translates framed multi-touch, keyboard, pointer, and touchpad gesture events into crate-owned values; full `wl_pointer` axis frames (continuous, discrete, value120, source, stop, relative-direction) accumulated per seat; uses cursor-shape when available |
 | Seats / outputs | Binds every `wl_seat` and `wl_output`; `SeatEvent::{Added,Changed,Removed}`; per-seat focus/serial/transfer/gestures; capability loss releases devices; seat-scoped grab/cursor/clipboard/DnD APIs; primary-seat compat for single-seat callers |
 | GPU present | Bufferless toplevel/layer surfaces + raw-window-handle 0.6 for Vulkan/wgpu; `SurfaceRegion` opaque/input; `request_frame` / presentation feedback; dmabuf feedback and import helpers |
-| Pointer capture | Implements `zwp_pointer_constraints_v1` confinement/locking and lazily creates `zwp_relative_pointer_v1` only for subscribed or locked surfaces |
+| Pointer capture | Implements `zwp_pointer_constraints_v1` confinement/locking and per-seat `zwp_relative_pointer_v1` streams when relative motion is enabled |
 | Pointer gestures | Implements `zwp_pointer_gestures_v1` swipe, pinch/pan/rotation, and v3 hold lifecycles with per-seat objects and surface-safe routing |
 | Text input | Implements seat-scoped `zwp_text_input_v3`, atomic preedit/commit/delete batches, retained editor state, UTF-8 byte offsets, content hints and cursor rectangles |
+| Idle notify | Optional `ext-idle-notify-v1` seat timeouts (with inhibitors or input-only v2) |
+| Foreign surfaces | Optional `xdg-foreign-v2` export/import handles for out-of-process parenting |
 
 ## Basic use
 
