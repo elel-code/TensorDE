@@ -12,7 +12,6 @@ use std::{
 };
 
 use smithay::{
-    backend::renderer::utils::RendererSurfaceStateUserData,
     utils::{IsAlive, Logical, Point, Rectangle},
     wayland::{
         compositor::{
@@ -37,6 +36,7 @@ use super::{
         OutputPresentationFeedback, for_each_surface_tree, send_frame_callbacks_surface_tree,
         take_presentation_feedback_surface_tree,
     },
+    surfaces::surface_view,
 };
 
 #[derive(Debug)]
@@ -305,15 +305,11 @@ where
         surface,
         location,
         |_, states, location| {
-            let Some(view) = states
-                .data_map
-                .get::<RendererSurfaceStateUserData>()
-                .and_then(|state| state.lock().unwrap().view())
-            else {
+            let Some(view) = surface_view(states) else {
                 return TraversalAction::SkipChildren;
             };
-            let location = *location + view.offset;
-            bbox = bbox.merge(Rectangle::new(location, view.dst));
+            let location = *location + Point::from(view.offset);
+            bbox = bbox.merge(Rectangle::new(location, view.size.into()));
             TraversalAction::DoChildren(location)
         },
         |_, _, _| {},
@@ -335,26 +331,18 @@ where
         surface,
         location.into(),
         |_, states, location| {
-            let Some(view) = states
-                .data_map
-                .get::<RendererSurfaceStateUserData>()
-                .and_then(|state| state.lock().unwrap().view())
-            else {
+            let Some(view) = surface_view(states) else {
                 return TraversalAction::SkipChildren;
             };
-            TraversalAction::DoChildren(*location + view.offset)
+            TraversalAction::DoChildren(*location + Point::from(view.offset))
         },
         |surface, states, location| {
-            let Some(view) = states
-                .data_map
-                .get::<RendererSurfaceStateUserData>()
-                .and_then(|state| state.lock().unwrap().view())
-            else {
+            let Some(view) = surface_view(states) else {
                 return;
             };
-            let location = *location + view.offset;
+            let location = *location + Point::from(view.offset);
             let local = point - location.to_f64();
-            let bounds = Rectangle::from_size(view.dst).to_f64();
+            let bounds = Rectangle::from_size(view.size.into()).to_f64();
             if !bounds.contains(local) {
                 return;
             }

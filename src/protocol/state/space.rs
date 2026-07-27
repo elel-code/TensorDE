@@ -5,14 +5,13 @@
 //! allocate or clone the mapped-output list on each pass.
 
 use smithay::{
-    backend::renderer::utils::RendererSurfaceStateUserData,
     output::Output,
     utils::{IsAlive, Logical, Point, Rectangle, Transform},
     wayland::compositor::{TraversalAction, with_surface_tree_downward},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
 
-use super::{PopupManager, ProtocolWindow};
+use super::{PopupManager, ProtocolWindow, surfaces::surface_view};
 
 #[derive(Debug)]
 struct MappedOutput {
@@ -405,11 +404,10 @@ fn update_surface_tree_output(
         (Point::from((0, 0)), false),
         |_, states, (location, parent_unmapped)| {
             let mut location = *location;
-            let data = states.data_map.get::<RendererSurfaceStateUserData>();
             if *parent_unmapped {
                 TraversalAction::DoChildren((location, true))
-            } else if let Some(surface_view) = data.and_then(|data| data.lock().unwrap().view()) {
-                location += surface_view.offset;
+            } else if let Some(surface_view) = surface_view(states) {
+                location += Point::from(surface_view.offset);
                 TraversalAction::DoChildren((location, false))
             } else {
                 TraversalAction::DoChildren((location, true))
@@ -425,10 +423,9 @@ fn update_surface_tree_output(
                 output.leave(surface);
                 return;
             };
-            let data = states.data_map.get::<RendererSurfaceStateUserData>();
-            if let Some(surface_view) = data.and_then(|data| data.lock().unwrap().view()) {
-                location += surface_view.offset;
-                let surface_rectangle = Rectangle::new(location, surface_view.dst);
+            if let Some(surface_view) = surface_view(states) {
+                location += Point::from(surface_view.offset);
+                let surface_rectangle = Rectangle::new(location, surface_view.size.into());
                 if output_overlap.overlaps(surface_rectangle) {
                     output.enter(surface);
                 } else {

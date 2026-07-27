@@ -18,7 +18,6 @@ mod presentation;
 mod protocol_side;
 mod space;
 mod surface_tree;
-#[cfg(feature = "tty")]
 mod surfaces;
 #[cfg(feature = "tty")]
 mod sync;

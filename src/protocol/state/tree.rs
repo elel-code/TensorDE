@@ -1,5 +1,4 @@
 use smithay::{
-    backend::renderer::utils::RendererSurfaceStateUserData,
     utils::IsAlive,
     wayland::compositor::{
         SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
@@ -9,9 +8,12 @@ use smithay::{
 use tracing::warn;
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
-use crate::scene::{SurfaceLayer, SurfaceTransform};
+use crate::scene::SurfaceLayer;
 
-use super::{RuntimeState, find_popup_root_surface, surfaces::SurfaceCommit};
+use super::{
+    RuntimeState, find_popup_root_surface,
+    surfaces::{SurfaceCommit, surface_render_snapshot},
+};
 
 impl RuntimeState {
     pub(crate) fn defer_surface_sync(
@@ -209,22 +211,14 @@ fn surface_snapshot(
     local_offset: (i32, i32),
     layer: SurfaceLayer,
 ) -> Option<SurfaceCommit> {
-    let renderer = states.data_map.get::<RendererSurfaceStateUserData>()?;
-    let renderer = renderer.lock().unwrap();
-    let buffer = renderer.buffer().map(|buffer| buffer.id());
-    let logical_size = renderer.surface_size().and_then(|size| {
-        Some(tensor_util::Size::new(
-            u32::try_from(size.w).ok()?,
-            u32::try_from(size.h).ok()?,
-        ))
-    });
+    let renderer = surface_render_snapshot(states)?;
     Some(SurfaceCommit {
-        buffer,
-        logical_size,
+        buffer: renderer.buffer,
+        logical_size: renderer.logical_size,
         local_offset,
-        commit: renderer.current_commit(),
-        buffer_scale: u32::try_from(renderer.buffer_scale()).unwrap_or(1),
-        transform: surface_transform(renderer.buffer_transform()),
+        commit: renderer.commit,
+        buffer_scale: renderer.buffer_scale,
+        transform: renderer.transform,
         layer,
     })
 }
@@ -250,19 +244,6 @@ fn popup_base(offset: (i32, i32), geometry: (i32, i32)) -> (i32, i32) {
         offset.0.saturating_sub(geometry.0),
         offset.1.saturating_sub(geometry.1),
     )
-}
-
-fn surface_transform(transform: smithay::utils::Transform) -> SurfaceTransform {
-    match transform {
-        smithay::utils::Transform::Normal => SurfaceTransform::Normal,
-        smithay::utils::Transform::_90 => SurfaceTransform::Rotate90,
-        smithay::utils::Transform::_180 => SurfaceTransform::Rotate180,
-        smithay::utils::Transform::_270 => SurfaceTransform::Rotate270,
-        smithay::utils::Transform::Flipped => SurfaceTransform::Flipped,
-        smithay::utils::Transform::Flipped90 => SurfaceTransform::Flipped90,
-        smithay::utils::Transform::Flipped180 => SurfaceTransform::Flipped180,
-        smithay::utils::Transform::Flipped270 => SurfaceTransform::Flipped270,
-    }
 }
 
 #[cfg(test)]
