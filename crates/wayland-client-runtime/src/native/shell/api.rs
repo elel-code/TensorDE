@@ -91,7 +91,7 @@ impl NativeShell {
         // Bind every advertised wl_seat (multi-seat compositors).
         for global in globals.contents().clone_list() {
             if global.interface == "wl_seat" {
-                let version = global.version.min(9).max(1);
+                let version = global.version.clamp(1, 9);
                 let seat = globals
                     .registry()
                     .bind::<wl_seat::WlSeat, _, _>(global.name, version, &qh, ());
@@ -106,7 +106,7 @@ impl NativeShell {
         // Bind every advertised wl_output (multi-instance).
         for global in globals.contents().clone_list() {
             if global.interface == "wl_output" {
-                let version = global.version.min(4).max(1);
+                let version = global.version.clamp(1, 4);
                 let output = globals
                     .registry()
                     .bind::<wl_output::WlOutput, _, _>(global.name, version, &qh, ());
@@ -797,6 +797,9 @@ impl NativeShell {
     }
 
     /// Create a `zwlr_layer_surface_v1` (panel / bar / overlay).
+    /// Convenience constructor; prefer [`Self::create_layer_surface_full`] for
+    /// structured attributes.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_layer_surface(
         &mut self,
         namespace: impl Into<String>,
@@ -888,11 +891,10 @@ impl NativeShell {
         let dest_w = state.size.width.max(1) as i32;
         let dest_h = state.size.height.max(1) as i32;
         // Zero size means compositor-chosen; only set destination when both axes are fixed.
-        if state.size.width > 0 && state.size.height > 0 {
-            if let Some(vp) = viewport.as_ref() {
+        if state.size.width > 0 && state.size.height > 0
+            && let Some(vp) = viewport.as_ref() {
                 vp.set_destination(dest_w, dest_h);
             }
-        }
 
         let fractional = self
             .state
@@ -1597,79 +1599,7 @@ impl NativeShell {
         self.state.events.len()
     }
 
-    /// Ensure every bound seat has data-device / primary selection proxies.
-    ///
-    /// Shell-wide `data_device` / `primary_device` always mirror the **primary**
-    /// seat for single-seat APIs (`set_selection`, `start_drag`, …).
-    fn ensure_all_seat_transfer_devices(&mut self) {
-        let qh = self.queue.handle();
-        let seat_globals: Vec<u32> = self.state.seats.keys().copied().collect();
-        for global in seat_globals {
-            let Some(rec) = self.state.seats.get(&global) else {
-                continue;
-            };
-            let seat = rec.seat.clone();
-            let need_data = rec.data_device.is_none();
-            let need_primary = rec.primary_device.is_none();
-            if need_data && let Some(manager) = self.state.data_device_manager.as_ref() {
-                let device = manager.get_data_device(&seat, &qh, ());
-                if let Some(rec) = self.state.seats.get_mut(&global) {
-                    rec.data_device = Some(device);
-                }
-            }
-            if need_primary && let Some(manager) = self.state.primary_selection_manager.as_ref() {
-                let device = manager.get_device(&seat, &qh, ());
-                if let Some(rec) = self.state.seats.get_mut(&global) {
-                    rec.primary_device = Some(device);
-                }
-            }
-        }
-        self.mirror_primary_transfer_devices();
-        self.connection.mark_dirty();
-    }
-
-    /// Copy primary-seat transfer proxies onto shell-wide fields.
-    fn mirror_primary_transfer_devices(&mut self) {
-        let Some(primary_id) = self.primary_seat_id() else {
-            return;
-        };
-        let Some(rec) = self.state.seats.get(&primary_id.get()) else {
-            return;
-        };
-        self.state.data_device = rec.data_device.clone();
-        self.state.primary_device = rec.primary_device.clone();
-    }
-
-    /// Re-create seat-scoped protocol objects after primary seat changes.
-    fn rebind_primary_seat_devices(&mut self) {
-        let qh = self.queue.handle();
-        self.ensure_all_seat_transfer_devices();
-        let Some(seat) = self.state.seat.clone() else {
-            return;
-        };
-        // Force primary mirror even if shell-wide fields were stale.
-        self.mirror_primary_transfer_devices();
-        if self.state.text_input.is_none()
-            && let Some(tim) = self.state.text_input_manager.as_ref()
-        {
-            self.state.text_input = Some(tim.get_text_input(&seat, &qh, ()));
-        }
-        // Recreate pointer gestures on the new primary pointer if present.
-        if let Some(pointer) = self.state.pointer.clone()
-            && let Some(manager) = self.state.pointer_gestures.as_ref()
-        {
-            if self.state.swipe_gesture.is_none() {
-                self.state.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
-            }
-            if self.state.pinch_gesture.is_none() {
-                self.state.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
-            }
-            if manager.version() >= 3 && self.state.hold_gesture.is_none() {
-                self.state.hold_gesture = Some(manager.get_hold_gesture(&pointer, &qh, ()));
-            }
-        }
-        self.connection.mark_dirty();
-    }
+    // Seat transfer rebind helpers live in `seat.rs`.
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = NativeShellEvent> + '_ {
         self.state.events.drain(..)
@@ -2118,11 +2048,10 @@ fn apply_layer_state_to_role(
     if version >= 2 {
         role.set_layer(state.layer.into());
     }
-    if version >= 5 {
-        if let Some(edge) = state.exclusive_edge {
+    if version >= 5
+        && let Some(edge) = state.exclusive_edge {
             role.set_exclusive_edge(edge.to_wire());
         }
-    }
     Ok(())
 }
 

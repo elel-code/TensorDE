@@ -140,27 +140,24 @@ impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> 
                     .primary_source
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
-                {
-                    if let Some(bytes) = state
+                    && let Some(bytes) = state
                         .primary_content
                         .as_ref()
                         .and_then(|c| c.bytes_for_mime(&mime_type))
                     {
                         spawn_write_fd("fika-wl-primary-send", fd, bytes);
                     }
-                }
             }
-            zwp_primary_selection_source_v1::Event::Cancelled => {
+            zwp_primary_selection_source_v1::Event::Cancelled
                 if state
                     .primary_source
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
-                {
+                => {
                     state.primary_source = None;
                     state.primary_content = None;
                     state.push(NativeShellEvent::PrimarySelectionCancelled);
                 }
-            }
             _ => {}
         }
     }

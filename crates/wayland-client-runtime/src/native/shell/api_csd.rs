@@ -64,11 +64,7 @@ impl NativeShell {
             return Ok(());
         }
 
-        if !self.state.csd_frames.contains_key(&id) {
-            self.state
-                .csd_frames
-                .insert(id, ClientSideFrame::new(id, w, h, title.clone()));
-        }
+        self.state.csd_frames.entry(id).or_insert_with(|| ClientSideFrame::new(id, w, h, title.clone()));
 
         {
             let frame = self

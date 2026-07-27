@@ -253,12 +253,12 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                     });
                 }
             }
-            wl_data_source::Event::DndFinished => {
+            wl_data_source::Event::DndFinished
                 if state
                     .dnd_source
                     .as_ref()
                     .is_some_and(|s| s.id() == source.id())
-                {
+                => {
                     let source_id = state.dnd_source_id.unwrap_or(0);
                     state.dnd_source = None;
                     state.dnd_source_id = None;
@@ -269,7 +269,6 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                         cancelled: false,
                     });
                 }
-            }
             _ => {}
         }
     }

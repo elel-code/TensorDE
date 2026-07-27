@@ -27,6 +27,7 @@ mod dispatch_primary;
 mod dispatch_relative;
 mod dispatch_text;
 mod handle;
+mod seat;
 mod types;
 
 pub use api::NativeShell;

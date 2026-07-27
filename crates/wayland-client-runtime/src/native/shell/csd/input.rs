@@ -182,8 +182,8 @@ impl MouseState {
             HitLocation::Head if pressed => {
                 if can_maximize {
                     let now = Instant::now();
-                    if let Some(last) = self.last_title_click.replace(now) {
-                        if now.duration_since(last) < DOUBLE_CLICK {
+                    if let Some(last) = self.last_title_click.replace(now)
+                        && now.duration_since(last) < DOUBLE_CLICK {
                             self.last_title_click = None;
                             return Some(if maximized {
                                 FrameAction::UnMaximize
@@ -191,7 +191,6 @@ impl MouseState {
                                 FrameAction::Maximize
                             });
                         }
-                    }
                 }
                 Some(FrameAction::Move)
             }

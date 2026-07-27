@@ -38,7 +38,7 @@ pub fn fill_argb8888(file: &mut File, width: u32, height: u32, argb: [u8; 4]) ->
 }
 
 /// Create a single-buffer pool attachment for a solid-color surface.
-pub fn create_solid_buffer<State: 'static>(
+pub fn create_solid_buffer<State>(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<State>,
     width: u32,
@@ -46,7 +46,8 @@ pub fn create_solid_buffer<State: 'static>(
     argb: [u8; 4],
 ) -> io::Result<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>
 where
-    State: wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+    State: 'static
+        + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
         + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
 {
     let stride = width.saturating_mul(4);
@@ -70,7 +71,7 @@ where
 ///
 /// `rgba` is tightly packed 8-bit RGBA (not premultiplied). Converted to
 /// premultiplied ARGB8888 native endian for `wl_shm::Format::Argb8888`.
-pub fn create_rgba_buffer<State: 'static>(
+pub fn create_rgba_buffer<State>(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<State>,
     width: u32,
@@ -78,7 +79,8 @@ pub fn create_rgba_buffer<State: 'static>(
     rgba: &[u8],
 ) -> io::Result<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>
 where
-    State: wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+    State: 'static
+        + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
         + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
 {
     let expected = (width as usize)

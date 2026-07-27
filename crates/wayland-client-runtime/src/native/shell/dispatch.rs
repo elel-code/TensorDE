@@ -69,13 +69,13 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
                 version,
             } => {
                 if interface == "wl_seat" && !state.seats.contains_key(&name) {
-                    let v = version.min(9).max(1);
+                    let v = version.clamp(1, 9);
                     let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, v, qh, ());
                     state.register_seat(name, seat);
                 }
                 // Hotplug: bind outputs advertised after the initial registry dump.
                 if interface == "wl_output" && !state.outputs.contains_key(&name) {
-                    let v = version.min(4).max(1);
+                    let v = version.clamp(1, 4);
                     let output = registry.bind::<wl_output::WlOutput, _, _>(name, v, qh, ());
                     state
                         .output_objects
@@ -272,15 +272,14 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                 if let Some(record) = state.toplevels.get_mut(&id) {
                     record.configured = true;
                     record.last_configure_serial = serial;
-                    if let Some((w, h)) = record.pending_size {
-                        if w > 0 && h > 0 {
+                    if let Some((w, h)) = record.pending_size
+                        && w > 0 && h > 0 {
                             record.logical_w = w as u32;
                             record.logical_h = h as u32;
                             if let Some(vp) = record.viewport.as_ref() {
                                 vp.set_destination(w, h);
                             }
                         }
-                    }
                     let suggested = SuggestedSize::new(
                         Some(record.logical_w).filter(|&w| w > 0),
                         Some(record.logical_h).filter(|&h| h > 0),
@@ -360,11 +359,10 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
                 width,
                 height,
             } => {
-                if let Some(id) = id {
-                    if let Some(record) = state.popups.get_mut(&id) {
+                if let Some(id) = id
+                    && let Some(record) = state.popups.get_mut(&id) {
                         record.pending_geom = Some((x, y, width, height));
                     }
-                }
             }
             xdg_popup::Event::PopupDone => {
                 if let Some(id) = id {
@@ -372,11 +370,10 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
                 }
             }
             xdg_popup::Event::Repositioned { token } => {
-                if let Some(id) = id {
-                    if let Some(record) = state.popups.get_mut(&id) {
+                if let Some(id) = id
+                    && let Some(record) = state.popups.get_mut(&id) {
                         record.pending_reposition_token = Some(token);
                     }
-                }
             }
             _ => {}
         }
@@ -414,14 +411,13 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for NativeShellState {
                 height,
                 states,
             } => {
-                if let Some(id) = id {
-                    if let Some(record) = state.toplevels.get_mut(&id) {
+                if let Some(id) = id
+                    && let Some(record) = state.toplevels.get_mut(&id) {
                         if width > 0 && height > 0 {
                             record.pending_size = Some((width, height));
                         }
                         record.pending_states = decode_toplevel_states(&states);
                     }
-                }
             }
             xdg_toplevel::Event::Close => {
                 if let Some(id) = id {
@@ -445,11 +441,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
         let seat_global = state.seat_objects.get(&seat.id().protocol_id()).copied();
         match event {
             wl_seat::Event::Name { name } => {
-                if let Some(global) = seat_global {
-                    if let Some(rec) = state.seats.get_mut(&global) {
+                if let Some(global) = seat_global
+                    && let Some(rec) = state.seats.get_mut(&global) {
                         rec.name = Some(name);
                     }
-                }
             }
             wl_seat::Event::Capabilities {
                 capabilities: WEnum::Value(capabilities),
@@ -462,11 +457,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                     .as_ref()
                     .is_some_and(|s| s.id() == seat.id());
 
-                if let Some(global) = seat_global {
-                    if let Some(rec) = state.seats.get_mut(&global) {
+                if let Some(global) = seat_global
+                    && let Some(rec) = state.seats.get_mut(&global) {
                         rec.capabilities = capabilities;
                     }
-                }
 
                 if capabilities.contains(wl_seat::Capability::Keyboard) {
                     let need = match seat_global.and_then(|g| state.seats.get(&g)) {
@@ -520,11 +514,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                             }
                             state.pointer = Some(pointer.clone());
                         }
-                        if let Some(global) = seat_global {
-                            if let Some(rec) = state.seats.get_mut(&global) {
+                        if let Some(global) = seat_global
+                            && let Some(rec) = state.seats.get_mut(&global) {
                                 rec.pointer = Some(pointer);
                             }
-                        }
                     }
                 }
                 if capabilities.contains(wl_seat::Capability::Touch) {
@@ -557,11 +550,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                         state.touch_points.clear();
                         state.push(NativeShellEvent::TouchCancel);
                     }
-                    if let Some(global) = seat_global {
-                        if let Some(rec) = state.seats.get_mut(&global) {
+                    if let Some(global) = seat_global
+                        && let Some(rec) = state.seats.get_mut(&global) {
                             rec.touch = None;
                         }
-                    }
                 }
             }
             _ => {}
@@ -688,11 +680,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 if let Some(id) = id {
                     state.pointer_enter_serial = Some(serial);
                     state.note_seat_serial(seat_global, serial);
-                    if let Some(g) = seat_global {
-                        if let Some(rec) = state.seats.get_mut(&g) {
+                    if let Some(g) = seat_global
+                        && let Some(rec) = state.seats.get_mut(&g) {
                             rec.pointer_enter_serial = Some(serial);
                         }
-                    }
                     // CSD decoration parts: handle chrome input, map focus to parent.
                     if let Some(&(parent, kind)) = state.csd_part_owners.get(&id) {
                         state.csd_pointer_part = Some((parent, kind));
@@ -721,20 +712,18 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     .get(&surface.id().protocol_id())
                     .copied()
                     .or(state.pointer_focus);
-                if let Some(id) = id {
-                    if state.csd_part_owners.contains_key(&id)
-                        || state.csd_pointer_part.is_some()
+                if let Some(id) = id
+                    && (state.csd_part_owners.contains_key(&id)
+                        || state.csd_pointer_part.is_some())
                     {
-                        if let Some((parent, _)) = state.csd_pointer_part.take() {
-                            if let Some(frame) = state.csd_frames.get_mut(&parent) {
+                        if let Some((parent, _)) = state.csd_pointer_part.take()
+                            && let Some(frame) = state.csd_frames.get_mut(&parent) {
                                 frame.on_pointer_leave();
                             }
-                        }
                         state.on_pointer_focus_changed(None, qh);
                         state.set_seat_pointer_focus(seat_global, None);
                         return;
                     }
-                }
                 state.csd_pointer_part = None;
                 state.on_pointer_focus_changed(None, qh);
                 state.set_seat_pointer_focus(seat_global, None);
@@ -773,11 +762,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 state.note_seat_serial(seat_global, serial);
                 let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 if let Some((parent, _)) = state.csd_pointer_part {
-                    if let Some(frame) = state.csd_frames.get_mut(&parent) {
-                        if let Some(action) = frame.on_pointer_button(button, pressed) {
+                    if let Some(frame) = state.csd_frames.get_mut(&parent)
+                        && let Some(action) = frame.on_pointer_button(button, pressed) {
                             state.pending_frame_actions.push((parent, action));
                         }
-                    }
                     return;
                 }
                 state.push(NativeShellEvent::PointerButton {
@@ -801,12 +789,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 }
                 _ => {}
             },
-            wl_pointer::Event::Frame => {
-                if state.axis_h != 0.0
+            wl_pointer::Event::Frame
+                if (state.axis_h != 0.0
                     || state.axis_v != 0.0
                     || state.axis_h120 != 0
-                    || state.axis_v120 != 0
-                {
+                    || state.axis_v120 != 0)
+                => {
                     state.push(NativeShellEvent::PointerAxis {
                         surface: state.pointer_focus,
                         horizontal: state.axis_h,
@@ -820,7 +808,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     state.axis_h120 = 0;
                     state.axis_v120 = 0;
                 }
-            }
             _ => {}
         }
     }
@@ -1145,13 +1132,12 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                     WEnum::Value(f) => f.contains(wl_output::Mode::Current),
                     _ => false,
                 };
-                if current {
-                    if let Some(record) = state.outputs.get_mut(&name) {
+                if current
+                    && let Some(record) = state.outputs.get_mut(&name) {
                         record.mode_width = width;
                         record.mode_height = height;
                         record.mode_refresh_mhz = refresh;
                     }
-                }
                 state.push(NativeShellEvent::OutputMode {
                     output: name,
                     width,

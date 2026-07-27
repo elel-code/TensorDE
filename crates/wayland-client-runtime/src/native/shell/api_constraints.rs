@@ -90,20 +90,16 @@ impl NativeShellState {
             .locked_pointer
             .as_ref()
             .is_some_and(|(sid, _)| *sid == id)
-        {
-            if let Some((_, proxy)) = self.locked_pointer.take() {
+            && let Some((_, proxy)) = self.locked_pointer.take() {
                 proxy.destroy();
             }
-        }
         if self
             .confined_pointer
             .as_ref()
             .is_some_and(|(sid, _)| *sid == id)
-        {
-            if let Some((_, proxy)) = self.confined_pointer.take() {
+            && let Some((_, proxy)) = self.confined_pointer.take() {
                 proxy.destroy();
             }
-        }
     }
 
     /// Apply retained capture for `id` when it holds pointer focus.
@@ -176,11 +172,10 @@ impl NativeShellState {
         new_focus: Option<NativeSurfaceId>,
         qh: &wayland_client::QueueHandle<Self>,
     ) {
-        if let Some(old) = self.pointer_focus {
-            if new_focus != Some(old) {
+        if let Some(old) = self.pointer_focus
+            && new_focus != Some(old) {
                 self.clear_live_constraints_for(old);
             }
-        }
         self.pointer_focus = new_focus;
         if let Some(id) = new_focus {
             let _ = self.apply_pointer_constraint(id, qh);

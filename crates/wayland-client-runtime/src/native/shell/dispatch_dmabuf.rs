@@ -28,15 +28,14 @@ impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for NativeShellState {
                 format,
                 modifier_hi,
                 modifier_lo,
-            } => {
+            }
                 // v4+ uses feedback format tables; only collect legacy modifiers.
-                if proxy.version() < 4 {
+                if proxy.version() < 4 => {
                     let modifier = (u64::from(modifier_hi) << 32) | u64::from(modifier_lo);
                     state
                         .dmabuf_modifiers
                         .push(DmabufFormat::new(format, modifier));
                 }
-            }
             _ => {}
         }
     }

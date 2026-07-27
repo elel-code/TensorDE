@@ -459,7 +459,7 @@ fn attach_pixmap(
     Ok(())
 }
 
-fn create_argb_buffer_from_bytes<State: 'static>(
+fn create_argb_buffer_from_bytes<State>(
     shm_global: &wl_shm::WlShm,
     qh: &QueueHandle<State>,
     width: u32,
@@ -467,7 +467,8 @@ fn create_argb_buffer_from_bytes<State: 'static>(
     pixels: &[u8],
 ) -> std::io::Result<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>
 where
-    State: wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+    State: 'static
+        + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
         + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
 {
     use std::io::Write;

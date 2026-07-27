@@ -66,6 +66,7 @@ impl NativeShell {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // shared path for GPU / SHM / dialog roles
     fn create_toplevel_inner(
         &mut self,
         title: impl Into<String>,
@@ -127,11 +128,10 @@ impl NativeShell {
         toplevel.set_title(title_str.clone());
         toplevel.set_app_id(app_id_str);
 
-        if let Some(parent_id) = parent {
-            if let Some(parent_rec) = self.state.toplevels.get(&parent_id) {
+        if let Some(parent_id) = parent
+            && let Some(parent_rec) = self.state.toplevels.get(&parent_id) {
                 toplevel.set_parent(Some(&parent_rec.toplevel));
             }
-        }
 
         let dialog = if modal {
             if let Some(wm_dialog) = self.state.xdg_wm_dialog.as_ref() {
