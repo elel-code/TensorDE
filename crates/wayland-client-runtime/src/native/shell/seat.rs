@@ -90,6 +90,9 @@ impl NativeShellState {
                 pointer_enter_serial: None,
                 data_device: None,
                 primary_device: None,
+                swipe_gesture: None,
+                pinch_gesture: None,
+                hold_gesture: None,
             },
         );
         self.push(NativeShellEvent::SeatAdded {
@@ -110,6 +113,9 @@ impl NativeShellState {
         self.keyboard_objects.retain(|_, name| *name != global_name);
         self.pointer_objects.retain(|_, name| *name != global_name);
         self.touch_objects.retain(|_, name| *name != global_name);
+        self.swipe_objects.retain(|_, name| *name != global_name);
+        self.pinch_objects.retain(|_, name| *name != global_name);
+        self.hold_objects.retain(|_, name| *name != global_name);
 
         let was_primary = self
             .seat
@@ -120,6 +126,9 @@ impl NativeShellState {
         drop(rec.keyboard);
         drop(rec.pointer);
         drop(rec.touch);
+        drop(rec.swipe_gesture);
+        drop(rec.pinch_gesture);
+        drop(rec.hold_gesture);
 
         if was_primary {
             // Promote another seat if available, else clear primary fields.
@@ -159,6 +168,61 @@ impl NativeShellState {
         }
 
         self.push(NativeShellEvent::SeatRemoved { seat: global_name });
+    }
+
+    /// Bind gesture objects for one seat's pointer (and optionally mirror primary).
+    ///
+    /// Called from seat capability dispatch when a pointer is created, and from
+    /// [`NativeShell::ensure_all_seat_gestures`] during rebind.
+    pub(crate) fn bind_gestures_for_seat(
+        &mut self,
+        global: u32,
+        pointer: &wl_pointer::WlPointer,
+        qh: &wayland_client::QueueHandle<NativeShellState>,
+        is_primary: bool,
+    ) {
+        let Some(manager) = self.pointer_gestures.clone() else {
+            return;
+        };
+        let hold_ok = manager.version() >= 3;
+        let (need_swipe, need_pinch, need_hold) = match self.seats.get(&global) {
+            Some(rec) => (
+                rec.swipe_gesture.is_none(),
+                rec.pinch_gesture.is_none(),
+                hold_ok && rec.hold_gesture.is_none(),
+            ),
+            None => return,
+        };
+        if need_swipe {
+            let g = manager.get_swipe_gesture(pointer, qh, ());
+            self.swipe_objects.insert(g.id().protocol_id(), global);
+            if let Some(rec) = self.seats.get_mut(&global) {
+                rec.swipe_gesture = Some(g.clone());
+            }
+            if is_primary {
+                self.swipe_gesture = Some(g);
+            }
+        }
+        if need_pinch {
+            let g = manager.get_pinch_gesture(pointer, qh, ());
+            self.pinch_objects.insert(g.id().protocol_id(), global);
+            if let Some(rec) = self.seats.get_mut(&global) {
+                rec.pinch_gesture = Some(g.clone());
+            }
+            if is_primary {
+                self.pinch_gesture = Some(g);
+            }
+        }
+        if need_hold {
+            let g = manager.get_hold_gesture(pointer, qh, ());
+            self.hold_objects.insert(g.id().protocol_id(), global);
+            if let Some(rec) = self.seats.get_mut(&global) {
+                rec.hold_gesture = Some(g.clone());
+            }
+            if is_primary {
+                self.hold_gesture = Some(g);
+            }
+        }
     }
 }
 
@@ -220,19 +284,46 @@ impl NativeShell {
         {
             self.state.text_input = Some(tim.get_text_input(&seat, &qh, ()));
         }
-        // Recreate pointer gestures on the new primary pointer if present.
-        if let Some(pointer) = self.state.pointer.clone()
-            && let Some(manager) = self.state.pointer_gestures.as_ref()
+        // Recreate pointer gestures for every seat that has a pointer.
+        self.ensure_all_seat_gestures();
+        // Mirror primary seat gestures onto shell-wide fields for compatibility.
+        if let Some(primary_id) = self.primary_seat_id()
+            && let Some(rec) = self.state.seats.get(&primary_id.get())
         {
-            if self.state.swipe_gesture.is_none() {
-                self.state.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
-            }
-            if self.state.pinch_gesture.is_none() {
-                self.state.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
-            }
-            if manager.version() >= 3 && self.state.hold_gesture.is_none() {
-                self.state.hold_gesture = Some(manager.get_hold_gesture(&pointer, &qh, ()));
-            }
+            self.state.swipe_gesture = rec.swipe_gesture.clone();
+            self.state.pinch_gesture = rec.pinch_gesture.clone();
+            self.state.hold_gesture = rec.hold_gesture.clone();
+        }
+        let _ = qh;
+        self.connection.mark_dirty();
+    }
+
+    /// Bind swipe/pinch/hold on every seat that has a pointer and the global.
+    pub(crate) fn ensure_all_seat_gestures(&mut self) {
+        let qh = self.queue.handle();
+        let primary = self.primary_seat_id().map(|id| id.get());
+        let seat_globals: Vec<(u32, wl_pointer::WlPointer)> = self
+            .state
+            .seats
+            .iter()
+            .filter_map(|(global, rec)| {
+                rec.pointer
+                    .as_ref()
+                    .map(|p| (*global, p.clone()))
+            })
+            .collect();
+        for (global, pointer) in seat_globals {
+            let is_primary = primary == Some(global);
+            self.state
+                .bind_gestures_for_seat(global, &pointer, &qh, is_primary);
+        }
+        // Keep shell-wide mirrors on the primary seat.
+        if let Some(primary_id) = primary
+            && let Some(rec) = self.state.seats.get(&primary_id)
+        {
+            self.state.swipe_gesture = rec.swipe_gesture.clone();
+            self.state.pinch_gesture = rec.pinch_gesture.clone();
+            self.state.hold_gesture = rec.hold_gesture.clone();
         }
         self.connection.mark_dirty();
     }

@@ -1085,8 +1085,17 @@ impl NativeRuntime {
     }
 
     pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {
+        self.store_selection_on_seat(content, None)
+    }
+
+    /// Store clipboard content on a specific seat (or primary when `None`).
+    pub fn store_selection_on_seat(
+        &mut self,
+        content: TransferContent,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         self.shell
-            .set_selection_content(content)
+            .set_selection_content_on_seat(content, seat)
             .map_err(map_native_error)
     }
 
@@ -1115,13 +1124,22 @@ impl NativeRuntime {
         &mut self,
         content: TransferContent,
     ) -> Result<(), RuntimeError> {
+        self.store_primary_selection_on_seat(content, None)
+    }
+
+    /// Set primary selection on a specific seat (or primary when `None`).
+    pub fn store_primary_selection_on_seat(
+        &mut self,
+        content: TransferContent,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         if !self.shell.has_primary_selection() {
             return Err(RuntimeError::Unsupported(
                 "zwp_primary_selection_device_manager_v1",
             ));
         }
         self.shell
-            .set_primary_selection_content(content)
+            .set_primary_selection_content_on_seat(content, seat)
             .map_err(map_native_error)
     }
 
@@ -1155,10 +1173,22 @@ impl NativeRuntime {
         _actions: DndActions,
         icon: Option<crate::DndIcon>,
     ) -> Result<DndSourceId, RuntimeError> {
+        self.start_drag_on_seat(origin, content, _actions, icon, None)
+    }
+
+    /// Start a drag using a specific seat's data device and serial.
+    pub fn start_drag_on_seat(
+        &mut self,
+        origin: SurfaceId,
+        content: TransferContent,
+        _actions: DndActions,
+        icon: Option<crate::DndIcon>,
+        seat: Option<crate::SeatId>,
+    ) -> Result<DndSourceId, RuntimeError> {
         let native = self.native(origin)?;
         let id = self
             .shell
-            .start_drag_content_with_icon(native, content, icon)
+            .start_drag_content_with_icon_on_seat(native, content, icon, seat)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("serial") => {
                     RuntimeError::InvalidDragSerial

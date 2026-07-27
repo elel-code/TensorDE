@@ -8,10 +8,34 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::{
 
 use super::types::{NativeShellEvent, NativeShellState};
 
-/// Gestures are currently bound only to the primary seat pointer.
-fn primary_seat_global(state: &NativeShellState) -> Option<u32> {
-    let seat = state.seat.as_ref()?;
-    state.seat_objects.get(&seat.id().protocol_id()).copied()
+fn seat_for_swipe(
+    state: &NativeShellState,
+    gesture: &zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
+) -> Option<u32> {
+    state
+        .swipe_objects
+        .get(&gesture.id().protocol_id())
+        .copied()
+}
+
+fn seat_for_pinch(
+    state: &NativeShellState,
+    gesture: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+) -> Option<u32> {
+    state
+        .pinch_objects
+        .get(&gesture.id().protocol_id())
+        .copied()
+}
+
+fn seat_for_hold(
+    state: &NativeShellState,
+    gesture: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
+) -> Option<u32> {
+    state
+        .hold_objects
+        .get(&gesture.id().protocol_id())
+        .copied()
 }
 
 impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for NativeShellState {
@@ -29,13 +53,13 @@ impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for NativeShell
 impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
+        gesture: &zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
         event: zwp_pointer_gesture_swipe_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let seat_global = primary_seat_global(state);
+        let seat_global = seat_for_swipe(state, gesture);
         match event {
             zwp_pointer_gesture_swipe_v1::Event::Begin {
                 serial,
@@ -87,13 +111,13 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Na
 impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+        gesture: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
         event: zwp_pointer_gesture_pinch_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let seat_global = primary_seat_global(state);
+        let seat_global = seat_for_pinch(state, gesture);
         match event {
             zwp_pointer_gesture_pinch_v1::Event::Begin {
                 serial,
@@ -153,13 +177,13 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
 impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for NativeShellState {
     fn event(
         state: &mut Self,
-        _: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
+        gesture: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
         event: zwp_pointer_gesture_hold_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let seat_global = primary_seat_global(state);
+        let seat_global = seat_for_hold(state, gesture);
         match event {
             zwp_pointer_gesture_hold_v1::Event::Begin {
                 serial,

@@ -495,29 +495,17 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                                 .pointer_objects
                                 .insert(pointer.id().protocol_id(), global);
                         }
-                        // Gestures / relative pointer attach only to the primary
-                        // pointer (single stream APIs today).
+                        // Relative pointer remains primary-only (single stream API).
                         if is_primary || state.pointer.is_none() {
-                            if let Some(manager) = state.pointer_gestures.as_ref() {
-                                if state.swipe_gesture.is_none() {
-                                    state.swipe_gesture =
-                                        Some(manager.get_swipe_gesture(&pointer, qh, ()));
-                                }
-                                if state.pinch_gesture.is_none() {
-                                    state.pinch_gesture =
-                                        Some(manager.get_pinch_gesture(&pointer, qh, ()));
-                                }
-                                if manager.version() >= 3 && state.hold_gesture.is_none() {
-                                    state.hold_gesture =
-                                        Some(manager.get_hold_gesture(&pointer, qh, ()));
-                                }
-                            }
                             state.pointer = Some(pointer.clone());
                         }
-                        if let Some(global) = seat_global
-                            && let Some(rec) = state.seats.get_mut(&global) {
-                                rec.pointer = Some(pointer);
+                        if let Some(global) = seat_global {
+                            if let Some(rec) = state.seats.get_mut(&global) {
+                                rec.pointer = Some(pointer.clone());
                             }
+                            // Per-seat gesture objects (multi-seat compositors).
+                            state.bind_gestures_for_seat(global, &pointer, qh, is_primary);
+                        }
                     }
                 }
                 if capabilities.contains(wl_seat::Capability::Touch) {

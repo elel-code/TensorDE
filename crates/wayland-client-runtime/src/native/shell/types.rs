@@ -487,6 +487,16 @@ pub(crate) struct SeatRecord {
     pub(crate) primary_device: Option<
         wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
     >,
+    /// Per-seat pointer-gesture objects (bound when this seat has a pointer).
+    pub(crate) swipe_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
+    >,
+    pub(crate) pinch_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+    >,
+    pub(crate) hold_gesture: Option<
+        wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
+    >,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -821,6 +831,12 @@ pub struct NativeShellState {
     pub(crate) hold_gesture: Option<
         wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
     >,
+    /// `zwp_pointer_gesture_swipe_v1` protocol id → seat registry name.
+    pub(crate) swipe_objects: HashMap<u32, u32>,
+    /// `zwp_pointer_gesture_pinch_v1` protocol id → seat registry name.
+    pub(crate) pinch_objects: HashMap<u32, u32>,
+    /// `zwp_pointer_gesture_hold_v1` protocol id → seat registry name.
+    pub(crate) hold_objects: HashMap<u32, u32>,
     /// Surface that currently owns an in-progress swipe/pinch/hold (begin).
     pub(crate) gesture_surface: Option<NativeSurfaceId>,
     pub(crate) relative_pointer_manager: Option<
@@ -1006,6 +1022,9 @@ impl Default for NativeShellState {
             swipe_gesture: None,
             pinch_gesture: None,
             hold_gesture: None,
+            swipe_objects: HashMap::new(),
+            pinch_objects: HashMap::new(),
+            hold_objects: HashMap::new(),
             gesture_surface: None,
             relative_pointer_manager: None,
             relative_pointer: None,
