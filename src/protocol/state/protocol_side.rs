@@ -3,12 +3,12 @@
 use std::collections::{HashMap, HashSet};
 
 use smithay::wayland::{
-    foreign_toplevel_list::ForeignToplevelHandle,
     keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor, session_lock::LockSurface,
 };
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::capture::CaptureSessions;
+use crate::protocol::globals::foreign_toplevel::ForeignToplevelHandle;
 
 /// Side tables for protocols that keep compositor-owned identity beyond a global.
 #[derive(Default)]
@@ -27,6 +27,11 @@ pub(crate) struct ObjectKey(u32);
 impl ObjectKey {
     pub(crate) fn from_surface(surface: &WlSurface) -> Self {
         Self(surface.id().protocol_id())
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_protocol_id(id: u32) -> Self {
+        Self(id)
     }
 }
 

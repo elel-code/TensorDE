@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 
-use smithay::{
-    output::{Output, WeakOutput},
-    wayland::foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle},
-};
+use smithay::output::{Output, WeakOutput};
 use wayland_protocols::ext::image_capture_source::v1::server::{
     ext_foreign_toplevel_image_capture_source_manager_v1::{
         self, ExtForeignToplevelImageCaptureSourceManagerV1,
@@ -21,6 +18,8 @@ use crate::protocol::{
     },
     state::RuntimeState,
 };
+
+use super::foreign_toplevel::{ForeignToplevelWeakHandle, weak_handle_from_resource};
 
 const VERSION: u32 = 1;
 
@@ -97,9 +96,9 @@ impl ImageCaptureSource {
         }
     }
 
-    pub(in crate::protocol) fn toplevel(&self) -> Option<ForeignToplevelHandle> {
+    pub(in crate::protocol) fn toplevel_key(&self) -> Option<crate::protocol::state::ObjectKey> {
         match self.kind.as_ref() {
-            SourceKind::Toplevel(toplevel) => toplevel.upgrade(),
+            SourceKind::Toplevel(toplevel) => toplevel.live_key(),
             _ => None,
         }
     }
@@ -204,8 +203,8 @@ where
                 source,
                 toplevel_handle,
             } => {
-                let kind = ForeignToplevelHandle::from_resource(&toplevel_handle)
-                    .map(|toplevel| SourceKind::Toplevel(toplevel.downgrade()))
+                let kind = weak_handle_from_resource(&toplevel_handle)
+                    .map(SourceKind::Toplevel)
                     .unwrap_or(SourceKind::Invalid);
                 data_init.init(
                     source,

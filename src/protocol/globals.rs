@@ -10,7 +10,6 @@ use smithay::{
         content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
         fifo::FifoManagerState,
-        foreign_toplevel_list::ForeignToplevelListState,
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
@@ -49,6 +48,7 @@ use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
+pub(in crate::protocol) mod foreign_toplevel;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod shm;
@@ -59,6 +59,7 @@ pub(in crate::protocol) mod viewporter;
 
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
+use foreign_toplevel::ForeignToplevelListState;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use shm::ShmProtocol;

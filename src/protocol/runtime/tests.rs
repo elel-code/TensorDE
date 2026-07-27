@@ -35,6 +35,7 @@ use super::*;
 mod capture;
 #[cfg(feature = "tty")]
 mod dmabuf;
+mod foreign_toplevel;
 mod surface_callbacks;
 mod surface_state;
 

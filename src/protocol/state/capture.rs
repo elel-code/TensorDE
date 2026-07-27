@@ -19,7 +19,6 @@ use std::{
 use smithay::{
     output::Output,
     utils::{Buffer as BufferCoords, Size},
-    wayland::foreign_toplevel_list::ForeignToplevelHandle,
 };
 use tracing::{debug, trace, warn};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
@@ -75,19 +74,15 @@ impl RuntimeState {
         if let Some(output) = source.output() {
             return constraints_for_output(&output);
         }
-        if let Some(handle) = source.toplevel()
-            && let Some((size, _)) = self.toplevel_capture_geometry(&handle)
+        if let Some(key) = source.toplevel_key()
+            && let Some((size, _)) = self.toplevel_capture_geometry(key)
         {
             return Some(shm_constraints(size));
         }
         None
     }
 
-    fn toplevel_capture_geometry(
-        &self,
-        handle: &ForeignToplevelHandle,
-    ) -> Option<(Size<i32, BufferCoords>, Rect)> {
-        let key = *handle.user_data().get::<ObjectKey>()?;
+    fn toplevel_capture_geometry(&self, key: ObjectKey) -> Option<(Size<i32, BufferCoords>, Rect)> {
         for window in self.space.elements() {
             let Some(surface) = window.wl_surface() else {
                 continue;
@@ -192,8 +187,8 @@ fn capture_kind_for_session(state: &RuntimeState, session: &SessionRef) -> Optio
             origin,
         });
     }
-    if let Some(handle) = source.toplevel()
-        && let Some((size, geometry)) = state.toplevel_capture_geometry(&handle)
+    if let Some(key) = source.toplevel_key()
+        && let Some((size, geometry)) = state.toplevel_capture_geometry(key)
     {
         return Some(CaptureKind::Toplevel { size, geometry });
     }

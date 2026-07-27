@@ -4,7 +4,6 @@ use smithay::{
     input::pointer::PointerHandle,
     utils::{IsAlive, Logical, Point, Serial},
     wayland::{
-        foreign_toplevel_list::ForeignToplevelListHandler,
         idle_inhibit::IdleInhibitHandler,
         input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
         keyboard_shortcuts_inhibit::{
@@ -87,9 +86,7 @@ impl RuntimeState {
         let handle = self
             .protocol_globals
             .foreign_toplevel_list()
-            .new_toplevel::<RuntimeState>(title.clone(), app_id.clone());
-        // Stable surface key for capture/IPC without scanning the map by title.
-        handle.user_data().insert_if_missing(|| key);
+            .new_toplevel::<RuntimeState>(key, title.clone(), app_id.clone());
         self.protocol_side.foreign_toplevels.insert(key, handle);
         debug!(
             surface = surface.id().protocol_id(),
@@ -109,20 +106,7 @@ impl RuntimeState {
         let Some(handle) = self.protocol_side.foreign_toplevels.get(&key) else {
             return;
         };
-        // Smithay skips no-op title/app_id events; only send `done` when either
-        // field actually changes so idle clients are not woken every configure.
-        let title_changed = title.is_some_and(|title| handle.title() != title);
-        let app_id_changed = app_id.is_some_and(|app_id| handle.app_id() != app_id);
-        if !title_changed && !app_id_changed {
-            return;
-        }
-        if let Some(title) = title.filter(|_| title_changed) {
-            handle.send_title(title);
-        }
-        if let Some(app_id) = app_id.filter(|_| app_id_changed) {
-            handle.send_app_id(app_id);
-        }
-        handle.send_done();
+        handle.send_metadata(title, app_id);
     }
 
     pub(crate) fn close_foreign_toplevel(&mut self, surface: &WlSurface) {
@@ -278,14 +262,6 @@ impl PointerWarpHandler for RuntimeState {
         pointer.set_location(target);
         #[cfg(feature = "tty")]
         self.request_redraw_at(pointer.current_location());
-    }
-}
-
-impl ForeignToplevelListHandler for RuntimeState {
-    fn foreign_toplevel_list_state(
-        &mut self,
-    ) -> &mut smithay::wayland::foreign_toplevel_list::ForeignToplevelListState {
-        self.protocol_globals.foreign_toplevel_list()
     }
 }
 
