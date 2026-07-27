@@ -60,6 +60,8 @@ pub struct RelativePointerEvent {
     pub time_micros: u64,
     pub delta: (f64, f64),
     pub delta_unaccelerated: (f64, f64),
+    /// Seat that owns the relative-pointer stream, when known.
+    pub seat: Option<crate::SeatId>,
 }
 
 #[allow(dead_code)]

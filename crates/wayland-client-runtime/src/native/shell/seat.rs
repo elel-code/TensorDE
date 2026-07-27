@@ -564,6 +564,11 @@ impl NativeShell {
             .is_some_and(|s| s.primary_device.is_some())
     }
 
+    /// Whether a keymap was applied via `wl_keyboard.keymap` (xkb ready).
+    pub fn has_xkb(&self) -> bool {
+        self.state.xkb.is_some()
+    }
+
     /// Set the pointer cursor via `wp_cursor_shape` when available.
     pub fn set_cursor_shape(
         &mut self,

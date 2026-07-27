@@ -253,11 +253,6 @@ impl NativeShell {
         &self.state.incoming_mimes
     }
 
-    /// Whether a keymap was applied via `wl_keyboard.keymap` (xkb ready).
-    pub fn has_xkb(&self) -> bool {
-        self.state.xkb.is_some()
-    }
-
     /// Begin a clipboard receive; returns a pipe read **off** the display thread.
     pub fn receive_selection_pipe(
         &mut self,

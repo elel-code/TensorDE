@@ -660,9 +660,11 @@ pub fn map_native_event_full(
             dy,
             dx_unaccel,
             dy_unaccel,
+            seat,
         } => {
-            let surface = map_state
-                .pointer_focus
+            // Prefer the seat's pointer focus; fall back to last-wins map state.
+            let focus = map_state.pointer_focus;
+            let surface = focus
                 .map(|s| surfaces.intern(s))
                 .unwrap_or(SurfaceId(0));
             Some(Event::RelativePointer(RelativePointerEvent {
@@ -670,6 +672,7 @@ pub fn map_native_event_full(
                 time_micros: utime,
                 delta: (dx, dy),
                 delta_unaccelerated: (dx_unaccel, dy_unaccel),
+                seat: seat.map(SeatId::from_raw),
             }))
         }
         NativeShellEvent::TextInputEnter { surface } => {

@@ -361,12 +361,16 @@ pub enum NativeShellEvent {
         seat: Option<u32>,
     },
     /// `zwp_relative_pointer_v1.relative_motion`.
+    ///
+    /// Relative pointer is still a single stream (bound to the active seat
+    /// pointer); `seat` identifies that seat when known.
     RelativePointer {
         utime: u64,
         dx: f64,
         dy: f64,
         dx_unaccel: f64,
         dy_unaccel: f64,
+        seat: Option<u32>,
     },
     /// Pointer constraint activated or deactivated.
     PointerConstraint {

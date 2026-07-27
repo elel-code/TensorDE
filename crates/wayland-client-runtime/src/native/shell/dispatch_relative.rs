@@ -40,12 +40,18 @@ impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for NativeShell
         } = event
         {
             let utime = (u64::from(utime_hi) << 32) | u64::from(utime_lo);
+            // Relative pointer is bound to one seat pointer (shell-wide stream).
+            let seat = state
+                .pointer
+                .as_ref()
+                .and_then(|p| state.seat_for_pointer(p));
             state.push(NativeShellEvent::RelativePointer {
                 utime,
                 dx,
                 dy,
                 dx_unaccel,
                 dy_unaccel,
+                seat,
             });
         }
     }

@@ -82,6 +82,38 @@ impl NativeShell {
         state.relative_motion = enabled;
         self.set_pointer_capture_state(id, state)
     }
+
+    /// Enable `zwp_relative_pointer_v1` for the active seat pointer.
+    ///
+    /// Still a single stream (protocol + API surface); multi-seat clients that
+    /// need per-seat relative motion can extend this later.
+    pub fn enable_relative_pointer(&mut self) -> Result<(), NativeError> {
+        if self.state.relative_pointer.is_some() {
+            return Ok(());
+        }
+        let manager = self
+            .state
+            .relative_pointer_manager
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("relative_pointer_manager missing".into()))?;
+        let pointer = self
+            .state
+            .pointer
+            .as_ref()
+            .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
+        let qh = self.queue.handle();
+        self.state.relative_pointer = Some(manager.get_relative_pointer(pointer, &qh, ()));
+        self.connection.mark_dirty();
+        Ok(())
+    }
+
+    pub fn disable_relative_pointer(&mut self) -> Result<(), NativeError> {
+        if let Some(rel) = self.state.relative_pointer.take() {
+            rel.destroy();
+            self.connection.mark_dirty();
+        }
+        Ok(())
+    }
 }
 
 impl NativeShellState {
