@@ -548,7 +548,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                         state.touch_pending.clear();
                         state.touch_active.clear();
                         state.touch_points.clear();
-                        state.push(NativeShellEvent::TouchCancel);
+                        state.push(NativeShellEvent::TouchCancel { seat: seat_global });
                     }
                     if let Some(global) = seat_global
                         && let Some(rec) = state.seats.get_mut(&global) {
@@ -975,6 +975,7 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
                     y,
                     serial,
                     time,
+                    seat: seat_global,
                 });
             }
             wl_touch::Event::Up { serial, time, id } => {
@@ -982,22 +983,40 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
                 if let Ok(pos) = state.touch_active.binary_search(&id) {
                     state.touch_active.remove(pos);
                 }
-                state.touch_pending.push(PendingTouchEvent::Up { id, serial, time });
+                state.touch_pending.push(PendingTouchEvent::Up {
+                    id,
+                    serial,
+                    time,
+                    seat: seat_global,
+                });
                 // Weston may omit Frame after the last touch-up.
                 if state.touch_active.is_empty() {
                     flush = true;
                 }
             }
             wl_touch::Event::Motion { time, id, x, y } => {
-                state.touch_pending.push(PendingTouchEvent::Motion { id, x, y, time });
+                state.touch_pending.push(PendingTouchEvent::Motion {
+                    id,
+                    x,
+                    y,
+                    time,
+                    seat: seat_global,
+                });
             }
             wl_touch::Event::Shape { id, major, minor } => {
-                state.touch_pending.push(PendingTouchEvent::Shape { id, major, minor });
+                state.touch_pending.push(PendingTouchEvent::Shape {
+                    id,
+                    major,
+                    minor,
+                    seat: seat_global,
+                });
             }
             wl_touch::Event::Orientation { id, orientation } => {
-                state
-                    .touch_pending
-                    .push(PendingTouchEvent::Orientation { id, degrees: orientation });
+                state.touch_pending.push(PendingTouchEvent::Orientation {
+                    id,
+                    degrees: orientation,
+                    seat: seat_global,
+                });
             }
             wl_touch::Event::Frame => {
                 flush = true;
@@ -1006,7 +1025,9 @@ impl Dispatch<wl_touch::WlTouch, ()> for NativeShellState {
                 state.touch_pending.clear();
                 state.touch_active.clear();
                 state.touch_points.clear();
-                state.push(NativeShellEvent::TouchCancel);
+                state.push(NativeShellEvent::TouchCancel {
+                    seat: seat_global,
+                });
             }
             _ => {}
         }
@@ -1026,6 +1047,15 @@ impl NativeShellState {
             return;
         }
         let pending = std::mem::take(&mut self.touch_pending);
+        // All events in one frame share the same seat (single wl_touch).
+        let frame_seat = match pending.first() {
+            Some(PendingTouchEvent::Down { seat, .. })
+            | Some(PendingTouchEvent::Up { seat, .. })
+            | Some(PendingTouchEvent::Motion { seat, .. })
+            | Some(PendingTouchEvent::Shape { seat, .. })
+            | Some(PendingTouchEvent::Orientation { seat, .. }) => *seat,
+            None => None,
+        };
         for ev in pending {
             match ev {
                 PendingTouchEvent::Down {
@@ -1035,6 +1065,7 @@ impl NativeShellState {
                     y,
                     serial,
                     time,
+                    seat,
                 } => {
                     self.push(NativeShellEvent::TouchDown {
                         surface,
@@ -1043,24 +1074,65 @@ impl NativeShellState {
                         y,
                         serial,
                         time,
+                        seat,
                     });
                 }
-                PendingTouchEvent::Up { id, serial, time } => {
+                PendingTouchEvent::Up {
+                    id,
+                    serial,
+                    time,
+                    seat,
+                } => {
                     self.touch_points.remove(&id);
-                    self.push(NativeShellEvent::TouchUp { id, serial, time });
+                    self.push(NativeShellEvent::TouchUp {
+                        id,
+                        serial,
+                        time,
+                        seat,
+                    });
                 }
-                PendingTouchEvent::Motion { id, x, y, time } => {
-                    self.push(NativeShellEvent::TouchMotion { id, x, y, time });
+                PendingTouchEvent::Motion {
+                    id,
+                    x,
+                    y,
+                    time,
+                    seat,
+                } => {
+                    self.push(NativeShellEvent::TouchMotion {
+                        id,
+                        x,
+                        y,
+                        time,
+                        seat,
+                    });
                 }
-                PendingTouchEvent::Shape { id, major, minor } => {
-                    self.push(NativeShellEvent::TouchShape { id, major, minor });
+                PendingTouchEvent::Shape {
+                    id,
+                    major,
+                    minor,
+                    seat,
+                } => {
+                    self.push(NativeShellEvent::TouchShape {
+                        id,
+                        major,
+                        minor,
+                        seat,
+                    });
                 }
-                PendingTouchEvent::Orientation { id, degrees } => {
-                    self.push(NativeShellEvent::TouchOrientation { id, degrees });
+                PendingTouchEvent::Orientation {
+                    id,
+                    degrees,
+                    seat,
+                } => {
+                    self.push(NativeShellEvent::TouchOrientation {
+                        id,
+                        degrees,
+                        seat,
+                    });
                 }
             }
         }
-        self.push(NativeShellEvent::TouchFrame);
+        self.push(NativeShellEvent::TouchFrame { seat: frame_seat });
     }
 
     /// Drop tracked touch points for a destroyed surface (emit cancel once).
@@ -1078,7 +1150,8 @@ impl NativeShellState {
         self.touch_pending.clear();
         self.touch_active.clear();
         self.touch_points.clear();
-        self.push(NativeShellEvent::TouchCancel);
+        // Surface teardown cancel is not seat-scoped (any seat may own points).
+        self.push(NativeShellEvent::TouchCancel { seat: None });
     }
 }
 

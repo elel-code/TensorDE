@@ -130,32 +130,42 @@ pub enum NativeShellEvent {
         y: f64,
         serial: u32,
         time: u32,
+        /// Registry global name of the seat that owns this touch device.
+        seat: Option<u32>,
     },
     TouchUp {
         id: i32,
         serial: u32,
         time: u32,
+        seat: Option<u32>,
     },
     TouchMotion {
         id: i32,
         x: f64,
         y: f64,
         time: u32,
+        seat: Option<u32>,
     },
     /// Ellipse axes approximating the contact (optional; compositor-dependent).
     TouchShape {
         id: i32,
         major: f64,
         minor: f64,
+        seat: Option<u32>,
     },
     /// Clockwise angle of the major axis from positive surface-local Y (degrees).
     TouchOrientation {
         id: i32,
         degrees: f64,
+        seat: Option<u32>,
     },
     /// End of a frame-buffered touch batch (after pending events are flushed).
-    TouchFrame,
-    TouchCancel,
+    TouchFrame {
+        seat: Option<u32>,
+    },
+    TouchCancel {
+        seat: Option<u32>,
+    },
     OutputGeometry {
         output: u32,
         x: i32,
@@ -566,26 +576,31 @@ pub(crate) enum PendingTouchEvent {
         y: f64,
         serial: u32,
         time: u32,
+        seat: Option<u32>,
     },
     Up {
         id: i32,
         serial: u32,
         time: u32,
+        seat: Option<u32>,
     },
     Motion {
         id: i32,
         x: f64,
         y: f64,
         time: u32,
+        seat: Option<u32>,
     },
     Shape {
         id: i32,
         major: f64,
         minor: f64,
+        seat: Option<u32>,
     },
     Orientation {
         id: i32,
         degrees: f64,
+        seat: Option<u32>,
     },
 }
 

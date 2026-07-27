@@ -140,7 +140,7 @@ impl NativeShellState {
                     self.touch_pending.clear();
                     self.touch_active.clear();
                     self.touch_points.clear();
-                    self.push(NativeShellEvent::TouchCancel);
+                    self.push(NativeShellEvent::TouchCancel { seat: None });
                 }
             }
             // Gestures / constraints were bound to the old primary pointer.

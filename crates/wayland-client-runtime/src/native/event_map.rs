@@ -386,6 +386,7 @@ pub fn map_native_event_full(
             y,
             serial,
             time,
+            seat: event_seat,
         } => {
             let seat = seat?;
             map_state.last_serial = serial;
@@ -401,9 +402,15 @@ pub fn map_native_event_full(
                         InputSerialSource::TouchDown,
                     ),
                 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::TouchUp { id, serial, time } => {
+        NativeShellEvent::TouchUp {
+            id,
+            serial,
+            time,
+            seat: event_seat,
+        } => {
             let seat = seat?;
             map_state.last_serial = serial;
             Some(Event::Touch(TouchEvent {
@@ -417,27 +424,52 @@ pub fn map_native_event_full(
                         InputSerialSource::TouchUp,
                     ),
                 },
+                seat: event_seat.map(SeatId::from_raw),
             }))
         }
-        NativeShellEvent::TouchMotion { id, x, y, time } => Some(Event::Touch(TouchEvent {
+        NativeShellEvent::TouchMotion {
+            id,
+            x,
+            y,
+            time,
+            seat: event_seat,
+        } => Some(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Motion {
                 time,
                 id,
                 position: (x, y),
             },
+            seat: event_seat.map(SeatId::from_raw),
         })),
-        NativeShellEvent::TouchShape { id, major, minor } => Some(Event::Touch(TouchEvent {
+        NativeShellEvent::TouchShape {
+            id,
+            major,
+            minor,
+            seat: event_seat,
+        } => Some(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Shape { id, major, minor },
+            seat: event_seat.map(SeatId::from_raw),
         })),
-        NativeShellEvent::TouchOrientation { id, degrees } => Some(Event::Touch(TouchEvent {
+        NativeShellEvent::TouchOrientation {
+            id,
+            degrees,
+            seat: event_seat,
+        } => Some(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Orientation { id, degrees },
+            seat: event_seat.map(SeatId::from_raw),
         })),
-        NativeShellEvent::TouchCancel => Some(Event::Touch(TouchEvent {
+        NativeShellEvent::TouchFrame { seat: event_seat } => {
+            // Frame is protocol-level; no public event (already expanded).
+            let _ = event_seat;
+            None
+        }
+        NativeShellEvent::TouchCancel { seat: event_seat } => Some(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Cancelled,
+            seat: event_seat.map(SeatId::from_raw),
         })),
         NativeShellEvent::GestureSwipeBegin {
             surface,
@@ -828,8 +860,7 @@ pub fn map_native_event_full(
         // Selection / primary selection mime lists remain internal until apps
         // request a receive (same model as clipboard).
         // OutputMode is folded into OutputDone / NativeShell::outputs() snapshots.
-        NativeShellEvent::TouchFrame
-        | NativeShellEvent::OutputMode { .. }
+        NativeShellEvent::OutputMode { .. }
         | NativeShellEvent::Selection { .. }
         | NativeShellEvent::SelectionCancelled
         | NativeShellEvent::PrimarySelection { .. }
@@ -932,6 +963,7 @@ mod tests {
             y: 20.0,
             serial: 42,
             time: 1000,
+            seat: Some(1),
         };
         // Without seat, serial-bearing touch events are dropped.
         assert!(map_native_event_full(event.clone(), &mut map, None, &mut map_state).is_none());
@@ -1015,6 +1047,7 @@ mod tests {
                 id: 2,
                 major: 4.0,
                 minor: 2.0,
+                seat: None,
             },
             &mut map,
             None,
@@ -1035,6 +1068,7 @@ mod tests {
             NativeShellEvent::TouchOrientation {
                 id: 2,
                 degrees: 45.0,
+                seat: None,
             },
             &mut map,
             None,

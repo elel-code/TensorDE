@@ -211,6 +211,8 @@ pub struct TouchEvent {
     /// for an unmatched up or a cancellation with no tracked live point.
     pub surface: Option<SurfaceId>,
     pub kind: TouchEventKind,
+    /// Seat that owns this touch device, when known.
+    pub seat: Option<crate::SeatId>,
 }
 
 #[derive(Clone, Debug)]
@@ -269,15 +271,18 @@ mod tests {
         events.push(Event::Touch(TouchEvent {
             surface: None,
             kind: TouchEventKind::Cancelled,
+            seat: None,
         }));
         events.push(Event::Touch(TouchEvent {
             surface: Some(SurfaceId(7)),
             kind: TouchEventKind::Cancelled,
+            seat: None,
         }));
         let capacity = events.pending.capacity();
         let mut drained = vec![Event::Touch(TouchEvent {
             surface: Some(SurfaceId(1)),
             kind: TouchEventKind::Cancelled,
+            seat: None,
         })];
 
         events.drain_into(&mut drained);
