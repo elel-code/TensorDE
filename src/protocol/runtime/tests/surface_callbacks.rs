@@ -1,15 +1,12 @@
 use std::time::Duration;
 
-use smithay::{
-    output::Output,
-    wayland::{
-        compositor::{SurfaceAttributes, with_states},
-        presentation::PresentationFeedbackCachedState,
-    },
-};
+use smithay::wayland::compositor::{SurfaceAttributes, with_states};
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
-use crate::protocol::state::{OutputPresentationFeedback, PopupManager, ProtocolWindow};
+use crate::protocol::{
+    globals::{output::Output, presentation::PresentationFeedbackCachedState},
+    state::{OutputPresentationFeedback, PopupManager, ProtocolWindow},
+};
 
 pub(super) fn assert_submission_filtering(
     window: &ProtocolWindow,

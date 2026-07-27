@@ -12,6 +12,7 @@ mod output_config;
 mod output_helpers;
 #[cfg(feature = "tty")]
 mod output_topology;
+mod output_values;
 pub(super) mod popup;
 #[cfg(feature = "tty")]
 mod presentation;
@@ -38,6 +39,7 @@ use event_loop::EventLoopState;
 use layer::LayerMaps;
 #[cfg(feature = "tty")]
 use layer::LayerSurface;
+use output_values::{output_integer_scale, smithay_transform};
 use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
@@ -47,11 +49,9 @@ use calloop::LoopHandle;
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     input::{Seat, SeatState},
-    output::Scale,
     wayland::{
         compositor::{CompositorState, get_parent, send_surface_state, with_states},
         fractional_scale::with_fractional_scale,
-        output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelSurface, XdgShellState},
     },
@@ -74,7 +74,8 @@ use crate::{
     render::VulkanRenderer,
     scene::SceneAppearance,
 };
-use tensor_util::Size;
+use tensor_protocol::SurfaceTransform;
+use tensor_util::{OutputScale, Size};
 
 #[cfg(feature = "tty")]
 use super::cursor::CursorState;
@@ -115,7 +116,6 @@ pub(crate) struct RuntimeState {
     pub(crate) display_handle: DisplayHandle,
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
-    pub(crate) output_manager_state: OutputManagerState,
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) data_device_state: DataDeviceState,
     pub(crate) protocol_globals: ProtocolGlobals,
@@ -198,7 +198,6 @@ impl RuntimeState {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle, &loop_handle);
         #[cfg(feature = "xwayland")]
@@ -211,7 +210,6 @@ impl RuntimeState {
             display_handle,
             compositor_state,
             xdg_shell_state,
-            output_manager_state,
             seat_state,
             data_device_state,
             protocol_globals,
@@ -560,11 +558,16 @@ impl RuntimeState {
             .elements()
             .find(|window| window.wl_surface().as_deref() == Some(&root))
             .map(|window| self.window_output_state(window))
-            .unwrap_or((Scale::Integer(1), smithay::utils::Transform::Normal));
+            .unwrap_or((OutputScale::ONE, SurfaceTransform::Normal));
         with_states(surface, |states| {
-            send_surface_state(surface, states, scale.integer_scale(), transform);
+            send_surface_state(
+                surface,
+                states,
+                output_integer_scale(scale),
+                smithay_transform(transform),
+            );
             with_fractional_scale(states, |fractional| {
-                fractional.set_preferred_scale(scale.fractional_scale());
+                fractional.set_preferred_scale(scale.as_f64());
             });
         });
     }
@@ -572,14 +575,19 @@ impl RuntimeState {
     fn update_window_surface_state(&self, window: &ProtocolWindow) {
         let (scale, transform) = self.window_output_state(window);
         window.with_surfaces(&self.popups, |surface, states| {
-            send_surface_state(surface, states, scale.integer_scale(), transform);
+            send_surface_state(
+                surface,
+                states,
+                output_integer_scale(scale),
+                smithay_transform(transform),
+            );
             with_fractional_scale(states, |fractional| {
-                fractional.set_preferred_scale(scale.fractional_scale());
+                fractional.set_preferred_scale(scale.as_f64());
             });
         });
     }
 
-    fn window_output_state(&self, window: &ProtocolWindow) -> (Scale, smithay::utils::Transform) {
+    fn window_output_state(&self, window: &ProtocolWindow) -> (OutputScale, SurfaceTransform) {
         self.space
             .outputs_for_element(window)
             .filter_map(|output| {
@@ -590,10 +598,13 @@ impl RuntimeState {
                 left.0
                     .cmp(&right.0)
                     .then(left.1.cmp(&right.1))
-                    .then(left.2.cmp(&right.2))
+                    .then(left.2.cmp(right.2))
             })
-            .map(|(_, _, _, output)| (output.current_scale(), output.current_transform()))
-            .unwrap_or((Scale::Integer(1), smithay::utils::Transform::Normal))
+            .map(|(_, _, _, output)| {
+                let snapshot = output.snapshot();
+                (snapshot.scale, snapshot.transform)
+            })
+            .unwrap_or((OutputScale::ONE, SurfaceTransform::Normal))
     }
 
     fn default_workspace_area(&self) -> Option<tensor_util::Rect> {
@@ -617,7 +628,7 @@ impl RuntimeState {
                 left.0
                     .cmp(&right.0)
                     .then(left.1.cmp(&right.1))
-                    .then(left.2.cmp(&right.2))
+                    .then(left.2.cmp(right.2))
             })
             .map(|(_, _, _, geometry)| geometry)
     }
@@ -665,8 +676,9 @@ impl RuntimeState {
             .outputs()
             .filter_map(|output| {
                 let geometry = self.space.output_geometry(output)?;
-                let mode = output.current_mode()?;
-                let scale = output.current_scale().fractional_scale();
+                let snapshot = output.snapshot();
+                let mode = snapshot.mode?;
+                let scale = snapshot.scale.as_f64();
                 let logical = tensor_util::Rect::new(
                     geometry.loc.x,
                     geometry.loc.y,
@@ -674,15 +686,15 @@ impl RuntimeState {
                     u32::try_from(geometry.size.h).unwrap_or(0),
                 );
                 Some(crate::ipc::OutputSnapshot {
-                    name: output.name(),
+                    name: output.name().to_owned(),
                     x: geometry.loc.x,
                     y: geometry.loc.y,
                     width: geometry.size.w,
                     height: geometry.size.h,
                     scale,
-                    mode_width: mode.size.w,
-                    mode_height: mode.size.h,
-                    refresh_millihertz: mode.refresh,
+                    mode_width: mode.width,
+                    mode_height: mode.height,
+                    refresh_millihertz: mode.refresh_millihertz,
                     primary: primary == Some(logical),
                     enabled: true,
                 })
@@ -732,7 +744,7 @@ fn maximum_axis(value: i32) -> Option<u32> {
 
 #[cfg(feature = "tty")]
 struct ManagedOutput {
-    output: smithay::output::Output,
+    output: crate::protocol::globals::output::Output,
     global: GlobalId,
     descriptor: OutputDescriptor,
     /// True after at least one frame was accepted by atomic KMS. Used to skip

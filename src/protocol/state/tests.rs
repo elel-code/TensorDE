@@ -33,7 +33,7 @@ fn output_location(state: &RuntimeState, name: &str) -> i32 {
         .find(|output| output.name() == name)
         .unwrap()
         .current_location()
-        .x
+        .0
 }
 
 fn output_geometry(
@@ -107,8 +107,14 @@ fn fractional_output_scale_controls_logical_reflow() {
         .outputs()
         .find(|output| output.name() == "DP-1")
         .unwrap();
-    assert_eq!(first.current_scale().fractional_scale(), 1.25);
-    assert_eq!(first.current_scale().integer_scale(), 2);
+    assert_eq!(first.current_scale().as_f64(), 1.25);
+    assert_eq!(
+        first
+            .current_scale()
+            .units()
+            .div_ceil(tensor_util::OutputScale::DENOMINATOR),
+        2
+    );
 }
 
 #[test]

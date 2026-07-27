@@ -307,7 +307,7 @@ impl SessionLockHandler for RuntimeState {
             .space
             .outputs()
             .find(|candidate| candidate.owns(&output))
-            .map(|output| output.name())
+            .map(|output| output.name().to_owned())
             .unwrap_or_else(|| "unknown".to_owned());
         if let Some(output_obj) = self.space.outputs().find(|o| o.owns(&output))
             && let Some(geometry) = self.space.output_geometry(output_obj)
@@ -514,12 +514,8 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
     fn gamma_output_id(&self, output: &WlOutput) -> Option<tensor_host::ConnectorId> {
         #[cfg(feature = "tty")]
         {
-            self.space
-                .outputs()
-                .find(|candidate| candidate.owns(output))?
-                .user_data()
-                .get::<crate::backend::BackendOutputId>()
-                .copied()
+            crate::protocol::globals::output::Output::from_resource(output)
+                .map(|output| output.id())
         }
         #[cfg(not(feature = "tty"))]
         {

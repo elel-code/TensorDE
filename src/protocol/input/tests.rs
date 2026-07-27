@@ -1,9 +1,10 @@
 use calloop::EventLoop;
 use smithay::{
     input::keyboard::keysyms,
-    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     utils::{Logical, Point, Rectangle},
 };
+use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
+use tensor_util::OutputScale;
 use wayland_server::Display;
 
 use super::pointer_geometry::{
@@ -11,6 +12,7 @@ use super::pointer_geometry::{
     sanitize_relative_pointer_delta, virtual_terminal_for_keysym,
 };
 use crate::layout::{LayoutEngine, LayoutKind};
+use crate::protocol::globals::output::Output;
 use crate::protocol::state::RuntimeState;
 
 #[test]
@@ -90,24 +92,17 @@ fn relative_pointer_crosses_neighboring_outputs_but_not_a_gap() {
 }
 
 fn map_output(state: &mut RuntimeState, name: &str, location: (i32, i32), size: (i32, i32)) {
+    let mode = PhysicalMode::new(size.0, size.1, 60_000);
     let output = Output::new(
+        ConnectorId::new(1, size.0 as u32),
         name.to_owned(),
-        PhysicalProperties {
-            size: (600, 340).into(),
-            subpixel: Subpixel::HorizontalRgb,
-            make: "Tensor test".to_owned(),
-            model: name.to_owned(),
-            serial_number: name.to_owned(),
-        },
+        (600, 340),
+        SubpixelLayout::HorizontalRgb,
+        vec![mode],
+        mode,
+        mode,
+        OutputScale::ONE,
     );
-    output.change_current_state(
-        Some(Mode {
-            size: size.into(),
-            refresh: 60_000,
-        }),
-        None,
-        Some(Scale::Integer(1)),
-        Some(location.into()),
-    );
+    output.set_location(location);
     state.space.map_output(&output, location);
 }

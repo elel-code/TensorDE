@@ -1,11 +1,12 @@
 //! Output topology: connect / change / disconnect / reflow.
 //!
-//! Value types are host/drm; Smithay Output is created only at this adapter edge.
+//! Value types and Wayland output objects are Tensor-owned.
 
 use tracing::info;
 
 use crate::{
     backend::{BackendOutputEvent, BackendOutputId, OutputDescriptor},
+    protocol::globals::output::Output,
     render::RenderOutputId,
 };
 
@@ -57,34 +58,19 @@ impl RuntimeState {
             mode_height = descriptor.mode.height,
             refresh_millihertz = descriptor.mode.refresh_millihertz,
             scale = descriptor.scale.as_f64(),
-            "Smithay output connected"
+            "output connected"
         );
-        let preferred = crate::protocol::adapter::output_mode(descriptor.mode);
-        let output = smithay::output::Output::new(
+        let output = Output::new(
+            descriptor.id,
             descriptor.name.clone(),
-            smithay::output::PhysicalProperties {
-                size: descriptor.physical_size.into(),
-                subpixel: crate::protocol::adapter::output_subpixel(descriptor.subpixel),
-                make: "Unknown".to_owned(),
-                model: descriptor.name.clone(),
-                serial_number: "Unknown".to_owned(),
-            },
+            descriptor.physical_size,
+            descriptor.subpixel,
+            descriptor.modes.clone(),
+            descriptor.mode,
+            descriptor.mode,
+            descriptor.scale,
         );
-        for mode in &descriptor.modes {
-            output.add_mode(crate::protocol::adapter::output_mode(*mode));
-        }
-        output.set_preferred(preferred);
-        output.change_current_state(
-            Some(preferred),
-            None,
-            Some(smithay::output::Scale::Fractional(
-                descriptor.scale.as_f64(),
-            )),
-            Some((0, 0).into()),
-        );
-        // Backend identity for gamma / capture without scanning by name.
-        output.user_data().insert_if_missing(|| descriptor.id);
-        let global = output.create_global::<Self>(&self.display_handle);
+        let global = output.create_global(&self.display_handle);
         self.space.map_output(&output, (0, 0));
         let output_id = descriptor.id;
         self.outputs.insert(
@@ -113,7 +99,7 @@ impl RuntimeState {
             mode_height = descriptor.mode.height,
             refresh_millihertz = descriptor.mode.refresh_millihertz,
             scale = descriptor.scale.as_f64(),
-            "Smithay output modes changed"
+            "output modes changed"
         );
         if !self.outputs.contains_key(&descriptor.id) {
             return self.connect_output(descriptor);
@@ -134,31 +120,17 @@ impl RuntimeState {
                 "discarded presentation feedback for replaced output mode"
             );
         }
-        let preferred = crate::protocol::adapter::output_mode(descriptor.mode);
         let managed = self
             .outputs
             .get_mut(&descriptor.id)
             .expect("output existence was checked before renderer registration");
-        managed
-            .output
-            .user_data()
-            .insert_if_missing(|| descriptor.id);
-        for mode in managed.output.modes() {
-            managed.output.delete_mode(mode);
-        }
-        for mode in &descriptor.modes {
-            managed
-                .output
-                .add_mode(crate::protocol::adapter::output_mode(*mode));
-        }
-        managed.output.set_preferred(preferred);
-        managed.output.change_current_state(
-            Some(preferred),
-            None,
-            Some(smithay::output::Scale::Fractional(
-                descriptor.scale.as_f64(),
-            )),
-            None,
+        managed.output.reconfigure(
+            descriptor.physical_size,
+            descriptor.subpixel,
+            descriptor.modes.clone(),
+            descriptor.mode,
+            descriptor.mode,
+            descriptor.scale,
         );
         let output_id = descriptor.id;
         managed.descriptor = descriptor;
@@ -177,6 +149,7 @@ impl RuntimeState {
         let Some(managed) = self.outputs.remove(&id) else {
             return;
         };
+        managed.output.deactivate();
         self.unregister_present_output(id);
         self.remove_layer_output(&managed.output);
         self.space.unmap_output(&managed.output, &self.popups);
@@ -197,7 +170,7 @@ impl RuntimeState {
             device_id = id.device_id,
             connector_id = id.connector_id,
             discarded_presentations = discarded,
-            "Smithay output disconnected"
+            "output disconnected"
         );
     }
 
@@ -269,12 +242,7 @@ impl RuntimeState {
                     auto_x = auto_x.saturating_add(size.0);
                     position
                 });
-            managed.output.change_current_state(
-                None,
-                None,
-                None,
-                Some((position.0, position.1).into()),
-            );
+            managed.output.set_location(position);
             self.space
                 .map_output(&managed.output, (position.0, position.1));
             if let Some(geometry) = self.space.output_geometry(&managed.output) {

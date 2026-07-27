@@ -18,7 +18,6 @@ use smithay::{
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
         pointer_warp::PointerWarpManager,
-        presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
@@ -51,6 +50,8 @@ pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod foreign_toplevel;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
+pub(in crate::protocol) mod output;
+pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod single_pixel_buffer;
 #[cfg(feature = "tty")]
@@ -62,6 +63,8 @@ use dmabuf::DmabufProtocol;
 use foreign_toplevel::ForeignToplevelListState;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
+use output::OutputProtocol;
+use presentation::PresentationProtocol;
 use shm::ShmProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
 #[cfg(feature = "tty")]
@@ -74,6 +77,7 @@ use viewporter::ViewporterProtocol;
 
 pub(crate) struct ProtocolGlobals {
     shm: ShmProtocol,
+    output: OutputProtocol,
     viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleManagerState,
     xdg_decoration: XdgDecorationState,
@@ -83,7 +87,7 @@ pub(crate) struct ProtocolGlobals {
     relative_pointer: RelativePointerManagerState,
     pointer_gestures: PointerGesturesState,
     pointer_constraints: PointerConstraintsState,
-    presentation: PresentationState,
+    presentation: PresentationProtocol,
     cursor_shape: CursorShapeManagerState,
     activation: XdgActivationState,
     idle_notifier: IdleNotifierState<RuntimeState>,
@@ -146,6 +150,7 @@ impl ProtocolGlobals {
         );
         Self {
             shm: ShmProtocol::new(display),
+            output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
             xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
@@ -155,7 +160,7 @@ impl ProtocolGlobals {
             relative_pointer: RelativePointerManagerState::new::<RuntimeState>(display),
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
             pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
-            presentation: PresentationState::new::<RuntimeState>(display, Monotonic::ID as u32),
+            presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeManagerState::new::<RuntimeState>(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
             idle_notifier: IdleNotifierState::new(display, loop_handle.clone()),
@@ -209,6 +214,10 @@ impl ProtocolGlobals {
             #[cfg(feature = "tty")]
             syncobj: DrmSyncobjProtocol::new(),
         }
+    }
+
+    pub(crate) const fn xdg_output_enabled(&self) -> bool {
+        self.output.xdg_output_enabled()
     }
 
     #[cfg(feature = "tty")]

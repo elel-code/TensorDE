@@ -4,14 +4,13 @@
 //! ordering live here. Refresh reuses per-window overlap storage and does not
 //! allocate or clone the mapped-output list on each pass.
 
+use super::{PopupManager, ProtocolWindow, smithay_transform, surfaces::surface_view};
+use crate::protocol::globals::output::Output;
 use smithay::{
-    output::Output,
-    utils::{IsAlive, Logical, Point, Rectangle, Transform},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Size},
     wayland::compositor::{TraversalAction, with_surface_tree_downward},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
-
-use super::{PopupManager, ProtocolWindow, surfaces::surface_view};
 
 #[derive(Debug)]
 struct MappedOutput {
@@ -357,14 +356,15 @@ fn mapped_output_geometry(
     output: &Output,
     location: Point<i32, Logical>,
 ) -> Option<Rectangle<i32, Logical>> {
-    let transform: Transform = output.current_transform();
-    output.current_mode().map(|mode| {
+    let snapshot = output.snapshot();
+    let transform = smithay_transform(snapshot.transform);
+    snapshot.mode.map(|mode| {
         Rectangle::new(
             location,
             transform
-                .transform_size(mode.size)
+                .transform_size(Size::<i32, Physical>::from((mode.width, mode.height)))
                 .to_f64()
-                .to_logical(output.current_scale().fractional_scale())
+                .to_logical(snapshot.scale.as_f64())
                 .to_i32_ceil(),
         )
     })
@@ -441,36 +441,24 @@ fn update_surface_tree_output(
 
 #[cfg(test)]
 mod tests {
-    use smithay::{
-        output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-        utils::Transform,
-    };
+    use crate::protocol::globals::output::Output;
+    use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
+    use tensor_util::OutputScale;
 
     use super::{PopupManager, WindowSpace};
 
     fn output(name: &str, size: (i32, i32), scale: f64) -> Output {
-        let output = Output::new(
+        let mode = PhysicalMode::new(size.0, size.1, 60_000);
+        Output::new(
+            ConnectorId::new(1, size.0 as u32),
             name.to_owned(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Tensor".to_owned(),
-                model: name.to_owned(),
-                serial_number: name.to_owned(),
-            },
-        );
-        let mode = Mode {
-            size: size.into(),
-            refresh: 60_000,
-        };
-        output.add_mode(mode);
-        output.change_current_state(
-            Some(mode),
-            Some(Transform::Normal),
-            Some(Scale::Fractional(scale)),
-            None,
-        );
-        output
+            (0, 0),
+            SubpixelLayout::Unknown,
+            vec![mode],
+            mode,
+            mode,
+            OutputScale::from_f64(scale).unwrap(),
+        )
     }
 
     #[test]
@@ -483,7 +471,15 @@ mod tests {
         assert_eq!(geometry.loc, (10, 20).into());
         assert_eq!(geometry.size, (1280, 720).into());
 
-        output.change_current_state(None, None, Some(Scale::Fractional(2.0)), None);
+        let mode = PhysicalMode::new(1920, 1080, 60_000);
+        output.reconfigure(
+            (0, 0),
+            SubpixelLayout::Unknown,
+            vec![mode],
+            mode,
+            mode,
+            OutputScale::from_f64(2.0).unwrap(),
+        );
         space.refresh_output_geometry(&output);
         assert_eq!(
             space.output_geometry(&output).unwrap().size,

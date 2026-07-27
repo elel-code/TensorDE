@@ -35,6 +35,7 @@ tty = [
 xwayland = ["smithay/xwayland"]
 
 [dependencies]
+arc-swap = "1"
 bevy_ecs = { version = "0.19", default-features = false, features = ["std", "multi_threaded"] }
 bytemuck = "1"
 calloop = "0.14"

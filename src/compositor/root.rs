@@ -218,10 +218,7 @@ impl Compositor {
                 state.view_count(),
                 state.output_count(),
                 state.seat.name().to_owned(),
-                state
-                    .output_manager_state
-                    .xdg_output_manager_global()
-                    .is_some(),
+                state.protocol_globals.xdg_output_enabled(),
                 state.protocol_globals.capabilities(),
             )
         };

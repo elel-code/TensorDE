@@ -19,7 +19,6 @@ use smithay::{
             is_sync_subsurface, with_states,
         },
         fractional_scale::FractionalScaleHandler,
-        output::OutputHandler,
         seat::WaylandFocus,
         selection::{
             SelectionHandler,
@@ -576,6 +575,4 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
 
 impl DndGrabHandler for RuntimeState {}
 impl WaylandDndGrabHandler for RuntimeState {}
-impl OutputHandler for RuntimeState {}
-
 smithay::delegate_dispatch2!(RuntimeState);

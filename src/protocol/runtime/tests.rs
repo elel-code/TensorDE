@@ -1,9 +1,8 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use smithay::{
-    output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
-    utils::{ClockSource, Monotonic},
-};
+use smithay::utils::{ClockSource, Monotonic};
+use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
+use tensor_util::OutputScale;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -30,12 +29,15 @@ use wayland_protocols::{
 };
 use wayland_server::Resource;
 
+use crate::protocol::globals::output::Output;
+
 use super::*;
 
 mod capture;
 #[cfg(feature = "tty")]
 mod dmabuf;
 mod foreign_toplevel;
+mod output;
 mod surface_callbacks;
 mod surface_state;
 
@@ -737,29 +739,18 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
 }
 
 pub(super) fn install_test_output(runtime: &mut WaylandRuntime) {
-    let mode = OutputMode {
-        size: (1000, 800).into(),
-        refresh: 60_000,
-    };
+    let mode = PhysicalMode::new(1000, 800, 60_000);
     let output = Output::new(
+        ConnectorId::new(1, 1),
         "test-output".to_owned(),
-        PhysicalProperties {
-            size: (600, 340).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Tensor".to_owned(),
-            model: "Nested".to_owned(),
-            serial_number: "test".to_owned(),
-        },
+        (600, 340),
+        SubpixelLayout::Unknown,
+        vec![mode],
+        mode,
+        mode,
+        OutputScale::from_f64(1.25).unwrap(),
     );
-    output.add_mode(mode);
-    output.set_preferred(mode);
-    output.change_current_state(
-        Some(mode),
-        None,
-        Some(Scale::Fractional(1.25)),
-        Some((0, 0).into()),
-    );
-    let _global = output.create_global::<RuntimeState>(&runtime.state.display_handle);
+    let _global = output.create_global(&runtime.state.display_handle);
     runtime.state.space.map_output(&output, (0, 0));
 }
 

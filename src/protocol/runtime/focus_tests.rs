@@ -1,12 +1,15 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
+use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
+use tensor_util::OutputScale;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface},
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+use crate::protocol::globals::output::Output;
 
 use super::*;
 
@@ -418,27 +421,16 @@ fn lifecycle_toplevel(
 }
 
 fn install_test_output(runtime: &mut WaylandRuntime) {
-    let mode = OutputMode {
-        size: (1000, 800).into(),
-        refresh: 60_000,
-    };
+    let mode = PhysicalMode::new(1000, 800, 60_000);
     let output = Output::new(
+        ConnectorId::new(1, 1),
         "focus-test-output".to_owned(),
-        PhysicalProperties {
-            size: (600, 340).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Tensor".to_owned(),
-            model: "Nested".to_owned(),
-            serial_number: "focus-test".to_owned(),
-        },
-    );
-    output.add_mode(mode);
-    output.set_preferred(mode);
-    output.change_current_state(
-        Some(mode),
-        None,
-        Some(Scale::Fractional(1.25)),
-        Some((0, 0).into()),
+        (600, 340),
+        SubpixelLayout::Unknown,
+        vec![mode],
+        mode,
+        mode,
+        OutputScale::from_f64(1.25).unwrap(),
     );
     runtime.state.space.map_output(&output, (0, 0));
 }

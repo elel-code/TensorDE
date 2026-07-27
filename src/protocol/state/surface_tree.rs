@@ -7,15 +7,18 @@
 use std::time::Duration;
 
 use smithay::{
-    output::{Output, WeakOutput},
     utils::{NonNegativeClockSource, Time},
-    wayland::{
-        compositor::{SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward},
-        presentation::{PresentationFeedbackCachedState, PresentationFeedbackCallback, Refresh},
+    wayland::compositor::{
+        SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward,
     },
 };
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
+
+use crate::protocol::globals::{
+    output::{Output, WeakOutput},
+    presentation::{PresentationFeedbackCachedState, PresentationFeedbackCallback, Refresh},
+};
 
 pub(super) fn for_each_surface_tree<F>(surface: &WlSurface, processor: &mut F)
 where
@@ -89,7 +92,7 @@ impl SurfacePresentationFeedback {
         flags: wp_presentation_feedback::Kind,
     ) {
         for callback in self.callbacks.drain(..) {
-            if callback.clk_id() == clock_id {
+            if callback.clock_id() == clock_id {
                 callback.presented(output, time, refresh, sequence, flags | self.flags);
             } else {
                 callback.discarded();

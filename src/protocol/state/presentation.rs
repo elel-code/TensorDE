@@ -5,9 +5,8 @@ use std::{
 };
 
 use smithay::{
-    output::Output,
     utils::{Clock, Monotonic},
-    wayland::{compositor::SurfaceData, presentation::Refresh},
+    wayland::compositor::SurfaceData,
 };
 use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;
@@ -28,6 +27,7 @@ use super::{
         take_presentation_feedback_surface_tree,
     },
 };
+use crate::protocol::globals::{output::Output, presentation::Refresh};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PresentationKey {
@@ -143,7 +143,7 @@ impl RuntimeState {
         let sample = presentation_sample(
             metadata,
             fallback_time,
-            output.current_mode().map(|mode| mode.refresh),
+            output.current_mode().map(|mode| mode.refresh_millihertz),
         );
         let mut feedback = frame;
         feedback.presented::<_, Monotonic>(
@@ -382,8 +382,6 @@ fn refresh_from_millihertz(refresh: i32) -> Refresh {
 
 #[cfg(test)]
 mod tests {
-    use smithay::output::{PhysicalProperties, Subpixel};
-
     use crate::{
         ecs::{SurfaceBufferId, WorkspaceId},
         layout::LayoutPlacement,
@@ -396,15 +394,16 @@ mod tests {
     const SECOND_OUTPUT: BackendOutputId = BackendOutputId::new(1, 3);
 
     fn feedback() -> OutputPresentationFeedback {
+        let mode = tensor_host::PhysicalMode::new(1920, 1080, 60_000);
         let output = Output::new(
+            OUTPUT,
             "test".to_owned(),
-            PhysicalProperties {
-                size: (600, 340).into(),
-                subpixel: Subpixel::HorizontalRgb,
-                make: "Tensor".to_owned(),
-                model: "Test".to_owned(),
-                serial_number: "1".to_owned(),
-            },
+            (600, 340),
+            tensor_host::SubpixelLayout::HorizontalRgb,
+            vec![mode],
+            mode,
+            mode,
+            tensor_util::OutputScale::ONE,
         );
         OutputPresentationFeedback::new(&output)
     }

@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use smithay::output::{Output, WeakOutput};
 use wayland_protocols::ext::image_capture_source::v1::server::{
     ext_foreign_toplevel_image_capture_source_manager_v1::{
         self, ExtForeignToplevelImageCaptureSourceManagerV1,
@@ -12,6 +11,7 @@ use wayland_protocols::ext::image_capture_source::v1::server::{
 };
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::GlobalId};
 
+use crate::protocol::globals::output::{Output, WeakOutput};
 use crate::protocol::{
     dispatch::{
         DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,

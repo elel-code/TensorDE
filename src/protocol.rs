@@ -1,6 +1,4 @@
 #[cfg(feature = "tty")]
-mod adapter;
-#[cfg(feature = "tty")]
 mod cursor;
 mod dispatch;
 mod extensions;

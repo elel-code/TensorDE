@@ -447,7 +447,7 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(super) fn scene_for_output(
         &mut self,
-        output: &smithay::output::Output,
+        output: &crate::protocol::globals::output::Output,
         logical: Rect,
     ) -> SceneSnapshot {
         let workspace = self.active_workspace();

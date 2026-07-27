@@ -16,10 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use smithay::{
-    output::Output,
-    utils::{Buffer as BufferCoords, Size},
-};
+use smithay::utils::{Buffer as BufferCoords, Size};
 use tracing::{debug, trace, warn};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
 
@@ -31,6 +28,7 @@ use crate::protocol::globals::image_capture_source::ImageCaptureSource;
 use crate::protocol::globals::image_copy_capture::{
     BufferConstraints, CaptureFailureReason, Frame, FrameRef, Session, SessionRef,
 };
+use crate::protocol::globals::output::Output;
 use crate::protocol::globals::shm::{BufferAccessError, with_buffer_contents_mut};
 
 /// Max pending capture frames (drop oldest on overflow — capture is lossy).
@@ -183,7 +181,7 @@ fn capture_kind_for_session(state: &RuntimeState, session: &SessionRef) -> Optio
             .map(|geo| (geo.loc.x, geo.loc.y))
             .unwrap_or((0, 0));
         return Some(CaptureKind::Output {
-            size: Size::from((mode.size.w, mode.size.h)),
+            size: Size::from((mode.width, mode.height)),
             origin,
         });
     }
@@ -509,7 +507,7 @@ fn fill_rect(
 
 fn constraints_for_output(output: &Output) -> Option<BufferConstraints> {
     let mode = output.current_mode()?;
-    Some(shm_constraints(Size::from((mode.size.w, mode.size.h))))
+    Some(shm_constraints(Size::from((mode.width, mode.height))))
 }
 
 fn shm_constraints(size: Size<i32, BufferCoords>) -> BufferConstraints {

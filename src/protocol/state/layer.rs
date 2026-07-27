@@ -30,6 +30,7 @@ use tracing::warn;
 #[cfg(feature = "tty")]
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
+use crate::protocol::globals::output::Output;
 #[cfg(feature = "tty")]
 use crate::{
     ecs::ViewId,
@@ -45,7 +46,7 @@ use crate::protocol::focus::KeyboardFocusTarget;
 
 #[cfg(feature = "tty")]
 pub(super) struct LayerPopupContext {
-    pub(super) output: smithay::output::Output,
+    pub(super) output: Output,
     pub(super) geometry: smithay::utils::Rectangle<i32, Logical>,
     pub(super) layer: WlrLayer,
     pub(super) non_exclusive_zone: smithay::utils::Rectangle<i32, Logical>,
@@ -54,7 +55,7 @@ pub(super) struct LayerPopupContext {
 impl RuntimeState {
     pub(crate) fn map_layer_surface(
         &mut self,
-        output: &smithay::output::Output,
+        output: &Output,
         surface: smithay::wayland::shell::wlr_layer::LayerSurface,
         namespace: String,
     ) {
@@ -72,14 +73,14 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(super) fn arrange_layer_output(&mut self, output: &smithay::output::Output) {
+    pub(super) fn arrange_layer_output(&mut self, output: &Output) {
         if let Some(map) = self.layer_maps.for_output_mut(output) {
             map.arrange(&self.popups);
         }
     }
 
     #[cfg(feature = "tty")]
-    pub(super) fn remove_layer_output(&mut self, output: &smithay::output::Output) {
+    pub(super) fn remove_layer_output(&mut self, output: &Output) {
         self.layer_maps.remove_output(output, &self.popups);
     }
 
@@ -91,7 +92,7 @@ impl RuntimeState {
     #[cfg(all(test, feature = "tty"))]
     pub(crate) fn layer_test_snapshot(
         &self,
-        output: &smithay::output::Output,
+        output: &Output,
     ) -> Option<(usize, smithay::utils::Rectangle<i32, Logical>)> {
         let output_geometry = self.space.output_geometry(output)?;
         Some(
@@ -138,11 +139,17 @@ impl RuntimeState {
             };
             layer.protocol().send_pending_configure();
             with_states(layer.wl_surface(), |states| {
-                let scale = output.current_scale();
-                let transform = output.current_transform();
-                send_surface_state(layer.wl_surface(), states, scale.integer_scale(), transform);
+                let snapshot = output.snapshot();
+                let scale = snapshot.scale;
+                let transform = snapshot.transform;
+                send_surface_state(
+                    layer.wl_surface(),
+                    states,
+                    super::output_integer_scale(scale),
+                    super::smithay_transform(transform),
+                );
                 with_fractional_scale(states, |fractional| {
-                    fractional.set_preferred_scale(scale.fractional_scale());
+                    fractional.set_preferred_scale(scale.as_f64());
                 });
             });
             let mapped = surface_has_buffer(&root);
@@ -283,7 +290,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn layer_output_for_surface(&self, surface: &WlSurface) -> Option<smithay::output::Output> {
+    fn layer_output_for_surface(&self, surface: &WlSurface) -> Option<Output> {
         self.layer_maps
             .layer_and_output_for_root(surface)
             .map(|(_, output)| output.clone())
@@ -393,7 +400,7 @@ impl RuntimeState {
     pub(super) fn merge_layer_surfaces(
         &self,
         scene: SceneSnapshot,
-        output: &smithay::output::Output,
+        output: &Output,
         logical: Rect,
     ) -> SceneSnapshot {
         let Some(map) = self.layer_maps.for_output(output) else {
@@ -485,13 +492,13 @@ impl RuntimeState {
     pub(super) fn merge_session_lock_surfaces(
         &self,
         scene: SceneSnapshot,
-        output: &smithay::output::Output,
+        output: &Output,
         logical: Rect,
     ) -> SceneSnapshot {
         let Some(lock) = self.protocol_side.session_lock.as_ref() else {
             return scene;
         };
-        let Some(lock_surface) = lock.surfaces.get(&output.name()) else {
+        let Some(lock_surface) = lock.surfaces.get(output.name()) else {
             // Locked but no surface yet: blank frame (no client content).
             return SceneSnapshot::new(scene.workspace_id, logical, Vec::new());
         };
@@ -521,7 +528,7 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(super) fn exclusive_workspace_area(
         &self,
-        output: &smithay::output::Output,
+        output: &Output,
         geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     ) -> Option<Rect> {
         let zone = self
@@ -560,10 +567,7 @@ impl RuntimeState {
     fn output_under_location(
         &self,
         location: Point<f64, Logical>,
-    ) -> Option<(
-        smithay::output::Output,
-        smithay::utils::Rectangle<i32, Logical>,
-    )> {
+    ) -> Option<(Output, smithay::utils::Rectangle<i32, Logical>)> {
         let output = self.space.output_under(location).next()?.clone();
         let geometry = self.space.output_geometry(&output)?;
         Some((output, geometry))

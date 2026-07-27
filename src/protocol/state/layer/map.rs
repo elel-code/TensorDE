@@ -9,8 +9,7 @@ use std::{
 };
 
 use smithay::{
-    output::Output,
-    utils::{Logical, Point, Rectangle, Size},
+    utils::{Logical, Physical, Point, Rectangle, Size},
     wayland::{
         compositor::{TraversalAction, with_states, with_surface_tree_downward},
         shell::wlr_layer::{
@@ -20,6 +19,8 @@ use smithay::{
     },
 };
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
+
+use crate::protocol::globals::output::Output;
 
 use super::super::{
     PopupManager,
@@ -439,16 +440,16 @@ impl LayerMaps {
 }
 
 fn output_rectangle(output: &Output) -> Rectangle<i32, Logical> {
+    let snapshot = output.snapshot();
     Rectangle::from_size(
-        output
-            .current_mode()
+        snapshot
+            .mode
             .map(|mode| {
-                let logical = mode
-                    .size
+                let logical = Size::<i32, Physical>::from(mode.size())
                     .to_f64()
-                    .to_logical(output.current_scale().fractional_scale())
+                    .to_logical(snapshot.scale.as_f64())
                     .to_i32_round();
-                output.current_transform().transform_size(logical)
+                super::super::smithay_transform(snapshot.transform).transform_size(logical)
             })
             .unwrap_or_default(),
     )
