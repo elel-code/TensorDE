@@ -83,6 +83,7 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
 
     // Attach plane sized for the *padded* texture (what GPU import uses).
     builder.push_raster_with_dmabuf(
+        IconGpuUploadKey::theme_asset(PathBuf::from("/test/dmabuf-icon.png")),
         raster,
         ViewRect {
             x: 0.0,

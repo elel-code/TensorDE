@@ -617,6 +617,45 @@ impl WgpuState {
             &self.queue,
         );
 
+        // After a directory change, drop previous-folder GPU icon textures and
+        // path-scoped thumbnail / failure caches (Dolphin kills preview jobs and
+        // clears finished items when the model is emptied). Done after upload so
+        // the current frame's slots stay resident.
+        let open_paths = ShellPaneId::ALL
+            .into_iter()
+            .filter_map(|pane| {
+                scene
+                    .panes
+                    .is_open(pane)
+                    .then(|| scene.pane_state(pane).map(|state| state.path.clone()))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let path_changed = scene.path_changes != self.rendered_path_changes;
+        if path_changed {
+            // Free ready thumbs for directories we left (not ancestors of a still-
+            // open pane — keep those for cheap Back navigation).
+            let left_paths = self
+                .rendered_open_paths
+                .iter()
+                .filter(|previous| {
+                    !open_paths
+                        .iter()
+                        .any(|open| open == *previous || open.starts_with(previous))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if left_paths.is_empty() {
+                self.icon_renderer.release_directory_caches(None);
+            } else {
+                for left in &left_paths {
+                    self.icon_renderer
+                        .release_directory_caches(Some(left.as_path()));
+                }
+            }
+            self.icon_renderer.release_unused_gpu_textures();
+        }
+
         let encode_present_start = Instant::now();
         let (view, mut encoder) = self.begin_surface_frame_encoding(&frame, "fika-wgpu-frame");
 
@@ -836,6 +875,8 @@ impl WgpuState {
             self.last_log = Instant::now();
         }
         self.rendered_view_switches = scene.view_switches;
+        self.rendered_path_changes = scene.path_changes;
+        self.rendered_open_paths = open_paths;
         self.last_render_dirty_key = Some(damage_snapshot.dirty_key.clone());
         self.last_render_damage_snapshot = Some(damage_snapshot);
         ShellRenderOutcome::Presented

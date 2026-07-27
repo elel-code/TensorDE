@@ -25,6 +25,14 @@ impl ShellFolderPreviewRoleRuntime {
         }
     }
 
+    fn touch_ready_key(&mut self, key: &FolderPreviewRoleKey) {
+        if let Some(entry) = self.ready.get_mut(key) {
+            self.frame = self.frame.wrapping_add(1);
+            entry.last_used_frame = self.frame;
+        }
+    }
+
+    /// Look up without mutating LRU (damage / dirty-key paths are shared `&`).
     fn preview(
         &self,
         path: &Path,
@@ -53,6 +61,30 @@ impl ShellFolderPreviewRoleRuntime {
             })
     }
 
+    /// Paint-path hit: refresh LRU so scrolled-away previews evict first.
+    fn preview_or_closest_touch(
+        &mut self,
+        path: &Path,
+        directory_modified_secs: u64,
+        size_px: u16,
+    ) -> Option<&FolderPreviewReady> {
+        let exact = FolderPreviewRoleKey::new(path.to_path_buf(), directory_modified_secs, size_px);
+        if self.ready.contains_key(&exact) {
+            self.touch_ready_key(&exact);
+            return self.ready.get(&exact).map(|entry| &entry.preview);
+        }
+        let closest_key = self
+            .ready
+            .iter()
+            .filter(|(key, _)| {
+                key.path == path && key.directory_modified_secs == directory_modified_secs
+            })
+            .min_by_key(|(key, _)| key.size_px.abs_diff(size_px))
+            .map(|(key, _)| key.clone())?;
+        self.touch_ready_key(&closest_key);
+        self.ready.get(&closest_key).map(|entry| &entry.preview)
+    }
+
     fn queue_candidates(
         &mut self,
         candidates: impl IntoIterator<Item = FolderPreviewRoleRequest>,
@@ -62,6 +94,7 @@ impl ShellFolderPreviewRoleRuntime {
         for candidate in candidates {
             keep.insert(candidate.key.clone());
             if self.ready.contains_key(&candidate.key) {
+                self.touch_ready_key(&candidate.key);
                 stats.ready += 1;
                 continue;
             }
@@ -225,6 +258,7 @@ impl ShellFolderPreviewRoleRuntime {
         self.finished.clear();
         self.pending.clear();
         self.active.clear();
+        self.shrink_maps_if_sparse();
     }
 
     fn clear_path_prefix(&mut self, path: &Path) {
@@ -239,6 +273,38 @@ impl ShellFolderPreviewRoleRuntime {
         self.finished.retain(|key| !key.path.starts_with(path));
         self.active.retain(|key| !key.path.starts_with(path));
         self.pending.retain(|key, _| !key.path.starts_with(path));
+        self.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
+        self.shrink_maps_if_sparse();
+    }
+
+    fn trim_failed(&mut self, max_entries: usize) {
+        if self.failed.len() <= max_entries {
+            return;
+        }
+        let excess = self.failed.len() - max_entries;
+        let drop_keys = self.failed.iter().take(excess).cloned().collect::<Vec<_>>();
+        for key in drop_keys {
+            self.failed.remove(&key);
+            self.finished.remove(&key);
+        }
+    }
+
+    fn shrink_maps_if_sparse(&mut self) {
+        if self.ready.capacity() > self.ready.len().saturating_mul(2).max(64) {
+            self.ready.shrink_to_fit();
+        }
+        if self.failed.capacity() > self.failed.len().saturating_mul(2).max(64) {
+            self.failed.shrink_to_fit();
+        }
+        if self.finished.capacity() > self.finished.len().saturating_mul(2).max(64) {
+            self.finished.shrink_to_fit();
+        }
+        if self.pending.capacity() > self.pending.len().saturating_mul(2).max(64) {
+            self.pending.shrink_to_fit();
+        }
+        if self.active.capacity() > self.active.len().saturating_mul(2).max(64) {
+            self.active.shrink_to_fit();
+        }
     }
 
     fn ready_len(&self) -> usize {

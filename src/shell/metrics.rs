@@ -39,8 +39,10 @@ pub(crate) const TEXT_SWASH_OUTLINE_CACHE_MAX_ENTRIES: usize = 256;
 pub(crate) const ICON_ATLAS_WIDTH: u32 = 1024;
 #[allow(dead_code)]
 pub(crate) const ICON_PADDING: u32 = 2;
-pub(crate) const ICON_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const ICON_ROLE_RASTER_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// CPU icon/thumbnail pixel cache. GPU-resident textures are the steady-state
+/// source of truth; this budget only covers miss / closest-size staging.
+pub(crate) const ICON_CACHE_MAX_BYTES: usize = 12 * 1024 * 1024;
+pub(crate) const ICON_ROLE_RASTER_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const ICON_RASTER_VISIBLE_SYNC_BUDGET: usize = 128;
 pub(crate) const ICON_ROLE_READ_AHEAD_LIMIT: usize = 512;
 pub(crate) const ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 64;
@@ -60,7 +62,11 @@ pub(crate) const DOLPHIN_VISIBLE_RANGE_UPDATE_MS: u64 = 50;
 #[allow(dead_code)]
 pub(crate) const DOLPHIN_ICON_SIZE_UPDATE_MS: u64 = 300;
 pub(crate) const VISIBLE_ICON_ROLE_PREWARM_BUDGET: Duration = Duration::from_millis(8);
-pub(crate) const THUMBNAIL_READY_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// Async thumbnail worker ready-set. Entries promote into the GPU pool; keep
+/// this tighter so multi-directory browsing does not pin tens of MB of PSS.
+pub(crate) const THUMBNAIL_READY_CACHE_MAX_BYTES: usize = 12 * 1024 * 1024;
+/// Cap permanent probe-failure sets so long sessions cannot pin unbounded paths.
+pub(crate) const THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES: usize = 4096;
 pub(crate) const THUMBNAIL_READ_AHEAD_PAGES: usize = 5;
 pub(crate) const THUMBNAIL_READ_AHEAD_RESOLVE_LIMIT: usize = 500;
 pub(crate) const THUMBNAIL_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 32;

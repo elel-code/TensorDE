@@ -349,4 +349,45 @@ impl FikaWgpuApp {
         }
     }
 
+    /// Exit after zoom/scroll autosmoke queues drain (and pending redraws settle).
+    ///
+    /// Enable with `FIKA_WGPU_AUTOSMOKE_EXIT=1` for headless per-frame benches
+    /// (e.g. `fika --view icons /bin`).
+    fn maybe_autosmoke_exit(&mut self, event_loop: &ActiveEventLoop) {
+        use std::sync::OnceLock;
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var_os("FIKA_WGPU_AUTOSMOKE_EXIT").is_some_and(|value| {
+                let value = value.to_string_lossy();
+                let value = value.trim().to_ascii_lowercase();
+                !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+            })
+        });
+        if !enabled {
+            return;
+        }
+        if !self.autosmoke_zoom_actions.is_empty() || !self.autosmoke_scroll_actions.is_empty() {
+            return;
+        }
+        if self.pending_redraw_frames > 0 {
+            return;
+        }
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        // Wait for first present + any visible-priority work to settle a bit.
+        if renderer.frame_count < 2 {
+            return;
+        }
+        if renderer.render_work_pending {
+            return;
+        }
+        fika_log!(
+            "[fika-wgpu] autosmoke-exit frames={} icon_cache_bytes={} thumb_ready_bytes={}",
+            renderer.frame_count,
+            renderer.icon_renderer.raster_cache.bytes(),
+            renderer.icon_renderer.thumbnails.ready_bytes(),
+        );
+        self.exit_event_loop(event_loop, "autosmoke-complete");
+    }
 }

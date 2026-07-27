@@ -333,12 +333,16 @@
         assert!(resolver.ready.contains_key(&second));
         assert!(resolver.ready.contains_key(&third));
 
+        // Resolve must keep the ready entry (Dolphin-style cache hit) so the
+        // next frame does not re-queue I/O or flash a MIME fallback.
         assert!(matches!(
             resolver.resolve(&second.path, 1, Some("image/png".to_string()), 8),
             ThumbnailResolveState::Ready(_)
         ));
-        assert_eq!(resolver.ready_len(), 1);
-        assert_eq!(resolver.ready_bytes(), 16);
+        assert_eq!(resolver.ready_len(), 2);
+        assert_eq!(resolver.ready_bytes(), 32);
+        assert!(resolver.ready.contains_key(&second));
+        assert!(resolver.ready.contains_key(&third));
 
         let _ = fs::remove_dir_all(cache_root);
     }

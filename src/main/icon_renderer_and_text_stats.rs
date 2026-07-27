@@ -233,13 +233,44 @@ impl IconRenderer {
         for slot in &mut frame.slots {
             let key = IconGpuUploadKey::from_slot(slot);
             self.frame_slot_keys.push(key.clone());
-            if let Some(entry) = self.gpu_textures.get_mut(&key) {
-                entry.last_used_frame = self.gpu_frame;
-                upload_skips += 1;
-                // Drop unused plane if the texture is already cached.
+
+            // Resident GPU texture with matching content → pure GPU sample.
+            let can_skip = self.gpu_textures.get(&key).is_some_and(|entry| {
+                entry.content_hash == slot.content_hash
+                    && entry.width == slot.width
+                    && entry.height == slot.height
+            });
+            if can_skip {
+                if let Some(entry) = self.gpu_textures.get_mut(&key) {
+                    entry.last_used_frame = self.gpu_frame;
+                    // Align slot UV metadata with resident texture.
+                    slot.width = entry.width;
+                    slot.height = entry.height;
+                    slot.content_width = entry.content_width;
+                    slot.content_height = entry.content_height;
+                }
+                slot.upload = None;
                 let _ = slot.dmabuf.take();
+                upload_skips += 1;
                 continue;
             }
+
+            // Need pixels (or dmabuf) to fill / rewrite the resident texture.
+            if slot.upload.is_none() && slot.dmabuf.is_none() {
+                // Sample-only draw for an already-resident identity that was
+                // not rewritten this frame — still mark used.
+                if let Some(entry) = self.gpu_textures.get_mut(&key) {
+                    entry.last_used_frame = self.gpu_frame;
+                    slot.width = entry.width;
+                    slot.height = entry.height;
+                    slot.content_width = entry.content_width;
+                    slot.content_height = entry.content_height;
+                    slot.content_hash = entry.content_hash;
+                }
+                upload_skips += 1;
+                continue;
+            }
+
             let (texture, source) = self.upload_slot_texture(device, queue, slot);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group =
@@ -257,11 +288,39 @@ impl IconRenderer {
                 IconGpuTexture {
                     texture,
                     bind_group,
+                    width: slot.width,
+                    height: slot.height,
+                    content_width: slot.content_width,
+                    content_height: slot.content_height,
+                    content_hash: slot.content_hash,
                     last_used_frame: self.gpu_frame,
                     source,
                 },
             );
+            // Steady state is GPU-only: drop one-shot CPU payload after upload.
+            slot.upload = None;
             uploads += 1;
+        }
+        // Free stamped CPU thumbnail staging once content textures are resident.
+        let content_paths = frame
+            .slots
+            .iter()
+            .filter_map(|slot| match &slot.identity.identity {
+                IconGpuIdentity::Content { path, stamp } => Some(IconRasterCacheKey::thumbnail(
+                    path.clone(),
+                    0,
+                    *stamp,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // release_gpu_resident matches on path+stamp (size ignored for stamped).
+        if !content_paths.is_empty() {
+            // Drop any stamped CPU entry for these paths regardless of size_px.
+            self.raster_cache
+                .release_gpu_resident_content(&content_paths);
+            self.thumbnails
+                .release_gpu_resident_content(&content_paths);
         }
         self.evict_gpu_textures_if_needed();
         frame.stats.atlas_uploads = uploads;
@@ -303,7 +362,10 @@ impl IconRenderer {
         }
     }
 
-    /// Create a GPU texture for one slot: dmabuf import when possible, else CPU.
+    /// Fill a resident GPU texture: optional dmabuf import, else `write_texture`.
+    ///
+    /// This is the only place CPU pixels touch the GPU for icons. Subsequent
+    /// frames sample the resident texture with no CPU involvement.
     fn upload_slot_texture(
         &self,
         device: &wgpu::Device,
@@ -315,16 +377,17 @@ impl IconRenderer {
     ) {
         use crate::shell::render::dmabuf::{ExternalTextureSource, acquire_external_texture};
 
-        let w = slot.raster.width;
-        let h = slot.raster.height;
+        let w = slot.width.max(1);
+        let h = slot.height.max(1);
         let plane = slot.dmabuf.take().map(|s| s.plane);
         let plan = if self.dmabuf_import_supported {
             self.dmabuf_plan
         } else {
             None
         };
+        let pixels = slot.upload.as_ref().map(|r| r.pixels.as_ref());
 
-        // Prefer zero-copy when the producer attached a plane and we have a plan.
+        // Optional zero-copy when a producer attached a plane (not required).
         if plane.is_some() && plan.is_some() {
             match acquire_external_texture(
                 device,
@@ -333,40 +396,45 @@ impl IconRenderer {
                 w,
                 h,
                 plane,
-                Some(slot.raster.pixels.as_ref()),
+                pixels,
                 Some("fika-icon-dmabuf"),
             ) {
                 Ok(ext) => return (ext.texture, ext.source),
                 Err(_) => {
-                    // Fall through to CPU path below.
+                    // Fall through to write_texture.
                 }
             }
         } else {
-            // Ensure plane is dropped if we skipped import (no plan).
             drop(plane);
         }
 
-        // Default icon path: RGBA8 CPU upload (matches historical atlas format).
+        let pixels = slot
+            .upload
+            .as_ref()
+            .map(|r| r.pixels.as_ref())
+            .unwrap_or(&[]);
         let texture = create_icon_texture(device, w, h);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            slot.raster.pixels.as_ref(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * 4),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
+        if !pixels.is_empty() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         (texture, ExternalTextureSource::CpuUpload)
     }
 
@@ -374,20 +442,68 @@ impl IconRenderer {
         // Soft cap: keep GPU icon textures roughly in line with CPU raster cache budget.
         const MAX_GPU_ICON_TEXTURES: usize = 512;
         while self.gpu_textures.len() > MAX_GPU_ICON_TEXTURES {
+            // Skip keys still drawn this frame (would flash empty icons).
+            // Previously `break` on the first in-use victim stopped all eviction
+            // when the LRU entry happened to still be on-screen.
             let Some(victim) = self
                 .gpu_textures
                 .iter()
+                .filter(|(key, _)| !self.frame_slot_keys.contains(key))
                 .min_by_key(|(_, e)| e.last_used_frame)
                 .map(|(k, _)| k.clone())
             else {
                 break;
             };
-            // Do not evict textures still referenced by the current frame.
-            if self.frame_slot_keys.contains(&victim) {
-                break;
-            }
             self.gpu_textures.remove(&victim);
         }
+        if self.gpu_textures.capacity() > self.gpu_textures.len().saturating_mul(2).max(64) {
+            self.gpu_textures.shrink_to_fit();
+        }
+    }
+
+    /// Drop GPU icon textures not referenced by the current frame after a path
+    /// change so VRAM does not retain the previous folder's full icon set.
+    fn release_unused_gpu_textures(&mut self) {
+        let before = self.gpu_textures.len();
+        self.gpu_textures
+            .retain(|key, _| self.frame_slot_keys.contains(key));
+        if before != self.gpu_textures.len()
+            && self.gpu_textures.capacity() > self.gpu_textures.len().saturating_mul(2).max(64)
+        {
+            self.gpu_textures.shrink_to_fit();
+        }
+    }
+
+    /// Trim async failure caches and optional path-scoped thumbnail ready data.
+    fn release_directory_caches(&mut self, left_path: Option<&Path>) {
+        self.icon_rasters.clear_failed();
+        self.icon_rasters.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
+        if let Some(path) = left_path {
+            self.thumbnails.clear_path_prefix(path);
+            // Drop content GPU textures under the left directory (MIME roles stay).
+            self.gpu_textures.retain(|key, _| match &key.identity {
+                IconGpuIdentity::Content { path: p, .. } => !p.starts_with(path),
+                _ => true,
+            });
+        }
+        self.thumbnails.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
+    }
+
+    fn gpu_resident_index(&self) -> IconGpuResidentIndex {
+        let mut entries = HashMap::with_capacity(self.gpu_textures.len());
+        for (key, tex) in &self.gpu_textures {
+            entries.insert(
+                key.clone(),
+                IconGpuResidentEntry {
+                    width: tex.width,
+                    height: tex.height,
+                    content_width: tex.content_width,
+                    content_height: tex.content_height,
+                    content_hash: tex.content_hash,
+                },
+            );
+        }
+        IconGpuResidentIndex { entries }
     }
 
     fn draw_batches<'pass>(

@@ -175,6 +175,7 @@ impl ApplicationHandler for FikaWgpuApp {
             self.drive_autosmoke_zoom(size);
             self.drive_autosmoke_scroll(size);
         }
+        self.maybe_autosmoke_exit(event_loop);
         self.drive_dialog_lifecycle_autosmoke(event_loop);
         self.drain_dialog_window_deferred_closes();
 

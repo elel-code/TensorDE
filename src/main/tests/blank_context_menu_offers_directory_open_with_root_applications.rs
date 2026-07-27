@@ -197,7 +197,9 @@
             PhysicalSize::new(128, 96),
         );
         let raster = test_icon_raster(2, 7);
+        let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"));
         builder.copy_raster_to_atlas(
+            identity,
             raster,
             ViewRect {
                 x: 4.0,
@@ -218,16 +220,17 @@
         assert_eq!(frame.slots.len(), 1);
         let slot = &frame.slots[0];
         let guard = ICON_ATLAS_GUARD_TEXELS as f32;
-        let tex_w = slot.raster.width as f32;
-        let tex_h = slot.raster.height as f32;
+        let tex_w = slot.width as f32;
+        let tex_h = slot.height as f32;
         let u0 = frame.content_vertices[0].uv[0] * tex_w;
         let v0 = frame.content_vertices[0].uv[1] * tex_h;
         let u1 = frame.content_vertices[2].uv[0] * tex_w;
         let v1 = frame.content_vertices[2].uv[1] * tex_h;
 
         // Padded texture is content + 2*guard.
-        assert_eq!(slot.raster.width, 4);
-        assert_eq!(slot.raster.height, 4);
+        assert_eq!(slot.width, 4);
+        assert_eq!(slot.height, 4);
+        assert!(slot.upload.is_some(), "cold slot carries one-shot CPU upload");
         assert!((u0 - guard).abs() < 0.001);
         assert!((v0 - guard).abs() < 0.001);
         assert!((u1 - (guard + 2.0)).abs() < 0.001);
@@ -250,7 +253,9 @@
             PhysicalSize::new(128, 96),
         );
         let raster = test_icon_raster(2, 7);
+        let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"));
         builder.copy_raster_to_atlas(
+            identity.clone(),
             raster.clone(),
             ViewRect {
                 x: 4.0,
@@ -267,6 +272,7 @@
             IconDrawLayer::Content,
         );
         builder.copy_raster_to_atlas(
+            identity,
             raster,
             ViewRect {
                 x: 24.0,
@@ -518,6 +524,7 @@
                     &mut icon_rasters,
                     &mut raster_cache,
                     &mut role_raster_cache,
+                    IconGpuResidentIndex::default(),
                 ),
                 IconFrameConfig::new(PhysicalSize::new(128, 96), 1.0, 1),
             );

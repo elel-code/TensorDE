@@ -43,6 +43,29 @@ impl IconRasterCache {
         self.get(&key)
     }
 
+    /// Closest cached thumbnail / folder-preview for the same path+mtime.
+    ///
+    /// Used on zoom and first present so we keep painting a preview (scaled)
+    /// instead of flashing back to a MIME icon while the exact size bucket
+    /// rasters or loads.
+    fn get_closest_stamped_variant(
+        &mut self,
+        requested: &IconRasterCacheKey,
+    ) -> Option<IconRaster> {
+        let stamp = requested.stamp?;
+        let key = self
+            .entries
+            .keys()
+            .filter(|key| {
+                key.stamp == Some(stamp)
+                    && key.path == requested.path
+                    && key.style == requested.style
+            })
+            .min_by_key(|key| key.size_px.abs_diff(requested.size_px))
+            .cloned()?;
+        self.get(&key)
+    }
+
     fn insert(&mut self, key: IconRasterCacheKey, raster: IconRaster) -> IconRaster {
         let bytes = raster.pixels.len();
         if let Some(old) = self.entries.insert(
@@ -56,7 +79,7 @@ impl IconRasterCache {
             self.bytes = self.bytes.saturating_sub(old.bytes);
         }
         self.bytes += bytes;
-        self.evict_if_needed(&key);
+        self.evict_if_needed(std::slice::from_ref(&key));
         raster
     }
 
@@ -68,12 +91,40 @@ impl IconRasterCache {
         self.bytes
     }
 
-    fn evict_if_needed(&mut self, protected: &IconRasterCacheKey) {
+    /// Drop all stamped CPU entries whose path+mtime match (any size bucket).
+    fn release_gpu_resident_content(&mut self, keys: &[IconRasterCacheKey]) {
+        let targets = keys
+            .iter()
+            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp)))
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return;
+        }
+        let victims = self
+            .entries
+            .keys()
+            .filter(|k| {
+                k.stamp
+                    .is_some_and(|stamp| targets.iter().any(|(p, s)| *p == k.path.as_path() && *s == stamp))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in victims {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.bytes);
+            }
+        }
+        if self.entries.capacity() > self.entries.len().saturating_mul(2).max(64) {
+            self.entries.shrink_to_fit();
+        }
+    }
+
+    fn evict_if_needed(&mut self, protected: &[IconRasterCacheKey]) {
         while self.bytes > self.max_bytes && self.entries.len() > 1 {
             let Some(victim) = self
                 .entries
                 .iter()
-                .filter(|(key, _)| *key != protected)
+                .filter(|(key, _)| !protected.iter().any(|p| p == *key))
                 .min_by_key(|(_, entry)| entry.last_used_frame)
                 .map(|(key, _)| key.clone())
             else {
@@ -199,6 +250,28 @@ impl IconRasterResolver {
         self.pending
             .values()
             .any(|priority| *priority == WorkerRequestPriority::Visible)
+    }
+
+    /// Forget permanent failure markers (e.g. after leaving a directory).
+    ///
+    /// Without this, a one-shot raster failure pins the key forever and the
+    /// icon stays on a generic fallback even when the theme/path later works.
+    fn clear_failed(&mut self) {
+        self.failed.clear();
+        if self.failed.capacity() > 64 {
+            self.failed.shrink_to_fit();
+        }
+    }
+
+    fn trim_failed(&mut self, max_entries: usize) {
+        if self.failed.len() <= max_entries {
+            return;
+        }
+        let excess = self.failed.len() - max_entries;
+        let drop_keys = self.failed.iter().take(excess).cloned().collect::<Vec<_>>();
+        for key in drop_keys {
+            self.failed.remove(&key);
+        }
     }
 }
 fn icon_raster_worker(

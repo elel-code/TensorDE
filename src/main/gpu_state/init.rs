@@ -85,12 +85,11 @@ impl WgpuState {
             .find(|format| !format.is_srgb())
             .or_else(|| capabilities.formats.first().copied())
             .ok_or_else(|| "surface has no supported formats".to_string())?;
-        let present_mode = capabilities
-            .present_modes
-            .iter()
-            .copied()
-            .find(|mode| *mode == wgpu::PresentMode::Fifo)
-            .unwrap_or_else(|| capabilities.present_modes[0]);
+        // Default Fifo (vsync, tear-free). Mailbox can cut a frame of latency on
+        // some stacks but is compositor-dependent — only enable after measuring
+        // with FIKA_WGPU_PRESENT=mailbox (falls back if unsupported).
+        let present_mode = select_surface_present_mode(&capabilities.present_modes);
+        let frame_latency = surface_frame_latency_from_env();
         let alpha_mode = capabilities
             .alpha_modes
             .iter()
@@ -106,8 +105,10 @@ impl WgpuState {
             .or_else(|| capabilities.alpha_modes.first().copied())
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
         fika_log!(
-            "[fika-wgpu] surface-format={format:?} srgb={} alpha={alpha_mode:?}",
+            "[fika-wgpu] surface-format={format:?} srgb={} alpha={alpha_mode:?} present={present_mode:?} frame_latency={} supported_present={:?}",
             format.is_srgb() as u8,
+            frame_latency,
+            capabilities.present_modes,
         );
 
         let config = wgpu::SurfaceConfiguration {
@@ -117,7 +118,7 @@ impl WgpuState {
             width: size.width,
             height: size.height,
             present_mode,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: frame_latency,
             alpha_mode,
             view_formats: vec![],
         };
@@ -163,6 +164,8 @@ impl WgpuState {
             frame_count: 0,
             last_log: Instant::now(),
             rendered_view_switches: 0,
+            rendered_path_changes: 0,
+            rendered_open_paths: Vec::new(),
             last_render_dirty_key: None,
             last_render_damage_snapshot: None,
             frame_latency: ShellFrameLatencyTracker::default(),
@@ -679,5 +682,71 @@ impl WgpuState {
             prepare_us,
             total_start.elapsed().as_micros()
         );
+    }
+}
+
+/// Present mode selection for the swapchain.
+///
+/// Default is **Fifo** (vsync). Opt into experimental modes for measurement:
+/// - `FIKA_WGPU_PRESENT=fifo` (default) — tear-free, compositor-paced
+/// - `FIKA_WGPU_PRESENT=mailbox` — low-latency triple-buffer when advertised
+/// - `FIKA_WGPU_PRESENT=immediate` — unsynced (tearing; debug only)
+///
+/// Unsupported values fall back through mailbox → fifo → first advertised mode.
+fn select_surface_present_mode(supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    let requested = std::env::var("FIKA_WGPU_PRESENT")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let preferred = match requested.as_deref() {
+        Some("mailbox") => wgpu::PresentMode::Mailbox,
+        Some("immediate") | Some("tear") => wgpu::PresentMode::Immediate,
+        Some("fifo") | None => wgpu::PresentMode::Fifo,
+        Some(other) => {
+            eprintln!(
+                "[fika-wgpu] unknown FIKA_WGPU_PRESENT={other:?}; using fifo (try fifo|mailbox|immediate)"
+            );
+            wgpu::PresentMode::Fifo
+        }
+    };
+    if supported.contains(&preferred) {
+        return preferred;
+    }
+    if preferred != wgpu::PresentMode::Fifo && supported.contains(&wgpu::PresentMode::Fifo) {
+        fika_log!(
+            "[fika-wgpu] present mode {preferred:?} unsupported; falling back to Fifo (supported={supported:?})"
+        );
+        return wgpu::PresentMode::Fifo;
+    }
+    supported
+        .first()
+        .copied()
+        .unwrap_or(wgpu::PresentMode::Fifo)
+}
+
+/// Swapchain frame latency (`desired_maximum_frame_latency`).
+///
+/// Default **2** (wgpu-typical double-buffer depth). Override with
+/// `FIKA_WGPU_FRAME_LATENCY=1` when measuring scroll/navigate staleness; values
+/// outside 1..=3 are clamped.
+fn surface_frame_latency_from_env() -> u32 {
+    const DEFAULT: u32 = 2;
+    let Ok(raw) = std::env::var("FIKA_WGPU_FRAME_LATENCY") else {
+        return DEFAULT;
+    };
+    match raw.trim().parse::<u32>() {
+        Ok(value) if (1..=3).contains(&value) => value,
+        Ok(value) => {
+            eprintln!(
+                "[fika-wgpu] FIKA_WGPU_FRAME_LATENCY={value} out of range 1..=3; using {DEFAULT}"
+            );
+            DEFAULT
+        }
+        Err(_) => {
+            eprintln!(
+                "[fika-wgpu] invalid FIKA_WGPU_FRAME_LATENCY={raw:?}; using {DEFAULT}"
+            );
+            DEFAULT
+        }
     }
 }

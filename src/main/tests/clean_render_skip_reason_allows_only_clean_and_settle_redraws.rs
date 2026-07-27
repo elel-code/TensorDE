@@ -97,57 +97,66 @@
     }
 
     #[test]
-    fn icon_gpu_upload_key_tracks_raster_content() {
-        let first = IconGpuSlot {
-            key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 7)),
-            raster: test_icon_raster(16, 7),
-            dmabuf: None,
+    fn icon_gpu_identity_is_size_free_for_roles_and_theme() {
+        // MIME role: not bound to a filesystem path or size bucket.
+        let mime = FileIconKind::Mime {
+            mime: Arc::from("application/x-executable"),
         };
-        let same = IconGpuSlot {
-            key: first.key.clone(),
-            raster: first.raster.clone(),
-            dmabuf: None,
-        };
-        let different_pixels = IconGpuSlot {
-            key: IconAtlasRasterKey::from_raster(&test_icon_raster(16, 9)),
-            raster: test_icon_raster(16, 9),
-            dmabuf: None,
-        };
+        let a = IconGpuUploadKey::role(mime.clone());
+        let b = IconGpuUploadKey::role(mime);
+        assert_eq!(a, b);
 
-        assert_eq!(
-            IconGpuUploadKey::from_slot(&first),
-            IconGpuUploadKey::from_slot(&same)
-        );
+        // Theme asset: path only — zoom must not allocate a new GPU slot.
+        let theme_48 = IconGpuUploadKey::theme_asset(PathBuf::from("/icons/app.png"));
+        let theme_96 = IconGpuUploadKey::theme_asset(PathBuf::from("/icons/app.png"));
+        assert_eq!(theme_48, theme_96);
         assert_ne!(
-            IconGpuUploadKey::from_slot(&first),
-            IconGpuUploadKey::from_slot(&different_pixels)
+            theme_48,
+            IconGpuUploadKey::theme_asset(PathBuf::from("/icons/other.png"))
         );
-        // Same pixels → same key regardless of slot identity.
-        assert_eq!(
-            IconGpuUploadKey::from_raster(&first.raster),
-            IconGpuUploadKey::from_slot(&first)
-        );
+
+        // Content previews: path + mtime (still size-free).
+        let c1 = IconGpuUploadKey::content(PathBuf::from("/photos/a.jpg"), 7);
+        let c2 = IconGpuUploadKey::content(PathBuf::from("/photos/a.jpg"), 7);
+        let c3 = IconGpuUploadKey::content(PathBuf::from("/photos/a.jpg"), 8);
+        assert_eq!(c1, c2);
+        assert_ne!(c1, c3);
+
+        // Role vs content must never collide.
+        assert_ne!(a, c1);
     }
 
     #[test]
-    fn icon_atlas_raster_key_tracks_dimensions_and_pixels() {
-        let first = test_icon_raster(16, 7);
-        let same = first.clone();
-        let different_pixels = test_icon_raster(16, 9);
-        let different_size = test_icon_raster(18, 7);
-
-        assert_eq!(
-            IconAtlasRasterKey::from_raster(&first),
-            IconAtlasRasterKey::from_raster(&same)
-        );
-        assert_ne!(
-            IconAtlasRasterKey::from_raster(&first),
-            IconAtlasRasterKey::from_raster(&different_pixels)
-        );
-        assert_ne!(
-            IconAtlasRasterKey::from_raster(&first),
-            IconAtlasRasterKey::from_raster(&different_size)
-        );
+    fn icon_gpu_slot_content_hash_changes_when_pixels_change() {
+        let identity = IconGpuUploadKey::role(FileIconKind::Directory);
+        let a = padded_icon_atlas_raster(&test_icon_raster(16, 7));
+        let b = padded_icon_atlas_raster(&test_icon_raster(16, 9));
+        let hash_a = hash_bytes_with_len(a.pixels.as_ref());
+        let hash_b = hash_bytes_with_len(b.pixels.as_ref());
+        assert_ne!(hash_a, hash_b);
+        let slot_a = IconGpuSlot {
+            identity: identity.clone(),
+            width: a.width,
+            height: a.height,
+            content_width: 16,
+            content_height: 16,
+            content_hash: hash_a,
+            upload: Some(a),
+            dmabuf: None,
+        };
+        let slot_b = IconGpuSlot {
+            identity,
+            width: b.width,
+            height: b.height,
+            content_width: 16,
+            content_height: 16,
+            content_hash: hash_b,
+            upload: Some(b),
+            dmabuf: None,
+        };
+        // Same GPU identity, different generation → in-place rewrite, not new key.
+        assert_eq!(slot_a.identity, slot_b.identity);
+        assert_ne!(slot_a.content_hash, slot_b.content_hash);
     }
 
     #[test]

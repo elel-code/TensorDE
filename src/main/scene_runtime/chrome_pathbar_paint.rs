@@ -305,8 +305,8 @@ impl ShellScene {
         }
         let size_px = self.folder_preview_role_size_px_for_item(pixmap_layout);
         self.folder_preview_roles
-            .borrow()
-            .preview_or_closest(&path, modified_secs, size_px)
+            .borrow_mut()
+            .preview_or_closest_touch(&path, modified_secs, size_px)
             .cloned()
     }
 

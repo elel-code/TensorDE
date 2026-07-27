@@ -302,10 +302,12 @@ struct IconFrameBuilder<'a> {
     icon_rasters: &'a mut IconRasterResolver,
     raster_cache: &'a mut IconRasterCache,
     role_raster_cache: &'a mut IconRoleRasterCache,
+    /// Snapshot of GPU-resident icons at frame start (size-free sample path).
+    gpu_resident: IconGpuResidentIndex,
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
-    /// Dedup unique rasters → slot index for this frame.
-    slot_by_raster: HashMap<IconAtlasRasterKey, u32>,
+    /// Dedup logical icon identities → slot index for this frame.
+    slot_by_identity: HashMap<IconGpuUploadKey, u32>,
     slots: Vec<IconGpuSlot>,
     draws: Vec<IconDraw>,
     overlay_draws: Vec<IconDraw>,
@@ -386,8 +388,8 @@ fn pack_icon_batches(
             push_icon_draw_vertices(
                 &mut vertices,
                 &draws[i],
-                gpu_slot.raster.width,
-                gpu_slot.raster.height,
+                gpu_slot.width,
+                gpu_slot.height,
                 surface_size,
             );
         }
@@ -414,7 +416,8 @@ fn icon_draw_content_hash(
         layer_draws.len().hash(&mut hasher);
         for draw in layer_draws {
             if let Some(slot) = slots.get(draw.slot as usize) {
-                slot.key.hash(&mut hasher);
+                slot.identity.hash(&mut hasher);
+                slot.content_hash.hash(&mut hasher);
             } else {
                 draw.slot.hash(&mut hasher);
             }
@@ -451,28 +454,58 @@ fn icon_slot_hash(slots: &[IconGpuSlot]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     slots.len().hash(&mut hasher);
     for slot in slots {
-        slot.key.hash(&mut hasher);
+        slot.identity.hash(&mut hasher);
+        slot.content_hash.hash(&mut hasher);
+        slot.width.hash(&mut hasher);
+        slot.height.hash(&mut hasher);
     }
     hasher.finish()
 }
-/// GPU cache entry for one unique icon raster (scheme C).
+/// Resident GPU texture for one logical icon (scheme C, full GPU sample path).
 struct IconGpuTexture {
     bind_group: wgpu::BindGroup,
     /// Keeps the texture alive for the bind group.
     #[allow(dead_code)]
     texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    content_width: u32,
+    content_height: u32,
+    /// Matches last uploaded CPU content generation.
+    content_hash: u64,
     last_used_frame: u64,
-    /// How this texture was created (dmabuf import vs CPU upload).
+    /// How this texture was last filled (dmabuf import vs CPU upload).
     #[allow(dead_code)]
     source: crate::shell::render::dmabuf::ExternalTextureSource,
+}
+
+/// Snapshot of resident GPU icon sizes at frame start (avoids mut borrow splits).
+#[derive(Clone, Debug, Default)]
+struct IconGpuResidentIndex {
+    entries: HashMap<IconGpuUploadKey, IconGpuResidentEntry>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct IconGpuResidentEntry {
+    width: u32,
+    height: u32,
+    content_width: u32,
+    content_height: u32,
+    content_hash: u64,
+}
+
+impl IconGpuResidentIndex {
+    fn get(&self, key: &IconGpuUploadKey) -> Option<IconGpuResidentEntry> {
+        self.entries.get(key).copied()
+    }
 }
 struct IconRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// Persistent per-raster GPU textures (scheme C).
+    /// Persistent logical-key → GPU texture map (scheme C).
     gpu_textures: HashMap<IconGpuUploadKey, IconGpuTexture>,
-    /// Frame-local: slot index → cache key for draw.
+    /// Frame-local: slot index → logical cache key for draw.
     frame_slot_keys: Vec<IconGpuUploadKey>,
     content_batches: Vec<IconSlotBatch>,
     overlay_batches: Vec<IconSlotBatch>,

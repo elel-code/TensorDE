@@ -130,6 +130,11 @@ struct WgpuState {
     frame_count: u64,
     last_log: Instant,
     rendered_view_switches: u64,
+    /// Last scene `path_changes` observed while presenting; used to free
+    /// directory-scoped thumbnail / failure caches after navigate.
+    rendered_path_changes: u64,
+    /// Open pane paths from the last presented frame (for pruning left dirs).
+    rendered_open_paths: Vec<PathBuf>,
     last_render_dirty_key: Option<ShellRenderDirtyKey>,
     last_render_damage_snapshot: Option<ShellRenderDamageSnapshot>,
     frame_latency: ShellFrameLatencyTracker,
@@ -260,12 +265,13 @@ struct IconFrameStats {
 }
 /// One frame of icon geometry for scheme-C per-icon GPU textures.
 ///
-/// Unique rasters are slots; draws reference a slot and sample that texture
-/// with local UVs (no shared atlas packing). Upload creates/reuses one
-/// `wgpu::Texture` (+ bind group) per slot; optional `dmabuf` plane enables
-/// zero-copy import when a compositor plan is available.
+/// Slots are keyed by **logical** [`IconRasterCacheKey`] (path / size bucket /
+/// mtime / style), not by CPU pixel hash. The hot path samples resident
+/// `wgpu::Texture`s; CPU pixels exist only as a one-shot upload payload when a
+/// slot is cold or its content generation changes. Dmabuf remains an optional
+/// producer path — not required for the full-GPU sample pipeline.
 struct IconFrame {
-    /// Unique icon textures for this frame (CPU pixels and/or dmabuf plane).
+    /// Unique logical icons for this frame (optional CPU payload for upload).
     slots: Vec<IconGpuSlot>,
     /// Content-layer draws grouped by slot (each batch = one bind + draw).
     content_batches: Vec<IconSlotBatch>,
@@ -285,20 +291,36 @@ struct IconDmabufSource {
     plane: crate::shell::render::dmabuf::DmabufImportPlane,
 }
 
-/// One unique raster that becomes its own GPU texture.
+/// One logical icon that maps to a resident GPU texture.
+///
+/// `upload` is `Some` only when this frame must (re)write GPU memory. After a
+/// successful upload the CPU payload is dropped so the steady state is
+/// GPU-only sampling. Zoom changes screen size only — identity has **no**
+/// size bucket, so the same texture is re-sampled.
 struct IconGpuSlot {
-    key: IconAtlasRasterKey,
-    raster: IconRaster,
-    /// When set, upload prefers `texture_from_dmabuf_fd` over `write_texture`.
+    identity: IconGpuUploadKey,
+    /// Padded texture size used for UV generation / pack (may match a larger
+    /// resident GPU texture when we only scale-sample this frame).
+    width: u32,
+    height: u32,
+    /// Unpadded content size inside the padded texture (for UV mapping).
+    content_width: u32,
+    content_height: u32,
+    /// Content generation of `upload` (or last known GPU contents).
+    content_hash: u64,
+    /// One-shot CPU pixels for `write_texture` / dmabuf fallback.
+    upload: Option<IconRaster>,
     dmabuf: Option<IconDmabufSource>,
 }
 
 impl std::fmt::Debug for IconGpuSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IconGpuSlot")
-            .field("key", &self.key)
-            .field("raster_w", &self.raster.width)
-            .field("raster_h", &self.raster.height)
+            .field("identity", &self.identity)
+            .field("w", &self.width)
+            .field("h", &self.height)
+            .field("content_hash", &self.content_hash)
+            .field("needs_upload", &self.upload.is_some())
             .field("has_dmabuf", &self.dmabuf.is_some())
             .finish()
     }
@@ -310,44 +332,48 @@ struct IconSlotBatch {
     vertex_start: u32,
     vertex_count: u32,
 }
+
+/// GPU-resident icon identity — **never** includes a size bucket.
+///
+/// - [`Role`](Self::Role): MIME / directory / generic file / named chrome icons.
+///   Shared by every entry with that role (not bound to a filesystem path).
+/// - [`ThemeAsset`](Self::ThemeAsset): resolved theme file path (named icons).
+/// - [`Content`](Self::Content): thumbnails / folder previews (path + mtime).
+///
+/// Zoom only changes sampling; the same GPU texture stays bound.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct IconAtlasRasterKey {
-    raster_width: u32,
-    raster_height: u32,
-    pixels_hash: u64,
+enum IconGpuIdentity {
+    Role(FileIconKind),
+    ThemeAsset { path: PathBuf },
+    Content { path: PathBuf, stamp: u64 },
 }
-impl IconAtlasRasterKey {
-    fn from_raster(raster: &IconRaster) -> Self {
-        Self {
-            raster_width: raster.width,
-            raster_height: raster.height,
-            pixels_hash: hash_bytes_with_len(raster.pixels.as_ref()),
-        }
-    }
-}
-/// Identity for a GPU icon slot (raster content only; no atlas destination).
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct IconGpuUploadKey {
-    raster_width: u32,
-    raster_height: u32,
-    pixels_hash: u64,
+    identity: IconGpuIdentity,
 }
+
 impl IconGpuUploadKey {
-    fn from_slot(slot: &IconGpuSlot) -> Self {
+    fn role(kind: FileIconKind) -> Self {
         Self {
-            raster_width: slot.raster.width,
-            raster_height: slot.raster.height,
-            pixels_hash: slot.key.pixels_hash,
+            identity: IconGpuIdentity::Role(kind),
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn from_raster(raster: &IconRaster) -> Self {
+    fn theme_asset(path: PathBuf) -> Self {
         Self {
-            raster_width: raster.width,
-            raster_height: raster.height,
-            pixels_hash: hash_bytes_with_len(raster.pixels.as_ref()),
+            identity: IconGpuIdentity::ThemeAsset { path },
         }
+    }
+
+    fn content(path: PathBuf, stamp: u64) -> Self {
+        Self {
+            identity: IconGpuIdentity::Content { path, stamp },
+        }
+    }
+
+    fn from_slot(slot: &IconGpuSlot) -> Self {
+        slot.identity.clone()
     }
 }
 fn padded_icon_atlas_raster(raster: &IconRaster) -> IconRaster {

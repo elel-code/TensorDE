@@ -33,9 +33,25 @@ impl ThumbnailRasterResolver {
         self.drain_results();
         let key = IconRasterCacheKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
         let failure_key = ThumbnailProbeCacheKey::new(path.to_path_buf(), modified_secs);
-        if let Some(entry) = self.ready.remove(&key) {
-            self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
-            return ThumbnailResolveState::Ready(entry.raster);
+        // Keep the ready entry (Dolphin-style cache hit). Removing here forced a
+        // re-queue every frame and thrashed GPU uploads / flash of MIME icons.
+        if let Some(entry) = self.ready.get_mut(&key) {
+            self.ready_frame = self.ready_frame.wrapping_add(1);
+            entry.last_used_frame = self.ready_frame;
+            return ThumbnailResolveState::Ready(entry.raster.clone());
+        }
+        // Zoom / first-frame: paint a nearby size while the exact bucket loads.
+        if let Some(raster) = self.take_closest_ready(path, modified_secs, size_px) {
+            // Still ensure the exact size is queued as visible work.
+            if !self.pending.contains_key(&key) && !self.failed.contains(&failure_key) {
+                let _ = self.send_request(
+                    key,
+                    mime_type,
+                    ThumbnailRequestPriority::Visible,
+                    failure_key,
+                );
+            }
+            return ThumbnailResolveState::Ready(raster);
         }
         if self.failed.contains(&failure_key) {
             return ThumbnailResolveState::Failed;
@@ -54,6 +70,28 @@ impl ThumbnailRasterResolver {
         } else {
             ThumbnailResolveState::Failed
         }
+    }
+
+    fn take_closest_ready(
+        &mut self,
+        path: &Path,
+        modified_secs: u64,
+        size_px: u16,
+    ) -> Option<IconRaster> {
+        let key = self
+            .ready
+            .keys()
+            .filter(|key| {
+                key.path.as_path() == path
+                    && key.stamp == Some(modified_secs)
+                    && key.style == IconRasterStyle::Original
+            })
+            .min_by_key(|key| key.size_px.abs_diff(size_px))
+            .cloned()?;
+        let entry = self.ready.get_mut(&key)?;
+        self.ready_frame = self.ready_frame.wrapping_add(1);
+        entry.last_used_frame = self.ready_frame;
+        Some(entry.raster.clone())
     }
 
     fn queue_deferred(
@@ -147,6 +185,7 @@ impl ThumbnailRasterResolver {
         }
         self.ready_bytes += bytes;
         self.evict_ready_if_needed(&key);
+        self.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
     }
 
     fn evict_ready_if_needed(&mut self, protected: &IconRasterCacheKey) {
@@ -172,6 +211,77 @@ impl ThumbnailRasterResolver {
 
     fn ready_bytes(&self) -> usize {
         self.ready_bytes
+    }
+
+    /// Drop all ready sizes for path+mtime pairs that are GPU-resident.
+    fn release_gpu_resident_content(&mut self, keys: &[IconRasterCacheKey]) {
+        let targets = keys
+            .iter()
+            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp)))
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return;
+        }
+        let victims = self
+            .ready
+            .keys()
+            .filter(|k| {
+                k.stamp
+                    .is_some_and(|stamp| targets.iter().any(|(p, s)| *p == k.path.as_path() && *s == stamp))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in victims {
+            if let Some(entry) = self.ready.remove(&key) {
+                self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
+            }
+        }
+        self.shrink_maps_if_sparse();
+    }
+
+    /// Drop ready/failed/pending entries under `path` (directory navigate away).
+    ///
+    /// Mirrors Dolphin killing preview jobs and clearing finished items when the
+    /// model is emptied / items leave the view, so memory and stale failure
+    /// markers do not accumulate across folders.
+    fn clear_path_prefix(&mut self, path: &Path) {
+        self.ready.retain(|key, entry| {
+            let keep = !key.path.starts_with(path);
+            if !keep {
+                self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
+            }
+            keep
+        });
+        self.failed.retain(|key| !key.path.starts_with(path));
+        self.pending.retain(|key, _| !key.path.starts_with(path));
+        self.shrink_maps_if_sparse();
+    }
+
+    /// Bound the permanent failure set so a long session cannot pin unbounded
+    /// path strings after probing non-previewable files.
+    fn trim_failed(&mut self, max_entries: usize) {
+        if self.failed.len() <= max_entries {
+            return;
+        }
+        // Failures are not LRU-tracked; drop an arbitrary excess. Keys are
+        // (path, mtime) so a later mtime change re-probes correctly.
+        let excess = self.failed.len() - max_entries;
+        let drop_keys = self.failed.iter().take(excess).cloned().collect::<Vec<_>>();
+        for key in drop_keys {
+            self.failed.remove(&key);
+        }
+    }
+
+    fn shrink_maps_if_sparse(&mut self) {
+        if self.ready.capacity() > self.ready.len().saturating_mul(2).max(64) {
+            self.ready.shrink_to_fit();
+        }
+        if self.failed.capacity() > self.failed.len().saturating_mul(2).max(64) {
+            self.failed.shrink_to_fit();
+        }
+        if self.pending.capacity() > self.pending.len().saturating_mul(2).max(64) {
+            self.pending.shrink_to_fit();
+        }
     }
 
     fn has_visible_pending(&self) -> bool {

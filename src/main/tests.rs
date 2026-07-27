@@ -31,6 +31,7 @@ mod tests {
     include!("tests/text_atlas_upload_extends_edges_for_linear_sampling.rs");
     include!("tests/text_input_v3_updates_editors.rs");
     include!("tests/thumbnail_read_ahead_indexes_follow_dolphin_order.rs");
+    include!("tests/thumbnail_ready_cache_retains_hits_and_clears_left_paths.rs");
     include!("tests/toolbar_split_view_opens_single_selected_directory_with_active_view_mode.rs");
     include!("tests/trash_context_target_uses_multi_selection_and_rejects_remote_paths.rs");
 }
