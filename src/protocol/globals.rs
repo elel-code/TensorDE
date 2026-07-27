@@ -14,7 +14,6 @@ use smithay::{
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
         virtual_keyboard::VirtualKeyboardManagerState,
-        xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
     },
 };
@@ -27,6 +26,7 @@ use super::extensions::{
 };
 use super::state::RuntimeState;
 
+pub(in crate::protocol) mod activation;
 pub(in crate::protocol) mod background_effect;
 pub(in crate::protocol) mod cursor_shape;
 pub(in crate::protocol) mod desktop_controls;
@@ -53,6 +53,7 @@ mod syncobj;
 pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod xdg_decoration;
 
+use activation::ActivationProtocol;
 use background_effect::BackgroundEffectProtocol;
 use cursor_shape::CursorShapeProtocol;
 use desktop_controls::DesktopControls;
@@ -97,7 +98,7 @@ pub(crate) struct ProtocolGlobals {
     pub(super) pointer_constraints: PointerConstraintsProtocol,
     presentation: PresentationProtocol,
     pub(super) cursor_shape: CursorShapeProtocol,
-    activation: XdgActivationState,
+    pub(super) activation: ActivationProtocol,
     pub(super) idle_notify: IdleNotifyProtocol,
     idle_inhibit: IdleInhibitProtocol,
     layer_shell: WlrLayerShellState,
@@ -161,7 +162,7 @@ impl ProtocolGlobals {
             pointer_constraints: PointerConstraintsProtocol::new(display),
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeProtocol::new(display),
-            activation: XdgActivationState::new::<RuntimeState>(display),
+            activation: ActivationProtocol::new(display),
             idle_notify: IdleNotifyProtocol::new(display),
             idle_inhibit: IdleInhibitProtocol::new(display),
             layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
@@ -278,10 +279,6 @@ impl ProtocolGlobals {
 
     pub(crate) fn ext_data_control(&mut self) -> &mut ExtDataControlState {
         &mut self.ext_data_control
-    }
-
-    pub(crate) fn activation(&mut self) -> &mut XdgActivationState {
-        &mut self.activation
     }
 
     pub(crate) fn layer_shell(&mut self) -> &mut WlrLayerShellState {

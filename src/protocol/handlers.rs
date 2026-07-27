@@ -397,9 +397,11 @@ impl SeatHandler for RuntimeState {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
-        let client = focused
-            .and_then(WaylandFocus::wl_surface)
-            .and_then(|surface| self.display_handle.get_client(surface.id()).ok());
+        let focused = focused.and_then(WaylandFocus::wl_surface);
+        self.protocol_globals
+            .activation
+            .sync_keyboard_focus(focused.as_deref());
+        let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_primary_focus(&self.display_handle, seat, client.clone());
         set_data_device_focus(&self.display_handle, seat, client);
     }
@@ -435,63 +437,6 @@ impl PrimarySelectionHandler for RuntimeState {
 impl DataDeviceHandler for RuntimeState {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.data_device_state
-    }
-}
-
-/// Tokens older than this are rejected (matches Niri's activation window).
-const XDG_ACTIVATION_TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-impl smithay::wayland::xdg_activation::XdgActivationHandler for RuntimeState {
-    fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
-        self.protocol_globals.activation()
-    }
-
-    fn request_activation(
-        &mut self,
-        token: smithay::wayland::xdg_activation::XdgActivationToken,
-        token_data: smithay::wayland::xdg_activation::XdgActivationTokenData,
-        surface: WlSurface,
-    ) {
-        if token_data.timestamp.elapsed() >= XDG_ACTIVATION_TOKEN_TIMEOUT {
-            self.protocol_globals.activation().remove_token(&token);
-            return;
-        }
-        // Accept activation requests that still have a mapped view. Unmapped
-        // surfaces that carry a fresh compositor-issued spawn token are also
-        // accepted once they map and call activate with the same token.
-        let window = self
-            .view_for_surface(&surface)
-            .is_some()
-            .then(|| {
-                self.space
-                    .elements()
-                    .find(|window| window.wl_surface().as_deref() == Some(&surface))
-                    .cloned()
-            })
-            .flatten();
-        if let Some(window) = window {
-            #[cfg(feature = "tty")]
-            let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
-            #[cfg(not(feature = "tty"))]
-            let _ = window;
-        }
-        self.protocol_globals.activation().remove_token(&token);
-        #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
-    }
-}
-
-impl RuntimeState {
-    /// Mint an external xdg-activation token for compositor-owned launches.
-    pub(crate) fn issue_spawn_activation_token(&mut self) -> String {
-        self.protocol_globals
-            .activation()
-            .retain_tokens(|_, data| data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT);
-        let (token, _) = self
-            .protocol_globals
-            .activation()
-            .create_external_token(None);
-        token.as_str().to_owned()
     }
 }
 

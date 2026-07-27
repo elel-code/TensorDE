@@ -34,6 +34,8 @@ use crate::protocol::globals::output::Output;
 use super::*;
 
 #[cfg(feature = "tty")]
+mod activation;
+#[cfg(feature = "tty")]
 mod background_effect;
 mod capture;
 #[cfg(feature = "tty")]

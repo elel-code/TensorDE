@@ -194,7 +194,12 @@ fn queue_spawn(
             "spawn program must not be empty".to_owned(),
         ));
     }
-    let token = state.issue_spawn_activation_token();
+    let token = state.issue_spawn_activation_token().map_err(|error| {
+        (
+            "activation_token",
+            format!("could not issue launch activation token: {error}"),
+        )
+    })?;
     let request = LaunchRequest::new(
         request_id,
         program.as_str(),

@@ -178,6 +178,7 @@ impl RuntimeState {
             }
         } else if keyboard_count == 0 && self.seat.get_keyboard().is_some() {
             self.seat.remove_keyboard();
+            self.protocol_globals.activation.sync_keyboard_focus(None);
         }
 
         if pointer_count > 0 && self.seat.get_pointer().is_none() {
@@ -188,6 +189,7 @@ impl RuntimeState {
             self.request_redraw_all();
         } else if pointer_count == 0 && self.seat.get_pointer().is_some() {
             self.seat.remove_pointer();
+            self.protocol_globals.activation.sync_pointer_focus(None);
             // The next frame has no overlay, which damages the previous
             // cursor bounds and clears the last visible arrow.
             self.request_redraw_all();
@@ -204,6 +206,7 @@ impl RuntimeState {
             return;
         };
         let key_state = smithay_key_state(event.pressed);
+        let serial = SERIAL_COUNTER.next_serial();
         if key_state == SmithayKeyState::Pressed && self.cursor.note_keyboard_activity() {
             // Typing hid the software cursor; repaint the pointer head.
             if let Some(pointer) = self.seat.get_pointer() {
@@ -216,11 +219,11 @@ impl RuntimeState {
             .current_focus()
             .and_then(|focus| focus.wl_surface().map(std::borrow::Cow::into_owned))
             .is_some_and(|surface| self.shortcuts_inhibited_for(&surface));
-        keyboard.input::<(), _>(
+        let intercepted = keyboard.input::<(), _>(
             self,
             xkb_keycode(event.key),
             key_state,
-            SERIAL_COUNTER.next_serial(),
+            serial,
             event.time_msec(),
             move |state, modifiers, handle| {
                 let keysym = handle.modified_sym().raw();
@@ -263,6 +266,11 @@ impl RuntimeState {
                 FilterResult::Forward
             },
         );
+        if key_state == SmithayKeyState::Pressed && intercepted.is_none() {
+            self.protocol_globals
+                .activation
+                .note_keyboard_interaction(serial.into());
+        }
         // Value bus: keycode-level sample (not keysym — keymap stays seat-side).
         self.push_key_sample(event.sample());
     }
@@ -367,6 +375,9 @@ impl RuntimeState {
             previous_location
         };
         let current_focus = pointer.current_focus();
+        self.protocol_globals
+            .activation
+            .sync_pointer_focus(current_focus.as_ref());
         if emit_motion {
             let constraint_focus = current_focus.as_ref().and_then(|surface| {
                 focus_identity
@@ -498,8 +509,14 @@ impl RuntimeState {
         };
         let serial = SERIAL_COUNTER.next_serial();
         let state = smithay_button_state(event.pressed);
-        if state == ButtonState::Pressed && !pointer.is_grabbed() {
+        let grabbed = pointer.is_grabbed();
+        if state == ButtonState::Pressed && !grabbed {
             self.focus_window_at(pointer.current_location(), serial);
+        }
+        if state == ButtonState::Pressed && !grabbed {
+            self.protocol_globals
+                .activation
+                .note_pointer_interaction(serial.into());
         }
         pointer.button(
             self,

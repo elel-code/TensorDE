@@ -270,7 +270,13 @@ impl Compositor {
             }
         };
         for (index, program, args) in requests {
-            let token = self.protocol.state_mut().issue_spawn_activation_token();
+            let token = match self.protocol.state_mut().issue_spawn_activation_token() {
+                Ok(token) => token,
+                Err(error) => {
+                    warn!(request_id = index, program, %error, "could not issue launch activation token");
+                    continue;
+                }
+            };
             let request = LaunchRequest::new(
                 index as u64,
                 program.as_str(),
@@ -638,7 +644,7 @@ mod tests {
     #[test]
     fn spawn_issues_a_nonempty_activation_token() {
         let mut state = runtime_state();
-        let token = state.issue_spawn_activation_token();
+        let token = state.issue_spawn_activation_token().unwrap();
         assert!(!token.is_empty());
         assert_eq!(
             LaunchRequest::new(1, "true", std::iter::empty::<&str>())
