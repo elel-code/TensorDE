@@ -3,7 +3,6 @@ use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
-        cursor_shape::CursorShapeManagerState,
         input_method::InputMethodManagerState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
@@ -31,6 +30,7 @@ use super::extensions::{
 use super::state::RuntimeState;
 
 pub(in crate::protocol) mod background_effect;
+pub(in crate::protocol) mod cursor_shape;
 pub(in crate::protocol) mod desktop_controls;
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
@@ -54,6 +54,7 @@ pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod xdg_decoration;
 
 use background_effect::BackgroundEffectProtocol;
+use cursor_shape::CursorShapeProtocol;
 use desktop_controls::DesktopControls;
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
@@ -93,7 +94,7 @@ pub(crate) struct ProtocolGlobals {
     pointer_gestures: PointerGesturesState,
     pointer_constraints: PointerConstraintsState,
     presentation: PresentationProtocol,
-    cursor_shape: CursorShapeManagerState,
+    pub(super) cursor_shape: CursorShapeProtocol,
     activation: XdgActivationState,
     pub(super) idle_notify: IdleNotifyProtocol,
     idle_inhibit: IdleInhibitProtocol,
@@ -157,7 +158,7 @@ impl ProtocolGlobals {
             pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
             pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
-            cursor_shape: CursorShapeManagerState::new::<RuntimeState>(display),
+            cursor_shape: CursorShapeProtocol::new(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
             idle_notify: IdleNotifyProtocol::new(display),
             idle_inhibit: IdleInhibitProtocol::new(display),

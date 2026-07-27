@@ -167,6 +167,12 @@ performs one hash lookup and visits only that client's listeners, without a glob
 allocation, or Wayland-resource clone. The accelerated delta is converted through the client's
 logical scale while the unaccelerated delta remains device-native, and the target reuses the
 post-grab focus read already required by pointer constraints. Tensor-owned
+`wp_cursor_shape_manager_v1` v2 also replaces Smithay's global and stores persistent cursor images
+in a Tensor enum backed directly by `cursor-icon`. Pointer shapes require the active enter serial
+and focused or grabbed client. Tablet shapes track the exact proximity serial and current client;
+axis tracking is gated on a bound tablet cursor-shape device, so clients that do not opt in add no
+hash lookup, resource access, or client-id copy to tablet motion. Destroyed tablet tools become
+inert immediately. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

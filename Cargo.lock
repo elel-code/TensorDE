@@ -2027,6 +2027,7 @@ dependencies = [
  "calloop",
  "clap",
  "compio",
+ "cursor-icon",
  "drm",
  "drm-ffi",
  "futures-channel",

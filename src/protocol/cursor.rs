@@ -1,16 +1,28 @@
-use smithay::{
-    input::pointer::CursorImageStatus,
-    utils::{IsAlive, Logical, Point, Rectangle},
-};
+use cursor_icon::CursorIcon;
+use smithay::utils::{IsAlive, Logical, Point, Rectangle};
 use tensor_util::{OutputScale, Rect};
+use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::render::CursorOverlay;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::protocol) enum CursorImage {
+    Hidden,
+    Named(CursorIcon),
+    Surface(WlSurface),
+}
+
+impl CursorImage {
+    pub(in crate::protocol) const fn default_named() -> Self {
+        Self::Named(CursorIcon::Default)
+    }
+}
+
 /// Cursor state remains in the protocol boundary because a client cursor
-/// surface is thread-affine Smithay state. The renderer receives only the
+/// surface is a thread-affine Wayland object. The renderer receives only the
 /// value-only `CursorOverlay` it needs for the current output frame.
 pub(crate) struct CursorState {
-    image: CursorImageStatus,
+    image: CursorImage,
     logical_size: u32,
     hide_when_typing: bool,
     hidden_for_typing: bool,
@@ -19,7 +31,7 @@ pub(crate) struct CursorState {
 impl Default for CursorState {
     fn default() -> Self {
         Self {
-            image: CursorImageStatus::default_named(),
+            image: CursorImage::default_named(),
             logical_size: 24,
             hide_when_typing: false,
             hidden_for_typing: false,
@@ -36,7 +48,7 @@ impl CursorState {
         }
     }
 
-    pub(crate) fn set_image(&mut self, image: CursorImageStatus) -> bool {
+    pub(in crate::protocol) fn set_image(&mut self, image: CursorImage) -> bool {
         if self.image == image {
             return false;
         }
@@ -74,7 +86,7 @@ impl CursorState {
         viewport: Rect,
     ) -> Option<CursorOverlay> {
         self.normalize_surface_liveness();
-        if self.hidden_for_typing || matches!(&self.image, CursorImageStatus::Hidden) {
+        if self.hidden_for_typing || matches!(&self.image, CursorImage::Hidden) {
             return None;
         }
         let local_x = pointer.x - f64::from(output.loc.x);
@@ -95,9 +107,14 @@ impl CursorState {
     }
 
     fn normalize_surface_liveness(&mut self) {
-        if matches!(&self.image, CursorImageStatus::Surface(surface) if !surface.alive()) {
-            self.image = CursorImageStatus::default_named();
+        if matches!(&self.image, CursorImage::Surface(surface) if !surface.alive()) {
+            self.image = CursorImage::default_named();
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::protocol) fn image(&self) -> &CursorImage {
+        &self.image
     }
 }
 
@@ -128,8 +145,8 @@ mod tests {
     #[test]
     fn hidden_and_off_output_cursors_do_not_create_an_overlay() {
         let mut cursor = CursorState::default();
-        assert!(!cursor.set_image(CursorImageStatus::default_named()));
-        assert!(cursor.set_image(CursorImageStatus::Hidden));
+        assert!(!cursor.set_image(CursorImage::default_named()));
+        assert!(cursor.set_image(CursorImage::Hidden));
         assert_eq!(
             cursor.overlay_for_output(
                 (20.0, 30.0).into(),
@@ -139,7 +156,7 @@ mod tests {
             ),
             None
         );
-        cursor.set_image(CursorImageStatus::default_named());
+        cursor.set_image(CursorImage::default_named());
         assert_eq!(
             cursor.overlay_for_output(
                 (110.0, 30.0).into(),

@@ -4,6 +4,8 @@ mod protocols;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 #[cfg(feature = "tty")]
+use super::cursor::CursorImage;
+#[cfg(feature = "tty")]
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use smithay::{
     input::{
@@ -404,7 +406,11 @@ impl SeatHandler for RuntimeState {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         #[cfg(feature = "tty")]
-        if self.cursor.set_image(image) {
+        if self.cursor.set_image(match image {
+            CursorImageStatus::Hidden => CursorImage::Hidden,
+            CursorImageStatus::Named(icon) => CursorImage::Named(icon),
+            CursorImageStatus::Surface(surface) => CursorImage::Surface(surface),
+        }) {
             if let Some(pointer) = self.seat.get_pointer() {
                 self.request_redraw_at(pointer.current_location());
             } else {

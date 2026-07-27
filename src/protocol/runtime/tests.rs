@@ -36,6 +36,8 @@ use super::*;
 #[cfg(feature = "tty")]
 mod background_effect;
 mod capture;
+#[cfg(feature = "tty")]
+mod cursor_shape;
 mod decoration;
 mod desktop_controls;
 #[cfg(feature = "tty")]

@@ -28,6 +28,7 @@ use smithay::{
 };
 use tensor_input::{DeviceChange, DeviceId};
 use tracing::debug;
+use wayland_server::Resource;
 
 use super::RuntimeState;
 
@@ -90,6 +91,15 @@ impl RuntimeState {
             .get(&device)
             .and_then(|descriptor| self.seat.tablet_seat().get_tablet(descriptor));
         if tablet.is_some() {
+            if self.protocol_globals.cursor_shape.has_tablet_devices() {
+                let focus_client = focus
+                    .as_ref()
+                    .and_then(|(surface, _)| surface.client())
+                    .map(|client| client.id());
+                self.protocol_globals
+                    .cursor_shape
+                    .note_tablet_focus(tool.descriptor(), focus_client);
+            }
             let time = tablet_time_msec(&event);
             let serial = SERIAL_COUNTER.next_serial();
             tool.axis(self, tablet_axis_frame(&event));
@@ -129,14 +139,25 @@ impl RuntimeState {
                     .map(|bounds| tablet_location(&event, bounds))
                     .unwrap_or_default();
                 let time = tablet_time_msec(&event);
+                let serial = SERIAL_COUNTER.next_serial();
+                let focus = self.pointer_focus_under(location);
+                let focus_client = focus
+                    .as_ref()
+                    .and_then(|(surface, _)| surface.client())
+                    .map(|client| client.id());
+                self.protocol_globals.cursor_shape.note_tablet_proximity(
+                    tool.descriptor(),
+                    serial,
+                    focus_client,
+                );
                 tool.proximity_in(
                     self,
-                    self.pointer_focus_under(location),
+                    focus,
                     tablet,
                     &ProximityInEvent {
                         location,
                         axis: Some(tablet_axis_frame(&event)),
-                        serial: SERIAL_COUNTER.next_serial(),
+                        serial,
                         time,
                     },
                 );
@@ -145,6 +166,9 @@ impl RuntimeState {
             }
             LibinputProximityState::Out => {
                 let time = tablet_time_msec(&event);
+                self.protocol_globals
+                    .cursor_shape
+                    .clear_tablet_proximity(tool.descriptor());
                 tool.proximity_out(
                     self,
                     &ProximityOutEvent {
