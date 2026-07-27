@@ -7,6 +7,7 @@ use wayland_client::Proxy;
 
 use super::api::NativeShell;
 use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId, SeatRecord};
+use crate::native::connection::NativeError;
 
 impl NativeShellState {
     /// Seat registry name owning a keyboard/pointer/touch proxy, if known.
@@ -302,8 +303,34 @@ impl NativeShellState {
 
         if changed {
             self.recompute_seat_capabilities_union();
+            // If the primary seat lost a device, mirror another seat's proxy so
+            // single-seat APIs keep working when any seat still has that cap.
+            if is_primary {
+                self.promote_primary_device_mirrors();
+            }
         }
         changed
+    }
+
+    /// Fill empty shell-wide keyboard/pointer/touch from any seat that still has them.
+    pub(crate) fn promote_primary_device_mirrors(&mut self) {
+        if self.keyboard.is_none() {
+            self.keyboard = self
+                .seats
+                .values()
+                .find_map(|rec| rec.keyboard.clone());
+        }
+        if self.pointer.is_none()
+            && let Some(rec) = self.seats.values().find(|rec| rec.pointer.is_some())
+        {
+            self.pointer = rec.pointer.clone();
+            self.swipe_gesture = rec.swipe_gesture.clone();
+            self.pinch_gesture = rec.pinch_gesture.clone();
+            self.hold_gesture = rec.hold_gesture.clone();
+        }
+        if self.touch.is_none() {
+            self.touch = self.seats.values().find_map(|rec| rec.touch.clone());
+        }
     }
 
     /// Shell-wide capability bits = union of every bound seat's capabilities.
@@ -313,6 +340,72 @@ impl NativeShellState {
             caps |= rec.capabilities;
         }
         self.seat_capabilities = caps;
+    }
+
+    /// Seat + serial for compositor grabs (move/resize/menu).
+    ///
+    /// Prefer the seat whose `last_input_serial` matches the shell-wide last-wins
+    /// serial so multi-seat input pairs correctly. Falls back to primary seat.
+    pub(crate) fn resolve_grab_seat_serial(
+        &self,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(wl_seat::WlSeat, u32), NativeError> {
+        if let Some(id) = seat {
+            let rec = self.seats.get(&id.get()).ok_or_else(|| {
+                NativeError::Protocol(format!("unknown seat {}", id.get()))
+            })?;
+            let serial = rec.last_input_serial.ok_or_else(|| {
+                NativeError::Protocol("no input serial for toplevel interaction".into())
+            })?;
+            return Ok((rec.seat.clone(), serial));
+        }
+        if let Some(serial) = self.last_input_serial {
+            for rec in self.seats.values() {
+                if rec.last_input_serial == Some(serial) {
+                    return Ok((rec.seat.clone(), serial));
+                }
+            }
+            // Shell serial without a matching seat record: use primary seat.
+            if let Some(primary) = self.seat.clone() {
+                return Ok((primary, serial));
+            }
+        }
+        Err(NativeError::Protocol(
+            "no input serial for toplevel interaction".into(),
+        ))
+    }
+
+    /// Pointer + enter serial for cursor shape (optional seat override).
+    pub(crate) fn resolve_cursor_pointer_serial(
+        &self,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(wl_pointer::WlPointer, u32), NativeError> {
+        if let Some(id) = seat {
+            let rec = self.seats.get(&id.get()).ok_or_else(|| {
+                NativeError::Protocol(format!("unknown seat {}", id.get()))
+            })?;
+            let pointer = rec.pointer.clone().ok_or_else(|| {
+                NativeError::Protocol("seat has no pointer".into())
+            })?;
+            let serial = rec.pointer_enter_serial.ok_or_else(|| {
+                NativeError::Protocol("no pointer enter serial".into())
+            })?;
+            return Ok((pointer, serial));
+        }
+        // Prefer the seat that owns the shell-wide enter serial.
+        if let Some(serial) = self.pointer_enter_serial {
+            for rec in self.seats.values() {
+                if rec.pointer_enter_serial == Some(serial)
+                    && let Some(pointer) = rec.pointer.clone()
+                {
+                    return Ok((pointer, serial));
+                }
+            }
+            if let Some(pointer) = self.pointer.clone() {
+                return Ok((pointer, serial));
+            }
+        }
+        Err(NativeError::Protocol("no pointer enter serial".into()))
     }
 
     /// Bind gesture objects for one seat's pointer (and optionally mirror primary).

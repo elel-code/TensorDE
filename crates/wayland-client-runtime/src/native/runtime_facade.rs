@@ -579,6 +579,15 @@ impl NativeRuntime {
     }
 
     pub fn set_cursor(&mut self, icon: CursorIcon) -> Result<(), RuntimeError> {
+        self.set_cursor_on_seat(icon, None)
+    }
+
+    /// Set the cursor shape on a specific seat's pointer (or auto-resolve).
+    pub fn set_cursor_on_seat(
+        &mut self,
+        icon: CursorIcon,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         if !self.shell.has_cursor_shape() {
             return Err(RuntimeError::Unsupported("wp_cursor_shape_manager_v1"));
         }
@@ -597,7 +606,7 @@ impl NativeRuntime {
             CursorIcon::SwResize => CursorShape::SwResize,
         };
         self.shell
-            .set_cursor_shape(shape)
+            .set_cursor_shape_on_seat(shape, seat)
             .map_err(map_native_error)
     }
 
@@ -905,9 +914,18 @@ impl NativeRuntime {
     }
 
     pub fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        self.begin_interactive_move_on_seat(surface, None)
+    }
+
+    /// Start an interactive move using a specific seat's serial (or auto-resolve).
+    pub fn begin_interactive_move_on_seat(
+        &mut self,
+        surface: SurfaceId,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
-            .begin_interactive_move(native)
+            .begin_interactive_move_on_seat(native, seat)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("serial") => {
                     RuntimeError::InvalidToplevelInteractionSerial
@@ -921,9 +939,19 @@ impl NativeRuntime {
         surface: SurfaceId,
         edge: crate::ResizeEdge,
     ) -> Result<(), RuntimeError> {
+        self.begin_interactive_resize_on_seat(surface, edge, None)
+    }
+
+    /// Start an interactive resize using a specific seat's serial (or auto-resolve).
+    pub fn begin_interactive_resize_on_seat(
+        &mut self,
+        surface: SurfaceId,
+        edge: crate::ResizeEdge,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
-            .begin_interactive_resize(native, edge)
+            .begin_interactive_resize_on_seat(native, edge, seat)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("serial") => {
                     RuntimeError::InvalidToplevelInteractionSerial
@@ -937,9 +965,19 @@ impl NativeRuntime {
         surface: SurfaceId,
         position: LogicalPosition,
     ) -> Result<(), RuntimeError> {
+        self.show_window_menu_on_seat(surface, position, None)
+    }
+
+    /// Show the window menu using a specific seat's serial (or auto-resolve).
+    pub fn show_window_menu_on_seat(
+        &mut self,
+        surface: SurfaceId,
+        position: LogicalPosition,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
-            .show_window_menu(native, position)
+            .show_window_menu_on_seat(native, position, seat)
             .map_err(|e| match e {
                 NativeError::Protocol(msg) if msg.contains("serial") => {
                     RuntimeError::InvalidToplevelInteractionSerial

@@ -11,13 +11,22 @@ use crate::toplevel_interaction::ResizeEdge;
 impl NativeShell {
     /// Compositor-driven move using the latest input serial (pointer press preferred).
     pub fn begin_interactive_move(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
-        let (seat, serial) = self.grab_seat_serial()?;
+        self.begin_interactive_move_on_seat(id, None)
+    }
+
+    /// Compositor-driven move using a specific seat's serial (or auto-resolve).
+    pub fn begin_interactive_move_on_seat(
+        &mut self,
+        id: NativeSurfaceId,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (wl_seat, serial) = self.state.resolve_grab_seat_serial(seat)?;
         let record = self
             .state
             .toplevels
             .get(&id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        record.toplevel._move(&seat, serial);
+        record.toplevel._move(&wl_seat, serial);
         self.connection.mark_dirty();
         Ok(())
     }
@@ -28,13 +37,25 @@ impl NativeShell {
         id: NativeSurfaceId,
         edge: ResizeEdge,
     ) -> Result<(), NativeError> {
-        let (seat, serial) = self.grab_seat_serial()?;
+        self.begin_interactive_resize_on_seat(id, edge, None)
+    }
+
+    /// Compositor-driven resize using a specific seat's serial (or auto-resolve).
+    pub fn begin_interactive_resize_on_seat(
+        &mut self,
+        id: NativeSurfaceId,
+        edge: ResizeEdge,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (wl_seat, serial) = self.state.resolve_grab_seat_serial(seat)?;
         let record = self
             .state
             .toplevels
             .get(&id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
-        record.toplevel.resize(&seat, serial, map_resize_edge(edge));
+        record
+            .toplevel
+            .resize(&wl_seat, serial, map_resize_edge(edge));
         self.connection.mark_dirty();
         Ok(())
     }
@@ -45,7 +66,17 @@ impl NativeShell {
         id: NativeSurfaceId,
         position: LogicalPosition,
     ) -> Result<(), NativeError> {
-        let (seat, serial) = self.grab_seat_serial()?;
+        self.show_window_menu_on_seat(id, position, None)
+    }
+
+    /// Show the window menu using a specific seat's serial (or auto-resolve).
+    pub fn show_window_menu_on_seat(
+        &mut self,
+        id: NativeSurfaceId,
+        position: LogicalPosition,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (wl_seat, serial) = self.state.resolve_grab_seat_serial(seat)?;
         let record = self
             .state
             .toplevels
@@ -53,7 +84,7 @@ impl NativeShell {
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
         record
             .toplevel
-            .show_window_menu(&seat, serial, position.x, position.y);
+            .show_window_menu(&wl_seat, serial, position.x, position.y);
         self.connection.mark_dirty();
         Ok(())
     }
@@ -123,21 +154,6 @@ impl NativeShell {
         record.toplevel.set_minimized();
         self.connection.mark_dirty();
         Ok(())
-    }
-
-    fn grab_seat_serial(
-        &self,
-    ) -> Result<(wayland_client::protocol::wl_seat::WlSeat, u32), NativeError> {
-        let seat = self
-            .state
-            .seat
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("no seat".into()))?
-            .clone();
-        let serial = self.state.last_input_serial.ok_or_else(|| {
-            NativeError::Protocol("no input serial for toplevel interaction".into())
-        })?;
-        Ok((seat, serial))
     }
 }
 

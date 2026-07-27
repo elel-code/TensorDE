@@ -594,22 +594,23 @@ impl NativeShell {
 
     /// Set the pointer cursor via `wp_cursor_shape` when available.
     pub fn set_cursor_shape(&mut self, shape: CursorShape) -> Result<(), NativeError> {
-        let serial = self
-            .state
-            .pointer_enter_serial
-            .ok_or_else(|| NativeError::Protocol("no pointer enter serial".into()))?;
-        let pointer = self
-            .state
-            .pointer
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("no pointer".into()))?;
+        self.set_cursor_shape_on_seat(shape, None)
+    }
+
+    /// Set the cursor shape on a specific seat's pointer (or auto-resolve).
+    pub fn set_cursor_shape_on_seat(
+        &mut self,
+        shape: CursorShape,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (pointer, serial) = self.state.resolve_cursor_pointer_serial(seat)?;
         let manager = self
             .state
             .cursor_shape_manager
             .as_ref()
             .ok_or_else(|| NativeError::Protocol("wp_cursor_shape_manager_v1 missing".into()))?;
         let qh = self.queue.handle();
-        let device = manager.get_pointer(pointer, &qh, ());
+        let device = manager.get_pointer(&pointer, &qh, ());
         device.set_shape(serial, shape);
         device.destroy();
         self.connection.mark_dirty();
