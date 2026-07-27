@@ -15,7 +15,7 @@ winit, tokio, or a custom poll loop.
 │ Protocol layer (always on; no async runtime)             │
 │   NativeConnection · NativeShell · NativePump            │
 │   try_read_and_dispatch / dispatch_pending / drain_*     │
-│   native/protocols/{core,stable,staging,unstable,ext,wlr}│
+│   native/protocols.rs + protocols/{core,stable,…}        │
 ├──────────────────────────────────────────────────────────┤
 │ Compio adapter (feature = "compio", default ON)          │
 │   NativeRuntime · CompioFdReady · WakeHandle             │
@@ -65,7 +65,18 @@ wayland-client-runtime = { version = "0.1", default-features = false }
 | **ext** | `wayland-protocols` `ext/` | Optional |
 | **community** | wlr / … | Optional |
 
-Layout: `src/native/protocols/{core,stable,staging,unstable,ext,community/wlr}/`.
+Layout (Rust 2018+ style — no `mod.rs`):
+
+```text
+src/native.rs
+src/native/
+  event_map.rs + event_map/
+  shell.rs + shell/          (csd.rs + csd/, dispatch_*.rs, api_*.rs, …)
+  protocols.rs + protocols/
+    core.rs + core/          (shm, xkb_state, …)
+    stable.rs · staging.rs · unstable.rs · ext.rs
+    community.rs + community/wlr.rs
+```
 
 `ProtocolClass`, `ProtocolSpec`, and `PROTOCOL_MATRIX` (alias
 `FIKA_PROTOCOL_MATRIX`) document which globals this crate understands.

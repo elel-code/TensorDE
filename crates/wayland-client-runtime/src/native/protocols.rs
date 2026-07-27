@@ -6,14 +6,15 @@
 //! folder so dependencies and capability flags stay honest.
 //!
 //! ```text
+//! protocols.rs          // matrix + ProtocolClass / ProtocolSpec
 //! protocols/
-//!   core/         wl_* from wayland.xml (always required for a shell)
-//!   stable/       wayland-protocols stable/ (xdg-shell, viewporter, …)
-//!   staging/      wayland-protocols staging/ (fractional-scale, activation, …)
-//!   unstable/     legacy zwp_* only if still needed for a compositor
-//!   ext/          ext-* extensions (background-effect, …)
-//!   community/
-//!     wlr/        wlroots / wlroots-adjacent (layer-shell, …)
+//!   core.rs + core/     // wl_* from wayland.xml (always required)
+//!   stable.rs           // wayland-protocols stable/ (xdg-shell, …)
+//!   staging.rs          // wayland-protocols staging/
+//!   unstable.rs         // legacy zwp_* only if still needed
+//!   ext.rs              // ext-* extensions
+//!   community.rs + community/
+//!     wlr.rs            // wlroots-adjacent (layer-shell, …)
 //! ```
 //!
 //! Wire bindings still come from `wayland-client` / `wayland-protocols*`.
