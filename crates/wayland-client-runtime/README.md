@@ -68,7 +68,7 @@ and is passed to `wgpu::Instance::create_surface`.
 
 | Area | Public behavior |
 | --- | --- |
-| Connection/event loop | Owns the Wayland connection and event queue; calloop dispatch remains for compatibility; Compio can await display readability |
+| Connection/event loop | Owns the Wayland connection and event queue; plain non-blocking display fd; Compio (optional) waits for readiness only; deferred flush + `arm_present_notify` / `is_present_pending` |
 | Toplevels | Creates xdg-toplevel surfaces, reports configure/close/frame/scale events, and starts compositor-driven move, eight-edge resize, and window-menu interactions |
 | Dialogs | Creates parented xdg-dialog-v1 surfaces with modality; falls back to a parented xdg-toplevel when unsupported |
 | Activation | Exports and consumes `xdg-activation-v1` tokens, carries optional app/seat/serial context, and supports coalesced user-attention requests |
@@ -81,7 +81,7 @@ and is passed to `wgpu::Instance::create_surface`.
 | Blur | Uses `ext-background-effect-v1` and preserves complete-surface or arbitrary surface-local rectangle regions |
 | Data transfer | Clipboard and DnD share one MIME-content model, runtime connection, seat/serial state, data devices and pipe I/O; application-specific formats stay in the application |
 | Drag and drop | Handles incoming/outgoing offers, action negotiation and lifecycle events; optional RGBA previews use owned SHM drag-icon surfaces |
-| Input | Translates framed multi-touch, keyboard, pointer, and touchpad gesture events into crate-owned values; preserves continuous, discrete, value120, source, stop, and relative-direction axis data; uses cursor-shape when available and falls back to the system cursor theme |
+| Input | Translates framed multi-touch, keyboard, pointer, and touchpad gesture events into crate-owned values; full `wl_pointer` axis frames (continuous, discrete, value120, source, stop, relative-direction) accumulated per seat; uses cursor-shape when available |
 | Seats / outputs | Binds every `wl_seat` and `wl_output`; `SeatEvent::{Added,Changed,Removed}`; per-seat focus/serial/transfer/gestures; capability loss releases devices; seat-scoped grab/cursor/clipboard/DnD APIs; primary-seat compat for single-seat callers |
 | GPU present | Bufferless toplevel/layer surfaces + raw-window-handle 0.6 for Vulkan/wgpu; `SurfaceRegion` opaque/input; `request_frame` / presentation feedback; dmabuf feedback and import helpers |
 | Pointer capture | Implements `zwp_pointer_constraints_v1` confinement/locking and lazily creates `zwp_relative_pointer_v1` only for subscribed or locked surfaces |

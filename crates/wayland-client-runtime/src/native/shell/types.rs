@@ -66,11 +66,9 @@ pub enum NativeShellEvent {
     },
     PointerAxis {
         surface: Option<NativeSurfaceId>,
-        horizontal: f64,
-        vertical: f64,
-        /// High-resolution wheel units (120 = one notch); 0 if not reported.
-        horizontal_value120: i32,
-        vertical_value120: i32,
+        horizontal: crate::pointer_axis::PointerAxisValue,
+        vertical: crate::pointer_axis::PointerAxisValue,
+        source: Option<crate::pointer_axis::PointerAxisSource>,
         seat: Option<u32>,
     },
     SeatKeyboardEnter {
@@ -510,10 +508,7 @@ pub(crate) struct SeatRecord {
         wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
     >,
     /// Axis accumulation until `wl_pointer.frame` for this seat's pointer.
-    pub(crate) axis_h: f64,
-    pub(crate) axis_v: f64,
-    pub(crate) axis_h120: i32,
-    pub(crate) axis_v120: i32,
+    pub(crate) axis: crate::pointer_axis::PointerAxisFrameAccum,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -937,11 +932,8 @@ pub struct NativeShellState {
     pub(crate) pending_csd_refresh: HashSet<NativeSurfaceId>,
     /// XKB state from the latest `wl_keyboard.keymap` (optional).
     pub(crate) xkb: Option<crate::native::protocols::core::NativeXkb>,
-    /// Accumulated axis values until frame (or immediate emit if no frame).
-    pub(crate) axis_h: f64,
-    pub(crate) axis_v: f64,
-    pub(crate) axis_h120: i32,
-    pub(crate) axis_v120: i32,
+    /// Shell-wide axis accumulation fallback when seat is unknown.
+    pub(crate) axis: crate::pointer_axis::PointerAxisFrameAccum,
     pub(crate) next_id: u32,
     pub(crate) events: Vec<NativeShellEvent>,
     pub(crate) seat_capabilities: wl_seat::Capability,
@@ -1088,10 +1080,7 @@ impl Default for NativeShellState {
             pending_csd_cursor: None,
             pending_csd_refresh: HashSet::new(),
             xkb: None,
-            axis_h: 0.0,
-            axis_v: 0.0,
-            axis_h120: 0,
-            axis_v120: 0,
+            axis: crate::pointer_axis::PointerAxisFrameAccum::default(),
             next_id: 1,
             // Hot path: avoid realloc on typical multi-event dispatch batches.
             events: Vec::with_capacity(64),

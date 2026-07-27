@@ -44,6 +44,9 @@
 //! [`NativeRuntime`] keeps long-lived [`CompioFdReady`] watches on the display
 //! and wake fds, then calls the same protocol read path. Fika uses this.
 //! Renderers take [`SurfaceHandle`] (raw-window-handle 0.6).
+//!
+//! Present pacing: [`NativeRuntime::arm_present_notify`] + [`NativeRuntime::flush`]
+//! before GPU present; [`NativeRuntime::is_present_pending`] for redraw gating.
 
 mod activation {
     use crate::{InputSerial, SurfaceId};

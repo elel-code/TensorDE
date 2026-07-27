@@ -51,9 +51,8 @@ impl PointerAxisValue {
 }
 
 
-#[allow(dead_code)]
-pub(crate) fn map_axis_source(source: Option<wl_pointer::AxisSource>) -> Option<PointerAxisSource> {
-    match source? {
+pub(crate) fn map_axis_source(source: wl_pointer::AxisSource) -> Option<PointerAxisSource> {
+    match source {
         wl_pointer::AxisSource::Wheel => Some(PointerAxisSource::Wheel),
         wl_pointer::AxisSource::Finger => Some(PointerAxisSource::Finger),
         wl_pointer::AxisSource::Continuous => Some(PointerAxisSource::Continuous),
@@ -62,14 +61,75 @@ pub(crate) fn map_axis_source(source: Option<wl_pointer::AxisSource>) -> Option<
     }
 }
 
-#[allow(dead_code)]
-fn map_axis_direction(
+pub(crate) fn map_axis_direction(
     direction: wl_pointer::AxisRelativeDirection,
 ) -> Option<PointerAxisDirection> {
     match direction {
         wl_pointer::AxisRelativeDirection::Identical => Some(PointerAxisDirection::Identical),
         wl_pointer::AxisRelativeDirection::Inverted => Some(PointerAxisDirection::Inverted),
         _ => None,
+    }
+}
+
+/// Per-seat (or shell-wide) accumulation of axis events until `wl_pointer.frame`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PointerAxisFrameAccum {
+    pub horizontal: PointerAxisValue,
+    pub vertical: PointerAxisValue,
+    pub source: Option<PointerAxisSource>,
+}
+
+impl PointerAxisFrameAccum {
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn has_content(self) -> bool {
+        self.horizontal.has_motion()
+            || self.vertical.has_motion()
+            || self.horizontal.stopped
+            || self.vertical.stopped
+            || self.source.is_some()
+    }
+
+    pub fn add_continuous(&mut self, vertical: bool, value: f64) {
+        if vertical {
+            self.vertical.continuous += value;
+        } else {
+            self.horizontal.continuous += value;
+        }
+    }
+
+    pub fn add_discrete(&mut self, vertical: bool, value: i32) {
+        if vertical {
+            self.vertical.discrete = self.vertical.discrete.saturating_add(value);
+        } else {
+            self.horizontal.discrete = self.horizontal.discrete.saturating_add(value);
+        }
+    }
+
+    pub fn add_value120(&mut self, vertical: bool, value: i32) {
+        if vertical {
+            self.vertical.value120 = self.vertical.value120.saturating_add(value);
+        } else {
+            self.horizontal.value120 = self.horizontal.value120.saturating_add(value);
+        }
+    }
+
+    pub fn set_stop(&mut self, vertical: bool) {
+        if vertical {
+            self.vertical.stopped = true;
+        } else {
+            self.horizontal.stopped = true;
+        }
+    }
+
+    pub fn set_relative_direction(&mut self, vertical: bool, direction: PointerAxisDirection) {
+        if vertical {
+            self.vertical.relative_direction = Some(direction);
+        } else {
+            self.horizontal.relative_direction = Some(direction);
+        }
     }
 }
 
@@ -118,5 +178,30 @@ mod tests {
         };
         assert_eq!(value.logical_steps(), Some(1.0));
         assert_eq!(value.relative_direction, Some(PointerAxisDirection::Inverted));
+    }
+
+    #[test]
+    fn frame_accum_merges_axis_events_until_clear() {
+        let mut frame = PointerAxisFrameAccum::default();
+        frame.add_continuous(true, 12.0);
+        frame.add_value120(true, 60);
+        frame.add_discrete(false, 1);
+        frame.set_stop(true);
+        frame.source = Some(PointerAxisSource::Wheel);
+        frame.set_relative_direction(false, PointerAxisDirection::Inverted);
+
+        assert!(frame.has_content());
+        assert_eq!(frame.vertical.continuous, 12.0);
+        assert_eq!(frame.vertical.value120, 60);
+        assert!(frame.vertical.stopped);
+        assert_eq!(frame.horizontal.discrete, 1);
+        assert_eq!(
+            frame.horizontal.relative_direction,
+            Some(PointerAxisDirection::Inverted)
+        );
+        assert_eq!(frame.source, Some(PointerAxisSource::Wheel));
+
+        frame.clear();
+        assert!(!frame.has_content());
     }
 }

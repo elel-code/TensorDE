@@ -11,7 +11,6 @@ use crate::event::{
     Event, KeyState, KeyboardEvent, Modifiers, PointerEvent, PointerEventKind, SurfaceEvent,
     TouchEvent, TouchEventKind,
 };
-use crate::pointer_axis::PointerAxisValue;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::input::{InputSerial, InputSerialSource};
 use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
@@ -300,8 +299,7 @@ pub fn map_native_event_full(
             surface,
             horizontal,
             vertical,
-            horizontal_value120,
-            vertical_value120,
+            source,
             seat: event_seat,
         } => {
             let surface = surface
@@ -312,17 +310,9 @@ pub fn map_native_event_full(
                 position: map_state.pointer_pos,
                 kind: PointerEventKind::Axis {
                     time: 0,
-                    horizontal: PointerAxisValue {
-                        continuous: horizontal,
-                        value120: horizontal_value120,
-                        ..PointerAxisValue::default()
-                    },
-                    vertical: PointerAxisValue {
-                        continuous: vertical,
-                        value120: vertical_value120,
-                        ..PointerAxisValue::default()
-                    },
-                    source: None,
+                    horizontal,
+                    vertical,
+                    source,
                 },
                 seat: event_seat.map(SeatId::from_raw),
             }))

@@ -348,85 +348,91 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 });
             }
             wl_pointer::Event::Axis { axis, value, .. } => {
-                // Accumulate per-seat so concurrent multi-seat scrolls do not mix.
-                if let Some(g) = seat_global
-                    && let Some(rec) = state.seats.get_mut(&g)
-                {
-                    match axis {
-                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => rec.axis_v += value,
-                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => rec.axis_h += value,
-                        _ => {}
-                    }
-                } else {
-                    match axis {
-                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => state.axis_v += value,
-                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => state.axis_h += value,
-                        _ => {}
-                    }
-                }
+                let Some(vertical) = axis_is_vertical(axis) else {
+                    return;
+                };
+                axis_accum_mut(state, seat_global).add_continuous(vertical, value);
+            }
+            wl_pointer::Event::AxisDiscrete { axis, discrete } => {
+                let Some(vertical) = axis_is_vertical(axis) else {
+                    return;
+                };
+                axis_accum_mut(state, seat_global).add_discrete(vertical, discrete);
             }
             wl_pointer::Event::AxisValue120 { axis, value120 } => {
-                if let Some(g) = seat_global
-                    && let Some(rec) = state.seats.get_mut(&g)
+                let Some(vertical) = axis_is_vertical(axis) else {
+                    return;
+                };
+                axis_accum_mut(state, seat_global).add_value120(vertical, value120);
+            }
+            wl_pointer::Event::AxisSource { axis_source } => {
+                if let WEnum::Value(source) = axis_source
+                    && let Some(mapped) = crate::pointer_axis::map_axis_source(source)
                 {
-                    match axis {
-                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
-                            rec.axis_v120 = rec.axis_v120.saturating_add(value120);
-                        }
-                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
-                            rec.axis_h120 = rec.axis_h120.saturating_add(value120);
-                        }
-                        _ => {}
-                    }
-                } else {
-                    match axis {
-                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
-                            state.axis_v120 = state.axis_v120.saturating_add(value120);
-                        }
-                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
-                            state.axis_h120 = state.axis_h120.saturating_add(value120);
-                        }
-                        _ => {}
-                    }
+                    axis_accum_mut(state, seat_global).source = Some(mapped);
+                }
+            }
+            wl_pointer::Event::AxisStop { axis, .. } => {
+                let Some(vertical) = axis_is_vertical(axis) else {
+                    return;
+                };
+                axis_accum_mut(state, seat_global).set_stop(vertical);
+            }
+            wl_pointer::Event::AxisRelativeDirection { axis, direction } => {
+                let Some(vertical) = axis_is_vertical(axis) else {
+                    return;
+                };
+                if let WEnum::Value(dir) = direction
+                    && let Some(mapped) = crate::pointer_axis::map_axis_direction(dir)
+                {
+                    axis_accum_mut(state, seat_global).set_relative_direction(vertical, mapped);
                 }
             }
             wl_pointer::Event::Frame => {
-                let (h, v, h120, v120, focus) = if let Some(g) = seat_global
+                let (frame, focus) = if let Some(g) = seat_global
                     && let Some(rec) = state.seats.get_mut(&g)
                 {
-                    let out = (rec.axis_h, rec.axis_v, rec.axis_h120, rec.axis_v120, rec.pointer_focus);
-                    rec.axis_h = 0.0;
-                    rec.axis_v = 0.0;
-                    rec.axis_h120 = 0;
-                    rec.axis_v120 = 0;
+                    let out = (rec.axis, rec.pointer_focus);
+                    rec.axis.clear();
                     out
                 } else {
-                    let out = (
-                        state.axis_h,
-                        state.axis_v,
-                        state.axis_h120,
-                        state.axis_v120,
-                        state.pointer_focus,
-                    );
-                    state.axis_h = 0.0;
-                    state.axis_v = 0.0;
-                    state.axis_h120 = 0;
-                    state.axis_v120 = 0;
+                    let out = (state.axis, state.pointer_focus);
+                    state.axis.clear();
                     out
                 };
-                if h != 0.0 || v != 0.0 || h120 != 0 || v120 != 0 {
+                if frame.has_content() {
                     state.push(NativeShellEvent::PointerAxis {
                         surface: focus,
-                        horizontal: h,
-                        vertical: v,
-                        horizontal_value120: h120,
-                        vertical_value120: v120,
+                        horizontal: frame.horizontal,
+                        vertical: frame.vertical,
+                        source: frame.source,
                         seat: seat_global,
                     });
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn axis_is_vertical(axis: WEnum<wl_pointer::Axis>) -> Option<bool> {
+    match axis {
+        WEnum::Value(wl_pointer::Axis::VerticalScroll) => Some(true),
+        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => Some(false),
+        _ => None,
+    }
+}
+
+fn axis_accum_mut(
+    state: &mut NativeShellState,
+    seat_global: Option<u32>,
+) -> &mut crate::pointer_axis::PointerAxisFrameAccum {
+    if let Some(g) = seat_global
+        && let Some(rec) = state.seats.get_mut(&g)
+    {
+        &mut rec.axis
+    } else {
+        &mut state.axis
     }
 }
 
