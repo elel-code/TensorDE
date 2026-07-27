@@ -14,7 +14,6 @@ use smithay::{
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
         virtual_keyboard::VirtualKeyboardManagerState,
-        xdg_foreign::XdgForeignState,
     },
 };
 use wayland_server::{Client, DisplayHandle};
@@ -42,6 +41,7 @@ pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod pointer_constraints;
 pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
+mod random_handle;
 pub(in crate::protocol) mod relative_pointer;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod shortcut_inhibit;
@@ -52,6 +52,7 @@ pub(in crate::protocol) mod surface_timing;
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod xdg_decoration;
+pub(in crate::protocol) mod xdg_foreign;
 
 use activation::ActivationProtocol;
 use background_effect::BackgroundEffectProtocol;
@@ -83,6 +84,7 @@ use syncobj::DrmSyncobjProtocol;
 pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use viewporter::ViewporterProtocol;
 use xdg_decoration::XdgDecorationProtocol;
+use xdg_foreign::XdgForeignProtocol;
 
 pub(crate) struct ProtocolGlobals {
     shm: ShmProtocol,
@@ -111,7 +113,7 @@ pub(crate) struct ProtocolGlobals {
     session_lock: SessionLockManagerState,
     security_context: SecurityContextManagerState,
     foreign_toplevel_list: ForeignToplevelListState,
-    xdg_foreign: XdgForeignState,
+    pub(super) xdg_foreign: XdgForeignProtocol,
     pub(super) desktop_controls: DesktopControls,
     pub(super) surface_metadata: SurfaceMetadataProtocol,
     background_effect: BackgroundEffectProtocol,
@@ -186,7 +188,7 @@ impl ProtocolGlobals {
                 },
             ),
             foreign_toplevel_list: ForeignToplevelListState::new::<RuntimeState>(display),
-            xdg_foreign: XdgForeignState::new::<RuntimeState>(display),
+            xdg_foreign: XdgForeignProtocol::new(display),
             desktop_controls: DesktopControls::new(display),
             surface_metadata: SurfaceMetadataProtocol::new(display),
             background_effect: BackgroundEffectProtocol::new(display),
@@ -291,10 +293,6 @@ impl ProtocolGlobals {
 
     pub(crate) fn session_lock(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock
-    }
-
-    pub(crate) fn xdg_foreign(&mut self) -> &mut XdgForeignState {
-        &mut self.xdg_foreign
     }
 
     pub(crate) fn xdg_toplevel_destroyed(

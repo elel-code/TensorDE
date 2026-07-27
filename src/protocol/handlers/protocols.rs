@@ -5,7 +5,6 @@ use smithay::{
     wayland::{
         input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
-        xdg_foreign::XdgForeignHandler,
     },
 };
 use tracing::{debug, info, warn};
@@ -84,12 +83,6 @@ impl RuntimeState {
 
     pub(crate) fn session_is_locked(&self) -> bool {
         self.protocol_side.session_lock.is_some()
-    }
-}
-
-impl XdgForeignHandler for RuntimeState {
-    fn xdg_foreign_state(&mut self) -> &mut smithay::wayland::xdg_foreign::XdgForeignState {
-        self.protocol_globals.xdg_foreign()
     }
 }
 

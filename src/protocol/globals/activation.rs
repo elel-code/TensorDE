@@ -406,29 +406,7 @@ impl RuntimeState {
 }
 
 fn random_token() -> io::Result<String> {
-    let mut bytes = [0_u8; TOKEN_BYTES];
-    let mut filled = 0;
-    while filled < bytes.len() {
-        match rustix::rand::getrandom(&mut bytes[filled..], rustix::rand::GetRandomFlags::empty()) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "getrandom returned no activation-token bytes",
-                ));
-            }
-            Ok(read) => filled += read,
-            Err(rustix::io::Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut token = String::with_capacity(TOKEN_BYTES * 2);
-    for byte in bytes {
-        token.push(char::from(HEX[usize::from(byte >> 4)]));
-        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    Ok(token)
+    super::random_handle::random_hex::<TOKEN_BYTES>()
 }
 
 delegate_global_dispatch!(RuntimeState, XdgActivationV1, ActivationGlobalData);

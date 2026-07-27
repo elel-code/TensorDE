@@ -187,7 +187,16 @@ rectangles, then segment clipping is bounded, stack-only, lock-free, and allocat
 Client-controlled regions that exceed that bound remain inactive instead of controlling compositor
 input latency. Only constrained surfaces receive a commit hook, region and hint state remain
 double-buffered, and oneshot deactivation removes both the direct surface index and hook without a
-compatibility implementation. Tensor-owned
+compatibility implementation. Tensor also owns `xdg_activation_v1` directly. Compositor launches
+and focused clients share one bounded, one-shot token authority; 256-bit handles come from
+`rustix::rand::getrandom`, expire after ten seconds, and never fall back to weak randomness.
+Keyboard/button interaction grants are fixed-size O(1) overwrites, while focus changes retain only
+weak surface identities, so input adds no scan, lock, allocation, or Wayland-resource clone.
+Tensor-owned `zxdg_exporter_v2` / `zxdg_importer_v2` replace Smithay's xdg-foreign state as well.
+Handles use the same kernel CSPRNG and an O(1) map instead of a handle scan. Every imported object
+owns its own parent relationship, invalidation is exact, destroying an export notifies all live
+importers, and surface teardown uses reverse indices rather than scanning unrelated exports. No
+compatibility implementation remains. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`
