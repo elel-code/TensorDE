@@ -418,47 +418,23 @@
     }
 
     #[test]
-    fn file_icon_resolver_visible_path_uses_fallback_while_exact_role_is_pending() {
+    fn file_icon_resolver_visible_path_sync_resolves_exact_mime_without_fallback() {
         let mut harness = FileIconResolverTestHarness::new();
-        let text_file = test_entry_with_mime("readme.txt", false, "text/plain");
-        let log_file = test_entry_with_mime("system.log", false, "text/plain");
+        let shortcut =
+            test_entry_with_mime("OCS Desktop.lnk", false, "application/x-ms-shortcut");
         let icon_size = 32.0;
 
-        let (_fallback, deferred) =
+        let (_resolved, deferred) =
             harness
                 .resolver
-                .resolve_entry_visible(Path::new("/tmp"), &text_file, icon_size);
-        assert!(deferred);
-        let request_key = harness
-            .next_request_key()
-            .expect("visible text file should queue exact MIME icon resolve");
-        match &request_key.role.kind {
-            FileIconKind::Mime { mime } => assert_eq!(mime.as_ref(), "text/plain"),
-            kind => panic!("expected text/plain MIME role, got {kind:?}"),
-        }
-        assert_eq!(harness.resolver.pending_len_for_test(), 1);
-
-        let (_same_fallback, deferred) =
-            harness
-                .resolver
-                .resolve_entry_visible(Path::new("/var/log"), &log_file, icon_size);
-        assert!(deferred);
-        assert_eq!(harness.resolver.pending_len_for_test(), 1);
+                .resolve_entry_visible(Path::new("/tmp"), &shortcut, icon_size);
+        assert!(!deferred);
+        assert_eq!(harness.resolver.pending_len_for_test(), 0);
+        assert_eq!(harness.resolver.cached_len_for_test(), 1);
         assert!(
             harness.next_request_key().is_none(),
-            "same MIME role and size should reuse the pending exact request"
+            "Dolphin resolves visible MIME icons synchronously before async previews"
         );
-
-        let resolved_path = PathBuf::from("/theme/mimetypes/text-plain.svg");
-        harness.complete(request_key, Some(resolved_path.clone()));
-        let (resolved, deferred) =
-            harness
-                .resolver
-                .resolve_entry_visible(Path::new("/var/log"), &log_file, icon_size);
-
-        assert!(!deferred);
-        assert_eq!(resolved.path, Some(resolved_path));
-        assert_eq!(harness.resolver.pending_len_for_test(), 0);
     }
 
     #[test]

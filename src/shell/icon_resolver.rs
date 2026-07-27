@@ -166,32 +166,17 @@ impl FileIconResolver {
         self.resolve_path_cache_key_visible(key)
     }
 
-    /// Resolve a precomputed visible key. The frame builder already needs the
-    /// role for GPU identity, so accepting the key avoids parsing `.desktop`
-    /// `Icon=` metadata twice on every visible frame.
+    /// Resolve a precomputed visible key synchronously, matching Dolphin's
+    /// `updateVisibleIcons()` pass. Deferred resolution is reserved for
+    /// off-screen/read-ahead roles; painting a generic fallback here can leave
+    /// a size-free GPU role showing the wrong icon until the directory is
+    /// entered again.
     pub(crate) fn resolve_path_cache_key_visible(
         &mut self,
         key: FileIconPathCacheKey,
     ) -> (ResolvedFileIcon, bool) {
         self.drain_results();
-        if let Some(icon) = self.resolve_key(key.clone(), IconResolvePriority::Visible) {
-            return (icon, false);
-        }
-
-        // Desktop launchers / Named icons: first paint must use the real
-        // Icon= theme path. Falling back to generic File would poison the
-        // size-free Role GPU slot and only look correct after re-enter once
-        // the async worker result lands and the role kind changes.
-        if matches!(key.role.kind, FileIconKind::Named { .. }) {
-            return (self.resolve_key_fast(key), false);
-        }
-
-        let fallback_key = visible_icon_fallback_key(&key);
-        if let Some(icon) = self.cached.get(&fallback_key) {
-            return (icon.clone(), true);
-        }
-
-        (self.resolve_key_fast(fallback_key), true)
+        (self.resolve_key_fast(key), false)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -594,7 +579,10 @@ mod tests {
         // First visible frame must not fall back to generic File — that would
         // paint the wrong size-free Role GPU slot until re-enter.
         let (icon, deferred) = resolver.resolve_entry_visible(&root, &entry, 48.0);
-        assert!(!deferred, "Named desktop icons must sync-resolve on first paint");
+        assert!(
+            !deferred,
+            "Named desktop icons must sync-resolve on first paint"
+        );
         assert!(
             icon.path.is_some(),
             "Icon=folder should resolve via theme on first frame"

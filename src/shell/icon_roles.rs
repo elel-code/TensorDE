@@ -558,6 +558,26 @@ mod tests {
     }
 
     #[test]
+    fn windows_shortcut_mime_prefers_exact_dolphin_icon_before_generic_fallback() {
+        let mime = fika_core::MimeDatabase::shared();
+        let profile = file_icon_profile(
+            &FileIconKind::Mime {
+                mime: Arc::from("application/x-ms-shortcut"),
+            },
+            mime,
+        );
+
+        assert_eq!(
+            profile.icon_candidates.first().map(String::as_str),
+            Some("application-x-ms-shortcut")
+        );
+        assert_eq!(
+            profile.generic_candidates.first().map(String::as_str),
+            Some("emblem-symbolic-link")
+        );
+    }
+
+    #[test]
     fn exe_preliminary_icon_candidates_include_executable_alias() {
         let database = fika_core::MimeDatabase::from_maps(
             [("exe".to_string(), "application/x-msdownload".to_string())].into(),
