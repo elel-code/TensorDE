@@ -283,7 +283,6 @@ struct IconFrame {
     overlay_vertices: Vec<TextVertex>,
     stats: IconFrameStats,
 }
-const ICON_ATLAS_GUARD_TEXELS: u32 = 1;
 /// Optional single-plane dmabuf for zero-copy GPU upload (scheme C + dmabuf).
 ///
 /// Consumed once at `IconRenderer::upload`; not `Clone` (owns the fd).
@@ -299,11 +298,11 @@ struct IconDmabufSource {
 /// size bucket, so the same texture is re-sampled.
 struct IconGpuSlot {
     identity: IconGpuUploadKey,
-    /// Padded texture size used for UV generation / pack (may match a larger
-    /// resident GPU texture when we only scale-sample this frame).
+    /// Texture size used for UV generation (may match a larger resident GPU
+    /// texture when we only scale-sample this frame).
     width: u32,
     height: u32,
-    /// Unpadded content size inside the padded texture (for UV mapping).
+    /// Logical content size (kept separate for resident upgrade decisions).
     content_width: u32,
     content_height: u32,
     /// Content generation of `upload` (or last known GPU contents).
@@ -376,38 +375,12 @@ impl IconGpuUploadKey {
         slot.identity.clone()
     }
 }
-fn padded_icon_atlas_raster(raster: &IconRaster) -> IconRaster {
-    if ICON_ATLAS_GUARD_TEXELS == 0 || raster.width == 0 || raster.height == 0 {
-        return raster.clone();
-    }
-
-    let guard = ICON_ATLAS_GUARD_TEXELS;
-    let width = raster.width + guard * 2;
-    let height = raster.height + guard * 2;
-    let mut pixels = vec![0; (width * height * 4) as usize];
-    for y in 0..height {
-        let src_y = y.saturating_sub(guard).min(raster.height.saturating_sub(1));
-        for x in 0..width {
-            let src_x = x.saturating_sub(guard).min(raster.width.saturating_sub(1));
-            let src_offset = ((src_y * raster.width + src_x) * 4) as usize;
-            let dst_offset = ((y * width + x) * 4) as usize;
-            pixels[dst_offset..dst_offset + 4]
-                .copy_from_slice(&raster.pixels[src_offset..src_offset + 4]);
-        }
-    }
-
-    IconRaster {
-        pixels: pixels.into(),
-        width,
-        height,
-    }
-}
 #[derive(Clone, Debug)]
 struct IconDraw {
     screen: ViewRect,
     /// Index into the frame's per-icon GPU slots.
     slot: u32,
-    /// Sample rect in the slot texture's pixel space (includes guard padding).
+    /// Sample rect in the slot texture's pixel space.
     source: ViewRect,
     alpha: f32,
 }

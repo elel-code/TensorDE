@@ -8,7 +8,7 @@ use std::thread;
 
 use crate::shell::icon_roles::{
     FileIconKind, FileIconPathCacheKey, FileIconProfile, FileIconRoleCacheKey, NamedIconFallback,
-    file_icon_path_cache_key, file_icon_profile, icon_cache_size,
+    file_icon_path_cache_key_with_stamp, file_icon_profile, icon_cache_size,
 };
 use crate::shell::role_worker_queue::{
     PriorityWorkerQueue, PriorityWorkerRequest, WorkerRequestPriority,
@@ -117,11 +117,12 @@ impl FileIconResolver {
     ) -> Option<ResolvedFileIcon> {
         self.drain_results();
         let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key(
+        let key = file_icon_path_cache_key_with_stamp(
             &path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
+            entry.modified_secs,
             icon_size,
         );
         self.resolve_key(key, IconResolvePriority::Deferred)
@@ -136,11 +137,12 @@ impl FileIconResolver {
     ) -> ResolvedFileIcon {
         self.drain_results();
         let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key(
+        let key = file_icon_path_cache_key_with_stamp(
             &path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
+            entry.modified_secs,
             icon_size,
         );
         self.resolve_key_fast(key)
@@ -152,17 +154,36 @@ impl FileIconResolver {
         entry: &Entry,
         icon_size: f32,
     ) -> (ResolvedFileIcon, bool) {
-        self.drain_results();
         let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key(
+        let key = file_icon_path_cache_key_with_stamp(
             &path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
+            entry.modified_secs,
             icon_size,
         );
+        self.resolve_path_cache_key_visible(key)
+    }
+
+    /// Resolve a precomputed visible key. The frame builder already needs the
+    /// role for GPU identity, so accepting the key avoids parsing `.desktop`
+    /// `Icon=` metadata twice on every visible frame.
+    pub(crate) fn resolve_path_cache_key_visible(
+        &mut self,
+        key: FileIconPathCacheKey,
+    ) -> (ResolvedFileIcon, bool) {
+        self.drain_results();
         if let Some(icon) = self.resolve_key(key.clone(), IconResolvePriority::Visible) {
             return (icon, false);
+        }
+
+        // Desktop launchers / Named icons: first paint must use the real
+        // Icon= theme path. Falling back to generic File would poison the
+        // size-free Role GPU slot and only look correct after re-enter once
+        // the async worker result lands and the role kind changes.
+        if matches!(key.role.kind, FileIconKind::Named { .. }) {
+            return (self.resolve_key_fast(key), false);
         }
 
         let fallback_key = visible_icon_fallback_key(&key);
@@ -182,11 +203,12 @@ impl FileIconResolver {
     ) -> ResolvedFileIcon {
         self.drain_results();
         let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key(
+        let key = file_icon_path_cache_key_with_stamp(
             &path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
+            entry.modified_secs,
             icon_size,
         );
         self.resolve_key_fast(key)
@@ -522,5 +544,62 @@ mod tests {
             Some(&IconResolvePriority::Visible)
         );
         assert!(resolver.has_visible_pending());
+    }
+
+    #[test]
+    fn named_desktop_icons_resolve_synchronously_on_first_visible_frame() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let root = std::env::temp_dir().join(format!(
+            "fika-named-visible-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("OCS Desktop.desktop");
+        fs::write(
+            &path,
+            "[Desktop Entry]\nName=OCS\nType=Application\nIcon=folder\nExec=true\n",
+        )
+        .unwrap();
+
+        let (request_tx, _request_rx) = mpsc::channel::<IconResolveRequest>();
+        let (_result_tx, result_rx) = mpsc::channel::<IconResolveResult>();
+        let mut resolver = FileIconResolver {
+            cached: HashMap::new(),
+            pending: HashMap::new(),
+            fast_theme: IconThemeResolver::default(),
+            fast_profiles: HashMap::new(),
+            request_tx: Some(request_tx),
+            result_rx,
+        };
+
+        let entry = Entry::new(fika_core::EntryData {
+            name: Arc::from("OCS Desktop.desktop"),
+            name_width_units: 0,
+            target_path: None,
+            size_bytes: 64,
+            modified_secs: Some(1),
+            metadata_complete: true,
+            mime_type: Some(Arc::from("application/x-desktop")),
+            mime_magic_checked: true,
+            trash_original_path: None,
+            trash_deletion_time: None,
+            is_dir: false,
+        });
+        // First visible frame must not fall back to generic File — that would
+        // paint the wrong size-free Role GPU slot until re-enter.
+        let (icon, deferred) = resolver.resolve_entry_visible(&root, &entry, 48.0);
+        assert!(!deferred, "Named desktop icons must sync-resolve on first paint");
+        assert!(
+            icon.path.is_some(),
+            "Icon=folder should resolve via theme on first frame"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 }

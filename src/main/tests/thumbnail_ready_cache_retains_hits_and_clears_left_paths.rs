@@ -68,35 +68,42 @@
     }
 
     #[test]
-    fn cpu_icon_cache_releases_all_sizes_for_gpu_resident_content() {
+    fn cpu_icon_cache_releases_sizes_upto_resident_keeps_larger() {
         let mut cache = IconRasterCache::new(ICON_CACHE_MAX_BYTES);
         let theme = IconRasterCacheKey::icon(PathBuf::from("/theme/app.svg"), 48);
         let thumb_64 = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/a.jpg"), 64, 7);
         let thumb_96 = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/a.jpg"), 96, 7);
+        let thumb_128 = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/a.jpg"), 128, 7);
         cache.begin_frame();
         cache.insert(theme.clone(), test_icon_raster(8, 1));
-        cache.insert(thumb_64, test_icon_raster(8, 2));
-        cache.insert(thumb_96, test_icon_raster(16, 3));
-        assert_eq!(cache.len(), 3);
+        cache.insert(thumb_64.clone(), test_icon_raster(8, 2));
+        cache.insert(thumb_96.clone(), test_icon_raster(16, 3));
+        cache.insert(thumb_128.clone(), test_icon_raster(24, 4));
+        assert_eq!(cache.len(), 4);
 
-        // Any size key for the same path+mtime frees every bucket.
-        let probe = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/a.jpg"), 0, 7);
-        cache.release_gpu_resident_content(&[probe]);
+        // Resident GPU is 96px: drop ≤96, keep larger 128 for zoom upgrade.
+        let probe = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/a.jpg"), 96, 7);
+        cache.release_gpu_resident_content_upto(&[probe]);
         assert!(cache.contains(&theme));
-        assert_eq!(cache.len(), 1);
+        assert!(!cache.contains(&thumb_64));
+        assert!(!cache.contains(&thumb_96));
+        assert!(cache.contains(&thumb_128));
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
-    fn thumbnail_ready_releases_all_sizes_for_gpu_resident_content() {
+    fn thumbnail_ready_releases_sizes_upto_resident_keeps_larger() {
         let mut thumbnails =
             ThumbnailRasterResolver::with_cache_root(PathBuf::from("/tmp/fika-thumb-release"));
         let a = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/b.png"), 48, 3);
         let b = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/b.png"), 96, 3);
+        let c = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/b.png"), 128, 3);
         thumbnails.insert_ready(a, test_icon_raster(8, 4));
         thumbnails.insert_ready(b, test_icon_raster(16, 5));
-        assert_eq!(thumbnails.ready_len(), 2);
-        let probe = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/b.png"), 0, 3);
-        thumbnails.release_gpu_resident_content(&[probe]);
-        assert_eq!(thumbnails.ready_len(), 0);
-        assert_eq!(thumbnails.ready_bytes(), 0);
+        thumbnails.insert_ready(c.clone(), test_icon_raster(24, 6));
+        assert_eq!(thumbnails.ready_len(), 3);
+        let probe = IconRasterCacheKey::thumbnail(PathBuf::from("/photos/b.png"), 96, 3);
+        thumbnails.release_gpu_resident_content_upto(&[probe]);
+        assert_eq!(thumbnails.ready_len(), 1);
+        assert!(thumbnails.ready.contains_key(&c));
     }

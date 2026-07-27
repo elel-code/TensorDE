@@ -91,11 +91,12 @@ impl IconRasterCache {
         self.bytes
     }
 
-    /// Drop all stamped CPU entries whose path+mtime match (any size bucket).
-    fn release_gpu_resident_content(&mut self, keys: &[IconRasterCacheKey]) {
+    /// Drop stamped CPU entries for path+mtime that are no larger than the
+    /// resident GPU content size. Larger buckets stay so zoom can upgrade.
+    fn release_gpu_resident_content_upto(&mut self, keys: &[IconRasterCacheKey]) {
         let targets = keys
             .iter()
-            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp)))
+            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp, k.size_px)))
             .collect::<Vec<_>>();
         if targets.is_empty() {
             return;
@@ -104,8 +105,11 @@ impl IconRasterCache {
             .entries
             .keys()
             .filter(|k| {
-                k.stamp
-                    .is_some_and(|stamp| targets.iter().any(|(p, s)| *p == k.path.as_path() && *s == stamp))
+                k.stamp.is_some_and(|stamp| {
+                    targets.iter().any(|(p, s, max_px)| {
+                        *p == k.path.as_path() && *s == stamp && k.size_px <= *max_px
+                    })
+                })
             })
             .cloned()
             .collect::<Vec<_>>();

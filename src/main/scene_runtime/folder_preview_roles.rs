@@ -89,6 +89,9 @@ impl ShellScene {
             }
             ShellViewMode::Details => self.details_icon_size_for_step(zoom_step),
         };
+        // Folder previews are already a composed icon-sized raster. Keeping
+        // their ready/GPU size at the actual Dolphin zoom bucket avoids doing
+        // four 256px child compositions for a 48px folder icon.
         icon_cache_size(icon_size)
     }
 

@@ -525,25 +525,48 @@ fn rasterize_bitmap_icon(path: &Path, target_size: u32) -> Option<IconRaster> {
         return None;
     }
 
+    // Theme icons and generated freedesktop thumbnails are commonly already
+    // in the requested square bucket. Reuse the decoder allocation directly;
+    // GPU sampling handles all on-screen scaling from this point onward.
+    if source_width == target_size && source_height == target_size {
+        return Some(IconRaster {
+            pixels: Arc::from(image.into_raw()),
+            width: target_size,
+            height: target_size,
+        });
+    }
+
     let (draw_width, draw_height) = fit_size(source_width, source_height, target_size);
-    let resized = image::imageops::resize(
-        &image,
-        draw_width,
-        draw_height,
-        image::imageops::FilterType::Lanczos3,
-    );
     let mut pixels = vec![0; (target_size * target_size * 4) as usize];
     let x = (target_size - draw_width) / 2;
     let y = (target_size - draw_height) / 2;
-    copy_rgba_into(
-        resized.as_raw(),
-        draw_width,
-        draw_height,
-        &mut pixels,
-        target_size,
-        x,
-        y,
-    );
+    if draw_width == source_width && draw_height == source_height {
+        copy_rgba_into(
+            image.as_raw(),
+            draw_width,
+            draw_height,
+            &mut pixels,
+            target_size,
+            x,
+            y,
+        );
+    } else {
+        let resized = image::imageops::resize(
+            &image,
+            draw_width,
+            draw_height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        copy_rgba_into(
+            resized.as_raw(),
+            draw_width,
+            draw_height,
+            &mut pixels,
+            target_size,
+            x,
+            y,
+        );
+    }
     Some(IconRaster {
         pixels: Arc::from(pixels),
         width: target_size,

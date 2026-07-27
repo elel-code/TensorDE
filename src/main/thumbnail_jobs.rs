@@ -213,11 +213,14 @@ impl ThumbnailRasterResolver {
         self.ready_bytes
     }
 
-    /// Drop all ready sizes for path+mtime pairs that are GPU-resident.
-    fn release_gpu_resident_content(&mut self, keys: &[IconRasterCacheKey]) {
+    /// Drop ready sizes ≤ resident GPU content size for path+mtime.
+    ///
+    /// Larger ready buckets are kept so zoom-in can upgrade the size-free
+    /// content GPU slot instead of replaying the first-open resolution.
+    fn release_gpu_resident_content_upto(&mut self, keys: &[IconRasterCacheKey]) {
         let targets = keys
             .iter()
-            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp)))
+            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp, k.size_px)))
             .collect::<Vec<_>>();
         if targets.is_empty() {
             return;
@@ -226,8 +229,11 @@ impl ThumbnailRasterResolver {
             .ready
             .keys()
             .filter(|k| {
-                k.stamp
-                    .is_some_and(|stamp| targets.iter().any(|(p, s)| *p == k.path.as_path() && *s == stamp))
+                k.stamp.is_some_and(|stamp| {
+                    targets.iter().any(|(p, s, max_px)| {
+                        *p == k.path.as_path() && *s == stamp && k.size_px <= *max_px
+                    })
+                })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -315,12 +321,14 @@ fn thumbnail_raster_for_request(
     thumbnailers: &ThumbnailerRegistry,
     request: &ThumbnailRasterRequest,
 ) -> Option<IconRaster> {
+    let freestanding = ThumbnailSize::for_raster_px(request.key.size_px);
     thumbnail_request_from_raster_request(request)
         .and_then(|thumbnail_request| {
-            generate_thumbnail_with_external_thumbnailer_registry(
+            generate_thumbnail_with_external_thumbnailer_registry_size(
                 cache_root,
                 &thumbnail_request,
                 thumbnailers,
+                freestanding,
             )
             .ok()
             .flatten()

@@ -160,29 +160,7 @@
     }
 
     #[test]
-    fn icon_atlas_upload_extends_edges_for_linear_sampling() {
-        let raster = IconRaster {
-            pixels: vec![
-                10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
-            ]
-            .into(),
-            width: 2,
-            height: 2,
-        };
-
-        let padded = padded_icon_atlas_raster(&raster);
-
-        assert_eq!(padded.width, 4);
-        assert_eq!(padded.height, 4);
-        assert_eq!(raster_pixel(&padded, 0, 0), [10, 20, 30, 255]);
-        assert_eq!(raster_pixel(&padded, 1, 1), [10, 20, 30, 255]);
-        assert_eq!(raster_pixel(&padded, 3, 0), [40, 50, 60, 255]);
-        assert_eq!(raster_pixel(&padded, 0, 3), [70, 80, 90, 255]);
-        assert_eq!(raster_pixel(&padded, 3, 3), [100, 110, 120, 255]);
-    }
-
-    #[test]
-    fn icon_frame_vertices_sample_inside_atlas_guard() {
+    fn icon_frame_vertices_sample_raw_texture_for_gpu_clamp() {
         let mut resolver = FileIconResolver::new();
         let mut thumbnails = ThumbnailRasterResolver::new();
         let mut icon_rasters = IconRasterResolver::new();
@@ -219,7 +197,6 @@
         let frame = builder.finish();
         assert_eq!(frame.slots.len(), 1);
         let slot = &frame.slots[0];
-        let guard = ICON_ATLAS_GUARD_TEXELS as f32;
         let tex_w = slot.width as f32;
         let tex_h = slot.height as f32;
         let u0 = frame.content_vertices[0].uv[0] * tex_w;
@@ -227,14 +204,15 @@
         let u1 = frame.content_vertices[2].uv[0] * tex_w;
         let v1 = frame.content_vertices[2].uv[1] * tex_h;
 
-        // Padded texture is content + 2*guard.
-        assert_eq!(slot.width, 4);
-        assert_eq!(slot.height, 4);
+        // Scheme-C uses one texture per icon. ClampToEdge performs edge
+        // extension in the sampler, avoiding a CPU padding allocation/copy.
+        assert_eq!(slot.width, 2);
+        assert_eq!(slot.height, 2);
         assert!(slot.upload.is_some(), "cold slot carries one-shot CPU upload");
-        assert!((u0 - guard).abs() < 0.001);
-        assert!((v0 - guard).abs() < 0.001);
-        assert!((u1 - (guard + 2.0)).abs() < 0.001);
-        assert!((v1 - (guard + 2.0)).abs() < 0.001);
+        assert!(u0.abs() < 0.001);
+        assert!(v0.abs() < 0.001);
+        assert!((u1 - 2.0).abs() < 0.001);
+        assert!((v1 - 2.0).abs() < 0.001);
     }
 
     #[test]
@@ -543,4 +521,65 @@
         }
 
         assert!(icon_rasters.pending.is_empty());
+    }
+
+    #[test]
+    fn gpu_resident_thumbnail_does_not_requeue_same_size_cpu_work() {
+        let directory = PathBuf::from("/tmp");
+        let path = directory.join("resident.png");
+        let modified_secs = 17;
+        let gpu_key = IconGpuUploadKey::content(path.clone(), modified_secs);
+        let resident = IconGpuResidentIndex {
+            entries: HashMap::from([(
+                gpu_key,
+                IconGpuResidentEntry {
+                    width: 256,
+                    height: 256,
+                    content_width: 256,
+                    content_height: 256,
+                    content_hash: 1,
+                },
+            )]),
+        };
+        let mut resolver = FileIconResolver::new();
+        let mut thumbnails = ThumbnailRasterResolver::new();
+        let mut icon_rasters = IconRasterResolver::new();
+        let mut raster_cache = IconRasterCache::new(ICON_CACHE_MAX_BYTES);
+        let mut role_raster_cache = IconRoleRasterCache::new(ICON_ROLE_RASTER_CACHE_MAX_BYTES);
+        let entry = test_entry_with_mime_and_modified(
+            "resident.png",
+            false,
+            "image/png",
+            Some(modified_secs),
+        );
+        let mut builder = IconFrameBuilder::new(
+            IconFrameResources::new(
+                &mut resolver,
+                &mut thumbnails,
+                &mut icon_rasters,
+                &mut raster_cache,
+                &mut role_raster_cache,
+                resident,
+            ),
+            IconFrameConfig::new(PhysicalSize::new(128, 96), 1.0, 0),
+        );
+
+        assert!(builder.push_thumbnail(
+            &directory,
+            &entry,
+            ViewRect {
+                x: 4.0,
+                y: 4.0,
+                width: 48.0,
+                height: 48.0,
+            },
+            ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 128.0,
+                height: 96.0,
+            },
+            IconDrawLayer::Content,
+        ));
+        assert!(thumbnails.pending.is_empty());
     }

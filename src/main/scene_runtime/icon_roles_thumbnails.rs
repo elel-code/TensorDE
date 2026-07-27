@@ -38,11 +38,12 @@ impl ShellScene {
 
     fn enqueue_icon_role_read_ahead(&self, directory: &Path, entry: &Entry, icon_size: f32) {
         let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key(
+        let key = file_icon_path_cache_key_with_stamp(
             &path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
+            entry.modified_secs,
             icon_size,
         );
         self.icon_role_read_ahead.borrow_mut().push_key(key);

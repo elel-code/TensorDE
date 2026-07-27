@@ -505,6 +505,8 @@ struct IconRenderer {
     sampler: wgpu::Sampler,
     /// Persistent logical-key → GPU texture map (scheme C).
     gpu_textures: HashMap<IconGpuUploadKey, IconGpuTexture>,
+    /// Approximate RGBA residency for byte-based VRAM eviction.
+    gpu_texture_bytes: usize,
     /// Frame-local: slot index → logical cache key for draw.
     frame_slot_keys: Vec<IconGpuUploadKey>,
     content_batches: Vec<IconSlotBatch>,

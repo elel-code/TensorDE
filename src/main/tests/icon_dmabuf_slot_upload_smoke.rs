@@ -53,13 +53,11 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
         }
     };
 
-    // CPU fallback pixels (padded size must match slot raster after guard).
-    let pad_w = W + ICON_ATLAS_GUARD_TEXELS * 2;
-    let pad_h = H + ICON_ATLAS_GUARD_TEXELS * 2;
+    // CPU fallback pixels match the raw texture; ClampToEdge handles filtering.
     let pixels = vec![0u8, 0, 255, 255]
         .into_iter()
         .cycle()
-        .take((pad_w * pad_h * 4) as usize)
+        .take((W * H * 4) as usize)
         .collect::<Vec<_>>();
     let raster = IconRaster {
         pixels: pixels.into(),
@@ -81,7 +79,7 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
         PhysicalSize::new(128, 128),
     );
 
-    // Attach plane sized for the *padded* texture (what GPU import uses).
+    // Attach a plane sized for the raw texture imported by the GPU.
     builder.push_raster_with_dmabuf(
         IconGpuUploadKey::theme_asset(PathBuf::from("/test/dmabuf-icon.png")),
         raster,

@@ -83,11 +83,11 @@ use shell::icon_resolver::FileIconResolverTestHarness;
 use shell::icon_resolver::{FileIconResolver, ResolvedFileIcon, visible_icon_fallback_key};
 use shell::icon_role_read_ahead::ShellIconRoleReadAheadQueue;
 #[cfg(test)]
-use shell::icon_roles::file_icon_profile;
+use shell::icon_roles::{file_icon_path_cache_key, file_icon_profile};
 use shell::icon_roles::{
     FILE_ICON_CORNER_RADIUS_RATIO, FOLDER_ICON_CORNER_RADIUS_RATIO, FileIconKind,
     FileIconPathCacheKey, FileIconProfile, FileIconRoleCacheKey, NamedIconFallback,
-    file_icon_path_cache_key, icon_cache_size,
+    file_icon_path_cache_key_with_stamp, icon_cache_size, thumbnail_display_cache_size,
 };
 use shell::location::{
     LocationDraftPurpose, PathHistory, ShellLocationDraft, ShellPaneHistories,

@@ -424,10 +424,13 @@ fn folder_preview_child_raster(
         priority,
     )
     .and_then(|thumbnail_request| {
-        generate_thumbnail_with_external_thumbnailer_registry(
+        generate_thumbnail_with_external_thumbnailer_registry_size(
             cache_root,
             &thumbnail_request,
             thumbnailers,
+            // Each child occupies only a fraction of the composed folder icon;
+            // use the nearest source bucket without applying display bias again.
+            ThumbnailSize::for_raster_px(size_px),
         )
         .ok()
         .flatten()

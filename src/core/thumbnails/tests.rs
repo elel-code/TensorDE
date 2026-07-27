@@ -47,6 +47,50 @@ fn thumbnail_cache_lookup_prefers_normal_before_large() {
 }
 
 #[test]
+fn thumbnail_size_for_display_px_prefers_sharper_buckets() {
+    assert_eq!(ThumbnailSize::for_display_px(16), ThumbnailSize::Normal);
+    assert_eq!(ThumbnailSize::for_display_px(32), ThumbnailSize::Normal);
+    assert_eq!(ThumbnailSize::for_display_px(48), ThumbnailSize::Large);
+    assert_eq!(ThumbnailSize::for_display_px(96), ThumbnailSize::Large);
+    assert_eq!(ThumbnailSize::for_display_px(128), ThumbnailSize::XLarge);
+    assert_eq!(ThumbnailSize::for_display_px(256), ThumbnailSize::XXLarge);
+}
+
+#[test]
+fn thumbnail_size_for_prepared_raster_does_not_apply_display_bias_twice() {
+    assert_eq!(ThumbnailSize::for_raster_px(128), ThumbnailSize::Normal);
+    assert_eq!(ThumbnailSize::for_raster_px(256), ThumbnailSize::Large);
+    assert_eq!(ThumbnailSize::for_raster_px(512), ThumbnailSize::XLarge);
+    assert_eq!(ThumbnailSize::for_raster_px(1024), ThumbnailSize::XXLarge);
+}
+
+#[test]
+fn thumbnail_cache_lookup_prefers_requested_then_sharper() {
+    let root = temp_root("lookup-prefer");
+    let uri = "file:///tmp/photo.jpg";
+    let normal = thumbnail_cache_path(&root, ThumbnailSize::Normal, uri);
+    let large = thumbnail_cache_path(&root, ThumbnailSize::Large, uri);
+    let x_large = thumbnail_cache_path(&root, ThumbnailSize::XLarge, uri);
+    for path in [&normal, &large, &x_large] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    fs::write(&normal, test_thumbnail_png(uri, 1)).unwrap();
+    fs::write(&large, test_thumbnail_png(uri, 1)).unwrap();
+    fs::write(&x_large, test_thumbnail_png(uri, 1)).unwrap();
+
+    // Preferred Large hits first even when sharper x-large also exists.
+    let hit = cached_thumbnail_preferring(&root, uri, Some(1), ThumbnailSize::Large).unwrap();
+    assert_eq!(hit.size(), ThumbnailSize::Large);
+    assert_eq!(hit.path(), large.as_path());
+
+    // Preferred XLarge hits its own bucket.
+    let hit = cached_thumbnail_preferring(&root, uri, Some(1), ThumbnailSize::XLarge).unwrap();
+    assert_eq!(hit.size(), ThumbnailSize::XLarge);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn thumbnail_cache_lookup_rejects_mismatched_metadata() {
     let root = temp_root("mismatch");
     let file = root.join("image.png");

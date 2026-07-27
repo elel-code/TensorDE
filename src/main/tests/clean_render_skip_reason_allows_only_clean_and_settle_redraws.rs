@@ -129,8 +129,8 @@
     #[test]
     fn icon_gpu_slot_content_hash_changes_when_pixels_change() {
         let identity = IconGpuUploadKey::role(FileIconKind::Directory);
-        let a = padded_icon_atlas_raster(&test_icon_raster(16, 7));
-        let b = padded_icon_atlas_raster(&test_icon_raster(16, 9));
+        let a = test_icon_raster(16, 7);
+        let b = test_icon_raster(16, 9);
         let hash_a = hash_bytes_with_len(a.pixels.as_ref());
         let hash_b = hash_bytes_with_len(b.pixels.as_ref());
         assert_ne!(hash_a, hash_b);

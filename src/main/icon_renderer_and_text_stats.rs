@@ -73,6 +73,7 @@ impl IconRenderer {
             bind_group_layout,
             sampler,
             gpu_textures: HashMap::new(),
+            gpu_texture_bytes: 0,
             frame_slot_keys: Vec::new(),
             content_batches: Vec::new(),
             overlay_batches: Vec::new(),
@@ -177,11 +178,12 @@ impl IconRenderer {
                     continue;
                 };
                 let path = projection.view.path.join(entry.name.as_ref());
-                let path_key = file_icon_path_cache_key(
+                let path_key = file_icon_path_cache_key_with_stamp(
                     &path,
                     entry.is_dir,
                     entry.mime_type.clone(),
                     entry.mime_magic_checked,
+                    entry.modified_secs,
                     icon_size,
                 );
                 let role_key = path_key.role.clone();
@@ -283,7 +285,8 @@ impl IconRenderer {
                     self.cpu_uploads = self.cpu_uploads.saturating_add(1);
                 }
             }
-            self.gpu_textures.insert(
+            let texture_bytes = icon_texture_bytes(slot.width, slot.height);
+            let replaced = self.gpu_textures.insert(
                 key,
                 IconGpuTexture {
                     texture,
@@ -297,30 +300,43 @@ impl IconRenderer {
                     source,
                 },
             );
+            self.gpu_texture_bytes = self.gpu_texture_bytes.saturating_add(texture_bytes);
+            if let Some(replaced) = replaced {
+                self.gpu_texture_bytes = self
+                    .gpu_texture_bytes
+                    .saturating_sub(icon_texture_bytes(replaced.width, replaced.height));
+            }
             // Steady state is GPU-only: drop one-shot CPU payload after upload.
             slot.upload = None;
             uploads += 1;
         }
-        // Free stamped CPU thumbnail staging once content textures are resident.
-        let content_paths = frame
+        // Free stamped CPU thumbnail staging that is no larger than the
+        // resident GPU texture. Keep *larger* CPU sizes so zoom-in can upgrade
+        // the size-free content slot instead of staying stuck at the first-open
+        // resolution (release used to drop every size for path+mtime).
+        let content_resident = frame
             .slots
             .iter()
             .filter_map(|slot| match &slot.identity.identity {
-                IconGpuIdentity::Content { path, stamp } => Some(IconRasterCacheKey::thumbnail(
-                    path.clone(),
-                    0,
-                    *stamp,
-                )),
+                IconGpuIdentity::Content { path, stamp } => {
+                    let size_px = slot
+                        .content_width
+                        .max(slot.content_height)
+                        .min(u32::from(u16::MAX)) as u16;
+                    Some(IconRasterCacheKey::thumbnail(
+                        path.clone(),
+                        size_px,
+                        *stamp,
+                    ))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        // release_gpu_resident matches on path+stamp (size ignored for stamped).
-        if !content_paths.is_empty() {
-            // Drop any stamped CPU entry for these paths regardless of size_px.
+        if !content_resident.is_empty() {
             self.raster_cache
-                .release_gpu_resident_content(&content_paths);
+                .release_gpu_resident_content_upto(&content_resident);
             self.thumbnails
-                .release_gpu_resident_content(&content_paths);
+                .release_gpu_resident_content_upto(&content_resident);
         }
         self.evict_gpu_textures_if_needed();
         frame.stats.atlas_uploads = uploads;
@@ -439,22 +455,30 @@ impl IconRenderer {
     }
 
     fn evict_gpu_textures_if_needed(&mut self) {
-        // Soft cap: keep GPU icon textures roughly in line with CPU raster cache budget.
+        // Protect both object count and bytes. A count-only cap becomes unsafe
+        // when high-zoom previews are 256px (512 textures would approach 128 MiB).
         const MAX_GPU_ICON_TEXTURES: usize = 512;
-        while self.gpu_textures.len() > MAX_GPU_ICON_TEXTURES {
+        const MAX_GPU_ICON_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
+        while self.gpu_textures.len() > MAX_GPU_ICON_TEXTURES
+            || self.gpu_texture_bytes > MAX_GPU_ICON_TEXTURE_BYTES
+        {
             // Skip keys still drawn this frame (would flash empty icons).
             // Previously `break` on the first in-use victim stopped all eviction
             // when the LRU entry happened to still be on-screen.
             let Some(victim) = self
                 .gpu_textures
                 .iter()
-                .filter(|(key, _)| !self.frame_slot_keys.contains(key))
+                .filter(|(_, entry)| entry.last_used_frame != self.gpu_frame)
                 .min_by_key(|(_, e)| e.last_used_frame)
                 .map(|(k, _)| k.clone())
             else {
                 break;
             };
-            self.gpu_textures.remove(&victim);
+            if let Some(removed) = self.gpu_textures.remove(&victim) {
+                self.gpu_texture_bytes = self
+                    .gpu_texture_bytes
+                    .saturating_sub(icon_texture_bytes(removed.width, removed.height));
+            }
         }
         if self.gpu_textures.capacity() > self.gpu_textures.len().saturating_mul(2).max(64) {
             self.gpu_textures.shrink_to_fit();
@@ -466,7 +490,8 @@ impl IconRenderer {
     fn release_unused_gpu_textures(&mut self) {
         let before = self.gpu_textures.len();
         self.gpu_textures
-            .retain(|key, _| self.frame_slot_keys.contains(key));
+            .retain(|_, entry| entry.last_used_frame == self.gpu_frame);
+        self.recount_gpu_texture_bytes();
         if before != self.gpu_textures.len()
             && self.gpu_textures.capacity() > self.gpu_textures.len().saturating_mul(2).max(64)
         {
@@ -485,6 +510,7 @@ impl IconRenderer {
                 IconGpuIdentity::Content { path: p, .. } => !p.starts_with(path),
                 _ => true,
             });
+            self.recount_gpu_texture_bytes();
         }
         self.thumbnails.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
     }
@@ -504,6 +530,14 @@ impl IconRenderer {
             );
         }
         IconGpuResidentIndex { entries }
+    }
+
+    fn recount_gpu_texture_bytes(&mut self) {
+        self.gpu_texture_bytes = self
+            .gpu_textures
+            .values()
+            .map(|texture| icon_texture_bytes(texture.width, texture.height))
+            .sum();
     }
 
     fn draw_batches<'pass>(
@@ -546,6 +580,12 @@ impl IconRenderer {
     fn batch_count(&self) -> usize {
         self.content_batches.len() + self.overlay_batches.len()
     }
+}
+
+fn icon_texture_bytes(width: u32, height: u32) -> usize {
+    (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4)
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct TextFrameStats {

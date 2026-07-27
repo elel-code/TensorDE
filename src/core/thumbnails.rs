@@ -25,6 +25,8 @@ pub use scheduler::{
 const THUMBNAILS_DIR: &str = "thumbnails";
 const NORMAL_DIR: &str = "normal";
 const LARGE_DIR: &str = "large";
+const X_LARGE_DIR: &str = "x-large";
+const XX_LARGE_DIR: &str = "xx-large";
 const FAIL_DIR: &str = "fail";
 const FAIL_APP_DIR: &str = "gnome-thumbnail-factory";
 const PNG_EXTENSION: &str = "png";
@@ -34,10 +36,17 @@ const PNG_CHUNK_CRC_LEN: usize = 4;
 
 const FAILURE_THUMBNAIL_IDAT: &[u8] = &[0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01];
 
+/// Freedesktop freestanding thumbnail sizes (shared with Dolphin / GNOME).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ThumbnailSize {
+    /// 128px — `~/.cache/thumbnails/normal`
     Normal,
+    /// 256px — `~/.cache/thumbnails/large`
     Large,
+    /// 512px — `~/.cache/thumbnails/x-large`
+    XLarge,
+    /// 1024px — `~/.cache/thumbnails/xx-large`
+    XXLarge,
 }
 
 impl ThumbnailSize {
@@ -45,6 +54,8 @@ impl ThumbnailSize {
         match self {
             Self::Normal => NORMAL_DIR,
             Self::Large => LARGE_DIR,
+            Self::XLarge => X_LARGE_DIR,
+            Self::XXLarge => XX_LARGE_DIR,
         }
     }
 
@@ -52,6 +63,53 @@ impl ThumbnailSize {
         match self {
             Self::Normal => 128,
             Self::Large => 256,
+            Self::XLarge => 512,
+            Self::XXLarge => 1024,
+        }
+    }
+
+    /// All freestanding sizes from largest to smallest (shared cache lookup order).
+    pub fn all_descending() -> [Self; 4] {
+        [Self::XXLarge, Self::XLarge, Self::Large, Self::Normal]
+    }
+
+    /// Pick freestanding cache size from on-screen icon / decode pixels.
+    ///
+    /// Biased toward sharper freestanding buckets than a 1:1 match so default
+    /// Icons mode (48px) uses `large/` (256) instead of soft `normal/` (128),
+    /// and high zoom can use `x-large` / `xx-large`.
+    pub fn for_display_px(size_px: u16) -> Self {
+        match size_px {
+            0..=32 => Self::Normal,
+            33..=96 => Self::Large,
+            97..=192 => Self::XLarge,
+            _ => Self::XXLarge,
+        }
+    }
+
+    /// Pick the smallest freestanding bucket that can supply a prepared raster.
+    ///
+    /// Unlike [`Self::for_display_px`], this must not apply the sharpness bias a
+    /// second time. The render request may already have been raised from 48px
+    /// to 256px; mapping that 256px again would unnecessarily generate a 1024px
+    /// `xx-large` thumbnail only to immediately downscale it on the CPU.
+    pub fn for_raster_px(size_px: u16) -> Self {
+        match size_px {
+            0..=128 => Self::Normal,
+            129..=256 => Self::Large,
+            257..=512 => Self::XLarge,
+            _ => Self::XXLarge,
+        }
+    }
+
+    /// Lookup order: requested, nearest sharper buckets, then softer buckets.
+    /// A fixed array keeps cache probes allocation-free.
+    fn lookup_order(self) -> [Self; 4] {
+        match self {
+            Self::Normal => [Self::Normal, Self::Large, Self::XLarge, Self::XXLarge],
+            Self::Large => [Self::Large, Self::XLarge, Self::XXLarge, Self::Normal],
+            Self::XLarge => [Self::XLarge, Self::XXLarge, Self::Large, Self::Normal],
+            Self::XXLarge => [Self::XXLarge, Self::XLarge, Self::Large, Self::Normal],
         }
     }
 }
@@ -76,6 +134,8 @@ impl ThumbnailCacheHit {
 pub struct ThumbnailCachePaths {
     pub normal: PathBuf,
     pub large: PathBuf,
+    pub x_large: PathBuf,
+    pub xx_large: PathBuf,
     pub failure: PathBuf,
 }
 
@@ -513,6 +573,8 @@ pub fn thumbnail_cache_paths_for_uri(root: &Path, uri: &str) -> ThumbnailCachePa
     ThumbnailCachePaths {
         normal: thumbnail_cache_path(root, ThumbnailSize::Normal, uri),
         large: thumbnail_cache_path(root, ThumbnailSize::Large, uri),
+        x_large: thumbnail_cache_path(root, ThumbnailSize::XLarge, uri),
+        xx_large: thumbnail_cache_path(root, ThumbnailSize::XXLarge, uri),
         failure: thumbnail_failure_path(root, uri),
     }
 }
@@ -543,13 +605,33 @@ fn cached_thumbnail(
     uri: &str,
     modified_secs: Option<u64>,
 ) -> Option<ThumbnailCacheHit> {
-    [ThumbnailSize::Normal, ThumbnailSize::Large]
-        .into_iter()
-        .find_map(|size| {
-            let path = thumbnail_cache_path(root, size, uri);
-            thumbnail_metadata_matches(&path, uri, modified_secs)
-                .then_some(ThumbnailCacheHit { size, path })
-        })
+    cached_thumbnail_preferring(root, uri, modified_secs, ThumbnailSize::Normal)
+}
+
+fn cached_thumbnail_preferring(
+    root: &Path,
+    uri: &str,
+    modified_secs: Option<u64>,
+    preferred: ThumbnailSize,
+) -> Option<ThumbnailCacheHit> {
+    preferred.lookup_order().into_iter().find_map(|size| {
+        let path = thumbnail_cache_path(root, size, uri);
+        thumbnail_metadata_matches(&path, uri, modified_secs)
+            .then_some(ThumbnailCacheHit { size, path })
+    })
+}
+
+pub fn cached_thumbnail_for_request_size(
+    root: &Path,
+    request: &ThumbnailRequest,
+    preferred: ThumbnailSize,
+) -> Option<ThumbnailCacheHit> {
+    cached_thumbnail_preferring(
+        root,
+        request.uri(),
+        Some(request.modified_secs()),
+        preferred,
+    )
 }
 
 fn thumbnail_metadata_matches(path: &Path, uri: &str, modified_secs: Option<u64>) -> bool {
@@ -624,14 +706,30 @@ pub fn generate_thumbnail_with_external_thumbnailer_registry(
     request: &ThumbnailRequest,
     registry: &ThumbnailerRegistry,
 ) -> io::Result<Option<ThumbnailCacheHit>> {
-    if let Some(hit) = cached_thumbnail_for_request(root, request) {
+    generate_thumbnail_with_external_thumbnailer_registry_size(
+        root,
+        request,
+        registry,
+        ThumbnailSize::Normal,
+    )
+}
+
+/// Like [`generate_thumbnail_with_external_thumbnailer_registry`], but write/read
+/// the freestanding size that matches on-screen icon pixels (`Large` = 256).
+pub fn generate_thumbnail_with_external_thumbnailer_registry_size(
+    root: &Path,
+    request: &ThumbnailRequest,
+    registry: &ThumbnailerRegistry,
+    size: ThumbnailSize,
+) -> io::Result<Option<ThumbnailCacheHit>> {
+    if let Some(hit) = cached_thumbnail_for_request_size(root, request, size) {
         return Ok(Some(hit));
     }
     if thumbnail_failure_is_cached(root, request.uri(), request.modified_secs()) {
         return Ok(None);
     }
 
-    let output_path = thumbnail_cache_path(root, ThumbnailSize::Normal, request.uri());
+    let output_path = thumbnail_cache_path(root, size, request.uri());
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -640,19 +738,17 @@ pub fn generate_thumbnail_with_external_thumbnailer_registry(
     if thumbnail_request_is_windows_executable(request) {
         attempted = true;
         let _ = fs::remove_file(&temp_path);
-        if let Some(png) =
-            windows_executable_icon_png(request.path(), ThumbnailSize::Normal.max_dimension())?
-        {
+        if let Some(png) = windows_executable_icon_png(request.path(), size.max_dimension())? {
             fs::write(&temp_path, png)?;
             if write_thumbnail_metadata(&temp_path, request.uri(), request.modified_secs()).is_ok()
                 && fs::rename(&temp_path, &output_path).is_ok()
-                && let Some(hit) = cached_thumbnail_for_request(root, request)
+                && let Some(hit) = cached_thumbnail_for_request_size(root, request, size)
             {
                 return Ok(Some(hit));
             }
         }
     }
-    let commands = registry.commands_for_request(request, &temp_path, ThumbnailSize::Normal);
+    let commands = registry.commands_for_request(request, &temp_path, size);
     for command in commands {
         let _ = fs::remove_file(&temp_path);
         match run_external_thumbnailer_command(&command) {
@@ -664,7 +760,7 @@ pub fn generate_thumbnail_with_external_thumbnailer_registry(
                 if write_thumbnail_metadata(&temp_path, request.uri(), request.modified_secs())
                     .is_ok()
                     && fs::rename(&temp_path, &output_path).is_ok()
-                    && let Some(hit) = cached_thumbnail_for_request(root, request)
+                    && let Some(hit) = cached_thumbnail_for_request_size(root, request, size)
                 {
                     return Ok(Some(hit));
                 }
