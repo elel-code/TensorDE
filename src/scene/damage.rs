@@ -174,10 +174,9 @@ mod tests {
         layout::LayoutPlacement,
         scene::{
             BackdropBlur, ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot,
-            SurfaceContent, SurfaceLayer, SurfaceTransform,
+            SurfaceContent, SurfaceLayer, SurfaceSampleTransform,
         },
     };
-    use tensor_util::Size;
 
     use super::*;
 
@@ -319,10 +318,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(revision),
             layer: SurfaceLayer::View,
-            buffer_size: Size::new(40, 40),
             local_geometry: Rect::new(0, 0, 40, 40),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         };
         let span = ContentSpan::new(0, 1).unwrap();
         let old = SceneSnapshot::with_content(
@@ -352,10 +349,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(revision),
             layer: SurfaceLayer::Popup,
-            buffer_size: Size::new(10, 10),
             local_geometry: Rect::new(x, 5, 10, 10),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         };
         let span = ContentSpan::new(0, 1).unwrap();
         let old = SceneSnapshot::with_content(

@@ -7,7 +7,7 @@ use crate::{
     render::CursorOverlay,
     scene::{
         ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceLayer,
-        SurfaceTransform,
+        SurfaceSampleTransform,
     },
 };
 
@@ -47,7 +47,7 @@ pub(crate) struct SurfaceDraw {
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
     pub(crate) effects: EffectStyle,
-    pub(crate) transform: SurfaceTransform,
+    pub(crate) sample_transform: SurfaceSampleTransform,
 }
 
 /// A vector cursor draws after every client surface and therefore needs no
@@ -166,7 +166,7 @@ impl FrameDrawPlan {
                     destination,
                     clip,
                     effects: node.effects,
-                    transform: content.transform,
+                    sample_transform: content.sample_transform,
                 });
                 scene_draws.push(SceneDrawCommand::Client(draws.len() - 1));
             }
@@ -255,7 +255,10 @@ mod tests {
     use crate::{
         ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{ContentRevision, SceneNode, SurfaceContent, SurfaceLayer, SurfaceTransform},
+        scene::{
+            ContentRevision, SceneNode, SurfaceContent, SurfaceLayer, SurfaceSampleTransform,
+            SurfaceTransform,
+        },
     };
 
     use super::*;
@@ -293,20 +296,16 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
-                buffer_size: Size::new(80, 60),
                 local_geometry: Rect::new(0, 0, 80, 60),
-                buffer_scale: 1,
-                transform: SurfaceTransform::Normal,
+                sample_transform: SurfaceSampleTransform::IDENTITY,
             },
             SurfaceContent {
                 surface_id: SurfaceId::new(2),
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(2),
                 layer: SurfaceLayer::View,
-                buffer_size: Size::new(20, 20),
                 local_geometry: Rect::new(5, 5, 20, 20),
-                buffer_scale: 1,
-                transform: SurfaceTransform::Normal,
+                sample_transform: SurfaceSampleTransform::IDENTITY,
             },
         ];
         let span = crate::scene::ContentSpan::new(0, contents.len()).unwrap();
@@ -338,10 +337,13 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(3),
             layer: SurfaceLayer::View,
-            buffer_size: Size::new(80, 100),
             local_geometry: Rect::new(10, 5, 80, 60),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Rotate90,
+            sample_transform: SurfaceSampleTransform::for_surface(
+                Size::new(80, 100),
+                1,
+                SurfaceTransform::Rotate90,
+                None,
+            ),
         }];
         let span = crate::scene::ContentSpan::new(0, contents.len()).unwrap();
         let scene = SceneSnapshot::with_content(
@@ -359,7 +361,15 @@ mod tests {
         let draw = plan.draws()[0];
         assert_eq!(draw.destination, Rect::new(-10, -5, 80, 60));
         assert_eq!(draw.clip, Rect::new(0, 0, 70, 55));
-        assert_eq!(draw.transform, SurfaceTransform::Rotate90);
+        assert_eq!(
+            draw.sample_transform,
+            SurfaceSampleTransform::for_surface(
+                Size::new(80, 100),
+                1,
+                SurfaceTransform::Rotate90,
+                None,
+            )
+        );
     }
 
     #[test]
@@ -374,10 +384,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::Popup,
-            buffer_size: Size::new(30, 10),
             local_geometry: Rect::new(15, 5, 30, 10),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
         let span = crate::scene::ContentSpan::new(0, 1).unwrap();
         let scene = SceneSnapshot::with_content(
@@ -408,10 +416,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::View,
-            buffer_size: Size::new(3, 4),
             local_geometry: Rect::new(0, 0, 3, 4),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
         let span = crate::scene::ContentSpan::new(0, 1).unwrap();
         let scene = SceneSnapshot::with_content(
@@ -528,10 +534,8 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(1),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
-                buffer_size: Size::new(40, 30),
                 local_geometry: Rect::new(0, 0, 40, 30),
-                buffer_scale: 1,
-                transform: SurfaceTransform::Normal,
+                sample_transform: SurfaceSampleTransform::IDENTITY,
             },
             // This popup overlaps the lower view's ring. It must be emitted
             // after the ring just like Niri's window popup tree.
@@ -540,20 +544,16 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(2),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::Popup,
-                buffer_size: Size::new(18, 12),
                 local_geometry: Rect::new(34, -2, 18, 12),
-                buffer_scale: 1,
-                transform: SurfaceTransform::Normal,
+                sample_transform: SurfaceSampleTransform::IDENTITY,
             },
             SurfaceContent {
                 surface_id: SurfaceId::new(3),
                 buffer_id: SurfaceBufferId::new(3),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
-                buffer_size: Size::new(40, 30),
                 local_geometry: Rect::new(0, 0, 40, 30),
-                buffer_scale: 1,
-                transform: SurfaceTransform::Normal,
+                sample_transform: SurfaceSampleTransform::IDENTITY,
             },
         ];
         let lower_span = crate::scene::ContentSpan::new(0, 2).unwrap();

@@ -1,12 +1,12 @@
 use tensor_host::{DrmFormat, Fourcc, Modifier};
-use tensor_util::{OutputScale, Rect, Size};
+use tensor_util::{OutputScale, Rect};
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::LayoutPlacement,
     scene::{
         ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot, SurfaceContent,
-        SurfaceLayer, SurfaceTransform,
+        SurfaceLayer, SurfaceSampleTransform,
     },
 };
 
@@ -39,10 +39,8 @@ fn scene() -> SceneSnapshot {
         buffer_id: SurfaceBufferId::new(1),
         revision: ContentRevision::new(1),
         layer: SurfaceLayer::View,
-        buffer_size: Size::new(100, 100),
         local_geometry: Rect::new(0, 0, 100, 100),
-        buffer_scale: 1,
-        transform: SurfaceTransform::Normal,
+        sample_transform: SurfaceSampleTransform::IDENTITY,
     };
     SceneSnapshot::with_content(
         WorkspaceId::new(0),

@@ -9,7 +9,7 @@ use smithay::wayland::{
     },
     shm,
 };
-use tensor_protocol::SurfaceTransform;
+use tensor_protocol::{SurfaceSourceRect, SurfaceTransform};
 use wayland_server::{
     Resource,
     protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
@@ -18,7 +18,7 @@ use wayland_server::{
 #[cfg(feature = "tty")]
 use crate::protocol::globals::dmabuf::dmabuf_buffer;
 use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
-use crate::protocol::globals::viewporter::committed_viewport_size;
+use crate::protocol::globals::viewporter::{CommittedViewport, committed_viewport};
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -42,6 +42,7 @@ pub(super) struct SurfaceRenderSnapshot {
     pub(super) commit: u64,
     pub(super) buffer_scale: u32,
     pub(super) transform: SurfaceTransform,
+    pub(super) source: Option<SurfaceSourceRect>,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ struct SurfaceState {
     commit: u64,
     buffer_scale: u32,
     transform: SurfaceTransform,
+    source: Option<SurfaceSourceRect>,
 }
 
 impl Default for SurfaceState {
@@ -63,6 +65,7 @@ impl Default for SurfaceState {
             commit: 0,
             buffer_scale: 1,
             transform: SurfaceTransform::Normal,
+            source: None,
         }
     }
 }
@@ -96,7 +99,8 @@ impl SurfaceState {
         self.buffer_scale = u32::try_from(attributes.buffer_scale).unwrap_or(1).max(1);
         self.transform = surface_transform(attributes.buffer_transform);
         let logical_size = logical_buffer_size(buffer_size, self.buffer_scale, self.transform);
-        let view = view_snapshot(states, logical_size);
+        let viewport = committed_viewport(states, logical_size);
+        let view = view_snapshot(states, logical_size, viewport);
         let damaged = attributes
             .damage
             .iter()
@@ -106,6 +110,7 @@ impl SurfaceState {
             self.commit = self.commit.wrapping_add(1);
         }
         self.view = Some(view);
+        self.source = viewport.source;
     }
 
     fn replace_buffer(&mut self, buffer: WlBuffer) {
@@ -122,6 +127,7 @@ impl SurfaceState {
         self.view = None;
         self.buffer_scale = 1;
         self.transform = SurfaceTransform::Normal;
+        self.source = None;
         self.commit = self.commit.wrapping_add(1);
     }
 
@@ -221,6 +227,7 @@ pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRen
         commit: state.commit,
         buffer_scale: state.buffer_scale,
         transform: state.transform,
+        source: state.source,
     })
 }
 
@@ -234,6 +241,7 @@ pub(crate) struct TestSurfaceState {
     pub(crate) commit: u64,
     pub(crate) buffer_scale: u32,
     pub(crate) transform: SurfaceTransform,
+    pub(crate) source: Option<SurfaceSourceRect>,
 }
 
 #[cfg(test)]
@@ -262,6 +270,7 @@ pub(crate) fn test_surface_tree_states(root: &WlSurface) -> Vec<TestSurfaceState
                 commit: state.commit,
                 buffer_scale: state.buffer_scale,
                 transform: state.transform,
+                source: state.source,
             });
         },
         |_, _, _| true,
@@ -302,10 +311,12 @@ fn logical_buffer_size(
     }
 }
 
-fn view_snapshot(states: &SurfaceData, logical_size: (i32, i32)) -> SurfaceViewSnapshot {
-    let size = committed_viewport_size(states, logical_size)
-        .and_then(valid_size)
-        .unwrap_or(logical_size);
+fn view_snapshot(
+    states: &SurfaceData,
+    logical_size: (i32, i32),
+    viewport: CommittedViewport,
+) -> SurfaceViewSnapshot {
+    let size = viewport.size().and_then(valid_size).unwrap_or(logical_size);
     let offset = if states.role == Some(SUBSURFACE_ROLE) {
         let mut subsurface = states.cached_state.get::<SubsurfaceCachedState>();
         let location = subsurface.current().location;

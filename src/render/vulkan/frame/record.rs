@@ -116,7 +116,9 @@ pub(super) fn prepare_draws(
                 resource_heap_base,
                 draw.image_descriptor,
             )?;
-            let uv = draw.transform.uv_transform();
+            let origin = draw.sample_transform.origin();
+            let axis_x = draw.sample_transform.axis_x();
+            let axis_y = draw.sample_transform.axis_y();
             Ok(PreparedDraw {
                 push: DrawPushData {
                     descriptor_index,
@@ -127,15 +129,10 @@ pub(super) fn prepare_draws(
                     opacity: draw.effects.opacity.as_f32(),
                     padding: 0.0,
                     destination: destination_to_ndc(draw.destination, viewport),
-                    uv_origin_axis_x: [
-                        f32::from(uv.origin.0),
-                        f32::from(uv.origin.1),
-                        f32::from(uv.axis_x.0),
-                        f32::from(uv.axis_x.1),
-                    ],
+                    uv_origin_axis_x: [origin.0, origin.1, axis_x.0, axis_x.1],
                     uv_axis_y_surface_size: [
-                        f32::from(uv.axis_y.0),
-                        f32::from(uv.axis_y.1),
+                        axis_y.0,
+                        axis_y.1,
                         draw.destination.width as f32,
                         draw.destination.height as f32,
                     ],

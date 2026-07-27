@@ -383,12 +383,11 @@ fn refresh_from_millihertz(refresh: i32) -> Refresh {
 #[cfg(test)]
 mod tests {
     use smithay::output::{PhysicalProperties, Subpixel};
-    use tensor_util::Size;
 
     use crate::{
         ecs::{SurfaceBufferId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceTransform},
+        scene::{ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceSampleTransform},
     };
 
     use super::*;
@@ -565,10 +564,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(id),
             revision: ContentRevision::new(1),
             layer,
-            buffer_size: Size::new(local_geometry.width, local_geometry.height),
             local_geometry,
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         }
     }
 }

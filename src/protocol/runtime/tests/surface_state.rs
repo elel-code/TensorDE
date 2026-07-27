@@ -183,6 +183,7 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
         release_rx.recv().unwrap();
 
         let viewport = viewporter.get_viewport(&root, &handle, ());
+        viewport.set_source(2.0, 4.0, 10.0, 20.0);
         viewport.set_destination(40, 20);
         root.set_buffer_scale(2);
         root.set_buffer_transform(wl_output::Transform::_90);
@@ -220,6 +221,7 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
             &handle,
             (),
         );
+        viewport.set_source(-1.0, -1.0, -1.0, -1.0);
         viewport.set_destination(9, 7);
         root.set_buffer_scale(1);
         root.set_buffer_transform(wl_output::Transform::Normal);
@@ -278,6 +280,7 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     assert_eq!(states[0].commit, 1);
     assert_eq!(states[0].buffer_scale, 1);
     assert_eq!(states[0].transform, SurfaceTransform::Normal);
+    assert_eq!(states[0].source, None);
     release_tx.send(()).unwrap();
 
     assert_eq!(
@@ -296,6 +299,10 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     assert_eq!(state.commit, 2);
     assert_eq!(state.buffer_scale, 2);
     assert_eq!(state.transform, SurfaceTransform::Rotate90);
+    assert_eq!(
+        state.source.expect("source crop was committed").raw_fixed(),
+        [512, 1024, 2560, 5120]
+    );
     release_tx.send(()).unwrap();
 
     let (child_id, child_buffer_id) = match dispatch_until_step(&mut runtime, &event_rx) {
@@ -333,6 +340,7 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     assert_eq!(state.commit, 3);
     assert_eq!(state.buffer_scale, 1);
     assert_eq!(state.transform, SurfaceTransform::Normal);
+    assert_eq!(state.source, None);
     let pixel = test_surface_buffer(&root).expect("single-pixel buffer is current");
     assert_eq!(
         single_pixel_rgba(&pixel),

@@ -1,5 +1,6 @@
 pub use tensor_protocol::{
-    ContentRevision, SurfaceContent, SurfaceLayer, SurfaceTransform, SurfaceUvTransform,
+    ContentRevision, SurfaceContent, SurfaceLayer, SurfaceSampleTransform, SurfaceSourceRect,
+    SurfaceTransform, SurfaceUvTransform,
 };
 
 /// Index range into `SceneSnapshot`'s flat surface-content table.

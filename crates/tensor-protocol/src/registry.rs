@@ -6,7 +6,8 @@ use std::{
 use tensor_util::{Rect, Size};
 
 use crate::{
-    ContentRevision, SurfaceBufferId, SurfaceContent, SurfaceId, SurfaceLayer, SurfaceTransform,
+    ContentRevision, SurfaceBufferId, SurfaceContent, SurfaceId, SurfaceLayer,
+    SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
 };
 
 /// Protocol-owned mapping from opaque wire objects to value-only scene state.
@@ -41,6 +42,7 @@ struct SurfaceState<K, C> {
     last_commit: Option<C>,
     buffer_scale: u32,
     transform: SurfaceTransform,
+    source: Option<SurfaceSourceRect>,
     layer: SurfaceLayer,
 }
 
@@ -89,6 +91,7 @@ pub struct SurfaceCommit<K, C = u64> {
     pub commit: C,
     pub buffer_scale: u32,
     pub transform: SurfaceTransform,
+    pub source: Option<SurfaceSourceRect>,
     pub layer: SurfaceLayer,
 }
 
@@ -111,6 +114,7 @@ where
                 last_commit: None,
                 buffer_scale: 1,
                 transform: SurfaceTransform::Normal,
+                source: None,
                 layer: SurfaceLayer::View,
             },
         );
@@ -182,6 +186,7 @@ where
             || state.last_commit != Some(snapshot.commit)
             || state.buffer_scale != buffer_scale
             || state.transform != snapshot.transform
+            || state.source != snapshot.source
             || state.layer != snapshot.layer;
 
         let mut released_buffers = Vec::new();
@@ -205,20 +210,27 @@ where
         state.last_commit = Some(snapshot.commit);
         state.buffer_scale = buffer_scale;
         state.transform = snapshot.transform;
+        state.source = snapshot.source;
         state.layer = snapshot.layer;
-        let content = state.current.as_ref().map(|current| SurfaceContent {
-            surface_id: state.id,
-            buffer_id: current.id,
-            revision: state.revision,
-            layer: state.layer,
-            buffer_size: self
+        let content = state.current.as_ref().map(|current| {
+            let buffer_size = self
                 .buffers
                 .get(&current.object)
                 .map(|record| record.size)
-                .unwrap_or(current.local_geometry.size()),
-            local_geometry: current.local_geometry,
-            buffer_scale: state.buffer_scale,
-            transform: state.transform,
+                .unwrap_or(current.local_geometry.size());
+            SurfaceContent {
+                surface_id: state.id,
+                buffer_id: current.id,
+                revision: state.revision,
+                layer: state.layer,
+                local_geometry: current.local_geometry,
+                sample_transform: SurfaceSampleTransform::for_surface(
+                    buffer_size,
+                    state.buffer_scale,
+                    state.transform,
+                    state.source,
+                ),
+            }
         });
         self.surfaces.insert(surface.clone(), state);
 
@@ -232,19 +244,23 @@ where
     pub fn current_content(&self, surface: &K) -> Option<SurfaceContent> {
         let state = self.surfaces.get(surface)?;
         let current = state.current.as_ref()?;
+        let buffer_size = self
+            .buffers
+            .get(&current.object)
+            .map(|record| record.size)
+            .unwrap_or(current.local_geometry.size());
         Some(SurfaceContent {
             surface_id: state.id,
             buffer_id: current.id,
             revision: state.revision,
             layer: state.layer,
-            buffer_size: self
-                .buffers
-                .get(&current.object)
-                .map(|record| record.size)
-                .unwrap_or(current.local_geometry.size()),
             local_geometry: current.local_geometry,
-            buffer_scale: state.buffer_scale,
-            transform: state.transform,
+            sample_transform: SurfaceSampleTransform::for_surface(
+                buffer_size,
+                state.buffer_scale,
+                state.transform,
+                state.source,
+            ),
         })
     }
 
@@ -427,6 +443,7 @@ mod tests {
             commit: serial,
             buffer_scale: 1,
             transform: SurfaceTransform::Normal,
+            source: None,
             layer: SurfaceLayer::View,
         }
     }
@@ -495,6 +512,37 @@ mod tests {
         let replaced = registry.update_surface(&SURFACE_A, &commit(Some(BUFFER_B), 2));
         assert_eq!(replaced.released_buffers, [SurfaceBufferId::new(7)]);
         assert_eq!(replaced.content.unwrap().buffer_id, SurfaceBufferId::new(8));
+    }
+
+    #[test]
+    fn source_only_change_advances_revision_and_sampling_transform() {
+        let mut registry = SurfaceBufferRegistry::<u64>::default();
+        registry.register_surface(SURFACE_A).unwrap();
+        registry.register_imported_buffer(BUFFER_A, SurfaceBufferId::new(7), Size::new(80, 60));
+
+        let initial = registry.update_surface(&SURFACE_A, &commit(Some(BUFFER_A), 1));
+        let initial = initial.content.unwrap();
+        assert_eq!(initial.revision, ContentRevision::new(1));
+        assert_eq!(initial.sample_transform, SurfaceSampleTransform::IDENTITY);
+
+        let source = SurfaceSourceRect::from_raw_fixed(10 * 256, 5 * 256, 20 * 256, 30 * 256);
+        let mut cropped = commit(Some(BUFFER_A), 1);
+        cropped.source = Some(source);
+        let cropped = registry.update_surface(&SURFACE_A, &cropped);
+
+        assert!(cropped.changed);
+        let cropped = cropped.content.unwrap();
+        assert_eq!(cropped.revision, ContentRevision::new(2));
+        assert_ne!(cropped.sample_transform, initial.sample_transform);
+        assert_eq!(
+            cropped.sample_transform,
+            SurfaceSampleTransform::for_surface(
+                Size::new(80, 60),
+                1,
+                SurfaceTransform::Normal,
+                Some(source),
+            )
+        );
     }
 
     #[test]

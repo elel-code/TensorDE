@@ -228,7 +228,7 @@ fn scene_extraction_separates_stable_nodes_from_draw_order() {
 
 #[test]
 fn scene_extraction_keeps_surface_content_out_of_smithay_and_entity_ids() {
-    use crate::scene::{ContentRevision, SurfaceContent, SurfaceLayer, SurfaceTransform};
+    use crate::scene::{ContentRevision, SurfaceContent, SurfaceLayer, SurfaceSampleTransform};
 
     let mut world = CompositorWorld::new();
     world.spawn_view(view(1), workspace(1)).unwrap();
@@ -237,10 +237,8 @@ fn scene_extraction_keeps_surface_content_out_of_smithay_and_entity_ids() {
         buffer_id: crate::ecs::SurfaceBufferId::new(9),
         revision: ContentRevision::new(3),
         layer: SurfaceLayer::View,
-        buffer_size: Size::new(640, 480),
         local_geometry: Rect::new(0, 0, 640, 480),
-        buffer_scale: 1,
-        transform: SurfaceTransform::Normal,
+        sample_transform: SurfaceSampleTransform::IDENTITY,
     };
     assert!(world.set_view_content(view(1), vec![content]).unwrap());
     assert_eq!(world.view_content(view(1)).unwrap().surfaces, [content]);

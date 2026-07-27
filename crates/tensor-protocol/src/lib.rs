@@ -17,7 +17,8 @@ pub use catalog::{
     PROTOCOL_CATALOG, ProtocolCapabilityRef, ProtocolTier, catalog_count_at_most, catalog_entry,
 };
 pub use content::{
-    ContentRevision, SurfaceContent, SurfaceLayer, SurfaceTransform, SurfaceUvTransform,
+    ContentRevision, SurfaceContent, SurfaceLayer, SurfaceSampleTransform, SurfaceSourceRect,
+    SurfaceTransform, SurfaceUvTransform,
 };
 pub use ids::{SurfaceBufferId, SurfaceId};
 pub use output::{OutputHeadSnapshot, OutputHeadUpdate, configuration_keeps_head_enabled};

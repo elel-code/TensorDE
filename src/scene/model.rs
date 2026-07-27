@@ -301,9 +301,7 @@ impl SceneSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use tensor_util::Size;
-
-    use crate::scene::{ContentRevision, SurfaceLayer, SurfaceTransform};
+    use crate::scene::{ContentRevision, SurfaceLayer, SurfaceSampleTransform};
 
     use super::*;
 
@@ -384,10 +382,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(1),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::Popup,
-            buffer_size: Size::new(10, 10),
             local_geometry: Rect::new(20, 5, 10, 10),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         };
         let span = ContentSpan::new(0, 1).unwrap();
         let scene = SceneSnapshot::with_content(

@@ -219,6 +219,7 @@ fn surface_snapshot(
         commit: renderer.commit,
         buffer_scale: renderer.buffer_scale,
         transform: renderer.transform,
+        source: renderer.source,
         layer,
     })
 }

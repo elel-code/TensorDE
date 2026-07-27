@@ -6,6 +6,7 @@
 use std::sync::Mutex;
 
 use smithay::wayland::compositor::{self, Cacheable, CompositorHandler, SurfaceData, with_states};
+use tensor_protocol::SurfaceSourceRect;
 use wayland_protocols::wp::viewporter::server::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
@@ -48,7 +49,7 @@ pub(in crate::protocol) struct ViewportData {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct ViewportCachedState {
-    source: Option<ViewportSource>,
+    source: Option<SurfaceSourceRect>,
     destination: Option<(i32, i32)>,
 }
 
@@ -59,31 +60,6 @@ impl Cacheable for ViewportCachedState {
 
     fn merge_into(self, current: &mut Self, _display: &DisplayHandle) {
         *current = self;
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ViewportSource {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-impl ViewportSource {
-    fn has_integer_size(self) -> bool {
-        self.width.fract() == 0.0 && self.height.fract() == 0.0
-    }
-
-    fn fits(self, buffer_size: (i32, i32)) -> bool {
-        self.x >= 0.0
-            && self.y >= 0.0
-            && self.x + self.width <= f64::from(buffer_size.0)
-            && self.y + self.height <= f64::from(buffer_size.1)
-    }
-
-    fn integer_size(self) -> (i32, i32) {
-        (self.width as i32, self.height as i32)
     }
 }
 
@@ -107,33 +83,48 @@ impl ViewportMarker {
 
 type ViewportSurfaceState = Mutex<Option<ViewportMarker>>;
 
-pub(in crate::protocol) fn committed_viewport_size(
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::protocol) struct CommittedViewport {
+    pub(in crate::protocol) source: Option<SurfaceSourceRect>,
+    destination: Option<(i32, i32)>,
+}
+
+impl CommittedViewport {
+    pub(in crate::protocol) fn size(self) -> Option<(i32, i32)> {
+        self.destination
+            .or_else(|| self.source.map(SurfaceSourceRect::integer_size))
+    }
+}
+
+pub(in crate::protocol) fn committed_viewport(
     states: &SurfaceData,
     buffer_size: (i32, i32),
-) -> Option<(i32, i32)> {
+) -> CommittedViewport {
     let viewport = {
         let mut cached = states.cached_state.get::<ViewportCachedState>();
         *cached.current()
     };
 
     if let Some(source) = viewport.source
-        && !source.fits(buffer_size)
+        && !source.fits_within(buffer_size.0, buffer_size.1)
         && let Some(marker) = states.data_map.get::<ViewportSurfaceState>()
         && let Some(marker) = marker.lock().unwrap().as_ref()
         && let Ok(resource) = marker.resource.upgrade()
     {
+        let [x, y, width, height] = source.as_f64();
         resource.post_error(
             wp_viewport::Error::OutOfBuffer,
             format!(
                 "source rectangle x={},y={},w={},h={} extends outside buffer {}x{}",
-                source.x, source.y, source.width, source.height, buffer_size.0, buffer_size.1
+                x, y, width, height, buffer_size.0, buffer_size.1
             ),
         );
     }
 
-    viewport
-        .destination
-        .or_else(|| viewport.source.map(ViewportSource::integer_size))
+    CommittedViewport {
+        source: viewport.source,
+        destination: viewport.destination,
+    }
 }
 
 pub(in crate::protocol) trait ViewporterHandler: 'static {
@@ -264,12 +255,12 @@ where
                         .cached_state
                         .get::<ViewportCachedState>()
                         .pending()
-                        .source = (!unset).then_some(ViewportSource {
-                        x,
-                        y,
-                        width,
-                        height,
-                    });
+                        .source = (!unset).then_some(SurfaceSourceRect::from_raw_fixed(
+                        wire_fixed(x),
+                        wire_fixed(y),
+                        wire_fixed(width),
+                        wire_fixed(height),
+                    ));
                 });
             }
             wp_viewport::Request::SetDestination { width, height } => {
@@ -374,6 +365,10 @@ fn scale_destination(value: i32, client_scale: f64) -> i32 {
     (f64::from(value) / client_scale).round() as i32
 }
 
+fn wire_fixed(value: f64) -> i32 {
+    (value * SurfaceSourceRect::FIXED_SCALE as f64).round() as i32
+}
+
 delegate_global_dispatch!(RuntimeState, WpViewporter, ViewporterGlobalData);
 delegate_dispatch!(RuntimeState, WpViewporter, ViewporterData);
 delegate_dispatch!(RuntimeState, WpViewport, ViewportData);
@@ -384,15 +379,16 @@ mod tests {
 
     #[test]
     fn source_validation_checks_fractional_size_and_full_bounds() {
-        let source = ViewportSource {
-            x: 0.5,
-            y: 1.0,
-            width: 9.0,
-            height: 7.5,
-        };
+        let source = SurfaceSourceRect::from_raw_fixed(
+            wire_fixed(0.5),
+            wire_fixed(1.0),
+            wire_fixed(9.0),
+            wire_fixed(7.5),
+        );
         assert!(!source.has_integer_size());
-        assert!(source.fits((10, 9)));
-        assert!(!source.fits((9, 9)));
+        assert!(source.fits_within(10, 9));
+        assert!(!source.fits_within(9, 9));
+        assert_eq!(source.raw_fixed(), [128, 256, 2304, 1920]);
     }
 
     #[test]

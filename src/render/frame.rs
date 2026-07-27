@@ -437,10 +437,9 @@ mod tests {
         layout::LayoutPlacement,
         scene::{
             ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceContent, SurfaceLayer,
-            SurfaceTransform,
+            SurfaceSampleTransform,
         },
     };
-    use tensor_util::Size;
 
     const OUTPUT: RenderOutputId = RenderOutputId {
         device_id: 1,
@@ -477,10 +476,8 @@ mod tests {
             buffer_id: SurfaceBufferId::new(view_id),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::View,
-            buffer_size: Size::new(640, 480),
             local_geometry: Rect::new(0, 0, 640, 480),
-            buffer_scale: 1,
-            transform: SurfaceTransform::Normal,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
         SceneSnapshot::with_content(
             WorkspaceId::new(0),

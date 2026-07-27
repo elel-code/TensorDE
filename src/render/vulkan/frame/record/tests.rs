@@ -1,5 +1,18 @@
 use vulkanalia::vk::Handle;
 
+use tensor_host::{DrmFormat, Fourcc, Modifier};
+use tensor_util::{OutputScale, Size};
+
+use crate::{
+    ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
+    layout::LayoutPlacement,
+    render::{FrameScheduler, NativeOutputTarget, OutputFormat, RenderOutputId},
+    scene::{
+        ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot, SurfaceContent,
+        SurfaceLayer, SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
+    },
+};
+
 use super::*;
 
 fn client_image(first: bool) -> ClientImageInfo {
@@ -86,6 +99,73 @@ fn descriptor_push_index_rejects_out_of_slice_draws() {
 #[test]
 fn draw_push_data_stays_within_the_descriptor_heap_push_budget() {
     assert_eq!(DRAW_PUSH_DATA_SIZE, 64);
+}
+
+#[test]
+fn cropped_sampling_transform_reaches_push_constants_without_record_time_math() {
+    let viewport = Rect::new(0, 0, 100, 80);
+    let target = NativeOutputTarget {
+        output: RenderOutputId {
+            device_id: 1,
+            connector_id: 2,
+        },
+        viewport,
+        format: OutputFormat {
+            format: DrmFormat::new(Fourcc::XRGB8888, Modifier::from_raw(9)),
+            plane_count: 1,
+        },
+        scale: OutputScale::ONE,
+    };
+    let sample_transform = SurfaceSampleTransform::for_surface(
+        Size::new(64, 32),
+        2,
+        SurfaceTransform::Rotate90,
+        Some(SurfaceSourceRect::from_raw_fixed(
+            2 * 256,
+            4 * 256,
+            10 * 256,
+            20 * 256,
+        )),
+    );
+    let content = SurfaceContent {
+        surface_id: SurfaceId::new(1),
+        buffer_id: SurfaceBufferId::new(1),
+        revision: ContentRevision::new(1),
+        layer: SurfaceLayer::View,
+        local_geometry: Rect::new(0, 0, 40, 20),
+        sample_transform,
+    };
+    let scene = SceneSnapshot::with_content(
+        WorkspaceId::new(1),
+        viewport,
+        vec![
+            SceneNode::new(
+                ViewId::new(1),
+                1,
+                LayoutPlacement {
+                    geometry: Rect::new(0, 0, 40, 20),
+                    visible: Some(Rect::new(0, 0, 40, 20)),
+                },
+                EffectStyle::default(),
+            )
+            .with_content(ContentSpan::new(0, 1).unwrap()),
+        ],
+        vec![content],
+    );
+    let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+    scheduler.register_output(target).unwrap();
+    let frame = scheduler.prepare(target.output, scene, 0).unwrap();
+
+    let prepared = prepare_draws(&frame, 32, 0).unwrap();
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(
+        prepared[0].push.uv_origin_axis_x,
+        [0.875, 0.125, 0.0, 0.625]
+    );
+    assert_eq!(
+        prepared[0].push.uv_axis_y_surface_size,
+        [-0.625, 0.0, 40.0, 20.0]
+    );
 }
 
 #[test]
