@@ -1,11 +1,9 @@
-use calloop::LoopHandle;
 #[cfg(feature = "xwayland")]
 use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
         cursor_shape::CursorShapeManagerState,
-        idle_notify::IdleNotifierState,
         input_method::InputMethodManagerState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
@@ -40,6 +38,7 @@ pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod foreign_toplevel;
 pub(in crate::protocol) mod fractional_scale;
 pub(in crate::protocol) mod idle_inhibit;
+pub(in crate::protocol) mod idle_notify;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
@@ -61,6 +60,7 @@ use dmabuf::DmabufProtocol;
 use foreign_toplevel::ForeignToplevelListState;
 use fractional_scale::FractionalScaleProtocol;
 use idle_inhibit::IdleInhibitProtocol;
+use idle_notify::IdleNotifyProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
@@ -94,7 +94,7 @@ pub(crate) struct ProtocolGlobals {
     presentation: PresentationProtocol,
     cursor_shape: CursorShapeManagerState,
     activation: XdgActivationState,
-    idle_notifier: IdleNotifierState<RuntimeState>,
+    pub(super) idle_notify: IdleNotifyProtocol,
     idle_inhibit: IdleInhibitProtocol,
     layer_shell: WlrLayerShellState,
     single_pixel_buffer: SinglePixelBufferProtocol,
@@ -126,11 +126,7 @@ pub(crate) struct ProtocolGlobals {
 }
 
 impl ProtocolGlobals {
-    pub(crate) fn new(
-        display: &DisplayHandle,
-        loop_handle: &LoopHandle<'static, RuntimeState>,
-    ) -> Self {
-        let _ = loop_handle;
+    pub(crate) fn new(display: &DisplayHandle) -> Self {
         let primary_selection = PrimarySelectionState::new::<RuntimeState>(display);
         let unrestricted = |client: &Client| {
             client
@@ -162,7 +158,7 @@ impl ProtocolGlobals {
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeManagerState::new::<RuntimeState>(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
-            idle_notifier: IdleNotifierState::new(display, loop_handle.clone()),
+            idle_notify: IdleNotifyProtocol::new(display),
             idle_inhibit: IdleInhibitProtocol::new(display),
             layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
             single_pixel_buffer: SinglePixelBufferProtocol::new(display),
@@ -231,7 +227,7 @@ impl ProtocolGlobals {
         self.desktop_controls.remove_surface(surface);
         self.shortcut_inhibit.remove_surface(surface);
         if self.idle_inhibit.remove_surface(surface) {
-            self.idle_notifier.set_is_inhibited(false);
+            self.idle_notify.set_inhibited(false);
         }
         self.surface_timing.remove_surface(surface)
     }
@@ -281,10 +277,6 @@ impl ProtocolGlobals {
 
     pub(crate) fn activation(&mut self) -> &mut XdgActivationState {
         &mut self.activation
-    }
-
-    pub(crate) fn idle_notifier(&mut self) -> &mut IdleNotifierState<RuntimeState> {
-        &mut self.idle_notifier
     }
 
     pub(crate) fn layer_shell(&mut self) -> &mut WlrLayerShellState {
@@ -351,7 +343,7 @@ impl ProtocolGlobals {
             &self.presentation,
             &self.cursor_shape,
             &self.activation,
-            &self.idle_notifier,
+            &self.idle_notify,
             &self.idle_inhibit,
             &self.layer_shell,
             &self.single_pixel_buffer,
@@ -391,7 +383,7 @@ impl ProtocolGlobals {
             presentation_time: true,
             cursor_shape: true,
             xdg_activation: true,
-            idle_notify: true,
+            idle_notify: self.idle_notify.advertised(),
             idle_inhibit: true,
             layer_shell: true,
             single_pixel_buffer: true,
@@ -484,7 +476,6 @@ pub(crate) struct ProtocolCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use calloop::EventLoop;
     use wayland_server::Display;
 
     use super::*;
@@ -492,11 +483,9 @@ mod tests {
 
     #[test]
     fn long_lived_globals_are_owned_as_one_capability_set() {
-        let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
         let display = Display::<RuntimeState>::new().unwrap();
         let state = RuntimeState::with_appearance(
             display,
-            event_loop.handle(),
             LayoutEngine::new(LayoutKind::Scrolling1D),
             crate::scene::SceneAppearance::default(),
         );

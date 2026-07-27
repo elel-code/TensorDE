@@ -41,6 +41,7 @@ mod desktop_controls;
 #[cfg(feature = "tty")]
 mod dmabuf;
 mod foreign_toplevel;
+mod idle_notify;
 mod inhibitors;
 mod output;
 mod surface_callbacks;

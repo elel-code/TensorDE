@@ -19,9 +19,9 @@ use crate::protocol::state::RuntimeState;
 #[cfg(feature = "tty")]
 const MAX_DRM_COMPLETION_SOURCES: usize = 16;
 #[cfg(feature = "tty")]
-const MAIN_COMPLETION_CAPACITY: usize = 3 + MAX_DRM_COMPLETION_SOURCES;
+const MAIN_COMPLETION_CAPACITY: usize = 4 + MAX_DRM_COMPLETION_SOURCES;
 #[cfg(not(feature = "tty"))]
-const MAIN_COMPLETION_CAPACITY: usize = 3;
+const MAIN_COMPLETION_CAPACITY: usize = 4;
 
 #[derive(Clone, Copy)]
 enum SourceCommand {
@@ -32,6 +32,7 @@ enum MainCompletion {
     Worker(io::Result<u64>),
     Legacy(io::Result<()>),
     CommitTimer(io::Result<()>),
+    IdleTimer(io::Result<()>),
     #[cfg(feature = "tty")]
     Drm {
         device_id: u64,
@@ -43,6 +44,7 @@ struct TurnCompletions {
     worker: Option<io::Result<u64>>,
     legacy: Option<io::Result<()>>,
     commit_timer: Option<io::Result<()>>,
+    idle_timer: Option<io::Result<()>>,
     #[cfg(feature = "tty")]
     drm: [Option<DrmCompletion>; MAX_DRM_COMPLETION_SOURCES],
     #[cfg(feature = "tty")]
@@ -61,6 +63,7 @@ impl TurnCompletions {
             worker: None,
             legacy: None,
             commit_timer: None,
+            idle_timer: None,
             #[cfg(feature = "tty")]
             drm: std::array::from_fn(|_| None),
             #[cfg(feature = "tty")]
@@ -73,6 +76,7 @@ impl TurnCompletions {
             MainCompletion::Worker(result) => self.worker.replace(result).is_some(),
             MainCompletion::Legacy(result) => self.legacy.replace(result).is_some(),
             MainCompletion::CommitTimer(result) => self.commit_timer.replace(result).is_some(),
+            MainCompletion::IdleTimer(result) => self.idle_timer.replace(result).is_some(),
             #[cfg(feature = "tty")]
             MainCompletion::Drm { device_id, result } => {
                 if self.drm[..self.drm_len]
@@ -126,6 +130,10 @@ impl WaylandRuntime {
             .state
             .duplicate_commit_timer_fd()
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
+        let idle_timer_fd = self
+            .state
+            .duplicate_idle_timer_fd()
+            .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         runtime.block_on(async {
@@ -148,7 +156,24 @@ impl WaylandRuntime {
                 legacy_commands.clone(),
             ));
             let commit_timer_source = commit_timer_fd
-                .map(|fd| CommitTimerCompletionSource::new(fd, completions.clone()))
+                .map(|fd| {
+                    TimerCompletionSource::new(
+                        fd,
+                        completions.clone(),
+                        MainCompletion::CommitTimer,
+                        "commit-timing",
+                    )
+                })
+                .transpose()?;
+            let idle_timer_source = idle_timer_fd
+                .map(|fd| {
+                    TimerCompletionSource::new(
+                        fd,
+                        completions.clone(),
+                        MainCompletion::IdleTimer,
+                        "idle-notify",
+                    )
+                })
                 .transpose()?;
             #[cfg(feature = "tty")]
             let mut drm_sources = DrmCompletionSources::new();
@@ -241,6 +266,21 @@ impl WaylandRuntime {
                             })?;
                     }
                 }
+                if let Some(result) = turn.idle_timer {
+                    let rearm = match result {
+                        Ok(()) => self.state.complete_idle_timer(),
+                        Err(error) => {
+                            self.state.idle_timer_completion_failed(&error);
+                            false
+                        }
+                    };
+                    if rearm
+                        && !stop.is_stopped()
+                        && let Some(source) = &idle_timer_source
+                    {
+                        source.rearm()?;
+                    }
+                }
                 #[cfg(feature = "tty")]
                 self.state.finish_completion_turn();
                 self.state.on_loop_idle();
@@ -249,6 +289,9 @@ impl WaylandRuntime {
             let _ = worker_task.cancel().await;
             let _ = legacy_task.cancel().await;
             if let Some(source) = commit_timer_source {
+                source.shutdown().await;
+            }
+            if let Some(source) = idle_timer_source {
                 source.shutdown().await;
             }
             #[cfg(feature = "tty")]
@@ -300,30 +343,38 @@ async fn wait_for_legacy_completions(
     }
 }
 
-struct CommitTimerCompletionSource {
+struct TimerCompletionSource {
     commands: LocalCompletionQueue<SourceCommand>,
     task: compio::runtime::JoinHandle<()>,
+    name: &'static str,
 }
 
-impl CommitTimerCompletionSource {
+impl TimerCompletionSource {
     fn new(
         fd: OwnedFd,
         completions: LocalCompletionQueue<MainCompletion>,
+        publish: fn(io::Result<()>) -> MainCompletion,
+        name: &'static str,
     ) -> Result<Self, ProtocolError> {
         let reader =
             PollFd::new(fd).map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let commands = LocalCompletionQueue::bounded(1);
-        let task = compio::runtime::spawn(wait_for_commit_timer_completions(
+        let task = compio::runtime::spawn(wait_for_timer_completions(
             reader,
             completions,
             commands.clone(),
+            publish,
         ));
-        Ok(Self { commands, task })
+        Ok(Self {
+            commands,
+            task,
+            name,
+        })
     }
 
     fn rearm(&self) -> Result<(), ProtocolError> {
         self.commands.try_send(SourceCommand::Rearm).map_err(|_| {
-            ProtocolError::MainCompletion("commit-timing completion rearm queue is full".to_owned())
+            ProtocolError::MainCompletion(format!("{} completion rearm queue is full", self.name))
         })
     }
 
@@ -332,20 +383,17 @@ impl CommitTimerCompletionSource {
     }
 }
 
-async fn wait_for_commit_timer_completions(
+async fn wait_for_timer_completions(
     reader: PollFd<OwnedFd>,
     completions: LocalCompletionQueue<MainCompletion>,
     commands: LocalCompletionQueue<SourceCommand>,
+    publish: fn(io::Result<()>) -> MainCompletion,
 ) {
     loop {
         // PollFd submits one IORING_OP_POLL_ADD and resolves only from its CQE.
         let result = reader.read_ready().await;
         let failed = result.is_err();
-        if completions
-            .try_send(MainCompletion::CommitTimer(result))
-            .is_err()
-            || failed
-        {
+        if completions.try_send(publish(result)).is_err() || failed {
             return;
         }
         if commands.recv().await.is_err() {
@@ -555,6 +603,33 @@ mod tests {
 
     #[test]
     fn commit_timer_completion_is_one_shot_until_explicit_rearm() {
+        assert_timer_completion_is_one_shot(
+            MainCompletion::CommitTimer,
+            |completion| match completion {
+                MainCompletion::CommitTimer(result) => result,
+                _ => panic!("expected a commit-timer completion"),
+            },
+            "commit-timing",
+        );
+    }
+
+    #[test]
+    fn idle_timer_completion_is_one_shot_until_explicit_rearm() {
+        assert_timer_completion_is_one_shot(
+            MainCompletion::IdleTimer,
+            |completion| match completion {
+                MainCompletion::IdleTimer(result) => result,
+                _ => panic!("expected an idle-timer completion"),
+            },
+            "idle-notify",
+        );
+    }
+
+    fn assert_timer_completion_is_one_shot(
+        publish: fn(io::Result<()>) -> MainCompletion,
+        take_result: fn(MainCompletion) -> io::Result<()>,
+        name: &'static str,
+    ) {
         let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY).unwrap();
         runtime.block_on(async {
             let timer = rustix::time::timerfd_create(
@@ -564,7 +639,8 @@ mod tests {
             .unwrap();
             let fd = rustix::io::fcntl_dupfd_cloexec(&timer, 0).unwrap();
             let completions = LocalCompletionQueue::bounded(MAIN_COMPLETION_CAPACITY);
-            let source = CommitTimerCompletionSource::new(fd, completions.clone()).unwrap();
+            let source =
+                TimerCompletionSource::new(fd, completions.clone(), publish, name).unwrap();
             let arm = || {
                 rustix::time::timerfd_settime(
                     &timer,
@@ -581,10 +657,7 @@ mod tests {
             };
 
             arm();
-            let MainCompletion::CommitTimer(result) = completions.recv().await.unwrap() else {
-                panic!("expected a commit-timer completion");
-            };
-            result.unwrap();
+            take_result(completions.recv().await.unwrap()).unwrap();
             let mut expirations = [0_u8; 8];
             assert_eq!(
                 rustix::io::read(&timer, &mut expirations[..]).unwrap(),
@@ -594,10 +667,7 @@ mod tests {
 
             source.rearm().unwrap();
             arm();
-            let MainCompletion::CommitTimer(result) = completions.recv().await.unwrap() else {
-                panic!("expected a rearmed commit-timer completion");
-            };
-            result.unwrap();
+            take_result(completions.recv().await.unwrap()).unwrap();
             source.shutdown().await;
         });
     }

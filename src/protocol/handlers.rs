@@ -493,14 +493,6 @@ impl smithay::input::tablet::TabletSeatHandler for RuntimeState {
     type ToolFocus = WlSurface;
 }
 
-impl smithay::wayland::idle_notify::IdleNotifierHandler for RuntimeState {
-    fn idle_notifier_state(
-        &mut self,
-    ) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
-        self.protocol_globals.idle_notifier()
-    }
-}
-
 impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
     fn shell_state(&mut self) -> &mut smithay::wayland::shell::wlr_layer::WlrLayerShellState {
         self.protocol_globals.layer_shell()

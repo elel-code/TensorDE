@@ -1,4 +1,3 @@
-use calloop::EventLoop;
 use tensor_host::{DrmFormat, Fourcc, Modifier, PhysicalMode, SubpixelLayout};
 use wayland_server::Display;
 
@@ -53,7 +52,6 @@ fn output_events_keep_tensor_window_space_stable_across_hotplug() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );
@@ -85,7 +83,6 @@ fn fractional_output_scale_controls_logical_reflow() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );
@@ -122,7 +119,6 @@ fn every_connected_output_starts_a_redraw_cycle() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );
@@ -160,7 +156,6 @@ fn secondary_output_scene_is_blank_with_its_own_viewport() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );
@@ -201,7 +196,6 @@ fn workspace_redraw_targets_only_the_primary_output() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );
@@ -237,7 +231,6 @@ fn pointer_redraw_targets_only_the_output_under_the_cursor() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
     );

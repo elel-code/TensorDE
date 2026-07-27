@@ -61,7 +61,7 @@ impl WaylandRuntime {
     ) -> Result<Self, ProtocolError> {
         let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
-        let state = RuntimeState::with_appearance(display, event_loop.handle(), layout, appearance);
+        let state = RuntimeState::with_appearance(display, layout, appearance);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
         let socket_name = socket
             .socket_name()
@@ -270,9 +270,8 @@ pub(crate) fn test_runtime_state(
     layout: LayoutEngine,
     appearance: SceneAppearance,
 ) -> RuntimeState {
-    let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
     let display = Display::<RuntimeState>::new().unwrap();
-    RuntimeState::with_appearance(display, event_loop.handle(), layout, appearance)
+    RuntimeState::with_appearance(display, layout, appearance)
 }
 
 fn bind_socket_source() -> Result<ListeningSocket, wayland_server::BindError> {

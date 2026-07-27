@@ -44,7 +44,6 @@ use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
 
-use calloop::LoopHandle;
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
@@ -191,7 +190,6 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn with_appearance(
         display: Display<Self>,
-        loop_handle: LoopHandle<'static, Self>,
         layout: LayoutEngine,
         appearance: SceneAppearance,
     ) -> Self {
@@ -199,7 +197,7 @@ impl RuntimeState {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
-        let protocol_globals = ProtocolGlobals::new(&display_handle, &loop_handle);
+        let protocol_globals = ProtocolGlobals::new(&display_handle);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();

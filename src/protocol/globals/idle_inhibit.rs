@@ -152,13 +152,13 @@ impl DispatchDelegate<ZwpIdleInhibitorV1, RuntimeState> for IdleInhibitorData {
 impl RuntimeState {
     fn add_idle_inhibitor(&mut self, surface: &WlSurface) {
         if self.protocol_globals.idle_inhibit.add(surface) {
-            self.protocol_globals.idle_notifier.set_is_inhibited(true);
+            self.protocol_globals.idle_notify.set_inhibited(true);
         }
     }
 
     fn remove_idle_inhibitor(&mut self, surface: &WlSurface) {
         if self.protocol_globals.idle_inhibit.remove(surface) {
-            self.protocol_globals.idle_notifier.set_is_inhibited(false);
+            self.protocol_globals.idle_notify.set_inhibited(false);
         }
     }
 

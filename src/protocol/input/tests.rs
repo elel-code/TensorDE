@@ -1,4 +1,3 @@
-use calloop::EventLoop;
 use smithay::{
     input::keyboard::keysyms,
     utils::{Logical, Point, Rectangle},
@@ -72,7 +71,6 @@ fn relative_pointer_crosses_neighboring_outputs_but_not_a_gap() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
-        EventLoop::<RuntimeState>::try_new().unwrap().handle(),
         LayoutEngine::new(LayoutKind::Scrolling1D),
         crate::scene::SceneAppearance::default(),
     );

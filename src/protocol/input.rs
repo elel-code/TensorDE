@@ -142,9 +142,7 @@ impl RuntimeState {
             LibinputEvent::Tablet { device, event } => self.process_tablet_event(device, event),
         }
         if activity {
-            self.protocol_globals
-                .idle_notifier()
-                .notify_activity(&self.seat);
+            self.notify_idle_activity();
         }
     }
 

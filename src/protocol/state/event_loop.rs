@@ -316,15 +316,12 @@ impl RuntimeState {
 mod tests {
     use super::*;
     use crate::layout::{LayoutEngine, LayoutKind};
-    use calloop::EventLoop;
     use wayland_server::Display;
 
     fn state() -> RuntimeState {
-        let event_loop = EventLoop::<RuntimeState>::try_new().unwrap();
         let display = Display::<RuntimeState>::new().unwrap();
         RuntimeState::with_appearance(
             display,
-            event_loop.handle(),
             LayoutEngine::new(LayoutKind::Scrolling1D),
             crate::scene::SceneAppearance::default(),
         )
