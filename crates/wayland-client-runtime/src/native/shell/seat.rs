@@ -465,6 +465,127 @@ impl NativeShellState {
 }
 
 impl NativeShell {
+    /// Number of bound seats.
+    #[inline]
+    pub fn seat_count(&self) -> usize {
+        self.state.seats.len()
+    }
+
+    /// Snapshot of bound seats (registry name + optional compositor seat name).
+    pub fn seats(&self) -> Vec<crate::SeatInfo> {
+        let mut list: Vec<_> = self
+            .state
+            .seats
+            .values()
+            .map(|s| crate::SeatInfo {
+                id: crate::SeatId::from_raw(s.global_name),
+                name: s.name.clone(),
+                has_keyboard: s.keyboard.is_some(),
+                has_pointer: s.pointer.is_some(),
+                has_touch: s.touch.is_some(),
+            })
+            .collect();
+        list.sort_by_key(|s| s.id.get());
+        list
+    }
+
+    /// Keyboard-focused surface on `seat`, if any.
+    pub fn seat_keyboard_focus(&self, seat: crate::SeatId) -> Option<NativeSurfaceId> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.keyboard_focus)
+    }
+
+    /// Pointer-focused surface on `seat`, if any.
+    pub fn seat_pointer_focus(&self, seat: crate::SeatId) -> Option<NativeSurfaceId> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.pointer_focus)
+    }
+
+    /// Latest input serial on `seat` (for seat-scoped grabs / selections).
+    pub fn seat_last_input_serial(&self, seat: crate::SeatId) -> Option<u32> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.last_input_serial)
+    }
+
+    /// Pointer-enter serial on `seat` (cursor shape, etc.).
+    pub fn seat_pointer_enter_serial(&self, seat: crate::SeatId) -> Option<u32> {
+        self.state
+            .seats
+            .get(&seat.get())
+            .and_then(|s| s.pointer_enter_serial)
+    }
+
+    /// Build an [`crate::InputSerial`] from the latest serial on `seat`.
+    ///
+    /// Returns `None` if the seat is unknown or has no serial yet.
+    pub fn seat_input_serial(
+        &self,
+        seat: crate::SeatId,
+        source: crate::InputSerialSource,
+    ) -> Option<crate::InputSerial> {
+        let rec = self.state.seats.get(&seat.get())?;
+        let serial = rec.last_input_serial?;
+        Some(crate::InputSerial::new(rec.seat.clone(), serial, source))
+    }
+
+    /// Primary seat id (first bound / current primary), if any.
+    pub fn primary_seat_id(&self) -> Option<crate::SeatId> {
+        let primary = self.state.seat.as_ref()?;
+        self.state
+            .seat_objects
+            .get(&primary.id().protocol_id())
+            .copied()
+            .map(crate::SeatId::from_raw)
+    }
+
+    /// Whether `seat` has a bound `wl_data_device` (clipboard / DnD).
+    pub fn seat_has_data_device(&self, seat: crate::SeatId) -> bool {
+        self.state
+            .seats
+            .get(&seat.get())
+            .is_some_and(|s| s.data_device.is_some())
+    }
+
+    /// Whether `seat` has a bound primary selection device.
+    pub fn seat_has_primary_device(&self, seat: crate::SeatId) -> bool {
+        self.state
+            .seats
+            .get(&seat.get())
+            .is_some_and(|s| s.primary_device.is_some())
+    }
+
+    /// Set the pointer cursor via `wp_cursor_shape` when available.
+    pub fn set_cursor_shape(
+        &mut self,
+        shape: wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape,
+    ) -> Result<(), NativeError> {
+        self.set_cursor_shape_on_seat(shape, None)
+    }
+
+    /// Set the cursor shape on a specific seat's pointer (or auto-resolve).
+    pub fn set_cursor_shape_on_seat(
+        &mut self,
+        shape: wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (pointer, serial) = self.state.resolve_cursor_pointer_serial(seat)?;
+        let manager = self.state.cursor_shape_manager.as_ref().ok_or_else(|| {
+            NativeError::Protocol("wp_cursor_shape_manager_v1 missing".into())
+        })?;
+        let qh = self.queue.handle();
+        let device = manager.get_pointer(&pointer, &qh, ());
+        device.set_shape(serial, shape);
+        device.destroy();
+        self.connection.mark_dirty();
+        Ok(())
+    }
+
     /// Ensure every bound seat has data-device / primary selection proxies.
     ///
     /// Shell-wide `data_device` / `primary_device` always mirror the **primary**
