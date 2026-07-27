@@ -2,7 +2,7 @@
 
 use smithay::{
     input::pointer::PointerHandle,
-    utils::{IsAlive, Logical, Point, Serial},
+    utils::{IsAlive, Logical, Point},
     wayland::{
         idle_inhibit::IdleInhibitHandler,
         input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
@@ -11,10 +11,8 @@ use smithay::{
             KeyboardShortcutsInhibitor,
         },
         pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
-        pointer_warp::PointerWarpHandler,
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         xdg_foreign::XdgForeignHandler,
-        xdg_system_bell::XdgSystemBellHandler,
     },
 };
 use tracing::{debug, info, warn};
@@ -215,56 +213,6 @@ impl KeyboardShortcutsInhibitHandler for RuntimeState {
     }
 }
 
-impl XdgSystemBellHandler for RuntimeState {
-    fn ring(&mut self, surface: Option<WlSurface>) {
-        info!(
-            surface = surface.as_ref().map(|s| s.id().protocol_id()),
-            "xdg-system-bell ring"
-        );
-    }
-}
-
-impl PointerWarpHandler for RuntimeState {
-    fn warp_pointer(
-        &mut self,
-        surface: WlSurface,
-        _pointer: wayland_server::protocol::wl_pointer::WlPointer,
-        pos: Point<f64, Logical>,
-        _serial: Serial,
-    ) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
-        let origin = self
-            .space
-            .elements()
-            .find(|window| window.wl_surface().as_deref() == Some(&surface))
-            .and_then(|window| self.space.element_geometry(window))
-            .map(|geo| geo.loc.to_f64());
-        #[cfg(feature = "tty")]
-        let origin = origin.or_else(|| {
-            self.layer_surface_origin(&surface)
-                .map(|point| point.to_f64())
-        });
-        let Some(origin) = origin else {
-            return;
-        };
-        let target = origin + pos;
-        #[cfg(feature = "tty")]
-        if let Some(bounds) = self.pointer_coordinate_space() {
-            pointer.set_location(crate::protocol::input::constrain_pointer_location(
-                target, bounds,
-            ));
-        } else {
-            pointer.set_location(target);
-        }
-        #[cfg(not(feature = "tty"))]
-        pointer.set_location(target);
-        #[cfg(feature = "tty")]
-        self.request_redraw_at(pointer.current_location());
-    }
-}
-
 impl XdgForeignHandler for RuntimeState {
     fn xdg_foreign_state(&mut self) -> &mut smithay::wayland::xdg_foreign::XdgForeignState {
         self.protocol_globals.xdg_foreign()
@@ -399,9 +347,6 @@ fn toplevel_metadata(surface: &WlSurface) -> (Option<String>, Option<String>) {
         )
     })
 }
-
-impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for RuntimeState {}
-impl smithay::wayland::xdg_toplevel_tag::XdgToplevelTagHandler for RuntimeState {}
 
 impl smithay::wayland::selection::wlr_data_control::DataControlHandler for RuntimeState {
     fn data_control_state(

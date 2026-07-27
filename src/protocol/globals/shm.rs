@@ -74,6 +74,31 @@ pub(in crate::protocol) struct ShmBufferData {
     metadata: ShmBufferMetadata,
 }
 
+/// Keeps the pool mapping for a validated SHM buffer alive without copying pixels.
+#[derive(Clone, Debug)]
+pub(in crate::protocol) struct ShmBufferLease {
+    _pool: Arc<Pool>,
+    _offset: usize,
+    metadata: ShmBufferMetadata,
+}
+
+impl ShmBufferLease {
+    pub(in crate::protocol) fn metadata(&self) -> ShmBufferMetadata {
+        self.metadata
+    }
+
+    #[cfg(test)]
+    pub(in crate::protocol) fn with_contents<T>(
+        &self,
+        callback: impl FnOnce(*const u8, usize, ShmBufferMetadata) -> T,
+    ) -> Result<T, BufferAccessError> {
+        let len = self.metadata.byte_len().ok_or(BufferAccessError::BadMap)?;
+        self._pool
+            .with_data(self._offset, len, |ptr| callback(ptr, len, self.metadata))
+            .map_err(|()| BufferAccessError::BadMap)
+    }
+}
+
 impl ShmBufferData {
     pub(in crate::protocol) fn metadata(&self) -> ShmBufferMetadata {
         self.metadata
@@ -90,6 +115,15 @@ pub(in crate::protocol) enum BufferAccessError {
 
 pub(in crate::protocol) fn shm_buffer(buffer: &WlBuffer) -> Option<&ShmBufferData> {
     buffer.data::<ShmBufferData>()
+}
+
+pub(in crate::protocol) fn lease_shm_buffer(buffer: &WlBuffer) -> Option<ShmBufferLease> {
+    let data = shm_buffer(buffer)?;
+    Some(ShmBufferLease {
+        _pool: data.pool.clone(),
+        _offset: data.offset,
+        metadata: data.metadata,
+    })
 }
 
 /// Borrow the exact byte range belonging to one SHM buffer without copying.
@@ -135,6 +169,9 @@ pub(in crate::protocol) trait ShmHandler: 'static {
 
 impl ShmHandler for RuntimeState {
     fn shm_buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        self.protocol_globals
+            .desktop_controls
+            .shm_buffer_destroyed(buffer);
         #[cfg(feature = "tty")]
         self.buffer_destroyed(&buffer.id());
         #[cfg(not(feature = "tty"))]

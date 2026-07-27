@@ -17,8 +17,14 @@ use input::{
 };
 use smithay::{
     backend::input::{ButtonState, TabletToolCapabilities, TabletToolDescriptor, TabletToolType},
+    input::tablet::{
+        TabletDescriptor, TabletSeatTrait,
+        tool::{
+            AxisFrame, ButtonEvent, DownEvent, MotionEvent, ProximityInEvent, ProximityOutEvent,
+            UpEvent,
+        },
+    },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 use tensor_input::{DeviceChange, DeviceId};
 use tracing::debug;
@@ -40,7 +46,7 @@ impl RuntimeState {
                 }
                 self.seat
                     .tablet_seat()
-                    .add_tablet::<Self>(&self.display_handle, &descriptor);
+                    .add_wp_tablet(&self.display_handle, &descriptor);
                 self.tablet_devices.insert(id, descriptor);
                 debug!(name = %device.name(), "tablet tool device added");
             }
@@ -75,20 +81,28 @@ impl RuntimeState {
         let tool = {
             let descriptor = tablet_tool_descriptor(&event);
             let tablet_seat = self.seat.tablet_seat();
-            tablet_seat.add_tool::<Self>(self, &self.display_handle.clone(), &descriptor)
+            tablet_seat.get_tool(&descriptor).unwrap_or_else(|| {
+                tablet_seat.add_wp_tool(self, &self.display_handle.clone(), &descriptor)
+            })
         };
         let tablet = self
             .tablet_devices
             .get(&device)
             .and_then(|descriptor| self.seat.tablet_seat().get_tablet(descriptor));
-        if let Some(tablet) = tablet {
+        if tablet.is_some() {
+            let time = tablet_time_msec(&event);
+            let serial = SERIAL_COUNTER.next_serial();
+            tool.axis(self, tablet_axis_frame(&event));
             tool.motion(
-                location,
+                self,
                 focus,
-                &tablet,
-                SERIAL_COUNTER.next_serial(),
-                tablet_time_msec(&event),
+                &MotionEvent {
+                    location,
+                    serial,
+                    time,
+                },
             );
+            tool.frame(self, time);
         }
         self.request_redraw_at(location);
     }
@@ -97,7 +111,9 @@ impl RuntimeState {
         let tool = {
             let descriptor = tablet_tool_descriptor(&event);
             let tablet_seat = self.seat.tablet_seat();
-            tablet_seat.add_tool::<Self>(self, &self.display_handle.clone(), &descriptor)
+            tablet_seat.get_tool(&descriptor).unwrap_or_else(|| {
+                tablet_seat.add_wp_tool(self, &self.display_handle.clone(), &descriptor)
+            })
         };
         let tablet = self
             .tablet_devices
@@ -112,19 +128,31 @@ impl RuntimeState {
                     .pointer_coordinate_space()
                     .map(|bounds| tablet_location(&event, bounds))
                     .unwrap_or_default();
-                if let Some(focus) = self.pointer_focus_under(location) {
-                    tool.proximity_in(
+                let time = tablet_time_msec(&event);
+                tool.proximity_in(
+                    self,
+                    self.pointer_focus_under(location),
+                    tablet,
+                    &ProximityInEvent {
                         location,
-                        focus,
-                        &tablet,
-                        SERIAL_COUNTER.next_serial(),
-                        tablet_time_msec(&event),
-                    );
-                }
+                        axis: Some(tablet_axis_frame(&event)),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                );
+                tool.frame(self, time);
                 self.request_redraw_at(location);
             }
             LibinputProximityState::Out => {
-                tool.proximity_out(tablet_time_msec(&event));
+                let time = tablet_time_msec(&event);
+                tool.proximity_out(
+                    self,
+                    &ProximityOutEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                );
+                tool.frame(self, time);
             }
         }
     }
@@ -136,12 +164,25 @@ impl RuntimeState {
         };
         match event.tip_state() {
             LibinputTipState::Down => {
-                tool.tip_down(SERIAL_COUNTER.next_serial(), tablet_time_msec(&event));
+                tool.down(
+                    self,
+                    &DownEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: tablet_time_msec(&event),
+                    },
+                );
             }
             LibinputTipState::Up => {
-                tool.tip_up(tablet_time_msec(&event));
+                tool.up(
+                    self,
+                    &UpEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: tablet_time_msec(&event),
+                    },
+                );
             }
         }
+        tool.frame(self, tablet_time_msec(&event));
     }
 
     fn on_tablet_button(&mut self, event: LibinputTabletButtonEvent) {
@@ -153,12 +194,17 @@ impl RuntimeState {
             LibinputButtonState::Pressed => ButtonState::Pressed,
             LibinputButtonState::Released => ButtonState::Released,
         };
+        let time = tablet_time_msec(&event);
         tool.button(
-            event.button(),
-            state,
-            SERIAL_COUNTER.next_serial(),
-            tablet_time_msec(&event),
+            self,
+            &ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                button: event.button(),
+                state,
+                time,
+            },
         );
+        tool.frame(self, time);
     }
 }
 
@@ -211,6 +257,23 @@ fn tablet_location(
         event.y_transformed(bounds.size.h as u32),
     )) + bounds.loc.to_f64();
     super::constrain_pointer_location(location, bounds)
+}
+
+fn tablet_axis_frame(event: &impl TabletToolEventTrait) -> AxisFrame {
+    AxisFrame {
+        pressure: event.pressure_has_changed().then(|| event.pressure()),
+        distance: event.distance_has_changed().then(|| event.distance()),
+        tilt: (event.tilt_x_has_changed() || event.tilt_y_has_changed())
+            .then(|| (event.tilt_x(), event.tilt_y())),
+        rotation: event.rotation_has_changed().then(|| event.rotation()),
+        slider: event.slider_has_changed().then(|| event.slider_position()),
+        wheel: event.wheel_has_changed().then(|| {
+            (
+                event.wheel_delta(),
+                event.wheel_delta_discrete().round() as i32,
+            )
+        }),
+    }
 }
 
 #[inline]

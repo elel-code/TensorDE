@@ -36,6 +36,7 @@ use super::*;
 #[cfg(feature = "tty")]
 mod background_effect;
 mod capture;
+mod desktop_controls;
 #[cfg(feature = "tty")]
 mod dmabuf;
 mod foreign_toplevel;

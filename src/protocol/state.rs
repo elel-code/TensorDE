@@ -84,6 +84,7 @@ use super::globals::ProtocolGlobals;
 use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
 use surfaces::SurfaceBufferRegistry;
+pub(in crate::protocol) use surfaces::surface_contains_point;
 pub(crate) use surfaces::{apply_surface_alpha, destroy_surface_state, on_commit_surface_handler};
 #[cfg(test)]
 pub(crate) use surfaces::{test_surface_buffer, test_surface_tree_states};
@@ -157,7 +158,7 @@ pub(crate) struct RuntimeState {
     pub(crate) input_devices: HashMap<tensor_input::DeviceId, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
     pub(super) tablet_devices:
-        HashMap<tensor_input::DeviceId, smithay::wayland::tablet_manager::TabletDescriptor>,
+        HashMap<tensor_input::DeviceId, smithay::input::tablet::TabletDescriptor>,
     #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
     /// When true, every redraw path fans out to all CRTCs (debug only).

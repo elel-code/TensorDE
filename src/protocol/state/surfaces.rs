@@ -197,6 +197,17 @@ pub(super) fn surface_view(states: &SurfaceData) -> Option<SurfaceViewSnapshot> 
         .view
 }
 
+pub(in crate::protocol) fn surface_contains_point(surface: &WlSurface, point: (f64, f64)) -> bool {
+    if !point.0.is_finite() || !point.1.is_finite() || point.0 < 0.0 || point.1 < 0.0 {
+        return false;
+    }
+    with_states(surface, |states| {
+        surface_view(states).is_some_and(|view| {
+            point.0 < f64::from(view.size.0) && point.1 < f64::from(view.size.1)
+        })
+    })
+}
+
 #[cfg(feature = "tty")]
 pub(super) fn surface_has_buffer(surface: &WlSurface) -> bool {
     with_states(surface, |states| {

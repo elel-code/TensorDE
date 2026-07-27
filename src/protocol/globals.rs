@@ -11,7 +11,6 @@ use smithay::{
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
-        pointer_warp::PointerWarpManager,
         relative_pointer::RelativePointerManagerState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
@@ -25,9 +24,6 @@ use smithay::{
         virtual_keyboard::VirtualKeyboardManagerState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
-        xdg_system_bell::XdgSystemBellState,
-        xdg_toplevel_icon::XdgToplevelIconManager,
-        xdg_toplevel_tag::XdgToplevelTagManager,
     },
 };
 use wayland_server::{Client, DisplayHandle};
@@ -40,6 +36,7 @@ use super::extensions::{
 use super::state::RuntimeState;
 
 pub(in crate::protocol) mod background_effect;
+pub(in crate::protocol) mod desktop_controls;
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod foreign_toplevel;
@@ -57,6 +54,7 @@ mod syncobj;
 pub(in crate::protocol) mod viewporter;
 
 use background_effect::BackgroundEffectProtocol;
+use desktop_controls::DesktopControls;
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
 use foreign_toplevel::ForeignToplevelListState;
@@ -105,12 +103,9 @@ pub(crate) struct ProtocolGlobals {
     security_context: SecurityContextManagerState,
     foreign_toplevel_list: ForeignToplevelListState,
     xdg_foreign: XdgForeignState,
-    system_bell: XdgSystemBellState,
-    pointer_warp: PointerWarpManager,
+    pub(super) desktop_controls: DesktopControls,
     pub(super) surface_metadata: SurfaceMetadataProtocol,
     background_effect: BackgroundEffectProtocol,
-    toplevel_icon: XdgToplevelIconManager,
-    toplevel_tag: XdgToplevelTagManager,
     pub(super) surface_timing: SurfaceTimingProtocol,
     #[cfg(feature = "xwayland")]
     xwayland_keyboard_grab: XWaylandKeyboardGrabState,
@@ -187,12 +182,9 @@ impl ProtocolGlobals {
             ),
             foreign_toplevel_list: ForeignToplevelListState::new::<RuntimeState>(display),
             xdg_foreign: XdgForeignState::new::<RuntimeState>(display),
-            system_bell: XdgSystemBellState::new::<RuntimeState>(display),
-            pointer_warp: PointerWarpManager::new::<RuntimeState>(display),
+            desktop_controls: DesktopControls::new(display),
             surface_metadata: SurfaceMetadataProtocol::new(display),
             background_effect: BackgroundEffectProtocol::new(display),
-            toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
-            toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
             surface_timing: SurfaceTimingProtocol::new(display),
             #[cfg(feature = "xwayland")]
             xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
@@ -232,6 +224,7 @@ impl ProtocolGlobals {
     ) -> Vec<SurfaceBarrier> {
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
+        self.desktop_controls.remove_surface(surface);
         self.surface_timing.remove_surface(surface)
     }
 
@@ -360,12 +353,9 @@ impl ProtocolGlobals {
             &self.security_context,
             &self.foreign_toplevel_list,
             &self.xdg_foreign,
-            &self.system_bell,
-            &self.pointer_warp,
+            &self.desktop_controls,
             &self.surface_metadata,
             &self.background_effect,
-            &self.toplevel_icon,
-            &self.toplevel_tag,
             &self.surface_timing,
             &self.virtual_pointer,
             &self.gamma_control,

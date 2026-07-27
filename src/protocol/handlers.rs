@@ -516,9 +516,9 @@ impl RuntimeState {
     }
 }
 
-// wp_cursor_shape_v1 can bind tablet tools; Smithay requires the handler even
-// when Tensor does not yet advertise a tablet seat global.
-impl smithay::wayland::tablet_manager::TabletSeatHandler for RuntimeState {}
+impl smithay::input::tablet::TabletSeatHandler for RuntimeState {
+    type ToolFocus = WlSurface;
+}
 
 impl smithay::wayland::idle_notify::IdleNotifierHandler for RuntimeState {
     fn idle_notifier_state(
