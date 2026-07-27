@@ -1,22 +1,20 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
+
 use tracing::warn;
 
-use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Device,
-    DeviceCapability, Event, InputBackend, PointerAxisEvent, PointerButtonEvent,
-    PointerMotionAbsoluteEvent, PointerMotionEvent, UnusedEvent,
-};
-use smithay::input::pointer::AxisFrame;
-use smithay::output::Output;
 use smithay::wayland::{Dispatch2, GlobalDispatch2};
+use tensor_host::AxisSource;
+use tensor_input::{
+    AbsoluteMotionEvent, AxisDirection, PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
+};
 use wayland_protocols_wlr::virtual_pointer::v1::server::{
     zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1,
 };
 use wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, New, Resource, WEnum,
     backend::ClientId,
-    protocol::{wl_pointer, wl_seat::WlSeat},
+    protocol::{wl_output::WlOutput, wl_pointer, wl_seat::WlSeat},
 };
 use zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
@@ -31,11 +29,77 @@ pub struct VirtualPointerManagerGlobalData {
     filter: Box<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>,
 }
 
-pub struct VirtualPointerInputBackend;
-
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct VirtualPointer {
     pointer: ZwlrVirtualPointerV1,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PendingAxisFrame {
+    time_msec: Option<u32>,
+    horizontal: Option<f64>,
+    vertical: Option<f64>,
+    horizontal_v120: Option<i32>,
+    vertical_v120: Option<i32>,
+    source: Option<AxisSource>,
+    horizontal_stopped: bool,
+    vertical_stopped: bool,
+}
+
+impl PendingAxisFrame {
+    #[inline]
+    fn set_time(&mut self, time_msec: u32) {
+        self.time_msec.get_or_insert(time_msec);
+    }
+
+    #[inline]
+    fn add_value(&mut self, axis: wl_pointer::Axis, value: f64) {
+        let amount = match axis {
+            wl_pointer::Axis::HorizontalScroll => &mut self.horizontal,
+            wl_pointer::Axis::VerticalScroll => &mut self.vertical,
+            _ => unreachable!(),
+        };
+        *amount = Some(amount.unwrap_or_default() + value);
+    }
+
+    #[inline]
+    fn set_v120(&mut self, axis: wl_pointer::Axis, value: i32) {
+        match axis {
+            wl_pointer::Axis::HorizontalScroll => self.horizontal_v120 = Some(value),
+            wl_pointer::Axis::VerticalScroll => self.vertical_v120 = Some(value),
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn stop(&mut self, axis: wl_pointer::Axis) {
+        match axis {
+            wl_pointer::Axis::HorizontalScroll => self.horizontal_stopped = true,
+            wl_pointer::Axis::VerticalScroll => self.vertical_stopped = true,
+            _ => unreachable!(),
+        }
+    }
+
+    fn into_event(self) -> Option<PointerAxisEvent> {
+        let time_msec = self.time_msec?;
+        let source = self.source.unwrap_or_else(|| {
+            warn!("virtual pointer axis frame has no source; using continuous");
+            AxisSource::Continuous
+        });
+        Some(
+            PointerAxisEvent::new(
+                self.horizontal,
+                self.vertical,
+                self.horizontal_v120,
+                self.vertical_v120,
+                msec_to_nsec(time_msec),
+                source,
+                AxisDirection::Identical,
+                AxisDirection::Identical,
+            )
+            .with_stops(self.horizontal_stopped, self.vertical_stopped),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -43,9 +107,9 @@ pub struct VirtualPointerUserData {
     #[allow(dead_code)]
     seat: Option<WlSeat>,
     #[allow(dead_code)]
-    output: Option<Output>,
+    output: Option<WlOutput>,
 
-    axis_frame: Mutex<Option<AxisFrame>>,
+    axis_frame: Mutex<Option<PendingAxisFrame>>,
 }
 
 impl VirtualPointer {
@@ -59,218 +123,33 @@ impl VirtualPointer {
     }
 
     #[allow(dead_code)]
-    pub fn output(&self) -> Option<&Output> {
+    pub fn output(&self) -> Option<&WlOutput> {
         self.data().output.as_ref()
     }
+}
 
-    fn finish_axis_frame(&self) -> Option<AxisFrame> {
-        self.data().axis_frame.lock().unwrap().take()
+impl VirtualPointerUserData {
+    fn finish_axis_frame(&self) -> Option<PointerAxisEvent> {
+        self.axis_frame.lock().unwrap().take()?.into_event()
     }
 
-    fn mutate_axis_frame(&self, time: Option<u32>, f: impl FnOnce(AxisFrame) -> AxisFrame) {
-        let mut frame = self.data().axis_frame.lock().unwrap();
-
-        *frame = frame.or(time.map(AxisFrame::new)).map(f);
+    fn update_axis_frame(
+        &self,
+        time_msec: Option<u32>,
+        update: impl FnOnce(&mut PendingAxisFrame),
+    ) {
+        let mut pending = self.axis_frame.lock().unwrap();
+        let frame = pending.get_or_insert_default();
+        if let Some(time_msec) = time_msec {
+            frame.set_time(time_msec);
+        }
+        update(frame);
     }
 }
 
-impl Device for VirtualPointer {
-    fn id(&self) -> String {
-        format!("wlr virtual pointer {}", self.pointer.id())
-    }
-
-    fn name(&self) -> String {
-        String::from("virtual pointer")
-    }
-
-    fn has_capability(&self, capability: DeviceCapability) -> bool {
-        matches!(capability, DeviceCapability::Pointer)
-    }
-
-    fn usb_id(&self) -> Option<(u32, u32)> {
-        None
-    }
-
-    fn syspath(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-}
-
-pub struct VirtualPointerMotionEvent {
-    pointer: VirtualPointer,
-    time: u32,
-    dx: f64,
-    dy: f64,
-}
-
-impl Event<VirtualPointerInputBackend> for VirtualPointerMotionEvent {
-    fn time(&self) -> u64 {
-        self.time as u64 * 1000 // millis to micros
-    }
-
-    fn device(&self) -> VirtualPointer {
-        self.pointer.clone()
-    }
-}
-
-impl PointerMotionEvent<VirtualPointerInputBackend> for VirtualPointerMotionEvent {
-    fn delta_x(&self) -> f64 {
-        self.dx
-    }
-
-    fn delta_y(&self) -> f64 {
-        self.dy
-    }
-
-    fn delta_x_unaccel(&self) -> f64 {
-        self.dx
-    }
-
-    fn delta_y_unaccel(&self) -> f64 {
-        self.dy
-    }
-}
-
-pub struct VirtualPointerMotionAbsoluteEvent {
-    pointer: VirtualPointer,
-    time: u32,
-    x: u32,
-    y: u32,
-    x_extent: u32,
-    y_extent: u32,
-}
-
-impl Event<VirtualPointerInputBackend> for VirtualPointerMotionAbsoluteEvent {
-    fn time(&self) -> u64 {
-        self.time as u64 * 1000 // millis to micros
-    }
-
-    fn device(&self) -> VirtualPointer {
-        self.pointer.clone()
-    }
-}
-
-impl AbsolutePositionEvent<VirtualPointerInputBackend> for VirtualPointerMotionAbsoluteEvent {
-    fn x(&self) -> f64 {
-        self.x as f64 / self.x_extent as f64
-    }
-
-    fn y(&self) -> f64 {
-        self.y as f64 / self.y_extent as f64
-    }
-
-    fn x_transformed(&self, width: i32) -> f64 {
-        (self.x as i64 * width as i64) as f64 / self.x_extent as f64
-    }
-
-    fn y_transformed(&self, height: i32) -> f64 {
-        (self.y as i64 * height as i64) as f64 / self.y_extent as f64
-    }
-}
-
-pub struct VirtualPointerButtonEvent {
-    pointer: VirtualPointer,
-    time: u32,
-    button: u32,
-    state: ButtonState,
-}
-
-impl Event<VirtualPointerInputBackend> for VirtualPointerButtonEvent {
-    fn time(&self) -> u64 {
-        self.time as u64 * 1000 // millis to micros
-    }
-
-    fn device(&self) -> VirtualPointer {
-        self.pointer.clone()
-    }
-}
-
-impl PointerButtonEvent<VirtualPointerInputBackend> for VirtualPointerButtonEvent {
-    fn button_code(&self) -> u32 {
-        self.button
-    }
-
-    fn state(&self) -> ButtonState {
-        self.state
-    }
-}
-
-pub struct VirtualPointerAxisEvent {
-    pointer: VirtualPointer,
-    frame: AxisFrame,
-}
-
-impl Event<VirtualPointerInputBackend> for VirtualPointerAxisEvent {
-    fn time(&self) -> u64 {
-        self.frame.time as u64 * 1000 // millis to micros
-    }
-
-    fn device(&self) -> VirtualPointer {
-        self.pointer.clone()
-    }
-}
-
-fn tuple_axis<T>(tuple: (T, T), axis: Axis) -> T {
-    match axis {
-        Axis::Horizontal => tuple.0,
-        Axis::Vertical => tuple.1,
-    }
-}
-
-impl PointerAxisEvent<VirtualPointerInputBackend> for VirtualPointerAxisEvent {
-    fn amount(&self, axis: Axis) -> Option<f64> {
-        Some(tuple_axis(self.frame.axis, axis))
-    }
-
-    fn amount_v120(&self, axis: Axis) -> Option<f64> {
-        self.frame.v120.map(|v120| tuple_axis(v120, axis) as f64)
-    }
-
-    fn source(&self) -> AxisSource {
-        self.frame.source.unwrap_or_else(|| {
-            warn!("AxisSource: no source set, giving bogus value");
-            AxisSource::Continuous
-        })
-    }
-
-    fn relative_direction(&self, axis: Axis) -> AxisRelativeDirection {
-        tuple_axis(self.frame.relative_direction, axis)
-    }
-}
-
-impl PointerMotionAbsoluteEvent<VirtualPointerInputBackend> for VirtualPointerMotionAbsoluteEvent {}
-
-impl InputBackend for VirtualPointerInputBackend {
-    type Device = VirtualPointer;
-
-    type KeyboardKeyEvent = UnusedEvent;
-    type PointerAxisEvent = VirtualPointerAxisEvent;
-    type PointerButtonEvent = VirtualPointerButtonEvent;
-    type PointerMotionEvent = VirtualPointerMotionEvent;
-    type PointerMotionAbsoluteEvent = VirtualPointerMotionAbsoluteEvent;
-
-    type GestureSwipeBeginEvent = UnusedEvent;
-    type GestureSwipeUpdateEvent = UnusedEvent;
-    type GestureSwipeEndEvent = UnusedEvent;
-    type GesturePinchBeginEvent = UnusedEvent;
-    type GesturePinchUpdateEvent = UnusedEvent;
-    type GesturePinchEndEvent = UnusedEvent;
-    type GestureHoldBeginEvent = UnusedEvent;
-    type GestureHoldEndEvent = UnusedEvent;
-
-    type TouchDownEvent = UnusedEvent;
-    type TouchUpEvent = UnusedEvent;
-    type TouchMotionEvent = UnusedEvent;
-    type TouchCancelEvent = UnusedEvent;
-    type TouchFrameEvent = UnusedEvent;
-    type TabletToolAxisEvent = UnusedEvent;
-    type TabletToolProximityEvent = UnusedEvent;
-    type TabletToolTipEvent = UnusedEvent;
-    type TabletToolButtonEvent = UnusedEvent;
-
-    type SwitchToggleEvent = UnusedEvent;
-
-    type SpecialEvent = UnusedEvent;
+#[inline]
+const fn msec_to_nsec(time_msec: u32) -> u64 {
+    time_msec as u64 * 1_000_000
 }
 
 pub trait VirtualPointerHandler: 'static {
@@ -283,10 +162,10 @@ pub trait VirtualPointerHandler: 'static {
         let _ = pointer;
     }
 
-    fn on_virtual_pointer_motion(&mut self, event: VirtualPointerMotionEvent);
-    fn on_virtual_pointer_motion_absolute(&mut self, event: VirtualPointerMotionAbsoluteEvent);
-    fn on_virtual_pointer_button(&mut self, event: VirtualPointerButtonEvent);
-    fn on_virtual_pointer_axis(&mut self, event: VirtualPointerAxisEvent);
+    fn on_virtual_pointer_motion(&mut self, event: RelativeMotionEvent);
+    fn on_virtual_pointer_motion_absolute(&mut self, event: AbsoluteMotionEvent);
+    fn on_virtual_pointer_button(&mut self, event: PointerButtonEvent);
+    fn on_virtual_pointer_axis(&mut self, event: PointerAxisEvent);
 }
 
 impl VirtualPointerManagerState {
@@ -363,7 +242,7 @@ where
                 seat,
                 output,
                 id,
-            } => (id, seat, output.as_ref().and_then(Output::from_resource)),
+            } => (id, seat, output),
             zwlr_virtual_pointer_manager_v1::Request::Destroy => return,
             _ => unreachable!(),
         };
@@ -398,16 +277,14 @@ where
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
-        let pointer = VirtualPointer {
-            pointer: resource.clone(),
-        };
         match request {
             zwlr_virtual_pointer_v1::Request::Motion { time, dx, dy } => {
-                handler.on_virtual_pointer_motion(VirtualPointerMotionEvent {
-                    pointer,
-                    time,
-                    dx,
-                    dy,
+                handler.on_virtual_pointer_motion(RelativeMotionEvent {
+                    delta_x: dx,
+                    delta_y: dy,
+                    unaccelerated_x: dx,
+                    unaccelerated_y: dy,
+                    time_ns: msec_to_nsec(time),
                 });
             }
             zwlr_virtual_pointer_v1::Request::MotionAbsolute {
@@ -417,13 +294,10 @@ where
                 x_extent,
                 y_extent,
             } => {
-                handler.on_virtual_pointer_motion_absolute(VirtualPointerMotionAbsoluteEvent {
-                    pointer,
-                    time,
-                    x,
-                    y,
-                    x_extent,
-                    y_extent,
+                handler.on_virtual_pointer_motion_absolute(AbsoluteMotionEvent {
+                    x: f64::from(x) / f64::from(x_extent),
+                    y: f64::from(y) / f64::from(y_extent),
+                    time_ns: msec_to_nsec(time),
                 });
             }
             zwlr_virtual_pointer_v1::Request::Button {
@@ -431,21 +305,17 @@ where
                 button,
                 state,
             } => {
-                let state = match state {
-                    WEnum::Value(wl_pointer::ButtonState::Released) => ButtonState::Released,
-                    _ => ButtonState::Pressed,
-                };
-                handler.on_virtual_pointer_button(VirtualPointerButtonEvent {
-                    pointer,
-                    time,
+                let pressed = !matches!(state, WEnum::Value(wl_pointer::ButtonState::Released));
+                handler.on_virtual_pointer_button(PointerButtonEvent {
                     button,
-                    state,
+                    pressed,
+                    time_ns: msec_to_nsec(time),
                 });
             }
             zwlr_virtual_pointer_v1::Request::Axis { time, axis, value } => {
                 let axis = match axis {
-                    WEnum::Value(wl_pointer::Axis::VerticalScroll) => Axis::Vertical,
-                    WEnum::Value(wl_pointer::Axis::HorizontalScroll) => Axis::Horizontal,
+                    WEnum::Value(axis @ wl_pointer::Axis::VerticalScroll)
+                    | WEnum::Value(axis @ wl_pointer::Axis::HorizontalScroll) => axis,
                     _ => {
                         warn!("Axis: invalid axis");
                         resource.post_error(
@@ -455,11 +325,11 @@ where
                         return;
                     }
                 };
-                pointer.mutate_axis_frame(Some(time), |frame| frame.value(axis, value));
+                self.update_axis_frame(Some(time), |frame| frame.add_value(axis, value));
             }
             zwlr_virtual_pointer_v1::Request::Frame => {
-                if let Some(frame) = pointer.finish_axis_frame() {
-                    handler.on_virtual_pointer_axis(VirtualPointerAxisEvent { pointer, frame });
+                if let Some(event) = self.finish_axis_frame() {
+                    handler.on_virtual_pointer_axis(event);
                 }
             }
             zwlr_virtual_pointer_v1::Request::AxisSource { axis_source } => {
@@ -477,12 +347,12 @@ where
                         return;
                     }
                 };
-                pointer.mutate_axis_frame(None, |frame| frame.source(axis_source));
+                self.update_axis_frame(None, |frame| frame.source = Some(axis_source));
             }
             zwlr_virtual_pointer_v1::Request::AxisStop { time, axis } => {
                 let axis = match axis {
-                    WEnum::Value(wl_pointer::Axis::VerticalScroll) => Axis::Vertical,
-                    WEnum::Value(wl_pointer::Axis::HorizontalScroll) => Axis::Horizontal,
+                    WEnum::Value(axis @ wl_pointer::Axis::VerticalScroll)
+                    | WEnum::Value(axis @ wl_pointer::Axis::HorizontalScroll) => axis,
                     _ => {
                         warn!("AxisStop: invalid axis");
                         resource.post_error(
@@ -492,7 +362,7 @@ where
                         return;
                     }
                 };
-                pointer.mutate_axis_frame(Some(time), |frame| frame.stop(axis));
+                self.update_axis_frame(Some(time), |frame| frame.stop(axis));
             }
             zwlr_virtual_pointer_v1::Request::AxisDiscrete {
                 time,
@@ -501,8 +371,8 @@ where
                 discrete,
             } => {
                 let axis = match axis {
-                    WEnum::Value(wl_pointer::Axis::VerticalScroll) => Axis::Vertical,
-                    WEnum::Value(wl_pointer::Axis::HorizontalScroll) => Axis::Horizontal,
+                    WEnum::Value(axis @ wl_pointer::Axis::VerticalScroll)
+                    | WEnum::Value(axis @ wl_pointer::Axis::HorizontalScroll) => axis,
                     _ => {
                         warn!("AxisDiscrete: invalid axis");
                         resource.post_error(
@@ -512,8 +382,9 @@ where
                         return;
                     }
                 };
-                pointer.mutate_axis_frame(Some(time), |frame| {
-                    frame.value(axis, value).v120(axis, discrete * 120)
+                self.update_axis_frame(Some(time), |frame| {
+                    frame.add_value(axis, value);
+                    frame.set_v120(axis, discrete.saturating_mul(120));
                 });
             }
             zwlr_virtual_pointer_v1::Request::Destroy => {}
@@ -530,5 +401,55 @@ where
             .virtual_pointer_manager_state()
             .virtual_pointers
             .remove(resource);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_source_before_timed_value_survives_the_frame() {
+        let mut frame = PendingAxisFrame {
+            source: Some(AxisSource::Finger),
+            ..PendingAxisFrame::default()
+        };
+        frame.add_value(wl_pointer::Axis::VerticalScroll, 1.25);
+        frame.set_time(42);
+        frame.add_value(wl_pointer::Axis::VerticalScroll, -0.5);
+        frame.set_time(99);
+
+        let event = frame.into_event().unwrap();
+        assert_eq!(event.source, AxisSource::Finger);
+        assert_eq!(event.vertical(), Some(0.75));
+        assert_eq!(event.horizontal(), None);
+        assert_eq!(event.time_ns, 42_000_000);
+    }
+
+    #[test]
+    fn axis_stop_and_v120_remain_independent_values() {
+        let mut frame = PendingAxisFrame {
+            source: Some(AxisSource::Wheel),
+            ..PendingAxisFrame::default()
+        };
+        frame.set_time(7);
+        frame.set_v120(wl_pointer::Axis::HorizontalScroll, -240);
+        frame.stop(wl_pointer::Axis::VerticalScroll);
+
+        let event = frame.into_event().unwrap();
+        assert_eq!(event.horizontal_v120(), Some(-240));
+        assert_eq!(event.vertical(), None);
+        assert!(!event.horizontal_stopped());
+        assert!(event.vertical_stopped());
+    }
+
+    #[test]
+    fn source_only_frame_does_not_fabricate_an_axis_timestamp() {
+        let frame = PendingAxisFrame {
+            source: Some(AxisSource::Continuous),
+            ..PendingAxisFrame::default()
+        };
+
+        assert_eq!(frame.into_event(), None);
     }
 }

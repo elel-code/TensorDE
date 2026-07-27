@@ -103,9 +103,11 @@ const HORIZONTAL_AMOUNT: u8 = 1 << 0;
 const VERTICAL_AMOUNT: u8 = 1 << 1;
 const HORIZONTAL_V120: u8 = 1 << 2;
 const VERTICAL_V120: u8 = 1 << 3;
+const HORIZONTAL_STOP: u8 = 1 << 4;
+const VERTICAL_STOP: u8 = 1 << 5;
 
-/// One complete scroll frame. Presence bits preserve zero-valued stop events
-/// without paying for four `Option<f64>` discriminants.
+/// One complete scroll frame. Presence bits preserve optional values and
+/// explicit stops without adding discriminants to the inline event.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerAxisEvent {
     horizontal: f64,
@@ -158,6 +160,19 @@ impl PointerAxisEvent {
         }
     }
 
+    /// Attach explicit end-of-scroll markers without changing the inline
+    /// event layout. Stops are independent of zero-valued axis samples.
+    #[inline]
+    pub const fn with_stops(mut self, horizontal: bool, vertical: bool) -> Self {
+        if horizontal {
+            self.present |= HORIZONTAL_STOP;
+        }
+        if vertical {
+            self.present |= VERTICAL_STOP;
+        }
+        self
+    }
+
     #[inline]
     pub const fn horizontal(self) -> Option<f64> {
         if self.present & HORIZONTAL_AMOUNT != 0 {
@@ -192,6 +207,16 @@ impl PointerAxisEvent {
         } else {
             None
         }
+    }
+
+    #[inline]
+    pub const fn horizontal_stopped(self) -> bool {
+        self.present & HORIZONTAL_STOP != 0
+    }
+
+    #[inline]
+    pub const fn vertical_stopped(self) -> bool {
+        self.present & VERTICAL_STOP != 0
     }
 
     #[inline]
@@ -252,10 +277,13 @@ mod tests {
             AxisSource::Finger,
             AxisDirection::Identical,
             AxisDirection::Inverted,
-        );
+        )
+        .with_stops(false, true);
 
         assert_eq!(event.vertical(), Some(0.0));
         assert_eq!(event.horizontal(), None);
+        assert!(!event.horizontal_stopped());
+        assert!(event.vertical_stopped());
         assert_eq!(event.time_msec(), 4);
         assert_eq!(event.sample(), None);
     }

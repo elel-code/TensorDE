@@ -314,4 +314,8 @@ where
         direction,
         direction,
     )
+    .with_stops(
+        source == AxisSource::Finger && horizontal == Some(0.0),
+        source == AxisSource::Finger && vertical == Some(0.0),
+    )
 }

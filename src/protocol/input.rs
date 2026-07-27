@@ -1,8 +1,5 @@
-mod tablet;
-#[cfg(feature = "tty")]
-mod virtual_pointer;
-
 mod pointer_geometry;
+mod tablet;
 #[cfg(test)]
 mod tests;
 
@@ -269,7 +266,7 @@ impl RuntimeState {
         backend.change_vt(vt);
     }
 
-    fn forward_pointer_motion(&mut self, event: RelativeMotionEvent) {
+    pub(crate) fn forward_pointer_motion(&mut self, event: RelativeMotionEvent) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -286,7 +283,7 @@ impl RuntimeState {
     /// Follow the same absolute-coordinate conversion used by Niri: libinput
     /// maps the device into the compositor's logical output bounds, then the
     /// seat receives the resulting global location and a redraw is queued.
-    fn forward_pointer_motion_absolute(&mut self, event: AbsoluteMotionEvent) {
+    pub(crate) fn forward_pointer_motion_absolute(&mut self, event: AbsoluteMotionEvent) {
         let Some(bounds) = self.pointer_coordinate_space() else {
             return;
         };
@@ -387,7 +384,7 @@ impl RuntimeState {
             .reduce(Rectangle::merge)
     }
 
-    fn forward_pointer_button(&mut self, event: PointerButtonEvent) {
+    pub(crate) fn forward_pointer_button(&mut self, event: PointerButtonEvent) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -409,7 +406,7 @@ impl RuntimeState {
         let _ = self.push_event(event.sample().into_event());
     }
 
-    fn forward_pointer_axis(&mut self, event: PointerAxisEvent) {
+    pub(crate) fn forward_pointer_axis(&mut self, event: PointerAxisEvent) {
         use smithay::input::pointer::AxisFrame;
 
         let Some(pointer) = self.seat.get_pointer() else {
@@ -440,7 +437,14 @@ impl RuntimeState {
                 frame = frame.v120(axis, steps);
             }
         }
+        if event.horizontal_stopped() {
+            frame = frame.stop(Axis::Horizontal);
+        }
+        if event.vertical_stopped() {
+            frame = frame.stop(Axis::Vertical);
+        }
         pointer.axis(self, frame);
+        pointer.frame(self);
         if let Some(sample) = event.sample() {
             let _ = self.push_event(sample.into_event());
         }

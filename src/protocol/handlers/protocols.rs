@@ -499,42 +499,30 @@ impl crate::protocol::extensions::virtual_pointer::VirtualPointerHandler for Run
         self.protocol_globals.virtual_pointer()
     }
 
-    fn on_virtual_pointer_motion(
-        &mut self,
-        event: crate::protocol::extensions::virtual_pointer::VirtualPointerMotionEvent,
-    ) {
+    fn on_virtual_pointer_motion(&mut self, event: tensor_input::RelativeMotionEvent) {
         #[cfg(feature = "tty")]
-        self.forward_virtual_pointer_motion(event);
+        self.forward_pointer_motion(event);
         #[cfg(not(feature = "tty"))]
         let _ = event;
     }
 
-    fn on_virtual_pointer_motion_absolute(
-        &mut self,
-        event: crate::protocol::extensions::virtual_pointer::VirtualPointerMotionAbsoluteEvent,
-    ) {
+    fn on_virtual_pointer_motion_absolute(&mut self, event: tensor_input::AbsoluteMotionEvent) {
         #[cfg(feature = "tty")]
-        self.forward_virtual_pointer_motion_absolute(event);
+        self.forward_pointer_motion_absolute(event);
         #[cfg(not(feature = "tty"))]
         let _ = event;
     }
 
-    fn on_virtual_pointer_button(
-        &mut self,
-        event: crate::protocol::extensions::virtual_pointer::VirtualPointerButtonEvent,
-    ) {
+    fn on_virtual_pointer_button(&mut self, event: tensor_input::PointerButtonEvent) {
         #[cfg(feature = "tty")]
-        self.forward_virtual_pointer_button(event);
+        self.forward_pointer_button(event);
         #[cfg(not(feature = "tty"))]
         let _ = event;
     }
 
-    fn on_virtual_pointer_axis(
-        &mut self,
-        event: crate::protocol::extensions::virtual_pointer::VirtualPointerAxisEvent,
-    ) {
+    fn on_virtual_pointer_axis(&mut self, event: tensor_input::PointerAxisEvent) {
         #[cfg(feature = "tty")]
-        self.forward_virtual_pointer_axis(event);
+        self.forward_pointer_axis(event);
         #[cfg(not(feature = "tty"))]
         let _ = event;
     }
