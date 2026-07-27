@@ -134,6 +134,10 @@ impl PlatformBackend {
         self.inner.surface_handle(surface)
     }
 
+    fn logical_size(&self, surface: SurfaceId) -> Option<LogicalSize> {
+        self.inner.logical_size(surface)
+    }
+
     fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
         self.inner.set_title(surface, title)
     }
@@ -158,8 +162,12 @@ impl PlatformBackend {
         self.inner.set_blur(surface, state)
     }
 
-    fn set_cursor(&mut self, icon: RuntimeCursorIcon) -> Result<(), RuntimeError> {
-        self.inner.set_cursor(icon)
+    fn set_cursor_on_seat(
+        &mut self,
+        icon: RuntimeCursorIcon,
+        seat: Option<wayland_client_runtime::SeatId>,
+    ) -> Result<(), RuntimeError> {
+        self.inner.set_cursor_on_seat(icon, seat)
     }
 
     fn set_text_input_state(
@@ -174,24 +182,20 @@ impl PlatformBackend {
         self.inner.request_user_attention(surface)
     }
 
-    fn request_frame(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        self.inner.request_frame(surface)
+    fn arm_present_notify(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        self.inner.arm_present_notify(surface)
     }
 
-    fn is_frame_pending(&self, surface: SurfaceId) -> bool {
-        self.inner.is_frame_pending(surface)
+    fn flush(&mut self) -> Result<(), RuntimeError> {
+        self.inner.flush()
     }
 
-    fn request_presentation_feedback(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<(), RuntimeError> {
-        self.inner.request_presentation_feedback(surface)
-    }
-
-    #[allow(dead_code)] // available for present-path diagnostics / future pacing
-    fn is_presentation_pending(&self, surface: SurfaceId) -> bool {
-        self.inner.is_presentation_pending(surface)
+    fn is_present_pending(&self, surface: SurfaceId) -> bool {
+        if self.inner.capabilities().presentation {
+            self.inner.is_presentation_pending(surface)
+        } else {
+            self.inner.is_frame_pending(surface)
+        }
     }
 
     fn request_dmabuf_default_feedback(&mut self) -> Result<(), RuntimeError> {

@@ -18,6 +18,7 @@ impl EventLoop {
                 next_async_serial: Cell::new(1),
                 control_flow: Cell::new(ControlFlow::Wait),
                 exiting: Cell::new(false),
+                last_pointer_seat: Cell::new(None),
                 dmabuf_default_feedback: RefCell::new(None),
                 dmabuf_surface_feedback: RefCell::new(HashMap::new()),
             },
@@ -102,7 +103,10 @@ impl EventLoop {
                     result => result,
                 },
                 RuntimeCommand::SetCursor(icon) => runtime
-                    .set_cursor(runtime_cursor_icon(icon))
+                    .set_cursor_on_seat(
+                        runtime_cursor_icon(icon),
+                        self.active.last_pointer_seat.get(),
+                    )
                     .or_else(|error| match error {
                         RuntimeError::Unsupported(_) => Ok(()),
                         error => Err(error),
@@ -127,16 +131,6 @@ impl EventLoop {
                         RuntimeError::Unsupported(_) => Ok(()),
                         error => Err(error),
                     }),
-                RuntimeCommand::ArmFrame(surface) => {
-                    // Arm presentation feedback only when the global exists;
-                    // always keep wl_surface.frame for pacing.
-                    if runtime.capabilities().presentation {
-                        let _ = runtime.request_presentation_feedback(surface);
-                    }
-                    runtime
-                        .request_frame(surface)
-                        .and_then(|()| runtime.commit(surface))
-                }
                 RuntimeCommand::Destroy(surface) => {
                     self.active.windows.borrow_mut().remove(&surface);
                     self.active
@@ -176,6 +170,9 @@ impl EventLoop {
                 let Some(window) = self.window(event.surface) else {
                     return Ok(());
                 };
+                if let Some(seat) = event.seat {
+                    self.active.last_pointer_seat.set(Some(seat));
+                }
                 let scale = window.scale_factor();
                 let position = PhysicalPosition::new(
                     event.position.0 * scale,
@@ -581,7 +578,7 @@ impl EventLoop {
                     .borrow()
                     .capabilities()
                     .fractional_scale;
-                let (physical, logical, changed) = {
+                let (physical, logical, surface_state_changed, resized) = {
                     let mut state = window
                         .state
                         .lock()
@@ -590,15 +587,11 @@ impl EventLoop {
                         suggested_size.width.unwrap_or(state.logical_size.width),
                         suggested_size.height.unwrap_or(state.logical_size.height),
                     );
-                    let physical = logical_to_physical_rounded(logical, state.scale_factor);
-                    let changed = !state.configured || physical != state.physical_size;
-                    state.logical_size = logical;
-                    state.physical_size = physical;
-                    state.configured = true;
-                    state.redraw_requested = true;
-                    (physical, logical, changed)
+                    let (physical, surface_state_changed, resized) =
+                        apply_configured_logical_size(&mut state, logical);
+                    (physical, logical, surface_state_changed, resized)
                 };
-                {
+                if surface_state_changed {
                     let mut runtime = self.active.runtime.borrow_mut();
                     runtime.set_window_geometry(surface, LogicalPosition::ZERO, logical)?;
                     if fractional_scale {
@@ -614,7 +607,7 @@ impl EventLoop {
                     }
                     runtime.commit(surface)?;
                 }
-                if changed {
+                if resized {
                     app.window_event(
                         &self.active,
                         surface,
@@ -628,11 +621,22 @@ impl EventLoop {
                     return Ok(());
                 };
                 let factor = normalize_wayland_scale_factor(factor);
+                // Native dispatch may already have processed a following
+                // xdg_surface.configure from the same socket batch. Prefer that
+                // compositor-confirmed size over WindowState's provisional one.
+                let configured_logical = self
+                    .active
+                    .runtime
+                    .borrow()
+                    .logical_size(surface);
                 let logical = {
                     let mut state = window
                         .state
                         .lock()
                         .expect("Wayland window state mutex poisoned");
+                    if let Some(logical) = configured_logical {
+                        state.logical_size = logical;
+                    }
                     state.scale_factor = factor;
                     state.physical_size =
                         logical_to_physical_rounded(state.logical_size, state.scale_factor);
@@ -708,7 +712,7 @@ impl EventLoop {
                     .expect("Wayland window state mutex poisoned");
                 if state.configured
                     && state.redraw_requested
-                    && !runtime.is_frame_pending(window.id())
+                    && !runtime.is_present_pending(window.id())
                 {
                     state.redraw_requested = false;
                     ready.push(window.id());
@@ -735,7 +739,7 @@ impl EventLoop {
                     .expect("Wayland window state mutex poisoned");
                 state.configured
                     && state.redraw_requested
-                    && !runtime.is_frame_pending(window.id())
+                    && !runtime.is_present_pending(window.id())
             })
     }
 

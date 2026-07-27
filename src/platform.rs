@@ -19,8 +19,8 @@ use wayland_client_runtime::{
     DndAction as RuntimeDndAction, DndActions as RuntimeDndActions, DndEvent,
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
     LogicalPosition, LogicalSize, MimePayload, NativeRuntime, PointerAxisValue, PointerEventKind,
-    PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, RuntimeError,
-    SurfaceEvent, SurfaceHandle, SurfaceId,
+    PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, RuntimeError, SeatId, SurfaceEvent,
+    SurfaceHandle, SurfaceId,
     TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,
     TextInputContentPurpose as RuntimeTextInputContentPurpose,
@@ -121,7 +121,6 @@ enum RuntimeCommand {
     SetCursor(CursorIcon),
     SetIme(SurfaceId, Option<ImeState>),
     RequestUserAttention(SurfaceId),
-    ArmFrame(SurfaceId),
     Destroy(SurfaceId),
 }
 
@@ -228,13 +227,6 @@ impl WaylandWindow {
             .expect("Wayland window state mutex poisoned")
             .redraw_requested = true;
         self.shared.wake.wake();
-    }
-
-    pub fn pre_present_notify(&self) {
-        // Protocol-side frame coalesce lives in the runtime (`is_frame_pending` /
-        // `request_frame`). Always queue ArmFrame; the runtime no-ops while a
-        // callback is already outstanding.
-        self.shared.push(RuntimeCommand::ArmFrame(self.id));
     }
 
     pub fn set_title(&self, title: &str) {
@@ -349,6 +341,8 @@ pub struct ActiveEventLoop {
     next_async_serial: Cell<u64>,
     control_flow: Cell<ControlFlow>,
     exiting: Cell<bool>,
+    /// Seat that last produced pointer enter/motion (for cursor shape routing).
+    last_pointer_seat: Cell<Option<SeatId>>,
     /// Latest default `zwp_linux_dmabuf` feedback (format table + tranches).
     dmabuf_default_feedback: RefCell<Option<wayland_client_runtime::DmabufFeedback>>,
     /// Per-surface feedback snapshots.
@@ -404,6 +398,21 @@ impl ActiveEventLoop {
     /// Whether `zwp_linux_dmabuf_v1` is bound on the connection.
     pub fn has_linux_dmabuf(&self) -> bool {
         self.runtime.borrow().has_linux_dmabuf()
+    }
+
+    /// Arm present pacing before the renderer's next buffer commit/present.
+    ///
+    /// Prefers `wp_presentation` feedback, falls back to `wl_surface.frame`,
+    /// then flushes so the compositor sees the callback on the same commit.
+    pub fn pre_present_notify(&self, surface: WindowId) {
+        let mut runtime = self.runtime.borrow_mut();
+        if let Err(error) = runtime.arm_present_notify(surface) {
+            eprintln!("[fika-wayland] present notification failed: {error}");
+            return;
+        }
+        if let Err(error) = runtime.flush() {
+            eprintln!("[fika-wayland] present flush failed: {error}");
+        }
     }
 
     pub fn create_window(
@@ -541,7 +550,6 @@ impl ActiveEventLoop {
 
     pub fn set_control_flow(&self, control_flow: ControlFlow) {
         self.control_flow.set(control_flow);
-        self.shared.wake.wake();
     }
 
     pub fn exit(&self) {
@@ -700,6 +708,22 @@ fn logical_to_physical_rounded(size: LogicalSize, scale_factor: f64) -> Physical
         scaled_dimension(size.width, scale_factor),
         scaled_dimension(size.height, scale_factor),
     )
+}
+
+fn apply_configured_logical_size(
+    state: &mut WindowState,
+    logical_size: LogicalSize,
+) -> (PhysicalSize<u32>, bool, bool) {
+    let physical_size = logical_to_physical_rounded(logical_size, state.scale_factor);
+    let surface_state_changed = !state.configured
+        || logical_size != state.logical_size
+        || physical_size != state.physical_size;
+    let resized = !state.configured || physical_size != state.physical_size;
+    state.logical_size = logical_size;
+    state.physical_size = physical_size;
+    state.configured = true;
+    state.redraw_requested = true;
+    (physical_size, surface_state_changed, resized)
 }
 
 fn physical_to_logical_rounded(size: PhysicalSize<u32>, scale_factor: f64) -> LogicalSize {
@@ -945,6 +969,51 @@ mod scaling_tests {
             physical_to_logical_rounded(PhysicalSize::new(1202, 962), 1.5),
             LogicalSize::new(801, 641)
         );
+    }
+
+    #[test]
+    fn repeated_same_size_configure_skips_surface_state_commit_and_resize() {
+        let logical = LogicalSize::new(847, 1015);
+        let physical = PhysicalSize::new(1271, 1523);
+        let mut state = WindowState {
+            logical_size: logical,
+            physical_size: physical,
+            scale_factor: 1.5,
+            configured: true,
+            redraw_requested: false,
+        };
+
+        let (next_physical, surface_state_changed, resized) =
+            apply_configured_logical_size(&mut state, logical);
+
+        assert_eq!(next_physical, physical);
+        assert!(!surface_state_changed);
+        assert!(!resized);
+        assert!(state.redraw_requested);
+    }
+
+    #[test]
+    fn initial_and_resized_configures_update_surface_state() {
+        let initial_logical = LogicalSize::new(847, 1015);
+        let mut state = WindowState {
+            logical_size: initial_logical,
+            physical_size: PhysicalSize::new(1271, 1523),
+            scale_factor: 1.5,
+            configured: false,
+            redraw_requested: false,
+        };
+
+        let (_, surface_state_changed, resized) =
+            apply_configured_logical_size(&mut state, initial_logical);
+        assert!(surface_state_changed);
+        assert!(resized);
+
+        let resized_logical = LogicalSize::new(900, 700);
+        let (physical, surface_state_changed, resized) =
+            apply_configured_logical_size(&mut state, resized_logical);
+        assert_eq!(physical, PhysicalSize::new(1350, 1050));
+        assert!(surface_state_changed);
+        assert!(resized);
     }
 
     #[test]

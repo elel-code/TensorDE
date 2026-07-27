@@ -562,6 +562,29 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
+    /// Flush pending protocol requests to the display socket.
+    ///
+    /// Prefer this after arming frame/presentation callbacks immediately before
+    /// a GPU present so the compositor sees the feedback object on the same
+    /// commit that attaches the buffer.
+    pub fn flush(&mut self) -> Result<(), RuntimeError> {
+        self.shell.flush().map_err(map_native_error)
+    }
+
+    /// Arm present pacing for the next surface commit.
+    ///
+    /// Uses `wp_presentation.feedback` when available, otherwise
+    /// `wl_surface.frame`. Both paths coalesce while a callback is outstanding.
+    /// Does **not** commit; pair with the renderer's buffer commit / present.
+    pub fn arm_present_notify(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
+        if self.capabilities.presentation {
+            self.request_presentation_feedback(surface)?;
+        } else {
+            self.request_frame(surface)?;
+        }
+        Ok(())
+    }
+
     pub fn set_buffer_scale(&mut self, surface: SurfaceId, factor: i32) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
