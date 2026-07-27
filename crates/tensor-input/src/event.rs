@@ -79,6 +79,65 @@ pub struct PointerButtonEvent {
     pub time_ns: TimeNs,
 }
 
+/// One phase of a touchpad gesture. Variants keep impossible payload
+/// combinations out of the completion-to-seat value path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointerGestureEvent {
+    SwipeBegin {
+        fingers: u32,
+        time_ns: TimeNs,
+    },
+    SwipeUpdate {
+        delta_x: f64,
+        delta_y: f64,
+        time_ns: TimeNs,
+    },
+    SwipeEnd {
+        cancelled: bool,
+        time_ns: TimeNs,
+    },
+    PinchBegin {
+        fingers: u32,
+        time_ns: TimeNs,
+    },
+    PinchUpdate {
+        delta_x: f64,
+        delta_y: f64,
+        scale: f64,
+        rotation: f64,
+        time_ns: TimeNs,
+    },
+    PinchEnd {
+        cancelled: bool,
+        time_ns: TimeNs,
+    },
+    HoldBegin {
+        fingers: u32,
+        time_ns: TimeNs,
+    },
+    HoldEnd {
+        cancelled: bool,
+        time_ns: TimeNs,
+    },
+}
+
+impl PointerGestureEvent {
+    #[inline]
+    pub const fn time_msec(self) -> u32 {
+        let time_ns = match self {
+            Self::SwipeBegin { time_ns, .. }
+            | Self::SwipeUpdate { time_ns, .. }
+            | Self::SwipeEnd { time_ns, .. }
+            | Self::PinchBegin { time_ns, .. }
+            | Self::PinchUpdate { time_ns, .. }
+            | Self::PinchEnd { time_ns, .. }
+            | Self::HoldBegin { time_ns, .. }
+            | Self::HoldEnd { time_ns, .. } => time_ns,
+        };
+        (time_ns / 1_000_000) as u32
+    }
+}
+
 impl PointerButtonEvent {
     #[inline]
     pub const fn time_msec(self) -> u32 {
@@ -249,6 +308,7 @@ pub enum BackendInputEvent {
     PointerMotionAbsolute(AbsoluteMotionEvent),
     PointerButton(PointerButtonEvent),
     PointerAxis(PointerAxisEvent),
+    PointerGesture(PointerGestureEvent),
     /// Activity from an event whose protocol routing is not implemented yet.
     Activity,
 }
@@ -293,5 +353,6 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<BackendInputEvent>();
         assert!(size_of::<BackendInputEvent>() <= 64);
+        assert!(size_of::<PointerGestureEvent>() <= 48);
     }
 }

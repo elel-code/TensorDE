@@ -28,7 +28,7 @@ use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use tensor_host::AxisSource;
 use tensor_input::{
     AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceChange, KeyboardEvent,
-    PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent,
 };
 
 use crate::backend::LibinputEvent;
@@ -137,6 +137,9 @@ impl RuntimeState {
             }
             LibinputEvent::Input(BackendInputEvent::PointerAxis(event)) => {
                 self.forward_pointer_axis(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::PointerGesture(event)) => {
+                self.forward_pointer_gesture(event)
             }
             LibinputEvent::Input(BackendInputEvent::Activity) => {}
             LibinputEvent::Tablet { device, event } => self.process_tablet_event(device, event),
@@ -319,6 +322,7 @@ impl RuntimeState {
             return;
         };
         let time = (time_ns / 1_000_000) as u32;
+        let serial = SERIAL_COUNTER.next_serial();
         let _ = self.cursor.note_pointer_activity();
         let focus = self.pointer_focus_under(location);
         pointer.motion(
@@ -326,11 +330,14 @@ impl RuntimeState {
             focus,
             &MotionEvent {
                 location,
-                serial: SERIAL_COUNTER.next_serial(),
+                serial,
                 time,
             },
         );
         let current_focus = pointer.current_focus();
+        self.protocol_globals
+            .pointer_gestures
+            .focus_changed(current_focus.as_ref(), serial, time);
         if let Some(event) = relative
             && let Some(client) = current_focus.as_ref().and_then(Resource::client)
         {
@@ -356,6 +363,34 @@ impl RuntimeState {
         // both resubmit on every relative move. Immediate redraw keeps pointer
         // latency off the idle-turn path; bus coalescing still records intent.
         self.request_redraw_at(location);
+    }
+
+    pub(crate) fn forward_pointer_gesture(&mut self, event: PointerGestureEvent) {
+        let target = if matches!(
+            event,
+            PointerGestureEvent::SwipeBegin { .. }
+                | PointerGestureEvent::PinchBegin { .. }
+                | PointerGestureEvent::HoldBegin { .. }
+        ) {
+            self.seat
+                .get_pointer()
+                .and_then(|pointer| pointer.current_focus())
+                .and_then(|surface| {
+                    let client = surface.client()?;
+                    let client_scale = <Self as smithay::wayland::compositor::CompositorHandler>::client_compositor_state(
+                        self,
+                        &client,
+                    )
+                    .client_scale();
+                    Some((surface, client_scale))
+                })
+        } else {
+            None
+        };
+        self.protocol_globals.pointer_gestures.event(
+            target.as_ref().map(|(surface, scale)| (surface, *scale)),
+            event,
+        );
     }
 
     /// Match Niri's relative-pointer behavior: movement can cross directly

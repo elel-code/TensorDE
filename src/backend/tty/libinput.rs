@@ -11,6 +11,10 @@ use input::{
     AsRaw, DeviceCapability, Libinput, event,
     event::{
         EventTrait as _,
+        gesture::{
+            GestureEndEvent as _, GestureEventCoordinates as _, GestureEventTrait as _,
+            GesturePinchEventTrait as _,
+        },
         keyboard::KeyboardEventTrait as _,
         pointer::{PointerEventTrait as _, PointerScrollEvent as _},
     },
@@ -20,7 +24,7 @@ use tensor_host::AxisSource;
 use tensor_input::{
     AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceCapabilities, DeviceChange,
     DeviceEvent, DeviceId, KeyboardEvent, PointerAxisEvent, PointerButtonEvent,
-    RelativeMotionEvent,
+    PointerGestureEvent, RelativeMotionEvent,
 };
 
 use super::session::SeatSession;
@@ -150,6 +154,7 @@ impl LibinputSource {
             }
             input::Event::Keyboard(_) => None,
             input::Event::Pointer(event) => self.map_pointer_event(event),
+            input::Event::Gesture(event) => map_gesture_event(event),
             input::Event::Tablet(event) => {
                 let device = event.device();
                 let raw = device.as_raw() as usize;
@@ -271,6 +276,66 @@ impl LibinputSource {
             self.dropped_in_completion = 0;
         }
     }
+}
+
+fn map_gesture_event(event: event::GestureEvent) -> Option<LibinputEvent> {
+    let event = match event {
+        event::GestureEvent::Swipe(event) => match event {
+            event::gesture::GestureSwipeEvent::Begin(event) => PointerGestureEvent::SwipeBegin {
+                fingers: gesture_fingers(&event)?,
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            event::gesture::GestureSwipeEvent::Update(event) => PointerGestureEvent::SwipeUpdate {
+                delta_x: event.dx(),
+                delta_y: event.dy(),
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            event::gesture::GestureSwipeEvent::End(event) => PointerGestureEvent::SwipeEnd {
+                cancelled: event.cancelled(),
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            _ => return None,
+        },
+        event::GestureEvent::Pinch(event) => match event {
+            event::gesture::GesturePinchEvent::Begin(event) => PointerGestureEvent::PinchBegin {
+                fingers: gesture_fingers(&event)?,
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            event::gesture::GesturePinchEvent::Update(event) => PointerGestureEvent::PinchUpdate {
+                delta_x: event.dx(),
+                delta_y: event.dy(),
+                scale: event.scale(),
+                rotation: event.angle_delta(),
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            event::gesture::GesturePinchEvent::End(event) => PointerGestureEvent::PinchEnd {
+                cancelled: event.cancelled(),
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            _ => return None,
+        },
+        event::GestureEvent::Hold(event) => match event {
+            event::gesture::GestureHoldEvent::Begin(event) => PointerGestureEvent::HoldBegin {
+                fingers: gesture_fingers(&event)?,
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            event::gesture::GestureHoldEvent::End(event) => PointerGestureEvent::HoldEnd {
+                cancelled: event.cancelled(),
+                time_ns: micros_to_nanos(event.time_usec()),
+            },
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(LibinputEvent::Input(BackendInputEvent::PointerGesture(
+        event,
+    )))
+}
+
+fn gesture_fingers(event: &impl event::gesture::GestureEventTrait) -> Option<u32> {
+    u32::try_from(event.finger_count())
+        .ok()
+        .filter(|fingers| *fingers != 0)
 }
 
 impl AsFd for LibinputSource {

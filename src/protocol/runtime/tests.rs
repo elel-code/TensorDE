@@ -47,6 +47,8 @@ mod idle_notify;
 mod inhibitors;
 mod output;
 #[cfg(feature = "tty")]
+mod pointer_gestures;
+#[cfg(feature = "tty")]
 mod relative_pointer;
 mod surface_callbacks;
 #[cfg(feature = "tty")]

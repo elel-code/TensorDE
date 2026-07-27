@@ -16,6 +16,6 @@ mod sample;
 pub use capability::{DeviceCapabilities, DeviceId};
 pub use event::{
     AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceChange, DeviceEvent,
-    KeyboardEvent, PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
+    KeyboardEvent, PointerAxisEvent, PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent,
 };
 pub use sample::{ButtonCode, KeyCode, Sample, TimeNs};

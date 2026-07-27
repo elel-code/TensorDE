@@ -5,7 +5,6 @@ use smithay::{
     wayland::{
         input_method::InputMethodManagerState,
         pointer_constraints::PointerConstraintsState,
-        pointer_gestures::PointerGesturesState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
             primary_selection::PrimarySelectionState,
@@ -41,6 +40,7 @@ pub(in crate::protocol) mod idle_notify;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
+pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod relative_pointer;
 pub(in crate::protocol) mod shm;
@@ -65,6 +65,7 @@ use idle_notify::IdleNotifyProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
+use pointer_gestures::PointerGesturesProtocol;
 use presentation::PresentationProtocol;
 use relative_pointer::RelativePointerProtocol;
 use shm::ShmProtocol;
@@ -91,7 +92,7 @@ pub(crate) struct ProtocolGlobals {
     wlr_data_control: WlrDataControlState,
     ext_data_control: ExtDataControlState,
     pub(super) relative_pointer: RelativePointerProtocol,
-    pointer_gestures: PointerGesturesState,
+    pub(super) pointer_gestures: PointerGesturesProtocol,
     pointer_constraints: PointerConstraintsState,
     presentation: PresentationProtocol,
     pub(super) cursor_shape: CursorShapeProtocol,
@@ -155,7 +156,7 @@ impl ProtocolGlobals {
             wlr_data_control,
             ext_data_control,
             relative_pointer: RelativePointerProtocol::new(display),
-            pointer_gestures: PointerGesturesState::new::<RuntimeState>(display),
+            pointer_gestures: PointerGesturesProtocol::new(display),
             pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeProtocol::new(display),

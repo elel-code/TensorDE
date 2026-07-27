@@ -172,7 +172,13 @@ in a Tensor enum backed directly by `cursor-icon`. Pointer shapes require the ac
 and focused or grabbed client. Tablet shapes track the exact proximity serial and current client;
 axis tracking is gated on a bound tablet cursor-shape device, so clients that do not opt in add no
 hash lookup, resource access, or client-id copy to tablet motion. Destroyed tablet tools become
-inert immediately. Tensor-owned
+inert immediately. Tensor also owns the complete `wp_pointer_gestures_v1` v3 wire path. Libinput
+swipe, pinch, and hold phases, which were previously discarded, now enter the compositor as compact
+copyable `tensor-input` values after the submitted libinput operation completes. Gesture resources
+are indexed by focused client; updates perform one hash lookup and visit only that client's active
+listeners, without a global scan, lock, allocation, or Wayland-resource clone. Begin captures the
+surface identity and client scale once, resources created mid-gesture remain inactive, and leaving
+the initial surface emits a cancelled end before any later update can cross focus. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`
