@@ -76,19 +76,15 @@ macro_rules! delegate_global_dispatch {
                 data: &$data,
                 data_init: &mut wayland_server::DataInit<'_, Self>,
             ) {
-                <$data as $crate::protocol::dispatch::GlobalDispatchDelegate<
-                                    $interface,
-                                    $state,
-                                >>::bind(
-                                    data, state, display, client, resource, data_init,
-                                );
+                <$data as $crate::protocol::dispatch::GlobalDispatchDelegate<$interface, $state>>::bind(
+                    data, state, display, client, resource, data_init,
+                );
             }
 
             fn can_view(client: wayland_server::Client, data: &$data) -> bool {
-                <$data as $crate::protocol::dispatch::GlobalDispatchDelegate<
-                                    $interface,
-                                    $state,
-                                >>::can_view(data, &client)
+                <$data as $crate::protocol::dispatch::GlobalDispatchDelegate<$interface, $state>>::can_view(
+                    data, &client,
+                )
             }
         }
     };

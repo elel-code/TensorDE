@@ -9,7 +9,6 @@ use std::{
 };
 
 use smithay::{
-    backend::renderer::utils::with_renderer_surface_state,
     output::Output,
     utils::{Logical, Point, Rectangle, Size},
     wayland::{
@@ -24,6 +23,7 @@ use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::super::{
     PopupManager,
+    surfaces::surface_view,
     window::{surface_tree_bbox, surface_tree_under},
 };
 
@@ -87,13 +87,12 @@ impl LayerSurface {
     }
 
     pub(super) fn geometry(&self) -> Rectangle<i32, Logical> {
-        with_renderer_surface_state(self.wl_surface(), |state| {
-            state.view().map(|view| Rectangle {
-                loc: view.offset,
-                size: view.dst,
+        with_states(self.wl_surface(), |states| {
+            surface_view(states).map(|view| Rectangle {
+                loc: view.offset.into(),
+                size: view.size.into(),
             })
         })
-        .flatten()
         .unwrap_or_default()
     }
 

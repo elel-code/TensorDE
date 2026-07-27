@@ -6,7 +6,6 @@ mod xwayland;
 #[cfg(feature = "tty")]
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use smithay::{
-    backend::renderer::utils::on_commit_buffer_handler,
     input::{
         Seat, SeatHandler, SeatState,
         dnd::DndGrabHandler,
@@ -50,7 +49,8 @@ use smithay::xwayland::XWaylandClientData;
 use super::{
     focus::KeyboardFocusTarget,
     state::{
-        PopupKind, RuntimeState, WaylandClientState, find_popup_root_surface,
+        PopupKind, RuntimeState, WaylandClientState, destroy_surface_state,
+        find_popup_root_surface, on_commit_surface_handler,
         popup::{PopupGrabHandler, PopupKeyboardGrab, PopupPointerGrab},
         xdg_size_constraints,
     },
@@ -88,7 +88,7 @@ impl CompositorHandler for RuntimeState {
             ExplicitSyncCommit::None => None,
             ExplicitSyncCommit::Points(points) => Some(points),
             ExplicitSyncCommit::Rejected => {
-                on_commit_buffer_handler::<Self>(surface);
+                on_commit_surface_handler(surface);
                 let root = self
                     .owning_view_root(surface)
                     .unwrap_or_else(|| surface_root(surface));
@@ -98,7 +98,7 @@ impl CompositorHandler for RuntimeState {
                 return;
             }
         };
-        on_commit_buffer_handler::<Self>(surface);
+        on_commit_surface_handler(surface);
         self.popups.commit(surface);
 
         #[cfg(feature = "tty")]
@@ -206,6 +206,7 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        destroy_surface_state(surface);
         #[cfg(feature = "tty")]
         {
             self.discard_deferred_surface_sync(surface);

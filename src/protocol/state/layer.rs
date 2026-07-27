@@ -16,7 +16,6 @@ pub(super) use map::LayerSurface;
 
 #[cfg(feature = "tty")]
 use smithay::{
-    backend::renderer::utils::with_renderer_surface_state,
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
@@ -40,7 +39,7 @@ use crate::{
 
 use super::RuntimeState;
 #[cfg(feature = "tty")]
-use super::{find_popup_root_surface, tree::collect_surface_tree};
+use super::{find_popup_root_surface, surfaces::surface_has_buffer, tree::collect_surface_tree};
 #[cfg(feature = "tty")]
 use crate::protocol::focus::KeyboardFocusTarget;
 
@@ -684,11 +683,6 @@ impl RuntimeState {
             self.layer_shell_on_demand_focus = None;
         }
     }
-}
-
-#[cfg(feature = "tty")]
-fn surface_has_buffer(surface: &WlSurface) -> bool {
-    with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }
 
 #[cfg(feature = "tty")]

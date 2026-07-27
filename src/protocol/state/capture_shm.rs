@@ -1,17 +1,16 @@
 //! SHM client-content blit for image-copy-capture (idle path only).
 //!
-//! Uses the live buffer held by Smithay's renderer surface state (survives
-//! after commit consumed the pending assignment). DMA-only clients keep the
-//! silhouette. Never called from page-flip / submit.
+//! Uses the live buffer held by Tensor's surface state after commit consumes
+//! the pending assignment. DMA-only clients keep the silhouette. Never called
+//! from page-flip / submit.
 
-use smithay::{
-    backend::renderer::utils::with_renderer_surface_state,
-    wayland::shm::{BufferAccessError, with_buffer_contents},
-};
+use smithay::wayland::shm::{BufferAccessError, with_buffer_contents};
 use tracing::trace;
-use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm, wl_surface::WlSurface};
+use wayland_server::protocol::{wl_shm, wl_surface::WlSurface};
 
 use crate::layout::Rect;
+
+use super::surfaces::surface_buffer;
 
 /// Blit one SHM surface into an XRGB/ARGB capture mapping.
 ///
@@ -25,7 +24,7 @@ pub(super) fn blit_surface_shm_into(
     dest_rect: Rect,
     clip: Rect,
 ) -> bool {
-    let Some(buffer) = current_surface_buffer(surface) else {
+    let Some(buffer) = surface_buffer(surface) else {
         return false;
     };
     match with_buffer_contents(&buffer, |ptr, len, data| {
@@ -90,10 +89,6 @@ pub(super) fn blit_surface_shm_into(
         Err(BufferAccessError::NotManaged) => false,
         Err(_) => false,
     }
-}
-
-fn current_surface_buffer(surface: &WlSurface) -> Option<WlBuffer> {
-    with_renderer_surface_state(surface, |state| state.buffer().map(|b| (**b).clone())).flatten()
 }
 
 #[cfg(test)]

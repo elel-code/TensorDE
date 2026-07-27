@@ -33,6 +33,7 @@ use wayland_server::Resource;
 use super::*;
 
 mod surface_callbacks;
+mod surface_state;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ClientEvent {
