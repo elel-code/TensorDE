@@ -1104,10 +1104,38 @@ impl NativeShellState {
 
     pub(crate) fn note_seat_serial(&mut self, seat_global: Option<u32>, serial: u32) {
         self.last_input_serial = Some(serial);
-        if let Some(g) = seat_global {
-            if let Some(rec) = self.seats.get_mut(&g) {
-                rec.last_input_serial = Some(serial);
-            }
+        if let Some(g) = seat_global
+            && let Some(rec) = self.seats.get_mut(&g)
+        {
+            rec.last_input_serial = Some(serial);
+        }
+    }
+
+    /// Update per-seat keyboard focus (and shell-wide last-wins focus).
+    pub(crate) fn set_keyboard_focus(
+        &mut self,
+        seat_global: Option<u32>,
+        surface: Option<NativeSurfaceId>,
+    ) {
+        self.keyboard_focus = surface;
+        if let Some(g) = seat_global
+            && let Some(rec) = self.seats.get_mut(&g)
+        {
+            rec.keyboard_focus = surface;
+        }
+    }
+
+    /// Update per-seat pointer focus (shell-wide focus is set via
+    /// [`crate::native::shell::api_constraints`] / dispatch).
+    pub(crate) fn set_seat_pointer_focus(
+        &mut self,
+        seat_global: Option<u32>,
+        surface: Option<NativeSurfaceId>,
+    ) {
+        if let Some(g) = seat_global
+            && let Some(rec) = self.seats.get_mut(&g)
+        {
+            rec.pointer_focus = surface;
         }
     }
 

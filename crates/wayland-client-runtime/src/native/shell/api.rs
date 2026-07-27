@@ -1599,8 +1599,8 @@ impl NativeShell {
 
     /// Ensure every bound seat has data-device / primary selection proxies.
     ///
-    /// Shell-wide `data_device` / `primary_device` mirror the primary seat for
-    /// single-seat APIs (`set_selection`, `start_drag`, …).
+    /// Shell-wide `data_device` / `primary_device` always mirror the **primary**
+    /// seat for single-seat APIs (`set_selection`, `start_drag`, …).
     fn ensure_all_seat_transfer_devices(&mut self) {
         let qh = self.queue.handle();
         let seat_globals: Vec<u32> = self.state.seats.keys().copied().collect();
@@ -1611,35 +1611,33 @@ impl NativeShell {
             let seat = rec.seat.clone();
             let need_data = rec.data_device.is_none();
             let need_primary = rec.primary_device.is_none();
-            if need_data {
-                if let Some(manager) = self.state.data_device_manager.as_ref() {
-                    let device = manager.get_data_device(&seat, &qh, ());
-                    if let Some(rec) = self.state.seats.get_mut(&global) {
-                        rec.data_device = Some(device);
-                    }
+            if need_data && let Some(manager) = self.state.data_device_manager.as_ref() {
+                let device = manager.get_data_device(&seat, &qh, ());
+                if let Some(rec) = self.state.seats.get_mut(&global) {
+                    rec.data_device = Some(device);
                 }
             }
-            if need_primary {
-                if let Some(manager) = self.state.primary_selection_manager.as_ref() {
-                    let device = manager.get_device(&seat, &qh, ());
-                    if let Some(rec) = self.state.seats.get_mut(&global) {
-                        rec.primary_device = Some(device);
-                    }
+            if need_primary && let Some(manager) = self.state.primary_selection_manager.as_ref() {
+                let device = manager.get_device(&seat, &qh, ());
+                if let Some(rec) = self.state.seats.get_mut(&global) {
+                    rec.primary_device = Some(device);
                 }
             }
         }
-        // Mirror primary seat devices onto shell-wide fields.
-        if let Some(primary_id) = self.primary_seat_id() {
-            if let Some(rec) = self.state.seats.get(&primary_id.get()) {
-                if self.state.data_device.is_none() {
-                    self.state.data_device = rec.data_device.clone();
-                }
-                if self.state.primary_device.is_none() {
-                    self.state.primary_device = rec.primary_device.clone();
-                }
-            }
-        }
+        self.mirror_primary_transfer_devices();
         self.connection.mark_dirty();
+    }
+
+    /// Copy primary-seat transfer proxies onto shell-wide fields.
+    fn mirror_primary_transfer_devices(&mut self) {
+        let Some(primary_id) = self.primary_seat_id() else {
+            return;
+        };
+        let Some(rec) = self.state.seats.get(&primary_id.get()) else {
+            return;
+        };
+        self.state.data_device = rec.data_device.clone();
+        self.state.primary_device = rec.primary_device.clone();
     }
 
     /// Re-create seat-scoped protocol objects after primary seat changes.
@@ -1649,30 +1647,25 @@ impl NativeShell {
         let Some(seat) = self.state.seat.clone() else {
             return;
         };
-        // Prefer the primary seat's already-bound transfer devices.
-        if let Some(primary_id) = self.primary_seat_id() {
-            if let Some(rec) = self.state.seats.get(&primary_id.get()) {
-                self.state.data_device = rec.data_device.clone();
-                self.state.primary_device = rec.primary_device.clone();
-            }
-        }
-        if self.state.text_input.is_none() {
-            if let Some(tim) = self.state.text_input_manager.as_ref() {
-                self.state.text_input = Some(tim.get_text_input(&seat, &qh, ()));
-            }
+        // Force primary mirror even if shell-wide fields were stale.
+        self.mirror_primary_transfer_devices();
+        if self.state.text_input.is_none()
+            && let Some(tim) = self.state.text_input_manager.as_ref()
+        {
+            self.state.text_input = Some(tim.get_text_input(&seat, &qh, ()));
         }
         // Recreate pointer gestures on the new primary pointer if present.
-        if let Some(pointer) = self.state.pointer.clone() {
-            if let Some(manager) = self.state.pointer_gestures.as_ref() {
-                if self.state.swipe_gesture.is_none() {
-                    self.state.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
-                }
-                if self.state.pinch_gesture.is_none() {
-                    self.state.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
-                }
-                if manager.version() >= 3 && self.state.hold_gesture.is_none() {
-                    self.state.hold_gesture = Some(manager.get_hold_gesture(&pointer, &qh, ()));
-                }
+        if let Some(pointer) = self.state.pointer.clone()
+            && let Some(manager) = self.state.pointer_gestures.as_ref()
+        {
+            if self.state.swipe_gesture.is_none() {
+                self.state.swipe_gesture = Some(manager.get_swipe_gesture(&pointer, &qh, ()));
+            }
+            if self.state.pinch_gesture.is_none() {
+                self.state.pinch_gesture = Some(manager.get_pinch_gesture(&pointer, &qh, ()));
+            }
+            if manager.version() >= 3 && self.state.hold_gesture.is_none() {
+                self.state.hold_gesture = Some(manager.get_hold_gesture(&pointer, &qh, ()));
             }
         }
         self.connection.mark_dirty();

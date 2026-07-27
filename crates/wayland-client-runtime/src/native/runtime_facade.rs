@@ -117,7 +117,6 @@ impl NativeRuntime {
                 idle_inhibit: caps.idle_inhibit,
                 linux_dmabuf: caps.linux_dmabuf,
                 linux_dmabuf_version: caps.linux_dmabuf_version,
-                ..RuntimeCapabilities::default()
             },
         })
     }
@@ -166,11 +165,11 @@ impl NativeRuntime {
                 continue;
             }
             // Prefer full output snapshot after mode/geometry/name settle.
-            if let crate::NativeShellEvent::OutputDone { output } = event {
-                if let Some(info) = self.shell.output_info(output) {
-                    target.push(Event::Output(crate::OutputEvent::Updated(info)));
-                    continue;
-                }
+            if let crate::NativeShellEvent::OutputDone { output } = event
+                && let Some(info) = self.shell.output_info(output)
+            {
+                target.push(Event::Output(crate::OutputEvent::Updated(info)));
+                continue;
             }
             if let Some(mapped) = crate::map_native_event_full(
                 event,

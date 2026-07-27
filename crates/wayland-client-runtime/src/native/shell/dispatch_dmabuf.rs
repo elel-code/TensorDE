@@ -9,9 +9,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
 
-use super::types::{
-    DmabufFeedbackBuild, NativeShellEvent, NativeShellState, PendingDmabufTranche,
-};
+use super::types::{NativeShellEvent, NativeShellState};
 use crate::dmabuf::{DmabufFeedback, DmabufFeedbackTranche, DmabufFormat, DmabufTrancheFlags};
 
 impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for NativeShellState {
@@ -63,6 +61,9 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 }
                 let len = size / entry;
                 // MAP_PRIVATE copy-on-write so the compositor can reuse the fd.
+                // SAFETY: `fd` is a live compositor-owned format table; size is a
+                // multiple of `DmabufFormat` and non-zero (checked above). We map
+                // read-only PRIVATE and unmap before the fd is dropped.
                 let map = match unsafe {
                     rustix::mm::mmap(
                         std::ptr::null_mut(),
@@ -76,16 +77,16 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                     Ok(ptr) => ptr,
                     Err(_) => return,
                 };
+                // SAFETY: `map` is a successful mmap of `size` bytes holding `len`
+                // densely packed `DmabufFormat` values (layout matches the protocol
+                // table). We copy out then munmap the same range.
                 let formats = unsafe {
                     let slice = slice::from_raw_parts(map as *const DmabufFormat, len);
                     let owned = slice.to_vec();
                     let _ = rustix::mm::munmap(map, size);
                     owned
                 };
-                let pending = state
-                    .dmabuf_feedback_pending
-                    .entry(pid)
-                    .or_insert_with(DmabufFeedbackBuild::default);
+                let pending = state.dmabuf_feedback_pending.entry(pid).or_default();
                 pending.formats = formats;
             }
             zwp_linux_dmabuf_feedback_v1::Event::MainDevice { device } => {
@@ -93,7 +94,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 state
                     .dmabuf_feedback_pending
                     .entry(pid)
-                    .or_insert_with(DmabufFeedbackBuild::default)
+                    .or_default()
                     .main_device = main_device;
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheTargetDevice { device } => {
@@ -101,7 +102,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 state
                     .dmabuf_tranche_pending
                     .entry(pid)
-                    .or_insert_with(PendingDmabufTranche::default)
+                    .or_default()
                     .device = device;
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheFlags { flags } => {
@@ -112,7 +113,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 state
                     .dmabuf_tranche_pending
                     .entry(pid)
-                    .or_insert_with(PendingDmabufTranche::default)
+                    .or_default()
                     .flags = DmabufTrancheFlags::from_bits_truncate(bits);
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheFormats { indices } => {
@@ -126,7 +127,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 state
                     .dmabuf_tranche_pending
                     .entry(pid)
-                    .or_insert_with(PendingDmabufTranche::default)
+                    .or_default()
                     .formats = formats;
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheDone => {
@@ -137,7 +138,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 state
                     .dmabuf_feedback_pending
                     .entry(pid)
-                    .or_insert_with(DmabufFeedbackBuild::default)
+                    .or_default()
                     .tranches
                     .push(DmabufFeedbackTranche {
                         device: tranche.device,

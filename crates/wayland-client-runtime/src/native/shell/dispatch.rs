@@ -600,12 +600,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
                     .copied();
-                state.keyboard_focus = id;
-                if let Some(g) = seat_global {
-                    if let Some(rec) = state.seats.get_mut(&g) {
-                        rec.keyboard_focus = id;
-                    }
-                }
+                state.set_keyboard_focus(seat_global, id);
                 state.push(NativeShellEvent::SeatKeyboardEnter {
                     surface: id,
                     seat: seat_global,
@@ -617,12 +612,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for NativeShellState {
                     .get(&surface.id().protocol_id())
                     .copied()
                     .or(state.keyboard_focus);
-                state.keyboard_focus = None;
-                if let Some(g) = seat_global {
-                    if let Some(rec) = state.seats.get_mut(&g) {
-                        rec.keyboard_focus = None;
-                    }
-                }
+                state.set_keyboard_focus(seat_global, None);
                 state.push(NativeShellEvent::SeatKeyboardLeave {
                     surface: id,
                     seat: seat_global,
@@ -707,11 +697,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     if let Some(&(parent, kind)) = state.csd_part_owners.get(&id) {
                         state.csd_pointer_part = Some((parent, kind));
                         state.on_pointer_focus_changed(Some(parent), qh);
-                        if let Some(g) = seat_global {
-                            if let Some(rec) = state.seats.get_mut(&g) {
-                                rec.pointer_focus = Some(parent);
-                            }
-                        }
+                        state.set_seat_pointer_focus(seat_global, Some(parent));
                         if let Some(frame) = state.csd_frames.get_mut(&parent) {
                             let cursor = frame.on_pointer_enter(kind, surface_x, surface_y);
                             state.pending_csd_cursor = Some(cursor);
@@ -720,11 +706,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     }
                     state.csd_pointer_part = None;
                     state.on_pointer_focus_changed(Some(id), qh);
-                    if let Some(g) = seat_global {
-                        if let Some(rec) = state.seats.get_mut(&g) {
-                            rec.pointer_focus = Some(id);
-                        }
-                    }
+                    state.set_seat_pointer_focus(seat_global, Some(id));
                     state.push(NativeShellEvent::PointerEnter {
                         surface: id,
                         x: surface_x,
@@ -749,21 +731,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                             }
                         }
                         state.on_pointer_focus_changed(None, qh);
-                        if let Some(g) = seat_global {
-                            if let Some(rec) = state.seats.get_mut(&g) {
-                                rec.pointer_focus = None;
-                            }
-                        }
+                        state.set_seat_pointer_focus(seat_global, None);
                         return;
                     }
                 }
                 state.csd_pointer_part = None;
                 state.on_pointer_focus_changed(None, qh);
-                if let Some(g) = seat_global {
-                    if let Some(rec) = state.seats.get_mut(&g) {
-                        rec.pointer_focus = None;
-                    }
-                }
+                state.set_seat_pointer_focus(seat_global, None);
                 if let Some(id) = id {
                     state.push(NativeShellEvent::PointerLeave {
                         surface: id,
