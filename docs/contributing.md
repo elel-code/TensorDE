@@ -20,7 +20,7 @@ Dependency ranges use broad compatible major/minor constraints, never `"*"`.
 Tensor-owned crates must pass `uv run scripts/check_crate_boundaries.py`. They cannot depend on or
 import Smithay; only a temporary `tensor-smithay` adapter crate may do so. The same check requires
 `tensor-runtime` to expose Compio async operations with the io_uring driver and rejects direct
-readiness-reactor dependencies. Compio's `polling` feature remains only its automatic host fallback.
+readiness-reactor dependencies. Compio's `polling` feature must remain disabled.
 
 TTY builds compile the descriptor-heap client shaders with `glslangValidator`; install the Vulkan
 shader tools before running the renderer-enabled checks. The generated SPIR-V is build output and

@@ -5,8 +5,8 @@
 //! - **Compositor thread** owns [`tensor_event::EventQueue`] and policy.
 //! - **I/O model:** Compio is a **completion** runtime (submit op → completion),
 //!   not a readiness poll loop. On Linux the product driver is **io_uring**.
-//!   Compio's `polling` feature is only an automatic host fallback when an
-//!   io_uring instance cannot be created — not a Tensor design goal.
+//!   The `polling` feature is disabled; runtime construction fails if io_uring
+//!   cannot be created.
 //! - **Workers and I/O services** (log drain, launch notifications, IPC) use
 //!   Compio completions and exchange only value-only messages.
 //!
@@ -39,6 +39,7 @@ mod fd_completion;
 mod inject;
 mod local;
 mod reactor;
+mod runtime;
 mod worker;
 
 pub use bridge::{BridgeStats, TrySendError, WorkerBridge, WorkerRx, WorkerTx};
@@ -50,4 +51,5 @@ pub use reactor::{
     CompletionDriver, EventfdCompletion, EventfdWake, EventfdWakeError, NullWake, RuntimeStop,
     TurnBudget, TurnSummary, WakeSink, run_turn,
 };
+pub use runtime::io_uring_runtime;
 pub use worker::{CompioWorker, WorkerError};

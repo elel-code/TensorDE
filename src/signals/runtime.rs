@@ -62,17 +62,15 @@ mod platform {
         thread::{self, JoinHandle},
     };
 
-    use compio::{
-        io::AsyncReadExt,
-        runtime::{Runtime, fd::AsyncFd},
-    };
+    use compio::{io::AsyncReadExt, runtime::fd::AsyncFd};
     use rustix::{fs::OFlags, runtime::KernelSigSet};
-    use tensor_runtime::{EventfdWake, WakeSink, WorkerTx};
+    use tensor_runtime::{EventfdWake, WakeSink, WorkerTx, io_uring_runtime};
 
     use super::{SignalEvent, SignalRuntimeError, TerminationSignal};
 
     // `signalfd_siginfo` is a fixed 128-byte Linux userspace ABI record.
     const SIGNAL_INFO_SIZE: usize = 128;
+    const SIGNAL_RUNTIME_OPS: usize = 2;
 
     unsafe extern "C" {
         #[link_name = "signalfd"]
@@ -92,7 +90,7 @@ mod platform {
             let join = thread::Builder::new()
                 .name("tensor-signal-completions".to_owned())
                 .spawn(move || {
-                    let runtime = match Runtime::new() {
+                    let runtime = match io_uring_runtime(SIGNAL_RUNTIME_OPS) {
                         Ok(runtime) => runtime,
                         Err(error) => {
                             let _ = ready_tx.send(Err(SignalRuntimeError::Runtime(error)));
@@ -214,7 +212,7 @@ mod platform {
         #[test]
         fn submitted_signalfd_read_completes_with_a_value() {
             crate::signals::block_early().unwrap();
-            let runtime = Runtime::new().unwrap();
+            let runtime = io_uring_runtime(SIGNAL_RUNTIME_OPS).unwrap();
             let received = runtime.block_on(async {
                 let mut signal_fd = AsyncFd::new(create_signal_fd().unwrap()).unwrap();
                 let target = rustix::thread::gettid();

@@ -8,7 +8,7 @@ bindings are replaced.
 **I/O model:** Compio is **not** a readiness reactor. Do not design “register fd,
 poll until readable.” Design “submit the op (read/accept/timer/wake); when it
 **completes**, push a value event and run the semantic turn.” Compio's `polling`
-Cargo feature is only an automatic host fallback if io_uring cannot be created.
+Cargo feature is disabled; failure to create io_uring fails runtime initialization.
 
 ## Performance design
 
@@ -22,6 +22,7 @@ Cargo feature is only an automatic host fallback if io_uring cannot be created.
 | Present & Vulkan record stay on the compositor thread | Predictable latency; Compio only posts completion-derived values |
 | Bounded bridges (`try_send`) | Same contract as calloop channels / logging drain |
 | **Completion** (io_uring driver), not readiness-as-architecture | Batch CQEs, lower syscall tax, one ring for files + wake + sockets |
+| Ring capacity follows each service's fixed operation budget | No 1024-entry default ring per worker and no hot-path growth |
 
 Borrowings from Smithay/calloop (shape only):
 

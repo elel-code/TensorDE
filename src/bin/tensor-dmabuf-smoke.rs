@@ -20,13 +20,14 @@ use std::{
 
 use buffer_pool::{BufferPool, find_render_node};
 use clap::Parser;
-use compio::runtime::{Runtime, fd::PollFd};
+use compio::runtime::fd::PollFd;
 use futures_util::{future::Either, pin_mut};
 use rustix::time::{
     Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, timerfd_create,
     timerfd_settime,
 };
 use state::SmokeState;
+use tensor_runtime::io_uring_runtime;
 use thiserror::Error;
 use wayland_client::{
     Connection, EventQueue,
@@ -143,7 +144,7 @@ fn run(args: Args) -> Result<(), SmokeError> {
     state.commit_initial_surface();
 
     let timeout = timeout_fd(Duration::from_secs(args.timeout))?;
-    let runtime = Runtime::new().map_err(|error| SmokeError::Completion(error.to_string()))?;
+    let runtime = io_uring_runtime(2).map_err(|error| SmokeError::Completion(error.to_string()))?;
     let healthy = runtime.block_on(async {
         let timeout =
             PollFd::new(timeout).map_err(|error| SmokeError::Completion(error.to_string()))?;

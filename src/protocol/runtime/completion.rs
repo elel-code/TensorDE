@@ -6,8 +6,10 @@ use std::{
     time::Duration,
 };
 
-use compio::runtime::{Runtime, fd::PollFd};
-use tensor_runtime::{EventfdCompletion, EventfdWake, LocalCompletionQueue, RuntimeStop};
+use compio::runtime::fd::PollFd;
+use tensor_runtime::{
+    EventfdCompletion, EventfdWake, LocalCompletionQueue, RuntimeStop, io_uring_runtime,
+};
 #[cfg(feature = "tty")]
 use tracing::warn;
 
@@ -116,8 +118,8 @@ impl WaylandRuntime {
         }
         let legacy_fd = rustix::io::fcntl_dupfd_cloexec(self.event_loop.as_fd(), 0)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
-        let runtime =
-            Runtime::new().map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
+        let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY)
+            .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         runtime.block_on(async {
             let worker_reader = wake
                 .completion_reader()
@@ -470,7 +472,7 @@ mod tests {
     #[cfg(feature = "tty")]
     #[test]
     fn drm_source_completion_is_one_shot_until_explicit_rearm() {
-        let runtime = Runtime::new().unwrap();
+        let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY).unwrap();
         runtime.block_on(async {
             let wake = EventfdWake::new().unwrap();
             let fd = rustix::io::fcntl_dupfd_cloexec(wake.as_fd(), 0).unwrap();
@@ -505,7 +507,7 @@ mod tests {
     #[cfg(feature = "tty")]
     #[test]
     fn removing_one_drm_source_preserves_other_submitted_waits() {
-        let runtime = Runtime::new().unwrap();
+        let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY).unwrap();
         runtime.block_on(async {
             let removed = EventfdWake::new().unwrap();
             let retained = EventfdWake::new().unwrap();

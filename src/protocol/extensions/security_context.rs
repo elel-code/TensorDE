@@ -23,7 +23,7 @@ use std::{
 use compio::{
     io::AsyncRead,
     net::{UnixListener, UnixStream},
-    runtime::{JoinHandle as CompioJoinHandle, Runtime, fd::AsyncFd},
+    runtime::{JoinHandle as CompioJoinHandle, fd::AsyncFd},
 };
 use futures_util::future::{Either, select};
 use rustix::{
@@ -36,6 +36,7 @@ use rustix::{
 use tensor_protocol::SecurityContextMetadata;
 use tensor_runtime::{
     EventfdWake, EventfdWakeError, TrySendError, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
+    io_uring_runtime,
 };
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -350,7 +351,7 @@ impl SecurityContextRuntime {
         let join = thread::Builder::new()
             .name("tensor-security-context-completions".to_owned())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(MAX_ACTIVE_LISTENERS * 3 + 1) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(SecurityContextRuntimeError::Runtime(error)));

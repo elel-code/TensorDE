@@ -18,13 +18,18 @@ The long-term I/O runtime is **Compio (completion model) + io_uring driver**
 (`tensor-runtime`); the semantic loop is always `tensor-event::EventQueue`. Turn contracts live
 in `tensor_runtime::{run_turn, EventfdWake, CompletionDriver::IoUring}`. Compio is **submit →
 complete**, not a readiness poll loop. On Linux the product driver is **io_uring**; Compio's
-`polling` feature is only an automatic host fallback when io_uring cannot be created — not the
-architecture we design for. calloop still owns some Smithay fds as a **readiness** loop during
+`polling` feature is disabled, so inability to create io_uring is a runtime initialization error.
+calloop still owns some Smithay fds as a **readiness** loop during
 migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, IPC,
 udev hotplug waits, libinput waits, libseat session waits, blocked process signals, and worker
 notifications) uses Compio completions and posts value-only messages across bounded bridges. Workers never own
 Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
+
+Every Compio service constructs its ring through `tensor_runtime::io_uring_runtime` with the
+service's fixed maximum number of submitted operations. Capacities are rounded to a power of two
+once at startup; Tensor neither allocates Compio's 1024-entry default ring per service nor grows a
+ring on a latency-sensitive path.
 
 Vulkan output submissions export a binary sync-file for KMS. Tensor duplicates only that sync-file
 and submits a one-shot io_uring fence wait on a Compio service; the worker never receives a Vulkan
@@ -34,8 +39,8 @@ replaces the former timer-driven timeline query loop.
 Diagnostics are the first such service. Tracing formats a record on its caller, caps it at 8 KiB,
 then performs a non-blocking enqueue into an 8,192-record fan-in queue. One Compio drain thread
 owns either the selected `TENSOR_LOG_FILE` or `stderr` (and therefore the systemd journal in a
-service). Writes complete through Compio (io_uring driver on capable Linux; host fallback only if
-io_uring setup fails). Queue saturation is intentionally lossy, but the drain emits a later
+service). Writes complete through Compio's io_uring driver; failure to initialize that driver
+fails startup. Queue saturation is intentionally lossy, but the drain emits a later
 dropped-record notice; this is preferable to allowing logging to delay input, page-flip, or frame
 submission. The worker has no Smithay, Vulkan, DRM/KMS, or ECS ownership.
 

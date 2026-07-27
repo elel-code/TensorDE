@@ -15,9 +15,8 @@
 //! fds. That is migration debt. The target is: same work as Compio-submitted
 //! ops whose futures/CQEs complete on the compositor or worker thread.
 //!
-//! Compio's `polling` Cargo feature is only the driver's automatic host
-//! fallback when an io_uring instance cannot be created — not a Tensor
-//! readiness-loop design.
+//! Compio's `polling` Cargo feature is disabled. Failure to create io_uring is
+//! a runtime initialization error, never a switch to a readiness driver.
 //!
 //! Performance: zero-alloc at the turn call site; present/Vulkan stay on the
 //! compositor thread. Workers never hold DRM/Wayland objects.
@@ -61,28 +60,18 @@ pub struct TurnSummary {
 
 /// Which completion driver Compio is expected to use underneath.
 ///
-/// Product Tensor on Linux is always [`CompletionDriver::IoUring`]. Fallback
-/// exists so hosts without io_uring still run workers; it is not a feature goal.
+/// Product Tensor uses the io_uring completion driver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompletionDriver {
-    /// Linux io_uring (Compio's primary driver). **Required** for the tty product path.
+    /// Linux io_uring. Required for every Compio runtime in the product.
     IoUring,
-    /// Compio host fallback driver only when io_uring cannot be created.
-    HostFallback,
 }
 
 impl CompletionDriver {
     /// Preferred driver for this build target.
     #[inline]
     pub const fn preferred() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            Self::IoUring
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Self::HostFallback
-        }
+        Self::IoUring
     }
 
     #[inline]
@@ -272,16 +261,13 @@ mod tests {
     use crate::WorkerBridge;
 
     #[test]
-    fn preferred_driver_is_io_uring_on_linux() {
-        #[cfg(target_os = "linux")]
+    fn configured_driver_is_io_uring() {
         assert!(CompletionDriver::preferred().is_io_uring());
-        #[cfg(not(target_os = "linux"))]
-        assert!(!CompletionDriver::preferred().is_io_uring());
     }
 
     #[test]
     fn compio_reader_returns_a_completion_value() {
-        let runtime = compio::runtime::Runtime::new().expect("Compio runtime");
+        let runtime = crate::io_uring_runtime(1).expect("Compio runtime");
         runtime.block_on(async {
             let wake = std::sync::Arc::new(EventfdWake::new().expect("eventfd"));
             let mut completion = wake.completion_reader().expect("attach eventfd");

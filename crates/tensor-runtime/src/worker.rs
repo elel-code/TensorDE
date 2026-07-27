@@ -12,6 +12,8 @@ use std::{
 use compio::runtime::Runtime;
 use thiserror::Error;
 
+use crate::io_uring_runtime;
+
 /// Errors from constructing or driving a Compio worker.
 #[derive(Debug, Error)]
 pub enum WorkerError {
@@ -19,6 +21,8 @@ pub enum WorkerError {
     Runtime(std::io::Error),
     #[error("failed to spawn Compio worker thread: {0}")]
     Spawn(std::io::Error),
+    #[error("Compio worker stopped during runtime initialization")]
+    StartupDisconnected,
     #[error("Compio worker is shut down")]
     Shutdown,
 }
@@ -39,16 +43,20 @@ impl CompioWorker {
     pub fn start(name: impl Into<String>, job_capacity: usize) -> Result<Self, WorkerError> {
         let name = name.into();
         let (tx, rx) = mpsc::sync_channel::<WorkerMsg>(job_capacity.max(1));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join = thread::Builder::new()
             .name(name)
             .spawn(move || {
-                let Ok(runtime) = Runtime::new() else {
-                    // Without a runtime the worker cannot run jobs; exit quietly.
-                    // Construction of the handle already succeeded; jobs will fail try_spawn
-                    // only if the channel fills after this exit — prefer explicit start errors
-                    // via a preflight Runtime::new on the caller if needed.
-                    return;
+                let runtime = match io_uring_runtime(8) {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
                 };
+                if ready_tx.send(Ok(())).is_err() {
+                    return;
+                }
                 while let Ok(msg) = rx.recv() {
                     match msg {
                         WorkerMsg::Run(job) => job(&runtime),
@@ -57,6 +65,17 @@ impl CompioWorker {
                 }
             })
             .map_err(WorkerError::Spawn)?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = join.join();
+                return Err(WorkerError::Runtime(error));
+            }
+            Err(_) => {
+                let _ = join.join();
+                return Err(WorkerError::StartupDisconnected);
+            }
+        }
         Ok(Self {
             tx,
             join: Some(join),

@@ -12,15 +12,14 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use compio::{
-    net::{UnixListener, UnixStream},
-    runtime::Runtime,
-};
+use compio::net::{UnixListener, UnixStream};
 use rustix::{
     io::fcntl_dupfd_cloexec,
     net::{Shutdown, shutdown},
 };
-use tensor_runtime::{EventfdWake, EventfdWakeError, WakeSink, WorkerRx, WorkerTx};
+use tensor_runtime::{
+    EventfdWake, EventfdWakeError, WakeSink, WorkerRx, WorkerTx, io_uring_runtime,
+};
 use thiserror::Error;
 use tracing::warn;
 use wayland_server::ListeningSocket;
@@ -56,7 +55,7 @@ impl WaylandSocketRuntime {
         let join = thread::Builder::new()
             .name("tensor-wayland-accept-completions".to_owned())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(2) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(WaylandSocketRuntimeError::Runtime(error)));

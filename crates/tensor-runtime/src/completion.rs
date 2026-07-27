@@ -14,10 +14,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use compio::runtime::Runtime;
 use thiserror::Error;
 
-use crate::{EventfdWake, EventfdWakeError, WakeSink};
+use crate::{EventfdWake, EventfdWakeError, WakeSink, io_uring_runtime};
 
 /// Owns a submitted eventfd completion loop on a dedicated Compio runtime.
 pub struct EventfdCompletionRelay {
@@ -44,7 +43,7 @@ impl EventfdCompletionRelay {
         let join = thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(1) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(CompletionRelayError::Runtime(error)));

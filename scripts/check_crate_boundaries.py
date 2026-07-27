@@ -11,7 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SMITHAY_DEPENDENCIES = {"smithay", "smithay-drm-extras"}
 READINESS_DEPENDENCIES = {"calloop", "mio", "polling"}
+REQUIRED_COMPIO_FEATURES = {"runtime", "async-fd", "io-uring"}
 SMITHAY_CODE = re.compile(r"\bsmithay::|\bextern\s+crate\s+smithay\b")
+DEFAULT_COMPIO_RUNTIME = re.compile(r"(?:compio::runtime::)?Runtime::new\s*\(")
 
 
 def dependency_tables(manifest: dict) -> list[dict]:
@@ -31,14 +33,36 @@ def dependency_tables(manifest: dict) -> list[dict]:
     return tables
 
 
+def check_compio_features(
+    manifest_path: Path, manifest: dict, failures: list[str]
+) -> None:
+    compio = manifest.get("dependencies", {}).get("compio")
+    if compio is None:
+        return
+    features = set(compio.get("features", []))
+    if compio.get("default-features", True) or not REQUIRED_COMPIO_FEATURES <= features:
+        failures.append(
+            f"{manifest_path}: Compio must disable defaults and enable "
+            f"{sorted(REQUIRED_COMPIO_FEATURES)}"
+        )
+    if "polling" in features:
+        failures.append(f"{manifest_path}: Compio polling fallback must remain disabled")
+
+
 def main() -> int:
     failures: list[str] = []
+    root_manifest_path = ROOT / "Cargo.toml"
+    root_manifest = tomllib.loads(root_manifest_path.read_text(encoding="utf-8"))
+    check_compio_features(root_manifest_path, root_manifest, failures)
+
     for source in sorted((ROOT / "src").glob("**/*.rs")):
         relative = source.relative_to(ROOT / "src")
         if relative.parts[0] in {"backend", "protocol"}:
             continue
         if SMITHAY_CODE.search(source.read_text(encoding="utf-8")):
             failures.append(f"{source}: Smithay path outside backend/protocol adapter")
+        if DEFAULT_COMPIO_RUNTIME.search(source.read_text(encoding="utf-8")):
+            failures.append(f"{source}: use tensor_runtime::io_uring_runtime with a fixed budget")
 
     for manifest_path in sorted((ROOT / "crates").glob("*/Cargo.toml")):
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
@@ -50,17 +74,16 @@ def main() -> int:
         if forbidden:
             failures.append(f"{manifest_path}: forbidden dependencies {sorted(forbidden)}")
         for source in sorted(manifest_path.parent.glob("src/**/*.rs")):
-            if SMITHAY_CODE.search(source.read_text(encoding="utf-8")):
+            text = source.read_text(encoding="utf-8")
+            if SMITHAY_CODE.search(text):
                 failures.append(f"{source}: Smithay path outside adapter crate")
+            if DEFAULT_COMPIO_RUNTIME.search(text):
+                failures.append(
+                    f"{source}: use tensor_runtime::io_uring_runtime with a fixed budget"
+                )
 
         if package == "tensor-runtime":
-            compio = manifest["dependencies"].get("compio", {})
-            features = set(compio.get("features", []))
-            required = {"runtime", "async-fd", "io-uring"}
-            if compio.get("default-features", True) or not required <= features:
-                failures.append(
-                    f"{manifest_path}: Compio must disable defaults and enable {sorted(required)}"
-                )
+            check_compio_features(manifest_path, manifest, failures)
             direct_readiness = dependencies & READINESS_DEPENDENCIES
             if direct_readiness:
                 failures.append(

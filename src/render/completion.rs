@@ -17,11 +17,11 @@ use std::{
 use compio::{
     BufResult,
     driver::op::{Interest, PollOnce},
-    runtime::Runtime,
 };
 use tensor_host::ConnectorId;
 use tensor_runtime::{
     EventfdWake, EventfdWakeError, TrySendError, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
+    io_uring_runtime,
 };
 use thiserror::Error;
 
@@ -91,7 +91,7 @@ impl GpuFenceRuntime {
         let join = thread::Builder::new()
             .name("tensor-gpu-fence-completions".to_owned())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(MAX_PENDING_GPU_FENCES + 1) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(GpuFenceRuntimeError::Runtime(error)));

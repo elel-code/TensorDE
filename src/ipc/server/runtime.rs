@@ -18,11 +18,10 @@ use compio::{
     BufResult,
     io::{AsyncRead, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    runtime::Runtime,
 };
 use futures_channel::oneshot;
 use rustix::{net::sockopt::socket_peercred, process::geteuid};
-use tensor_runtime::{EventfdWake, WakeSink, WorkerTx};
+use tensor_runtime::{EventfdWake, WakeSink, WorkerTx, io_uring_runtime};
 use tracing::warn;
 
 use super::{IpcError, IpcReply};
@@ -63,7 +62,7 @@ impl IpcRuntime {
         let join = thread::Builder::new()
             .name("tensor-ipc-completions".to_owned())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(MAX_IPC_CONNECTIONS + 2) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(IpcError::Runtime(error)));

@@ -18,14 +18,14 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use compio::runtime::{Runtime, fd::PollFd};
+use compio::runtime::fd::PollFd;
 use futures_util::future::{Either, select};
 use rustix::io::fcntl_dupfd_cloexec;
 use thiserror::Error;
 
 use crate::{
     EventfdCompletion, EventfdWake, EventfdWakeError, TrySendError, WakeSink, WorkerBridge,
-    WorkerRx, WorkerTx,
+    WorkerRx, WorkerTx, io_uring_runtime,
 };
 
 #[derive(Clone, Copy)]
@@ -78,7 +78,7 @@ impl OpaqueFdCompletionRuntime {
         let join = thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                let runtime = match Runtime::new() {
+                let runtime = match io_uring_runtime(2) {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         let _ = ready_tx.send(Err(OpaqueFdCompletionError::Runtime(error)));

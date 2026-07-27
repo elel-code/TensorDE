@@ -5,8 +5,8 @@
 //! each formatted record into a bounded value-only message and gives a single
 //! Compio-owned drain thread sole ownership of the output handle. Compio is a
 //! **completion** runtime (writes complete; no readiness loop). Linux product
-//! driver is io_uring; Compio's polling feature is only an automatic host
-//! fallback if io_uring cannot be created.
+//! driver is io_uring; Compio's polling feature is disabled and driver
+//! initialization fails closed when io_uring cannot be created.
 //!
 //! `sequence::run` blocks termination signals before this worker exists, so
 //! the worker inherits the compositor's signal mask and never competes with
@@ -29,6 +29,7 @@ use compio::{
     io::{AsyncWriteAtExt, AsyncWriteExt},
     runtime::Runtime,
 };
+use tensor_runtime::io_uring_runtime;
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
@@ -321,7 +322,7 @@ fn log_worker(
     state: Arc<LogState>,
     ready: SyncSender<Result<(), LoggingError>>,
 ) {
-    let runtime = match Runtime::new() {
+    let runtime = match io_uring_runtime(2) {
         Ok(runtime) => runtime,
         Err(source) => {
             let _ = ready.send(Err(LoggingError::Runtime(source)));

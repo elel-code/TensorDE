@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn send_and_receive_reuse_fixed_storage() {
-        let runtime = compio::runtime::Runtime::new().unwrap();
+        let runtime = crate::io_uring_runtime(1).unwrap();
         runtime.block_on(async {
             let queue = LocalCompletionQueue::bounded(2);
             let capacity = queue.backing_capacity();
