@@ -37,10 +37,9 @@ impl NativeShell {
         if let Some(app_id) = app_id {
             token.set_app_id(app_id.to_string());
         }
-        if let (Some(serial), Some(seat)) =
-            (self.state.last_input_serial, self.state.seat.as_ref())
-        {
-            token.set_serial(serial, seat);
+        // Pair serial with the seat that produced it (multi-seat safe).
+        if let Ok((seat, serial)) = self.state.resolve_grab_seat_serial(None) {
+            token.set_serial(serial, &seat);
         }
         token.set_surface(&wl);
         token.commit();
