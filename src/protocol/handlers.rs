@@ -30,7 +30,7 @@ use smithay::{
         },
         shell::xdg::{
             PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
-            XdgShellState, decoration::XdgDecorationHandler,
+            XdgShellState,
         },
     },
 };
@@ -371,6 +371,8 @@ impl XdgShellHandler for RuntimeState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.protocol_globals
+            .xdg_toplevel_destroyed(surface.xdg_toplevel());
         self.unregister_toplevel(surface.wl_surface());
     }
 
@@ -421,35 +423,6 @@ impl SelectionHandler for RuntimeState {
 impl PrimarySelectionHandler for RuntimeState {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         self.protocol_globals.primary_selection()
-    }
-}
-
-impl XdgDecorationHandler for RuntimeState {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        set_client_side_decoration(&toplevel);
-    }
-
-    fn request_mode(
-        &mut self,
-        toplevel: ToplevelSurface,
-        _mode: wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
-    ) {
-        set_client_side_decoration(&toplevel);
-    }
-
-    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        set_client_side_decoration(&toplevel);
-    }
-}
-
-fn set_client_side_decoration(toplevel: &ToplevelSurface) {
-    use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-
-    toplevel.with_pending_state(|state| {
-        state.decoration_mode = Some(Mode::ClientSide);
-    });
-    if toplevel.is_initial_configure_sent() {
-        toplevel.send_pending_configure();
     }
 }
 

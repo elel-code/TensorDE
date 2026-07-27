@@ -20,6 +20,7 @@ use smithay::{
         pointer::{ButtonEvent, MotionEvent},
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
+    wayland::seat::WaylandFocus,
 };
 use tracing::{debug, warn};
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -144,7 +145,6 @@ impl RuntimeState {
             self.protocol_globals
                 .idle_notifier()
                 .notify_activity(&self.seat);
-            self.refresh_idle_inhibition();
         }
     }
 
@@ -210,6 +210,10 @@ impl RuntimeState {
                 self.request_redraw_all();
             }
         }
+        let shortcuts_inhibited = keyboard
+            .current_focus()
+            .and_then(|focus| focus.wl_surface().map(std::borrow::Cow::into_owned))
+            .is_some_and(|surface| self.shortcuts_inhibited_for(&surface));
         keyboard.input::<(), _>(
             self,
             xkb_keycode(event.key),
@@ -224,6 +228,9 @@ impl RuntimeState {
                     }
                     // A VT switch can prevent a key release from reaching us.
                     return FilterResult::Intercept(());
+                }
+                if shortcuts_inhibited {
+                    return FilterResult::Forward;
                 }
                 // Super+digit → workspace 1..9; Super+Shift+digit moves focused view
                 // and follows; Super+Page_Up/Down cycles.

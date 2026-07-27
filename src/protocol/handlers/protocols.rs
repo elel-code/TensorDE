@@ -2,14 +2,9 @@
 
 use smithay::{
     input::pointer::PointerHandle,
-    utils::{IsAlive, Logical, Point},
+    utils::{Logical, Point},
     wayland::{
-        idle_inhibit::IdleInhibitHandler,
         input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
-        keyboard_shortcuts_inhibit::{
-            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState,
-            KeyboardShortcutsInhibitor,
-        },
         pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         xdg_foreign::XdgForeignHandler,
@@ -27,16 +22,6 @@ use crate::protocol::extensions::security_context::{
 use crate::protocol::state::{ObjectKey, RuntimeState, SessionLockState};
 
 impl RuntimeState {
-    pub(crate) fn refresh_idle_inhibition(&mut self) {
-        self.protocol_side
-            .idle_inhibitors
-            .retain(|surface| surface.alive());
-        let inhibited = !self.protocol_side.idle_inhibitors.is_empty();
-        self.protocol_globals
-            .idle_notifier()
-            .set_is_inhibited(inhibited);
-    }
-
     pub(crate) fn publish_foreign_toplevel_from_surface(&mut self, surface: &WlSurface) {
         let (title, app_id) = toplevel_metadata(surface);
         self.publish_foreign_toplevel(
@@ -117,15 +102,6 @@ impl RuntimeState {
     pub(crate) fn session_is_locked(&self) -> bool {
         self.protocol_side.session_lock.is_some()
     }
-
-    /// Whether compositor keybinds (except VT recovery) should be suppressed.
-    #[allow(dead_code)] // reserved for the upcoming bind path
-    pub(crate) fn shortcuts_inhibited_for(&self, surface: &WlSurface) -> bool {
-        self.protocol_side
-            .shortcut_inhibitors
-            .get(&ObjectKey::from_surface(surface))
-            .is_some_and(KeyboardShortcutsInhibitor::is_active)
-    }
 }
 
 impl PointerConstraintsHandler for RuntimeState {
@@ -179,37 +155,6 @@ impl PointerConstraintsHandler for RuntimeState {
         pointer.set_location(target);
         #[cfg(feature = "tty")]
         self.request_redraw_at(pointer.current_location());
-    }
-}
-
-impl IdleInhibitHandler for RuntimeState {
-    fn inhibit(&mut self, surface: WlSurface) {
-        self.protocol_side.idle_inhibitors.insert(surface);
-        self.refresh_idle_inhibition();
-    }
-
-    fn uninhibit(&mut self, surface: WlSurface) {
-        self.protocol_side.idle_inhibitors.remove(&surface);
-        self.refresh_idle_inhibition();
-    }
-}
-
-impl KeyboardShortcutsInhibitHandler for RuntimeState {
-    fn keyboard_shortcuts_inhibit_state(&mut self) -> &mut KeyboardShortcutsInhibitState {
-        self.protocol_globals.keyboard_shortcuts_inhibit()
-    }
-
-    fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        inhibitor.activate();
-        self.protocol_side
-            .shortcut_inhibitors
-            .insert(ObjectKey::from_surface(inhibitor.wl_surface()), inhibitor);
-    }
-
-    fn inhibitor_destroyed(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        self.protocol_side
-            .shortcut_inhibitors
-            .remove(&ObjectKey::from_surface(inhibitor.wl_surface()));
     }
 }
 

@@ -1,10 +1,8 @@
 //! Side tables for protocol globals that keep compositor-owned identity.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use smithay::wayland::{
-    keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor, session_lock::LockSurface,
-};
+use smithay::wayland::session_lock::LockSurface;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::capture::CaptureSessions;
@@ -13,8 +11,6 @@ use crate::protocol::globals::foreign_toplevel::ForeignToplevelHandle;
 /// Side tables for protocols that keep compositor-owned identity beyond a global.
 #[derive(Default)]
 pub(crate) struct ProtocolSideState {
-    pub(crate) idle_inhibitors: HashSet<WlSurface>,
-    pub(crate) shortcut_inhibitors: HashMap<ObjectKey, KeyboardShortcutsInhibitor>,
     pub(crate) foreign_toplevels: HashMap<ObjectKey, ForeignToplevelHandle>,
     pub(crate) session_lock: Option<SessionLockState>,
     pub(crate) capture: CaptureSessions,

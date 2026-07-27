@@ -148,8 +148,13 @@ freeze once into shared `Arc` snapshots; pixel buffers remain zero-copy mmap lea
 and `wl_buffer` resources are destroyed, while destroying a buffer before its live icon raises
 `no_buffer`. A buffer-to-icon reverse index makes unrelated SHM buffer destruction one hash lookup
 instead of an icon scan. Icon commit hooks are installed only on surfaces that opt in, so ordinary
-commit, input, vblank, and present paths gain no work. Only the core compositor cached-state boundary
-remains Smithay-backed for surface commits. Tensor-owned gamma, virtual-pointer, workspace,
+commit, input, vblank, and present paths gain no work. Tensor also owns `zxdg_decoration_v1`,
+`zwp_idle_inhibit_v1`, and `zwp_keyboard_shortcuts_inhibit_v1` directly. Idle inhibition preserves
+multiple live inhibitors per surface without scanning them on input activity. Shortcut inhibitors
+are keyed by stable surface identity, reject duplicates, and add one allocation-free hash lookup to
+the key path only while resolving the focused surface; VT recovery remains compositor-owned. Only
+the core compositor cached-state boundary remains Smithay-backed for surface commits. Tensor-owned
+gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`
 rather than Smithay `Output`, and ramp ingestion uses one final allocation without a full-size

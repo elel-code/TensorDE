@@ -5,10 +5,8 @@ use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
         cursor_shape::CursorShapeManagerState,
-        idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
         input_method::InputMethodManagerState,
-        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
         relative_pointer::RelativePointerManagerState,
@@ -18,7 +16,7 @@ use smithay::{
             wlr_data_control::DataControlState as WlrDataControlState,
         },
         session_lock::SessionLockManagerState,
-        shell::{wlr_layer::WlrLayerShellState, xdg::decoration::XdgDecorationState},
+        shell::wlr_layer::WlrLayerShellState,
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
         virtual_keyboard::VirtualKeyboardManagerState,
@@ -41,17 +39,20 @@ pub(in crate::protocol) mod desktop_controls;
 pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod foreign_toplevel;
 pub(in crate::protocol) mod fractional_scale;
+pub(in crate::protocol) mod idle_inhibit;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod shm;
+pub(in crate::protocol) mod shortcut_inhibit;
 pub(in crate::protocol) mod single_pixel_buffer;
 pub(in crate::protocol) mod surface_metadata;
 pub(in crate::protocol) mod surface_timing;
 #[cfg(feature = "tty")]
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
+pub(in crate::protocol) mod xdg_decoration;
 
 use background_effect::BackgroundEffectProtocol;
 use desktop_controls::DesktopControls;
@@ -59,11 +60,13 @@ use desktop_controls::DesktopControls;
 use dmabuf::DmabufProtocol;
 use foreign_toplevel::ForeignToplevelListState;
 use fractional_scale::FractionalScaleProtocol;
+use idle_inhibit::IdleInhibitProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
 use presentation::PresentationProtocol;
 use shm::ShmProtocol;
+use shortcut_inhibit::ShortcutInhibitProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
 use surface_metadata::SurfaceMetadataProtocol;
 use surface_timing::{SurfaceBarrier, SurfaceTimingProtocol};
@@ -74,13 +77,14 @@ use syncobj::DrmSyncobjProtocol;
 #[cfg(feature = "tty")]
 pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use viewporter::ViewporterProtocol;
+use xdg_decoration::XdgDecorationProtocol;
 
 pub(crate) struct ProtocolGlobals {
     shm: ShmProtocol,
     output: OutputProtocol,
     viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleProtocol,
-    xdg_decoration: XdgDecorationState,
+    xdg_decoration: XdgDecorationProtocol,
     primary_selection: PrimarySelectionState,
     wlr_data_control: WlrDataControlState,
     ext_data_control: ExtDataControlState,
@@ -91,10 +95,10 @@ pub(crate) struct ProtocolGlobals {
     cursor_shape: CursorShapeManagerState,
     activation: XdgActivationState,
     idle_notifier: IdleNotifierState<RuntimeState>,
-    idle_inhibit: IdleInhibitManagerState,
+    idle_inhibit: IdleInhibitProtocol,
     layer_shell: WlrLayerShellState,
     single_pixel_buffer: SinglePixelBufferProtocol,
-    keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState,
+    shortcut_inhibit: ShortcutInhibitProtocol,
     tablet: TabletManagerState,
     text_input: TextInputManagerState,
     input_method: InputMethodManagerState,
@@ -148,7 +152,7 @@ impl ProtocolGlobals {
             output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleProtocol::new(display),
-            xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
+            xdg_decoration: XdgDecorationProtocol::new(display),
             primary_selection,
             wlr_data_control,
             ext_data_control,
@@ -159,10 +163,10 @@ impl ProtocolGlobals {
             cursor_shape: CursorShapeManagerState::new::<RuntimeState>(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
             idle_notifier: IdleNotifierState::new(display, loop_handle.clone()),
-            idle_inhibit: IdleInhibitManagerState::new::<RuntimeState>(display),
+            idle_inhibit: IdleInhibitProtocol::new(display),
             layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
             single_pixel_buffer: SinglePixelBufferProtocol::new(display),
-            keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<RuntimeState>(display),
+            shortcut_inhibit: ShortcutInhibitProtocol::new(display),
             tablet: TabletManagerState::new::<RuntimeState>(display),
             text_input: TextInputManagerState::new::<RuntimeState>(display),
             // Privileged input-method / virtual-keyboard: unrestricted clients only.
@@ -219,12 +223,16 @@ impl ProtocolGlobals {
     }
 
     pub(in crate::protocol) fn remove_surface(
-        &self,
+        &mut self,
         surface: &wayland_server::protocol::wl_surface::WlSurface,
     ) -> Vec<SurfaceBarrier> {
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
         self.desktop_controls.remove_surface(surface);
+        self.shortcut_inhibit.remove_surface(surface);
+        if self.idle_inhibit.remove_surface(surface) {
+            self.idle_notifier.set_is_inhibited(false);
+        }
         self.surface_timing.remove_surface(surface)
     }
 
@@ -283,10 +291,6 @@ impl ProtocolGlobals {
         &mut self.layer_shell
     }
 
-    pub(crate) fn keyboard_shortcuts_inhibit(&mut self) -> &mut KeyboardShortcutsInhibitState {
-        &mut self.keyboard_shortcuts_inhibit
-    }
-
     pub(crate) fn foreign_toplevel_list(&mut self) -> &mut ForeignToplevelListState {
         &mut self.foreign_toplevel_list
     }
@@ -297,6 +301,13 @@ impl ProtocolGlobals {
 
     pub(crate) fn xdg_foreign(&mut self) -> &mut XdgForeignState {
         &mut self.xdg_foreign
+    }
+
+    pub(crate) fn xdg_toplevel_destroyed(
+        &mut self,
+        toplevel: &wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+    ) {
+        self.xdg_decoration.toplevel_destroyed(toplevel);
     }
 
     pub(crate) fn virtual_pointer(&mut self) -> &mut VirtualPointerManagerState {
@@ -344,7 +355,7 @@ impl ProtocolGlobals {
             &self.idle_inhibit,
             &self.layer_shell,
             &self.single_pixel_buffer,
-            &self.keyboard_shortcuts_inhibit,
+            &self.shortcut_inhibit,
             &self.tablet,
             &self.text_input,
             &self.input_method,
