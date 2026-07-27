@@ -3,23 +3,28 @@
 //! Ported from Niri/Hyprland-style wlr gamma control. The compositor supplies
 //! LUT size and apply/reset through [`GammaControlHandler`].
 
-use std::{collections::HashMap, fs::File, io::Read};
-
-use smithay::{
-    output::Output,
-    wayland::{Dispatch2, GlobalDispatch2},
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, Read},
 };
+
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
+use tensor_host::ConnectorId;
 use tracing::{trace, warn};
 use wayland_protocols_wlr::gamma_control::v1::server::{
     zwlr_gamma_control_manager_v1::{self, ZwlrGammaControlManagerV1},
     zwlr_gamma_control_v1::{self, ZwlrGammaControlV1},
 };
-use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId};
+use wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, New, Resource, backend::ClientId,
+    protocol::wl_output::WlOutput,
+};
 
 const VERSION: u32 = 1;
 
 pub struct GammaControlManagerState {
-    gamma_controls: HashMap<Output, ZwlrGammaControlV1>,
+    gamma_controls: HashMap<ConnectorId, ZwlrGammaControlV1>,
 }
 
 pub struct GammaControlManagerGlobalData {
@@ -28,12 +33,42 @@ pub struct GammaControlManagerGlobalData {
 
 pub trait GammaControlHandler: 'static {
     fn gamma_control_manager_state(&mut self) -> &mut GammaControlManagerState;
-    fn get_gamma_size(&mut self, output: &Output) -> Option<u32>;
-    fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Option<()>;
+    fn gamma_output_id(&self, output: &WlOutput) -> Option<ConnectorId>;
+    fn get_gamma_size(&mut self, output: ConnectorId) -> Option<u32>;
+    fn set_gamma(&mut self, output: ConnectorId, ramp: Option<Vec<u16>>) -> Option<()>;
 }
 
 pub struct GammaControlState {
+    output: Option<ConnectorId>,
     gamma_size: u32,
+}
+
+#[derive(Debug)]
+enum GammaRampReadError {
+    InvalidSize,
+    Io(io::Error),
+    TrailingData,
+}
+
+fn read_gamma_ramp(
+    reader: &mut impl Read,
+    gamma_size: u32,
+) -> Result<Vec<u16>, GammaRampReadError> {
+    let values = usize::try_from(gamma_size)
+        .ok()
+        .and_then(|size| size.checked_mul(3))
+        .ok_or(GammaRampReadError::InvalidSize)?;
+    let mut ramp = vec![0u16; values];
+    // Every u16 bit pattern is valid, and the protocol sends native-endian
+    // values. Reading into the initialized allocation avoids a second buffer
+    // and a full-ramp copy on this control path.
+    let bytes = bytemuck::cast_slice_mut(&mut ramp);
+    reader.read_exact(bytes).map_err(GammaRampReadError::Io)?;
+    match reader.read(&mut [0]) {
+        Ok(0) => Ok(ramp),
+        Ok(_) => Err(GammaRampReadError::TrailingData),
+        Err(error) => Err(GammaRampReadError::Io(error)),
+    }
 }
 
 impl GammaControlManagerState {
@@ -56,8 +91,8 @@ impl GammaControlManagerState {
     }
 
     #[allow(dead_code)]
-    pub fn output_removed(&mut self, output: &Output) {
-        if let Some(gamma_control) = self.gamma_controls.remove(output) {
+    pub fn output_removed(&mut self, output: ConnectorId) {
+        if let Some(gamma_control) = self.gamma_controls.remove(&output) {
             gamma_control.failed();
         }
     }
@@ -106,26 +141,35 @@ where
     ) {
         match request {
             zwlr_gamma_control_manager_v1::Request::GetGammaControl { id, output } => {
-                if let Some(output) = Output::from_resource(&output) {
-                    #[allow(clippy::map_entry)]
-                    if !state
+                if let Some(output) = state.gamma_output_id(&output)
+                    && !state
                         .gamma_control_manager_state()
                         .gamma_controls
                         .contains_key(&output)
-                        && let Some(gamma_size) = state.get_gamma_size(&output)
-                    {
-                        let zwlr_gamma_control =
-                            data_init.init(id, GammaControlState { gamma_size });
-                        zwlr_gamma_control.gamma_size(gamma_size);
-                        state
-                            .gamma_control_manager_state()
-                            .gamma_controls
-                            .insert(output, zwlr_gamma_control);
-                        return;
-                    }
+                    && let Some(gamma_size) = state.get_gamma_size(output)
+                {
+                    let zwlr_gamma_control = data_init.init(
+                        id,
+                        GammaControlState {
+                            output: Some(output),
+                            gamma_size,
+                        },
+                    );
+                    zwlr_gamma_control.gamma_size(gamma_size);
+                    state
+                        .gamma_control_manager_state()
+                        .gamma_controls
+                        .insert(output, zwlr_gamma_control);
+                    return;
                 }
                 data_init
-                    .init(id, GammaControlState { gamma_size: 0 })
+                    .init(
+                        id,
+                        GammaControlState {
+                            output: None,
+                            gamma_size: 0,
+                        },
+                    )
                     .failed();
             }
             zwlr_gamma_control_manager_v1::Request::Destroy => {}
@@ -134,9 +178,6 @@ where
     }
 }
 
-// Smithay `Output` is the protocol adapter's lifetime key. Tensor-owned policy
-// uses stable connector IDs and never inherits this internally mutable key.
-#[allow(clippy::mutable_key_type)]
 impl<D> Dispatch2<ZwlrGammaControlV1, D> for GammaControlState
 where
     D: GammaControlHandler,
@@ -153,49 +194,50 @@ where
     ) {
         match request {
             zwlr_gamma_control_v1::Request::SetGamma { fd } => {
-                let gamma_controls = &mut state.gamma_control_manager_state().gamma_controls;
-                let Some((output, _)) = gamma_controls.iter().find(|(_, x)| *x == resource) else {
+                let Some(output) = self.output else {
                     return;
                 };
-                let output = output.clone();
-                trace!("setting gamma for output {}", output.name());
-
-                let expected = self.gamma_size as usize * 3 * 2;
-                let mut file = File::from(fd);
-                let mut bytes = vec![0u8; expected];
-                if let Err(err) = file.read_exact(&mut bytes) {
-                    warn!("failed to read gamma data: {err:?}");
-                    resource.failed();
-                    gamma_controls.remove(&output);
-                    let _ = state.set_gamma(&output, None);
+                let is_active = state
+                    .gamma_control_manager_state()
+                    .gamma_controls
+                    .get(&output)
+                    .is_some_and(|control| control == resource);
+                if !is_active {
                     return;
                 }
-                match file.read(&mut [0]) {
-                    Ok(0) => {}
-                    Ok(_) => {
-                        warn!("gamma data is too large");
+                trace!(?output, "setting gamma for output");
+
+                let mut file = File::from(fd);
+                let gamma = match read_gamma_ramp(&mut file, self.gamma_size) {
+                    Ok(gamma) => gamma,
+                    Err(error) => {
+                        match &error {
+                            GammaRampReadError::Io(error) => {
+                                warn!(?error, "failed to read gamma data");
+                            }
+                            GammaRampReadError::InvalidSize => {
+                                warn!("gamma ramp size is not representable");
+                            }
+                            GammaRampReadError::TrailingData => {
+                                warn!("gamma data is too large");
+                            }
+                        }
                         resource.failed();
-                        gamma_controls.remove(&output);
-                        let _ = state.set_gamma(&output, None);
+                        state
+                            .gamma_control_manager_state()
+                            .gamma_controls
+                            .remove(&output);
+                        let _ = state.set_gamma(output, None);
                         return;
                     }
-                    Err(err) => {
-                        warn!("error reading gamma data: {err:?}");
-                        resource.failed();
-                        gamma_controls.remove(&output);
-                        let _ = state.set_gamma(&output, None);
-                        return;
-                    }
-                }
-                let gamma = bytes
-                    .chunks_exact(2)
-                    .map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
-                    .collect::<Vec<_>>();
-                if state.set_gamma(&output, Some(gamma)).is_none() {
+                };
+                if state.set_gamma(output, Some(gamma)).is_none() {
                     resource.failed();
-                    let gamma_controls = &mut state.gamma_control_manager_state().gamma_controls;
-                    gamma_controls.remove(&output);
-                    let _ = state.set_gamma(&output, None);
+                    state
+                        .gamma_control_manager_state()
+                        .gamma_controls
+                        .remove(&output);
+                    let _ = state.set_gamma(output, None);
                 }
             }
             zwlr_gamma_control_v1::Request::Destroy => {}
@@ -204,12 +246,51 @@ where
     }
 
     fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ZwlrGammaControlV1) {
-        let gamma_controls = &mut state.gamma_control_manager_state().gamma_controls;
-        let Some((output, _)) = gamma_controls.iter().find(|(_, x)| *x == resource) else {
+        let Some(output) = self.output else {
             return;
         };
-        let output = output.clone();
-        gamma_controls.remove(&output);
-        let _ = state.set_gamma(&output, None);
+        let is_active = state
+            .gamma_control_manager_state()
+            .gamma_controls
+            .get(&output)
+            .is_some_and(|control| control == resource);
+        if is_active {
+            state
+                .gamma_control_manager_state()
+                .gamma_controls
+                .remove(&output);
+            let _ = state.set_gamma(output, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn gamma_ramp_reads_native_endian_values_without_staging() {
+        let values = [0u16, 1, 258, u16::MAX, 17, 19];
+        let bytes = values
+            .into_iter()
+            .flat_map(u16::to_ne_bytes)
+            .collect::<Vec<_>>();
+
+        let ramp = read_gamma_ramp(&mut Cursor::new(bytes), 2).unwrap();
+        assert_eq!(ramp, values);
+    }
+
+    #[test]
+    fn gamma_ramp_rejects_short_and_trailing_payloads() {
+        assert!(matches!(
+            read_gamma_ramp(&mut Cursor::new(vec![0; 5]), 1),
+            Err(GammaRampReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
+        assert!(matches!(
+            read_gamma_ramp(&mut Cursor::new(vec![0; 7]), 1),
+            Err(GammaRampReadError::TrailingData)
+        ));
     }
 }

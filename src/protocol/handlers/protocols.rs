@@ -535,15 +535,29 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
         self.protocol_globals.gamma_control()
     }
 
-    fn get_gamma_size(&mut self, output: &smithay::output::Output) -> Option<u32> {
+    fn gamma_output_id(&self, output: &WlOutput) -> Option<tensor_host::ConnectorId> {
         #[cfg(feature = "tty")]
         {
-            let id = *output
+            self.space
+                .outputs()
+                .find(|candidate| candidate.owns(output))?
                 .user_data()
-                .get::<crate::backend::BackendOutputId>()?;
+                .get::<crate::backend::BackendOutputId>()
+                .copied()
+        }
+        #[cfg(not(feature = "tty"))]
+        {
+            let _ = output;
+            None
+        }
+    }
+
+    fn get_gamma_size(&mut self, output: tensor_host::ConnectorId) -> Option<u32> {
+        #[cfg(feature = "tty")]
+        {
             self.backend
                 .as_ref()
-                .and_then(|backend| backend.gamma_size(id))
+                .and_then(|backend| backend.gamma_size(output))
         }
         #[cfg(not(feature = "tty"))]
         {
@@ -554,17 +568,14 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
 
     fn set_gamma(
         &mut self,
-        output: &smithay::output::Output,
+        output: tensor_host::ConnectorId,
         ramp: Option<Vec<u16>>,
     ) -> Option<()> {
         #[cfg(feature = "tty")]
         {
-            let id = *output
-                .user_data()
-                .get::<crate::backend::BackendOutputId>()?;
             self.backend
                 .as_mut()
-                .and_then(|backend| backend.set_gamma(id, ramp.as_deref()))
+                .and_then(|backend| backend.set_gamma(output, ramp.as_deref()))
         }
         #[cfg(not(feature = "tty"))]
         {

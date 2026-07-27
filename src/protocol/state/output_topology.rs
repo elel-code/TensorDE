@@ -191,9 +191,7 @@ impl RuntimeState {
             backend.remove_output_buffers(id);
         }
         self.display_handle.remove_global::<Self>(managed.global);
-        self.protocol_globals
-            .gamma_control()
-            .output_removed(&managed.output);
+        self.protocol_globals.gamma_control().output_removed(id);
         self.reflow_outputs();
         info!(
             device_id = id.device_id,

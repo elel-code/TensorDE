@@ -2014,6 +2014,7 @@ name = "tensor-compositor"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
+ "bytemuck",
  "calloop",
  "clap",
  "compio",

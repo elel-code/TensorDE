@@ -36,6 +36,7 @@ xwayland = ["smithay/xwayland"]
 
 [dependencies]
 bevy_ecs = { version = "0.19", default-features = false, features = ["std", "multi_threaded"] }
+bytemuck = "1"
 calloop = "0.14"
 clap = { version = "4", features = ["derive"] }
 # Compio = completion model; io-uring is the product driver; `polling` is Compio's host fallback only.
