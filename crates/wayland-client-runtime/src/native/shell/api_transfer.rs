@@ -428,25 +428,48 @@ impl NativeShell {
 
     fn transfer_serial(&self, seat: Option<crate::SeatId>) -> Option<u32> {
         if let Some(id) = seat {
-            self.state
+            return self
+                .state
                 .seats
                 .get(&id.get())
                 .and_then(|s| s.last_input_serial)
-                .or(self.state.last_input_serial)
-        } else {
-            self.state.last_input_serial
+                .or(self.state.last_input_serial);
         }
+        // Match grab resolution: prefer the seat that owns the last-wins serial.
+        if let Some(serial) = self.state.last_input_serial {
+            for rec in self.state.seats.values() {
+                if rec.last_input_serial == Some(serial) {
+                    return Some(serial);
+                }
+            }
+            return Some(serial);
+        }
+        None
+    }
+
+    /// Seat whose serial is used for transfer when `seat` is `None`.
+    fn transfer_seat_global(&self, seat: Option<crate::SeatId>) -> Option<u32> {
+        if let Some(id) = seat {
+            return Some(id.get());
+        }
+        let serial = self.state.last_input_serial?;
+        self.state
+            .seats
+            .values()
+            .find(|rec| rec.last_input_serial == Some(serial))
+            .map(|rec| rec.global_name)
+            .or_else(|| self.primary_seat_id().map(|id| id.get()))
     }
 
     fn transfer_data_device(
         &self,
         seat: Option<crate::SeatId>,
     ) -> Option<wayland_client::protocol::wl_data_device::WlDataDevice> {
-        if let Some(id) = seat
+        if let Some(global) = self.transfer_seat_global(seat)
             && let Some(dev) = self
                 .state
                 .seats
-                .get(&id.get())
+                .get(&global)
                 .and_then(|s| s.data_device.clone())
         {
             return Some(dev);
@@ -460,11 +483,11 @@ impl NativeShell {
     ) -> Option<
         wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
     > {
-        if let Some(id) = seat
+        if let Some(global) = self.transfer_seat_global(seat)
             && let Some(dev) = self
                 .state
                 .seats
-                .get(&id.get())
+                .get(&global)
                 .and_then(|s| s.primary_device.clone())
         {
             return Some(dev);

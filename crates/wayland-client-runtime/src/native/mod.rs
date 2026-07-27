@@ -26,6 +26,8 @@ mod shell;
 
 #[cfg(feature = "compio")]
 mod runtime_facade;
+mod runtime_dmabuf;
+mod runtime_transfer;
 
 pub use connection::{NativeConnection, NativeError};
 pub use event_map::{
