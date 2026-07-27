@@ -6,7 +6,7 @@ use std::{
 use tensor_util::{Rect, Size};
 
 use crate::{
-    ContentRevision, SurfaceBufferId, SurfaceContent, SurfaceId, SurfaceLayer,
+    ContentRevision, SurfaceAlpha, SurfaceBufferId, SurfaceContent, SurfaceId, SurfaceLayer,
     SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
 };
 
@@ -44,6 +44,7 @@ struct SurfaceState<K, C> {
     transform: SurfaceTransform,
     source: Option<SurfaceSourceRect>,
     layer: SurfaceLayer,
+    alpha: SurfaceAlpha,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +94,7 @@ pub struct SurfaceCommit<K, C = u64> {
     pub transform: SurfaceTransform,
     pub source: Option<SurfaceSourceRect>,
     pub layer: SurfaceLayer,
+    pub alpha: SurfaceAlpha,
 }
 
 impl<K, C> SurfaceBufferRegistry<K, C>
@@ -116,6 +118,7 @@ where
                 transform: SurfaceTransform::Normal,
                 source: None,
                 layer: SurfaceLayer::View,
+                alpha: SurfaceAlpha::OPAQUE,
             },
         );
         Some(id)
@@ -187,7 +190,8 @@ where
             || state.buffer_scale != buffer_scale
             || state.transform != snapshot.transform
             || state.source != snapshot.source
-            || state.layer != snapshot.layer;
+            || state.layer != snapshot.layer
+            || state.alpha != snapshot.alpha;
 
         let mut released_buffers = Vec::new();
         if state.current.as_ref().map(|current| &current.object)
@@ -212,6 +216,7 @@ where
         state.transform = snapshot.transform;
         state.source = snapshot.source;
         state.layer = snapshot.layer;
+        state.alpha = snapshot.alpha;
         let content = state.current.as_ref().map(|current| {
             let buffer_size = self
                 .buffers
@@ -223,6 +228,7 @@ where
                 buffer_id: current.id,
                 revision: state.revision,
                 layer: state.layer,
+                alpha: state.alpha,
                 local_geometry: current.local_geometry,
                 sample_transform: SurfaceSampleTransform::for_surface(
                     buffer_size,
@@ -254,6 +260,7 @@ where
             buffer_id: current.id,
             revision: state.revision,
             layer: state.layer,
+            alpha: state.alpha,
             local_geometry: current.local_geometry,
             sample_transform: SurfaceSampleTransform::for_surface(
                 buffer_size,
@@ -445,6 +452,7 @@ mod tests {
             transform: SurfaceTransform::Normal,
             source: None,
             layer: SurfaceLayer::View,
+            alpha: SurfaceAlpha::OPAQUE,
         }
     }
 
@@ -543,6 +551,25 @@ mod tests {
                 Some(source),
             )
         );
+    }
+
+    #[test]
+    fn alpha_only_change_advances_revision_without_replacing_the_buffer() {
+        let mut registry = SurfaceBufferRegistry::<u64>::default();
+        registry.register_surface(SURFACE_A).unwrap();
+        registry.register_imported_buffer(BUFFER_A, SurfaceBufferId::new(7), Size::new(80, 60));
+        let initial = registry.update_surface(&SURFACE_A, &commit(Some(BUFFER_A), 1));
+        assert_eq!(initial.content.unwrap().revision, ContentRevision::new(1));
+
+        let mut metadata = commit(Some(BUFFER_A), 1);
+        metadata.alpha = SurfaceAlpha::from_raw(0x1234_5678);
+        let updated = registry.update_surface(&SURFACE_A, &metadata);
+
+        assert!(updated.changed);
+        let content = updated.content.unwrap();
+        assert_eq!(content.revision, ContentRevision::new(2));
+        assert_eq!(content.buffer_id, SurfaceBufferId::new(7));
+        assert_eq!(content.alpha.raw(), 0x1234_5678);
     }
 
     #[test]

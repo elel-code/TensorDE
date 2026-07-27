@@ -261,8 +261,50 @@ pub struct SurfaceContent {
     pub buffer_id: SurfaceBufferId,
     pub revision: ContentRevision,
     pub layer: SurfaceLayer,
+    pub alpha: SurfaceAlpha,
     pub local_geometry: Rect,
     pub sample_transform: SurfaceSampleTransform,
+}
+
+/// Exact client-provided alpha multiplier for one protocol surface.
+///
+/// The wire protocol uses the complete `u32` range, so the scene boundary
+/// preserves all 32 bits and converts to floating point only while preparing
+/// the Vulkan push constants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceAlpha(u32);
+
+impl SurfaceAlpha {
+    pub const TRANSPARENT: Self = Self(0);
+    pub const OPAQUE: Self = Self(u32::MAX);
+
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    pub fn as_f32(self) -> f32 {
+        self.0 as f32 / u32::MAX as f32
+    }
+}
+
+impl Default for SurfaceAlpha {
+    fn default() -> Self {
+        Self::OPAQUE
+    }
+}
+
+/// Protocol-neutral content hint supplied by `wp_content_type_v1`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SurfaceContentType {
+    #[default]
+    None,
+    Photo,
+    Video,
+    Game,
 }
 
 #[cfg(test)]

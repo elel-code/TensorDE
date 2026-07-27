@@ -4,9 +4,7 @@ use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
-        alpha_modifier::AlphaModifierState,
         commit_timing::CommitTimingManagerState,
-        content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
         fifo::FifoManagerState,
         idle_inhibit::IdleInhibitManagerState,
@@ -54,6 +52,7 @@ pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod single_pixel_buffer;
+pub(in crate::protocol) mod surface_metadata;
 #[cfg(feature = "tty")]
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
@@ -69,6 +68,7 @@ use output::OutputProtocol;
 use presentation::PresentationProtocol;
 use shm::ShmProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
+use surface_metadata::SurfaceMetadataProtocol;
 #[cfg(feature = "tty")]
 pub(crate) use syncobj::DrmSyncPoint;
 #[cfg(feature = "tty")]
@@ -107,8 +107,7 @@ pub(crate) struct ProtocolGlobals {
     xdg_foreign: XdgForeignState,
     system_bell: XdgSystemBellState,
     pointer_warp: PointerWarpManager,
-    content_type: ContentTypeState,
-    alpha_modifier: AlphaModifierState,
+    pub(super) surface_metadata: SurfaceMetadataProtocol,
     background_effect: BackgroundEffectProtocol,
     toplevel_icon: XdgToplevelIconManager,
     toplevel_tag: XdgToplevelTagManager,
@@ -191,8 +190,7 @@ impl ProtocolGlobals {
             xdg_foreign: XdgForeignState::new::<RuntimeState>(display),
             system_bell: XdgSystemBellState::new::<RuntimeState>(display),
             pointer_warp: PointerWarpManager::new::<RuntimeState>(display),
-            content_type: ContentTypeState::new::<RuntimeState>(display),
-            alpha_modifier: AlphaModifierState::new::<RuntimeState>(display),
+            surface_metadata: SurfaceMetadataProtocol::new(display),
             background_effect: BackgroundEffectProtocol::new(display),
             toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
             toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
@@ -232,14 +230,14 @@ impl ProtocolGlobals {
 
     pub(crate) fn remove_surface(&self, surface: &wayland_server::protocol::wl_surface::WlSurface) {
         self.fractional_scale.remove_surface(surface);
-        self.background_effect.remove_surface(surface);
+        self.surface_metadata.remove_surface(surface);
     }
 
     pub(crate) fn committed_background_has_area(
         &self,
         surface: &wayland_server::protocol::wl_surface::WlSurface,
     ) -> bool {
-        self.background_effect.committed_has_area(surface)
+        self.surface_metadata.committed_background_has_area(surface)
     }
 
     #[cfg(feature = "tty")]
@@ -362,8 +360,7 @@ impl ProtocolGlobals {
             &self.xdg_foreign,
             &self.system_bell,
             &self.pointer_warp,
-            &self.content_type,
-            &self.alpha_modifier,
+            &self.surface_metadata,
             &self.background_effect,
             &self.toplevel_icon,
             &self.toplevel_tag,

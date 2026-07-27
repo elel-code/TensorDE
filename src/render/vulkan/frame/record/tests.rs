@@ -132,6 +132,7 @@ fn cropped_sampling_transform_reaches_push_constants_without_record_time_math() 
         buffer_id: SurfaceBufferId::new(1),
         revision: ContentRevision::new(1),
         layer: SurfaceLayer::View,
+        alpha: crate::scene::SurfaceAlpha::from_raw(0x8000_0000),
         local_geometry: Rect::new(0, 0, 40, 20),
         sample_transform,
     };
@@ -158,6 +159,10 @@ fn cropped_sampling_transform_reaches_push_constants_without_record_time_math() 
 
     let prepared = prepare_draws(&frame, 32, 0).unwrap();
     assert_eq!(prepared.len(), 1);
+    assert_eq!(
+        prepared[0].push.opacity,
+        crate::scene::SurfaceAlpha::from_raw(0x8000_0000).as_f32()
+    );
     assert_eq!(
         prepared[0].push.uv_origin_axis_x,
         [0.875, 0.125, 0.0, 0.625]

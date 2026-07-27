@@ -41,6 +41,8 @@ mod dmabuf;
 mod foreign_toplevel;
 mod output;
 mod surface_callbacks;
+#[cfg(feature = "tty")]
+mod surface_metadata;
 mod surface_state;
 
 #[derive(Debug, Eq, PartialEq)]

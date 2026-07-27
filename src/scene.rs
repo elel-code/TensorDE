@@ -5,8 +5,8 @@ mod model;
 
 pub use appearance::{FocusRingStyle, SceneAppearance};
 pub use content::{
-    ContentRevision, ContentSpan, SurfaceContent, SurfaceLayer, SurfaceSampleTransform,
-    SurfaceSourceRect, SurfaceTransform, SurfaceUvTransform,
+    ContentRevision, ContentSpan, SurfaceAlpha, SurfaceContent, SurfaceContentType, SurfaceLayer,
+    SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform, SurfaceUvTransform,
 };
 pub use damage::DamageSet;
 pub use model::{

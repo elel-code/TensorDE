@@ -563,6 +563,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(id),
             revision: ContentRevision::new(1),
             layer,
+            alpha: Default::default(),
             local_geometry,
             sample_transform: SurfaceSampleTransform::IDENTITY,
         }

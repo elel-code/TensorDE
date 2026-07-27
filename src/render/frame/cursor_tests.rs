@@ -39,6 +39,7 @@ fn scene() -> SceneSnapshot {
         buffer_id: SurfaceBufferId::new(1),
         revision: ContentRevision::new(1),
         layer: SurfaceLayer::View,
+        alpha: Default::default(),
         local_geometry: Rect::new(0, 0, 100, 100),
         sample_transform: SurfaceSampleTransform::IDENTITY,
     };

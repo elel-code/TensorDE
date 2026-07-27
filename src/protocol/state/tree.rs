@@ -221,6 +221,7 @@ fn surface_snapshot(
         transform: renderer.transform,
         source: renderer.source,
         layer,
+        alpha: renderer.alpha,
     })
 }
 

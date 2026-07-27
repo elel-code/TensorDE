@@ -318,6 +318,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(revision),
             layer: SurfaceLayer::View,
+            alpha: Default::default(),
             local_geometry: Rect::new(0, 0, 40, 40),
             sample_transform: SurfaceSampleTransform::IDENTITY,
         };
@@ -349,6 +350,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(revision),
             layer: SurfaceLayer::Popup,
+            alpha: Default::default(),
             local_geometry: Rect::new(x, 5, 10, 10),
             sample_transform: SurfaceSampleTransform::IDENTITY,
         };

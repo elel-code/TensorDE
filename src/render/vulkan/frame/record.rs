@@ -126,7 +126,7 @@ pub(super) fn prepare_draws(
                         .target
                         .scale
                         .physical_length_round(draw.effects.corner_radius),
-                    opacity: draw.effects.opacity.as_f32(),
+                    opacity: draw.effects.opacity.as_f32() * draw.alpha.as_f32(),
                     padding: 0.0,
                     destination: destination_to_ndc(draw.destination, viewport),
                     uv_origin_axis_x: [origin.0, origin.1, axis_x.0, axis_x.1],

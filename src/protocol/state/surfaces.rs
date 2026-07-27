@@ -6,7 +6,7 @@ use smithay::wayland::compositor::{
     BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
     SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
 };
-use tensor_protocol::{SurfaceSourceRect, SurfaceTransform};
+use tensor_protocol::{SurfaceAlpha, SurfaceSourceRect, SurfaceTransform};
 use wayland_server::{
     Resource,
     protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
@@ -41,6 +41,7 @@ pub(super) struct SurfaceRenderSnapshot {
     pub(super) buffer_scale: u32,
     pub(super) transform: SurfaceTransform,
     pub(super) source: Option<SurfaceSourceRect>,
+    pub(super) alpha: SurfaceAlpha,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ struct SurfaceState {
     buffer_scale: u32,
     transform: SurfaceTransform,
     source: Option<SurfaceSourceRect>,
+    alpha: SurfaceAlpha,
 }
 
 impl Default for SurfaceState {
@@ -64,6 +66,7 @@ impl Default for SurfaceState {
             buffer_scale: 1,
             transform: SurfaceTransform::Normal,
             source: None,
+            alpha: SurfaceAlpha::OPAQUE,
         }
     }
 }
@@ -170,6 +173,21 @@ pub(crate) fn destroy_surface_state(surface: &WlSurface) {
     });
 }
 
+pub(crate) fn apply_surface_alpha(surface: &WlSurface, alpha: SurfaceAlpha) {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(|| Mutex::new(SurfaceState::default()));
+        let mut state = states
+            .data_map
+            .get::<Mutex<SurfaceState>>()
+            .expect("surface state was inserted above")
+            .lock()
+            .unwrap();
+        state.alpha = alpha;
+    });
+}
+
 pub(super) fn surface_view(states: &SurfaceData) -> Option<SurfaceViewSnapshot> {
     states
         .data_map
@@ -226,6 +244,7 @@ pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRen
         buffer_scale: state.buffer_scale,
         transform: state.transform,
         source: state.source,
+        alpha: state.alpha,
     })
 }
 
@@ -240,6 +259,7 @@ pub(crate) struct TestSurfaceState {
     pub(crate) buffer_scale: u32,
     pub(crate) transform: SurfaceTransform,
     pub(crate) source: Option<SurfaceSourceRect>,
+    pub(crate) alpha: SurfaceAlpha,
 }
 
 #[cfg(test)]
@@ -269,6 +289,7 @@ pub(crate) fn test_surface_tree_states(root: &WlSurface) -> Vec<TestSurfaceState
                 buffer_scale: state.buffer_scale,
                 transform: state.transform,
                 source: state.source,
+                alpha: state.alpha,
             });
         },
         |_, _, _| true,

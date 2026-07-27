@@ -6,8 +6,8 @@ use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
     render::CursorOverlay,
     scene::{
-        ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceLayer,
-        SurfaceSampleTransform,
+        ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceAlpha,
+        SurfaceLayer, SurfaceSampleTransform,
     },
 };
 
@@ -47,6 +47,7 @@ pub(crate) struct SurfaceDraw {
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
     pub(crate) effects: EffectStyle,
+    pub(crate) alpha: SurfaceAlpha,
     pub(crate) sample_transform: SurfaceSampleTransform,
 }
 
@@ -120,6 +121,9 @@ impl FrameDrawPlan {
                 .visible
                 .map(|clip| clip.translated(-scene.viewport.x, -scene.viewport.y));
             for content in scene.contents_for(node) {
+                if content.alpha == SurfaceAlpha::TRANSPARENT {
+                    continue;
+                }
                 let logical_destination = content.local_geometry.translated(
                     node.placement.geometry.x.saturating_sub(scene.viewport.x),
                     node.placement.geometry.y.saturating_sub(scene.viewport.y),
@@ -166,6 +170,7 @@ impl FrameDrawPlan {
                     destination,
                     clip,
                     effects: node.effects,
+                    alpha: content.alpha,
                     sample_transform: content.sample_transform,
                 });
                 scene_draws.push(SceneDrawCommand::Client(draws.len() - 1));
@@ -296,6 +301,7 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
+                alpha: Default::default(),
                 local_geometry: Rect::new(0, 0, 80, 60),
                 sample_transform: SurfaceSampleTransform::IDENTITY,
             },
@@ -304,6 +310,7 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(9),
                 revision: ContentRevision::new(2),
                 layer: SurfaceLayer::View,
+                alpha: Default::default(),
                 local_geometry: Rect::new(5, 5, 20, 20),
                 sample_transform: SurfaceSampleTransform::IDENTITY,
             },
@@ -326,6 +333,38 @@ mod tests {
     }
 
     #[test]
+    fn transparent_surface_never_allocates_a_descriptor_or_draw() {
+        let viewport = Rect::new(0, 0, 80, 60);
+        let placement = LayoutPlacement {
+            geometry: viewport,
+            visible: Some(viewport),
+        };
+        let contents = vec![SurfaceContent {
+            surface_id: SurfaceId::new(1),
+            buffer_id: SurfaceBufferId::new(9),
+            revision: ContentRevision::new(1),
+            layer: SurfaceLayer::View,
+            alpha: SurfaceAlpha::TRANSPARENT,
+            local_geometry: viewport,
+            sample_transform: SurfaceSampleTransform::IDENTITY,
+        }];
+        let scene = SceneSnapshot::with_content(
+            WorkspaceId::new(1),
+            viewport,
+            vec![
+                SceneNode::new(ViewId::new(1), 1, placement, EffectStyle::default())
+                    .with_content(crate::scene::ContentSpan::new(0, 1).unwrap()),
+            ],
+            contents,
+        );
+
+        let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
+        assert!(plan.images().is_empty());
+        assert!(plan.draws().is_empty());
+        assert!(plan.scene_draws().is_empty());
+    }
+
+    #[test]
     fn draw_geometry_is_output_local_and_preserves_buffer_transform() {
         let viewport = Rect::new(200, 100, 160, 90);
         let placement = LayoutPlacement {
@@ -337,6 +376,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(3),
             layer: SurfaceLayer::View,
+            alpha: Default::default(),
             local_geometry: Rect::new(10, 5, 80, 60),
             sample_transform: SurfaceSampleTransform::for_surface(
                 Size::new(80, 100),
@@ -384,6 +424,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::Popup,
+            alpha: Default::default(),
             local_geometry: Rect::new(15, 5, 30, 10),
             sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
@@ -416,6 +457,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(2),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::View,
+            alpha: Default::default(),
             local_geometry: Rect::new(0, 0, 3, 4),
             sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
@@ -534,6 +576,7 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(1),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
+                alpha: Default::default(),
                 local_geometry: Rect::new(0, 0, 40, 30),
                 sample_transform: SurfaceSampleTransform::IDENTITY,
             },
@@ -544,6 +587,7 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(2),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::Popup,
+                alpha: Default::default(),
                 local_geometry: Rect::new(34, -2, 18, 12),
                 sample_transform: SurfaceSampleTransform::IDENTITY,
             },
@@ -552,6 +596,7 @@ mod tests {
                 buffer_id: SurfaceBufferId::new(3),
                 revision: ContentRevision::new(1),
                 layer: SurfaceLayer::View,
+                alpha: Default::default(),
                 local_geometry: Rect::new(0, 0, 40, 30),
                 sample_transform: SurfaceSampleTransform::IDENTITY,
             },

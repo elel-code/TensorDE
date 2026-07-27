@@ -1,15 +1,13 @@
 //! Tensor-owned `ext-background-effect-v1` wire and double-buffered state.
 
-use std::{cell::RefCell, collections::HashMap};
-
-use smithay::wayland::compositor::{self, RectangleKind, get_region_attributes};
+use smithay::wayland::compositor::{RectangleKind, get_region_attributes};
 use wayland_protocols::ext::background_effect::v1::server::{
     ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
     ext_background_effect_surface_v1::{self, ExtBackgroundEffectSurfaceV1},
 };
 use wayland_server::{
     Client, DataInit, DisplayHandle, New, Resource, Weak,
-    backend::{ClientId, GlobalId, ObjectId},
+    backend::{ClientId, GlobalId},
     protocol::{wl_region::WlRegion, wl_surface::WlSurface},
 };
 
@@ -20,9 +18,10 @@ use crate::protocol::{
     state::RuntimeState,
 };
 
+use super::surface_metadata::{AttachResult, install_metadata_hook};
+
 pub(crate) struct BackgroundEffectProtocol {
     _global: GlobalId,
-    surfaces: RefCell<HashMap<ObjectId, BackgroundSurfaceState>>,
 }
 
 impl BackgroundEffectProtocol {
@@ -31,98 +30,8 @@ impl BackgroundEffectProtocol {
             1,
             BackgroundEffectGlobalData,
         );
-        Self {
-            _global: global,
-            surfaces: RefCell::new(HashMap::new()),
-        }
+        Self { _global: global }
     }
-
-    pub(crate) fn commit_surface(&self, surface: &WlSurface) {
-        if let Some(state) = self.surfaces.borrow_mut().get_mut(&surface.id()) {
-            state.commit();
-        }
-    }
-
-    pub(crate) fn remove_surface(&self, surface: &WlSurface) {
-        self.surfaces.borrow_mut().remove(&surface.id());
-    }
-
-    pub(crate) fn committed_has_area(&self, surface: &WlSurface) -> bool {
-        self.surfaces
-            .borrow()
-            .get(&surface.id())
-            .is_some_and(|state| state.current_has_area)
-    }
-
-    fn has_resource(&self, surface: &WlSurface) -> bool {
-        self.surfaces
-            .borrow()
-            .get(&surface.id())
-            .is_some_and(BackgroundSurfaceState::has_resource)
-    }
-
-    fn attach(&self, surface: &WlSurface, resource: &ExtBackgroundEffectSurfaceV1) -> bool {
-        let mut surfaces = self.surfaces.borrow_mut();
-        let state = surfaces.entry(surface.id()).or_default();
-        let install_hook = !state.commit_hook_installed;
-        state.commit_hook_installed = true;
-        state.resource = Some(EffectResource {
-            id: resource.id(),
-            weak: resource.downgrade(),
-        });
-        install_hook
-    }
-
-    fn set_pending(&self, surface: &WlSurface, has_area: bool) {
-        self.surfaces
-            .borrow_mut()
-            .entry(surface.id())
-            .or_default()
-            .pending_has_area = Some(has_area);
-    }
-
-    fn detach(&self, surface: &WlSurface, resource: &ExtBackgroundEffectSurfaceV1) {
-        let mut surfaces = self.surfaces.borrow_mut();
-        let Some(state) = surfaces.get_mut(&surface.id()) else {
-            return;
-        };
-        if state
-            .resource
-            .as_ref()
-            .is_some_and(|attached| attached.id == resource.id())
-        {
-            state.resource = None;
-            state.pending_has_area = Some(false);
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct BackgroundSurfaceState {
-    resource: Option<EffectResource>,
-    pending_has_area: Option<bool>,
-    current_has_area: bool,
-    commit_hook_installed: bool,
-}
-
-impl BackgroundSurfaceState {
-    fn has_resource(&self) -> bool {
-        self.resource
-            .as_ref()
-            .is_some_and(|resource| resource.weak.upgrade().is_ok())
-    }
-
-    fn commit(&mut self) {
-        if let Some(has_area) = self.pending_has_area.take() {
-            self.current_has_area = has_area;
-        }
-    }
-}
-
-#[derive(Debug)]
-struct EffectResource {
-    id: ObjectId,
-    weak: Weak<ExtBackgroundEffectSurfaceV1>,
 }
 
 #[derive(Debug)]
@@ -167,8 +76,8 @@ impl DispatchDelegate<ExtBackgroundEffectManagerV1, RuntimeState> for Background
             ext_background_effect_manager_v1::Request::GetBackgroundEffect { id, surface } => {
                 if state
                     .protocol_globals
-                    .background_effect
-                    .has_resource(&surface)
+                    .surface_metadata
+                    .has_background(&surface)
                 {
                     manager.post_error(
                         ext_background_effect_manager_v1::Error::BackgroundEffectExists,
@@ -182,15 +91,18 @@ impl DispatchDelegate<ExtBackgroundEffectManagerV1, RuntimeState> for Background
                         surface: surface.downgrade(),
                     },
                 );
-                let install_hook = state
+                match state
                     .protocol_globals
-                    .background_effect
-                    .attach(&surface, &resource);
-                if install_hook {
-                    compositor::add_post_commit_hook::<RuntimeState, _>(
-                        &surface,
-                        background_effect_post_commit,
-                    );
+                    .surface_metadata
+                    .attach_background(&surface, &resource)
+                {
+                    AttachResult::AlreadyExists => manager.post_error(
+                        ext_background_effect_manager_v1::Error::BackgroundEffectExists,
+                        "the surface already has a background-effect object",
+                    ),
+                    AttachResult::Attached { install_hook } => {
+                        install_metadata_hook(install_hook, &surface);
+                    }
                 }
             }
             _ => unreachable!(),
@@ -216,8 +128,8 @@ impl DispatchDelegate<ExtBackgroundEffectSurfaceV1, RuntimeState> for Background
                 let has_area = region.as_ref().is_some_and(region_has_area);
                 state
                     .protocol_globals
-                    .background_effect
-                    .set_pending(&surface, has_area);
+                    .surface_metadata
+                    .set_pending_background(&surface, has_area);
             }
             ext_background_effect_surface_v1::Request::Destroy => self.detach(state, resource),
             _ => unreachable!(),
@@ -254,8 +166,8 @@ impl BackgroundEffectSurfaceData {
         };
         state
             .protocol_globals
-            .background_effect
-            .detach(&surface, resource);
+            .surface_metadata
+            .detach_background(&surface, resource);
     }
 }
 
@@ -264,17 +176,6 @@ fn region_has_area(region: &WlRegion) -> bool {
     attributes.rects.iter().any(|(kind, rect)| {
         matches!(kind, RectangleKind::Add) && rect.size.w > 0 && rect.size.h > 0
     })
-}
-
-fn background_effect_post_commit(
-    state: &mut RuntimeState,
-    _display: &DisplayHandle,
-    surface: &WlSurface,
-) {
-    state
-        .protocol_globals
-        .background_effect
-        .commit_surface(surface);
 }
 
 delegate_global_dispatch!(
@@ -292,24 +193,3 @@ delegate_dispatch!(
     ExtBackgroundEffectSurfaceV1,
     BackgroundEffectSurfaceData
 );
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_effect_is_invisible_until_commit_and_clears_once() {
-        let mut state = BackgroundSurfaceState {
-            pending_has_area: Some(true),
-            ..BackgroundSurfaceState::default()
-        };
-        assert!(!state.current_has_area);
-        state.commit();
-        assert!(state.current_has_area);
-        state.pending_has_area = Some(false);
-        assert!(state.current_has_area);
-        state.commit();
-        assert!(!state.current_has_area);
-        assert_eq!(state.pending_has_area, None);
-    }
-}

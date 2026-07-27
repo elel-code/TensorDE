@@ -476,6 +476,7 @@ mod tests {
             buffer_id: SurfaceBufferId::new(view_id),
             revision: ContentRevision::new(1),
             layer: SurfaceLayer::View,
+            alpha: Default::default(),
             local_geometry: Rect::new(0, 0, 640, 480),
             sample_transform: SurfaceSampleTransform::IDENTITY,
         }];
