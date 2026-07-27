@@ -191,11 +191,7 @@ impl PlatformBackend {
     }
 
     fn is_present_pending(&self, surface: SurfaceId) -> bool {
-        if self.inner.capabilities().presentation {
-            self.inner.is_presentation_pending(surface)
-        } else {
-            self.inner.is_frame_pending(surface)
-        }
+        self.inner.is_present_pending(surface)
     }
 
     fn request_dmabuf_default_feedback(&mut self) -> Result<(), RuntimeError> {

@@ -585,6 +585,19 @@ impl NativeRuntime {
         Ok(())
     }
 
+    /// Whether present pacing is still outstanding for `surface`.
+    ///
+    /// Prefer presentation feedback when the global is bound; otherwise the
+    /// `wl_surface.frame` callback. Used by event loops to avoid stacking
+    /// redraws while the compositor has not finished the previous present.
+    pub fn is_present_pending(&self, surface: SurfaceId) -> bool {
+        if self.capabilities.presentation {
+            self.is_presentation_pending(surface)
+        } else {
+            self.is_frame_pending(surface)
+        }
+    }
+
     pub fn set_buffer_scale(&mut self, surface: SurfaceId, factor: i32) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
@@ -738,9 +751,14 @@ mod tests {
             .expect("set title");
         runtime.request_frame(surface).expect("frame");
         assert!(runtime.is_frame_pending(surface));
+        // Arm the preferred present path (presentation feedback or frame).
+        runtime.arm_present_notify(surface).expect("arm present");
+        assert!(runtime.is_present_pending(surface));
         // Coalesce while pending.
         runtime.request_frame(surface).expect("frame again");
         assert!(runtime.is_frame_pending(surface));
+        runtime.arm_present_notify(surface).expect("arm present again");
+        assert!(runtime.is_present_pending(surface));
         assert_eq!(
             runtime.logical_size(surface),
             Some(LogicalSize::new(320, 240))
