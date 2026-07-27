@@ -179,6 +179,15 @@ are indexed by focused client; updates perform one hash lookup and visit only th
 listeners, without a global scan, lock, allocation, or Wayland-resource clone. Begin captures the
 surface identity and client scale once, resources created mid-gesture remain inactive, and leaving
 the initial surface emits a cancelled end before any later update can cross focus. Tensor-owned
+`zwp_pointer_constraints_v1` now replaces Smithay's state and handler outright. Locked pointers
+suppress absolute `wl_pointer.motion` while continuing the existing client-indexed relative-motion
+completion path; committed cursor hints are applied only when an active lock ends. Confinement
+regions are normalized once on the protocol control path into at most 128 non-overlapping
+rectangles, then segment clipping is bounded, stack-only, lock-free, and allocation-free on input.
+Client-controlled regions that exceed that bound remain inactive instead of controlling compositor
+input latency. Only constrained surfaces receive a commit hook, region and hint state remain
+double-buffered, and oneshot deactivation removes both the direct surface index and hook without a
+compatibility implementation. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

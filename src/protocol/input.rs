@@ -35,6 +35,7 @@ use crate::backend::LibinputEvent;
 
 use super::{
     focus::KeyboardFocusTarget,
+    globals::pointer_constraints::ConstraintMotion,
     state::{ProtocolWindow, RuntimeState},
 };
 
@@ -314,7 +315,7 @@ impl RuntimeState {
 
     fn forward_pointer_location(
         &mut self,
-        location: Point<f64, Logical>,
+        proposed_location: Point<f64, Logical>,
         time_ns: u64,
         relative: Option<RelativeMotionEvent>,
     ) {
@@ -324,17 +325,61 @@ impl RuntimeState {
         let time = (time_ns / 1_000_000) as u32;
         let serial = SERIAL_COUNTER.next_serial();
         let _ = self.cursor.note_pointer_activity();
-        let focus = self.pointer_focus_under(location);
-        pointer.motion(
-            self,
-            focus,
-            &MotionEvent {
-                location,
-                serial,
-                time,
-            },
-        );
+        let previous_location = pointer.current_location();
+        let constraint = self
+            .protocol_globals
+            .pointer_constraints
+            .constrain_motion(previous_location, proposed_location);
+        let planned_location = match constraint {
+            ConstraintMotion::Free(location)
+            | ConstraintMotion::Confined(location)
+            | ConstraintMotion::Locked(location) => location,
+        };
+        let focus = (!matches!(constraint, ConstraintMotion::Locked(_)))
+            .then(|| self.pointer_focus_under(planned_location))
+            .flatten();
+        let focus_identity = focus
+            .as_ref()
+            .map(|(surface, origin)| (surface.id(), *origin));
+        let confined_target_matches = self
+            .protocol_globals
+            .pointer_constraints
+            .active_matches(focus_identity.as_ref().map(|(surface, _)| surface));
+        let emit_motion = match constraint {
+            ConstraintMotion::Free(_) => true,
+            ConstraintMotion::Confined(_) => {
+                confined_target_matches && planned_location != previous_location
+            }
+            ConstraintMotion::Locked(_) => false,
+        };
+        let location = if emit_motion {
+            pointer.motion(
+                self,
+                focus,
+                &MotionEvent {
+                    location: planned_location,
+                    serial,
+                    time,
+                },
+            );
+            planned_location
+        } else {
+            previous_location
+        };
         let current_focus = pointer.current_focus();
+        if emit_motion {
+            let constraint_focus = current_focus.as_ref().and_then(|surface| {
+                focus_identity
+                    .as_ref()
+                    .filter(|(id, _)| *id == surface.id())
+                    .map(|(_, origin)| (surface, *origin))
+            });
+            let warp = self
+                .protocol_globals
+                .pointer_constraints
+                .focus_changed(constraint_focus, location);
+            self.apply_pointer_constraint_hint(warp);
+        }
         self.protocol_globals
             .pointer_gestures
             .focus_changed(current_focus.as_ref(), serial, time);
@@ -350,8 +395,9 @@ impl RuntimeState {
                 .relative_pointer
                 .motion(&client.id(), client_scale, event);
         }
-        pointer.frame(self);
-        self.maybe_activate_pointer_constraint(current_focus.as_ref());
+        if emit_motion {
+            pointer.frame(self);
+        }
         // Value bus: coalesce motion samples for the event layer (device Hz
         // must not expand the queue). Seat path already applied the sample.
         let _ = self.push_event(
@@ -515,7 +561,7 @@ impl RuntimeState {
     /// Resolve pointer input in compositor logical coordinates. Overlay and
     /// top layer surfaces sit above windows; bottom/background sit below.
     /// XWayland surfaces remain ordinary Wayland pointer targets.
-    fn pointer_focus_under(
+    pub(in crate::protocol) fn pointer_focus_under(
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {

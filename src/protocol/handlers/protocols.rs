@@ -1,11 +1,9 @@
 //! Additional Wayland protocol handlers beyond the core shell path.
 
 use smithay::{
-    input::pointer::PointerHandle,
-    utils::{Logical, Point},
+    utils::Logical,
     wayland::{
         input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
-        pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
         session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
         xdg_foreign::XdgForeignHandler,
     },
@@ -37,21 +35,6 @@ impl RuntimeState {
     ) {
         let (title, app_id) = toplevel_metadata(surface.wl_surface());
         self.update_foreign_toplevel(surface.wl_surface(), title.as_deref(), app_id.as_deref());
-    }
-
-    /// Activate a pointer constraint when focus matches the constrained surface.
-    pub(crate) fn maybe_activate_pointer_constraint(&mut self, focus: Option<&WlSurface>) {
-        let Some(focus) = focus else {
-            return;
-        };
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
-        with_pointer_constraint(focus, &pointer, |constraint| {
-            if let Some(constraint) = constraint {
-                constraint.activate();
-            }
-        });
     }
 
     pub(crate) fn publish_foreign_toplevel(
@@ -101,60 +84,6 @@ impl RuntimeState {
 
     pub(crate) fn session_is_locked(&self) -> bool {
         self.protocol_side.session_lock.is_some()
-    }
-}
-
-impl PointerConstraintsHandler for RuntimeState {
-    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-        let focused = pointer
-            .current_focus()
-            .is_some_and(|focus| focus.id() == surface.id());
-        if focused {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                if let Some(constraint) = constraint {
-                    constraint.activate();
-                }
-            });
-        }
-    }
-
-    fn remove_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {}
-
-    fn cursor_position_hint(
-        &mut self,
-        surface: &WlSurface,
-        pointer: &PointerHandle<Self>,
-        location: Point<f64, Logical>,
-    ) {
-        let active = with_pointer_constraint(surface, pointer, |constraint| {
-            constraint.is_some_and(|c| c.is_active())
-        });
-        if !active {
-            return;
-        }
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|window| window.wl_surface().as_deref() == Some(surface))
-        else {
-            return;
-        };
-        let Some(geometry) = self.space.element_geometry(window) else {
-            return;
-        };
-        let target = geometry.loc.to_f64() + location;
-        #[cfg(feature = "tty")]
-        if let Some(bounds) = self.pointer_coordinate_space() {
-            pointer.set_location(crate::protocol::input::constrain_pointer_location(
-                target, bounds,
-            ));
-        } else {
-            pointer.set_location(target);
-        }
-        #[cfg(not(feature = "tty"))]
-        pointer.set_location(target);
-        #[cfg(feature = "tty")]
-        self.request_redraw_at(pointer.current_location());
     }
 }
 

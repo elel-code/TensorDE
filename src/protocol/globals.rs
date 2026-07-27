@@ -4,7 +4,6 @@ use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
         input_method::InputMethodManagerState,
-        pointer_constraints::PointerConstraintsState,
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
             primary_selection::PrimarySelectionState,
@@ -40,6 +39,7 @@ pub(in crate::protocol) mod idle_notify;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
+pub(in crate::protocol) mod pointer_constraints;
 pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod relative_pointer;
@@ -65,6 +65,7 @@ use idle_notify::IdleNotifyProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
+use pointer_constraints::PointerConstraintsProtocol;
 use pointer_gestures::PointerGesturesProtocol;
 use presentation::PresentationProtocol;
 use relative_pointer::RelativePointerProtocol;
@@ -93,7 +94,7 @@ pub(crate) struct ProtocolGlobals {
     ext_data_control: ExtDataControlState,
     pub(super) relative_pointer: RelativePointerProtocol,
     pub(super) pointer_gestures: PointerGesturesProtocol,
-    pointer_constraints: PointerConstraintsState,
+    pub(super) pointer_constraints: PointerConstraintsProtocol,
     presentation: PresentationProtocol,
     pub(super) cursor_shape: CursorShapeProtocol,
     activation: XdgActivationState,
@@ -157,7 +158,7 @@ impl ProtocolGlobals {
             ext_data_control,
             relative_pointer: RelativePointerProtocol::new(display),
             pointer_gestures: PointerGesturesProtocol::new(display),
-            pointer_constraints: PointerConstraintsState::new::<RuntimeState>(display),
+            pointer_constraints: PointerConstraintsProtocol::new(display),
             presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
             cursor_shape: CursorShapeProtocol::new(display),
             activation: XdgActivationState::new::<RuntimeState>(display),
@@ -225,6 +226,7 @@ impl ProtocolGlobals {
         &mut self,
         surface: &wayland_server::protocol::wl_surface::WlSurface,
     ) -> Vec<SurfaceBarrier> {
+        self.pointer_constraints.remove_surface(surface);
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
         self.desktop_controls.remove_surface(surface);
