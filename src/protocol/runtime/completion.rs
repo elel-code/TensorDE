@@ -19,9 +19,9 @@ use crate::protocol::state::RuntimeState;
 #[cfg(feature = "tty")]
 const MAX_DRM_COMPLETION_SOURCES: usize = 16;
 #[cfg(feature = "tty")]
-const MAIN_COMPLETION_CAPACITY: usize = 2 + MAX_DRM_COMPLETION_SOURCES;
+const MAIN_COMPLETION_CAPACITY: usize = 3 + MAX_DRM_COMPLETION_SOURCES;
 #[cfg(not(feature = "tty"))]
-const MAIN_COMPLETION_CAPACITY: usize = 2;
+const MAIN_COMPLETION_CAPACITY: usize = 3;
 
 #[derive(Clone, Copy)]
 enum SourceCommand {
@@ -31,6 +31,7 @@ enum SourceCommand {
 enum MainCompletion {
     Worker(io::Result<u64>),
     Legacy(io::Result<()>),
+    CommitTimer(io::Result<()>),
     #[cfg(feature = "tty")]
     Drm {
         device_id: u64,
@@ -41,6 +42,7 @@ enum MainCompletion {
 struct TurnCompletions {
     worker: Option<io::Result<u64>>,
     legacy: Option<io::Result<()>>,
+    commit_timer: Option<io::Result<()>>,
     #[cfg(feature = "tty")]
     drm: [Option<DrmCompletion>; MAX_DRM_COMPLETION_SOURCES],
     #[cfg(feature = "tty")]
@@ -58,6 +60,7 @@ impl TurnCompletions {
         Self {
             worker: None,
             legacy: None,
+            commit_timer: None,
             #[cfg(feature = "tty")]
             drm: std::array::from_fn(|_| None),
             #[cfg(feature = "tty")]
@@ -69,6 +72,7 @@ impl TurnCompletions {
         let duplicate = match completion {
             MainCompletion::Worker(result) => self.worker.replace(result).is_some(),
             MainCompletion::Legacy(result) => self.legacy.replace(result).is_some(),
+            MainCompletion::CommitTimer(result) => self.commit_timer.replace(result).is_some(),
             #[cfg(feature = "tty")]
             MainCompletion::Drm { device_id, result } => {
                 if self.drm[..self.drm_len]
@@ -118,6 +122,10 @@ impl WaylandRuntime {
         }
         let legacy_fd = rustix::io::fcntl_dupfd_cloexec(self.event_loop.as_fd(), 0)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
+        let commit_timer_fd = self
+            .state
+            .duplicate_commit_timer_fd()
+            .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         runtime.block_on(async {
@@ -139,6 +147,9 @@ impl WaylandRuntime {
                 completions.clone(),
                 legacy_commands.clone(),
             ));
+            let commit_timer_source = commit_timer_fd
+                .map(|fd| CommitTimerCompletionSource::new(fd, completions.clone()))
+                .transpose()?;
             #[cfg(feature = "tty")]
             let mut drm_sources = DrmCompletionSources::new();
             #[cfg(feature = "tty")]
@@ -157,6 +168,22 @@ impl WaylandRuntime {
                     .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?
                 {
                     turn.record(completion)?;
+                }
+
+                if let Some(result) = turn.commit_timer {
+                    let rearm = match result {
+                        Ok(()) => self.state.complete_commit_timer(),
+                        Err(error) => {
+                            self.state.commit_timer_completion_failed(&error);
+                            false
+                        }
+                    };
+                    if rearm
+                        && !stop.is_stopped()
+                        && let Some(source) = &commit_timer_source
+                    {
+                        source.rearm()?;
+                    }
                 }
 
                 if let Some(result) = turn.worker {
@@ -221,6 +248,9 @@ impl WaylandRuntime {
 
             let _ = worker_task.cancel().await;
             let _ = legacy_task.cancel().await;
+            if let Some(source) = commit_timer_source {
+                source.shutdown().await;
+            }
             #[cfg(feature = "tty")]
             drm_sources.shutdown().await;
             Ok(())
@@ -259,6 +289,60 @@ async fn wait_for_legacy_completions(
         let failed = result.is_err();
         if completions
             .try_send(MainCompletion::Legacy(result))
+            .is_err()
+            || failed
+        {
+            return;
+        }
+        if commands.recv().await.is_err() {
+            return;
+        }
+    }
+}
+
+struct CommitTimerCompletionSource {
+    commands: LocalCompletionQueue<SourceCommand>,
+    task: compio::runtime::JoinHandle<()>,
+}
+
+impl CommitTimerCompletionSource {
+    fn new(
+        fd: OwnedFd,
+        completions: LocalCompletionQueue<MainCompletion>,
+    ) -> Result<Self, ProtocolError> {
+        let reader =
+            PollFd::new(fd).map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
+        let commands = LocalCompletionQueue::bounded(1);
+        let task = compio::runtime::spawn(wait_for_commit_timer_completions(
+            reader,
+            completions,
+            commands.clone(),
+        ));
+        Ok(Self { commands, task })
+    }
+
+    fn rearm(&self) -> Result<(), ProtocolError> {
+        self.commands.try_send(SourceCommand::Rearm).map_err(|_| {
+            ProtocolError::MainCompletion("commit-timing completion rearm queue is full".to_owned())
+        })
+    }
+
+    async fn shutdown(self) {
+        let _ = self.task.cancel().await;
+    }
+}
+
+async fn wait_for_commit_timer_completions(
+    reader: PollFd<OwnedFd>,
+    completions: LocalCompletionQueue<MainCompletion>,
+    commands: LocalCompletionQueue<SourceCommand>,
+) {
+    loop {
+        // PollFd submits one IORING_OP_POLL_ADD and resolves only from its CQE.
+        let result = reader.read_ready().await;
+        let failed = result.is_err();
+        if completions
+            .try_send(MainCompletion::CommitTimer(result))
             .is_err()
             || failed
         {
@@ -467,6 +551,55 @@ mod tests {
 
         assert_eq!(turns.get(), 1);
         assert!(stop.is_stopped());
+    }
+
+    #[test]
+    fn commit_timer_completion_is_one_shot_until_explicit_rearm() {
+        let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY).unwrap();
+        runtime.block_on(async {
+            let timer = rustix::time::timerfd_create(
+                rustix::time::TimerfdClockId::Monotonic,
+                rustix::time::TimerfdFlags::CLOEXEC | rustix::time::TimerfdFlags::NONBLOCK,
+            )
+            .unwrap();
+            let fd = rustix::io::fcntl_dupfd_cloexec(&timer, 0).unwrap();
+            let completions = LocalCompletionQueue::bounded(MAIN_COMPLETION_CAPACITY);
+            let source = CommitTimerCompletionSource::new(fd, completions.clone()).unwrap();
+            let arm = || {
+                rustix::time::timerfd_settime(
+                    &timer,
+                    rustix::time::TimerfdTimerFlags::empty(),
+                    &rustix::time::Itimerspec {
+                        it_interval: rustix::time::Timespec::default(),
+                        it_value: rustix::time::Timespec {
+                            tv_sec: 0,
+                            tv_nsec: 1,
+                        },
+                    },
+                )
+                .unwrap();
+            };
+
+            arm();
+            let MainCompletion::CommitTimer(result) = completions.recv().await.unwrap() else {
+                panic!("expected a commit-timer completion");
+            };
+            result.unwrap();
+            let mut expirations = [0_u8; 8];
+            assert_eq!(
+                rustix::io::read(&timer, &mut expirations[..]).unwrap(),
+                expirations.len()
+            );
+            assert!(completions.try_recv().unwrap().is_none());
+
+            source.rearm().unwrap();
+            arm();
+            let MainCompletion::CommitTimer(result) = completions.recv().await.unwrap() else {
+                panic!("expected a rearmed commit-timer completion");
+            };
+            result.unwrap();
+            source.shutdown().await;
+        });
     }
 
     #[cfg(feature = "tty")]

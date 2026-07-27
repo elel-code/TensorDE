@@ -256,6 +256,9 @@ impl RuntimeState {
     /// Completion-turn tail: event dispatch, then flush clients.
     pub(crate) fn on_loop_idle(&mut self) {
         self.dispatch_event_turn();
+        // FIFO constraints that did not enter a KMS submission are off-screen
+        // or otherwise unpresentable this turn; release them for forward progress.
+        self.release_unlatched_fifo_barriers();
         self.flush_wayland_clients();
     }
 

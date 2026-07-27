@@ -96,10 +96,17 @@ impl CompositorHandler for RuntimeState {
             }
         };
         on_commit_surface_handler(surface);
+        let fifo_activated = self
+            .protocol_globals
+            .surface_timing
+            .take_fifo_activation(surface);
         self.popups.commit(surface);
 
         #[cfg(feature = "tty")]
         if self.handle_session_lock_commit(surface) || self.handle_layer_shell_commit(surface) {
+            if fifo_activated {
+                self.request_redraw_all();
+            }
             if let Some(points) = explicit_sync.take() {
                 self.finish_unused_explicit_sync(points);
             }
@@ -183,7 +190,7 @@ impl CompositorHandler for RuntimeState {
                 .view_for_surface(&root)
                 .is_some_and(|view_id| self.pending_content_repaints.remove(&view_id));
         #[cfg(feature = "tty")]
-        if content_changed || deferred_repaint {
+        if content_changed || deferred_repaint || fifo_activated {
             let view = self.view_for_surface(&root);
             self.push_surface_committed(root.id().protocol_id(), view);
             if !reflowed {
@@ -200,10 +207,19 @@ impl CompositorHandler for RuntimeState {
         self.popups.cleanup();
         #[cfg(feature = "tty")]
         self.flush_client_releases();
+        #[cfg(not(feature = "tty"))]
+        let _ = fifo_activated;
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
-        self.protocol_globals.remove_surface(surface);
+        let released = self.protocol_globals.remove_surface(surface);
+        let notify_destroyed_client = !released.is_empty();
+        self.release_surface_barriers(released);
+        if notify_destroyed_client && let Some(client) = surface.client() {
+            let display = self.display_handle.clone();
+            self.client_compositor_state(&client)
+                .blocker_cleared(self, &display);
+        }
         destroy_surface_state(surface);
         #[cfg(feature = "tty")]
         {

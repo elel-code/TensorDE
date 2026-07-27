@@ -247,13 +247,13 @@ impl RuntimeState {
         };
         // Drain feedback only after all retry gates passed. The local owner
         // below discards it if Vulkan or atomic KMS cannot accept this frame.
-        let captured_presentation = self.capture_scene_presentation(output_id, &output, &scene);
+        let mut captured_presentation = self.capture_scene_presentation(output_id, &output, &scene);
         let Some(result) = self
             .renderer
             .as_mut()
             .map(|renderer| renderer.submit_scene(render_output, scene, cursor))
         else {
-            drop(captured_presentation);
+            self.discard_captured_presentation(captured_presentation);
             self.set_redraw_state(output_id, OutputRedrawState::Idle);
             return;
         };
@@ -263,7 +263,7 @@ impl RuntimeState {
                     renderer.take_sync_fd(render_output, frame.timeline_value)
                 });
                 let Some(sync_fd) = sync_fd else {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     if let Some(backend) = self.backend.as_mut() {
                         backend.mark_output_faulted(output_id);
                     }
@@ -279,7 +279,7 @@ impl RuntimeState {
                 let fence_fd = match sync_fd.as_fd().try_clone_to_owned() {
                     Ok(fd) => fd,
                     Err(error) => {
-                        drop(captured_presentation);
+                        self.discard_captured_presentation(captured_presentation);
                         if let Some(backend) = self.backend.as_mut() {
                             backend.mark_output_faulted(output_id);
                         }
@@ -295,7 +295,7 @@ impl RuntimeState {
                     }
                 };
                 let Some(fence_submitter) = self.gpu_fence_submitter.as_ref() else {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     if let Some(backend) = self.backend.as_mut() {
                         backend.mark_output_faulted(output_id);
                     }
@@ -311,7 +311,7 @@ impl RuntimeState {
                 if let Err(error) =
                     fence_submitter.submit(output_id, frame.timeline_value, fence_fd)
                 {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     if let Some(backend) = self.backend.as_mut() {
                         backend.mark_output_faulted(output_id);
                     }
@@ -326,7 +326,7 @@ impl RuntimeState {
                     return;
                 }
                 let Some(backend) = self.backend.as_mut() else {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     warn!(
                         output_device = output_id.device_id,
                         output_connector = output_id.connector_id,
@@ -345,7 +345,7 @@ impl RuntimeState {
                     frame.timeline_value,
                 );
                 if let Err(error) = self.event_loop.present_queue().try_push(intent) {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     warn!(
                         output_device = output_id.device_id,
                         output_connector = output_id.connector_id,
@@ -358,7 +358,7 @@ impl RuntimeState {
                 // Drain one intent immediately on the compositor thread (no
                 // worker hop — present stays latency-critical).
                 let Some(queued) = self.event_loop.present_queue().try_pop() else {
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     self.defer_output_repaint(output_id);
                     return;
                 };
@@ -375,7 +375,7 @@ impl RuntimeState {
                     {
                         slot.state = tensor_host::PresentState::Idle;
                     }
-                    drop(captured_presentation);
+                    self.discard_captured_presentation(captured_presentation);
                     warn!(
                         output_device = output_id.device_id,
                         output_connector = output_id.connector_id,
@@ -391,6 +391,7 @@ impl RuntimeState {
                 // Atomic KMS has latched ownership of the submitted client
                 // buffers. Let clients prepare their next frame immediately;
                 // presentation feedback remains pending until vblank.
+                self.release_submitted_fifo_barriers(&mut captured_presentation);
                 self.send_submitted_frame_callbacks(&captured_presentation);
                 self.queue_presentation(output_id, frame.timeline_value, captured_presentation);
                 if let Some(managed) = self.outputs.get_mut(&output_id) {
@@ -432,7 +433,7 @@ impl RuntimeState {
                 );
             }
             Err(error) => {
-                drop(captured_presentation);
+                self.discard_captured_presentation(captured_presentation);
                 warn!(
                     output_device = output_id.device_id,
                     output_connector = output_id.connector_id,

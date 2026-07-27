@@ -44,6 +44,7 @@ mod surface_callbacks;
 #[cfg(feature = "tty")]
 mod surface_metadata;
 mod surface_state;
+mod surface_timing;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ClientEvent {

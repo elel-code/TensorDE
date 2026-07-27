@@ -4,9 +4,7 @@ use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
-        commit_timing::CommitTimingManagerState,
         cursor_shape::CursorShapeManagerState,
-        fifo::FifoManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
         input_method::InputMethodManagerState,
@@ -53,6 +51,7 @@ pub(in crate::protocol) mod presentation;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod single_pixel_buffer;
 pub(in crate::protocol) mod surface_metadata;
+pub(in crate::protocol) mod surface_timing;
 #[cfg(feature = "tty")]
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
@@ -69,6 +68,7 @@ use presentation::PresentationProtocol;
 use shm::ShmProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
 use surface_metadata::SurfaceMetadataProtocol;
+use surface_timing::{SurfaceBarrier, SurfaceTimingProtocol};
 #[cfg(feature = "tty")]
 pub(crate) use syncobj::DrmSyncPoint;
 #[cfg(feature = "tty")]
@@ -111,8 +111,7 @@ pub(crate) struct ProtocolGlobals {
     background_effect: BackgroundEffectProtocol,
     toplevel_icon: XdgToplevelIconManager,
     toplevel_tag: XdgToplevelTagManager,
-    fifo: FifoManagerState,
-    commit_timing: CommitTimingManagerState,
+    pub(super) surface_timing: SurfaceTimingProtocol,
     #[cfg(feature = "xwayland")]
     xwayland_keyboard_grab: XWaylandKeyboardGrabState,
     virtual_pointer: VirtualPointerManagerState,
@@ -194,8 +193,7 @@ impl ProtocolGlobals {
             background_effect: BackgroundEffectProtocol::new(display),
             toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
             toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
-            fifo: FifoManagerState::new::<RuntimeState>(display),
-            commit_timing: CommitTimingManagerState::new::<RuntimeState>(display),
+            surface_timing: SurfaceTimingProtocol::new(display),
             #[cfg(feature = "xwayland")]
             xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
             virtual_pointer: VirtualPointerManagerState::new::<RuntimeState, _>(
@@ -228,9 +226,13 @@ impl ProtocolGlobals {
         self.fractional_scale.set_preferred_scale(surface, scale);
     }
 
-    pub(crate) fn remove_surface(&self, surface: &wayland_server::protocol::wl_surface::WlSurface) {
+    pub(in crate::protocol) fn remove_surface(
+        &self,
+        surface: &wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Vec<SurfaceBarrier> {
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
+        self.surface_timing.remove_surface(surface)
     }
 
     pub(crate) fn committed_background_has_area(
@@ -364,8 +366,7 @@ impl ProtocolGlobals {
             &self.background_effect,
             &self.toplevel_icon,
             &self.toplevel_tag,
-            &self.fifo,
-            &self.commit_timing,
+            &self.surface_timing,
             &self.virtual_pointer,
             &self.gamma_control,
             &self.ext_workspace,
@@ -410,7 +411,7 @@ impl ProtocolGlobals {
             toplevel_icon: true,
             toplevel_tag: true,
             fifo: true,
-            commit_timing: true,
+            commit_timing: self.surface_timing.commit_timing_advertised(),
             xwayland_keyboard_grab: cfg!(feature = "xwayland"),
             virtual_pointer: true,
             gamma_control: true,

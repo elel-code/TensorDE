@@ -27,7 +27,9 @@ use super::{
         take_presentation_feedback_surface_tree,
     },
 };
-use crate::protocol::globals::{output::Output, presentation::Refresh};
+use crate::protocol::globals::{
+    output::Output, presentation::Refresh, surface_timing::SurfaceBarrier,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PresentationKey {
@@ -40,6 +42,7 @@ pub(super) struct CapturedPresentation {
     feedback: OutputPresentationFeedback,
     submitted_surfaces: HashSet<SurfaceId>,
     submitted_views: HashSet<ViewId>,
+    fifo_barriers: Vec<SurfaceBarrier>,
 }
 
 #[derive(Debug, Default)]
@@ -180,8 +183,16 @@ impl RuntimeState {
         });
         let submitted_surfaces = submitted.keys().copied().collect::<HashSet<_>>();
         let submitted_views = submitted.values().copied().collect::<HashSet<_>>();
-        let mut feedback = OutputPresentationFeedback::new(output);
         let surface_buffers = &self.surface_buffers;
+        let fifo_barriers = self
+            .protocol_globals
+            .surface_timing
+            .capture_fifo_barriers(|surface| {
+                surface_buffers
+                    .surface_id(surface)
+                    .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
+            });
+        let mut feedback = OutputPresentationFeedback::new(output);
         let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
@@ -218,6 +229,7 @@ impl RuntimeState {
             feedback,
             submitted_surfaces,
             submitted_views,
+            fifo_barriers,
         }
     }
 
@@ -266,6 +278,15 @@ impl RuntimeState {
                 }
             }
         }
+    }
+
+    pub(super) fn release_submitted_fifo_barriers(&mut self, frame: &mut CapturedPresentation) {
+        let barriers = std::mem::take(&mut frame.fifo_barriers);
+        self.release_captured_fifo_barriers(barriers);
+    }
+
+    pub(super) fn discard_captured_presentation(&mut self, mut frame: CapturedPresentation) {
+        self.release_submitted_fifo_barriers(&mut frame);
     }
 }
 
