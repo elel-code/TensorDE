@@ -19,7 +19,6 @@ use smithay::{
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{get_parent, send_surface_state, with_states},
-        fractional_scale::with_fractional_scale,
         seat::WaylandFocus,
         shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer},
     },
@@ -138,20 +137,19 @@ impl RuntimeState {
                 return true;
             };
             layer.protocol().send_pending_configure();
+            let snapshot = output.snapshot();
+            let scale = snapshot.scale;
+            let transform = snapshot.transform;
             with_states(layer.wl_surface(), |states| {
-                let snapshot = output.snapshot();
-                let scale = snapshot.scale;
-                let transform = snapshot.transform;
                 send_surface_state(
                     layer.wl_surface(),
                     states,
                     super::output_integer_scale(scale),
                     super::smithay_transform(transform),
                 );
-                with_fractional_scale(states, |fractional| {
-                    fractional.set_preferred_scale(scale.as_f64());
-                });
             });
+            self.protocol_globals
+                .set_preferred_fractional_scale(layer.wl_surface(), scale);
             let mapped = surface_has_buffer(&root);
             let had_content = !self
                 .surface_buffers
@@ -440,7 +438,7 @@ impl RuntimeState {
             layer_index = layer_index.saturating_add(1);
             let view_id = ViewId::new(layer.view_id());
             // Layer shells commonly request panel blur via ext-background-effect.
-            let effects = Self::layer_surface_effects(layer.wl_surface());
+            let effects = self.layer_surface_effects(layer.wl_surface());
             nodes.push(
                 SceneNode::new(
                     view_id,

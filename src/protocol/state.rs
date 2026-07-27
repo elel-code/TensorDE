@@ -51,7 +51,6 @@ use smithay::{
     input::{Seat, SeatState},
     wayland::{
         compositor::{CompositorState, get_parent, send_surface_state, with_states},
-        fractional_scale::with_fractional_scale,
         selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelSurface, XdgShellState},
     },
@@ -566,10 +565,9 @@ impl RuntimeState {
                 output_integer_scale(scale),
                 smithay_transform(transform),
             );
-            with_fractional_scale(states, |fractional| {
-                fractional.set_preferred_scale(scale.as_f64());
-            });
         });
+        self.protocol_globals
+            .set_preferred_fractional_scale(surface, scale);
     }
 
     fn update_window_surface_state(&self, window: &ProtocolWindow) {
@@ -581,9 +579,8 @@ impl RuntimeState {
                 output_integer_scale(scale),
                 smithay_transform(transform),
             );
-            with_fractional_scale(states, |fractional| {
-                fractional.set_preferred_scale(scale.as_f64());
-            });
+            self.protocol_globals
+                .set_preferred_fractional_scale(surface, scale);
         });
     }
 

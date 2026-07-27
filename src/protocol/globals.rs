@@ -5,12 +5,10 @@ use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
         alpha_modifier::AlphaModifierState,
-        background_effect::BackgroundEffectState,
         commit_timing::CommitTimingManagerState,
         content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
         fifo::FifoManagerState,
-        fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
         input_method::InputMethodManagerState,
@@ -45,9 +43,11 @@ use super::extensions::{
 };
 use super::state::RuntimeState;
 
+pub(in crate::protocol) mod background_effect;
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
 pub(in crate::protocol) mod foreign_toplevel;
+pub(in crate::protocol) mod fractional_scale;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
 pub(in crate::protocol) mod output;
@@ -58,9 +58,11 @@ pub(in crate::protocol) mod single_pixel_buffer;
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
 
+use background_effect::BackgroundEffectProtocol;
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
 use foreign_toplevel::ForeignToplevelListState;
+use fractional_scale::FractionalScaleProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
 use output::OutputProtocol;
@@ -79,7 +81,7 @@ pub(crate) struct ProtocolGlobals {
     shm: ShmProtocol,
     output: OutputProtocol,
     viewporter: ViewporterProtocol,
-    fractional_scale: FractionalScaleManagerState,
+    fractional_scale: FractionalScaleProtocol,
     xdg_decoration: XdgDecorationState,
     primary_selection: PrimarySelectionState,
     wlr_data_control: WlrDataControlState,
@@ -107,7 +109,7 @@ pub(crate) struct ProtocolGlobals {
     pointer_warp: PointerWarpManager,
     content_type: ContentTypeState,
     alpha_modifier: AlphaModifierState,
-    background_effect: BackgroundEffectState,
+    background_effect: BackgroundEffectProtocol,
     toplevel_icon: XdgToplevelIconManager,
     toplevel_tag: XdgToplevelTagManager,
     fifo: FifoManagerState,
@@ -152,7 +154,7 @@ impl ProtocolGlobals {
             shm: ShmProtocol::new(display),
             output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
-            fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
+            fractional_scale: FractionalScaleProtocol::new(display),
             xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
             primary_selection,
             wlr_data_control,
@@ -191,7 +193,7 @@ impl ProtocolGlobals {
             pointer_warp: PointerWarpManager::new::<RuntimeState>(display),
             content_type: ContentTypeState::new::<RuntimeState>(display),
             alpha_modifier: AlphaModifierState::new::<RuntimeState>(display),
-            background_effect: BackgroundEffectState::new::<RuntimeState>(display),
+            background_effect: BackgroundEffectProtocol::new(display),
             toplevel_icon: XdgToplevelIconManager::new::<RuntimeState>(display),
             toplevel_tag: XdgToplevelTagManager::new::<RuntimeState>(display),
             fifo: FifoManagerState::new::<RuntimeState>(display),
@@ -218,6 +220,26 @@ impl ProtocolGlobals {
 
     pub(crate) const fn xdg_output_enabled(&self) -> bool {
         self.output.xdg_output_enabled()
+    }
+
+    pub(crate) fn set_preferred_fractional_scale(
+        &self,
+        surface: &wayland_server::protocol::wl_surface::WlSurface,
+        scale: tensor_util::OutputScale,
+    ) {
+        self.fractional_scale.set_preferred_scale(surface, scale);
+    }
+
+    pub(crate) fn remove_surface(&self, surface: &wayland_server::protocol::wl_surface::WlSurface) {
+        self.fractional_scale.remove_surface(surface);
+        self.background_effect.remove_surface(surface);
+    }
+
+    pub(crate) fn committed_background_has_area(
+        &self,
+        surface: &wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        self.background_effect.committed_has_area(surface)
     }
 
     #[cfg(feature = "tty")]

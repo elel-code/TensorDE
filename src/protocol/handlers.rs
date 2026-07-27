@@ -18,7 +18,6 @@ use smithay::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
             is_sync_subsurface, with_states,
         },
-        fractional_scale::FractionalScaleHandler,
         seat::WaylandFocus,
         selection::{
             SelectionHandler,
@@ -204,6 +203,7 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.protocol_globals.remove_surface(surface);
         destroy_surface_state(surface);
         #[cfg(feature = "tty")]
         {
@@ -405,12 +405,6 @@ impl SelectionHandler for RuntimeState {
 impl PrimarySelectionHandler for RuntimeState {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         self.protocol_globals.primary_selection()
-    }
-}
-
-impl FractionalScaleHandler for RuntimeState {
-    fn new_fractional_scale(&mut self, surface: WlSurface) {
-        self.update_surface_scale(&surface);
     }
 }
 

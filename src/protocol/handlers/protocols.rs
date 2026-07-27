@@ -419,35 +419,6 @@ impl smithay::wayland::selection::ext_data_control::DataControlHandler for Runti
     }
 }
 
-impl smithay::wayland::background_effect::ExtBackgroundEffectHandler for RuntimeState {
-    fn capabilities(&self) -> smithay::wayland::background_effect::Capability {
-        // Advertise blur only when the scene can mark backdrop sampling.
-        // Pixel blur still follows compositor policy radius until the GPU pass.
-        smithay::wayland::background_effect::Capability::Blur
-    }
-
-    fn set_blur_region(
-        &mut self,
-        wl_surface: WlSurface,
-        region: smithay::wayland::compositor::RegionAttributes,
-    ) {
-        // Pending state is already on the surface cache; commit applies to ECS.
-        // Trace-level only: this runs on protocol traffic, not the flip path.
-        debug!(
-            surface = wl_surface.id().protocol_id(),
-            rects = region.rects.len(),
-            "ext-background-effect: blur region pending"
-        );
-    }
-
-    fn unset_blur_region(&mut self, wl_surface: WlSurface) {
-        debug!(
-            surface = wl_surface.id().protocol_id(),
-            "ext-background-effect: blur region cleared (pending)"
-        );
-    }
-}
-
 #[cfg(feature = "xwayland")]
 impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for RuntimeState {
     fn keyboard_focus_for_xsurface(
