@@ -442,15 +442,14 @@ impl NativeShell {
         &self,
         seat: Option<crate::SeatId>,
     ) -> Option<wayland_client::protocol::wl_data_device::WlDataDevice> {
-        if let Some(id) = seat {
-            if let Some(dev) = self
+        if let Some(id) = seat
+            && let Some(dev) = self
                 .state
                 .seats
                 .get(&id.get())
                 .and_then(|s| s.data_device.clone())
-            {
-                return Some(dev);
-            }
+        {
+            return Some(dev);
         }
         self.state.data_device.clone()
     }
@@ -461,15 +460,14 @@ impl NativeShell {
     ) -> Option<
         wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
     > {
-        if let Some(id) = seat {
-            if let Some(dev) = self
+        if let Some(id) = seat
+            && let Some(dev) = self
                 .state
                 .seats
                 .get(&id.get())
                 .and_then(|s| s.primary_device.clone())
-            {
-                return Some(dev);
-            }
+        {
+            return Some(dev);
         }
         self.state.primary_device.clone()
     }
