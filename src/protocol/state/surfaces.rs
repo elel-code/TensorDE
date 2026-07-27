@@ -2,25 +2,23 @@
 
 use std::sync::Mutex;
 
-use smithay::{
-    backend::allocator::Buffer as _,
-    wayland::{
-        compositor::{
-            BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
-            SurfaceData, TraversalAction, is_sync_subsurface, with_states,
-            with_surface_tree_upward,
-        },
-        dmabuf::get_dmabuf,
-        shm,
-        single_pixel_buffer::get_single_pixel_buffer,
-        viewporter::{self, ViewportCachedState},
+use smithay::wayland::{
+    compositor::{
+        BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
+        SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
     },
+    shm,
+    single_pixel_buffer::get_single_pixel_buffer,
+    viewporter::{self, ViewportCachedState},
 };
 use tensor_protocol::SurfaceTransform;
 use wayland_server::{
     Resource,
     protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
 };
+
+#[cfg(feature = "tty")]
+use crate::protocol::globals::dmabuf::dmabuf_buffer;
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -267,9 +265,13 @@ pub(crate) fn test_surface_tree_states(root: &WlSurface) -> Vec<TestSurfaceState
 }
 
 fn wire_buffer_size(buffer: &WlBuffer) -> Option<(i32, i32)> {
-    if let Ok(dmabuf) = get_dmabuf(buffer) {
+    #[cfg(feature = "tty")]
+    if let Some(dmabuf) = dmabuf_buffer(buffer) {
         let size = dmabuf.size();
-        return valid_size((size.w, size.h));
+        return valid_size((
+            i32::try_from(size.width).ok()?,
+            i32::try_from(size.height).ok()?,
+        ));
     }
     if get_single_pixel_buffer(buffer).is_ok() {
         return Some((1, 1));

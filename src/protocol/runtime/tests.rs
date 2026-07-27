@@ -32,6 +32,8 @@ use wayland_server::Resource;
 
 use super::*;
 
+#[cfg(feature = "tty")]
+mod dmabuf;
 mod surface_callbacks;
 mod surface_state;
 

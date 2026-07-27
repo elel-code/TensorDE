@@ -54,7 +54,7 @@ use super::extensions::{
 use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
-mod dmabuf;
+pub(in crate::protocol) mod dmabuf;
 #[cfg(feature = "tty")]
 mod syncobj;
 
@@ -220,11 +220,6 @@ impl ProtocolGlobals {
         formats: impl IntoIterator<Item = tensor_host::DrmFormat>,
     ) -> Result<bool, String> {
         self.dmabuf.install(display, main_device, formats)
-    }
-
-    #[cfg(feature = "tty")]
-    pub(crate) fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
-        &mut self.dmabuf.state
     }
 
     #[cfg(feature = "tty")]

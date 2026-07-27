@@ -1,20 +1,19 @@
 use std::cell::RefCell;
 
-use smithay::{
-    backend::allocator::{Buffer, dmabuf::Dmabuf as SmithayDmabuf},
-    wayland::{
-        compositor::{BufferAssignment, SurfaceAttributes, with_states},
-        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
-    },
-};
-use tracing::warn;
+use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes, with_states};
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::{
     self, WpLinuxDrmSyncobjSurfaceV1,
 };
-use wayland_server::{Resource, protocol::wl_surface::WlSurface};
+use wayland_server::{
+    Resource,
+    protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
+};
 
 use crate::protocol::{
-    globals::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
+    globals::{
+        DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState,
+        dmabuf::{DmabufBuffer, DmabufImportHandler, is_dmabuf_buffer},
+    },
     state::{ExplicitSyncPoints, RuntimeState},
 };
 
@@ -73,7 +72,7 @@ pub(super) fn take_explicit_sync_points(surface: &WlSurface) -> ExplicitSyncComm
                 let release = release.expect("shape checked a release point");
                 let conflicting =
                     acquire.timeline() == release.timeline() && release.point() <= acquire.point();
-                if conflicting || get_dmabuf(&buffer).is_err() {
+                if conflicting || !is_dmabuf_buffer(&buffer) {
                     ExplicitSyncCommit::Rejected
                 } else {
                     ExplicitSyncCommit::Points(ExplicitSyncPoints { acquire, release })
@@ -107,81 +106,46 @@ fn explicit_sync_shape(
     }
 }
 
-impl DmabufHandler for RuntimeState {
-    fn dmabuf_state(&mut self) -> &mut DmabufState {
-        self.protocol_globals.dmabuf_state()
-    }
-
-    fn dmabuf_imported(
+impl DmabufImportHandler for RuntimeState {
+    fn import_dmabuf(
         &mut self,
-        _global: &DmabufGlobal,
-        dmabuf: SmithayDmabuf,
-        notifier: ImportNotifier,
-    ) {
-        let Some(size) = dmabuf_size(&dmabuf) else {
-            notifier.failed();
-            return;
-        };
-        let Some(_) = self.renderer.as_ref() else {
-            notifier.failed();
-            return;
-        };
+        buffer: &DmabufBuffer,
+    ) -> Result<crate::ecs::SurfaceBufferId, String> {
+        if buffer.flags() != 0 {
+            return Err(format!(
+                "dma-buf flags {:#x} require unsupported image transforms",
+                buffer.flags()
+            ));
+        }
+        if self.renderer.is_none() {
+            return Err("renderer is unavailable".to_owned());
+        }
         let Some(buffer_id) = self.allocate_client_buffer_id() else {
-            warn!("client buffer identity space is exhausted; rejecting linux-dmabuf import");
-            notifier.failed();
-            return;
+            return Err("client buffer identity space is exhausted".to_owned());
         };
-        let renderer_dmabuf = renderer_dmabuf(&dmabuf, size);
-        let import_result = self
-            .renderer
+        self.renderer
             .as_mut()
             .expect("renderer existence was checked above")
-            .import_client_dmabuf(buffer_id, &renderer_dmabuf);
-        match import_result {
-            Ok(()) => match notifier.successful::<RuntimeState>() {
-                Ok(buffer) => {
-                    if !self.register_imported_client_buffer(buffer.id(), buffer_id, size) {
-                        self.release_client_buffers([buffer_id]);
-                        warn!("linux-dmabuf buffer identity was already occupied; released import");
-                    }
-                }
-                Err(error) => {
-                    self.release_client_buffers([buffer_id]);
-                    warn!(%error, "client disappeared while completing linux-dmabuf import");
-                }
-            },
-            Err(error) => {
-                warn!(%error, "client linux-dmabuf import failed");
-                notifier.failed();
-            }
-        }
+            .import_client_dmabuf(buffer_id, buffer.descriptor())
+            .map_err(|error| error.to_string())?;
+        Ok(buffer_id)
     }
-}
 
-fn dmabuf_size(dmabuf: &SmithayDmabuf) -> Option<tensor_util::Size> {
-    let size = dmabuf.size();
-    Some(tensor_util::Size::new(
-        u32::try_from(size.w).ok()?,
-        u32::try_from(size.h).ok()?,
-    ))
-    .filter(|size| size.width > 0 && size.height > 0)
-}
+    fn register_dmabuf_buffer(
+        &mut self,
+        buffer: &WlBuffer,
+        id: crate::ecs::SurfaceBufferId,
+        size: tensor_util::Size,
+    ) -> bool {
+        self.register_imported_client_buffer(buffer.id(), id, size)
+    }
 
-fn renderer_dmabuf<'a>(
-    dmabuf: &'a SmithayDmabuf,
-    size: tensor_util::Size,
-) -> crate::render::Dmabuf<std::os::fd::BorrowedFd<'a>> {
-    let planes = dmabuf
-        .handles()
-        .zip(dmabuf.offsets())
-        .zip(dmabuf.strides())
-        .map(|((fd, offset), stride)| crate::render::DmabufPlane { fd, offset, stride })
-        .collect();
-    crate::render::Dmabuf {
-        size,
-        format: crate::protocol::adapter::host_drm_format(dmabuf.format()),
-        node: None,
-        planes,
+    fn release_dmabuf_import(&mut self, id: crate::ecs::SurfaceBufferId) {
+        self.release_client_buffers([id]);
+    }
+
+    fn dmabuf_buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        self.buffer_destroyed(&buffer.id());
     }
 }
 

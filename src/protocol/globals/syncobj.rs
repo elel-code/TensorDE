@@ -13,7 +13,6 @@ use std::{
 use smithay::wayland::{
     Dispatch2, GlobalDispatch2,
     compositor::{self, BufferAssignment, Cacheable, HookId, SurfaceAttributes, with_states},
-    dmabuf::get_dmabuf,
 };
 use tracing::warn;
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::{
@@ -30,6 +29,7 @@ use crate::{backend::DrmDeviceFd, protocol::state::RuntimeState};
 
 mod point;
 
+use super::dmabuf::is_dmabuf_buffer;
 pub(crate) use point::DrmSyncPoint;
 use point::{DrmTimeline, DrmTimelineInner};
 
@@ -201,7 +201,7 @@ fn commit_hook<D: DrmSyncobjHandler>(
                         ),
                     );
                 }
-                if get_dmabuf(buffer).is_err() {
+                if !is_dmabuf_buffer(buffer) {
                     syncobj_surface.post_error(
                         wp_linux_drm_syncobj_surface_v1::Error::UnsupportedBuffer,
                         "sync points require a dma-buf buffer".to_owned(),
