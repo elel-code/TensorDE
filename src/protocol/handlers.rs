@@ -21,15 +21,6 @@ use smithay::{
             is_sync_subsurface, with_states,
         },
         seat::WaylandFocus,
-        selection::{
-            SelectionHandler,
-            data_device::{
-                DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
-            },
-            primary_selection::{
-                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
-            },
-        },
         shell::xdg::{
             PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
             XdgShellState,
@@ -46,7 +37,7 @@ use wayland_server::{
 use smithay::xwayland::XWaylandClientData;
 
 use super::{
-    focus::KeyboardFocusTarget,
+    focus::{KeyboardFocusTarget, SurfaceFocusTarget},
     state::{
         PopupKind, RuntimeState, WaylandClientState, destroy_surface_state,
         find_popup_root_surface, on_commit_surface_handler,
@@ -214,6 +205,7 @@ impl CompositorHandler for RuntimeState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.selection_surface_destroyed(surface);
         self.remove_session_lock_surface(surface);
         self.remove_xdg_foreign_surface(surface);
         let released = self.protocol_globals.remove_surface(surface);
@@ -391,21 +383,20 @@ impl XdgShellHandler for RuntimeState {
 
 impl SeatHandler for RuntimeState {
     type KeyboardFocus = KeyboardFocusTarget;
-    type PointerFocus = WlSurface;
-    type TouchFocus = WlSurface;
+    type PointerFocus = SurfaceFocusTarget;
+    type TouchFocus = SurfaceFocusTarget;
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
         let focused = focused.and_then(WaylandFocus::wl_surface);
         self.protocol_globals
             .activation
             .sync_keyboard_focus(focused.as_deref());
-        let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
-        set_primary_focus(&self.display_handle, seat, client.clone());
-        set_data_device_focus(&self.display_handle, seat, client);
+        let client = focused.and_then(|surface| surface.client().map(|client| client.id()));
+        self.protocol_globals.selection.set_focus(client);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -423,22 +414,6 @@ impl SeatHandler for RuntimeState {
         }
         #[cfg(not(feature = "tty"))]
         let _ = image;
-    }
-}
-
-impl SelectionHandler for RuntimeState {
-    type SelectionUserData = ();
-}
-
-impl PrimarySelectionHandler for RuntimeState {
-    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
-        self.protocol_globals.primary_selection()
-    }
-}
-
-impl DataDeviceHandler for RuntimeState {
-    fn data_device_state(&mut self) -> &mut DataDeviceState {
-        &mut self.data_device_state
     }
 }
 
@@ -501,6 +476,23 @@ impl smithay::wayland::shell::wlr_layer::WlrLayerShellHandler for RuntimeState {
     }
 }
 
-impl DndGrabHandler for RuntimeState {}
-impl WaylandDndGrabHandler for RuntimeState {}
+impl DndGrabHandler for RuntimeState {
+    fn dropped(
+        &mut self,
+        _target: Option<smithay::input::dnd::DndTarget<'_, Self>>,
+        _validated: bool,
+        _seat: Seat<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        self.finish_selection_dnd();
+    }
+
+    fn cancelled(
+        &mut self,
+        _seat: Seat<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        self.finish_selection_dnd();
+    }
+}
 smithay::delegate_dispatch2!(RuntimeState);

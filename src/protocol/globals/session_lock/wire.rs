@@ -458,9 +458,10 @@ impl RuntimeState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let Some(mut focused) = pointer.current_focus() else {
+        let Some(focused) = pointer.current_focus() else {
             return;
         };
+        let mut focused = focused.into_surface();
         while let Some(parent) = compositor::get_parent(&focused) {
             focused = parent;
         }

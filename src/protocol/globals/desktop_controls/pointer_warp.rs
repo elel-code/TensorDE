@@ -75,7 +75,10 @@ impl RuntimeState {
             return;
         };
         if pointer.last_enter() != Some(Serial::from(serial))
-            || pointer.current_focus().as_ref() != Some(&surface)
+            || pointer
+                .current_focus()
+                .as_ref()
+                .is_none_or(|focused| focused.surface() != &surface)
             || !surface_contains_point(&surface, (local.x, local.y))
         {
             return;

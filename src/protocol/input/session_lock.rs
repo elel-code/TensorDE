@@ -97,9 +97,12 @@ impl RuntimeState {
             },
         );
         pointer.frame(self);
-        self.protocol_globals
-            .activation
-            .sync_pointer_focus(pointer.current_focus().as_ref());
+        self.protocol_globals.activation.sync_pointer_focus(
+            pointer
+                .current_focus()
+                .as_ref()
+                .map(SurfaceFocusTarget::surface),
+        );
         let _ = self.cursor.note_pointer_activity();
         self.request_redraw_at(location);
     }
@@ -107,7 +110,7 @@ impl RuntimeState {
     fn session_lock_pointer_focus(
         &self,
         location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    ) -> Option<(SurfaceFocusTarget, Point<f64, Logical>)> {
         let output = self.space.output_under(location).next()?;
         let geometry = self.space.output_geometry(output)?;
         let surface = self
@@ -115,7 +118,7 @@ impl RuntimeState {
             .session_lock
             .surface_for_output(output.id())?;
         surface_tree_under(surface, location, geometry.loc)
-            .map(|(surface, surface_location)| (surface, surface_location.to_f64()))
+            .map(|(surface, surface_location)| (surface.into(), surface_location.to_f64()))
     }
 
     fn forward_session_lock_button(&mut self, event: PointerButtonEvent) {
@@ -125,8 +128,9 @@ impl RuntimeState {
         let serial = SERIAL_COUNTER.next_serial();
         let state = smithay_button_state(event.pressed);
         if state == ButtonState::Pressed
-            && let Some(mut surface) = pointer.current_focus()
+            && let Some(surface) = pointer.current_focus()
         {
+            let mut surface = surface.into_surface();
             while let Some(parent) = smithay::wayland::compositor::get_parent(&surface) {
                 surface = parent;
             }

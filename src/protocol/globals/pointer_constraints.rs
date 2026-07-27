@@ -446,7 +446,7 @@ impl RuntimeState {
         let focus = current_focus.as_ref().and_then(|current| {
             hit.as_ref()
                 .filter(|(surface, _)| surface.id() == current.id())
-                .map(|(_, origin)| (current, *origin))
+                .map(|(_, origin)| (current.surface(), *origin))
         });
         let warp = self
             .protocol_globals

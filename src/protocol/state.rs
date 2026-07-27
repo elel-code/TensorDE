@@ -50,7 +50,6 @@ use smithay::{
     input::{Seat, SeatState},
     wayland::{
         compositor::{CompositorState, get_parent, send_surface_state, with_states},
-        selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelSurface, XdgShellState},
     },
 };
@@ -119,12 +118,12 @@ pub(crate) struct RuntimeState {
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
     pub(crate) seat_state: SeatState<Self>,
-    pub(crate) data_device_state: DataDeviceState,
     pub(crate) protocol_globals: ProtocolGlobals,
     pub(crate) protocol_side: ProtocolSideState,
     #[cfg(feature = "xwayland")]
     pub(crate) xwayland_shell_state: XWaylandShellState,
     pub(crate) seat: Seat<Self>,
+    pub(crate) dnd_icon: Option<WlSurface>,
     pub(crate) space: WindowSpace,
     pub(crate) popups: PopupManager,
     layer_maps: LayerMaps,
@@ -199,7 +198,6 @@ impl RuntimeState {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
-        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
@@ -212,12 +210,12 @@ impl RuntimeState {
             compositor_state,
             xdg_shell_state,
             seat_state,
-            data_device_state,
             protocol_globals,
             protocol_side: ProtocolSideState::default(),
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
             seat,
+            dnd_icon: None,
             space: WindowSpace::default(),
             popups: PopupManager::default(),
             layer_maps: LayerMaps::default(),

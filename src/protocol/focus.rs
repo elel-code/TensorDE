@@ -16,6 +16,9 @@ use smithay::xwayland::X11Surface;
 
 use super::state::{PopupKind, RuntimeState};
 
+mod surface;
+pub(crate) use surface::SurfaceFocusTarget;
+
 /// Keyboard focus keeps X11's ICCCM focus handshake intact while retaining
 /// normal Wayland surfaces as the common protocol target.
 #[derive(Clone, Debug, PartialEq)]

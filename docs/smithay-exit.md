@@ -208,6 +208,15 @@ cleared, and input-region/subsurface hit testing routes input only to active loc
 from VT recovery). Unlock, cancellation, output removal, and surface teardown clear the lock seat
 before focus can move. The Smithay session-lock state, handler, wrapper types, and
 immediate-confirmation path are deleted, not retained as an adapter. Tensor-owned
+`wl_data_device_manager`, primary selection, wlr data-control v2, and staging ext-data-control
+now share one Tensor authority as well. Sources and devices use exact client/object indices;
+focus changes visit only the old and new client, while privileged monitors are visited only when
+the selection changes. Outstanding focused offers are rejected after focus loss or replacement,
+and transfer FDs pass directly between protocol peers without compositor payload copies. Core DnD
+uses the same single-use source records and strict accept/action/finish state machine, including
+the pre-v3 copy action and cancellation rules; pointer and touch motion neither scan source tables
+nor read MIME metadata. Smithay selection state, handler traits, focus setters, and wire delegates
+are deleted rather than kept as a compatibility implementation. Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`

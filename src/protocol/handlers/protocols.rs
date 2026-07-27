@@ -150,22 +150,6 @@ fn toplevel_metadata(surface: &WlSurface) -> (Option<String>, Option<String>) {
     })
 }
 
-impl smithay::wayland::selection::wlr_data_control::DataControlHandler for RuntimeState {
-    fn data_control_state(
-        &mut self,
-    ) -> &mut smithay::wayland::selection::wlr_data_control::DataControlState {
-        self.protocol_globals.wlr_data_control()
-    }
-}
-
-impl smithay::wayland::selection::ext_data_control::DataControlHandler for RuntimeState {
-    fn data_control_state(
-        &mut self,
-    ) -> &mut smithay::wayland::selection::ext_data_control::DataControlState {
-        self.protocol_globals.ext_data_control()
-    }
-}
-
 #[cfg(feature = "xwayland")]
 impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for RuntimeState {
     fn keyboard_focus_for_xsurface(

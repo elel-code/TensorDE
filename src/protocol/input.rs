@@ -35,7 +35,7 @@ use tensor_input::{
 use crate::backend::LibinputEvent;
 
 use super::{
-    focus::KeyboardFocusTarget,
+    focus::{KeyboardFocusTarget, SurfaceFocusTarget},
     globals::pointer_constraints::ConstraintMotion,
     state::{ProtocolWindow, RuntimeState, surface_tree_under},
 };
@@ -361,7 +361,7 @@ impl RuntimeState {
         let location = if emit_motion {
             pointer.motion(
                 self,
-                focus,
+                focus.map(|(surface, origin)| (surface.into(), origin)),
                 &MotionEvent {
                     location: planned_location,
                     serial,
@@ -375,13 +375,13 @@ impl RuntimeState {
         let current_focus = pointer.current_focus();
         self.protocol_globals
             .activation
-            .sync_pointer_focus(current_focus.as_ref());
+            .sync_pointer_focus(current_focus.as_ref().map(SurfaceFocusTarget::surface));
         if emit_motion {
             let constraint_focus = current_focus.as_ref().and_then(|surface| {
                 focus_identity
                     .as_ref()
                     .filter(|(id, _)| *id == surface.id())
-                    .map(|(_, origin)| (surface, *origin))
+                    .map(|(_, origin)| (surface.surface(), *origin))
             });
             let warp = self
                 .protocol_globals
@@ -389,11 +389,13 @@ impl RuntimeState {
                 .focus_changed(constraint_focus, location);
             self.apply_pointer_constraint_hint(warp);
         }
-        self.protocol_globals
-            .pointer_gestures
-            .focus_changed(current_focus.as_ref(), serial, time);
+        self.protocol_globals.pointer_gestures.focus_changed(
+            current_focus.as_ref().map(SurfaceFocusTarget::surface),
+            serial,
+            time,
+        );
         if let Some(event) = relative
-            && let Some(client) = current_focus.as_ref().and_then(Resource::client)
+            && let Some(client) = current_focus.as_ref().and_then(SurfaceFocusTarget::client)
         {
             let client_scale =
                 <Self as smithay::wayland::compositor::CompositorHandler>::client_compositor_state(
@@ -443,7 +445,9 @@ impl RuntimeState {
             None
         };
         self.protocol_globals.pointer_gestures.event(
-            target.as_ref().map(|(surface, scale)| (surface, *scale)),
+            target
+                .as_ref()
+                .map(|(surface, scale)| (surface.surface(), *scale)),
             event,
         );
     }

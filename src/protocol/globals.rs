@@ -3,15 +3,8 @@ use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use smithay::{
     utils::{ClockSource, Monotonic},
     wayland::{
-        input_method::InputMethodManagerState,
-        selection::{
-            ext_data_control::DataControlState as ExtDataControlState,
-            primary_selection::PrimarySelectionState,
-            wlr_data_control::DataControlState as WlrDataControlState,
-        },
-        shell::wlr_layer::WlrLayerShellState,
-        tablet_manager::TabletManagerState,
-        text_input::TextInputManagerState,
+        input_method::InputMethodManagerState, shell::wlr_layer::WlrLayerShellState,
+        tablet_manager::TabletManagerState, text_input::TextInputManagerState,
         virtual_keyboard::VirtualKeyboardManagerState,
     },
 };
@@ -42,6 +35,7 @@ pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
 mod random_handle;
 pub(in crate::protocol) mod relative_pointer;
+pub(in crate::protocol) mod selection;
 pub(in crate::protocol) mod session_lock;
 pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod shortcut_inhibit;
@@ -71,6 +65,7 @@ use pointer_constraints::PointerConstraintsProtocol;
 use pointer_gestures::PointerGesturesProtocol;
 use presentation::PresentationProtocol;
 use relative_pointer::RelativePointerProtocol;
+use selection::SelectionProtocol;
 use session_lock::SessionLockProtocol;
 use shm::ShmProtocol;
 use shortcut_inhibit::ShortcutInhibitProtocol;
@@ -93,9 +88,7 @@ pub(crate) struct ProtocolGlobals {
     viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleProtocol,
     xdg_decoration: XdgDecorationProtocol,
-    primary_selection: PrimarySelectionState,
-    wlr_data_control: WlrDataControlState,
-    ext_data_control: ExtDataControlState,
+    pub(super) selection: SelectionProtocol,
     pub(super) relative_pointer: RelativePointerProtocol,
     pub(super) pointer_gestures: PointerGesturesProtocol,
     pub(super) pointer_constraints: PointerConstraintsProtocol,
@@ -135,31 +128,18 @@ pub(crate) struct ProtocolGlobals {
 
 impl ProtocolGlobals {
     pub(crate) fn new(display: &DisplayHandle) -> Self {
-        let primary_selection = PrimarySelectionState::new::<RuntimeState>(display);
         let unrestricted = |client: &Client| {
             client
                 .get_data::<crate::protocol::state::WaylandClientState>()
                 .is_none_or(|data| data.security_context.is_none())
         };
-        let wlr_data_control = WlrDataControlState::new::<RuntimeState, _>(
-            display,
-            Some(&primary_selection),
-            unrestricted,
-        );
-        let ext_data_control = ExtDataControlState::new::<RuntimeState, _>(
-            display,
-            Some(&primary_selection),
-            unrestricted,
-        );
         Self {
             shm: ShmProtocol::new(display),
             output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleProtocol::new(display),
             xdg_decoration: XdgDecorationProtocol::new(display),
-            primary_selection,
-            wlr_data_control,
-            ext_data_control,
+            selection: SelectionProtocol::new(display),
             relative_pointer: RelativePointerProtocol::new(display),
             pointer_gestures: PointerGesturesProtocol::new(display),
             pointer_constraints: PointerConstraintsProtocol::new(display),
@@ -272,18 +252,6 @@ impl ProtocolGlobals {
         self.syncobj.state.as_mut()
     }
 
-    pub(crate) fn primary_selection(&mut self) -> &mut PrimarySelectionState {
-        &mut self.primary_selection
-    }
-
-    pub(crate) fn wlr_data_control(&mut self) -> &mut WlrDataControlState {
-        &mut self.wlr_data_control
-    }
-
-    pub(crate) fn ext_data_control(&mut self) -> &mut ExtDataControlState {
-        &mut self.ext_data_control
-    }
-
     pub(crate) fn layer_shell(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell
     }
@@ -331,9 +299,7 @@ impl ProtocolGlobals {
             &self.viewporter,
             &self.fractional_scale,
             &self.xdg_decoration,
-            &self.primary_selection,
-            &self.wlr_data_control,
-            &self.ext_data_control,
+            &self.selection,
             &self.relative_pointer,
             &self.pointer_gestures,
             &self.pointer_constraints,
