@@ -217,7 +217,7 @@ impl Compositor {
                 state.layout.options(),
                 state.view_count(),
                 state.output_count(),
-                state.seat.name().to_owned(),
+                "tensor".to_owned(),
                 state.protocol_globals.xdg_output_enabled(),
                 state.protocol_globals.capabilities(),
             )

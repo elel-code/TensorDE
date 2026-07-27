@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::{
-    utils::{Logical, Point},
-    xwayland::X11Surface,
-};
+use smithay::utils::{Logical, Point};
 use tracing::debug;
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
 use super::super::{ProtocolWindow, RuntimeState};
+use crate::protocol::xwayland::X11Surface;
 
 /// Protocol-owned attachment for one override-redirect X11 surface. The
 /// renderer only sees the associated surface through its owning view's flat

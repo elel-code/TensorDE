@@ -1,7 +1,6 @@
 //! Tensor-owned cursor-shape protocol state.
 
 use cursor_icon::CursorIcon;
-use smithay::utils::Serial;
 use wayland_protocols::wp::cursor_shape::v1::server::{
     wp_cursor_shape_device_v1::{self, Shape, WpCursorShapeDeviceV1},
     wp_cursor_shape_manager_v1::{self, WpCursorShapeManagerV1},
@@ -11,6 +10,7 @@ use wayland_server::{
     backend::{GlobalId, ObjectId},
 };
 
+use crate::protocol::serial::Serial;
 use crate::protocol::{
     dispatch::{
         DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
@@ -105,11 +105,10 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
 
 fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, device: &ObjectId) -> bool {
     let grab_surface = state
-        .seat
-        .get_pointer()
-        .and_then(|pointer| pointer.grab_start_data())
-        .and_then(|data| data.focus)
-        .map(|(surface, _)| surface.id());
+        .input_seat
+        .pointer_grab_start()
+        .and_then(|data| data.focus.as_ref())
+        .map(Resource::id);
     state
         .protocol_globals
         .seat
@@ -122,8 +121,8 @@ fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {
         .cursor
         .set_image(crate::protocol::cursor::CursorImage::Named(icon))
     {
-        if let Some(pointer) = state.seat.get_pointer() {
-            state.request_redraw_at(pointer.current_location());
+        if let Some(location) = state.input_seat.pointer_location() {
+            state.request_redraw_at(location);
         } else {
             state.request_redraw_workspace();
         }

@@ -18,7 +18,7 @@ use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "xwayland")]
-use smithay::xwayland::X11Surface;
+use crate::protocol::xwayland::X11Surface;
 
 use super::{
     PopupManager,

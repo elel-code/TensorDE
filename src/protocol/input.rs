@@ -1,3 +1,4 @@
+mod focus;
 mod pointer_geometry;
 mod session_lock;
 #[cfg(test)]
@@ -10,75 +11,23 @@ use pointer_geometry::{
 
 pub(crate) use pointer_geometry::constrain_pointer_location;
 
-use smithay::{
-    backend::input::{
-        Axis, AxisRelativeDirection, AxisSource as SmithayAxisSource, ButtonState,
-        KeyState as SmithayKeyState, Keycode,
-    },
-    input::{
-        keyboard::{FilterResult, keysyms},
-        pointer::{ButtonEvent, MotionEvent},
-    },
-    utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::seat::WaylandFocus,
-};
+use smithay::utils::{Logical, Point, Rectangle};
 use tracing::{debug, warn};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
+use xkbcommon::xkb::keysyms;
 
-use tensor_host::AxisSource;
 use tensor_input::{
-    AbsoluteMotionEvent, AxisDirection, BackendInputEvent, DeviceChange, KeyboardEvent,
-    PointerAxisEvent, PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent,
+    AbsoluteMotionEvent, BackendInputEvent, DeviceChange, KeyboardEvent, PointerAxisEvent,
+    PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent,
 };
 
 use crate::backend::LibinputEvent;
 
 use super::{
-    focus::{KeyboardFocusTarget, SurfaceFocusTarget},
     globals::pointer_constraints::ConstraintMotion,
-    state::{ProtocolWindow, RuntimeState, surface_tree_under},
+    serial::{Serial, next_serial},
+    state::{RuntimeState, surface_tree_under},
 };
-
-#[inline]
-fn xkb_keycode(evdev_key: u32) -> Keycode {
-    (evdev_key + 8).into()
-}
-
-#[inline]
-fn smithay_key_state(pressed: bool) -> SmithayKeyState {
-    if pressed {
-        SmithayKeyState::Pressed
-    } else {
-        SmithayKeyState::Released
-    }
-}
-
-#[inline]
-fn smithay_button_state(pressed: bool) -> ButtonState {
-    if pressed {
-        ButtonState::Pressed
-    } else {
-        ButtonState::Released
-    }
-}
-
-#[inline]
-fn smithay_axis_source(source: AxisSource) -> SmithayAxisSource {
-    match source {
-        AxisSource::Finger => SmithayAxisSource::Finger,
-        AxisSource::Continuous | AxisSource::Unknown => SmithayAxisSource::Continuous,
-        AxisSource::Wheel => SmithayAxisSource::Wheel,
-        AxisSource::WheelTilt => SmithayAxisSource::WheelTilt,
-    }
-}
-
-#[inline]
-fn smithay_axis_direction(direction: AxisDirection) -> AxisRelativeDirection {
-    match direction {
-        AxisDirection::Identical => AxisRelativeDirection::Identical,
-        AxisDirection::Inverted => AxisRelativeDirection::Inverted,
-    }
-}
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: LibinputEvent) {
@@ -154,13 +103,18 @@ impl RuntimeState {
             .filter(|capabilities| capabilities.touch)
             .count();
 
-        if keyboard_count > 0 && self.seat.get_keyboard().is_none() {
-            match self.seat.add_keyboard(Default::default(), 200, 25) {
-                Ok(_) => {
-                    if let Err(error) = self.protocol_globals.seat.set_default_keyboard_enabled() {
-                        self.seat.remove_keyboard();
-                        warn!(%error, "failed to publish keyboard keymap");
-                    } else if self.session_is_locked() {
+        if keyboard_count > 0 && !self.input_seat.keyboard_enabled() {
+            match self
+                .input_seat
+                .enable_keyboard()
+                .map(ToOwned::to_owned)
+                .and_then(|keymap| {
+                    self.protocol_globals
+                        .seat
+                        .set_keyboard_enabled(true, Some(&keymap))
+                }) {
+                Ok(()) => {
+                    if self.session_is_locked() {
                         if let Some(surface) =
                             self.protocol_globals.session_lock.first_active_surface()
                         {
@@ -170,23 +124,28 @@ impl RuntimeState {
                         self.restore_keyboard_focus();
                     }
                 }
-                Err(error) => warn!(%error, "failed to publish keyboard capability"),
+                Err(error) => {
+                    self.input_seat.disable_keyboard();
+                    warn!(%error, "failed to publish keyboard capability");
+                }
             }
-        } else if keyboard_count == 0 && self.seat.get_keyboard().is_some() {
-            self.seat.remove_keyboard();
+        } else if keyboard_count == 0 && self.input_seat.keyboard_enabled() {
+            self.set_keyboard_focus(None, next_serial());
+            self.input_seat.disable_keyboard();
             let _ = self.protocol_globals.seat.set_keyboard_enabled(false, None);
             self.protocol_globals.activation.sync_keyboard_focus(None);
         }
 
-        if pointer_count > 0 && self.seat.get_pointer().is_none() {
-            self.seat.add_pointer();
+        if pointer_count > 0 && !self.input_seat.pointer_enabled() {
+            self.input_seat.enable_pointer();
             self.protocol_globals.seat.set_pointer_enabled(true);
             // A pointer can be discovered after the first output frame. Draw
             // the default software cursor immediately instead of waiting for
             // the user's first motion event to make it visible.
             self.request_redraw_all();
-        } else if pointer_count == 0 && self.seat.get_pointer().is_some() {
-            self.seat.remove_pointer();
+        } else if pointer_count == 0 && self.input_seat.pointer_enabled() {
+            self.clear_pointer_focus(next_serial(), 0);
+            self.input_seat.disable_pointer();
             self.protocol_globals.seat.set_pointer_enabled(false);
             self.protocol_globals.activation.sync_pointer_focus(None);
             // The next frame has no overlay, which damages the previous
@@ -194,11 +153,11 @@ impl RuntimeState {
             self.request_redraw_all();
         }
 
-        if touch_count > 0 && self.seat.get_touch().is_none() {
-            self.seat.add_touch();
+        if touch_count > 0 && !self.input_seat.touch_enabled() {
+            self.input_seat.set_touch_enabled(true);
             self.protocol_globals.seat.set_touch_enabled(true);
-        } else if touch_count == 0 && self.seat.get_touch().is_some() {
-            self.seat.remove_touch();
+        } else if touch_count == 0 && self.input_seat.touch_enabled() {
+            self.input_seat.set_touch_enabled(false);
             self.protocol_globals.seat.set_touch_enabled(false);
         }
 
@@ -209,71 +168,75 @@ impl RuntimeState {
     }
 
     fn forward_keyboard(&mut self, event: KeyboardEvent) {
-        let Some(keyboard) = self.seat.get_keyboard() else {
+        if !self.input_seat.keyboard_enabled() {
             return;
-        };
-        let key_state = smithay_key_state(event.pressed);
-        let serial = SERIAL_COUNTER.next_serial();
-        if key_state == SmithayKeyState::Pressed && self.cursor.note_keyboard_activity() {
+        }
+        let serial = next_serial();
+        if event.pressed && self.cursor.note_keyboard_activity() {
             // Typing hid the software cursor; repaint the pointer head.
-            if let Some(pointer) = self.seat.get_pointer() {
-                self.request_redraw_at(pointer.current_location());
+            if let Some(location) = self.input_seat.pointer_location() {
+                self.request_redraw_at(location);
             } else {
                 self.request_redraw_all();
             }
         }
-        let shortcuts_inhibited = keyboard
-            .current_focus()
-            .and_then(|focus| focus.wl_surface().map(std::borrow::Cow::into_owned))
+        let shortcuts_inhibited = self
+            .input_seat
+            .keyboard_focus()
             .is_some_and(|surface| self.shortcuts_inhibited_for(&surface));
-        let intercepted = keyboard.input::<(), _>(
-            self,
-            xkb_keycode(event.key),
-            key_state,
-            serial,
-            event.time_msec(),
-            move |state, modifiers, handle| {
-                let keysym = handle.modified_sym().raw();
-                if let Some(vt) = virtual_terminal_for_keysym(keysym) {
-                    if key_state == SmithayKeyState::Pressed {
-                        state.request_virtual_terminal(vt);
+        let Some(update) = self.input_seat.update_key(event.key, event.pressed, serial) else {
+            return;
+        };
+        if !update.transition {
+            return;
+        }
+        let mut intercepted = false;
+        if let Some(vt) = virtual_terminal_for_keysym(update.keysym) {
+            if update.pressed {
+                self.request_virtual_terminal(vt);
+            }
+            // A VT switch can prevent a key release from reaching us.
+            intercepted = true;
+        } else if !shortcuts_inhibited && update.pressed && update.modifiers.logo {
+            if let Some(index) = workspace_index_for_keysym(update.keysym) {
+                if update.modifiers.shift {
+                    if let Some(view) = self.world.focused_view(self.active_workspace()) {
+                        let _ =
+                            self.move_view_to_workspace(view, crate::ecs::WorkspaceId::new(index));
+                        let _ = self.activate_workspace_index(index);
                     }
-                    // A VT switch can prevent a key release from reaching us.
-                    return FilterResult::Intercept(());
+                } else {
+                    let _ = self.activate_workspace_index(index);
                 }
-                if shortcuts_inhibited {
-                    return FilterResult::Forward;
-                }
-                // Super+digit → workspace 1..9; Super+Shift+digit moves focused view
-                // and follows; Super+Page_Up/Down cycles.
-                if key_state == SmithayKeyState::Pressed && modifiers.logo {
-                    if let Some(index) = workspace_index_for_keysym(keysym) {
-                        if modifiers.shift {
-                            if let Some(view) = state.world.focused_view(state.active_workspace()) {
-                                let _ = state.move_view_to_workspace(
-                                    view,
-                                    crate::ecs::WorkspaceId::new(index),
-                                );
-                                let _ = state.activate_workspace_index(index);
-                            }
-                        } else {
-                            let _ = state.activate_workspace_index(index);
-                        }
-                        return FilterResult::Intercept(());
-                    }
-                    if keysym == keysyms::KEY_Page_Down || keysym == keysyms::KEY_Right {
-                        let _ = state.cycle_workspace(1);
-                        return FilterResult::Intercept(());
-                    }
-                    if keysym == keysyms::KEY_Page_Up || keysym == keysyms::KEY_Left {
-                        let _ = state.cycle_workspace(-1);
-                        return FilterResult::Intercept(());
-                    }
-                }
-                FilterResult::Forward
-            },
-        );
-        if key_state == SmithayKeyState::Pressed && intercepted.is_none() {
+                intercepted = true;
+            } else if update.keysym == keysyms::KEY_Page_Down || update.keysym == keysyms::KEY_Right
+            {
+                let _ = self.cycle_workspace(1);
+                intercepted = true;
+            } else if update.keysym == keysyms::KEY_Page_Up || update.keysym == keysyms::KEY_Left {
+                let _ = self.cycle_workspace(-1);
+                intercepted = true;
+            }
+        }
+        if !update.pressed && !self.input_seat.key_was_forwarded(update.evdev_key) {
+            intercepted = true;
+        }
+        if !intercepted {
+            if update.modifiers_changed {
+                self.protocol_globals
+                    .seat
+                    .modifiers(update.modifiers, serial);
+            }
+            self.protocol_globals.seat.key(
+                update.evdev_key,
+                update.pressed,
+                serial,
+                event.time_msec(),
+            );
+            self.input_seat
+                .set_key_forwarded(update.evdev_key, update.pressed);
+        }
+        if update.pressed && !intercepted {
             self.protocol_globals
                 .activation
                 .note_keyboard_interaction(serial.into());
@@ -291,13 +254,11 @@ impl RuntimeState {
     }
 
     pub(crate) fn forward_pointer_motion(&mut self, event: RelativeMotionEvent) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(current) = self.input_seat.pointer_location() else {
             return;
         };
-        let location = self.relative_pointer_location(
-            pointer.current_location(),
-            (event.delta_x, event.delta_y).into(),
-        );
+        let location =
+            self.relative_pointer_location(current, (event.delta_x, event.delta_y).into());
         let Some(location) = location else {
             return;
         };
@@ -312,9 +273,8 @@ impl RuntimeState {
             return;
         };
         let current = self
-            .seat
-            .get_pointer()
-            .map(|pointer| pointer.current_location())
+            .input_seat
+            .pointer_location()
             .unwrap_or_else(|| center_pointer_location(bounds));
         let location = Point::from((
             event.x * f64::from(bounds.size.w),
@@ -334,13 +294,12 @@ impl RuntimeState {
         time_ns: u64,
         relative: Option<RelativeMotionEvent>,
     ) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(previous_location) = self.input_seat.pointer_location() else {
             return;
         };
         let time = (time_ns / 1_000_000) as u32;
-        let serial = SERIAL_COUNTER.next_serial();
+        let serial = next_serial();
         let _ = self.cursor.note_pointer_activity();
-        let previous_location = pointer.current_location();
         let constraint = self
             .protocol_globals
             .pointer_constraints
@@ -350,9 +309,50 @@ impl RuntimeState {
             | ConstraintMotion::Confined(location)
             | ConstraintMotion::Locked(location) => location,
         };
-        let focus = (!matches!(constraint, ConstraintMotion::Locked(_)))
+        if self.protocol_globals.selection.dnd_active() {
+            self.input_seat.set_pointer_location(planned_location);
+            let target = self
+                .pointer_focus_under(planned_location)
+                .map(|(surface, origin)| {
+                    let scale = surface
+                        .client()
+                        .map(|client| self.client_scale(&client))
+                        .unwrap_or(1.0);
+                    (
+                        surface,
+                        (
+                            (planned_location.x - origin.x) * scale,
+                            (planned_location.y - origin.y) * scale,
+                        ),
+                    )
+                });
+            self.protocol_globals
+                .selection
+                .dnd_motion(target, serial, time);
+            let _ = self.push_event(
+                tensor_input::Sample::pointer_motion(
+                    planned_location.x,
+                    planned_location.y,
+                    time_ns,
+                )
+                .into_event(),
+            );
+            self.request_redraw_at(planned_location);
+            return;
+        }
+        self.reconcile_popup_grab(serial);
+        let hit = (!matches!(constraint, ConstraintMotion::Locked(_)))
             .then(|| self.pointer_focus_under(planned_location))
             .flatten();
+        let focus = if let Some(grab) = self.popup_grab.as_ref() {
+            hit.filter(|(surface, _)| grab.allows(surface))
+        } else if self.input_seat.pointer_is_grabbed() {
+            self.input_seat
+                .pointer_grab_start()
+                .and_then(|start| start.focus.clone().map(|surface| (surface, start.origin)))
+        } else {
+            hit
+        };
         let focus_identity = focus
             .as_ref()
             .map(|(surface, origin)| (surface.id(), *origin));
@@ -368,29 +368,21 @@ impl RuntimeState {
             ConstraintMotion::Locked(_) => false,
         };
         let location = if emit_motion {
-            pointer.motion(
-                self,
-                focus.map(|(surface, origin)| (surface.into(), origin)),
-                &MotionEvent {
-                    location: planned_location,
-                    serial,
-                    time,
-                },
-            );
+            self.deliver_pointer_motion(focus, planned_location, serial, time);
             planned_location
         } else {
             previous_location
         };
-        let current_focus = pointer.current_focus();
+        let current_focus = self.input_seat.pointer_focus_owned();
         self.protocol_globals
             .activation
-            .sync_pointer_focus(current_focus.as_ref().map(SurfaceFocusTarget::surface));
+            .sync_pointer_focus(current_focus.as_ref());
         if emit_motion {
             let constraint_focus = current_focus.as_ref().and_then(|surface| {
                 focus_identity
                     .as_ref()
                     .filter(|(id, _)| *id == surface.id())
-                    .map(|(_, origin)| (surface.surface(), *origin))
+                    .map(|(_, origin)| (surface, *origin))
             });
             let warp = self
                 .protocol_globals
@@ -398,13 +390,11 @@ impl RuntimeState {
                 .focus_changed(constraint_focus, location);
             self.apply_pointer_constraint_hint(warp);
         }
-        self.protocol_globals.pointer_gestures.focus_changed(
-            current_focus.as_ref().map(SurfaceFocusTarget::surface),
-            serial,
-            time,
-        );
+        self.protocol_globals
+            .pointer_gestures
+            .focus_changed(current_focus.as_ref(), serial, time);
         if let Some(event) = relative
-            && let Some(client) = current_focus.as_ref().and_then(SurfaceFocusTarget::client)
+            && let Some(client) = current_focus.as_ref().and_then(Resource::client)
         {
             let client_scale = self.client_scale(&client);
             self.protocol_globals
@@ -412,7 +402,7 @@ impl RuntimeState {
                 .motion(&client.id(), client_scale, event);
         }
         if emit_motion {
-            pointer.frame(self);
+            self.protocol_globals.seat.pointer_frame();
         }
         // Value bus: coalesce motion samples for the event layer (device Hz
         // must not expand the queue). Seat path already applied the sample.
@@ -434,21 +424,16 @@ impl RuntimeState {
                 | PointerGestureEvent::PinchBegin { .. }
                 | PointerGestureEvent::HoldBegin { .. }
         ) {
-            self.seat
-                .get_pointer()
-                .and_then(|pointer| pointer.current_focus())
-                .and_then(|surface| {
-                    let client = surface.client()?;
-                    let client_scale = self.client_scale(&client);
-                    Some((surface, client_scale))
-                })
+            self.input_seat.pointer_focus_owned().and_then(|surface| {
+                let client = surface.client()?;
+                let client_scale = self.client_scale(&client);
+                Some((surface, client_scale))
+            })
         } else {
             None
         };
         self.protocol_globals.pointer_gestures.event(
-            target
-                .as_ref()
-                .map(|(surface, scale)| (surface.surface(), *scale)),
+            target.as_ref().map(|(surface, scale)| (surface, *scale)),
             event,
         );
     }
@@ -507,72 +492,64 @@ impl RuntimeState {
     }
 
     pub(crate) fn forward_pointer_button(&mut self, event: PointerButtonEvent) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(location) = self.input_seat.pointer_location() else {
             return;
         };
-        let serial = SERIAL_COUNTER.next_serial();
-        let state = smithay_button_state(event.pressed);
-        let grabbed = pointer.is_grabbed();
-        if state == ButtonState::Pressed && !grabbed {
-            self.focus_window_at(pointer.current_location(), serial);
+        let serial = next_serial();
+        if self.protocol_globals.selection.dnd_active() {
+            let transitioned = self
+                .input_seat
+                .set_button(event.button, event.pressed, serial);
+            if transitioned && !event.pressed && !self.input_seat.pointer_is_grabbed() {
+                self.finish_selection_dnd();
+            }
+            let _ = self.push_event(event.sample().into_event());
+            return;
         }
-        if state == ButtonState::Pressed && !grabbed {
+        self.reconcile_popup_grab(serial);
+        if event.pressed && self.popup_grab.is_some() && self.input_seat.pointer_focus().is_none() {
+            self.dismiss_popup_grab(serial, true);
+            if let Some(focus) = self.pointer_focus_under(location) {
+                self.deliver_pointer_motion(focus.into(), location, serial, event.time_msec());
+                self.protocol_globals.seat.pointer_frame();
+            }
+        }
+        let grabbed = self.input_seat.pointer_is_grabbed();
+        if event.pressed && !grabbed {
+            self.focus_window_at(location, serial);
+        }
+        if event.pressed && !grabbed {
             self.protocol_globals
                 .activation
                 .note_pointer_interaction(serial.into());
         }
-        pointer.button(
-            self,
-            &ButtonEvent {
+        if self
+            .input_seat
+            .set_button(event.button, event.pressed, serial)
+        {
+            self.protocol_globals.seat.pointer_button(
                 serial,
-                time: event.time_msec(),
-                button: event.button,
-                state,
-            },
-        );
-        pointer.frame(self);
+                event.time_msec(),
+                event.button,
+                event.pressed,
+            );
+            self.protocol_globals.seat.pointer_frame();
+        }
         let _ = self.push_event(event.sample().into_event());
     }
 
     pub(crate) fn forward_pointer_axis(&mut self, event: PointerAxisEvent) {
-        use smithay::input::pointer::AxisFrame;
-
-        let Some(pointer) = self.seat.get_pointer() else {
+        if !self.input_seat.pointer_enabled() {
             return;
-        };
-        let mut frame = AxisFrame::new(event.time_msec())
-            .source(smithay_axis_source(event.source))
-            .relative_direction(
-                Axis::Horizontal,
-                smithay_axis_direction(event.horizontal_direction),
-            )
-            .relative_direction(
-                Axis::Vertical,
-                smithay_axis_direction(event.vertical_direction),
-            );
-        for (axis, amount, v120) in [
-            (
-                Axis::Horizontal,
-                event.horizontal(),
-                event.horizontal_v120(),
-            ),
-            (Axis::Vertical, event.vertical(), event.vertical_v120()),
-        ] {
-            if let Some(amount) = amount {
-                frame = frame.value(axis, amount);
-            }
-            if let Some(steps) = v120 {
-                frame = frame.v120(axis, steps);
-            }
         }
-        if event.horizontal_stopped() {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if event.vertical_stopped() {
-            frame = frame.stop(Axis::Vertical);
-        }
-        pointer.axis(self, frame);
-        pointer.frame(self);
+        let scale = self
+            .input_seat
+            .pointer_focus()
+            .and_then(Resource::client)
+            .map(|client| self.client_scale(&client))
+            .unwrap_or(1.0);
+        self.protocol_globals.seat.pointer_axis(event, scale);
+        self.protocol_globals.seat.pointer_frame();
         if let Some(sample) = event.sample() {
             let _ = self.push_event(sample.into_event());
         }
@@ -590,173 +567,99 @@ impl RuntimeState {
 
     /// Focus the keyboard-capable target under the pointer: layer shells with
     /// exclusive/on-demand interactivity, otherwise the toplevel/root window.
-    fn focus_window_at(&mut self, location: Point<f64, Logical>, serial: smithay::utils::Serial) {
+    fn focus_window_at(&mut self, location: Point<f64, Logical>, serial: Serial) {
+        if self.popup_grab.is_some() {
+            return;
+        }
         self.focus_at_pointer(location, serial);
     }
 
-    /// Reapply the ECS-selected root when a keyboard capability becomes
-    /// available after its window mapped. The focus method intentionally does
-    /// not reflow here: the window already has its configure, and only a
-    /// `wl_keyboard.enter` is missing.
-    pub(crate) fn restore_keyboard_focus(&mut self) {
-        let Some(view_id) = self.world.focused_view(self.active_workspace()) else {
+    fn reconcile_popup_grab(&mut self, serial: Serial) {
+        if self
+            .popup_grab
+            .as_ref()
+            .is_some_and(|grab| grab.has_ended())
+        {
+            self.dismiss_popup_grab(serial, true);
+        }
+    }
+
+    pub(crate) fn dismiss_popup_grab(&mut self, serial: Serial, restore_focus: bool) {
+        let Some(grab) = self.popup_grab.take() else {
             return;
         };
-        let Some(window) = self.mapped_window_for_view(view_id) else {
-            return;
-        };
-        let _ = self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+        let mut restore = grab.current_grab();
+        if let Some((tree_root, dismissed)) = grab.ungrab() {
+            if let Some(popup) = self.popups.find_popup(&dismissed) {
+                let _ = self.popups.dismiss_popup(&tree_root, &popup);
+            }
+            restore = tree_root;
+        }
+        if restore_focus && restore.is_alive() {
+            self.set_keyboard_focus(Some(restore), serial);
+        }
     }
 
-    pub(crate) fn focus_mapped_window(
+    fn deliver_pointer_motion(
         &mut self,
-        window: ProtocolWindow,
-        serial: smithay::utils::Serial,
-    ) -> bool {
-        let Some(surface) = window.wl_surface().map(std::borrow::Cow::into_owned) else {
-            return false;
-        };
-        let Some(view_id) = self.view_for_surface(&surface) else {
-            return false;
-        };
-        let keyboard = self.seat.get_keyboard();
-        if keyboard
-            .as_ref()
-            .is_some_and(|keyboard| keyboard.is_grabbed())
-        {
-            return false;
-        }
-
-        #[cfg(feature = "xwayland")]
-        let focus = window
-            .x11_surface()
-            .cloned()
-            .map(KeyboardFocusTarget::from)
-            .unwrap_or_else(|| KeyboardFocusTarget::from(surface.clone()));
-        #[cfg(not(feature = "xwayland"))]
-        let focus = KeyboardFocusTarget::from(surface);
-
-        let focus_changed = !self.world.is_focused(view_id);
-        // Niri and Hyprland make the state transition idempotent before they
-        // notify clients. Smithay performs the same equality check internally,
-        // but keeping it explicit here means a focus repair cannot reach a
-        // future keyboard-grab implementation as a redundant enter/leave.
-        let seat_focus_changed = keyboard
-            .as_ref()
-            .is_some_and(|keyboard| keyboard.current_focus().as_ref() != Some(&focus));
-        if let Err(error) = self.world.focus_view(view_id) {
-            warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
-            return false;
-        }
-        // Window activation supersedes on-demand layer keyboard memory.
-        self.clear_layer_on_demand_focus();
-        self.publish_window_activation(Some(&window));
-        // Match Niri and Hyprland's central focus-state early return: a seat
-        // focus repair must not silently reorder Tensor's hit-test space
-        // after ECS intentionally kept its scene order unchanged. Only a real
-        // active-view transition raises the complete attachment family.
-        if focus_changed {
-            self.raise_view_family_in_space(view_id, &window);
-            #[cfg(feature = "xwayland")]
-            self.raise_x11_popups_for_root(&surface);
-            #[cfg(feature = "xwayland")]
-            if let KeyboardFocusTarget::X11(x11) = &focus
-                && let Some(xwm) = self.xwm.as_mut()
-                && let Err(error) = xwm.raise_window(x11.as_ref())
-            {
-                warn!(%error, window = x11.window_id(), "failed to synchronize XWayland stacking");
-            }
-        }
-        // XDG clients must observe their first configure before a keyboard
-        // enter. The initial commit handler sends that configure and then
-        // re-enters this focus path; X11 has no XDG configure gate.
-        let keyboard_ready = window
-            .toplevel()
-            .is_none_or(|toplevel| toplevel.initial_configure_sent());
-        if let Some(keyboard) = keyboard
-            && keyboard_ready
-            && seat_focus_changed
-        {
-            keyboard.set_focus(self, Some(focus), serial);
-        }
-        focus_changed
-    }
-
-    /// Keep the three focus contracts in lockstep: ECS owns the selected
-    /// view, Smithay's seat owns keyboard delivery, and xdg-toplevel clients
-    /// observe `Activated`. In particular, terminals such as Ghostty use the
-    /// latter to decide whether their text cursor should blink.
-    ///
-    /// Initial xdg configure publication remains in the commit handler. A
-    /// toplevel that has not made its first commit only receives this pending
-    /// state there, as required by xdg-shell's initial-configure ordering.
-    pub(crate) fn publish_window_activation(&mut self, focused_window: Option<&ProtocolWindow>) {
-        let windows = self.space.elements().cloned().collect::<Vec<_>>();
-        for window in windows {
-            let active = focused_window.is_some_and(|focused| window == *focused);
-            if !window.set_activated(active) {
-                continue;
-            }
-            if let Some(toplevel) = window.toplevel()
-                && toplevel.initial_configure_sent()
-            {
-                toplevel.send_pending_configure();
-            }
-        }
-    }
-
-    /// Keep Tensor's input-space stacking aligned with the ECS scene when a
-    /// focused dialog is attached to a tiled owner. Rendering order is still
-    /// value-only ECS state; this only ensures pointer hit-testing sees the
-    /// same family above unrelated views.
-    fn raise_view_family_in_space(
-        &mut self,
-        focused: crate::ecs::ViewId,
-        focused_window: &ProtocolWindow,
+        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        location: Point<f64, Logical>,
+        serial: Serial,
+        time: u32,
     ) {
-        let Some(root) = self.world.tiled_ancestor(focused) else {
-            self.space.raise_element(focused_window, true);
+        self.input_seat.set_pointer_location(location);
+        let focus = focus.filter(|(surface, _)| surface.is_alive());
+        let old = self.input_seat.pointer_focus_owned();
+        let changed =
+            old.as_ref().map(Resource::id) != focus.as_ref().map(|(surface, _)| surface.id());
+        if changed {
+            if let Some(old) = old {
+                self.protocol_globals.seat.pointer_leave(&old, serial);
+            }
+            self.input_seat.replace_pointer_focus(focus.clone());
+            if let Some((surface, origin)) = focus {
+                let scale = surface
+                    .client()
+                    .map(|client| self.client_scale(&client))
+                    .unwrap_or(1.0);
+                self.protocol_globals.seat.pointer_enter(
+                    &surface,
+                    serial,
+                    (location.x - origin.x, location.y - origin.y),
+                    scale,
+                );
+            }
+            return;
+        }
+        let Some((surface, origin)) = focus else {
             return;
         };
-        let mut family = self.view_attachment_family(root);
-        if focused != root {
-            let focused_subtree = self.view_attachment_family(focused);
-            family.retain(|view_id| !focused_subtree.contains(view_id));
-            family.extend(focused_subtree);
-        }
-        for view_id in family {
-            let window = (view_id == focused)
-                .then(|| focused_window.clone())
-                .or_else(|| self.mapped_window_for_view(view_id));
-            if let Some(window) = window {
-                self.space.raise_element(&window, view_id == focused);
-            }
-        }
+        self.input_seat.update_pointer_origin(origin);
+        let scale = surface
+            .client()
+            .map(|client| self.client_scale(&client))
+            .unwrap_or(1.0);
+        self.protocol_globals.seat.pointer_motion(
+            time,
+            (location.x - origin.x, location.y - origin.y),
+            scale,
+        );
     }
 
-    fn view_attachment_family(&self, root: crate::ecs::ViewId) -> Vec<crate::ecs::ViewId> {
-        let mut family = vec![root];
-        let mut index = 0;
-        while let Some(owner) = family.get(index).copied() {
-            family.extend(self.world.attached_children(owner));
-            index += 1;
-        }
-        family
-    }
-
-    pub(crate) fn mapped_window_for_view(
-        &self,
-        view_id: crate::ecs::ViewId,
-    ) -> Option<ProtocolWindow> {
-        self.space
-            .elements()
-            .find(|window| {
-                window
-                    .wl_surface()
-                    .as_deref()
-                    .and_then(|surface| self.view_for_surface(surface))
-                    == Some(view_id)
-            })
-            .cloned()
+    pub(crate) fn clear_pointer_focus(&mut self, serial: Serial, time: u32) {
+        let Some(location) = self.input_seat.pointer_location() else {
+            return;
+        };
+        self.input_seat.clear_pointer_grab();
+        self.deliver_pointer_motion(None, location, serial, time);
+        self.protocol_globals.seat.pointer_frame();
+        self.protocol_globals.activation.sync_pointer_focus(None);
+        self.protocol_globals
+            .pointer_gestures
+            .focus_changed(None, serial, time);
+        let _ = self
+            .protocol_globals
+            .pointer_constraints
+            .focus_changed(None, location);
     }
 }

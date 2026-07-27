@@ -21,10 +21,7 @@ pub(in crate::protocol) use surface::{
 #[cfg(feature = "tty")]
 use crate::protocol::globals::compositor::{get_parent, send_surface_state, with_states};
 #[cfg(feature = "tty")]
-use smithay::{
-    utils::{Logical, Point, SERIAL_COUNTER},
-    wayland::seat::WaylandFocus,
-};
+use smithay::utils::{Logical, Point};
 #[cfg(feature = "tty")]
 use tensor_util::Rect;
 #[cfg(feature = "tty")]
@@ -45,7 +42,7 @@ use super::RuntimeState;
 #[cfg(feature = "tty")]
 use super::{find_popup_root_surface, surfaces::surface_has_buffer, tree::collect_surface_tree};
 #[cfg(feature = "tty")]
-use crate::protocol::focus::KeyboardFocusTarget;
+use crate::protocol::serial::{Serial, next_serial};
 
 #[cfg(feature = "tty")]
 pub(super) struct LayerPopupContext {
@@ -216,11 +213,7 @@ impl RuntimeState {
 
     /// Click focus: keyboard-capable layers first (same stacking order), else windows.
     #[cfg(feature = "tty")]
-    pub(crate) fn focus_at_pointer(
-        &mut self,
-        location: Point<f64, Logical>,
-        serial: smithay::utils::Serial,
-    ) {
+    pub(crate) fn focus_at_pointer(&mut self, location: Point<f64, Logical>, serial: Serial) {
         if let Some(layer) = self.keyboard_layer_under(location) {
             self.focus_layer_surface(layer, serial);
             return;
@@ -258,19 +251,16 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) fn reconcile_layer_keyboard_focus(&mut self) {
         self.sanitize_on_demand_layer_focus();
-        let serial = SERIAL_COUNTER.next_serial();
+        let serial = next_serial();
         if let Some(layer) = self.preferred_layer_keyboard_target() {
             self.focus_layer_surface(layer, serial);
             return;
         }
         // No layer claim: restore ECS-selected window if the seat sits on a layer.
-        let on_layer = self.seat.get_keyboard().is_some_and(|keyboard| {
-            keyboard.current_focus().is_some_and(|focus| {
-                focus.wl_surface().is_some_and(|surface| {
-                    self.layer_output_for_surface(surface.as_ref()).is_some()
-                })
-            })
-        });
+        let on_layer = self
+            .input_seat
+            .keyboard_focus()
+            .is_some_and(|surface| self.layer_output_for_surface(surface).is_some());
         if on_layer {
             self.restore_keyboard_focus();
         }
@@ -602,15 +592,8 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn focus_layer_surface(&mut self, layer: LayerSurface, serial: smithay::utils::Serial) {
-        if !layer.alive() || !layer.can_receive_keyboard_focus() {
-            return;
-        }
-        let keyboard = self.seat.get_keyboard();
-        if keyboard
-            .as_ref()
-            .is_some_and(|keyboard| keyboard.is_grabbed())
-        {
+    fn focus_layer_surface(&mut self, layer: LayerSurface, serial: Serial) {
+        if self.popup_grab.is_some() || !layer.alive() || !layer.can_receive_keyboard_focus() {
             return;
         }
         match layer.current().keyboard_interactivity {
@@ -625,11 +608,8 @@ impl RuntimeState {
         }
         // Layer focus is not an ECS view: clear xdg-toplevel Activated.
         self.publish_window_activation(None);
-        let focus = KeyboardFocusTarget::from(layer.wl_surface().clone());
-        if let Some(keyboard) = keyboard
-            && keyboard.current_focus().as_ref() != Some(&focus)
-        {
-            keyboard.set_focus(self, Some(focus), serial);
+        if self.input_seat.keyboard_focus() != Some(layer.wl_surface()) {
+            self.set_keyboard_focus(Some(layer.wl_surface().clone()), serial);
         }
     }
 

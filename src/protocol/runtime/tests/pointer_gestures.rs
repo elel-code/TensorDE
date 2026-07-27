@@ -290,10 +290,8 @@ fn pointer_gestures_send_complete_value_sequences_and_release_resources() {
         .expect("pointer-gestures test surface is mapped");
     runtime
         .state
-        .seat
-        .get_pointer()
-        .expect("test seat has a pointer")
-        .set_location(pointer_location);
+        .input_seat
+        .set_pointer_location(pointer_location);
     runtime
         .state
         .forward_pointer_motion(tensor_input::RelativeMotionEvent {

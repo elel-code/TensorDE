@@ -1,183 +1,136 @@
-use smithay::{
-    utils::{Logical, Rectangle},
-    wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
-    xwayland::{
-        X11Surface, X11Wm, XwmHandler,
-        xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId},
-    },
-};
 use tracing::{debug, warn};
-use wayland_server::Resource;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
-use super::RuntimeState;
+use crate::protocol::{
+    state::RuntimeState,
+    xwayland::{WmWindowProperty, XwmEvent},
+};
 
-impl XWaylandShellHandler for RuntimeState {
-    fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
-        &mut self.xwayland_shell_state
-    }
-
-    fn surface_associated(
-        &mut self,
-        _xwm: XwmId,
-        wl_surface: wayland_server::protocol::wl_surface::WlSurface,
-        window: X11Surface,
-    ) {
-        if window.is_override_redirect() {
-            self.x11_popup_surface_associated(window.clone(), wl_surface.clone());
-            debug!(
-                window = window.window_id(),
-                surface = ?wl_surface.id().protocol_id(),
-                "associated rootless XWayland override-redirect surface with its transient owner"
+impl RuntimeState {
+    pub(crate) fn associate_x11_surface(&mut self, window: u32, surface: WlSurface) {
+        let Some(x11) = self.xwm.as_ref().and_then(|xwm| xwm.window(window)) else {
+            warn!(
+                window,
+                surface = surface.id().protocol_id(),
+                "xwayland-shell referenced an unknown X11 window"
             );
             return;
-        }
-        let view_id = self.x11_surface_associated(window);
-        debug!(
-            surface = ?wl_surface.id().protocol_id(),
-            view_id = ?view_id.map(|id| id.get()),
-            "associated rootless XWayland surface with the ordinary scene path"
-        );
-    }
-}
-
-impl XwmHandler for RuntimeState {
-    fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
-        RuntimeState::xwm_state(self, xwm)
-    }
-
-    fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.x11_window_new(window.clone());
-        debug!(window = window.window_id(), "new rootless XWayland window");
-    }
-
-    fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.x11_popup_new(window.clone());
-        debug!(
-            window = window.window_id(),
-            "new XWayland override-redirect window"
-        );
-    }
-
-    fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if window.is_override_redirect() {
-            self.x11_popup_mapped(window);
-            return;
-        }
-        if let Err(error) = window.set_mapped(true) {
-            warn!(%error, window = window.window_id(), "failed to map rootless XWayland window");
-            return;
-        }
-        let _ = self.x11_map_requested(window);
-    }
-
-    fn map_window_notify(&mut self, _xwm: XwmId, window: X11Surface) {
-        if window.is_override_redirect() {
-            self.x11_popup_mapped(window);
-            return;
-        }
-        let _ = self.x11_map_requested(window);
-    }
-
-    fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.x11_popup_mapped(window.clone());
-        debug!(
-            window = window.window_id(),
-            "attached XWayland override-redirect window without creating an ECS view"
-        );
-    }
-
-    fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        if window.is_override_redirect() {
-            self.x11_popup_unmapped(&window);
-            return;
-        }
-        let _ = self.x11_window_gone(&window);
-        if let Err(error) = window.set_mapped(false) {
-            warn!(%error, window = window.window_id(), "failed to unmap rootless XWayland window");
+        };
+        x11.set_wl_surface(Some(surface.clone()));
+        if x11.is_override_redirect() {
+            self.x11_popup_surface_associated(x11, surface.clone());
+            debug!(
+                window,
+                surface = surface.id().protocol_id(),
+                "associated rootless XWayland popup surface"
+            );
+        } else {
+            let view = self.x11_surface_associated(x11);
+            debug!(
+                window,
+                surface = surface.id().protocol_id(),
+                view = ?view.map(|view| view.get()),
+                "associated rootless XWayland surface"
+            );
         }
     }
 
-    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        if window.is_override_redirect() {
-            self.x11_popup_destroyed(&window);
-            return;
-        }
-        let _ = self.x11_window_gone(&window);
-    }
-
-    fn configure_request(
-        &mut self,
-        _xwm: XwmId,
-        window: X11Surface,
-        _x: Option<i32>,
-        _y: Option<i32>,
-        width: Option<u32>,
-        height: Option<u32>,
-        _reorder: Option<Reorder>,
-    ) {
-        if window.is_override_redirect() {
-            return;
-        }
-        if self.x11_transient_configure_requested(&window, width, height) {
-            return;
-        }
-        // X11 coordinates are client requests, never layout authority. A
-        // reflow sends the current ordinary logical geometry back to XWayland.
-        if !self.reflow_default_workspace()
-            && let Err(error) = window.configure(None)
-        {
-            warn!(%error, window = window.window_id(), "failed to acknowledge XWayland configure request");
-        }
-    }
-
-    fn configure_notify(
-        &mut self,
-        _xwm: XwmId,
-        window: X11Surface,
-        _geometry: Rectangle<i32, Logical>,
-        above: Option<u32>,
-    ) {
-        if window.is_override_redirect() {
-            self.x11_popup_configured(window, above);
-            return;
-        }
-        // The compositor owns logical placement. Accepting this notification
-        // as a relocation would create the separate X11 coordinate model that
-        // fractional scaling deliberately avoids.
-        debug!(
-            window = window.window_id(),
-            "ignored XWayland configure-notify placement"
-        );
-    }
-
-    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
-        match property {
-            WmWindowProperty::TransientFor if window.is_override_redirect() => {
-                self.x11_popup_transient_for_changed(window);
+    pub(crate) fn handle_xwm_event(&mut self, event: XwmEvent) {
+        match event {
+            XwmEvent::NewWindow(window) => {
+                if window.is_override_redirect() {
+                    self.x11_popup_new(window.clone());
+                } else {
+                    self.x11_window_new(window.clone());
+                }
+                debug!(window = window.window_id(), "created rootless X11 window");
             }
-            WmWindowProperty::TransientFor => self.x11_transient_for_changed(window),
-            WmWindowProperty::NormalHints if !window.is_override_redirect() => {
-                self.x11_normal_hints_changed(window);
+            XwmEvent::MapRequested(window) => {
+                if window.is_override_redirect() {
+                    self.x11_popup_mapped(window);
+                    return;
+                }
+                if let Err(error) = window.set_mapped(true) {
+                    warn!(%error, window = window.window_id(), "failed to map rootless X11 window");
+                    return;
+                }
+                let _ = self.x11_map_requested(window);
             }
-            _ => {}
+            XwmEvent::Mapped(window) => {
+                if window.is_override_redirect() {
+                    self.x11_popup_mapped(window);
+                } else {
+                    let _ = self.x11_map_requested(window);
+                }
+            }
+            XwmEvent::Unmapped(window) => {
+                if window.is_override_redirect() {
+                    self.x11_popup_unmapped(&window);
+                } else {
+                    let _ = self.x11_window_gone(&window);
+                }
+                window.set_wl_surface(None);
+            }
+            XwmEvent::Destroyed(window) => {
+                if window.is_override_redirect() {
+                    self.x11_popup_destroyed(&window);
+                } else {
+                    let _ = self.x11_window_gone(&window);
+                }
+            }
+            XwmEvent::ConfigureRequested {
+                window,
+                width,
+                height,
+            } => {
+                if window.is_override_redirect()
+                    || self.x11_transient_configure_requested(&window, width, height)
+                {
+                    return;
+                }
+                if !self.reflow_default_workspace()
+                    && let Err(error) = window.configure(None)
+                {
+                    warn!(%error, window = window.window_id(), "failed to acknowledge X11 configure request");
+                }
+            }
+            XwmEvent::Configured { window, above } => {
+                if window.is_override_redirect() {
+                    self.x11_popup_configured(window, above);
+                }
+            }
+            XwmEvent::PropertyChanged(window, property) => match property {
+                WmWindowProperty::TransientFor if window.is_override_redirect() => {
+                    self.x11_popup_transient_for_changed(window);
+                }
+                WmWindowProperty::TransientFor => self.x11_transient_for_changed(window),
+                WmWindowProperty::NormalHints if !window.is_override_redirect() => {
+                    self.x11_normal_hints_changed(window);
+                }
+                WmWindowProperty::NormalHints => {}
+            },
+            XwmEvent::SurfaceSerial { window, serial } => {
+                self.xwayland_window_serial_received(window, serial);
+            }
+            XwmEvent::FocusRequested(window) => {
+                #[cfg(feature = "tty")]
+                let protocol_window = self
+                    .space
+                    .elements()
+                    .find(|candidate| candidate.x11_surface() == Some(&window))
+                    .cloned();
+                if let Some(protocol_window) = protocol_window {
+                    let _ = self.focus_mapped_window(
+                        protocol_window,
+                        crate::protocol::serial::next_serial(),
+                    );
+                }
+                #[cfg(not(feature = "tty"))]
+                let _ = window;
+            }
+            XwmEvent::ReflowRequested => {
+                let _ = self.reflow_default_workspace();
+            }
         }
-    }
-
-    fn resize_request(
-        &mut self,
-        _xwm: XwmId,
-        _window: X11Surface,
-        _button: u32,
-        _edge: ResizeEdge,
-    ) {
-        let _ = self.reflow_default_workspace();
-    }
-
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {
-        let _ = self.reflow_default_workspace();
-    }
-
-    fn disconnected(&mut self, _xwm: XwmId) {
-        self.xwm = None;
     }
 }

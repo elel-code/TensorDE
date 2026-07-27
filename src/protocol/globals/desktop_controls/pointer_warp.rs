@@ -64,14 +64,11 @@ impl RuntimeState {
         let Some(local) = logical_position(client_x, client_y, self.client_scale(client)) else {
             return;
         };
-        let Some(pointer) = self.seat.get_pointer() else {
+        if !self.input_seat.pointer_enabled() {
             return;
-        };
+        }
         if self.protocol_globals.seat.pointer_enter_serial() != Some(serial.into())
-            || pointer
-                .current_focus()
-                .as_ref()
-                .is_none_or(|focused| focused.surface() != &surface)
+            || self.input_seat.pointer_focus() != Some(&surface)
             || !surface_contains_point(&surface, (local.x, local.y))
         {
             return;
@@ -94,16 +91,18 @@ impl RuntimeState {
         let target = origin + local;
         #[cfg(feature = "tty")]
         if let Some(bounds) = self.pointer_coordinate_space() {
-            pointer.set_location(crate::protocol::input::constrain_pointer_location(
-                target, bounds,
-            ));
+            self.input_seat.set_pointer_location(
+                crate::protocol::input::constrain_pointer_location(target, bounds),
+            );
         } else {
-            pointer.set_location(target);
+            self.input_seat.set_pointer_location(target);
         }
         #[cfg(not(feature = "tty"))]
-        pointer.set_location(target);
+        self.input_seat.set_pointer_location(target);
         #[cfg(feature = "tty")]
-        self.request_redraw_at(pointer.current_location());
+        if let Some(location) = self.input_seat.pointer_location() {
+            self.request_redraw_at(location);
+        }
     }
 }
 

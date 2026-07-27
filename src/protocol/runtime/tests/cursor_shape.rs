@@ -164,10 +164,8 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
         .expect("cursor-shape test surface is mapped");
     runtime
         .state
-        .seat
-        .get_pointer()
-        .expect("test seat has a pointer")
-        .set_location(pointer_location);
+        .input_seat
+        .set_pointer_location(pointer_location);
     runtime
         .state
         .forward_pointer_motion(tensor_input::RelativeMotionEvent {

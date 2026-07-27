@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use smithay::utils::Serial;
 use tensor_input::PointerGestureEvent;
 use wayland_protocols::wp::pointer_gestures::zv1::server::{
     zwp_pointer_gesture_hold_v1::{self, ZwpPointerGestureHoldV1},
@@ -16,6 +15,7 @@ use wayland_server::{
     protocol::wl_surface::WlSurface,
 };
 
+use crate::protocol::serial::{Serial, next_serial};
 use crate::protocol::{
     dispatch::{
         DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
@@ -125,7 +125,7 @@ impl PointerGesturesProtocol {
         let time = event.time_msec();
         match event {
             PointerGestureEvent::SwipeBegin { fingers, .. } => {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let serial = next_serial();
                 self.finish_swipe(serial, time, true);
                 if fingers != 0 {
                     self.begin_swipe(target, serial, time, fingers);
@@ -134,13 +134,11 @@ impl PointerGesturesProtocol {
             PointerGestureEvent::SwipeUpdate {
                 delta_x, delta_y, ..
             } => self.update_swipe(time, delta_x, delta_y),
-            PointerGestureEvent::SwipeEnd { cancelled, .. } => self.finish_swipe(
-                smithay::utils::SERIAL_COUNTER.next_serial(),
-                time,
-                cancelled,
-            ),
+            PointerGestureEvent::SwipeEnd { cancelled, .. } => {
+                self.finish_swipe(next_serial(), time, cancelled)
+            }
             PointerGestureEvent::PinchBegin { fingers, .. } => {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let serial = next_serial();
                 self.finish_pinch(serial, time, true);
                 if fingers != 0 {
                     self.begin_pinch(target, serial, time, fingers);
@@ -153,23 +151,19 @@ impl PointerGesturesProtocol {
                 rotation,
                 ..
             } => self.update_pinch(time, delta_x, delta_y, scale, rotation),
-            PointerGestureEvent::PinchEnd { cancelled, .. } => self.finish_pinch(
-                smithay::utils::SERIAL_COUNTER.next_serial(),
-                time,
-                cancelled,
-            ),
+            PointerGestureEvent::PinchEnd { cancelled, .. } => {
+                self.finish_pinch(next_serial(), time, cancelled)
+            }
             PointerGestureEvent::HoldBegin { fingers, .. } => {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                let serial = next_serial();
                 self.finish_hold(serial, time, true);
                 if fingers != 0 {
                     self.begin_hold(target, serial, time, fingers);
                 }
             }
-            PointerGestureEvent::HoldEnd { cancelled, .. } => self.finish_hold(
-                smithay::utils::SERIAL_COUNTER.next_serial(),
-                time,
-                cancelled,
-            ),
+            PointerGestureEvent::HoldEnd { cancelled, .. } => {
+                self.finish_hold(next_serial(), time, cancelled)
+            }
         }
     }
 

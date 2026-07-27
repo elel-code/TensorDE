@@ -4,39 +4,16 @@ mod protocols;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 #[cfg(feature = "tty")]
-use super::cursor::CursorImage;
-#[cfg(feature = "tty")]
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
-use smithay::{
-    input::{Seat, SeatHandler, SeatState, dnd::DndGrabHandler, pointer::CursorImageStatus},
-    wayland::{buffer::BufferHandler, seat::WaylandFocus},
-};
-use wayland_server::{
-    Resource,
-    protocol::{wl_buffer, wl_surface::WlSurface},
-};
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use super::{
-    focus::{KeyboardFocusTarget, SurfaceFocusTarget},
     globals::compositor::{get_parent, is_sync_subsurface},
     state::{
         PopupKind, RuntimeState, destroy_surface_state, on_commit_surface_handler,
-        popup::PopupGrabHandler, xdg_size_constraints,
+        xdg_size_constraints,
     },
 };
-
-impl PopupGrabHandler for RuntimeState {
-    fn dismiss_grabbed_popup(
-        &mut self,
-        root: &WlSurface,
-        popup: &WlSurface,
-    ) -> Result<(), smithay::utils::DeadResource> {
-        let Some(popup) = self.popups.find_popup(popup) else {
-            return Ok(());
-        };
-        self.popups.dismiss_popup(root, &popup)
-    }
-}
 
 impl RuntimeState {
     pub(in crate::protocol) fn surface_commit_applied(&mut self, surface: &WlSurface) {
@@ -170,6 +147,7 @@ impl RuntimeState {
     }
 
     pub(in crate::protocol) fn surface_destroyed_applied(&mut self, surface: &WlSurface) {
+        self.input_seat.surface_destroyed(surface);
         self.selection_surface_destroyed(surface);
         self.layer_surface_wl_destroyed(surface);
         self.remove_session_lock_surface(surface);
@@ -242,67 +220,3 @@ fn surface_root(surface: &WlSurface) -> WlSurface {
     }
     root
 }
-
-impl BufferHandler for RuntimeState {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
-        #[cfg(feature = "tty")]
-        self.buffer_destroyed(&_buffer.id());
-    }
-}
-
-impl SeatHandler for RuntimeState {
-    type KeyboardFocus = KeyboardFocusTarget;
-    type PointerFocus = SurfaceFocusTarget;
-    type TouchFocus = SurfaceFocusTarget;
-
-    fn seat_state(&mut self) -> &mut SeatState<Self> {
-        &mut self.seat_state
-    }
-
-    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&KeyboardFocusTarget>) {
-        let focused = focused.and_then(WaylandFocus::wl_surface);
-        self.protocol_globals
-            .activation
-            .sync_keyboard_focus(focused.as_deref());
-        let client = focused.and_then(|surface| surface.client().map(|client| client.id()));
-        self.protocol_globals.selection.set_focus(client);
-    }
-
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
-        #[cfg(feature = "tty")]
-        if self.cursor.set_image(match image {
-            CursorImageStatus::Hidden => CursorImage::Hidden,
-            CursorImageStatus::Named(icon) => CursorImage::Named(icon),
-            CursorImageStatus::Surface(surface) => CursorImage::Surface(surface),
-        }) {
-            if let Some(pointer) = self.seat.get_pointer() {
-                self.request_redraw_at(pointer.current_location());
-            } else {
-                self.request_redraw_workspace();
-            }
-        }
-        #[cfg(not(feature = "tty"))]
-        let _ = image;
-    }
-}
-
-impl DndGrabHandler for RuntimeState {
-    fn dropped(
-        &mut self,
-        _target: Option<smithay::input::dnd::DndTarget<'_, Self>>,
-        _validated: bool,
-        _seat: Seat<Self>,
-        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) {
-        self.finish_selection_dnd();
-    }
-
-    fn cancelled(
-        &mut self,
-        _seat: Seat<Self>,
-        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) {
-        self.finish_selection_dnd();
-    }
-}
-smithay::delegate_dispatch2!(RuntimeState);

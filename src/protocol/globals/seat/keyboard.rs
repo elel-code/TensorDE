@@ -4,12 +4,6 @@ use std::{
 };
 
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
-use smithay::{
-    backend::input::KeyState,
-    input::keyboard::{KeysymHandle, ModifiersState},
-    utils::Serial,
-    wayland::seat::WaylandFocus,
-};
 use wayland_server::{
     Resource,
     backend::ClientId,
@@ -18,10 +12,9 @@ use wayland_server::{
         wl_surface::WlSurface,
     },
 };
-use xkbcommon::xkb;
 
 use super::{SeatProtocol, remove_resource};
-use crate::protocol::state::RuntimeState;
+use crate::protocol::{seat::ModifiersState, serial::Serial, state::RuntimeState};
 
 #[derive(Debug)]
 pub(super) struct KeymapFile {
@@ -109,28 +102,7 @@ impl SeatProtocol {
         Ok(())
     }
 
-    pub(crate) fn set_default_keyboard_enabled(&mut self) -> io::Result<()> {
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context,
-            "",
-            "",
-            "",
-            "",
-            None,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .ok_or_else(|| io::Error::other("failed to compile the default XKB keymap"))?;
-        let keymap = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
-        self.set_keyboard_enabled(true, Some(&keymap))
-    }
-
-    pub(crate) fn keyboard_enter(
-        &mut self,
-        surface: &WlSurface,
-        keys: &[KeysymHandle<'_>],
-        serial: Serial,
-    ) {
+    pub(crate) fn keyboard_enter(&mut self, surface: &WlSurface, pressed: Vec<u8>, serial: Serial) {
         let Some(client) = surface.client() else {
             return;
         };
@@ -143,10 +115,6 @@ impl SeatProtocol {
         let Some((last, preceding)) = keyboards.split_last() else {
             return;
         };
-        let mut pressed = Vec::with_capacity(keys.len() * std::mem::size_of::<u32>());
-        for key in keys {
-            pressed.extend_from_slice(&(key.raw_code().raw() - 8).to_ne_bytes());
-        }
         for keyboard in preceding {
             keyboard.enter(serial.into(), surface, pressed.clone());
         }
@@ -169,17 +137,18 @@ impl SeatProtocol {
         }
     }
 
-    pub(crate) fn key(&self, key: &KeysymHandle<'_>, state: KeyState, serial: Serial, time: u32) {
+    pub(crate) fn key(&self, key: u32, pressed: bool, serial: Serial, time: u32) {
         let Some(client) = self.keyboard_focus.as_ref() else {
             return;
         };
-        let wire_state = match state {
-            KeyState::Pressed => wl_keyboard::KeyState::Pressed,
-            KeyState::Released => wl_keyboard::KeyState::Released,
+        let wire_state = if pressed {
+            wl_keyboard::KeyState::Pressed
+        } else {
+            wl_keyboard::KeyState::Released
         };
         if let Some(keyboards) = self.keyboards.get(client) {
             for keyboard in keyboards {
-                keyboard.key(serial.into(), time, key.raw_code().raw() - 8, wire_state);
+                keyboard.key(serial.into(), time, key, wire_state);
             }
         }
     }
@@ -196,7 +165,7 @@ impl SeatProtocol {
                     modifiers.depressed,
                     modifiers.latched,
                     modifiers.locked,
-                    modifiers.layout_effective,
+                    modifiers.layout,
                 );
             }
         }
@@ -224,7 +193,7 @@ impl SeatProtocol {
                 modifiers.depressed,
                 modifiers.latched,
                 modifiers.locked,
-                modifiers.layout_effective,
+                modifiers.layout,
             );
         }
         self.keyboards.entry(client).or_default().push(keyboard);
@@ -237,22 +206,16 @@ impl SeatProtocol {
 
 impl RuntimeState {
     pub(super) fn keyboard_snapshot(&self, client: &ClientId) -> Option<KeyboardSnapshot> {
-        let keyboard = self.seat.get_keyboard()?;
-        let surface = keyboard.current_focus()?.wl_surface()?.into_owned();
+        let surface = self.input_seat.keyboard_focus()?.clone();
         if surface.client()?.id() != *client {
             return None;
         }
         let serial = self.protocol_globals.seat.keyboard_enter_serial()?;
-        let pressed_keys = keyboard.pressed_keys();
-        let mut pressed = Vec::with_capacity(pressed_keys.len() * std::mem::size_of::<u32>());
-        for key in pressed_keys {
-            pressed.extend_from_slice(&(key.raw() - 8).to_ne_bytes());
-        }
         Some(KeyboardSnapshot {
             surface,
             serial,
-            pressed,
-            modifiers: keyboard.modifier_state(),
+            pressed: self.input_seat.pressed_key_bytes(),
+            modifiers: self.input_seat.keyboard_modifiers(),
         })
     }
 }

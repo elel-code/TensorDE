@@ -690,7 +690,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     {
         let focused_view = view_id.expect("mapped test window has an ECS view");
         assert!(runtime.state.world.is_focused(focused_view));
-        assert!(runtime.state.seat.get_keyboard().is_none());
+        assert!(!runtime.state.input_seat.keyboard_enabled());
         runtime.state.input_devices.insert(
             tensor_input::DeviceId::new(1),
             super::super::state::InputDeviceCapabilities {
@@ -699,12 +699,8 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
             },
         );
         runtime.state.reconcile_seat_capabilities();
-        let keyboard = runtime
-            .state
-            .seat
-            .get_keyboard()
-            .expect("test keyboard capability is published");
-        assert!(keyboard.current_focus().is_some());
+        assert!(runtime.state.input_seat.keyboard_enabled());
+        assert!(runtime.state.input_seat.keyboard_focus().is_some());
     }
 
     #[cfg(feature = "tty")]
@@ -754,11 +750,8 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
     assert_eq!(runtime.state.view_count(), 0);
     #[cfg(feature = "tty")]
     assert!(
-        runtime
-            .state
-            .seat
-            .get_keyboard()
-            .is_some_and(|keyboard| keyboard.current_focus().is_none())
+        runtime.state.input_seat.keyboard_enabled()
+            && runtime.state.input_seat.keyboard_focus().is_none()
     );
     client.join().unwrap();
 }

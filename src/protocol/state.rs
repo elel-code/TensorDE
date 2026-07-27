@@ -30,7 +30,7 @@ mod workspace_host;
 mod xwayland;
 
 pub(crate) use client::WaylandClientState;
-pub(crate) use popup::{PopupKind, PopupManager, find_popup_root_surface};
+pub(crate) use popup::{PopupGrab, PopupKind, PopupManager, find_popup_root_surface};
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState};
 pub(crate) use window::ProtocolWindow;
 pub(crate) use workspace_host::WorkspaceHost;
@@ -44,11 +44,9 @@ use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
 
-use smithay::input::{Seat, SeatState};
-#[cfg(feature = "tty")]
-use smithay::utils::SERIAL_COUNTER;
+use crate::protocol::serial::next_serial;
 #[cfg(feature = "xwayland")]
-use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
+use crate::protocol::xwayland::{X11Wm, XWaylandShellState};
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
 use std::collections::HashSet;
@@ -59,6 +57,7 @@ use wayland_server::{
     Display, DisplayHandle, Resource, backend::ObjectId, protocol::wl_surface::WlSurface,
 };
 
+use crate::protocol::seat::InputSeat;
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
@@ -114,15 +113,15 @@ pub(crate) struct RuntimeState {
     display: Option<Display<Self>>,
     pub(crate) display_handle: DisplayHandle,
     pub(crate) compositor_state: CompositorState,
-    pub(crate) seat_state: SeatState<Self>,
+    pub(crate) input_seat: InputSeat,
     pub(crate) protocol_globals: ProtocolGlobals,
     pub(crate) protocol_side: ProtocolSideState,
     #[cfg(feature = "xwayland")]
     pub(crate) xwayland_shell_state: XWaylandShellState,
-    pub(crate) seat: Seat<Self>,
     pub(crate) dnd_icon: Option<WlSurface>,
     pub(crate) space: WindowSpace,
     pub(crate) popups: PopupManager,
+    pub(crate) popup_grab: Option<PopupGrab>,
     layer_maps: LayerMaps,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
@@ -193,23 +192,20 @@ impl RuntimeState {
         let compositor_state = CompositorState::new(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle);
         #[cfg(feature = "xwayland")]
-        let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
-        let mut seat_state = SeatState::new();
-        let seat = seat_state.new_seat("tensor");
-
+        let xwayland_shell_state = XWaylandShellState::new(&display_handle);
         Self {
             display: Some(display),
             display_handle,
             compositor_state,
-            seat_state,
+            input_seat: InputSeat::default(),
             protocol_globals,
             protocol_side: ProtocolSideState::default(),
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
-            seat,
             dnd_icon: None,
             space: WindowSpace::default(),
             popups: PopupManager::default(),
+            popup_grab: None,
             layer_maps: LayerMaps::default(),
             world: CompositorWorld::with_appearance(appearance),
             layout,
@@ -366,7 +362,7 @@ impl RuntimeState {
         // publication. XDG requires its first configure to be sent from the
         // initial surface commit, which the compositor handler performs.
         #[cfg(feature = "tty")]
-        self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+        self.focus_mapped_window(window, next_serial());
         self.refresh_ext_workspace_protocol();
         Some(view_id)
     }
@@ -437,7 +433,7 @@ impl RuntimeState {
             // Niri and Hyprland both move focus as part of close-time state
             // reconciliation. Transfer directly rather than leaving the seat
             // and `Activated` state blank until another input event arrives.
-            let _ = self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+            let _ = self.focus_mapped_window(window, next_serial());
         }
         self.refresh_ext_workspace_protocol();
         self.reflow_default_workspace();
@@ -445,14 +441,8 @@ impl RuntimeState {
     }
 
     pub(crate) fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        if keyboard
-            .current_focus()
-            .is_some_and(|focused| focused.targets_surface(surface))
-        {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        if self.input_seat.keyboard_focus() == Some(surface) {
+            self.set_keyboard_focus(None, next_serial());
         }
     }
 

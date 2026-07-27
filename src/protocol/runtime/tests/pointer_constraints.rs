@@ -233,18 +233,13 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
                 .into()
         })
         .expect("pointer-constraints test surface is mapped");
-    runtime
-        .state
-        .seat
-        .get_pointer()
-        .expect("test seat has a pointer")
-        .set_location(initial);
+    runtime.state.input_seat.set_pointer_location(initial);
     runtime
         .state
         .forward_pointer_motion(relative_motion(1.0, 1.0, 1));
     let focused = runtime
         .state
-        .pointer_focus_under(runtime.state.seat.get_pointer().unwrap().current_location())
+        .pointer_focus_under(runtime.state.input_seat.pointer_location().unwrap())
         .expect("test surface has pointer focus");
     let surface_origin = focused.1;
     start_tx.send(()).unwrap();
@@ -261,7 +256,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
             .constraint_count(),
         1
     );
-    let locked_location = runtime.state.seat.get_pointer().unwrap().current_location();
+    let locked_location = runtime.state.input_seat.pointer_location().unwrap();
     runtime
         .state
         .forward_pointer_motion(relative_motion(5.0, 2.0, 2));
@@ -274,7 +269,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
         }
     );
     assert_eq!(
-        runtime.state.seat.get_pointer().unwrap().current_location(),
+        runtime.state.input_seat.pointer_location().unwrap(),
         locked_location
     );
 
@@ -282,7 +277,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
         dispatch_until_constraint_step(&mut runtime, &step_rx),
         ConstraintStep::LockDestroyed
     );
-    let hinted = runtime.state.seat.get_pointer().unwrap().current_location();
+    let hinted = runtime.state.input_seat.pointer_location().unwrap();
     assert_eq!(hinted.x, surface_origin.x + 20.0);
     assert_eq!(hinted.y, surface_origin.y + 15.0);
 
@@ -301,7 +296,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
     };
     assert!((29.0..30.0).contains(&x));
     assert_eq!(y, 15.0);
-    let confined_location = runtime.state.seat.get_pointer().unwrap().current_location();
+    let confined_location = runtime.state.input_seat.pointer_location().unwrap();
     assert!((29.0..30.0).contains(&(confined_location.x - surface_origin.x)));
 
     assert_eq!(

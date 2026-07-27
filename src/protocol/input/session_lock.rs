@@ -7,13 +7,12 @@ impl RuntimeState {
                 self.forward_session_lock_keyboard(event)
             }
             LibinputEvent::Input(BackendInputEvent::PointerMotion(event)) => {
-                let Some(pointer) = self.seat.get_pointer() else {
+                let Some(current) = self.input_seat.pointer_location() else {
                     return;
                 };
-                let Some(location) = self.relative_pointer_location(
-                    pointer.current_location(),
-                    (event.delta_x, event.delta_y).into(),
-                ) else {
+                let Some(location) =
+                    self.relative_pointer_location(current, (event.delta_x, event.delta_y).into())
+                else {
                     return;
                 };
                 self.forward_session_lock_pointer_location(location, event.time_ns);
@@ -23,9 +22,8 @@ impl RuntimeState {
                     return;
                 };
                 let current = self
-                    .seat
-                    .get_pointer()
-                    .map(|pointer| pointer.current_location())
+                    .input_seat
+                    .pointer_location()
                     .unwrap_or_else(|| center_pointer_location(bounds));
                 let location = Point::from((
                     event.x * f64::from(bounds.size.w),
@@ -53,27 +51,41 @@ impl RuntimeState {
     }
 
     fn forward_session_lock_keyboard(&mut self, event: KeyboardEvent) {
-        let Some(keyboard) = self.seat.get_keyboard() else {
+        if !self.input_seat.keyboard_enabled() {
+            return;
+        }
+        let serial = next_serial();
+        let Some(update) = self.input_seat.update_key(event.key, event.pressed, serial) else {
             return;
         };
-        let key_state = smithay_key_state(event.pressed);
-        keyboard.input::<(), _>(
-            self,
-            xkb_keycode(event.key),
-            key_state,
-            SERIAL_COUNTER.next_serial(),
-            event.time_msec(),
-            move |state, _, handle| {
-                if let Some(vt) = virtual_terminal_for_keysym(handle.modified_sym().raw()) {
-                    if key_state == SmithayKeyState::Pressed {
-                        state.request_virtual_terminal(vt);
-                    }
-                    FilterResult::Intercept(())
-                } else {
-                    FilterResult::Forward
-                }
-            },
-        );
+        if !update.transition {
+            return;
+        }
+        let mut intercepted = false;
+        if let Some(vt) = virtual_terminal_for_keysym(update.keysym) {
+            if update.pressed {
+                self.request_virtual_terminal(vt);
+            }
+            intercepted = true;
+        }
+        if !update.pressed && !self.input_seat.key_was_forwarded(update.evdev_key) {
+            intercepted = true;
+        }
+        if !intercepted {
+            if update.modifiers_changed {
+                self.protocol_globals
+                    .seat
+                    .modifiers(update.modifiers, serial);
+            }
+            self.protocol_globals.seat.key(
+                update.evdev_key,
+                update.pressed,
+                serial,
+                event.time_msec(),
+            );
+            self.input_seat
+                .set_key_forwarded(update.evdev_key, update.pressed);
+        }
     }
 
     fn forward_session_lock_pointer_location(
@@ -81,26 +93,17 @@ impl RuntimeState {
         location: Point<f64, Logical>,
         time_ns: u64,
     ) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        if !self.input_seat.pointer_enabled() {
             return;
-        };
+        }
         let focus = self.session_lock_pointer_focus(location);
-        pointer.motion(
-            self,
-            focus,
-            &MotionEvent {
-                location,
-                serial: SERIAL_COUNTER.next_serial(),
-                time: (time_ns / 1_000_000) as u32,
-            },
-        );
-        pointer.frame(self);
-        self.protocol_globals.activation.sync_pointer_focus(
-            pointer
-                .current_focus()
-                .as_ref()
-                .map(SurfaceFocusTarget::surface),
-        );
+        let serial = next_serial();
+        let time = (time_ns / 1_000_000) as u32;
+        self.deliver_pointer_motion(focus, location, serial, time);
+        self.protocol_globals.seat.pointer_frame();
+        self.protocol_globals
+            .activation
+            .sync_pointer_focus(self.input_seat.pointer_focus());
         let _ = self.cursor.note_pointer_activity();
         self.request_redraw_at(location);
     }
@@ -108,7 +111,7 @@ impl RuntimeState {
     fn session_lock_pointer_focus(
         &self,
         location: Point<f64, Logical>,
-    ) -> Option<(SurfaceFocusTarget, Point<f64, Logical>)> {
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
         let output = self.space.output_under(location).next()?;
         let geometry = self.space.output_geometry(output)?;
         let surface = self
@@ -116,19 +119,16 @@ impl RuntimeState {
             .session_lock
             .surface_for_output(output.id())?;
         surface_tree_under(surface, location, geometry.loc)
-            .map(|(surface, surface_location)| (surface.into(), surface_location.to_f64()))
+            .map(|(surface, surface_location)| (surface, surface_location.to_f64()))
     }
 
     fn forward_session_lock_button(&mut self, event: PointerButtonEvent) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(focused) = self.input_seat.pointer_focus_owned() else {
             return;
         };
-        let serial = SERIAL_COUNTER.next_serial();
-        let state = smithay_button_state(event.pressed);
-        if state == ButtonState::Pressed
-            && let Some(surface) = pointer.current_focus()
-        {
-            let mut surface = surface.into_surface();
+        let serial = next_serial();
+        if event.pressed {
+            let mut surface = focused;
             while let Some(parent) = crate::protocol::globals::compositor::get_parent(&surface) {
                 surface = parent;
             }
@@ -140,56 +140,31 @@ impl RuntimeState {
                 self.focus_session_lock_surface(&surface);
             }
         }
-        pointer.button(
-            self,
-            &ButtonEvent {
+        if self
+            .input_seat
+            .set_button(event.button, event.pressed, serial)
+        {
+            self.protocol_globals.seat.pointer_button(
                 serial,
-                time: event.time_msec(),
-                button: event.button,
-                state,
-            },
-        );
-        pointer.frame(self);
+                event.time_msec(),
+                event.button,
+                event.pressed,
+            );
+            self.protocol_globals.seat.pointer_frame();
+        }
     }
 
     fn forward_session_lock_axis(&mut self, event: PointerAxisEvent) {
-        use smithay::input::pointer::AxisFrame;
-
-        let Some(pointer) = self.seat.get_pointer() else {
+        if !self.input_seat.pointer_enabled() {
             return;
-        };
-        let mut frame = AxisFrame::new(event.time_msec())
-            .source(smithay_axis_source(event.source))
-            .relative_direction(
-                Axis::Horizontal,
-                smithay_axis_direction(event.horizontal_direction),
-            )
-            .relative_direction(
-                Axis::Vertical,
-                smithay_axis_direction(event.vertical_direction),
-            );
-        for (axis, amount, v120) in [
-            (
-                Axis::Horizontal,
-                event.horizontal(),
-                event.horizontal_v120(),
-            ),
-            (Axis::Vertical, event.vertical(), event.vertical_v120()),
-        ] {
-            if let Some(amount) = amount {
-                frame = frame.value(axis, amount);
-            }
-            if let Some(steps) = v120 {
-                frame = frame.v120(axis, steps);
-            }
         }
-        if event.horizontal_stopped() {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if event.vertical_stopped() {
-            frame = frame.stop(Axis::Vertical);
-        }
-        pointer.axis(self, frame);
-        pointer.frame(self);
+        let scale = self
+            .input_seat
+            .pointer_focus()
+            .and_then(Resource::client)
+            .map(|client| self.client_scale(&client))
+            .unwrap_or(1.0);
+        self.protocol_globals.seat.pointer_axis(event, scale);
+        self.protocol_globals.seat.pointer_frame();
     }
 }

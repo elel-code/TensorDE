@@ -307,33 +307,9 @@ impl RuntimeState {
             self.publish_window_activation(None);
             self.cursor
                 .set_image(crate::protocol::cursor::CursorImage::default_named());
-            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                keyboard.unset_grab(self);
-                keyboard.set_focus(self, None, serial);
-            }
-            if let Some(pointer) = self.seat.get_pointer() {
-                pointer.unset_grab(self, serial, 0);
-                let location = pointer.current_location();
-                pointer.motion(
-                    self,
-                    None,
-                    &smithay::input::pointer::MotionEvent {
-                        location,
-                        serial,
-                        time: 0,
-                    },
-                );
-                pointer.frame(self);
-                self.protocol_globals.activation.sync_pointer_focus(None);
-                self.protocol_globals
-                    .pointer_gestures
-                    .focus_changed(None, serial, 0);
-                let _ = self
-                    .protocol_globals
-                    .pointer_constraints
-                    .focus_changed(None, location);
-            }
+            let serial = crate::protocol::serial::next_serial();
+            self.set_keyboard_focus(None, serial);
+            self.clear_pointer_focus(serial, 0);
         }
     }
 
@@ -342,27 +318,17 @@ impl RuntimeState {
         let _ = surface;
         #[cfg(feature = "tty")]
         {
-            use crate::protocol::focus::KeyboardFocusTarget;
-
-            let Some(keyboard) = self.seat.get_keyboard() else {
+            if !self.input_seat.keyboard_enabled() {
                 return;
-            };
-            let has_lock_focus = keyboard.current_focus().is_some_and(|focus| {
-                use smithay::wayland::seat::WaylandFocus;
-                focus.wl_surface().is_some_and(|focused| {
-                    self.protocol_globals
-                        .session_lock
-                        .contains_active_surface(focused.as_ref())
-                })
+            }
+            let has_lock_focus = self.input_seat.keyboard_focus().is_some_and(|focused| {
+                self.protocol_globals
+                    .session_lock
+                    .contains_active_surface(focused)
             });
             if !has_lock_focus {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                keyboard.unset_grab(self);
-                keyboard.set_focus(
-                    self,
-                    Some(KeyboardFocusTarget::from(surface.clone())),
-                    serial,
-                );
+                let serial = crate::protocol::serial::next_serial();
+                self.set_keyboard_focus(Some(surface.clone()), serial);
             }
         }
     }
@@ -391,33 +357,9 @@ impl RuntimeState {
     fn release_session_lock_seat(&mut self) {
         self.cursor
             .set_image(crate::protocol::cursor::CursorImage::default_named());
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.unset_grab(self);
-            keyboard.set_focus(self, None, serial);
-        }
-        if let Some(pointer) = self.seat.get_pointer() {
-            let location = pointer.current_location();
-            pointer.unset_grab(self, serial, 0);
-            pointer.motion(
-                self,
-                None,
-                &smithay::input::pointer::MotionEvent {
-                    location,
-                    serial,
-                    time: 0,
-                },
-            );
-            pointer.frame(self);
-            self.protocol_globals.activation.sync_pointer_focus(None);
-            self.protocol_globals
-                .pointer_gestures
-                .focus_changed(None, serial, 0);
-            let _ = self
-                .protocol_globals
-                .pointer_constraints
-                .focus_changed(None, location);
-        }
+        let serial = crate::protocol::serial::next_serial();
+        self.set_keyboard_focus(None, serial);
+        self.clear_pointer_focus(serial, 0);
     }
 
     fn session_lock_orphaned(&mut self) {
@@ -457,13 +399,10 @@ impl RuntimeState {
 
     #[cfg(feature = "tty")]
     fn clear_session_lock_pointer_focus_for_surface(&mut self, surface: &WlSurface) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(focused) = self.input_seat.pointer_focus_owned() else {
             return;
         };
-        let Some(focused) = pointer.current_focus() else {
-            return;
-        };
-        let mut focused = focused.into_surface();
+        let mut focused = focused;
         while let Some(parent) = compositor::get_parent(&focused) {
             focused = parent;
         }
@@ -472,27 +411,8 @@ impl RuntimeState {
         }
         self.cursor
             .set_image(crate::protocol::cursor::CursorImage::default_named());
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let location = pointer.current_location();
-        pointer.unset_grab(self, serial, 0);
-        pointer.motion(
-            self,
-            None,
-            &smithay::input::pointer::MotionEvent {
-                location,
-                serial,
-                time: 0,
-            },
-        );
-        pointer.frame(self);
-        self.protocol_globals.activation.sync_pointer_focus(None);
-        self.protocol_globals
-            .pointer_gestures
-            .focus_changed(None, serial, 0);
-        let _ = self
-            .protocol_globals
-            .pointer_constraints
-            .focus_changed(None, location);
+        let serial = crate::protocol::serial::next_serial();
+        self.clear_pointer_focus(serial, 0);
     }
 
     pub(in crate::protocol) fn remove_session_lock_surface(&mut self, surface: &WlSurface) {

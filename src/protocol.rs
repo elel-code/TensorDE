@@ -8,7 +8,11 @@ mod handlers;
 #[cfg(feature = "tty")]
 mod input;
 mod runtime;
+mod seat;
+mod serial;
 mod state;
+#[cfg(feature = "xwayland")]
+mod xwayland;
 
 pub(crate) use extensions::security_context::{
     MAX_PENDING_SECURITY_CONTEXT_EVENTS, SecurityContextEvent, SecurityContextRuntime,

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::xwayland::X11Surface;
+use crate::protocol::xwayland::X11Surface;
 use tracing::{debug, warn};
 use wayland_server::protocol::wl_surface::WlSurface;
 
@@ -353,6 +353,8 @@ fn logical_extent(value: i32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::xwayland::X11Surface;
+
     use super::{
         TransientReconciliation, XWaylandWindowLifecycle, logical_extent, transient_reconciliation,
         x11_transient_preferred_size,
@@ -367,8 +369,7 @@ mod tests {
 
     #[test]
     fn preferred_size_helper_is_kept_linked_to_x11_geometry_contract() {
-        let _ =
-            x11_transient_preferred_size as fn(&smithay::xwayland::X11Surface) -> tensor_util::Size;
+        let _ = x11_transient_preferred_size as fn(&X11Surface) -> tensor_util::Size;
     }
 
     #[test]

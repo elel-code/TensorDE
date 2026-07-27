@@ -96,26 +96,6 @@ impl SecurityContextHandler for RuntimeState {
     }
 }
 
-#[cfg(feature = "xwayland")]
-impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for RuntimeState {
-    fn keyboard_focus_for_xsurface(
-        &self,
-        surface: &WlSurface,
-    ) -> Option<crate::protocol::focus::KeyboardFocusTarget> {
-        self.space
-            .elements()
-            .find(|window| window.wl_surface().as_deref() == Some(surface))
-            .and_then(crate::protocol::state::ProtocolWindow::x11_surface)
-            .cloned()
-            .map(crate::protocol::focus::KeyboardFocusTarget::from)
-            .or_else(|| {
-                Some(crate::protocol::focus::KeyboardFocusTarget::from(
-                    surface.clone(),
-                ))
-            })
-    }
-}
-
 impl crate::protocol::extensions::virtual_pointer::VirtualPointerHandler for RuntimeState {
     fn virtual_pointer_manager_state(
         &mut self,

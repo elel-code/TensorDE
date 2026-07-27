@@ -133,11 +133,10 @@ impl DispatchDelegate<WlPointer, RuntimeState> for PointerData {
                 hotspot_y,
             } => {
                 let grab_surface = state
-                    .seat
-                    .get_pointer()
-                    .and_then(|handle| handle.grab_start_data())
-                    .and_then(|data| data.focus)
-                    .map(|(surface, _)| surface.id());
+                    .input_seat
+                    .pointer_grab_start()
+                    .and_then(|data| data.focus.as_ref())
+                    .map(Resource::id);
                 if !state.protocol_globals.seat.pointer_may_set_cursor(
                     serial.into(),
                     &pointer.id(),
@@ -176,8 +175,8 @@ impl DispatchDelegate<WlPointer, RuntimeState> for PointerData {
                     Some(surface) => CursorImage::Surface(surface),
                     None => CursorImage::Hidden,
                 }) {
-                    if let Some(pointer) = state.seat.get_pointer() {
-                        state.request_redraw_at(pointer.current_location());
+                    if let Some(location) = state.input_seat.pointer_location() {
+                        state.request_redraw_at(location);
                     } else {
                         state.request_redraw_workspace();
                     }

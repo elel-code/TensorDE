@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use smithay::{input::touch::FrameMarker, utils::Serial};
 use tensor_util::Point;
 use wayland_server::{
     DisplayHandle, Resource, Weak,
@@ -15,11 +14,11 @@ use wayland_server::{
     },
 };
 
+use crate::protocol::serial::Serial;
 use crate::protocol::state::RuntimeState;
 
 mod keyboard;
 mod pointer;
-mod touch;
 mod wire;
 
 use keyboard::KeymapFile;
@@ -40,7 +39,6 @@ pub(crate) struct SeatProtocol {
     keyboards: HashMap<ClientId, Vec<WlKeyboard>>,
     pointers: HashMap<ClientId, Vec<PointerResource>>,
     touches: HashMap<ClientId, Vec<WlTouch>>,
-    last_touch_frames: HashMap<ClientId, FrameMarker>,
     keyboard_enabled: bool,
     pointer_enabled: bool,
     touch_enabled: bool,
@@ -62,7 +60,6 @@ impl SeatProtocol {
             keyboards: HashMap::new(),
             pointers: HashMap::new(),
             touches: HashMap::new(),
-            last_touch_frames: HashMap::new(),
             keyboard_enabled: false,
             pointer_enabled: false,
             touch_enabled: false,
@@ -124,6 +121,14 @@ impl SeatProtocol {
             self.touch_enabled = enabled;
             self.send_capabilities();
         }
+    }
+
+    pub(super) fn insert_touch(&mut self, client: ClientId, touch: WlTouch) {
+        self.touches.entry(client).or_default().push(touch);
+    }
+
+    pub(super) fn remove_touch(&mut self, client: &ClientId, touch: &WlTouch) {
+        remove_resource(&mut self.touches, client, touch);
     }
 
     pub(crate) fn owns(&self, seat: &WlSeat) -> bool {

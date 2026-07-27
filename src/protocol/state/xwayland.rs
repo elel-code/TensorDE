@@ -1,17 +1,15 @@
 mod popup;
 mod transient;
 
-use calloop::LoopHandle;
-use smithay::{
-    utils::{Logical, Rectangle},
-    xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData, xwm::XwmId},
-};
+use smithay::utils::{Logical, Rectangle};
+use tensor_runtime::{OpaqueFdCompletionRuntime, WorkerTx};
 use tracing::warn;
 use wayland_server::{Client, Resource, protocol::wl_surface::WlSurface};
 
 use crate::{
     ecs::{ViewId, ViewPlacement},
     layout::SizeConstraints,
+    protocol::xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData},
 };
 use tensor_util::{Rect, Size};
 
@@ -23,7 +21,9 @@ pub(super) use transient::XWaylandTransientRegistry;
 pub(super) struct XWaylandProcess {
     instance: XWayland,
     client: Client,
-    loop_handle: LoopHandle<'static, RuntimeState>,
+    events: WorkerTx<tensor_runtime::OpaqueFdCompletion>,
+    control: WorkerTx<String>,
+    xwm_runtime: Option<OpaqueFdCompletionRuntime>,
 }
 
 /// The two independent signals needed before an X11 window can become a
@@ -76,7 +76,8 @@ impl RuntimeState {
         &mut self,
         instance: XWayland,
         client: Client,
-        loop_handle: LoopHandle<'static, Self>,
+        events: WorkerTx<tensor_runtime::OpaqueFdCompletion>,
+        control: WorkerTx<String>,
     ) {
         assert!(
             self.xwayland_process.is_none(),
@@ -85,7 +86,9 @@ impl RuntimeState {
         self.xwayland_process = Some(XWaylandProcess {
             instance,
             client,
-            loop_handle,
+            events,
+            control,
+            xwm_runtime: None,
         });
     }
 
@@ -94,7 +97,7 @@ impl RuntimeState {
     /// `Ok(None)` means a partial/spurious notification and requires rearming;
     /// `Ok(Some(display))` means the XWM was installed and the watcher can end.
     pub(crate) fn complete_xwayland_startup(&mut self) -> Result<Option<u32>, String> {
-        let (socket, display_number, client, loop_handle) = {
+        let (socket, display_number, client, events, control) = {
             let process = self
                 .xwayland_process
                 .as_mut()
@@ -107,7 +110,8 @@ impl RuntimeState {
                 socket,
                 process.instance.display_number(),
                 process.client.clone(),
-                process.loop_handle.clone(),
+                process.events.clone(),
+                process.control.clone(),
             )
         };
         let Some(socket) = socket else {
@@ -115,13 +119,23 @@ impl RuntimeState {
         };
         let _client_data = client
             .get_data::<XWaylandClientData>()
-            .ok_or_else(|| "XWayland client lost its Smithay client data".to_owned())?;
+            .ok_or_else(|| "XWayland client lost its Tensor client data".to_owned())?;
 
         // wl_output and fractional-scale state remain the only X11 coordinate authority.
         self.compositor_state.set_client_scale(&client, 1.0);
-        let xwm = X11Wm::start_wm(loop_handle, &self.display_handle, socket, client)
-            .map_err(|error| error.to_string())?;
+        let xwm = X11Wm::start(socket).map_err(|error| error.to_string())?;
+        let runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-xwayland-x11-completions",
+            xwm.completion_fd(),
+            events,
+            control,
+        )
+        .map_err(|error| error.to_string())?;
         self.install_xwm(xwm);
+        self.xwayland_process
+            .as_mut()
+            .expect("XWayland process disappeared during XWM startup")
+            .xwm_runtime = Some(runtime);
         Ok(Some(display_number))
     }
 
@@ -131,17 +145,17 @@ impl RuntimeState {
         }
     }
 
-    pub(crate) fn xwm_state(&mut self, xwm_id: XwmId) -> &mut X11Wm {
-        let xwm = self
+    pub(crate) fn drain_xwm_events(&mut self) -> Result<(), String> {
+        let events = self
             .xwm
             .as_mut()
-            .expect("XWayland event arrived without XWM state");
-        assert_eq!(
-            xwm.id(),
-            xwm_id,
-            "XWayland event arrived for an unknown XWM"
-        );
-        xwm
+            .ok_or_else(|| "X11 completion arrived without XWM state".to_owned())?
+            .drain_events()
+            .map_err(|error| error.to_string())?;
+        for event in events {
+            self.handle_xwm_event(event);
+        }
+        Ok(())
     }
 
     /// Attach an associated, mapped rootless X11 window to the ordinary
@@ -204,7 +218,7 @@ impl RuntimeState {
         self.space.map_element(window.clone(), (0, 0), false);
         self.update_x11_constraints(&surface, &x11);
         #[cfg(feature = "tty")]
-        let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
+        let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
         self.reflow_default_workspace();
         self.reconcile_x11_popups();
         Some(view_id)
@@ -275,7 +289,7 @@ impl RuntimeState {
 }
 
 pub(super) fn configure_x11_window(x11: &X11Surface, geometry: Rect) {
-    if let Err(error) = x11.configure(x11_configure_rect(geometry)) {
+    if let Err(error) = x11.configure(Some(x11_configure_rect(geometry))) {
         warn!(%error, window = x11.window_id(), "failed to configure rootless XWayland window");
     }
 }

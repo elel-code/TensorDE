@@ -17,6 +17,8 @@ use wayland_server::{
     protocol::{wl_seat::WlSeat, wl_surface::WlSurface},
 };
 
+#[cfg(feature = "tty")]
+use crate::protocol::serial::next_serial;
 use crate::protocol::{
     dispatch::{
         DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
@@ -403,7 +405,7 @@ impl RuntimeState {
             let Some(window) = self.mapped_window_for_view(view) else {
                 return;
             };
-            let _ = self.focus_mapped_window(window, smithay::utils::SERIAL_COUNTER.next_serial());
+            let _ = self.focus_mapped_window(window, next_serial());
             self.request_redraw_workspace();
         }
         #[cfg(not(feature = "tty"))]

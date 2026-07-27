@@ -1,6 +1,4 @@
 use smithay::utils::{ClockSource, Monotonic};
-#[cfg(feature = "xwayland")]
-use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
 use wayland_server::{Client, DisplayHandle};
 
 use super::extensions::{
@@ -110,8 +108,6 @@ pub(crate) struct ProtocolGlobals {
     pub(super) surface_metadata: SurfaceMetadataProtocol,
     background_effect: BackgroundEffectProtocol,
     pub(super) surface_timing: SurfaceTimingProtocol,
-    #[cfg(feature = "xwayland")]
-    xwayland_keyboard_grab: XWaylandKeyboardGrabState,
     virtual_pointer: VirtualPointerManagerState,
     gamma_control: GammaControlManagerState,
     ext_workspace: ExtWorkspaceManagerState,
@@ -167,8 +163,6 @@ impl ProtocolGlobals {
             surface_metadata: SurfaceMetadataProtocol::new(display),
             background_effect: BackgroundEffectProtocol::new(display),
             surface_timing: SurfaceTimingProtocol::new(display),
-            #[cfg(feature = "xwayland")]
-            xwayland_keyboard_grab: XWaylandKeyboardGrabState::new::<RuntimeState>(display),
             virtual_pointer: VirtualPointerManagerState::new::<RuntimeState, _>(
                 display,
                 unrestricted,
@@ -316,8 +310,6 @@ impl ProtocolGlobals {
             &self.image_capture_source,
             &self.image_copy_capture,
         );
-        #[cfg(feature = "xwayland")]
-        let _xwayland_global_owner = &self.xwayland_keyboard_grab;
         ProtocolCapabilities {
             shm: true,
             viewporter: true,

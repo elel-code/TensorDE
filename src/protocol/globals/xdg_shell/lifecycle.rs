@@ -1,13 +1,10 @@
 //! Runtime integration for Tensor-owned xdg roles.
 
-use smithay::{input::pointer::Focus, utils::Serial};
 use tracing::warn;
 use wayland_server::protocol::wl_seat;
 
-use crate::protocol::state::{
-    PopupKind, RuntimeState, find_popup_root_surface,
-    popup::{PopupKeyboardGrab, PopupPointerGrab},
-};
+use crate::protocol::serial::Serial;
+use crate::protocol::state::{PopupKind, RuntimeState, find_popup_root_surface};
 
 use super::{Popup, Toplevel};
 
@@ -43,7 +40,6 @@ impl RuntimeState {
         if !self.protocol_globals.seat.owns(&seat) {
             return;
         }
-        let seat = self.seat.clone();
         let popup = PopupKind::from(popup);
         let Ok(root) = find_popup_root_surface(&popup) else {
             return;
@@ -64,29 +60,21 @@ impl RuntimeState {
         }
 
         let serial = Serial::from(serial);
-        let Ok(mut grab) = self.popups.grab_popup(root.into(), popup, &seat, serial) else {
+        let nested_serial = self
+            .popup_grab
+            .as_ref()
+            .is_some_and(|grab| grab.serial() == serial || grab.previous_serial() == Some(serial));
+        if !nested_serial
+            && !self.input_seat.pointer_has_serial(serial)
+            && !self.input_seat.keyboard_has_serial(serial)
+        {
+            return;
+        }
+        let Ok(grab) = self.popups.grab_popup(root, popup, serial) else {
             return;
         };
-        if let Some(keyboard) = seat.get_keyboard() {
-            if keyboard.is_grabbed()
-                && !(keyboard.has_grab(serial)
-                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
-            {
-                grab.ungrab(self);
-                return;
-            }
-            keyboard.set_focus(self, grab.current_grab(), serial);
-            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
-        }
-        if let Some(pointer) = seat.get_pointer() {
-            if pointer.is_grabbed()
-                && !(pointer.has_grab(serial)
-                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
-            {
-                grab.ungrab(self);
-                return;
-            }
-            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
-        }
+        let focus = grab.current_grab();
+        self.popup_grab = Some(grab);
+        self.set_keyboard_focus(Some(focus), serial);
     }
 }

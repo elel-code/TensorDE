@@ -1,8 +1,6 @@
 #[cfg(feature = "xwayland")]
-use std::{ffi::OsString, process::Stdio};
+use std::ffi::OsString;
 
-#[cfg(feature = "xwayland")]
-use smithay::xwayland::XWayland;
 #[cfg(feature = "xwayland")]
 use tensor_runtime::{OpaqueFdCompletion, OpaqueFdCompletionRuntime, WorkerRx, WorkerTx};
 #[cfg(feature = "xwayland")]
@@ -12,6 +10,8 @@ use tracing::{info, warn};
 use super::{ProtocolError, WaylandRuntime};
 #[cfg(feature = "xwayland")]
 use crate::protocol::state::RuntimeState;
+#[cfg(feature = "xwayland")]
+use crate::protocol::xwayland::XWayland;
 
 #[cfg(feature = "xwayland")]
 pub(crate) const MAX_PENDING_XWAYLAND_STARTUP_EVENTS: usize = 1;
@@ -36,6 +36,21 @@ pub(crate) fn drain_xwayland_startup_events(
     state: &mut RuntimeState,
 ) {
     while let Some(completion) = events.try_recv() {
+        if state.xwm.is_some() {
+            match state.drain_xwm_events() {
+                Ok(()) => {
+                    if let Err(error) = completion.rearm() {
+                        warn!(?error, "failed to rearm the X11 socket completion");
+                    }
+                }
+                Err(error) => {
+                    let _ = completion.finish();
+                    state.xwm = None;
+                    warn!(%error, "X11 window manager completion failed");
+                }
+            }
+            continue;
+        }
         match state.complete_xwayland_startup() {
             Ok(Some(display_number)) => {
                 if let Err(error) = completion.finish() {
@@ -89,28 +104,22 @@ impl WaylandRuntime {
             .as_ref()
             .ok_or(ProtocolError::XWaylandCompletionRuntimeMissing)?;
         let display_handle = self.state.display_handle.clone();
-        let loop_handle = self.event_loop.handle();
-        let (xwayland, client) = XWayland::spawn(
-            &display_handle,
-            None,
-            std::iter::empty::<(&str, &str)>(),
-            std::iter::empty::<&str>(),
-            true,
-            Stdio::null(),
-            Stdio::null(),
-            |_| {},
-        )
-        .map_err(ProtocolError::XWayland)?;
+        let (xwayland, client) =
+            XWayland::spawn(&display_handle).map_err(ProtocolError::XWayland)?;
         let display_number = xwayland.display_number();
         let completion_runtime = OpaqueFdCompletionRuntime::start(
             "tensor-xwayland-startup-completions",
-            xwayland.poll_fd(),
+            xwayland.completion_fd(),
             channels.events.clone(),
             channels.control.clone(),
         )
         .map_err(|error| ProtocolError::XWaylandCompletion(error.to_string()))?;
-        self.state
-            .install_xwayland_process(xwayland, client, loop_handle);
+        self.state.install_xwayland_process(
+            xwayland,
+            client,
+            channels.events.clone(),
+            channels.control.clone(),
+        );
         self.xwayland_completion_runtime = Some(completion_runtime);
         self.xwayland_display = Some(OsString::from(format!(":{display_number}")));
         Ok(())

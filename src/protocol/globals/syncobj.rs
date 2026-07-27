@@ -13,7 +13,6 @@ use std::{
 use super::compositor::{
     self, BufferAssignment, Cacheable, HookId, SurfaceAttributes, with_states,
 };
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::warn;
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::{
     wp_linux_drm_syncobj_manager_v1::{self, WpLinuxDrmSyncobjManagerV1},
@@ -25,6 +24,9 @@ use wayland_server::{
     backend::GlobalId, protocol::wl_surface::WlSurface,
 };
 
+use crate::protocol::dispatch::{
+    DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
+};
 use crate::{backend::DrmDeviceFd, protocol::state::RuntimeState};
 
 mod point;
@@ -126,7 +128,7 @@ impl Drop for DrmSyncobjState {
     }
 }
 
-impl<D> GlobalDispatch2<WpLinuxDrmSyncobjManagerV1, D> for DrmSyncobjGlobalData
+impl<D> GlobalDispatchDelegate<WpLinuxDrmSyncobjManagerV1, D> for DrmSyncobjGlobalData
 where
     D: Dispatch<WpLinuxDrmSyncobjManagerV1, DrmSyncobjManagerData>,
 {
@@ -232,7 +234,7 @@ fn destruction_hook<D: DrmSyncobjHandler>(_state: &mut D, surface: &WlSurface) {
 #[derive(Debug)]
 pub(in crate::protocol) struct DrmSyncobjManagerData;
 
-impl<D> Dispatch2<WpLinuxDrmSyncobjManagerV1, D> for DrmSyncobjManagerData
+impl<D> DispatchDelegate<WpLinuxDrmSyncobjManagerV1, D> for DrmSyncobjManagerData
 where
     D: Dispatch<WpLinuxDrmSyncobjSurfaceV1, DrmSyncobjSurfaceData>,
     D: Dispatch<WpLinuxDrmSyncobjTimelineV1, DrmSyncobjTimelineData>,
@@ -320,7 +322,7 @@ pub(super) struct DrmSyncobjSurfaceData {
     destruction_hook_id: HookId,
 }
 
-impl<D> Dispatch2<WpLinuxDrmSyncobjSurfaceV1, D> for DrmSyncobjSurfaceData
+impl<D> DispatchDelegate<WpLinuxDrmSyncobjSurfaceV1, D> for DrmSyncobjSurfaceData
 where
     D: DrmSyncobjHandler,
 {
@@ -409,7 +411,9 @@ pub(super) struct DrmSyncobjTimelineData {
     timeline: DrmTimeline,
 }
 
-impl<D: DrmSyncobjHandler> Dispatch2<WpLinuxDrmSyncobjTimelineV1, D> for DrmSyncobjTimelineData {
+impl<D: DrmSyncobjHandler> DispatchDelegate<WpLinuxDrmSyncobjTimelineV1, D>
+    for DrmSyncobjTimelineData
+{
     fn request(
         &self,
         _state: &mut D,
@@ -440,6 +444,27 @@ impl<D: DrmSyncobjHandler> Dispatch2<WpLinuxDrmSyncobjTimelineV1, D> for DrmSync
         }
     }
 }
+
+delegate_global_dispatch!(
+    RuntimeState,
+    WpLinuxDrmSyncobjManagerV1,
+    DrmSyncobjGlobalData
+);
+delegate_dispatch!(
+    RuntimeState,
+    WpLinuxDrmSyncobjManagerV1,
+    DrmSyncobjManagerData
+);
+delegate_dispatch!(
+    RuntimeState,
+    WpLinuxDrmSyncobjSurfaceV1,
+    DrmSyncobjSurfaceData
+);
+delegate_dispatch!(
+    RuntimeState,
+    WpLinuxDrmSyncobjTimelineV1,
+    DrmSyncobjTimelineData
+);
 
 /// Owns the optional syncobj global and follows the Vulkan-selected DRM device.
 #[derive(Debug)]

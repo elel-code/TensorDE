@@ -32,7 +32,7 @@ tty = [
     "dep:libseat",
     "dep:udev",
 ]
-xwayland = ["smithay/xwayland"]
+xwayland = ["dep:x11rb"]
 
 [dependencies]
 appendlist = "1"
@@ -76,6 +76,7 @@ wayland-protocols = { version = "0.32", features = ["client", "server", "staging
 wayland-protocols-wlr = { version = "0.3", features = ["client", "server"] }
 wayland-server = "0.31"
 xkbcommon = "0.9"
+x11rb = { version = "0.13", optional = true, features = ["composite"] }
 zbus = { version = "5", optional = true }
 
 [[bin]]

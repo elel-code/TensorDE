@@ -179,8 +179,7 @@ impl RuntimeState {
         if let Some(view_id) = self.world.focused_view(active)
             && let Some(window) = self.mapped_window_for_view(view_id)
         {
-            use smithay::utils::SERIAL_COUNTER;
-            self.focus_mapped_window(window, SERIAL_COUNTER.next_serial());
+            self.focus_mapped_window(window, crate::protocol::serial::next_serial());
         }
     }
 

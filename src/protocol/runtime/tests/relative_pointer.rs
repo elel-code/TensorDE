@@ -194,10 +194,8 @@ fn relative_pointer_sends_unclipped_motion_and_removes_destroyed_resource() {
         .expect("relative-pointer test surface is mapped");
     runtime
         .state
-        .seat
-        .get_pointer()
-        .expect("test seat has a pointer")
-        .set_location(pointer_location);
+        .input_seat
+        .set_pointer_location(pointer_location);
 
     let time_usec = (1_u64 << 32) | 17;
     runtime

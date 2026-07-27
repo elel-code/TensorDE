@@ -457,7 +457,7 @@ impl SelectionProtocol {
         let dnd = self
             .active_dnd
             .as_ref()
-            .filter(|dnd| dnd.source == Some(token))
+            .filter(|dnd| dnd.source_token == Some(token))
             .map(|dnd| dnd.kind);
         let clipboard = self.clipboard == Some(token);
         let primary = self.primary == Some(token);

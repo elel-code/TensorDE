@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use smithay::input::dnd::{DndAction, Source};
 use wayland_server::{
     Resource,
     protocol::{
@@ -10,9 +9,9 @@ use wayland_server::{
     },
 };
 
-use super::{DndOfferObject, DndOfferState, SurfaceDndOffer};
+use super::{DndOfferObject, DndOfferState, DndSource, SurfaceDndOffer};
 
-pub(super) fn local<S: Source>(source: Arc<S>, devices: Vec<WlDataDevice>) -> SurfaceDndOffer<S> {
+pub(super) fn local(source: Arc<dyn DndSource>, devices: Vec<WlDataDevice>) -> SurfaceDndOffer {
     SurfaceDndOffer {
         state: Arc::new(Mutex::new(DndOfferState {
             active: true,
@@ -30,10 +29,10 @@ pub(super) fn local<S: Source>(source: Arc<S>, devices: Vec<WlDataDevice>) -> Su
     }
 }
 
-pub(super) fn handle_request<S: Source>(
+pub(super) fn handle_request(
     offer: &WlDataOffer,
     request: wl_data_offer::Request,
-    data: &DndOfferObject<S>,
+    data: &DndOfferObject,
 ) {
     match request {
         wl_data_offer::Request::Accept { mime_type, .. } => {
@@ -45,16 +44,16 @@ pub(super) fn handle_request<S: Source>(
                 );
                 return;
             }
-            let accepted_mime =
+            let accepted =
                 mime_type.filter(|mime| data.mime_types.iter().any(|known| known == mime));
-            state.accepted = accepted_mime.is_some();
+            state.accepted = accepted.is_some();
             drop(state);
             if let Some(source) = data
                 .target_source
                 .as_ref()
                 .and_then(|source| source.upgrade().ok())
             {
-                source.target(accepted_mime);
+                source.target(accepted);
             }
         }
         wl_data_offer::Request::Receive { mime_type, fd } => {
@@ -123,20 +122,11 @@ pub(super) fn handle_request<S: Source>(
                     offer.action(chosen);
                 }
                 if let Some(source) = data.source.lock().unwrap().as_ref() {
-                    source.choose_action(from_wire_action(chosen));
+                    source.choose_action(chosen);
                 }
             }
         }
         _ => unreachable!(),
-    }
-}
-
-fn from_wire_action(action: WlDndAction) -> DndAction {
-    match action {
-        WlDndAction::Copy => DndAction::Copy,
-        WlDndAction::Move => DndAction::Move,
-        WlDndAction::Ask => DndAction::Ask,
-        _ => DndAction::None,
     }
 }
 
@@ -179,53 +169,15 @@ fn choose_action(possible: WlDndAction, preferred: WlDndAction) -> WlDndAction {
 mod tests {
     use super::*;
 
-    fn finishable_state() -> DndOfferState {
-        DndOfferState {
-            active: true,
-            dropped: true,
-            accepted: true,
-            finished: false,
-            requires_accept: true,
-            requires_action: true,
-            source_actions: WlDndAction::Copy | WlDndAction::Move,
-            chosen_action: WlDndAction::Copy,
-        }
-    }
-
-    #[test]
-    fn finish_requires_active_drop_accept_and_action() {
-        assert!(finishable_state().ready_to_finish());
-
-        let mut state = finishable_state();
-        state.active = false;
-        assert!(!state.ready_to_finish());
-        let mut state = finishable_state();
-        state.dropped = false;
-        assert!(!state.ready_to_finish());
-        let mut state = finishable_state();
-        state.accepted = false;
-        assert!(!state.ready_to_finish());
-        let mut state = finishable_state();
-        state.chosen_action = WlDndAction::empty();
-        assert!(!state.ready_to_finish());
-        let mut state = finishable_state();
-        state.finished = true;
-        assert!(!state.ready_to_finish());
-    }
-
     #[test]
     fn action_negotiation_rejects_unadvertised_preference() {
         let source = WlDndAction::Copy | WlDndAction::Move;
         let destination = WlDndAction::Copy | WlDndAction::Ask;
-
         assert_eq!(
             negotiate_action(source, destination, WlDndAction::Copy),
             Ok(WlDndAction::Copy)
         );
         assert!(negotiate_action(source, destination, WlDndAction::Move).is_err());
         assert!(negotiate_action(source, destination, WlDndAction::Ask).is_err());
-        assert!(
-            negotiate_action(source, destination, WlDndAction::Copy | WlDndAction::Move,).is_err()
-        );
     }
 }

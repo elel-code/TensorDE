@@ -172,10 +172,7 @@ impl RuntimeState {
         }
 
         let scene = self.scene_for_output(&output, logical);
-        let pointer_location = self
-            .seat
-            .get_pointer()
-            .map(|pointer| pointer.current_location());
+        let pointer_location = self.input_seat.pointer_location();
         let cursor = match (pointer_location, self.space.output_geometry(&output)) {
             (Some(pointer), Some(geometry)) => {
                 self.cursor

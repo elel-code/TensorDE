@@ -428,7 +428,7 @@ fn pointer_constraint_post_commit(
 #[cfg(feature = "tty")]
 impl RuntimeState {
     pub(crate) fn reconcile_pointer_constraint(&mut self) {
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(location) = self.input_seat.pointer_location() else {
             let warp = self
                 .protocol_globals
                 .pointer_constraints
@@ -436,13 +436,12 @@ impl RuntimeState {
             self.apply_pointer_constraint_hint(warp);
             return;
         };
-        let location = pointer.current_location();
         let hit = self.pointer_focus_under(location);
-        let current_focus = pointer.current_focus();
-        let focus = current_focus.as_ref().and_then(|current| {
+        let current_focus = self.input_seat.pointer_focus();
+        let focus = current_focus.and_then(|current| {
             hit.as_ref()
                 .filter(|(surface, _)| surface.id() == current.id())
-                .map(|(_, origin)| (current.surface(), *origin))
+                .map(|(_, origin)| (current, *origin))
         });
         let warp = self
             .protocol_globals
@@ -458,14 +457,13 @@ impl RuntimeState {
         let Some(mut location) = hint else {
             return;
         };
-        let Some(pointer) = self.seat.get_pointer() else {
+        let Some(previous) = self.input_seat.pointer_location() else {
             return;
         };
-        let previous = pointer.current_location();
         if let Some(bounds) = self.pointer_coordinate_space() {
             location = crate::protocol::input::constrain_pointer_location(location, bounds);
         }
-        pointer.set_location(location);
+        self.input_seat.set_pointer_location(location);
         self.request_redraw_at(previous);
         self.request_redraw_at(location);
     }

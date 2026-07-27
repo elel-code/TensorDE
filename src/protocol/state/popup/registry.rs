@@ -1,28 +1,23 @@
 // Derived from Smithay's popup manager implementation at commit c0aa71d.
 // Smithay's copyright notice and MIT terms are in LICENSES/Smithay-MIT.txt.
 
-use smithay::{
-    input::{Seat, SeatHandler},
-    utils::{DeadResource, IsAlive, Logical, Point, Rectangle, Serial},
-    wayland::seat::WaylandFocus,
-};
+use smithay::utils::{Logical, Point, Rectangle};
+use thiserror::Error;
 use tracing::trace;
-use wayland_server::protocol::wl_surface::WlSurface;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
-use super::grab::{PopupGrab, PopupGrabError, PopupGrabHandler, PopupGrabInner};
+use super::grab::{PopupGrab, PopupGrabError, PopupGrabInner};
 use crate::protocol::globals::xdg_shell::Popup;
+use crate::protocol::serial::Serial;
 
 /// Protocol popup object retained by the compositor-thread topology owner.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PopupKind(pub(super) Popup);
 
-impl IsAlive for PopupKind {
-    fn alive(&self) -> bool {
+impl PopupKind {
+    pub(crate) fn alive(&self) -> bool {
         self.0.alive()
     }
-}
-
-impl PopupKind {
     pub(crate) fn wl_surface(&self) -> &WlSurface {
         self.0.wl_surface()
     }
@@ -52,6 +47,10 @@ impl PopupKind {
         self.0.send_popup_done();
     }
 }
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error("popup resource is no longer alive")]
+pub(crate) struct DeadResource;
 
 impl From<PopupKind> for WlSurface {
     fn from(popup: PopupKind) -> Self {
@@ -255,6 +254,7 @@ pub(crate) struct PopupManager {
     unmapped: Vec<PopupKind>,
     trees: Vec<PopupTree>,
     popup_grabs: Vec<PopupGrabInner>,
+    seat_grab: PopupGrabInner,
 }
 
 impl PopupManager {
@@ -320,7 +320,7 @@ impl PopupManager {
         root: &WlSurface,
         popup: &PopupKind,
     ) -> Result<(), DeadResource> {
-        if !root.alive() {
+        if !root.is_alive() {
             return Err(DeadResource);
         }
         if let Some(tree) = self.trees.iter_mut().find(|tree| tree.root == *root) {
@@ -338,26 +338,20 @@ impl PopupManager {
             tree.cleanup();
         }
         self.trees.retain(|tree| !tree.nodes.is_empty());
-        self.unmapped.retain(IsAlive::alive);
+        self.unmapped.retain(PopupKind::alive);
     }
 
-    pub(crate) fn grab_popup<D>(
+    pub(crate) fn grab_popup(
         &mut self,
-        root: <D as SeatHandler>::KeyboardFocus,
+        root: WlSurface,
         popup: PopupKind,
-        seat: &Seat<D>,
         serial: Serial,
-    ) -> Result<PopupGrab<D>, PopupGrabError>
-    where
-        D: PopupGrabHandler + 'static,
-        <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<WlSurface>,
-        <D as SeatHandler>::PointerFocus: From<<D as SeatHandler>::KeyboardFocus> + WaylandFocus,
-    {
-        let root_surface = find_popup_root_surface(&popup)?;
-        assert_eq!(root.wl_surface().as_deref(), Some(&root_surface));
+    ) -> Result<PopupGrab, PopupGrabError> {
+        let root_surface =
+            find_popup_root_surface(&popup).map_err(|_| PopupGrabError::DeadResource)?;
+        assert_eq!(root, root_surface);
 
-        seat.user_data().insert_if_missing(PopupGrabInner::default);
-        let toplevel_popups = seat.user_data().get::<PopupGrabInner>().unwrap().clone();
+        let toplevel_popups = self.seat_grab.clone();
         if !toplevel_popups.has_any_grabs() {
             self.popup_grabs.push(toplevel_popups.clone());
         }
@@ -383,7 +377,6 @@ impl PopupManager {
             root,
             serial,
             previous_serial,
-            seat.get_keyboard(),
         ))
     }
 }
