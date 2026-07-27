@@ -48,9 +48,7 @@ impl RuntimeState {
             LibinputEvent::Input(BackendInputEvent::PointerGesture(event)) => {
                 self.forward_pointer_gesture(event)
             }
-            LibinputEvent::Input(BackendInputEvent::Activity)
-            | LibinputEvent::Tablet { .. }
-            | LibinputEvent::Device { .. } => {}
+            LibinputEvent::Input(BackendInputEvent::Activity) | LibinputEvent::Device(_) => {}
         }
     }
 
@@ -131,7 +129,7 @@ impl RuntimeState {
             && let Some(surface) = pointer.current_focus()
         {
             let mut surface = surface.into_surface();
-            while let Some(parent) = smithay::wayland::compositor::get_parent(&surface) {
+            while let Some(parent) = crate::protocol::globals::compositor::get_parent(&surface) {
                 surface = parent;
             }
             if self

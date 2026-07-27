@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use smithay::input::pointer::PointerHandle;
 use wayland_protocols::wp::relative_pointer::zv1::server::{
     zwp_relative_pointer_manager_v1::{self, ZwpRelativePointerManagerV1},
     zwp_relative_pointer_v1::{self, ZwpRelativePointerV1},
@@ -135,8 +134,7 @@ impl DispatchDelegate<ZwpRelativePointerManagerV1, RuntimeState> for RelativePoi
     ) {
         match request {
             zwp_relative_pointer_manager_v1::Request::GetRelativePointer { id, pointer } => {
-                let active = PointerHandle::<RuntimeState>::from_resource(&pointer)
-                    .is_some_and(|handle| state.seat.get_pointer().as_ref() == Some(&handle));
+                let active = state.protocol_globals.seat.owns_pointer(&pointer);
                 let client = active.then(|| client.id());
                 let relative_pointer = data_init.init(
                     id,

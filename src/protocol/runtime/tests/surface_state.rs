@@ -31,6 +31,7 @@ enum Step {
     ViewportApplied,
     ChildDeferred { surface: u32, buffer: u32 },
     ChildApplied,
+    ChildDesynchronized,
     SinglePixelAttached { buffer: u32 },
     ViewportRemoved,
     ViewportRecreated,
@@ -213,6 +214,14 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
         event_tx.send(Step::ChildApplied).unwrap();
         release_rx.recv().unwrap();
 
+        subsurface.set_desync();
+        subsurface.set_position(11, 9);
+        child.damage_buffer(1, 1, 2, 2);
+        child.commit();
+        queue.roundtrip(&mut state).unwrap();
+        event_tx.send(Step::ChildDesynchronized).unwrap();
+        release_rx.recv().unwrap();
+
         let pixel = single_pixel.create_u32_rgba_buffer(
             0x1122_3344,
             0x5566_7788,
@@ -327,6 +336,18 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     assert_eq!(child.commit, 1);
     release_tx.send(()).unwrap();
 
+    assert_eq!(
+        dispatch_until_step(&mut runtime, &event_rx),
+        Step::ChildDesynchronized
+    );
+    let child = test_surface_tree_states(&root)
+        .into_iter()
+        .find(|state| state.surface == child_id)
+        .expect("desynchronized child remains in the surface tree");
+    assert_eq!(child.offset, (11, 9));
+    assert_eq!(child.commit, 2);
+    release_tx.send(()).unwrap();
+
     let pixel_id = match dispatch_until_step(&mut runtime, &event_rx) {
         Step::SinglePixelAttached { buffer } => buffer,
         step => panic!("expected single-pixel attach, got {step:?}"),
@@ -377,6 +398,84 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     let states = test_surface_tree_states(&root);
     assert!(states.iter().all(|state| state.surface != root_id));
     client.join().unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SurfaceViolation {
+    NonZeroAttachOffsetV5,
+    CyclicSubsurface,
+}
+
+#[test]
+fn compositor_reports_core_surface_errors_on_the_wire() {
+    let cases = [
+        (
+            SurfaceViolation::NonZeroAttachOffsetV5,
+            "wl_surface",
+            u32::from(wl_surface::Error::InvalidOffset),
+        ),
+        (
+            SurfaceViolation::CyclicSubsurface,
+            "wl_subcompositor",
+            u32::from(wl_subcompositor::Error::BadSurface),
+        ),
+    ];
+
+    for (violation, expected_interface, expected_code) in cases {
+        let (interface, code) = surface_protocol_error(violation);
+        assert_eq!(interface, expected_interface, "{violation:?}");
+        assert_eq!(code, expected_code, "{violation:?}");
+    }
+}
+
+fn surface_protocol_error(violation: SurfaceViolation) -> (String, u32) {
+    let mut runtime = WaylandRuntime::with_appearance(
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap();
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+    let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<SurfaceClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, _, _>(&handle, 5..=5, ())
+            .unwrap();
+
+        match violation {
+            SurfaceViolation::NonZeroAttachOffsetV5 => {
+                let surface = compositor.create_surface(&handle, ());
+                surface.attach(None, 1, 0);
+            }
+            SurfaceViolation::CyclicSubsurface => {
+                let subcompositor = globals
+                    .bind::<wl_subcompositor::WlSubcompositor, _, _>(&handle, 1..=1, ())
+                    .unwrap();
+                let first = compositor.create_surface(&handle, ());
+                let second = compositor.create_surface(&handle, ());
+                let _first_parent = subcompositor.get_subsurface(&first, &second, &handle, ());
+                let _cycle = subcompositor.get_subsurface(&second, &first, &handle, ());
+            }
+        }
+
+        assert!(queue.roundtrip(&mut SurfaceClient::default()).is_err());
+        let error = connection
+            .protocol_error()
+            .expect("expected protocol error");
+        result_tx
+            .send((error.object_interface, error.code))
+            .unwrap();
+    });
+
+    let result = dispatch_until_protocol_error(&mut runtime, &result_rx);
+    client.join().unwrap();
+    result
 }
 
 #[derive(Clone, Copy, Debug)]

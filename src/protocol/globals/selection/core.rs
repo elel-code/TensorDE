@@ -66,7 +66,7 @@ impl DispatchDelegate<WlDataDeviceManager, RuntimeState> for CoreManagerData {
                     .register_core_source(token, client.id(), &source);
             }
             wl_data_device_manager::Request::GetDataDevice { id, seat } => {
-                if !state.seat.owns(&seat) {
+                if !state.protocol_globals.seat.owns(&seat) {
                     return;
                 }
                 let device = data_init.init(

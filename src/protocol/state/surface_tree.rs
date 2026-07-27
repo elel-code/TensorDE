@@ -6,16 +6,12 @@
 
 use std::time::Duration;
 
-use smithay::{
-    utils::{NonNegativeClockSource, Time},
-    wayland::compositor::{
-        SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward,
-    },
-};
+use smithay::utils::{NonNegativeClockSource, Time};
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::protocol::globals::{
+    compositor::{SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward},
     output::{Output, WeakOutput},
     presentation::{PresentationFeedbackCachedState, PresentationFeedbackCallback, Refresh},
 };

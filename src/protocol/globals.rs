@@ -1,12 +1,6 @@
+use smithay::utils::{ClockSource, Monotonic};
 #[cfg(feature = "xwayland")]
 use smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState;
-use smithay::{
-    utils::{ClockSource, Monotonic},
-    wayland::{
-        input_method::InputMethodManagerState, tablet_manager::TabletManagerState,
-        text_input::TextInputManagerState, virtual_keyboard::VirtualKeyboardManagerState,
-    },
-};
 use wayland_server::{Client, DisplayHandle};
 
 use super::extensions::{
@@ -18,6 +12,7 @@ use super::state::RuntimeState;
 
 pub(in crate::protocol) mod activation;
 pub(in crate::protocol) mod background_effect;
+pub(in crate::protocol) mod compositor;
 pub(in crate::protocol) mod cursor_shape;
 pub(in crate::protocol) mod desktop_controls;
 #[cfg(feature = "tty")]
@@ -35,6 +30,7 @@ pub(in crate::protocol) mod pointer_gestures;
 pub(in crate::protocol) mod presentation;
 mod random_handle;
 pub(in crate::protocol) mod relative_pointer;
+pub(in crate::protocol) mod seat;
 pub(in crate::protocol) mod selection;
 pub(in crate::protocol) mod session_lock;
 pub(in crate::protocol) mod shm;
@@ -67,6 +63,7 @@ use pointer_constraints::PointerConstraintsProtocol;
 use pointer_gestures::PointerGesturesProtocol;
 use presentation::PresentationProtocol;
 use relative_pointer::RelativePointerProtocol;
+use seat::SeatProtocol;
 use selection::SelectionProtocol;
 use session_lock::SessionLockProtocol;
 use shm::ShmProtocol;
@@ -86,6 +83,7 @@ use xdg_foreign::XdgForeignProtocol;
 use xdg_shell::XdgShellProtocol;
 
 pub(crate) struct ProtocolGlobals {
+    pub(super) seat: SeatProtocol,
     shm: ShmProtocol,
     output: OutputProtocol,
     viewporter: ViewporterProtocol,
@@ -104,10 +102,6 @@ pub(crate) struct ProtocolGlobals {
     pub(super) layer_shell: LayerShellProtocol,
     single_pixel_buffer: SinglePixelBufferProtocol,
     shortcut_inhibit: ShortcutInhibitProtocol,
-    tablet: TabletManagerState,
-    text_input: TextInputManagerState,
-    input_method: InputMethodManagerState,
-    virtual_keyboard: VirtualKeyboardManagerState,
     pub(super) session_lock: SessionLockProtocol,
     security_context: SecurityContextManagerState,
     foreign_toplevel_list: ForeignToplevelListState,
@@ -138,6 +132,7 @@ impl ProtocolGlobals {
                 .is_none_or(|data| data.security_context.is_none())
         };
         Self {
+            seat: SeatProtocol::new(display),
             shm: ShmProtocol::new(display),
             output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
@@ -156,13 +151,6 @@ impl ProtocolGlobals {
             layer_shell: LayerShellProtocol::new(display),
             single_pixel_buffer: SinglePixelBufferProtocol::new(display),
             shortcut_inhibit: ShortcutInhibitProtocol::new(display),
-            tablet: TabletManagerState::new::<RuntimeState>(display),
-            text_input: TextInputManagerState::new::<RuntimeState>(display),
-            // Privileged input-method / virtual-keyboard: unrestricted clients only.
-            input_method: InputMethodManagerState::new::<RuntimeState, _>(display, |_| true),
-            virtual_keyboard: VirtualKeyboardManagerState::new::<RuntimeState, _>(display, |_| {
-                true
-            }),
             session_lock: SessionLockProtocol::new(display),
             // Sandboxed clients must not re-bind security-context.
             security_context: SecurityContextManagerState::new::<RuntimeState, _>(
@@ -313,10 +301,6 @@ impl ProtocolGlobals {
             &self.layer_shell,
             &self.single_pixel_buffer,
             &self.shortcut_inhibit,
-            &self.tablet,
-            &self.text_input,
-            &self.input_method,
-            &self.virtual_keyboard,
             &self.session_lock,
             &self.security_context,
             &self.foreign_toplevel_list,
@@ -353,10 +337,6 @@ impl ProtocolGlobals {
             layer_shell: true,
             single_pixel_buffer: true,
             keyboard_shortcuts_inhibit: true,
-            tablet: true,
-            text_input: true,
-            input_method: true,
-            virtual_keyboard: true,
             session_lock: true,
             security_context: true,
             foreign_toplevel_list: true,
@@ -407,10 +387,6 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) layer_shell: bool,
     pub(crate) single_pixel_buffer: bool,
     pub(crate) keyboard_shortcuts_inhibit: bool,
-    pub(crate) tablet: bool,
-    pub(crate) text_input: bool,
-    pub(crate) input_method: bool,
-    pub(crate) virtual_keyboard: bool,
     pub(crate) session_lock: bool,
     pub(crate) security_context: bool,
     pub(crate) foreign_toplevel_list: bool,
@@ -489,10 +465,6 @@ mod tests {
                 layer_shell: true,
                 single_pixel_buffer: true,
                 keyboard_shortcuts_inhibit: true,
-                tablet: true,
-                text_input: true,
-                input_method: true,
-                virtual_keyboard: true,
                 session_lock: true,
                 security_context: true,
                 foreign_toplevel_list: true,

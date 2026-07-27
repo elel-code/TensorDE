@@ -1,13 +1,10 @@
-use smithay::{
-    utils::IsAlive,
-    wayland::compositor::{
-        SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
-        with_surface_tree_upward,
-    },
-};
 use tracing::warn;
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
+use crate::protocol::globals::compositor::{
+    SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent,
+    with_surface_tree_upward,
+};
 use crate::scene::SurfaceLayer;
 
 use super::{
@@ -188,13 +185,13 @@ pub(super) fn collect_surface_tree(
         root,
         base,
         |surface, states, parent| {
-            if !surface.alive() {
+            if !surface.is_alive() {
                 return TraversalAction::SkipChildren;
             }
             TraversalAction::DoChildren(accumulate_offset(*parent, subsurface_offset(states)))
         },
         |surface, states, parent| {
-            if !surface.alive() {
+            if !surface.is_alive() {
                 return;
             }
             let offset = accumulate_offset(*parent, subsurface_offset(states));

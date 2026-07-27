@@ -4,11 +4,8 @@ mod region;
 
 use std::collections::HashMap;
 
-use smithay::{
-    input::pointer::PointerHandle,
-    utils::{Logical, Point},
-    wayland::compositor::{self, HookId, RectangleKind, get_region_attributes},
-};
+use super::compositor::{self, HookId, RectangleKind, get_region_attributes};
+use smithay::utils::{Logical, Point};
 use wayland_protocols::wp::pointer_constraints::zv1::server::{
     zwp_confined_pointer_v1::{self, ZwpConfinedPointerV1},
     zwp_locked_pointer_v1::{self, ZwpLockedPointerV1},
@@ -391,17 +388,16 @@ fn constraint_region(region: Option<&WlRegion>) -> ConstraintRegion {
                     RectangleKind::Add => RegionOpKind::Add,
                     RectangleKind::Subtract => RegionOpKind::Subtract,
                 },
-                x: rectangle.loc.x,
-                y: rectangle.loc.y,
-                width: rectangle.size.w,
-                height: rectangle.size.h,
+                x: rectangle.x,
+                y: rectangle.y,
+                width: i32::try_from(rectangle.width).unwrap_or(i32::MAX),
+                height: i32::try_from(rectangle.height).unwrap_or(i32::MAX),
             }),
     )
 }
 
 fn pointer_is_active(state: &RuntimeState, pointer: &WlPointer) -> bool {
-    PointerHandle::<RuntimeState>::from_resource(pointer)
-        .is_some_and(|handle| state.seat.get_pointer().as_ref() == Some(&handle))
+    state.protocol_globals.seat.owns_pointer(pointer)
 }
 
 fn install_constraint_hook(state: &mut RuntimeState, surface: &WlSurface) {

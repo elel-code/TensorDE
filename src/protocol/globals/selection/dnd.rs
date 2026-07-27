@@ -12,6 +12,7 @@ use std::{
     },
 };
 
+use crate::protocol::globals::compositor;
 use smithay::{
     input::{
         Seat,
@@ -19,7 +20,6 @@ use smithay::{
         pointer::Focus,
     },
     utils::{IsAlive, Logical, Point, SERIAL_COUNTER, Serial},
-    wayland::compositor,
 };
 use wayland_server::{
     DisplayHandle, Resource, Weak,

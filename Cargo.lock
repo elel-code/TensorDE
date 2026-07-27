@@ -2021,6 +2021,7 @@ dependencies = [
 name = "tensor-compositor"
 version = "0.1.0"
 dependencies = [
+ "appendlist",
  "arc-swap",
  "bevy_ecs",
  "bytemuck",
@@ -2059,6 +2060,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-server",
+ "xkbcommon",
  "zbus",
 ]
 

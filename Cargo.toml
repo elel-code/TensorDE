@@ -35,6 +35,7 @@ tty = [
 xwayland = ["smithay/xwayland"]
 
 [dependencies]
+appendlist = "1"
 arc-swap = "1"
 bevy_ecs = { version = "0.19", default-features = false, features = ["std", "multi_threaded"] }
 bytemuck = "1"
@@ -74,6 +75,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client", "server"] }
 wayland-server = "0.31"
+xkbcommon = "0.9"
 zbus = { version = "5", optional = true }
 
 [[bin]]

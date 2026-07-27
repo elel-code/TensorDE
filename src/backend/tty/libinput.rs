@@ -54,16 +54,8 @@ impl input::LibinputInterface for LibinputSessionInterface {
 
 #[derive(Debug)]
 pub(crate) enum LibinputEvent {
-    Device {
-        event: DeviceEvent,
-        /// The protocol tablet adapter still needs the libinput device object.
-        tablet: Option<input::Device>,
-    },
+    Device(DeviceEvent),
     Input(BackendInputEvent),
-    Tablet {
-        device: DeviceId,
-        event: event::TabletToolEvent,
-    },
 }
 
 pub(super) struct LibinputSource {
@@ -155,18 +147,7 @@ impl LibinputSource {
             input::Event::Keyboard(_) => None,
             input::Event::Pointer(event) => self.map_pointer_event(event),
             input::Event::Gesture(event) => map_gesture_event(event),
-            input::Event::Tablet(event) => {
-                let device = event.device();
-                let raw = device.as_raw() as usize;
-                let Some(device) = self.device_ids.get(&raw).copied() else {
-                    tracing::warn!(
-                        device = %device.sysname(),
-                        "ignored tablet event from an unknown libinput device"
-                    );
-                    return None;
-                };
-                Some(LibinputEvent::Tablet { device, event })
-            }
+            input::Event::Tablet(_) => Some(LibinputEvent::Input(BackendInputEvent::Activity)),
             _ => None,
         }
     }
@@ -198,15 +179,11 @@ impl LibinputSource {
             touch: device.has_capability(DeviceCapability::Touch),
             tablet: device.has_capability(DeviceCapability::TabletTool),
         };
-        let tablet = capabilities.tablet.then_some(device);
-        Some(LibinputEvent::Device {
-            event: DeviceEvent {
-                id,
-                capabilities,
-                change,
-            },
-            tablet,
-        })
+        Some(LibinputEvent::Device(DeviceEvent {
+            id,
+            capabilities,
+            change,
+        }))
     }
 
     fn map_pointer_event(&self, event: event::PointerEvent) -> Option<LibinputEvent> {

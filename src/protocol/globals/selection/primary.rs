@@ -70,7 +70,7 @@ impl DispatchDelegate<ZwpPrimarySelectionDeviceManagerV1, RuntimeState> for Prim
                 );
             }
             zwp_primary_selection_device_manager_v1::Request::GetDevice { id, seat } => {
-                if !state.seat.owns(&seat) {
+                if !state.protocol_globals.seat.owns(&seat) {
                     return;
                 }
                 let device = data_init.init(

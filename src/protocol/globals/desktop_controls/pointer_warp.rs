@@ -1,7 +1,4 @@
-use smithay::{
-    utils::{Logical, Point, Serial},
-    wayland::compositor::CompositorHandler,
-};
+use smithay::utils::{Logical, Point};
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::{self, WpPointerWarpV1};
 use wayland_server::{Client, DataInit, DisplayHandle, New};
 
@@ -64,17 +61,13 @@ impl RuntimeState {
         client_y: f64,
         serial: u32,
     ) {
-        let Some(local) = logical_position(
-            client_x,
-            client_y,
-            self.client_compositor_state(client).client_scale(),
-        ) else {
+        let Some(local) = logical_position(client_x, client_y, self.client_scale(client)) else {
             return;
         };
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        if pointer.last_enter() != Some(Serial::from(serial))
+        if self.protocol_globals.seat.pointer_enter_serial() != Some(serial.into())
             || pointer
                 .current_focus()
                 .as_ref()

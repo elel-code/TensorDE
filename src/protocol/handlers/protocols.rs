@@ -1,9 +1,5 @@
 //! Additional Wayland protocol handlers beyond the core shell path.
 
-use smithay::{
-    utils::Logical,
-    wayland::input_method::{InputMethodHandler, PopupSurface as ImPopupSurface},
-};
 use tracing::{debug, warn};
 use wayland_server::{
     Resource,
@@ -97,43 +93,6 @@ impl SecurityContextHandler for RuntimeState {
         if let Err(error) = submitter.submit(listener) {
             warn!(?error, "security-context listener queue rejected a request");
         }
-    }
-}
-
-impl InputMethodHandler for RuntimeState {
-    fn new_popup(&mut self, surface: ImPopupSurface) {
-        if let Err(error) = self
-            .popups
-            .track_popup(crate::protocol::state::PopupKind::from(surface))
-        {
-            warn!(%error, "failed to track input-method popup");
-        }
-        #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
-    }
-
-    fn dismiss_popup(&mut self, surface: ImPopupSurface) {
-        let parent = surface.get_parent().map(|parent| parent.surface.clone());
-        if let Some(parent) = parent {
-            let _ = self
-                .popups
-                .dismiss_popup(&parent, &crate::protocol::state::PopupKind::from(surface));
-        }
-        #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
-    }
-
-    fn popup_repositioned(&mut self, _surface: ImPopupSurface) {
-        #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
-    }
-
-    fn parent_geometry(&self, parent: &WlSurface) -> smithay::utils::Rectangle<i32, Logical> {
-        self.space
-            .elements()
-            .find(|window| window.wl_surface().as_deref() == Some(parent))
-            .and_then(|window| self.space.element_geometry(window))
-            .unwrap_or_default()
     }
 }
 

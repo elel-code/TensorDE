@@ -1,6 +1,5 @@
 mod pointer_geometry;
 mod session_lock;
-mod tablet;
 #[cfg(test)]
 mod tests;
 
@@ -83,8 +82,8 @@ fn smithay_axis_direction(direction: AxisDirection) -> AxisRelativeDirection {
 
 impl RuntimeState {
     pub(crate) fn process_input_event(&mut self, event: LibinputEvent) {
-        if let LibinputEvent::Device { event, tablet } = event {
-            self.process_input_device_change(event, tablet);
+        if let LibinputEvent::Device(event) = event {
+            self.process_input_device_change(event);
             return;
         }
         // A confirmed or pending lock owns client input. Compositor shortcuts
@@ -96,7 +95,7 @@ impl RuntimeState {
         }
         let activity = matches!(&event, LibinputEvent::Input(event) if event.is_activity());
         match event {
-            LibinputEvent::Device { .. } => unreachable!("device changes returned above"),
+            LibinputEvent::Device(_) => unreachable!("device changes returned above"),
             LibinputEvent::Input(BackendInputEvent::Keyboard(event)) => {
                 self.forward_keyboard(event)
             }
@@ -116,18 +115,13 @@ impl RuntimeState {
                 self.forward_pointer_gesture(event)
             }
             LibinputEvent::Input(BackendInputEvent::Activity) => {}
-            LibinputEvent::Tablet { device, event } => self.process_tablet_event(device, event),
         }
         if activity {
             self.notify_idle_activity();
         }
     }
 
-    fn process_input_device_change(
-        &mut self,
-        event: tensor_input::DeviceEvent,
-        tablet: Option<input::Device>,
-    ) {
+    fn process_input_device_change(&mut self, event: tensor_input::DeviceEvent) {
         match event.change {
             DeviceChange::Added => {
                 self.input_devices.insert(event.id, event.capabilities);
@@ -137,15 +131,12 @@ impl RuntimeState {
             }
         }
         self.reconcile_seat_capabilities();
-        if let Some(device) = tablet {
-            self.process_tablet_device(event.id, device, event.change);
-        }
     }
 
     /// Publish the aggregate libinput capabilities on the single Wayland
     /// seat. A keyboard can arrive after an application has mapped, so a
     /// successful keyboard creation must also restore the compositor-selected
-    /// focus to the new Smithay keyboard handle.
+    /// focus to the new keyboard state.
     pub(crate) fn reconcile_seat_capabilities(&mut self) {
         let keyboard_count = self
             .input_devices
@@ -165,32 +156,50 @@ impl RuntimeState {
 
         if keyboard_count > 0 && self.seat.get_keyboard().is_none() {
             match self.seat.add_keyboard(Default::default(), 200, 25) {
-                Ok(_) if self.session_is_locked() => {
-                    if let Some(surface) = self.protocol_globals.session_lock.first_active_surface()
-                    {
-                        self.focus_session_lock_surface(&surface);
+                Ok(_) => {
+                    if let Err(error) = self.protocol_globals.seat.set_default_keyboard_enabled() {
+                        self.seat.remove_keyboard();
+                        warn!(%error, "failed to publish keyboard keymap");
+                    } else if self.session_is_locked() {
+                        if let Some(surface) =
+                            self.protocol_globals.session_lock.first_active_surface()
+                        {
+                            self.focus_session_lock_surface(&surface);
+                        }
+                    } else {
+                        self.restore_keyboard_focus();
                     }
                 }
-                Ok(_) => self.restore_keyboard_focus(),
                 Err(error) => warn!(%error, "failed to publish keyboard capability"),
             }
         } else if keyboard_count == 0 && self.seat.get_keyboard().is_some() {
             self.seat.remove_keyboard();
+            let _ = self.protocol_globals.seat.set_keyboard_enabled(false, None);
             self.protocol_globals.activation.sync_keyboard_focus(None);
         }
 
         if pointer_count > 0 && self.seat.get_pointer().is_none() {
             self.seat.add_pointer();
+            self.protocol_globals.seat.set_pointer_enabled(true);
             // A pointer can be discovered after the first output frame. Draw
             // the default software cursor immediately instead of waiting for
             // the user's first motion event to make it visible.
             self.request_redraw_all();
         } else if pointer_count == 0 && self.seat.get_pointer().is_some() {
             self.seat.remove_pointer();
+            self.protocol_globals.seat.set_pointer_enabled(false);
             self.protocol_globals.activation.sync_pointer_focus(None);
             // The next frame has no overlay, which damages the previous
             // cursor bounds and clears the last visible arrow.
             self.request_redraw_all();
+        }
+
+        if touch_count > 0 && self.seat.get_touch().is_none() {
+            self.seat.add_touch();
+            self.protocol_globals.seat.set_touch_enabled(true);
+        } else if touch_count == 0 && self.seat.get_touch().is_some() {
+            self.seat.remove_touch();
+            self.protocol_globals.seat.set_touch_enabled(false);
         }
 
         debug!(
@@ -397,11 +406,7 @@ impl RuntimeState {
         if let Some(event) = relative
             && let Some(client) = current_focus.as_ref().and_then(SurfaceFocusTarget::client)
         {
-            let client_scale =
-                <Self as smithay::wayland::compositor::CompositorHandler>::client_compositor_state(
-                    self, &client,
-                )
-                .client_scale();
+            let client_scale = self.client_scale(&client);
             self.protocol_globals
                 .relative_pointer
                 .motion(&client.id(), client_scale, event);
@@ -434,11 +439,7 @@ impl RuntimeState {
                 .and_then(|pointer| pointer.current_focus())
                 .and_then(|surface| {
                     let client = surface.client()?;
-                    let client_scale = <Self as smithay::wayland::compositor::CompositorHandler>::client_compositor_state(
-                        self,
-                        &client,
-                    )
-                    .client_scale();
+                    let client_scale = self.client_scale(&client);
                     Some((surface, client_scale))
                 })
         } else {

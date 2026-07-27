@@ -1,4 +1,4 @@
-use smithay::wayland::compositor::{self, add_blocker};
+use crate::protocol::globals::compositor::{self, add_blocker};
 use wayland_protocols::wp::commit_timing::v1::server::{
     wp_commit_timer_v1::{self, WpCommitTimerV1},
     wp_commit_timing_manager_v1::{self, WpCommitTimingManagerV1},

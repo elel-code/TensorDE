@@ -1,4 +1,4 @@
-use smithay::wayland::compositor::{
+use crate::protocol::globals::compositor::{
     self, Barrier, Cacheable, add_blocker, is_sync_subsurface, with_states,
 };
 use wayland_protocols::wp::fifo::v1::server::{

@@ -112,7 +112,7 @@ impl DispatchDelegate<ZwlrDataControlManagerV1, RuntimeState> for WlrManagerData
                     .register_wlr_source(token, client.id(), &source);
             }
             zwlr_data_control_manager_v1::Request::GetDataDevice { id, seat } => {
-                if !state.seat.owns(&seat) {
+                if !state.protocol_globals.seat.owns(&seat) {
                     return;
                 }
                 let device = data_init.init(
@@ -152,7 +152,7 @@ impl DispatchDelegate<ExtDataControlManagerV1, RuntimeState> for ExtManagerData 
                     .register_ext_source(token, client.id(), &source);
             }
             ext_data_control_manager_v1::Request::GetDataDevice { id, seat } => {
-                if !state.seat.owns(&seat) {
+                if !state.protocol_globals.seat.owns(&seat) {
                     return;
                 }
                 let device = data_init.init(

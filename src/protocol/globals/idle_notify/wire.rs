@@ -55,7 +55,7 @@ impl DispatchDelegate<ExtIdleNotifierV1, RuntimeState> for IdleNotifyManagerData
             ext_idle_notifier_v1::Request::Destroy => return,
             _ => unreachable!(),
         };
-        if !state.seat.owns(&seat) {
+        if !state.protocol_globals.seat.owns(&seat) {
             return;
         }
         let notification = data_init.init(id, IdleNotificationData);

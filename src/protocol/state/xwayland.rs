@@ -113,12 +113,12 @@ impl RuntimeState {
         let Some(socket) = socket else {
             return Ok(None);
         };
-        let client_data = client
+        let _client_data = client
             .get_data::<XWaylandClientData>()
             .ok_or_else(|| "XWayland client lost its Smithay client data".to_owned())?;
 
         // wl_output and fractional-scale state remain the only X11 coordinate authority.
-        client_data.compositor_state.set_client_scale(1.0);
+        self.compositor_state.set_client_scale(&client, 1.0);
         let xwm = X11Wm::start_wm(loop_handle, &self.display_handle, socket, client)
             .map_err(|error| error.to_string())?;
         self.install_xwm(xwm);

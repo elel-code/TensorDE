@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use smithay::wayland::compositor::{SurfaceAttributes, with_states};
+use crate::protocol::globals::compositor::{SurfaceAttributes, with_states};
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use crate::protocol::{

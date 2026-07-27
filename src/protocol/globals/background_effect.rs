@@ -1,6 +1,6 @@
 //! Tensor-owned `ext-background-effect-v1` wire and double-buffered state.
 
-use smithay::wayland::compositor::{RectangleKind, get_region_attributes};
+use super::compositor::{RectangleKind, get_region_attributes};
 use wayland_protocols::ext::background_effect::v1::server::{
     ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
     ext_background_effect_surface_v1::{self, ExtBackgroundEffectSurfaceV1},
@@ -173,9 +173,10 @@ impl BackgroundEffectSurfaceData {
 
 fn region_has_area(region: &WlRegion) -> bool {
     let attributes = get_region_attributes(region);
-    attributes.rects.iter().any(|(kind, rect)| {
-        matches!(kind, RectangleKind::Add) && rect.size.w > 0 && rect.size.h > 0
-    })
+    attributes
+        .rects
+        .iter()
+        .any(|(kind, rect)| matches!(kind, RectangleKind::Add) && rect.width > 0 && rect.height > 0)
 }
 
 delegate_global_dispatch!(

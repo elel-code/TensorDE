@@ -72,9 +72,7 @@ impl RuntimeState {
 }
 
 fn position_xdg_popup(popup: &PopupKind, target: Rectangle<i32, Logical>) {
-    let PopupKind::Xdg(surface) = popup else {
-        return;
-    };
+    let surface = &popup.0;
     surface.constrain(Rect::new(
         target.loc.x,
         target.loc.y,

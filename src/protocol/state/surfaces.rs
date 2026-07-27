@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use smithay::wayland::compositor::{
+use crate::protocol::globals::compositor::{
     BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
     SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
 };
@@ -374,15 +374,19 @@ fn view_snapshot(
 fn damage_overlaps(damage: &Damage, buffer_size: (i32, i32), view_size: (i32, i32)) -> bool {
     match damage {
         Damage::Buffer(rect) => rectangle_overlaps(
-            rect.loc.x,
-            rect.loc.y,
-            rect.size.w,
-            rect.size.h,
+            rect.x,
+            rect.y,
+            i32::try_from(rect.width).unwrap_or(i32::MAX),
+            i32::try_from(rect.height).unwrap_or(i32::MAX),
             buffer_size,
         ),
-        Damage::Surface(rect) => {
-            rectangle_overlaps(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h, view_size)
-        }
+        Damage::Surface(rect) => rectangle_overlaps(
+            rect.x,
+            rect.y,
+            i32::try_from(rect.width).unwrap_or(i32::MAX),
+            i32::try_from(rect.height).unwrap_or(i32::MAX),
+            view_size,
+        ),
     }
 }
 

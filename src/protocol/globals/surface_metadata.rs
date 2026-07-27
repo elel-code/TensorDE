@@ -2,7 +2,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use smithay::wayland::compositor;
+use super::compositor;
 use tensor_protocol::{SurfaceAlpha, SurfaceContentType};
 use wayland_protocols::{
     ext::background_effect::v1::server::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,

@@ -118,7 +118,7 @@ impl RuntimeState {
             );
             return;
         }
-        let popup = super::super::PopupKind::Xdg(popup);
+        let popup = super::super::PopupKind::from(popup);
         self.unconstrain_popup(&popup);
         self.popups.commit(&popup);
     }

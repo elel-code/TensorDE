@@ -358,7 +358,7 @@ impl RuntimeState {
         let Ok(seat) = seat.upgrade() else {
             return false;
         };
-        if !self.seat.owns(&seat) {
+        if !self.protocol_globals.seat.owns(&seat) {
             return false;
         }
         if self
@@ -368,21 +368,27 @@ impl RuntimeState {
         {
             return true;
         }
-        let pointer_enter = self.seat.get_pointer().is_some_and(|pointer| {
-            pointer.last_enter().map(u32::from) == Some(*serial)
+        let pointer_enter = self
+            .protocol_globals
+            .seat
+            .pointer_enter_serial()
+            .map(u32::from)
+            == Some(*serial)
+            && self
+                .protocol_globals
+                .activation
+                .pointer_client_is_focused(client);
+        pointer_enter
+            || (self
+                .protocol_globals
+                .seat
+                .keyboard_enter_serial()
+                .map(u32::from)
+                == Some(*serial)
                 && self
                     .protocol_globals
                     .activation
-                    .pointer_client_is_focused(client)
-        });
-        pointer_enter
-            || self.seat.get_keyboard().is_some_and(|keyboard| {
-                keyboard.last_enter().map(u32::from) == Some(*serial)
-                    && self
-                        .protocol_globals
-                        .activation
-                        .keyboard_client_is_focused(client)
-            })
+                    .keyboard_client_is_focused(client))
     }
 
     fn activate_surface_with_token(&mut self, token: &str, surface: WlSurface) {

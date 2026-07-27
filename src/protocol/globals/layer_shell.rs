@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use smithay::wayland::compositor::{self, BufferAssignment, SurfaceAttributes, with_states};
+use super::compositor::{self, BufferAssignment, SurfaceAttributes, with_states};
 use wayland_protocols_wlr::layer_shell::v1::server::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},

@@ -11,11 +11,11 @@ use std::{
     os::fd::OwnedFd,
 };
 
+use super::compositor::{Barrier, with_states};
 use rustix::time::{
     ClockId, Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, clock_gettime,
     timerfd_create, timerfd_settime,
 };
-use smithay::wayland::compositor::{Barrier, CompositorHandler, with_states};
 use tracing::warn;
 use wayland_protocols::wp::{
     commit_timing::v1::server::{
@@ -668,10 +668,8 @@ impl RuntimeState {
                 clients.push(client);
             }
         }
-        let display = self.display_handle.clone();
         for client in clients {
-            let compositor = <Self as CompositorHandler>::client_compositor_state(self, &client);
-            compositor.blocker_cleared(self, &display);
+            self.compositor_blocker_cleared(&client);
         }
     }
 }

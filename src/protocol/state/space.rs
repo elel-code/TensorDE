@@ -5,11 +5,9 @@
 //! allocate or clone the mapped-output list on each pass.
 
 use super::{PopupManager, ProtocolWindow, smithay_transform, surfaces::surface_view};
+use crate::protocol::globals::compositor::{TraversalAction, with_surface_tree_downward};
 use crate::protocol::globals::output::Output;
-use smithay::{
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Size},
-    wayland::compositor::{TraversalAction, with_surface_tree_downward},
-};
+use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Size};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[derive(Debug)]

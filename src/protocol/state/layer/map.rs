@@ -3,13 +3,13 @@
 
 use std::{collections::HashMap, num::Saturating};
 
-use smithay::{
-    utils::{Logical, Physical, Point, Rectangle, Size},
-    wayland::compositor::{TraversalAction, with_states, with_surface_tree_downward},
-};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
-use crate::protocol::globals::output::{Output, OutputInstanceId};
+use crate::protocol::globals::{
+    compositor::{TraversalAction, with_states, with_surface_tree_downward},
+    output::{Output, OutputInstanceId},
+};
 
 use super::super::{
     PopupManager,

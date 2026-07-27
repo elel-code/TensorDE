@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use smithay::wayland::compositor::{Cacheable, with_states};
+use super::compositor::{Cacheable, with_states};
 use wayland_protocols::wp::presentation_time::server::{wp_presentation, wp_presentation_feedback};
 use wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, New, Resource, Weak, backend::GlobalId,

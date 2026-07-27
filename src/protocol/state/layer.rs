@@ -19,12 +19,11 @@ pub(in crate::protocol) use surface::{
 };
 
 #[cfg(feature = "tty")]
+use crate::protocol::globals::compositor::{get_parent, send_surface_state, with_states};
+#[cfg(feature = "tty")]
 use smithay::{
     utils::{Logical, Point, SERIAL_COUNTER},
-    wayland::{
-        compositor::{get_parent, send_surface_state, with_states},
-        seat::WaylandFocus,
-    },
+    wayland::seat::WaylandFocus,
 };
 #[cfg(feature = "tty")]
 use tensor_util::Rect;
@@ -130,7 +129,7 @@ impl RuntimeState {
                     layer.wl_surface(),
                     states,
                     super::output_integer_scale(scale),
-                    super::smithay_transform(transform),
+                    super::smithay_transform(transform).into(),
                 );
             });
             self.protocol_globals

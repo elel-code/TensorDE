@@ -43,6 +43,12 @@ impl SurfaceFocusTarget {
     pub(crate) fn into_surface(self) -> WlSurface {
         self.0
     }
+
+    fn client_scale(&self, state: &RuntimeState) -> f64 {
+        self.client()
+            .map(|client| state.client_scale(&client))
+            .unwrap_or(1.0)
+    }
 }
 
 impl Deref for SurfaceFocusTarget {
@@ -73,7 +79,7 @@ impl From<KeyboardFocusTarget> for SurfaceFocusTarget {
 
 impl IsAlive for SurfaceFocusTarget {
     fn alive(&self) -> bool {
-        self.0.alive()
+        self.0.is_alive()
     }
 }
 
@@ -84,162 +90,170 @@ impl WaylandFocus for SurfaceFocusTarget {
 }
 
 impl PointerTarget<RuntimeState> for SurfaceFocusTarget {
-    fn enter(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &MotionEvent) {
-        PointerTarget::<RuntimeState>::enter(&self.0, seat, state, event);
+    fn enter(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &MotionEvent) {
+        let scale = self.client_scale(state);
+        state
+            .protocol_globals
+            .seat
+            .pointer_enter(&self.0, event, scale);
     }
 
-    fn motion(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &MotionEvent) {
-        PointerTarget::<RuntimeState>::motion(&self.0, seat, state, event);
+    fn motion(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &MotionEvent) {
+        let scale = self.client_scale(state);
+        state.protocol_globals.seat.pointer_motion(event, scale);
     }
 
     fn relative_motion(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &RelativeMotionEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &RelativeMotionEvent,
     ) {
-        PointerTarget::<RuntimeState>::relative_motion(&self.0, seat, state, event);
     }
 
-    fn button(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &ButtonEvent) {
-        PointerTarget::<RuntimeState>::button(&self.0, seat, state, event);
+    fn button(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &ButtonEvent) {
+        state.protocol_globals.seat.pointer_button(event);
     }
 
-    fn axis(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, frame: AxisFrame) {
-        PointerTarget::<RuntimeState>::axis(&self.0, seat, state, frame);
+    fn axis(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, frame: AxisFrame) {
+        let scale = self.client_scale(state);
+        state.protocol_globals.seat.pointer_axis(frame, scale);
     }
 
-    fn frame(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState) {
-        PointerTarget::<RuntimeState>::frame(&self.0, seat, state);
+    fn frame(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState) {
+        state.protocol_globals.seat.pointer_frame();
     }
 
     fn gesture_swipe_begin(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GestureSwipeBeginEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GestureSwipeBeginEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_swipe_begin(&self.0, seat, state, event);
     }
 
     fn gesture_swipe_update(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GestureSwipeUpdateEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GestureSwipeUpdateEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_swipe_update(&self.0, seat, state, event);
     }
 
     fn gesture_swipe_end(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GestureSwipeEndEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GestureSwipeEndEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_swipe_end(&self.0, seat, state, event);
     }
 
     fn gesture_pinch_begin(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GesturePinchBeginEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GesturePinchBeginEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_pinch_begin(&self.0, seat, state, event);
     }
 
     fn gesture_pinch_update(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GesturePinchUpdateEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GesturePinchUpdateEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_pinch_update(&self.0, seat, state, event);
     }
 
     fn gesture_pinch_end(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GesturePinchEndEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GesturePinchEndEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_pinch_end(&self.0, seat, state, event);
     }
 
     fn gesture_hold_begin(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GestureHoldBeginEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GestureHoldBeginEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_hold_begin(&self.0, seat, state, event);
     }
 
     fn gesture_hold_end(
         &self,
-        seat: &Seat<RuntimeState>,
-        state: &mut RuntimeState,
-        event: &GestureHoldEndEvent,
+        _seat: &Seat<RuntimeState>,
+        _state: &mut RuntimeState,
+        _event: &GestureHoldEndEvent,
     ) {
-        PointerTarget::<RuntimeState>::gesture_hold_end(&self.0, seat, state, event);
     }
 
     fn leave(
         &self,
-        seat: &Seat<RuntimeState>,
+        _seat: &Seat<RuntimeState>,
         state: &mut RuntimeState,
         serial: Serial,
-        time: u32,
+        _time: u32,
     ) {
-        PointerTarget::<RuntimeState>::leave(&self.0, seat, state, serial, time);
+        state.protocol_globals.seat.pointer_leave(&self.0, serial);
     }
 }
 
 impl TouchTarget<RuntimeState> for SurfaceFocusTarget {
-    fn down(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &DownEvent) {
-        TouchTarget::<RuntimeState>::down(&self.0, seat, state, event);
+    fn down(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &DownEvent) {
+        let scale = self.client_scale(state);
+        state
+            .protocol_globals
+            .seat
+            .touch_down(&self.0, event, scale);
     }
 
-    fn up(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &UpEvent) {
-        TouchTarget::<RuntimeState>::up(&self.0, seat, state, event);
+    fn up(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &UpEvent) {
+        state.protocol_globals.seat.touch_up(&self.0, event);
     }
 
     fn motion(
         &self,
-        seat: &Seat<RuntimeState>,
+        _seat: &Seat<RuntimeState>,
         state: &mut RuntimeState,
         event: &TouchMotionEvent,
     ) {
-        TouchTarget::<RuntimeState>::motion(&self.0, seat, state, event);
+        let scale = self.client_scale(state);
+        state
+            .protocol_globals
+            .seat
+            .touch_motion(&self.0, event, scale);
     }
 
-    fn frame(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, marker: FrameMarker) {
-        TouchTarget::<RuntimeState>::frame(&self.0, seat, state, marker);
+    fn frame(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, marker: FrameMarker) {
+        state.protocol_globals.seat.touch_frame(&self.0, marker);
     }
 
-    fn cancel(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, marker: FrameMarker) {
-        TouchTarget::<RuntimeState>::cancel(&self.0, seat, state, marker);
+    fn cancel(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, marker: FrameMarker) {
+        state.protocol_globals.seat.touch_cancel(&self.0, marker);
     }
 
-    fn shape(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &ShapeEvent) {
-        TouchTarget::<RuntimeState>::shape(&self.0, seat, state, event);
+    fn shape(&self, _seat: &Seat<RuntimeState>, state: &mut RuntimeState, event: &ShapeEvent) {
+        state.protocol_globals.seat.touch_shape(&self.0, event);
     }
 
     fn orientation(
         &self,
-        seat: &Seat<RuntimeState>,
+        _seat: &Seat<RuntimeState>,
         state: &mut RuntimeState,
         event: &OrientationEvent,
     ) {
-        TouchTarget::<RuntimeState>::orientation(&self.0, seat, state, event);
+        state
+            .protocol_globals
+            .seat
+            .touch_orientation(&self.0, event);
     }
 
     fn last_frame(
         &self,
-        seat: &Seat<RuntimeState>,
+        _seat: &Seat<RuntimeState>,
         state: &mut RuntimeState,
     ) -> Option<FrameMarker> {
-        TouchTarget::<RuntimeState>::last_frame(&self.0, seat, state)
+        state.protocol_globals.seat.last_touch_frame(&self.0)
     }
 }

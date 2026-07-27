@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use smithay::wayland::compositor;
+use super::super::compositor;
 use wayland_protocols::xdg::toplevel_icon::v1::server::{
     xdg_toplevel_icon_manager_v1::{self, XdgToplevelIconManagerV1},
     xdg_toplevel_icon_v1::{self, XdgToplevelIconV1},

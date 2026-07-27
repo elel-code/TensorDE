@@ -1,9 +1,6 @@
 //! Runtime integration for Tensor-owned xdg roles.
 
-use smithay::{
-    input::{Seat, pointer::Focus},
-    utils::Serial,
-};
+use smithay::{input::pointer::Focus, utils::Serial};
 use tracing::warn;
 use wayland_server::protocol::wl_seat;
 
@@ -16,7 +13,7 @@ use super::{Popup, Toplevel};
 
 impl RuntimeState {
     pub(in crate::protocol) fn register_xdg_popup(&mut self, popup: Popup) {
-        let popup = PopupKind::Xdg(popup);
+        let popup = PopupKind::from(popup);
         self.unconstrain_popup(&popup);
         if let Err(error) = self.popups.track_popup(popup) {
             warn!(%error, "failed to track xdg popup");
@@ -43,10 +40,11 @@ impl RuntimeState {
         seat: wl_seat::WlSeat,
         serial: u32,
     ) {
-        let Some(seat) = Seat::from_resource(&seat) else {
+        if !self.protocol_globals.seat.owns(&seat) {
             return;
-        };
-        let popup = PopupKind::Xdg(popup);
+        }
+        let seat = self.seat.clone();
+        let popup = PopupKind::from(popup);
         let Ok(root) = find_popup_root_surface(&popup) else {
             return;
         };

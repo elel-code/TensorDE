@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes, with_states};
+use crate::protocol::globals::compositor::{BufferAssignment, SurfaceAttributes, with_states};
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::{
     self, WpLinuxDrmSyncobjSurfaceV1,
 };

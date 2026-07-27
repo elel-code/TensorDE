@@ -12,10 +12,7 @@ use std::{
 
 use smithay::{
     utils::{IsAlive, Logical, Point, Rectangle},
-    wayland::{
-        compositor::{SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward},
-        seat::WaylandFocus,
-    },
+    wayland::seat::WaylandFocus,
 };
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -30,6 +27,9 @@ use super::{
         take_presentation_feedback_surface_tree,
     },
     surfaces::surface_view,
+};
+use crate::protocol::globals::compositor::{
+    SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward,
 };
 use crate::protocol::globals::xdg_shell::Toplevel;
 
@@ -345,7 +345,7 @@ where
                 .current()
                 .input_region
                 .as_ref()
-                .is_none_or(|region| region.contains(local.to_i32_floor()));
+                .is_none_or(|region| region.contains(local.to_i32_floor().into()));
             if accepts_input {
                 *found.borrow_mut() = Some((surface.clone(), location));
             }

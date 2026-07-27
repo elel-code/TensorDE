@@ -4,10 +4,7 @@ use std::{
     time::Duration,
 };
 
-use smithay::{
-    utils::{Clock, Monotonic},
-    wayland::compositor::SurfaceData,
-};
+use smithay::utils::{Clock, Monotonic};
 use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;
 use tracing::warn;
@@ -28,7 +25,7 @@ use super::{
     },
 };
 use crate::protocol::globals::{
-    output::Output, presentation::Refresh, surface_timing::SurfaceBarrier,
+    compositor::SurfaceData, output::Output, presentation::Refresh, surface_timing::SurfaceBarrier,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

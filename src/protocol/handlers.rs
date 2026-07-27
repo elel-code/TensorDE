@@ -9,28 +9,19 @@ use super::cursor::CursorImage;
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use smithay::{
     input::{Seat, SeatHandler, SeatState, dnd::DndGrabHandler, pointer::CursorImageStatus},
-    wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
-        },
-        seat::WaylandFocus,
-    },
+    wayland::{buffer::BufferHandler, seat::WaylandFocus},
 };
 use wayland_server::{
-    Client, Resource,
+    Resource,
     protocol::{wl_buffer, wl_surface::WlSurface},
 };
 
-#[cfg(feature = "xwayland")]
-use smithay::xwayland::XWaylandClientData;
-
 use super::{
     focus::{KeyboardFocusTarget, SurfaceFocusTarget},
+    globals::compositor::{get_parent, is_sync_subsurface},
     state::{
-        PopupKind, RuntimeState, WaylandClientState, destroy_surface_state,
-        on_commit_surface_handler, popup::PopupGrabHandler, xdg_size_constraints,
+        PopupKind, RuntimeState, destroy_surface_state, on_commit_surface_handler,
+        popup::PopupGrabHandler, xdg_size_constraints,
     },
 };
 
@@ -47,23 +38,8 @@ impl PopupGrabHandler for RuntimeState {
     }
 }
 
-impl CompositorHandler for RuntimeState {
-    fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.compositor_state
-    }
-
-    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        #[cfg(feature = "xwayland")]
-        if let Some(state) = client.get_data::<XWaylandClientData>() {
-            return &state.compositor_state;
-        }
-        &client
-            .get_data::<WaylandClientState>()
-            .expect("all Tensor Wayland clients carry compositor state")
-            .compositor_state
-    }
-
-    fn commit(&mut self, surface: &WlSurface) {
+impl RuntimeState {
+    pub(in crate::protocol) fn surface_commit_applied(&mut self, surface: &WlSurface) {
         #[cfg(feature = "tty")]
         let mut explicit_sync = match take_explicit_sync_points(surface) {
             ExplicitSyncCommit::None => None,
@@ -85,7 +61,7 @@ impl CompositorHandler for RuntimeState {
             .surface_timing
             .take_fifo_activation(surface);
         if let Some(popup) = self.protocol_globals.xdg_shell.popup_for_surface(surface) {
-            self.popups.commit(&PopupKind::Xdg(popup));
+            self.popups.commit(&PopupKind::from(popup));
         }
 
         #[cfg(feature = "tty")]
@@ -193,7 +169,7 @@ impl CompositorHandler for RuntimeState {
         let _ = fifo_activated;
     }
 
-    fn destroyed(&mut self, surface: &WlSurface) {
+    pub(in crate::protocol) fn surface_destroyed_applied(&mut self, surface: &WlSurface) {
         self.selection_surface_destroyed(surface);
         self.layer_surface_wl_destroyed(surface);
         self.remove_session_lock_surface(surface);
@@ -211,9 +187,7 @@ impl CompositorHandler for RuntimeState {
         let notify_destroyed_client = !released.is_empty();
         self.release_surface_barriers(released);
         if notify_destroyed_client && let Some(client) = surface.client() {
-            let display = self.display_handle.clone();
-            self.client_compositor_state(&client)
-                .blocker_cleared(self, &display);
+            self.compositor_blocker_cleared(&client);
         }
         destroy_surface_state(surface);
         #[cfg(feature = "tty")]
@@ -310,10 +284,6 @@ impl SeatHandler for RuntimeState {
         #[cfg(not(feature = "tty"))]
         let _ = image;
     }
-}
-
-impl smithay::input::tablet::TabletSeatHandler for RuntimeState {
-    type ToolFocus = WlSurface;
 }
 
 impl DndGrabHandler for RuntimeState {

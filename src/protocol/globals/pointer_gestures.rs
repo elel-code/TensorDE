@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use smithay::{input::pointer::PointerHandle, utils::Serial};
+use smithay::utils::Serial;
 use tensor_input::PointerGestureEvent;
 use wayland_protocols::wp::pointer_gestures::zv1::server::{
     zwp_pointer_gesture_hold_v1::{self, ZwpPointerGestureHoldV1},
@@ -422,8 +422,10 @@ impl DispatchDelegate<ZwpPointerGesturesV1, RuntimeState> for PointerGesturesMan
         data_init: &mut DataInit<'_, RuntimeState>,
     ) {
         let active_client = |pointer: &wayland_server::protocol::wl_pointer::WlPointer| {
-            PointerHandle::<RuntimeState>::from_resource(pointer)
-                .is_some_and(|handle| state.seat.get_pointer().as_ref() == Some(&handle))
+            state
+                .protocol_globals
+                .seat
+                .owns_pointer(pointer)
                 .then(|| client.id())
         };
         match request {

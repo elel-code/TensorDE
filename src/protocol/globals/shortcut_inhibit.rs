@@ -136,7 +136,7 @@ impl DispatchDelegate<ZwpKeyboardShortcutsInhibitManagerV1, RuntimeState>
                 surface,
                 seat,
             } => {
-                if !state.seat.owns(&seat) {
+                if !state.protocol_globals.seat.owns(&seat) {
                     return;
                 }
                 if state.protocol_globals.shortcut_inhibit.contains(&surface) {

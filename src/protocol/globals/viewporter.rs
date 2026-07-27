@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 
-use smithay::wayland::compositor::{self, Cacheable, CompositorHandler, SurfaceData, with_states};
+use super::compositor::{self, Cacheable, SurfaceData, with_states};
 use tensor_protocol::SurfaceSourceRect;
 use wayland_protocols::wp::viewporter::server::{
     wp_viewport::{self, WpViewport},
@@ -143,7 +143,7 @@ pub(in crate::protocol) trait ViewporterHandler: 'static {
 
 impl ViewporterHandler for RuntimeState {
     fn viewport_client_scale(&self, client: &Client) -> f64 {
-        <Self as CompositorHandler>::client_compositor_state(self, client).client_scale()
+        self.client_scale(client)
     }
 }
 

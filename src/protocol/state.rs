@@ -44,12 +44,9 @@ use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
 
+use smithay::input::{Seat, SeatState};
 #[cfg(feature = "tty")]
 use smithay::utils::SERIAL_COUNTER;
-use smithay::{
-    input::{Seat, SeatState},
-    wayland::compositor::{CompositorState, get_parent, send_surface_state, with_states},
-};
 #[cfg(feature = "xwayland")]
 use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
 use std::collections::HashMap;
@@ -74,7 +71,11 @@ use tensor_util::{OutputScale, Size};
 #[cfg(feature = "tty")]
 use super::cursor::CursorState;
 use super::extensions::security_context::SecurityContextSubmitter;
-use super::globals::{ProtocolGlobals, xdg_shell::Toplevel};
+use super::globals::{
+    ProtocolGlobals,
+    compositor::{CompositorState, get_parent, send_surface_state, with_states},
+    xdg_shell::Toplevel,
+};
 #[cfg(feature = "tty")]
 use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
@@ -154,9 +155,6 @@ pub(crate) struct RuntimeState {
     /// Physical devices discovered by the input adapter (value-only caps).
     pub(crate) input_devices: HashMap<tensor_input::DeviceId, InputDeviceCapabilities>,
     #[cfg(feature = "tty")]
-    pub(super) tablet_devices:
-        HashMap<tensor_input::DeviceId, smithay::input::tablet::TabletDescriptor>,
-    #[cfg(feature = "tty")]
     pub(crate) cursor: CursorState,
     /// When true, every redraw path fans out to all CRTCs (debug only).
     #[cfg(feature = "tty")]
@@ -192,12 +190,12 @@ impl RuntimeState {
         appearance: SceneAppearance,
     ) -> Self {
         let display_handle = display.handle();
-        let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let compositor_state = CompositorState::new(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(&display_handle, "tensor");
+        let seat = seat_state.new_seat("tensor");
 
         Self {
             display: Some(display),
@@ -239,8 +237,6 @@ impl RuntimeState {
             backend: None,
             #[cfg(feature = "tty")]
             input_devices: HashMap::new(),
-            #[cfg(feature = "tty")]
-            tablet_devices: HashMap::new(),
             #[cfg(feature = "tty")]
             cursor: CursorState::default(),
             #[cfg(feature = "tty")]
@@ -448,7 +444,6 @@ impl RuntimeState {
         Some(view_id)
     }
 
-    #[cfg(feature = "tty")]
     pub(crate) fn clear_keyboard_focus_for_surface(&mut self, surface: &WlSurface) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
@@ -557,7 +552,7 @@ impl RuntimeState {
                 surface,
                 states,
                 output_integer_scale(scale),
-                smithay_transform(transform),
+                smithay_transform(transform).into(),
             );
         });
         self.protocol_globals
@@ -571,7 +566,7 @@ impl RuntimeState {
                 surface,
                 states,
                 output_integer_scale(scale),
-                smithay_transform(transform),
+                smithay_transform(transform).into(),
             );
             self.protocol_globals
                 .set_preferred_fractional_scale(surface, scale);

@@ -1,4 +1,6 @@
-use smithay::wayland::compositor::{self, BufferAssignment, SurfaceAttributes, with_states};
+use crate::protocol::globals::compositor::{
+    self, BufferAssignment, SurfaceAttributes, with_states,
+};
 use tracing::info;
 use wayland_protocols::ext::session_lock::v1::server::{
     ext_session_lock_manager_v1::{self, ExtSessionLockManagerV1},

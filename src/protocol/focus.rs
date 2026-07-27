@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Mutex};
 
 use smithay::{
     backend::input::KeyState,
@@ -9,12 +9,15 @@ use smithay::{
     utils::{IsAlive, Serial},
     wayland::seat::WaylandFocus,
 };
-use wayland_server::protocol::wl_surface::WlSurface;
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::X11Surface;
 
-use super::state::{PopupKind, RuntimeState};
+use super::{
+    globals::compositor::{HookId, add_destruction_hook, remove_destruction_hook, with_states},
+    state::{PopupKind, RuntimeState},
+};
 
 mod surface;
 pub(crate) use surface::SurfaceFocusTarget;
@@ -29,18 +32,9 @@ pub(crate) enum KeyboardFocusTarget {
 }
 
 impl KeyboardFocusTarget {
-    #[cfg(feature = "tty")]
     pub(crate) fn targets_surface(&self, surface: &WlSurface) -> bool {
         self.wl_surface()
             .is_some_and(|focused| focused.as_ref() == surface)
-    }
-
-    fn target(&self) -> &dyn KeyboardTarget<RuntimeState> {
-        match self {
-            Self::Wayland(surface) => surface,
-            #[cfg(feature = "xwayland")]
-            Self::X11(surface) => surface.as_ref(),
-        }
     }
 }
 
@@ -75,7 +69,7 @@ impl From<X11Surface> for KeyboardFocusTarget {
 impl IsAlive for KeyboardFocusTarget {
     fn alive(&self) -> bool {
         match self {
-            Self::Wayland(surface) => surface.alive(),
+            Self::Wayland(surface) => surface.is_alive(),
             #[cfg(feature = "xwayland")]
             Self::X11(surface) => surface.alive(),
         }
@@ -90,11 +84,28 @@ impl KeyboardTarget<RuntimeState> for KeyboardFocusTarget {
         keys: Vec<KeysymHandle<'_>>,
         serial: Serial,
     ) {
-        self.target().enter(seat, state, keys, serial);
+        match self {
+            Self::Wayland(surface) => {
+                state
+                    .protocol_globals
+                    .seat
+                    .keyboard_enter(surface, &keys, serial);
+                install_keyboard_focus_hook(surface);
+            }
+            #[cfg(feature = "xwayland")]
+            Self::X11(surface) => surface.enter(seat, state, keys, serial),
+        }
     }
 
     fn leave(&self, seat: &Seat<RuntimeState>, state: &mut RuntimeState, serial: Serial) {
-        self.target().leave(seat, state, serial);
+        match self {
+            Self::Wayland(surface) => {
+                state.protocol_globals.seat.keyboard_leave(surface, serial);
+                remove_keyboard_focus_hook(surface);
+            }
+            #[cfg(feature = "xwayland")]
+            Self::X11(surface) => surface.leave(seat, state, serial),
+        }
     }
 
     fn key(
@@ -106,7 +117,14 @@ impl KeyboardTarget<RuntimeState> for KeyboardFocusTarget {
         serial: Serial,
         time: u32,
     ) {
-        self.target().key(seat, state, key, key_state, serial, time);
+        match self {
+            Self::Wayland(_) => state
+                .protocol_globals
+                .seat
+                .key(&key, key_state, serial, time),
+            #[cfg(feature = "xwayland")]
+            Self::X11(surface) => surface.key(seat, state, key, key_state, serial, time),
+        }
     }
 
     fn modifiers(
@@ -116,7 +134,44 @@ impl KeyboardTarget<RuntimeState> for KeyboardFocusTarget {
         modifiers: ModifiersState,
         serial: Serial,
     ) {
-        self.target().modifiers(seat, state, modifiers, serial);
+        match self {
+            Self::Wayland(_) => state.protocol_globals.seat.modifiers(modifiers, serial),
+            #[cfg(feature = "xwayland")]
+            Self::X11(surface) => surface.modifiers(seat, state, modifiers, serial),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct KeyboardFocusHook(Mutex<Option<HookId>>);
+
+fn install_keyboard_focus_hook(surface: &WlSurface) {
+    let hook = add_destruction_hook::<RuntimeState, _>(surface, |state, surface| {
+        state.clear_keyboard_focus_for_surface(surface);
+    });
+    let old = with_states(surface, |states| {
+        states
+            .data_map
+            .get_or_insert(KeyboardFocusHook::default)
+            .0
+            .lock()
+            .unwrap()
+            .replace(hook)
+    });
+    if let Some(old) = old {
+        remove_destruction_hook(surface, &old);
+    }
+}
+
+fn remove_keyboard_focus_hook(surface: &WlSurface) {
+    let hook = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<KeyboardFocusHook>()
+            .and_then(|hook| hook.0.lock().unwrap().take())
+    });
+    if let Some(hook) = hook {
+        remove_destruction_hook(surface, &hook);
     }
 }
 

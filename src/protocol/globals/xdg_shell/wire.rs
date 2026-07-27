@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use smithay::wayland::compositor::{
+use crate::protocol::globals::compositor::{
     self, BufferAssignment, SurfaceAttributes, get_role, with_states,
 };
 use tensor_util::{Point, Rect, Size};
@@ -541,7 +541,7 @@ impl DispatchDelegate<XdgPopup, RuntimeState> for XdgRoleData {
                     return;
                 }
                 popup.update_positioner(positioner);
-                state.unconstrain_popup(&PopupKind::Xdg(popup.clone()));
+                state.unconstrain_popup(&PopupKind::from(popup.clone()));
                 popup.send_repositioned(token);
             }
             _ => unreachable!(),

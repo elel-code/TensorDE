@@ -50,9 +50,6 @@ pub enum PopupGrabError {
     /// The client tried to grab a popup after it's parent has been dismissed
     #[error("the parent of the popup has been already dismissed")]
     ParentDismissed,
-    /// The client tried to grab a popup after it has been mapped
-    #[error("tried to grab after being mapped")]
-    InvalidGrab,
     /// The client tried to grab a popup which is not the topmost
     #[error("popup was not created on the topmost popup")]
     NotTheTopmostPopup,
@@ -72,14 +69,12 @@ struct GrabPopup {
 }
 
 impl GrabPopup {
-    fn new(popup: &PopupKind) -> Option<Self> {
-        let PopupKind::Xdg(popup) = popup else {
-            return None;
-        };
-        Some(Self {
+    fn new(popup: &PopupKind) -> Self {
+        let popup = &popup.0;
+        Self {
             surface: popup.wl_surface().clone(),
             role: popup.xdg_popup().downgrade(),
-        })
+        }
     }
 
     fn alive(&self) -> bool {
@@ -109,9 +104,7 @@ impl PopupGrabInternal {
     }
 
     fn append_grab(&mut self, popup: &PopupKind) {
-        if let Some(popup) = GrabPopup::new(popup) {
-            self.active_grabs.push(popup);
-        }
+        self.active_grabs.push(GrabPopup::new(popup));
     }
 
     fn cleanup(&mut self) {

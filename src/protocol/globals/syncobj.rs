@@ -10,10 +10,10 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use smithay::wayland::{
-    Dispatch2, GlobalDispatch2,
-    compositor::{self, BufferAssignment, Cacheable, HookId, SurfaceAttributes, with_states},
+use super::compositor::{
+    self, BufferAssignment, Cacheable, HookId, SurfaceAttributes, with_states,
 };
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use tracing::warn;
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::{
     wp_linux_drm_syncobj_manager_v1::{self, WpLinuxDrmSyncobjManagerV1},
