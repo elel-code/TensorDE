@@ -94,6 +94,10 @@ impl NativeShellState {
                 swipe_gesture: None,
                 pinch_gesture: None,
                 hold_gesture: None,
+                axis_h: 0.0,
+                axis_v: 0.0,
+                axis_h120: 0,
+                axis_v120: 0,
             },
         );
         self.push(NativeShellEvent::SeatAdded {

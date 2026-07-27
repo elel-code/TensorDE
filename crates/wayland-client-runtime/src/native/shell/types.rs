@@ -505,6 +505,11 @@ pub(crate) struct SeatRecord {
     pub(crate) hold_gesture: Option<
         wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
     >,
+    /// Axis accumulation until `wl_pointer.frame` for this seat's pointer.
+    pub(crate) axis_h: f64,
+    pub(crate) axis_v: f64,
+    pub(crate) axis_h120: i32,
+    pub(crate) axis_v120: i32,
 }
 
 #[derive(Clone, Debug, Default)]

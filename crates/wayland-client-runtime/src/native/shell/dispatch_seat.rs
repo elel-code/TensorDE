@@ -310,7 +310,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     }
                     return;
                 }
-                if let Some(id) = state.pointer_focus {
+                let focus = seat_global
+                    .and_then(|g| state.seats.get(&g).and_then(|r| r.pointer_focus))
+                    .or(state.pointer_focus);
+                if let Some(id) = focus {
                     state.push(NativeShellEvent::PointerMotion {
                         surface: id,
                         x: surface_x,
@@ -334,46 +337,94 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         }
                     return;
                 }
+                let focus = seat_global
+                    .and_then(|g| state.seats.get(&g).and_then(|r| r.pointer_focus))
+                    .or(state.pointer_focus);
                 state.push(NativeShellEvent::PointerButton {
-                    surface: state.pointer_focus,
+                    surface: focus,
                     button,
                     pressed,
                     seat: seat_global,
                 });
             }
-            wl_pointer::Event::Axis { axis, value, .. } => match axis {
-                WEnum::Value(wl_pointer::Axis::VerticalScroll) => state.axis_v += value,
-                WEnum::Value(wl_pointer::Axis::HorizontalScroll) => state.axis_h += value,
-                _ => {}
-            },
-            wl_pointer::Event::AxisValue120 { axis, value120 } => match axis {
-                WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
-                    state.axis_v120 = state.axis_v120.saturating_add(value120);
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                // Accumulate per-seat so concurrent multi-seat scrolls do not mix.
+                if let Some(g) = seat_global
+                    && let Some(rec) = state.seats.get_mut(&g)
+                {
+                    match axis {
+                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => rec.axis_v += value,
+                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => rec.axis_h += value,
+                        _ => {}
+                    }
+                } else {
+                    match axis {
+                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => state.axis_v += value,
+                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => state.axis_h += value,
+                        _ => {}
+                    }
                 }
-                WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
-                    state.axis_h120 = state.axis_h120.saturating_add(value120);
+            }
+            wl_pointer::Event::AxisValue120 { axis, value120 } => {
+                if let Some(g) = seat_global
+                    && let Some(rec) = state.seats.get_mut(&g)
+                {
+                    match axis {
+                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
+                            rec.axis_v120 = rec.axis_v120.saturating_add(value120);
+                        }
+                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
+                            rec.axis_h120 = rec.axis_h120.saturating_add(value120);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match axis {
+                        WEnum::Value(wl_pointer::Axis::VerticalScroll) => {
+                            state.axis_v120 = state.axis_v120.saturating_add(value120);
+                        }
+                        WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
+                            state.axis_h120 = state.axis_h120.saturating_add(value120);
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            },
-            wl_pointer::Event::Frame
-                if (state.axis_h != 0.0
-                    || state.axis_v != 0.0
-                    || state.axis_h120 != 0
-                    || state.axis_v120 != 0)
-                => {
-                    state.push(NativeShellEvent::PointerAxis {
-                        surface: state.pointer_focus,
-                        horizontal: state.axis_h,
-                        vertical: state.axis_v,
-                        horizontal_value120: state.axis_h120,
-                        vertical_value120: state.axis_v120,
-                        seat: seat_global,
-                    });
+            }
+            wl_pointer::Event::Frame => {
+                let (h, v, h120, v120, focus) = if let Some(g) = seat_global
+                    && let Some(rec) = state.seats.get_mut(&g)
+                {
+                    let out = (rec.axis_h, rec.axis_v, rec.axis_h120, rec.axis_v120, rec.pointer_focus);
+                    rec.axis_h = 0.0;
+                    rec.axis_v = 0.0;
+                    rec.axis_h120 = 0;
+                    rec.axis_v120 = 0;
+                    out
+                } else {
+                    let out = (
+                        state.axis_h,
+                        state.axis_v,
+                        state.axis_h120,
+                        state.axis_v120,
+                        state.pointer_focus,
+                    );
                     state.axis_h = 0.0;
                     state.axis_v = 0.0;
                     state.axis_h120 = 0;
                     state.axis_v120 = 0;
+                    out
+                };
+                if h != 0.0 || v != 0.0 || h120 != 0 || v120 != 0 {
+                    state.push(NativeShellEvent::PointerAxis {
+                        surface: focus,
+                        horizontal: h,
+                        vertical: v,
+                        horizontal_value120: h120,
+                        vertical_value120: v120,
+                        seat: seat_global,
+                    });
                 }
+            }
             _ => {}
         }
     }
