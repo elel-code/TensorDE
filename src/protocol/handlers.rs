@@ -8,29 +8,19 @@ use super::cursor::CursorImage;
 #[cfg(feature = "tty")]
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use smithay::{
-    input::{
-        Seat, SeatHandler, SeatState,
-        dnd::DndGrabHandler,
-        pointer::{CursorImageStatus, Focus},
-    },
-    utils::Serial,
+    input::{Seat, SeatHandler, SeatState, dnd::DndGrabHandler, pointer::CursorImageStatus},
     wayland::{
         buffer::BufferHandler,
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface, with_states,
+            is_sync_subsurface,
         },
         seat::WaylandFocus,
-        shell::xdg::{
-            PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
-            XdgShellState,
-        },
     },
 };
-use tracing::warn;
 use wayland_server::{
     Client, Resource,
-    protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+    protocol::{wl_buffer, wl_surface::WlSurface},
 };
 
 #[cfg(feature = "xwayland")]
@@ -40,9 +30,7 @@ use super::{
     focus::{KeyboardFocusTarget, SurfaceFocusTarget},
     state::{
         PopupKind, RuntimeState, WaylandClientState, destroy_surface_state,
-        find_popup_root_surface, on_commit_surface_handler,
-        popup::{PopupGrabHandler, PopupKeyboardGrab, PopupPointerGrab},
-        xdg_size_constraints,
+        on_commit_surface_handler, popup::PopupGrabHandler, xdg_size_constraints,
     },
 };
 
@@ -50,9 +38,12 @@ impl PopupGrabHandler for RuntimeState {
     fn dismiss_grabbed_popup(
         &mut self,
         root: &WlSurface,
-        popup: &PopupKind,
+        popup: &WlSurface,
     ) -> Result<(), smithay::utils::DeadResource> {
-        self.popups.dismiss_popup(root, popup)
+        let Some(popup) = self.popups.find_popup(popup) else {
+            return Ok(());
+        };
+        self.popups.dismiss_popup(root, &popup)
     }
 }
 
@@ -93,7 +84,9 @@ impl CompositorHandler for RuntimeState {
             .protocol_globals
             .surface_timing
             .take_fifo_activation(surface);
-        self.popups.commit(surface);
+        if let Some(popup) = self.protocol_globals.xdg_shell.popup_for_surface(surface) {
+            self.popups.commit(&PopupKind::Xdg(popup));
+        }
 
         #[cfg(feature = "tty")]
         if self.handle_session_lock_commit(surface) || self.handle_layer_shell_commit(surface) {
@@ -146,14 +139,11 @@ impl CompositorHandler for RuntimeState {
                 && window.wl_surface().as_deref() == Some(&root)
                 && let Some(toplevel) = window.toplevel().cloned()
             {
-                let constraints = with_states(toplevel.wl_surface(), |states| {
-                    let mut cached = states.cached_state.get::<SurfaceCachedState>();
-                    let current = cached.current();
-                    xdg_size_constraints(current.min_size, current.max_size)
-                });
+                let (min_size, max_size) = toplevel.constraints();
+                let constraints = xdg_size_constraints(min_size, max_size);
                 let constraints_changed =
                     self.update_toplevel_constraints(toplevel.wl_surface(), constraints);
-                let needs_initial_configure = !toplevel.is_initial_configure_sent();
+                let needs_initial_configure = !toplevel.initial_configure_sent();
                 if constraints_changed || needs_initial_configure {
                     #[cfg(feature = "tty")]
                     {
@@ -165,7 +155,7 @@ impl CompositorHandler for RuntimeState {
                     }
                 }
                 if needs_initial_configure {
-                    if !toplevel.is_initial_configure_sent() {
+                    if !toplevel.initial_configure_sent() {
                         toplevel.send_configure();
                     }
                     // `focus_mapped_window` selects ECS and XDG activation
@@ -191,11 +181,10 @@ impl CompositorHandler for RuntimeState {
             }
         }
 
-        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
-            && !popup.is_initial_configure_sent()
-            && let Err(error) = popup.send_configure()
+        if let Some(popup) = self.protocol_globals.xdg_shell.popup_for_surface(surface)
+            && !popup.initial_configure_sent()
         {
-            warn!(%error, "failed to send initial popup configure");
+            popup.send_configure();
         }
         self.popups.cleanup();
         #[cfg(feature = "tty")]
@@ -209,6 +198,15 @@ impl CompositorHandler for RuntimeState {
         self.layer_surface_wl_destroyed(surface);
         self.remove_session_lock_surface(surface);
         self.remove_xdg_foreign_surface(surface);
+        if let Some(toplevel) = self
+            .protocol_globals
+            .xdg_shell
+            .toplevel_for_surface(surface)
+        {
+            self.protocol_globals
+                .xdg_toplevel_destroyed(toplevel.xdg_toplevel());
+        }
+        self.protocol_globals.xdg_shell.remove_wl_surface(surface);
         let released = self.protocol_globals.remove_surface(surface);
         let notify_destroyed_client = !released.is_empty();
         self.release_surface_barriers(released);
@@ -275,110 +273,6 @@ impl BufferHandler for RuntimeState {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
         #[cfg(feature = "tty")]
         self.buffer_destroyed(&_buffer.id());
-    }
-}
-
-impl XdgShellHandler for RuntimeState {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
-    }
-
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let _ = self.register_toplevel(surface);
-    }
-
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        let popup = PopupKind::Xdg(surface);
-        self.unconstrain_popup(&popup);
-        if let Err(error) = self.popups.track_popup(popup) {
-            warn!(%error, "failed to track xdg popup");
-        }
-    }
-
-    fn popup_destroyed(&mut self, _surface: PopupSurface) {
-        self.popups.cleanup();
-    }
-
-    fn reposition_request(
-        &mut self,
-        surface: PopupSurface,
-        positioner: PositionerState,
-        token: u32,
-    ) {
-        surface.with_pending_state(|state| {
-            state.geometry = positioner.get_geometry();
-            state.positioner = positioner;
-        });
-        self.unconstrain_popup(&PopupKind::Xdg(surface.clone()));
-        surface.send_repositioned(token);
-        if surface.is_initial_configure_sent()
-            && let Err(error) = surface.send_configure()
-        {
-            warn!(%error, "failed to configure repositioned popup");
-        }
-    }
-
-    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let Some(seat) = Seat::from_resource(&seat) else {
-            return;
-        };
-        let popup = PopupKind::Xdg(surface);
-        let Ok(root) = find_popup_root_surface(&popup) else {
-            return;
-        };
-        let is_view = self.view_for_surface(&root).is_some();
-        #[cfg(feature = "tty")]
-        let is_layer = self.is_layer_root(&root);
-        #[cfg(not(feature = "tty"))]
-        let is_layer = false;
-        if !is_view && !is_layer {
-            let _ = self.popups.dismiss_popup(&root, &popup);
-            return;
-        }
-        #[cfg(feature = "tty")]
-        if is_view && self.layer_blocks_window_popup_grabs() {
-            let _ = self.popups.dismiss_popup(&root, &popup);
-            return;
-        }
-        let Ok(mut grab) = self.popups.grab_popup(root.into(), popup, &seat, serial) else {
-            return;
-        };
-
-        if let Some(keyboard) = seat.get_keyboard() {
-            if keyboard.is_grabbed()
-                && !(keyboard.has_grab(serial)
-                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
-            {
-                grab.ungrab(self);
-                return;
-            }
-            keyboard.set_focus(self, grab.current_grab(), serial);
-            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
-        }
-        if let Some(pointer) = seat.get_pointer() {
-            if pointer.is_grabbed()
-                && !(pointer.has_grab(serial)
-                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
-            {
-                grab.ungrab(self);
-                return;
-            }
-            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
-        }
-    }
-
-    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.protocol_globals
-            .xdg_toplevel_destroyed(surface.xdg_toplevel());
-        self.unregister_toplevel(surface.wl_surface());
-    }
-
-    fn title_changed(&mut self, surface: ToplevelSurface) {
-        self.refresh_foreign_toplevel_metadata(&surface);
-    }
-
-    fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        self.refresh_foreign_toplevel_metadata(&surface);
     }
 }
 

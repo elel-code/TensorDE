@@ -4,6 +4,7 @@
 //! workspace, a fixed desktop pool, and mapping of protocol windows when the
 //! user switches. Protocol (`ext-workspace`) and IPC read/write through here.
 
+use tensor_util::Size;
 use tracing::{debug, info};
 
 use crate::ecs::{ViewId, WorkspaceId};
@@ -222,20 +223,9 @@ impl RuntimeState {
         for (window, geometry) in windows {
             self.update_window_surface_state(&window);
             if let Some(toplevel) = window.toplevel().cloned() {
-                let size = (
-                    i32::try_from(geometry.width).unwrap_or(i32::MAX),
-                    i32::try_from(geometry.height).unwrap_or(i32::MAX),
-                )
-                    .into();
-                let bounds = (
-                    i32::try_from(area.width).unwrap_or(i32::MAX),
-                    i32::try_from(area.height).unwrap_or(i32::MAX),
-                )
-                    .into();
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(size);
-                    state.bounds = Some(bounds);
-                });
+                let size = Size::new(geometry.width, geometry.height);
+                let bounds = Size::new(area.width, area.height);
+                toplevel.set_layout(size, bounds);
                 toplevel.send_pending_configure();
             }
             #[cfg(feature = "xwayland")]

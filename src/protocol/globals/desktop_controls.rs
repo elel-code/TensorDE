@@ -204,8 +204,9 @@ impl ToplevelState {
 
 fn toplevel_surface(state: &RuntimeState, toplevel: &XdgToplevel) -> Option<WlSurface> {
     state
-        .xdg_shell_state
-        .get_toplevel(toplevel)
+        .protocol_globals
+        .xdg_shell
+        .toplevel(toplevel)
         .map(|surface| surface.wl_surface().clone())
 }
 

@@ -64,6 +64,7 @@ mod surface_state;
 mod surface_timing;
 #[cfg(feature = "tty")]
 mod xdg_foreign;
+mod xdg_shell;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ClientEvent {

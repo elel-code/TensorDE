@@ -13,11 +13,17 @@ use wayland_server::{
 use crate::protocol::extensions::security_context::{
     SecurityContextHandler, SecurityContextListener,
 };
+use crate::protocol::globals::xdg_shell::Toplevel;
 use crate::protocol::state::{ObjectKey, RuntimeState};
 
 impl RuntimeState {
     pub(crate) fn publish_foreign_toplevel_from_surface(&mut self, surface: &WlSurface) {
-        let (title, app_id) = toplevel_metadata(surface);
+        let (title, app_id) = self
+            .protocol_globals
+            .xdg_shell
+            .toplevel_for_surface(surface)
+            .map(|toplevel| toplevel.metadata())
+            .unwrap_or_default();
         self.publish_foreign_toplevel(
             surface,
             title.unwrap_or_default(),
@@ -25,11 +31,8 @@ impl RuntimeState {
         );
     }
 
-    pub(crate) fn refresh_foreign_toplevel_metadata(
-        &mut self,
-        surface: &smithay::wayland::shell::xdg::ToplevelSurface,
-    ) {
-        let (title, app_id) = toplevel_metadata(surface.wl_surface());
+    pub(crate) fn refresh_foreign_toplevel_metadata(&mut self, surface: &Toplevel) {
+        let (title, app_id) = surface.metadata();
         self.update_foreign_toplevel(surface.wl_surface(), title.as_deref(), app_id.as_deref());
     }
 
@@ -101,7 +104,7 @@ impl InputMethodHandler for RuntimeState {
     fn new_popup(&mut self, surface: ImPopupSurface) {
         if let Err(error) = self
             .popups
-            .track_popup(crate::protocol::state::PopupKind::InputMethod(surface))
+            .track_popup(crate::protocol::state::PopupKind::from(surface))
         {
             warn!(%error, "failed to track input-method popup");
         }
@@ -112,10 +115,9 @@ impl InputMethodHandler for RuntimeState {
     fn dismiss_popup(&mut self, surface: ImPopupSurface) {
         let parent = surface.get_parent().map(|parent| parent.surface.clone());
         if let Some(parent) = parent {
-            let _ = self.popups.dismiss_popup(
-                &parent,
-                &crate::protocol::state::PopupKind::InputMethod(surface),
-            );
+            let _ = self
+                .popups
+                .dismiss_popup(&parent, &crate::protocol::state::PopupKind::from(surface));
         }
         #[cfg(feature = "tty")]
         self.request_redraw_workspace();
@@ -133,21 +135,6 @@ impl InputMethodHandler for RuntimeState {
             .and_then(|window| self.space.element_geometry(window))
             .unwrap_or_default()
     }
-}
-
-fn toplevel_metadata(surface: &WlSurface) -> (Option<String>, Option<String>) {
-    use smithay::wayland::compositor::with_states;
-    use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-    with_states(surface, |states| {
-        let data = states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .map(|d| d.lock().unwrap());
-        (
-            data.as_ref().and_then(|d| d.title.clone()),
-            data.as_ref().and_then(|d| d.app_id.clone()),
-        )
-    })
 }
 
 #[cfg(feature = "xwayland")]

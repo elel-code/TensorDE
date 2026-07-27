@@ -6,7 +6,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use wayland_server::{Resource, protocol::wl_surface::WlSurface};
+use wayland_protocols::xdg::shell::server::xdg_popup::XdgPopup;
+use wayland_server::{Resource, Weak, protocol::wl_surface::WlSurface};
 
 use smithay::{
     backend::input::{ButtonState, KeyState, Keycode},
@@ -36,7 +37,7 @@ pub(crate) trait PopupGrabHandler: SeatHandler {
     fn dismiss_grabbed_popup(
         &mut self,
         root: &WlSurface,
-        popup: &PopupKind,
+        popup: &WlSurface,
     ) -> Result<(), DeadResource>;
 }
 
@@ -60,8 +61,30 @@ pub enum PopupGrabError {
 #[derive(Debug, Default)]
 struct PopupGrabInternal {
     serial: Option<Serial>,
-    active_grabs: Vec<PopupKind>,
-    dismissed_grabs: Vec<PopupKind>,
+    active_grabs: Vec<GrabPopup>,
+    dismissed_grabs: Vec<GrabPopup>,
+}
+
+#[derive(Clone, Debug)]
+struct GrabPopup {
+    surface: WlSurface,
+    role: Weak<XdgPopup>,
+}
+
+impl GrabPopup {
+    fn new(popup: &PopupKind) -> Option<Self> {
+        let PopupKind::Xdg(popup) = popup else {
+            return None;
+        };
+        Some(Self {
+            surface: popup.wl_surface().clone(),
+            role: popup.xdg_popup().downgrade(),
+        })
+    }
+
+    fn alive(&self) -> bool {
+        self.surface.is_alive() && self.role.upgrade().is_ok()
+    }
 }
 
 impl PopupGrabInternal {
@@ -78,17 +101,17 @@ impl PopupGrabInternal {
             .iter()
             .rev()
             .find(|p| p.alive())
-            .map(|p| p.wl_surface())
+            .map(|p| &p.surface)
     }
 
     fn is_dismissed(&self, surface: &WlSurface) -> bool {
-        self.dismissed_grabs
-            .iter()
-            .any(|p| p.wl_surface() == surface)
+        self.dismissed_grabs.iter().any(|p| p.surface == *surface)
     }
 
     fn append_grab(&mut self, popup: &PopupKind) {
-        self.active_grabs.push(popup.clone());
+        if let Some(popup) = GrabPopup::new(popup) {
+            self.active_grabs.push(popup);
+        }
     }
 
     fn cleanup(&mut self) {
@@ -122,9 +145,14 @@ impl PopupGrabInner {
         guard.has_active_grabs()
     }
 
-    fn current_grab(&self) -> Option<PopupKind> {
+    fn current_grab(&self) -> Option<WlSurface> {
         let guard = self.internal.lock().unwrap();
-        guard.active_grabs.iter().rev().find(|p| p.alive()).cloned()
+        guard
+            .active_grabs
+            .iter()
+            .rev()
+            .find(|p| p.alive())
+            .map(|popup| popup.surface.clone())
     }
 
     pub(super) fn cleanup(&self) {
@@ -160,9 +188,12 @@ impl PopupGrabInner {
         Ok(guard.serial.replace(serial))
     }
 
-    fn ungrab(&self) -> (Option<PopupKind>, Option<WlSurface>) {
+    fn ungrab(&self) -> (Option<WlSurface>, Option<WlSurface>) {
         let mut guard = self.internal.lock().unwrap();
-        let dismissed = guard.active_grabs.first().cloned();
+        let dismissed = guard
+            .active_grabs
+            .first()
+            .map(|popup| popup.surface.clone());
         let PopupGrabInternal {
             active_grabs,
             dismissed_grabs,
@@ -251,7 +282,7 @@ where
 impl<D> PopupGrab<D>
 where
     D: PopupGrabHandler + 'static,
-    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<PopupKind>,
+    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<WlSurface>,
     <D as SeatHandler>::PointerFocus: From<<D as SeatHandler>::KeyboardFocus> + WaylandFocus,
 {
     pub(super) fn new(
@@ -404,7 +435,7 @@ where
 impl<D> KeyboardGrab<D> for PopupKeyboardGrab<D>
 where
     D: PopupGrabHandler + 'static,
-    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<PopupKind>,
+    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<WlSurface>,
     <D as SeatHandler>::PointerFocus: From<<D as SeatHandler>::KeyboardFocus> + WaylandFocus,
 {
     fn input(
@@ -512,7 +543,7 @@ where
 impl<D> PointerGrab<D> for PopupPointerGrab<D>
 where
     D: PopupGrabHandler + 'static,
-    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<PopupKind>,
+    <D as SeatHandler>::KeyboardFocus: WaylandFocus + From<WlSurface>,
     <D as SeatHandler>::PointerFocus: From<<D as SeatHandler>::KeyboardFocus> + WaylandFocus,
 {
     fn motion(

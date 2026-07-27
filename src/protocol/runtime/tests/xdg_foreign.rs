@@ -1,6 +1,5 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -400,16 +399,13 @@ fn parent_id(runtime: &WaylandRuntime, child_id: u32) -> Option<u32> {
         let surface = window.wl_surface()?.into_owned();
         (surface.id().protocol_id() == child_id).then_some(surface)
     })?;
-    with_states(&child, |states| {
-        states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()?
-            .lock()
-            .ok()?
-            .parent
-            .as_ref()
-            .map(|parent| parent.id().protocol_id())
-    })
+    runtime
+        .state
+        .protocol_globals
+        .xdg_shell
+        .toplevel_for_surface(&child)?
+        .parent_surface()
+        .map(|parent| parent.id().protocol_id())
 }
 
 fn dispatch_foreign_step(

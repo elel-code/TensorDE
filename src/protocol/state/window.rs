@@ -1,7 +1,6 @@
 //! Compositor-thread protocol window adapter.
 //!
-//! Window identity, cached geometry, and activation are Tensor-owned. Smithay
-//! remains responsible for the underlying Wayland/XWayland protocol objects.
+//! Window identity, cached geometry, activation, and XDG roles are Tensor-owned.
 
 use std::{
     borrow::Cow,
@@ -14,17 +13,11 @@ use std::{
 use smithay::{
     utils::{IsAlive, Logical, Point, Rectangle},
     wayland::{
-        compositor::{
-            SurfaceAttributes, SurfaceData, TraversalAction, with_states,
-            with_surface_tree_downward,
-        },
+        compositor::{SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward},
         seat::WaylandFocus,
-        shell::xdg::{SurfaceCachedState, ToplevelSurface},
     },
 };
-use wayland_protocols::{
-    wp::presentation_time::server::wp_presentation_feedback, xdg::shell::server::xdg_toplevel,
-};
+use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "xwayland")]
@@ -38,13 +31,14 @@ use super::{
     },
     surfaces::surface_view,
 };
+use crate::protocol::globals::xdg_shell::Toplevel;
 
 #[derive(Debug)]
 // The enum already lives inside one Rc allocation. Boxing X11 would add a
 // second allocation and pointer chase to every X11 window operation.
 #[allow(clippy::large_enum_variant)]
 enum ProtocolWindowSurface {
-    Wayland(ToplevelSurface),
+    Wayland(Toplevel),
     #[cfg(feature = "xwayland")]
     X11(X11Surface),
 }
@@ -86,7 +80,7 @@ impl IsAlive for ProtocolWindow {
 }
 
 impl ProtocolWindow {
-    pub(crate) fn new_wayland(toplevel: ToplevelSurface) -> Self {
+    pub(crate) fn new_wayland(toplevel: Toplevel) -> Self {
         Self(Rc::new(ProtocolWindowInner {
             surface: ProtocolWindowSurface::Wayland(toplevel),
             bbox: Cell::new(Rectangle::zero()),
@@ -105,15 +99,20 @@ impl ProtocolWindow {
         match &self.0.surface {
             ProtocolWindowSurface::Wayland(surface) => {
                 let bbox = self.bbox();
-                with_states(surface.wl_surface(), |states| {
-                    states
-                        .cached_state
-                        .get::<SurfaceCachedState>()
-                        .current()
-                        .geometry
-                        .and_then(|geometry| geometry.intersection(bbox))
-                })
-                .unwrap_or(bbox)
+                surface
+                    .geometry()
+                    .map(|geometry| {
+                        Rectangle::new(
+                            (geometry.x, geometry.y).into(),
+                            (
+                                i32::try_from(geometry.width).unwrap_or(i32::MAX),
+                                i32::try_from(geometry.height).unwrap_or(i32::MAX),
+                            )
+                                .into(),
+                        )
+                    })
+                    .and_then(|geometry| geometry.intersection(bbox))
+                    .unwrap_or(bbox)
             }
             #[cfg(feature = "xwayland")]
             ProtocolWindowSurface::X11(surface) => surface.geometry(),
@@ -143,13 +142,7 @@ impl ProtocolWindow {
 
     pub(crate) fn set_activated(&self, active: bool) -> bool {
         match &self.0.surface {
-            ProtocolWindowSurface::Wayland(surface) => surface.with_pending_state(|state| {
-                if active {
-                    state.states.set(xdg_toplevel::State::Activated)
-                } else {
-                    state.states.unset(xdg_toplevel::State::Activated)
-                }
-            }),
+            ProtocolWindowSurface::Wayland(surface) => surface.set_activated(active),
             #[cfg(feature = "xwayland")]
             ProtocolWindowSurface::X11(surface) => {
                 let was_active = surface.is_activated();
@@ -264,7 +257,7 @@ impl ProtocolWindow {
         }
     }
 
-    pub(crate) fn toplevel(&self) -> Option<&ToplevelSurface> {
+    pub(crate) fn toplevel(&self) -> Option<&Toplevel> {
         match &self.0.surface {
             ProtocolWindowSurface::Wayland(surface) => Some(surface),
             #[cfg(feature = "xwayland")]

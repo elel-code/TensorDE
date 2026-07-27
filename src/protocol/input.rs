@@ -671,7 +671,7 @@ impl RuntimeState {
         // re-enters this focus path; X11 has no XDG configure gate.
         let keyboard_ready = window
             .toplevel()
-            .is_none_or(|toplevel| toplevel.is_initial_configure_sent());
+            .is_none_or(|toplevel| toplevel.initial_configure_sent());
         if let Some(keyboard) = keyboard
             && keyboard_ready
             && seat_focus_changed
@@ -697,7 +697,7 @@ impl RuntimeState {
                 continue;
             }
             if let Some(toplevel) = window.toplevel()
-                && toplevel.is_initial_configure_sent()
+                && toplevel.initial_configure_sent()
             {
                 toplevel.send_pending_configure();
             }

@@ -48,10 +48,7 @@ pub(super) use surface_tree::OutputPresentationFeedback;
 use smithay::utils::SERIAL_COUNTER;
 use smithay::{
     input::{Seat, SeatState},
-    wayland::{
-        compositor::{CompositorState, get_parent, send_surface_state, with_states},
-        shell::xdg::{ToplevelSurface, XdgShellState},
-    },
+    wayland::compositor::{CompositorState, get_parent, send_surface_state, with_states},
 };
 #[cfg(feature = "xwayland")]
 use smithay::{wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
@@ -77,7 +74,7 @@ use tensor_util::{OutputScale, Size};
 #[cfg(feature = "tty")]
 use super::cursor::CursorState;
 use super::extensions::security_context::SecurityContextSubmitter;
-use super::globals::ProtocolGlobals;
+use super::globals::{ProtocolGlobals, xdg_shell::Toplevel};
 #[cfg(feature = "tty")]
 use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
@@ -116,7 +113,6 @@ pub(crate) struct RuntimeState {
     display: Option<Display<Self>>,
     pub(crate) display_handle: DisplayHandle,
     pub(crate) compositor_state: CompositorState,
-    pub(crate) xdg_shell_state: XdgShellState,
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) protocol_globals: ProtocolGlobals,
     pub(crate) protocol_side: ProtocolSideState,
@@ -197,7 +193,6 @@ impl RuntimeState {
     ) -> Self {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
-        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
@@ -208,7 +203,6 @@ impl RuntimeState {
             display: Some(display),
             display_handle,
             compositor_state,
-            xdg_shell_state,
             seat_state,
             protocol_globals,
             protocol_side: ProtocolSideState::default(),
@@ -350,7 +344,7 @@ impl RuntimeState {
         self.flush_client_releases();
     }
 
-    pub(crate) fn register_toplevel(&mut self, surface: ToplevelSurface) -> Option<ViewId> {
+    pub(crate) fn register_toplevel(&mut self, surface: Toplevel) -> Option<ViewId> {
         #[cfg(feature = "tty")]
         if self
             .surface_buffers
@@ -720,23 +714,12 @@ impl RuntimeState {
     }
 }
 
-pub(crate) fn xdg_size_constraints(
-    min_size: smithay::utils::Size<i32, smithay::utils::Logical>,
-    max_size: smithay::utils::Size<i32, smithay::utils::Logical>,
-) -> SizeConstraints {
+pub(crate) fn xdg_size_constraints(min_size: Size, max_size: Size) -> SizeConstraints {
     SizeConstraints::new(
-        Size::new(minimum_axis(min_size.w), minimum_axis(min_size.h)),
-        maximum_axis(max_size.w),
-        maximum_axis(max_size.h),
+        Size::new(min_size.width.max(1), min_size.height.max(1)),
+        (max_size.width > 0).then_some(max_size.width),
+        (max_size.height > 0).then_some(max_size.height),
     )
-}
-
-fn minimum_axis(value: i32) -> u32 {
-    u32::try_from(value).unwrap_or(0).max(1)
-}
-
-fn maximum_axis(value: i32) -> Option<u32> {
-    u32::try_from(value).ok().filter(|value| *value > 0)
 }
 
 #[cfg(feature = "tty")]

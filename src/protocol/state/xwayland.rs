@@ -13,7 +13,7 @@ use crate::{
     ecs::{ViewId, ViewPlacement},
     layout::SizeConstraints,
 };
-use tensor_util::Rect;
+use tensor_util::{Rect, Size};
 
 use super::{ProtocolWindow, RuntimeState, xdg_size_constraints};
 
@@ -283,7 +283,16 @@ pub(super) fn configure_x11_window(x11: &X11Surface, geometry: Rect) {
 fn x11_size_constraints(x11: &X11Surface) -> SizeConstraints {
     let min = x11.min_size().unwrap_or((0, 0).into());
     let max = x11.max_size().unwrap_or((0, 0).into());
-    xdg_size_constraints(min, max)
+    xdg_size_constraints(
+        Size::new(
+            u32::try_from(min.w).unwrap_or(0),
+            u32::try_from(min.h).unwrap_or(0),
+        ),
+        Size::new(
+            u32::try_from(max.w).unwrap_or(0),
+            u32::try_from(max.h).unwrap_or(0),
+        ),
+    )
 }
 
 fn x11_configure_rect(geometry: Rect) -> Rectangle<i32, Logical> {

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use smithay::wayland::shell::xdg::ToplevelSurface;
 use wayland_protocols::xdg::{
     decoration::zv1::server::{
         zxdg_decoration_manager_v1::{self, ZxdgDecorationManagerV1},
@@ -15,6 +14,7 @@ use wayland_server::{
     backend::{ClientId, GlobalId, ObjectId},
 };
 
+use super::xdg_shell::Toplevel;
 use crate::protocol::{
     dispatch::{
         DispatchDelegate, GlobalDispatchDelegate, delegate_dispatch, delegate_global_dispatch,
@@ -118,7 +118,8 @@ impl DispatchDelegate<ZxdgDecorationManagerV1, RuntimeState> for XdgDecorationMa
     ) {
         match request {
             zxdg_decoration_manager_v1::Request::GetToplevelDecoration { id, toplevel } => {
-                let Some(shell_toplevel) = state.xdg_shell_state.get_toplevel(&toplevel) else {
+                let Some(shell_toplevel) = state.protocol_globals.xdg_shell.toplevel(&toplevel)
+                else {
                     manager.post_error(
                         zxdg_toplevel_decoration_v1::Error::Orphaned,
                         "cannot decorate a destroyed xdg_toplevel",
@@ -197,7 +198,7 @@ fn configure_existing(
     toplevel: &XdgToplevel,
     decoration: &ZxdgToplevelDecorationV1,
 ) {
-    let Some(shell_toplevel) = state.xdg_shell_state.get_toplevel(toplevel) else {
+    let Some(shell_toplevel) = state.protocol_globals.xdg_shell.toplevel(toplevel) else {
         decoration.post_error(
             zxdg_toplevel_decoration_v1::Error::Orphaned,
             "xdg_toplevel no longer exists",
@@ -207,13 +208,10 @@ fn configure_existing(
     configure_client_side(&shell_toplevel, decoration);
 }
 
-fn configure_client_side(toplevel: &ToplevelSurface, decoration: &ZxdgToplevelDecorationV1) {
+fn configure_client_side(toplevel: &Toplevel, decoration: &ZxdgToplevelDecorationV1) {
     decoration.configure(Mode::ClientSide);
-    toplevel.with_pending_state(|state| {
-        state.decoration_mode = Some(Mode::ClientSide);
-    });
-    if toplevel.is_initial_configure_sent() {
-        toplevel.send_pending_configure();
+    if toplevel.initial_configure_sent() {
+        toplevel.send_configure();
     }
 }
 

@@ -127,6 +127,10 @@ and rendering itself.
   verifies Tensor's child-first borrowed iteration order, and tears it down without frame staging.
   A second tree destroys its parent first and must receive `not_the_topmost_popup` while Tensor
   removes the complete descendant topology immediately.
+- Stable XDG-shell wire coverage checks Tensor-owned error attribution for unconfigured buffers,
+  invalid configure serials, defunct role objects, and incomplete positioners. A remap test retains
+  an in-flight configure across detach, proves detach emits no replacement configure, then verifies
+  that the old-generation ACK cannot authorize a buffer after the required new empty commit.
 - Layer-shell lifecycle coverage creates a real top-anchored client surface, verifies its configure
   uses the fractional-scale logical output width, asserts its exclusive zone reshapes the workspace,
   and confirms protocol destruction removes the Tensor layer map and restores the full output zone.

@@ -1,6 +1,7 @@
 //! xdg-popup positioning against window and layer-shell parents.
 
 use smithay::utils::{Logical, Rectangle};
+use tensor_util::Rect;
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "tty")]
@@ -74,9 +75,12 @@ fn position_xdg_popup(popup: &PopupKind, target: Rectangle<i32, Logical>) {
     let PopupKind::Xdg(surface) = popup else {
         return;
     };
-    surface.with_pending_state(|state| {
-        state.geometry = state.positioner.get_unconstrained_geometry(target);
-    });
+    surface.constrain(Rect::new(
+        target.loc.x,
+        target.loc.y,
+        u32::try_from(target.size.w).unwrap_or(0),
+        u32::try_from(target.size.h).unwrap_or(0),
+    ));
 }
 
 #[cfg(test)]

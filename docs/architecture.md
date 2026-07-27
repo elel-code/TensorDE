@@ -91,8 +91,9 @@ commit: initial XDG configuration, committed min/max changes, output topology, a
 commands recompute geometry. The resulting snapshot relocates Tensor `WindowSpace` entries without
 changing their stacking order and supplies both the XDG suggested size and output-relative bounds.
 `ProtocolWindow` owns stable window identity and cached surface-tree bounds on the compositor
-thread. Its `Rc` clones share state without copying geometry, while Smithay remains only the
-underlying XDG/XWayland object plus the transitional layer/XDND adapters.
+thread. Its `Rc` clones share state without copying geometry. Tensor owns the underlying stable
+XDG role objects directly; Smithay remains only at the transitional core-surface, seat/input, and
+XWayland/XWM boundaries.
 
 Scene extraction is a separate once-per-frame boundary. Nodes are stored in stable `ViewId` order
 for linear snapshot comparison and carry an independent stacking-order index for drawing. Effect
@@ -140,8 +141,9 @@ compact topmost-to-bottom node index and parent indices; frame traversal borrows
 through an exact double-ended iterator, with no popup clones, mutex, or staging vector. Dynamic
 locations walk only the bounded popup parent chain. Destruction removes a complete descendant tree,
 and destroying a parent before its live XDG child reports the required `not_the_topmost_popup`
-protocol error immediately. Smithay remains the temporary XDG/input object adapter, not the popup
-policy or topology owner.
+protocol error immediately. Tensor-owned XDG role handles share the same compositor-thread `Rc`
+state as popup topology; the temporary Smithay seat grab receives only raw resource identity, so
+render, hit-test, and commit paths gain no `Arc`, mutex, or handle copy.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
 values. The ECS owner maintains the ID-to-entity index, rejects duplicate IDs, and is solely
@@ -217,7 +219,8 @@ belong in `crates/tensor-util`, while protocol, renderer, and compositor-specifi
 own crates/modules.
 
 The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
-compositor/subcompositor, xdg-shell, SHM, xdg-output, seat, data-device, and popup tracking, Tensor
+the transitional compositor/subcompositor and seat globals, Tensor-owned xdg-shell, SHM,
+xdg-output, data-device, and popup tracking, Tensor
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
 pointer gestures, pointer-constraints, presentation-time v2, cursor-shape, xdg-activation,
 idle-notify, idle-inhibit, wlr-layer-shell, single-pixel-buffer, keyboard-shortcuts-inhibit,
@@ -233,7 +236,15 @@ a non-empty validated client-import format list. Protocol work follows wayland-p
 Smithay-style **tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
 higher tiers win for the same capability, and `zwlr_*` is community-only when no standard path
 exists (see `docs/protocol-surface.md`). Tensor-local ports stay value-only at the ECS/event
-boundary. Tensor directly owns the wlr-layer-shell v5 global, wire requests, double-buffered role
+boundary. Tensor directly owns stable xdg-shell v7: `xdg_wm_base`, positioners, surfaces,
+toplevels, popups, client/server double-buffering, metadata, parents, and configure ACK lifecycle.
+Role and root lookup use exact resource/surface indices. Toplevel and popup configure backlogs are
+fixed at 16 entries, and every unmap advances a mapping generation so a delayed ACK can be consumed
+without authorizing a new mapping. A detach commit never emits the next initial configure; a new
+empty commit is required first. Popup placement uses saturating coordinates and bounded parent
+walks. There is no Smithay XDG state, handler, wrapper, cached state, or parallel path.
+
+Tensor also directly owns the wlr-layer-shell v5 global, wire requests, double-buffered role
 state, and fixed-capacity configure queues; there is no Smithay layer-shell handler or wrapper.
 Layer surfaces map through compositor-thread Tensor state: exact root/output indices make commit
 lookup O(1), while one compact `Vec` per active output preserves creation/stacking order without a
@@ -248,7 +259,7 @@ exclusive Bottom/Background only when the workspace has no views. xdg popups unc
 output (or non-exclusive zone for Background/Bottom parents); layer-shell roots may grab, while
 window popup grabs are dismissed when an interactive Overlay/Top layer holds focus. Layer content
 trees include their xdg popup children in the value-only scene merge. The linux-drm-syncobj global is
-added only after Smithay opens the
+added only after Tensor opens the
 Vulkan-selected primary device and verifies syncobj eventfd support. Compositor-owned launches
 (IPC `spawn` and `spawn_at_startup`) mint external `xdg-activation` tokens and export them as
 `XDG_ACTIVATION_TOKEN` / `DESKTOP_STARTUP_ID` on the child environment. Acquire points become temporary

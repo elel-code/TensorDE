@@ -1,6 +1,5 @@
 //! Layer-surface creation, destruction, and xdg-popup parenting.
 
-use smithay::wayland::{compositor::with_states, shell::xdg::XdgPopupSurfaceData};
 use tracing::warn;
 use wayland_protocols::xdg::shell::server::xdg_popup::XdgPopup;
 use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_surface_v1::{
@@ -98,32 +97,21 @@ impl RuntimeState {
         popup: &XdgPopup,
         layer_resource: &ZwlrLayerSurfaceV1,
     ) {
-        let Some(popup) = self.xdg_shell_state.get_popup(popup) else {
+        let Some(popup) = self.protocol_globals.xdg_shell.popup(popup) else {
             layer_resource.post_error(
                 zwlr_layer_surface_v1::Error::InvalidSurfaceState,
                 "xdg_popup is not owned by the active xdg shell",
             );
             return;
         };
-        if popup.is_initial_configure_sent() || popup.get_parent_surface().is_some() {
+        if popup.initial_configure_sent() || popup.parent_surface().is_some() {
             layer_resource.post_error(
                 zwlr_layer_surface_v1::Error::InvalidSurfaceState,
                 "xdg_popup already has a parent or committed initial state",
             );
             return;
         }
-        let parent_set = with_states(popup.wl_surface(), |states| {
-            let Some(attributes) = states.data_map.get::<XdgPopupSurfaceData>() else {
-                return false;
-            };
-            let mut attributes = attributes.lock().unwrap();
-            if attributes.parent.is_some() {
-                return false;
-            }
-            attributes.parent = Some(parent.wl_surface().clone());
-            true
-        });
-        if !parent_set {
+        if !popup.set_parent_if_unset(parent.wl_surface().clone()) {
             layer_resource.post_error(
                 zwlr_layer_surface_v1::Error::InvalidSurfaceState,
                 "xdg_popup parent state is unavailable",
@@ -132,6 +120,6 @@ impl RuntimeState {
         }
         let popup = super::super::PopupKind::Xdg(popup);
         self.unconstrain_popup(&popup);
-        self.popups.commit(popup.wl_surface());
+        self.popups.commit(&popup);
     }
 }

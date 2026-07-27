@@ -47,6 +47,7 @@ mod syncobj;
 pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod xdg_decoration;
 pub(in crate::protocol) mod xdg_foreign;
+pub(in crate::protocol) mod xdg_shell;
 
 use activation::ActivationProtocol;
 use background_effect::BackgroundEffectProtocol;
@@ -82,12 +83,14 @@ pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjSta
 use viewporter::ViewporterProtocol;
 use xdg_decoration::XdgDecorationProtocol;
 use xdg_foreign::XdgForeignProtocol;
+use xdg_shell::XdgShellProtocol;
 
 pub(crate) struct ProtocolGlobals {
     shm: ShmProtocol,
     output: OutputProtocol,
     viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleProtocol,
+    pub(super) xdg_shell: XdgShellProtocol,
     xdg_decoration: XdgDecorationProtocol,
     pub(super) selection: SelectionProtocol,
     pub(super) relative_pointer: RelativePointerProtocol,
@@ -139,6 +142,7 @@ impl ProtocolGlobals {
             output: OutputProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleProtocol::new(display),
+            xdg_shell: XdgShellProtocol::new(display),
             xdg_decoration: XdgDecorationProtocol::new(display),
             selection: SelectionProtocol::new(display),
             relative_pointer: RelativePointerProtocol::new(display),
@@ -295,6 +299,7 @@ impl ProtocolGlobals {
             &self.shm,
             &self.viewporter,
             &self.fractional_scale,
+            &self.xdg_shell,
             &self.xdg_decoration,
             &self.selection,
             &self.relative_pointer,

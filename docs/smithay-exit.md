@@ -27,7 +27,6 @@ area or move policy behind these crates is not exit work.
 | `tensor-input` | Device caps + `Sample` → bus events | Seat protocol objects, libinput |
 | `tensor-protocol` | Stable surface/buffer IDs, attachment lifecycle, tier policy | Wire objects, ECS entities |
 | `tensor-compositor` | Policy, ECS, Vulkan, adapters | — |
-| `tensor-smithay` *(future optional)* | Temporary adapter only | Product policy |
 
 ## Completion gates (delete Smithay only when all pass)
 
@@ -92,7 +91,7 @@ area or move policy behind these crates is not exit work.
 | 5 | **In progress** | `run_turn` + `EventfdWake` + `CompletionDriver::IoUring`; the compositor thread now runs a Compio completion loop directly, with no shared relay thread/channel. IPC, signalfd, GPU sync-file, security-context, Wayland listener/display, XWayland displayfd startup, udev hotplug, libinput, Tensor-owned libseat session waits, commit-timing and idle-notify timerfd deadlines, and per-device DRM page-flip waits are Compio-completed operations. Each timerfd has one submitted `IORING_OP_POLL_ADD`; its CQE is consumed before the earliest absolute monotonic deadline is rearmed, with no timer polling or readiness registry. DRM waits stay on the compositor thread, use one submitted op per device, decode one fixed stack batch after the CQE, and rearm explicitly. Libseat, udev, and libinput cursors apply one event at a time without per-completion staging vectors. Session-resume repaint is a completion-turn tail after DRM CQEs; tty no longer owns a calloop handle. The dma-buf client smoke also submits its Wayland socket operations directly through Compio, so `calloop-wayland-source` is gone. The aggregate remains only for Smithay's internal XWM event channel and focus-release ping |
 | 6 | **In progress** | Libinput CQEs normalize keyboard, relative/absolute pointer, button, axis, activity, device ID, and capabilities directly into compact `tensor-input` values. The hot path no longer carries Smithay backend events or allocates device-name keys. Virtual-pointer requests enter the same Tensor value path without per-event Wayland resource clones; its allocation-free axis accumulator preserves source-before-value ordering, v120, and explicit stops. Smithay's `backend_libinput` and `backend_session` features and session wrapper are removed; raw tablet tools terminate at the protocol adapter, whose allocating device descriptor is cached once per hotplug rather than rebuilt per motion |
 | 7 | **In progress** | See the Stage 7 protocol ledger below |
-| 8 | Exit | Optional `tensor-smithay` removed; dependency deleted |
+| 8 | Exit | Smithay and calloop dependencies deleted; no compatibility or adapter crate retained |
 
 ### Stage 7 protocol ledger
 
@@ -227,13 +226,27 @@ can never authorize a buffer in the new mapping. The detach commit does not conf
 mapping; the client must first issue the required empty initial commit. Output removal sends
 `closed`, further requests become inert, and transfer to xdg-popup state occurs once without a
 parallel layer adapter. These paths add no lock, allocation, table scan, or resource clone to
-input, vblank, present, or frame traversal. Tensor-owned
+input, vblank, present, or frame traversal. Tensor-owned stable xdg-shell v7 now replaces
+Smithay's XDG state and handler outright. Tensor owns the global, positioners, base surfaces,
+toplevel and popup role resources, client/server double-buffered state, metadata, parent
+relations, configure/ACK lifecycle, and role teardown. Exact resource and `wl_surface` indices
+make ordinary commit role lookup O(1); fixed 16-entry configure queues and per-mapping generations
+prevent stale ACKs from authorizing remaps without an unbounded backlog. Detach does not synthesize
+a configure for the next mapping: the client must issue the new empty initial commit first. Popup
+placement uses saturating arithmetic and a bounded parent walk. The temporary Smithay popup-grab
+trait receives only raw resource identities required by its `Send` bound; Tensor's role, frame
+traversal, hit testing, and commit state remain compositor-thread `Rc` values with no mutex or
+`Arc` conversion. XDG decoration, foreign parenting, desktop controls, and layer-popup parenting
+resolve the same Tensor handles directly. Smithay XDG wrappers, cached role state, handler
+callbacks, wire delegates, and compatibility path are deleted.
+
+Tensor-owned
 gamma, virtual-pointer, workspace,
 output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
 delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`
 rather than Smithay `Output`, and ramp ingestion uses one final allocation without a full-size
-staging copy. The Smithay `desktop` feature is removed; Dispatch1 shell state remains in the
-protocol adapter
+staging copy. The Smithay `desktop` feature is removed; only core compositor/subsurface, seat/input
+protocols, input-method popups, and XWayland/XWM remain at the Smithay boundary
 
 ## Performance rules (unchanged)
 

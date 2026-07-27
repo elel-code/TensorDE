@@ -2,13 +2,6 @@
 
 use std::{collections::HashMap, io, sync::Arc};
 
-use smithay::wayland::{
-    compositor::{get_role, with_states},
-    shell::{
-        is_valid_parent,
-        xdg::{XDG_TOPLEVEL_ROLE, XdgShellHandler, XdgToplevelSurfaceData},
-    },
-};
 use tracing::warn;
 use wayland_protocols::xdg::foreign::zv2::server::{
     zxdg_exported_v2::{self, ZxdgExportedV2},
@@ -263,7 +256,7 @@ impl DispatchDelegate<ZxdgExporterV2, RuntimeState> for ExporterData {
     ) {
         match request {
             zxdg_exporter_v2::Request::ExportToplevel { id, surface } => {
-                if get_role(&surface) != Some(XDG_TOPLEVEL_ROLE) {
+                if !state.protocol_globals.xdg_shell.is_toplevel(&surface) {
                     exporter.post_error(
                         zxdg_exporter_v2::Error::InvalidSurface,
                         "exported surface is not an xdg_toplevel",
@@ -431,26 +424,32 @@ impl RuntimeState {
         else {
             return;
         };
-        if get_role(&child) != Some(XDG_TOPLEVEL_ROLE) || !is_valid_parent(&child, &parent) {
+        let Some(child_toplevel) = self.protocol_globals.xdg_shell.toplevel_for_surface(&child)
+        else {
             imported.post_error(
                 zxdg_imported_v2::Error::InvalidSurface,
-                "invalid xdg-foreign parent relationship",
-            );
-            return;
-        }
-        let Ok(changed) = with_states(&child, |states| {
-            let data = states.data_map.get::<XdgToplevelSurfaceData>().ok_or(())?;
-            let mut role = data.lock().map_err(|_| ())?;
-            let changed = role.parent.as_ref() != Some(&parent);
-            role.parent = Some(parent.clone());
-            Ok::<_, ()>(changed)
-        }) else {
-            imported.post_error(
-                zxdg_imported_v2::Error::InvalidSurface,
-                "child has no live xdg_toplevel role state",
+                "xdg-foreign child is not a live xdg_toplevel",
             );
             return;
         };
+        let Some(parent_toplevel) = self
+            .protocol_globals
+            .xdg_shell
+            .toplevel_for_surface(&parent)
+        else {
+            imported.post_error(
+                zxdg_imported_v2::Error::InvalidSurface,
+                "xdg-foreign parent is not a live xdg_toplevel",
+            );
+            return;
+        };
+        if !child_toplevel.set_parent(Some(parent_toplevel)) {
+            imported.post_error(
+                zxdg_imported_v2::Error::InvalidSurface,
+                "xdg-foreign parent relationship is cyclic",
+            );
+            return;
+        }
 
         let previous =
             self.protocol_globals
@@ -461,42 +460,17 @@ impl RuntimeState {
         {
             self.clear_xdg_foreign_relation(previous);
         }
-        if changed {
-            self.notify_xdg_parent_changed(&child);
-        }
     }
 
     fn clear_xdg_foreign_relation(&mut self, relation: Relation) {
         let Ok(child) = relation.child.upgrade() else {
             return;
         };
-        let changed = with_states(&child, |states| {
-            let Some(data) = states.data_map.get::<XdgToplevelSurfaceData>() else {
-                return false;
-            };
-            let Ok(mut role) = data.lock() else {
-                return false;
-            };
-            if role.parent.as_ref().map(Resource::id) != Some(relation.parent) {
-                return false;
-            }
-            role.parent = None;
-            true
-        });
-        if changed {
-            self.notify_xdg_parent_changed(&child);
-        }
-    }
-
-    fn notify_xdg_parent_changed(&mut self, child: &WlSurface) {
-        let toplevel = self
-            .xdg_shell_state
-            .toplevel_surfaces()
-            .iter()
-            .find(|toplevel| toplevel.wl_surface() == child)
-            .cloned();
-        if let Some(toplevel) = toplevel {
-            <Self as XdgShellHandler>::parent_changed(self, toplevel);
+        let Some(toplevel) = self.protocol_globals.xdg_shell.toplevel_for_surface(&child) else {
+            return;
+        };
+        if toplevel.parent_surface().as_ref().map(Resource::id) == Some(relation.parent) {
+            toplevel.set_parent(None);
         }
     }
 }
