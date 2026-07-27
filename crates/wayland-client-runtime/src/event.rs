@@ -220,7 +220,7 @@ pub enum Event {
     Surface(SurfaceEvent),
     LayerSurface(LayerSurfaceEvent),
     Output(OutputEvent),
-    /// Seat hotplug (`wl_seat` registry add/remove).
+    /// Seat hotplug and capability updates (`wl_seat` lifecycle).
     Seat(SeatEvent),
     Activation(ActivationEvent),
     Pointer(PointerEvent),

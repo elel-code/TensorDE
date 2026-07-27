@@ -821,6 +821,19 @@ pub fn map_native_event_full(
             has_pointer,
             has_touch,
         }))),
+        NativeShellEvent::SeatChanged {
+            seat,
+            name,
+            has_keyboard,
+            has_pointer,
+            has_touch,
+        } => Some(Event::Seat(SeatEvent::Changed(SeatInfo {
+            id: SeatId::from_raw(seat),
+            name,
+            has_keyboard,
+            has_pointer,
+            has_touch,
+        }))),
         NativeShellEvent::SeatRemoved { seat } => {
             Some(Event::Seat(SeatEvent::Removed(SeatId::from_raw(seat))))
         }
@@ -1019,6 +1032,24 @@ mod tests {
                 assert!(info.has_keyboard && info.has_pointer && !info.has_touch);
             }
             other => panic!("expected Seat::Added, got {other:?}"),
+        }
+        let changed = map_native_event(
+            NativeShellEvent::SeatChanged {
+                seat: 7,
+                name: Some("seat0".into()),
+                has_keyboard: true,
+                has_pointer: false,
+                has_touch: true,
+            },
+            &mut map,
+        )
+        .expect("seat changed maps");
+        match changed {
+            Event::Seat(SeatEvent::Changed(info)) => {
+                assert_eq!(info.id.get(), 7);
+                assert!(!info.has_pointer && info.has_touch);
+            }
+            other => panic!("expected Seat::Changed, got {other:?}"),
         }
         let removed = map_native_event(NativeShellEvent::SeatRemoved { seat: 7 }, &mut map)
             .expect("seat removed maps");

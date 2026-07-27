@@ -26,11 +26,13 @@ pub struct SeatInfo {
     pub has_touch: bool,
 }
 
-/// Seat hotplug (registry `global` / `global_remove` for `wl_seat`).
+/// Seat hotplug and capability updates (`wl_seat` lifecycle).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SeatEvent {
     /// A seat was bound (devices may still be empty until capabilities arrive).
     Added(SeatInfo),
+    /// Name or device capabilities changed on an existing seat.
+    Changed(SeatInfo),
     /// A previously bound seat was removed from the registry.
     Removed(SeatId),
 }

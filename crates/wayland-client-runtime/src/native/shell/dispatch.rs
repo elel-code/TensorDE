@@ -442,25 +442,30 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
         match event {
             wl_seat::Event::Name { name } => {
                 if let Some(global) = seat_global
-                    && let Some(rec) = state.seats.get_mut(&global) {
-                        rec.name = Some(name);
-                    }
+                    && let Some(rec) = state.seats.get_mut(&global)
+                {
+                    rec.name = Some(name);
+                    state.push_seat_changed(global);
+                }
             }
             wl_seat::Event::Capabilities {
                 capabilities: WEnum::Value(capabilities),
             } => {
-                // Keep shell-wide capability bits as the union of all seats for
-                // capability queries; devices still attach per-seat.
-                state.seat_capabilities |= capabilities;
+                // Shell-wide capability bits are the union of every seat; devices
+                // still attach per-seat (and are released when a seat loses them).
                 let is_primary = state
                     .seat
                     .as_ref()
                     .is_some_and(|s| s.id() == seat.id());
 
                 if let Some(global) = seat_global
-                    && let Some(rec) = state.seats.get_mut(&global) {
-                        rec.capabilities = capabilities;
-                    }
+                    && let Some(rec) = state.seats.get_mut(&global)
+                {
+                    rec.capabilities = capabilities;
+                }
+                state.recompute_seat_capabilities_union();
+
+                let mut devices_changed = false;
 
                 if capabilities.contains(wl_seat::Capability::Keyboard) {
                     let need = match seat_global.and_then(|g| state.seats.get(&g)) {
@@ -481,6 +486,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                         if is_primary || state.keyboard.is_none() {
                             state.keyboard = Some(keyboard);
                         }
+                        devices_changed = true;
                     }
                 }
                 if capabilities.contains(wl_seat::Capability::Pointer) {
@@ -506,6 +512,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                             // Per-seat gesture objects (multi-seat compositors).
                             state.bind_gestures_for_seat(global, &pointer, qh, is_primary);
                         }
+                        devices_changed = true;
                     }
                 }
                 if capabilities.contains(wl_seat::Capability::Touch) {
@@ -526,22 +533,17 @@ impl Dispatch<wl_seat::WlSeat, ()> for NativeShellState {
                         if is_primary || state.touch.is_none() {
                             state.touch = Some(touch);
                         }
+                        devices_changed = true;
                     }
                 }
-                if !capabilities.contains(wl_seat::Capability::Touch) && is_primary {
-                    if state.touch.take().is_some()
-                        || !state.touch_active.is_empty()
-                        || !state.touch_pending.is_empty()
-                    {
-                        state.touch_pending.clear();
-                        state.touch_active.clear();
-                        state.touch_points.clear();
-                        state.push(NativeShellEvent::TouchCancel { seat: seat_global });
-                    }
-                    if let Some(global) = seat_global
-                        && let Some(rec) = state.seats.get_mut(&global) {
-                            rec.touch = None;
-                        }
+
+                // Release devices (and gestures) for capabilities that went away.
+                if state.release_lost_seat_capabilities(seat_global, capabilities, is_primary) {
+                    devices_changed = true;
+                }
+
+                if devices_changed && let Some(global) = seat_global {
+                    state.push_seat_changed(global);
                 }
             }
             _ => {}

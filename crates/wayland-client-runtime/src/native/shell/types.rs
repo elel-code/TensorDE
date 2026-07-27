@@ -201,6 +201,14 @@ pub enum NativeShellEvent {
         has_pointer: bool,
         has_touch: bool,
     },
+    /// Seat name or capability devices changed after the initial add.
+    SeatChanged {
+        seat: u32,
+        name: Option<String>,
+        has_keyboard: bool,
+        has_pointer: bool,
+        has_touch: bool,
+    },
     /// Registry `global_remove` for a previously bound `wl_seat`.
     SeatRemoved {
         seat: u32,

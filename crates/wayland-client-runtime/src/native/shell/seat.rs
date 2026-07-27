@@ -167,7 +167,152 @@ impl NativeShellState {
             self.pending_primary_seat_rebind = true;
         }
 
+        self.recompute_seat_capabilities_union();
         self.push(NativeShellEvent::SeatRemoved { seat: global_name });
+    }
+
+    /// Emit [`NativeShellEvent::SeatChanged`] with the current device snapshot.
+    pub(crate) fn push_seat_changed(&mut self, global: u32) {
+        let Some(rec) = self.seats.get(&global) else {
+            return;
+        };
+        self.push(NativeShellEvent::SeatChanged {
+            seat: global,
+            name: rec.name.clone(),
+            has_keyboard: rec.keyboard.is_some(),
+            has_pointer: rec.pointer.is_some(),
+            has_touch: rec.touch.is_some(),
+        });
+    }
+
+    /// Drop keyboard/pointer/touch (and gestures) when a seat loses those caps.
+    ///
+    /// Returns whether any device was released (caller may emit `SeatChanged`).
+    pub(crate) fn release_lost_seat_capabilities(
+        &mut self,
+        global: Option<u32>,
+        capabilities: wl_seat::Capability,
+        is_primary: bool,
+    ) -> bool {
+        let Some(global) = global else {
+            return false;
+        };
+        let mut changed = false;
+
+        if !capabilities.contains(wl_seat::Capability::Keyboard) {
+            let keyboard = self
+                .seats
+                .get_mut(&global)
+                .and_then(|rec| rec.keyboard.take());
+            if let Some(kb) = keyboard {
+                self.keyboard_objects
+                    .remove(&kb.id().protocol_id());
+                if is_primary && self.keyboard.as_ref().is_some_and(|k| k.id() == kb.id()) {
+                    self.keyboard = None;
+                }
+                if let Some(rec) = self.seats.get_mut(&global) {
+                    rec.keyboard_focus = None;
+                }
+                kb.release();
+                changed = true;
+            }
+        }
+
+        if !capabilities.contains(wl_seat::Capability::Pointer) {
+            let pointer = self
+                .seats
+                .get_mut(&global)
+                .and_then(|rec| rec.pointer.take());
+            if let Some(ptr) = pointer {
+                self.pointer_objects
+                    .remove(&ptr.id().protocol_id());
+                // Drop gesture objects bound to this seat's pointer.
+                let swipe = self
+                    .seats
+                    .get_mut(&global)
+                    .and_then(|rec| rec.swipe_gesture.take());
+                let pinch = self
+                    .seats
+                    .get_mut(&global)
+                    .and_then(|rec| rec.pinch_gesture.take());
+                let hold = self
+                    .seats
+                    .get_mut(&global)
+                    .and_then(|rec| rec.hold_gesture.take());
+                if let Some(g) = swipe {
+                    self.swipe_objects.remove(&g.id().protocol_id());
+                    if is_primary && self.swipe_gesture.as_ref().is_some_and(|s| s.id() == g.id()) {
+                        self.swipe_gesture = None;
+                    }
+                    g.destroy();
+                }
+                if let Some(g) = pinch {
+                    self.pinch_objects.remove(&g.id().protocol_id());
+                    if is_primary && self.pinch_gesture.as_ref().is_some_and(|s| s.id() == g.id()) {
+                        self.pinch_gesture = None;
+                    }
+                    g.destroy();
+                }
+                if let Some(g) = hold {
+                    self.hold_objects.remove(&g.id().protocol_id());
+                    if is_primary && self.hold_gesture.as_ref().is_some_and(|s| s.id() == g.id()) {
+                        self.hold_gesture = None;
+                    }
+                    g.destroy();
+                }
+                if is_primary && self.pointer.as_ref().is_some_and(|p| p.id() == ptr.id()) {
+                    self.pointer = None;
+                    // Relative/constraints were bound to the primary pointer.
+                    self.relative_pointer = None;
+                    self.locked_pointer = None;
+                    self.confined_pointer = None;
+                    self.gesture_surface = None;
+                }
+                if let Some(rec) = self.seats.get_mut(&global) {
+                    rec.pointer_focus = None;
+                    rec.pointer_enter_serial = None;
+                }
+                ptr.release();
+                changed = true;
+            }
+        }
+
+        if !capabilities.contains(wl_seat::Capability::Touch) {
+            let touch = self
+                .seats
+                .get_mut(&global)
+                .and_then(|rec| rec.touch.take());
+            if let Some(t) = touch {
+                self.touch_objects.remove(&t.id().protocol_id());
+                if is_primary && self.touch.as_ref().is_some_and(|x| x.id() == t.id()) {
+                    self.touch = None;
+                    if !self.touch_active.is_empty() || !self.touch_pending.is_empty() {
+                        self.touch_pending.clear();
+                        self.touch_active.clear();
+                        self.touch_points.clear();
+                        self.push(NativeShellEvent::TouchCancel {
+                            seat: Some(global),
+                        });
+                    }
+                }
+                t.release();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.recompute_seat_capabilities_union();
+        }
+        changed
+    }
+
+    /// Shell-wide capability bits = union of every bound seat's capabilities.
+    pub(crate) fn recompute_seat_capabilities_union(&mut self) {
+        let mut caps = wl_seat::Capability::empty();
+        for rec in self.seats.values() {
+            caps |= rec.capabilities;
+        }
+        self.seat_capabilities = caps;
     }
 
     /// Bind gesture objects for one seat's pointer (and optionally mirror primary).
