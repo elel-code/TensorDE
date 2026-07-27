@@ -1,4 +1,4 @@
-use crate::{InputSerial, SurfaceId};
+use crate::{InputSerial, SeatId, SurfaceId};
 
 /// A semantic touchpad gesture reported for a pointer.
 #[derive(Clone, Debug)]
@@ -25,6 +25,15 @@ impl PointerGestureEvent {
             Self::Hold(event) => event.serial(),
         }
     }
+
+    /// Seat that owns the gesture pointer, when known.
+    pub fn seat(&self) -> Option<SeatId> {
+        match self {
+            Self::Swipe(event) => event.seat(),
+            Self::Pinch(event) => event.seat(),
+            Self::Hold(event) => event.seat(),
+        }
+    }
 }
 
 /// Multi-finger translation in which all fingers move in the same direction.
@@ -35,18 +44,21 @@ pub enum PointerSwipeEvent {
         serial: InputSerial,
         time: u32,
         fingers: u32,
+        seat: Option<SeatId>,
     },
     /// Surface-coordinate delta since the previous update.
     Update {
         surface: SurfaceId,
         time: u32,
         delta: (f64, f64),
+        seat: Option<SeatId>,
     },
     End {
         surface: SurfaceId,
         serial: InputSerial,
         time: u32,
         cancelled: bool,
+        seat: Option<SeatId>,
     },
 }
 
@@ -65,6 +77,14 @@ impl PointerSwipeEvent {
             Self::Update { .. } => None,
         }
     }
+
+    pub fn seat(&self) -> Option<SeatId> {
+        match self {
+            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => {
+                *seat
+            }
+        }
+    }
 }
 
 /// Multi-finger gesture combining translation, scale, and rotation.
@@ -75,6 +95,7 @@ pub enum PointerPinchEvent {
         serial: InputSerial,
         time: u32,
         fingers: u32,
+        seat: Option<SeatId>,
     },
     Update {
         surface: SurfaceId,
@@ -86,12 +107,14 @@ pub enum PointerPinchEvent {
         scale: f64,
         /// Clockwise rotation in degrees since the previous gesture event.
         rotation_degrees_cw: f64,
+        seat: Option<SeatId>,
     },
     End {
         surface: SurfaceId,
         serial: InputSerial,
         time: u32,
         cancelled: bool,
+        seat: Option<SeatId>,
     },
 }
 
@@ -110,6 +133,14 @@ impl PointerPinchEvent {
             Self::Update { .. } => None,
         }
     }
+
+    pub fn seat(&self) -> Option<SeatId> {
+        match self {
+            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => {
+                *seat
+            }
+        }
+    }
 }
 
 /// One or more fingers held without significant movement.
@@ -120,12 +151,14 @@ pub enum PointerHoldEvent {
         serial: InputSerial,
         time: u32,
         fingers: u32,
+        seat: Option<SeatId>,
     },
     End {
         surface: SurfaceId,
         serial: InputSerial,
         time: u32,
         cancelled: bool,
+        seat: Option<SeatId>,
     },
 }
 
@@ -139,6 +172,12 @@ impl PointerHoldEvent {
     pub fn serial(&self) -> Option<&InputSerial> {
         match self {
             Self::Begin { serial, .. } | Self::End { serial, .. } => Some(serial),
+        }
+    }
+
+    pub fn seat(&self) -> Option<SeatId> {
+        match self {
+            Self::Begin { seat, .. } | Self::End { seat, .. } => *seat,
         }
     }
 }

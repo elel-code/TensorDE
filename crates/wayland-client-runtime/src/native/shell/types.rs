@@ -306,21 +306,26 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         fingers: u32,
         time: u32,
+        /// Registry global name of the seat that owns the gesture pointer.
+        seat: Option<u32>,
     },
     GestureSwipeUpdate {
         dx: f64,
         dy: f64,
         time: u32,
+        seat: Option<u32>,
     },
     GestureSwipeEnd {
         cancelled: bool,
         time: u32,
+        seat: Option<u32>,
     },
     /// Touchpad pinch (`zwp_pointer_gesture_pinch_v1`).
     GesturePinchBegin {
         surface: NativeSurfaceId,
         fingers: u32,
         time: u32,
+        seat: Option<u32>,
     },
     GesturePinchUpdate {
         dx: f64,
@@ -328,20 +333,24 @@ pub enum NativeShellEvent {
         scale: f64,
         rotation: f64,
         time: u32,
+        seat: Option<u32>,
     },
     GesturePinchEnd {
         cancelled: bool,
         time: u32,
+        seat: Option<u32>,
     },
     /// Touchpad hold (`zwp_pointer_gesture_hold_v1`, v3+).
     GestureHoldBegin {
         surface: NativeSurfaceId,
         fingers: u32,
         time: u32,
+        seat: Option<u32>,
     },
     GestureHoldEnd {
         cancelled: bool,
         time: u32,
+        seat: Option<u32>,
     },
     /// `zwp_relative_pointer_v1.relative_motion`.
     RelativePointer {

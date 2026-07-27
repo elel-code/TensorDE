@@ -8,6 +8,12 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::{
 
 use super::types::{NativeShellEvent, NativeShellState};
 
+/// Gestures are currently bound only to the primary seat pointer.
+fn primary_seat_global(state: &NativeShellState) -> Option<u32> {
+    let seat = state.seat.as_ref()?;
+    state.seat_objects.get(&seat.id().protocol_id()).copied()
+}
+
 impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for NativeShellState {
     fn event(
         _: &mut Self,
@@ -29,6 +35,7 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Na
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let seat_global = primary_seat_global(state);
         match event {
             zwp_pointer_gesture_swipe_v1::Event::Begin {
                 serial,
@@ -36,7 +43,7 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Na
                 surface,
                 fingers,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -47,22 +54,29 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Na
                         surface,
                         fingers,
                         time,
+                        seat: seat_global,
                     });
                 }
             }
             zwp_pointer_gesture_swipe_v1::Event::Update { time, dx, dy } => {
-                state.push(NativeShellEvent::GestureSwipeUpdate { dx, dy, time });
+                state.push(NativeShellEvent::GestureSwipeUpdate {
+                    dx,
+                    dy,
+                    time,
+                    seat: seat_global,
+                });
             }
             zwp_pointer_gesture_swipe_v1::Event::End {
                 serial,
                 time,
                 cancelled,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 state.gesture_surface = None;
                 state.push(NativeShellEvent::GestureSwipeEnd {
                     cancelled: cancelled != 0,
                     time,
+                    seat: seat_global,
                 });
             }
             _ => {}
@@ -79,6 +93,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let seat_global = primary_seat_global(state);
         match event {
             zwp_pointer_gesture_pinch_v1::Event::Begin {
                 serial,
@@ -86,7 +101,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
                 surface,
                 fingers,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -97,6 +112,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
                         surface,
                         fingers,
                         time,
+                        seat: seat_global,
                     });
                 }
             }
@@ -113,6 +129,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
                     scale,
                     rotation,
                     time,
+                    seat: seat_global,
                 });
             }
             zwp_pointer_gesture_pinch_v1::Event::End {
@@ -120,11 +137,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Na
                 time,
                 cancelled,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 state.gesture_surface = None;
                 state.push(NativeShellEvent::GesturePinchEnd {
                     cancelled: cancelled != 0,
                     time,
+                    seat: seat_global,
                 });
             }
             _ => {}
@@ -141,6 +159,7 @@ impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Nati
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let seat_global = primary_seat_global(state);
         match event {
             zwp_pointer_gesture_hold_v1::Event::Begin {
                 serial,
@@ -148,7 +167,7 @@ impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Nati
                 surface,
                 fingers,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -159,6 +178,7 @@ impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Nati
                         surface,
                         fingers,
                         time,
+                        seat: seat_global,
                     });
                 }
             }
@@ -167,11 +187,12 @@ impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Nati
                 time,
                 cancelled,
             } => {
-                state.last_input_serial = Some(serial);
+                state.note_seat_serial(seat_global, serial);
                 state.gesture_surface = None;
                 state.push(NativeShellEvent::GestureHoldEnd {
                     cancelled: cancelled != 0,
                     time,
+                    seat: seat_global,
                 });
             }
             _ => {}

@@ -475,6 +475,7 @@ pub fn map_native_event_full(
             surface,
             fingers,
             time,
+            seat: event_seat,
         } => {
             map_state.gesture_surface = Some(surface);
             let seat = seat?;
@@ -488,10 +489,16 @@ pub fn map_native_event_full(
                     ),
                     time,
                     fingers,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
-        NativeShellEvent::GestureSwipeUpdate { dx, dy, time } => {
+        NativeShellEvent::GestureSwipeUpdate {
+            dx,
+            dy,
+            time,
+            seat: event_seat,
+        } => {
             let surface = map_state
                 .gesture_surface
                 .map(|s| surfaces.intern(s))
@@ -501,10 +508,15 @@ pub fn map_native_event_full(
                     surface,
                     time,
                     delta: (dx, dy),
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
-        NativeShellEvent::GestureSwipeEnd { cancelled, time } => {
+        NativeShellEvent::GestureSwipeEnd {
+            cancelled,
+            time,
+            seat: event_seat,
+        } => {
             let seat = seat?;
             let surface = map_state
                 .gesture_surface
@@ -521,6 +533,7 @@ pub fn map_native_event_full(
                     ),
                     time,
                     cancelled,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
@@ -528,6 +541,7 @@ pub fn map_native_event_full(
             surface,
             fingers,
             time,
+            seat: event_seat,
         } => {
             map_state.gesture_surface = Some(surface);
             let seat = seat?;
@@ -541,6 +555,7 @@ pub fn map_native_event_full(
                     ),
                     time,
                     fingers,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
@@ -550,6 +565,7 @@ pub fn map_native_event_full(
             scale,
             rotation,
             time,
+            seat: event_seat,
         } => {
             let surface = map_state
                 .gesture_surface
@@ -562,10 +578,15 @@ pub fn map_native_event_full(
                     delta: (dx, dy),
                     scale,
                     rotation_degrees_cw: rotation,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
-        NativeShellEvent::GesturePinchEnd { cancelled, time } => {
+        NativeShellEvent::GesturePinchEnd {
+            cancelled,
+            time,
+            seat: event_seat,
+        } => {
             let seat = seat?;
             let surface = map_state
                 .gesture_surface
@@ -582,6 +603,7 @@ pub fn map_native_event_full(
                     ),
                     time,
                     cancelled,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
@@ -589,6 +611,7 @@ pub fn map_native_event_full(
             surface,
             fingers,
             time,
+            seat: event_seat,
         } => {
             map_state.gesture_surface = Some(surface);
             let seat = seat?;
@@ -602,10 +625,15 @@ pub fn map_native_event_full(
                     ),
                     time,
                     fingers,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
-        NativeShellEvent::GestureHoldEnd { cancelled, time } => {
+        NativeShellEvent::GestureHoldEnd {
+            cancelled,
+            time,
+            seat: event_seat,
+        } => {
             let seat = seat?;
             let surface = map_state
                 .gesture_surface
@@ -622,6 +650,7 @@ pub fn map_native_event_full(
                     ),
                     time,
                     cancelled,
+                    seat: event_seat.map(SeatId::from_raw),
                 },
             )))
         }
