@@ -9,6 +9,40 @@
     }
 
     #[test]
+    fn active_animation_redraws_are_deadline_paced() {
+        let now = Instant::now();
+        let next = now + Duration::from_millis(16);
+        let mut scheduled = None;
+
+        assert!(schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            now,
+            Some(next)
+        ));
+        assert_eq!(scheduled, Some(next));
+        assert!(!schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            now + Duration::from_millis(1),
+            Some(next + Duration::from_millis(16))
+        ));
+        assert!(schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            next,
+            Some(next + Duration::from_millis(16))
+        ));
+        assert!(!schedule_animation_redraw(
+            false,
+            &mut scheduled,
+            next,
+            None
+        ));
+        assert!(scheduled.is_none());
+    }
+
+    #[test]
     fn skipped_clean_render_consumes_pending_redraw_without_presenting() {
         assert!(ShellRenderOutcome::SkippedClean.consumed_redraw_request());
         assert!(!ShellRenderOutcome::SkippedClean.presented());

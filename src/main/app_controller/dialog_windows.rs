@@ -144,14 +144,6 @@ impl FikaWgpuApp {
         true
     }
 
-    fn autosmoke_work_pending(&self) -> bool {
-        !self.autosmoke_zoom_actions.is_empty()
-            || !self.autosmoke_scroll_actions.is_empty()
-            || self
-                .dialog_lifecycle_smoke
-                .is_some_and(DialogLifecycleSmoke::pending)
-    }
-
     fn drive_autosmoke_after_render(&mut self) {
         let Some((size, frame_count)) = self
             .renderer
@@ -165,11 +157,6 @@ impl FikaWgpuApp {
         }
         self.drive_autosmoke_zoom(size);
         self.drive_autosmoke_scroll(size);
-        if self.autosmoke_work_pending()
-            && let Some(window) = self.window.as_ref()
-        {
-            window.request_redraw();
-        }
     }
 
     fn drive_dialog_lifecycle_autosmoke(&mut self, event_loop: &ActiveEventLoop) {

@@ -169,7 +169,7 @@ pub struct MetadataRoleScheduler {
     visible: VecDeque<MetadataRoleRequest>,
     deferred: VecDeque<MetadataRoleRequest>,
     seen: HashMap<MetadataRoleWorkKey, MetadataRolePriority>,
-    active: HashSet<MetadataRoleWorkKey>,
+    active: HashMap<MetadataRoleWorkKey, MetadataRolePriority>,
     role_batch_pending: bool,
 }
 
@@ -238,27 +238,26 @@ impl MetadataRoleScheduler {
             return None;
         }
         let mut requests = Vec::new();
+        let mut active = HashMap::new();
         while requests.len() < batch_size {
-            let Some(request) = self.pop_next_queued_request() else {
+            let Some((request, priority)) = self.pop_next_queued_request() else {
                 break;
             };
+            active.insert(MetadataRoleWorkKey::from_request(&request), priority);
             requests.push(request);
         }
         if requests.is_empty() {
             None
         } else {
             self.role_batch_pending = true;
-            self.active = requests
-                .iter()
-                .map(MetadataRoleWorkKey::from_request)
-                .collect();
+            self.active = active;
             Some(MetadataRoleBatch { requests })
         }
     }
 
     pub fn finish_role_batch(&mut self) {
         self.role_batch_pending = false;
-        for key in self.active.drain() {
+        for (key, _) in self.active.drain() {
             self.seen.remove(&key);
         }
     }
@@ -270,7 +269,7 @@ impl MetadataRoleScheduler {
             .map(MetadataRoleWorkKey::from_result)
             .collect::<HashSet<_>>();
         self.role_batch_pending = false;
-        for key in self.active.drain() {
+        for (key, _) in self.active.drain() {
             if !failed.contains(&key) {
                 self.seen.remove(&key);
             }
@@ -281,7 +280,7 @@ impl MetadataRoleScheduler {
         self.visible.retain(|request| request.pane_id != pane_id);
         self.deferred.retain(|request| request.pane_id != pane_id);
         self.seen.retain(|key, _| key.pane_id != pane_id);
-        self.active.retain(|key| key.pane_id != pane_id);
+        self.active.retain(|key, _| key.pane_id != pane_id);
     }
 
     pub fn cancel_stale_pane_generations(&mut self, pane_id: PaneId, generation: Generation) {
@@ -292,11 +291,39 @@ impl MetadataRoleScheduler {
         self.seen
             .retain(|key, _| key.pane_id != pane_id || key.generation == generation);
         self.active
-            .retain(|key| key.pane_id != pane_id || key.generation == generation);
+            .retain(|key, _| key.pane_id != pane_id || key.generation == generation);
     }
 
     pub fn is_empty(&self) -> bool {
         self.visible.is_empty() && self.deferred.is_empty() && !self.role_batch_pending
+    }
+
+    pub fn has_visible_pending(&self) -> bool {
+        self.visible.iter().any(|request| {
+            self.seen.get(&MetadataRoleWorkKey::from_request(request))
+                == Some(&MetadataRolePriority::Visible)
+        }) || self
+            .active
+            .values()
+            .any(|priority| *priority == MetadataRolePriority::Visible)
+    }
+
+    pub fn priority_for_result(
+        &self,
+        result: &MetadataRoleResult,
+    ) -> Option<MetadataRolePriority> {
+        let path_hash = stable_hash(&result.path);
+        self.active
+            .iter()
+            .filter(|(key, _)| metadata_work_key_matches_result(key, result, path_hash))
+            .map(|(_, priority)| *priority)
+            .chain(
+                self.seen
+                    .iter()
+                    .filter(|(key, _)| metadata_work_key_matches_result(key, result, path_hash))
+                    .map(|(_, priority)| *priority),
+            )
+            .max()
     }
 
     #[cfg(test)]
@@ -309,17 +336,17 @@ impl MetadataRoleScheduler {
         self.seen.len()
     }
 
-    fn pop_next_queued_request(&mut self) -> Option<MetadataRoleRequest> {
+    fn pop_next_queued_request(&mut self) -> Option<(MetadataRoleRequest, MetadataRolePriority)> {
         while let Some(request) = self.visible.pop_front() {
             let key = MetadataRoleWorkKey::from_request(&request);
             if self.seen.get(&key) == Some(&MetadataRolePriority::Visible) {
-                return Some(request);
+                return Some((request, MetadataRolePriority::Visible));
             }
         }
         while let Some(request) = self.deferred.pop_front() {
             let key = MetadataRoleWorkKey::from_request(&request);
             if self.seen.get(&key) == Some(&MetadataRolePriority::Deferred) {
-                return Some(request);
+                return Some((request, MetadataRolePriority::Deferred));
             }
         }
         None
@@ -350,6 +377,17 @@ impl MetadataRoleScheduler {
             }
         }
     }
+}
+
+fn metadata_work_key_matches_result(
+    key: &MetadataRoleWorkKey,
+    result: &MetadataRoleResult,
+    result_path_hash: u64,
+) -> bool {
+    key.pane_id == result.pane_id
+        && key.generation == result.generation
+        && key.item_id == result.item_id
+        && key.path_hash == result_path_hash
 }
 
 pub fn metadata_role_results_for_requests(
@@ -472,6 +510,30 @@ mod tests {
         let batch = scheduler.start_role_batch(2).unwrap();
         assert_eq!(batch.requests[0].item_id(), visible.item_id);
         assert_eq!(batch.requests[1].item_id(), deferred.item_id);
+        assert!(scheduler.has_visible_pending());
+        scheduler.finish_role_batch();
+        assert!(!scheduler.has_visible_pending());
+    }
+
+    #[test]
+    fn metadata_role_scheduler_ignores_deferred_only_work_for_visible_pending() {
+        let candidate = metadata_candidate(
+            ItemId(1),
+            PathBuf::from("/tmp/fika-metadata-deferred-only/payload"),
+        );
+        let mut scheduler = MetadataRoleScheduler::default();
+
+        assert!(scheduler.queue_candidates_with_priority(
+            PaneId(1),
+            Generation(1),
+            vec![candidate],
+            MetadataRolePriority::Deferred,
+        ));
+        assert!(!scheduler.has_visible_pending());
+
+        let batch = scheduler.start_role_batch(1).unwrap();
+        assert_eq!(batch.requests.len(), 1);
+        assert!(!scheduler.has_visible_pending());
     }
 
     #[test]

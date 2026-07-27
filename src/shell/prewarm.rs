@@ -46,6 +46,8 @@ pub(crate) fn icon_raster_miss_budget_for_frame(reason: &str) -> usize {
     if let Some(budget) = env_usize("FIKA_WGPU_ICON_RASTER_MISS_BUDGET") {
         return budget;
     }
+    // Dolphin pauses role updates while scrolling / zooming (ShortInterval /
+    // LongInterval timers) so disk-backed icon loads never hitch the fling.
     if matches!(
         reason,
         "autosmoke-scroll" | "wheel-scroll" | "zoom" | "wheel-zoom" | "autosmoke-zoom"
@@ -56,6 +58,10 @@ pub(crate) fn icon_raster_miss_budget_for_frame(reason: &str) -> usize {
     } else {
         0
     }
+}
+
+pub(crate) fn icon_work_reason_for_frame(reason: &str, frame_count: u64) -> &str {
+    if frame_count == 0 { "startup" } else { reason }
 }
 
 pub(crate) fn icon_role_prewarm_budget_for_frame(reason: &str) -> Duration {
@@ -153,6 +159,19 @@ mod tests {
         assert_eq!(
             text_label_prewarm_mode_for_scene_prewarm("activate-directory"),
             TextLabelPrewarmMode::VisibleOnly
+        );
+    }
+
+    #[test]
+    fn first_surface_frame_uses_startup_icon_work_policy() {
+        assert_eq!(icon_work_reason_for_frame("redraw", 0), "startup");
+        assert_eq!(
+            icon_work_reason_for_frame("wheel-scroll", 1),
+            "wheel-scroll"
+        );
+        assert_eq!(
+            icon_raster_miss_budget_for_frame(icon_work_reason_for_frame("redraw", 0)),
+            ICON_RASTER_VISIBLE_SYNC_BUDGET
         );
     }
 }

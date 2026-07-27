@@ -249,8 +249,15 @@ impl ShellFolderPreviewRoleRuntime {
         self.ready_bytes
     }
 
+    #[cfg(test)]
     fn has_pending(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    fn has_visible_pending(&self) -> bool {
+        self.pending
+            .values()
+            .any(|priority| *priority == ThumbnailRequestPriority::Visible)
     }
 }
 fn folder_preview_worker(

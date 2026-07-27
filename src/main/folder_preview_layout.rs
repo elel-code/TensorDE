@@ -402,6 +402,59 @@ fn pack_icon_batches(
     }
     (vertices, batches)
 }
+
+fn icon_draw_content_hash(
+    draws: &[IconDraw],
+    overlay_draws: &[IconDraw],
+    slots: &[IconGpuSlot],
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (layer, layer_draws) in [(0_u8, draws), (1_u8, overlay_draws)] {
+        layer.hash(&mut hasher);
+        layer_draws.len().hash(&mut hasher);
+        for draw in layer_draws {
+            if let Some(slot) = slots.get(draw.slot as usize) {
+                slot.key.hash(&mut hasher);
+            } else {
+                draw.slot.hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+fn icon_draw_geometry_hash(draws: &[IconDraw], overlay_draws: &[IconDraw]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (layer, layer_draws) in [(0_u8, draws), (1_u8, overlay_draws)] {
+        layer.hash(&mut hasher);
+        layer_draws.len().hash(&mut hasher);
+        for draw in layer_draws {
+            for value in [
+                draw.screen.x,
+                draw.screen.y,
+                draw.screen.width,
+                draw.screen.height,
+                draw.source.x,
+                draw.source.y,
+                draw.source.width,
+                draw.source.height,
+                draw.alpha,
+            ] {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+fn icon_slot_hash(slots: &[IconGpuSlot]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    slots.len().hash(&mut hasher);
+    for slot in slots {
+        slot.key.hash(&mut hasher);
+    }
+    hasher.finish()
+}
 /// GPU cache entry for one unique icon raster (scheme C).
 struct IconGpuTexture {
     bind_group: wgpu::BindGroup,

@@ -465,6 +465,7 @@ impl<'a> TextFrameBuilder<'a> {
 
     fn finish(mut self) -> TextFrame {
         let pending = std::mem::take(&mut self.pending_draws);
+        let initial_atlas_height = self.atlas_cache.height;
         let label_cache_entry_limit = pending
             .len()
             .saturating_add(TEXT_LABEL_RECYCLE_CACHE_ENTRIES)
@@ -508,6 +509,14 @@ impl<'a> TextFrameBuilder<'a> {
                 uploads.push(text_atlas_upload_from_draw(atlas, draw));
                 atlases.push(atlas);
                 drawable.push(draw.clone());
+            }
+            // Growing the texture discards its old contents. Repack the live
+            // frame so every retained slot is uploaded into the new texture,
+            // and stale allocations cannot ratchet atlas memory upward.
+            if !reset_once && self.atlas_cache.height != initial_atlas_height {
+                reset_once = true;
+                self.atlas_cache.reset();
+                continue 'build_atlas;
             }
             break;
         }

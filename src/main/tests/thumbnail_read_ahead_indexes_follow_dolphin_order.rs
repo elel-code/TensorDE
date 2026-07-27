@@ -205,6 +205,7 @@
             request_tx: Some(request_tx),
             result_rx,
         };
+        assert!(!runtime.has_visible_pending());
 
         let stats = runtime.queue_candidates([FolderPreviewRoleRequest {
             key,
@@ -277,6 +278,7 @@
             request_tx: Some(request_tx),
             result_rx,
         };
+        assert!(!runtime.has_visible_pending());
 
         let stats = runtime.queue_candidates([FolderPreviewRoleRequest {
             key: key.clone(),
@@ -287,6 +289,7 @@
         let request = request_rx.try_recv().unwrap();
         assert_eq!(request.key, key);
         assert_eq!(request.priority, ThumbnailRequestPriority::Visible);
+        assert!(runtime.has_visible_pending());
     }
 
     #[test]

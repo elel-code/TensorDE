@@ -28,6 +28,7 @@ struct FikaWgpuApp {
     cursor_icon: CursorIcon,
     pending_redraw_frames: u8,
     pending_render_reason: Option<&'static str>,
+    next_animation_redraw: Option<Instant>,
     last_location_text_caret_dirty_value: u64,
     last_open_with_text_caret_dirty_value: u64,
     auto_cycle_views: bool,
@@ -125,36 +126,11 @@ impl ApplicationHandler for FikaWgpuApp {
         };
 
         window.set_blur(self.scene.background_blur);
-        let mut renderer = match WgpuState::new(window.clone()) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                fika_log!("[fika-wgpu] renderer init failed: {error}");
-                self.exit_event_loop(event_loop, "main-renderer-init-failed");
-                return;
-            }
-        };
         let clipboard = ShellClipboard::new(event_loop);
         fika_log!(
             "[fika-wgpu] clipboard-ready backend={}",
             clipboard.backend()
         );
-
-        self.scene
-            .set_scale_factor(window.scale_factor() as f32, renderer.size);
-
-        fika_log!(
-            "[fika-wgpu] shell-ready size={}x{} scale={:.2}",
-            renderer.size.width,
-            renderer.size.height,
-            window.scale_factor()
-        );
-
-        self.scene.clamp_scroll(renderer.size);
-        renderer.prewarm_scene_caches(&mut self.scene, "startup");
-        // Feedback may still be in-flight; seed plan when available and log.
-        renderer.sync_icon_dmabuf_plan(event_loop, Some(window.id()));
-        renderer.log_dmabuf_readiness(event_loop, Some(window.id()), "startup");
-        self.renderer = Some(renderer);
         self.clipboard = Some(clipboard);
         self.window = Some(window);
 
@@ -202,8 +178,15 @@ impl ApplicationHandler for FikaWgpuApp {
         self.drive_dialog_lifecycle_autosmoke(event_loop);
         self.drain_dialog_window_deferred_closes();
 
-        let autosmoke_work_pending = self.autosmoke_work_pending();
+        let now = Instant::now();
         let animation_active = self.scene.animation_active();
+        let next_scene_animation_deadline = self.scene.next_animation_frame_deadline();
+        let animation_redraw_due = schedule_animation_redraw(
+            animation_active,
+            &mut self.next_animation_redraw,
+            now,
+            next_scene_animation_deadline,
+        );
         let next_text_caret_deadline = self.scene.next_text_caret_blink_deadline();
         let location_caret_active = self.scene.location_text_caret_active();
         let location_caret_dirty_value = self.scene.location_text_caret_dirty_value();
@@ -229,9 +212,8 @@ impl ApplicationHandler for FikaWgpuApp {
             renderer.frame_count == 0
                 || renderer.rendered_view_switches != self.scene.view_switches
                 || self.pending_redraw_frames > 0
-                || animation_active
+                || animation_redraw_due
                 || location_caret_blink_due
-                || (autosmoke_work_pending && renderer.frame_count > 0)
         });
         let next_autosmoke_deadline = [
             (!self.autosmoke_zoom_actions.is_empty()).then_some(self.next_autosmoke_zoom),
@@ -244,7 +226,8 @@ impl ApplicationHandler for FikaWgpuApp {
             self.auto_cycle_views.then_some(self.next_auto_cycle),
             next_autosmoke_deadline,
             self.dialog_windows.next_deferred_close_deadline(),
-            self.scene.next_animation_frame_deadline(),
+            self.next_animation_redraw,
+            next_scene_animation_deadline,
             next_text_caret_deadline,
             self.directory_watchers.next_reload_deadline(),
         ]
@@ -328,30 +311,49 @@ impl ApplicationHandler for FikaWgpuApp {
             WindowEvent::SurfaceResized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let previous_size = renderer.size;
+                    let animate_reflow = renderer.frame_count > 0;
                     renderer.resize(size);
-                    self.scene
-                        .reflow_pane_items_after_window_resize(previous_size, renderer.size);
+                    if animate_reflow {
+                        self.scene
+                            .reflow_pane_items_after_window_resize(previous_size, renderer.size);
+                    } else {
+                        self.scene.clamp_scroll(renderer.size);
+                    }
+                } else {
+                    self.scene.clamp_scroll(size);
                 }
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor } => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.as_mut(), self.window.as_ref())
-                {
-                    let previous_size = renderer.size;
-                    let previous_rects = self
-                        .scene
-                        .visible_item_rects_by_path_for_open_panes(previous_size);
-                    renderer.resize(window.surface_size());
-                    let next_size = renderer.size;
-                    let scale_changed = self
-                        .scene
-                        .set_scale_factor(scale_factor as f32, next_size);
-                    if scale_changed || previous_size != next_size {
+                if let Some(window) = self.window.as_ref() {
+                    let surface_size = window.surface_size();
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        let previous_size = renderer.size;
+                        let previous_rects = (renderer.frame_count > 0).then(|| {
+                            self.scene
+                                .visible_item_rects_by_path_for_open_panes(previous_size)
+                        });
+                        renderer.resize(surface_size);
+                        let next_size = renderer.size;
+                        let scale_changed = self
+                            .scene
+                            .set_scale_factor(scale_factor as f32, next_size);
+                        if scale_changed || previous_size != next_size {
+                            if let Some(previous_rects) = previous_rects {
+                                self.scene.start_item_reflow_transitions_for_panes(
+                                    previous_rects,
+                                    next_size,
+                                );
+                            } else {
+                                self.scene.clamp_scroll(next_size);
+                            }
+                        }
+                    } else {
                         self.scene
-                            .start_item_reflow_transitions_for_panes(previous_rects, next_size);
+                            .set_scale_factor(scale_factor as f32, surface_size);
+                        self.scene.clamp_scroll(surface_size);
                     }
                     window.request_redraw();
                 }
@@ -429,4 +431,21 @@ impl ApplicationHandler for FikaWgpuApp {
             _ => {}
         }
     }
+}
+
+fn schedule_animation_redraw(
+    active: bool,
+    scheduled: &mut Option<Instant>,
+    now: Instant,
+    next_deadline: Option<Instant>,
+) -> bool {
+    if !active {
+        *scheduled = None;
+        return false;
+    }
+    if scheduled.is_some_and(|deadline| deadline > now) {
+        return false;
+    }
+    *scheduled = Some(next_deadline.unwrap_or(now + Duration::from_millis(16)));
+    true
 }

@@ -88,16 +88,16 @@ impl SceneFrame {
         icon_renderer: &mut IconRenderer,
         scene: &ShellScene,
     ) -> SceneFrameWorkPending {
-        let metadata = scene.metadata_role_work_pending();
+        let metadata = scene.metadata_role_visible_work_pending();
         let icon = self.icon_stats.deferred > 0
             || self.icon_stats.raster_deferred > 0
             || self.icon_stats.thumbnail_deferred > 0
-            || icon_renderer.resolver.has_pending()
+            || icon_renderer.resolver.has_visible_pending()
             || icon_renderer
                 .icon_rasters
-                .has_pending(&mut icon_renderer.raster_cache)
-            || icon_renderer.thumbnails.has_pending()
-            || scene.folder_preview_roles.borrow().has_pending();
+                .has_visible_pending(&mut icon_renderer.raster_cache)
+            || icon_renderer.thumbnails.has_visible_pending()
+            || scene.folder_preview_roles.borrow().has_visible_pending();
         let text = self.text_stats.deferred > 0;
         SceneFrameWorkPending {
             metadata,
@@ -353,17 +353,19 @@ pub(crate) fn prepare_dialog_frame(
     let text_stats = text_frame.stats;
     let icon_stats = icon_frame.stats;
     let text_work_pending = text_stats.deferred > 0;
+    // Only visible-priority work keeps the dialog frame dirty. Deferred
+    // read-ahead (Dolphin-style off-viewport resolve) must not block clean skips.
     let icon_work_pending = icon_stats.deferred > 0
         || icon_stats.raster_deferred > 0
         || icon_stats.thumbnail_deferred > 0
         || icon_resolve_results > 0
         || icon_raster_results > 0
         || thumbnail_results > 0
-        || icon_renderer.resolver.has_pending()
+        || icon_renderer.resolver.has_visible_pending()
         || icon_renderer
             .icon_rasters
-            .has_pending(&mut icon_renderer.raster_cache)
-        || icon_renderer.thumbnails.has_pending();
+            .has_visible_pending(&mut icon_renderer.raster_cache)
+        || icon_renderer.thumbnails.has_visible_pending();
 
     let mut vertex_upload_stats = quad_renderer.upload(device, queue, &vertices);
     vertex_upload_stats.merge(icon_renderer.upload(device, queue, &mut icon_frame));

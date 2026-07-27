@@ -82,23 +82,6 @@
     }
 
     #[test]
-    fn surface_frame_context_keeps_dialog_suboptimal_recovery_local() {
-        assert!(
-            ShellSurfaceFrameContext::Main {
-                view: "icons",
-                force_log: false,
-            }
-            .reconfigure_on_suboptimal()
-        );
-        assert!(
-            !ShellSurfaceFrameContext::DetachedDialog {
-                dialog_label: "open-with",
-            }
-            .reconfigure_on_suboptimal()
-        );
-    }
-
-    #[test]
     fn dolphin_filename_elision_preserves_extension() {
         let mut font_system = FontSystem::new();
         let mut buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));

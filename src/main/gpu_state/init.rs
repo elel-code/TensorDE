@@ -355,21 +355,15 @@ impl WgpuState {
         context: ShellSurfaceFrameContext,
     ) -> Option<wgpu::SurfaceTexture> {
         match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                if context.reconfigure_on_suboptimal() {
-                    // `configure` and the retry below both require the currently acquired
-                    // surface texture to have been released first.
-                    drop(frame);
-                    context.log_retry(reason);
-                    self.force_reconfigure(window.surface_size());
-                    self.acquire_surface_frame_after_reconfigure(window, reason, context)
-                } else {
-                    Some(frame)
-                }
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                context.log_retry(reason, "outdated");
+                self.force_reconfigure(window.surface_size());
+                self.acquire_surface_frame_after_reconfigure(window, reason, context)
             }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                context.log_retry(reason);
+            wgpu::CurrentSurfaceTexture::Lost => {
+                context.log_retry(reason, "lost");
                 self.force_reconfigure(window.surface_size());
                 self.acquire_surface_frame_after_reconfigure(window, reason, context)
             }
@@ -412,11 +406,12 @@ impl WgpuState {
     fn submit_surface_frame(
         &mut self,
         window: &WaylandWindow,
+        event_loop: &ActiveEventLoop,
         frame: wgpu::SurfaceTexture,
         encoder: wgpu::CommandEncoder,
     ) -> u64 {
         self.queue.submit(Some(encoder.finish()));
-        window.pre_present_notify();
+        event_loop.pre_present_notify(window.id());
         self.queue.present(frame);
         self.frame_count += 1;
         self.frame_count

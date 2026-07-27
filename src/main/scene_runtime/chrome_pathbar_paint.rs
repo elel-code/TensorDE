@@ -190,12 +190,36 @@ impl ShellScene {
 
     fn drain_metadata_role_results(&mut self) -> MetadataRolePrewarmStats {
         let (mut stats, results) = self.metadata_roles.drain_ready_results();
-        for result in results {
+        for (result, priority) in results {
             if self.apply_metadata_role_result(result) {
                 stats.applied += 1;
+                stats.visible_applied +=
+                    usize::from(priority == fika_core::MetadataRolePriority::Visible);
             }
         }
         stats
+    }
+
+    fn resolve_visible_metadata_roles_synchronously(
+        &self,
+        projections: &[ShellPaneProjection<'_>],
+    ) -> (MetadataRoleSyncStats, Vec<MetadataRoleResult>) {
+        self.metadata_roles.resolve_visible_synchronously(
+            projections,
+            Generation(self.path_changes),
+            DOLPHIN_MAX_BLOCK_TIMEOUT,
+        )
+    }
+
+    fn apply_synchronous_metadata_role_results(
+        &mut self,
+        results: Vec<MetadataRoleResult>,
+    ) -> usize {
+        let mut applied = 0;
+        for result in results {
+            applied += usize::from(self.apply_metadata_role_result(result));
+        }
+        applied
     }
 
     fn drain_folder_preview_role_results(&self) -> FolderPreviewRoleDrainStats {
@@ -445,8 +469,8 @@ impl ShellScene {
         true
     }
 
-    fn metadata_role_work_pending(&self) -> bool {
-        self.metadata_roles.has_pending()
+    fn metadata_role_visible_work_pending(&self) -> bool {
+        self.metadata_roles.has_visible_pending()
     }
 
     fn cancel_metadata_role_work_for_pane(&self, pane: ShellPaneId) {

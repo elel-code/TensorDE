@@ -151,6 +151,82 @@
     }
 
     #[test]
+    fn text_atlas_grows_from_live_content_and_reuploads_after_resize() {
+        let mut font_system = FontSystem::new();
+        let mut swash_cache = SwashCache::new();
+        let mut text_buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));
+        let mut label_cache = LabelRasterCache::new(1024 * 1024);
+        let mut metrics_cache = LabelMetricsCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES);
+        let mut atlas_cache = TextAtlasFrameCache::default();
+        let surface_size = PhysicalSize::new(320, 240);
+        let clip = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 320.0,
+            height: 240.0,
+        };
+        let label_rect = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 180.0,
+            height: TEXT_LINE_HEIGHT,
+        };
+
+        let mut first = TextFrameBuilder::new(
+            TextFrameResources::new(
+                &mut font_system,
+                &mut swash_cache,
+                &mut text_buffer,
+                &mut label_cache,
+                &mut metrics_cache,
+                &mut atlas_cache,
+            ),
+            surface_size,
+            1.0,
+            Vec::new(),
+        );
+        first.push_label(
+            "label-0",
+            label_rect,
+            clip,
+            TextColor::rgb(36, 41, 47),
+        );
+        let first_frame = first.finish();
+
+        assert!(first_frame.height < TEXT_ATLAS_MAX_HEIGHT);
+        assert_eq!(first_frame.uploads.len(), 1);
+        let first_height = first_frame.height;
+
+        let mut second = TextFrameBuilder::new(
+            TextFrameResources::new(
+                &mut font_system,
+                &mut swash_cache,
+                &mut text_buffer,
+                &mut label_cache,
+                &mut metrics_cache,
+                &mut atlas_cache,
+            ),
+            surface_size,
+            1.0,
+            Vec::new(),
+        );
+        for index in 0..16 {
+            second.push_label(
+                &format!("label-{index}"),
+                label_rect,
+                clip,
+                TextColor::rgb(36, 41, 47),
+            );
+        }
+        let second_frame = second.finish();
+
+        assert!(second_frame.height > first_height);
+        assert_eq!(second_frame.stats.quads, 16);
+        assert_eq!(second_frame.uploads.len(), 16);
+        assert_eq!(second_frame.stats.atlas_reused, 0);
+    }
+
+    #[test]
     fn start_no_wrap_labels_rasterize_to_shaped_text_width() {
         let mut font_system = FontSystem::new();
         let mut swash_cache = SwashCache::new();

@@ -3,10 +3,12 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use fika_core::{
     Entry, EntryData, EntryMetadataRole, Generation, ItemId, MetadataRoleBatch,
-    MetadataRoleCandidate, MetadataRolePriority, MetadataRoleResult, MetadataRoleScheduler, PaneId,
+    MetadataRoleCandidate, MetadataRolePriority, MetadataRoleRequest, MetadataRoleResult,
+    MetadataRoleScheduler, PaneId, metadata_role_result_for_request,
     metadata_role_results_for_requests, mime_magic_resolution_required,
 };
 
@@ -27,7 +29,19 @@ pub(crate) struct MetadataRolePrewarmStats {
     pub(crate) queued_snapshots: usize,
     pub(crate) batches_started: usize,
     pub(crate) results: usize,
+    pub(crate) visible_results: usize,
     pub(crate) applied: usize,
+    pub(crate) visible_applied: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct MetadataRoleSyncStats {
+    pub(crate) visible: usize,
+    pub(crate) resolved: usize,
+    pub(crate) deferred: usize,
+    pub(crate) applied: usize,
+    pub(crate) resolve_us: u128,
+    pub(crate) over_budget: bool,
 }
 
 pub(crate) struct ShellMetadataRoleRuntime {
@@ -92,21 +106,75 @@ impl ShellMetadataRoleRuntime {
 
     pub(crate) fn drain_ready_results(
         &self,
-    ) -> (MetadataRolePrewarmStats, Vec<MetadataRoleResult>) {
+    ) -> (
+        MetadataRolePrewarmStats,
+        Vec<(MetadataRoleResult, MetadataRolePriority)>,
+    ) {
         let mut stats = MetadataRolePrewarmStats::default();
         let mut ready = Vec::new();
         while let Ok(results) = self.rx.try_recv() {
-            self.scheduler
-                .borrow_mut()
-                .finish_role_batch_with_results(&results);
+            let priorities = {
+                let mut scheduler = self.scheduler.borrow_mut();
+                let priorities = results
+                    .iter()
+                    .map(|result| {
+                        scheduler
+                            .priority_for_result(result)
+                            .unwrap_or(MetadataRolePriority::Deferred)
+                    })
+                    .collect::<Vec<_>>();
+                scheduler.finish_role_batch_with_results(&results);
+                priorities
+            };
             stats.results += results.len();
-            ready.extend(results);
+            stats.visible_results += priorities
+                .iter()
+                .filter(|priority| **priority == MetadataRolePriority::Visible)
+                .count();
+            ready.extend(results.into_iter().zip(priorities));
         }
         (stats, ready)
     }
 
-    pub(crate) fn has_pending(&self) -> bool {
-        !self.scheduler.borrow().is_empty()
+    pub(crate) fn resolve_visible_synchronously(
+        &self,
+        projections: &[ShellPaneProjection<'_>],
+        generation: Generation,
+        budget: Duration,
+    ) -> (MetadataRoleSyncStats, Vec<MetadataRoleResult>) {
+        let mut requests = Vec::new();
+        for projection in projections {
+            let pane_id = core_pane_id_for_shell_pane(projection.geometry.kind);
+            requests.extend(
+                metadata_role_candidates_for_visible_projection(projection)
+                    .into_iter()
+                    .filter_map(|candidate| {
+                        MetadataRoleRequest::from_candidate(pane_id, generation, candidate)
+                    }),
+            );
+        }
+
+        let mut stats = MetadataRoleSyncStats {
+            visible: requests.len(),
+            ..MetadataRoleSyncStats::default()
+        };
+        let started = Instant::now();
+        let mut results = Vec::with_capacity(requests.len());
+        for request in requests {
+            if started.elapsed() >= budget {
+                stats.over_budget = true;
+                break;
+            }
+            results.push(metadata_role_result_for_request(request));
+        }
+        stats.resolved = results.len();
+        stats.deferred = stats.visible.saturating_sub(stats.resolved);
+        stats.resolve_us = started.elapsed().as_micros();
+        (stats, results)
+    }
+
+    pub(crate) fn has_visible_pending(&self) -> bool {
+        self.scheduler.borrow().has_visible_pending()
     }
 
     pub(crate) fn cancel_pane(&self, pane: ShellPaneId) {

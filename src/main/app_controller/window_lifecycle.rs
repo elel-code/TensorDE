@@ -37,6 +37,7 @@ impl FikaWgpuApp {
             cursor_icon: CursorIcon::Default,
             pending_redraw_frames: 0,
             pending_render_reason: None,
+            next_animation_redraw: None,
             last_location_text_caret_dirty_value: 0,
             last_open_with_text_caret_dirty_value: 0,
             auto_cycle_views,
@@ -51,6 +52,37 @@ impl FikaWgpuApp {
             autosmoke_scroll_allow_pending_redraw: autosmoke_scroll.allow_pending_redraw,
             dialog_lifecycle_smoke: DialogLifecycleSmoke::from_env(),
         }
+    }
+
+    fn ensure_main_renderer(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if self.renderer.is_some() {
+            return true;
+        }
+        let Some(window) = self.window.clone() else {
+            return false;
+        };
+        let mut renderer = match WgpuState::new(window.clone()) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                fika_log!("[fika-wgpu] renderer init failed: {error}");
+                self.exit_event_loop(event_loop, "main-renderer-init-failed");
+                return false;
+            }
+        };
+
+        self.scene
+            .set_scale_factor(window.scale_factor() as f32, renderer.size);
+        self.scene.clamp_scroll(renderer.size);
+        renderer.sync_icon_dmabuf_plan(event_loop, Some(window.id()));
+        renderer.log_dmabuf_readiness(event_loop, Some(window.id()), "startup");
+        fika_log!(
+            "[fika-wgpu] shell-ready size={}x{} scale={:.2}",
+            renderer.size.width,
+            renderer.size.height,
+            window.scale_factor()
+        );
+        self.renderer = Some(renderer);
+        true
     }
 
     fn set_window_cursor(&mut self, cursor_icon: CursorIcon) {

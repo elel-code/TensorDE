@@ -188,49 +188,47 @@ impl<'a> IconFrameBuilder<'a> {
             self.cache_hits += 1;
             self.icon_rasters.queue_visible(key.clone());
             raster
-        } else {
+        } else if self.raster_miss_budget == 0 {
             self.icon_rasters.queue_visible(key.clone());
-            if self.raster_miss_budget == 0 {
-                if let Some(raster) = self.role_raster_cache.get(&role_key) {
-                    self.cache_hits += 1;
-                    self.raster_deferred += 1;
-                    raster
-                } else if let Some(raster) = self.role_raster_cache.get(
-                    &visible_icon_fallback_key(&FileIconPathCacheKey {
-                        role: role_key.clone(),
-                        size_px,
-                    })
-                    .role,
-                ) {
-                    self.cache_hits += 1;
-                    self.raster_deferred += 1;
-                    raster
-                } else {
-                    self.raster_deferred += 1;
-                    self.fallbacks += 1;
-                    return false;
-                }
+            if let Some(raster) = self.role_raster_cache.get(&role_key) {
+                self.cache_hits += 1;
+                self.raster_deferred += 1;
+                raster
+            } else if let Some(raster) = self.role_raster_cache.get(
+                &visible_icon_fallback_key(&FileIconPathCacheKey {
+                    role: role_key.clone(),
+                    size_px,
+                })
+                .role,
+            ) {
+                self.cache_hits += 1;
+                self.raster_deferred += 1;
+                raster
             } else {
-                self.cache_misses += 1;
-                self.raster_miss_budget -= 1;
-                let raster_start = Instant::now();
-                let Some(raster) = rasterize_icon_for_cache_key(&key) else {
-                    self.raster_us += raster_start.elapsed().as_micros();
-                    self.fallbacks += 1;
-                    return false;
-                };
-                let raster_us = raster_start.elapsed().as_micros();
-                if raster_us >= 2_000 {
-                    fika_log!(
-                        "[fika-wgpu] icon-raster-slow path={} size={} elapsed={}us",
-                        key.path.display(),
-                        size_px,
-                        raster_us
-                    );
-                }
-                self.raster_us += raster_us;
-                self.raster_cache.insert(key, raster)
+                self.raster_deferred += 1;
+                self.fallbacks += 1;
+                return false;
             }
+        } else {
+            self.cache_misses += 1;
+            self.raster_miss_budget -= 1;
+            let raster_start = Instant::now();
+            let Some(raster) = rasterize_icon_for_cache_key(&key) else {
+                self.raster_us += raster_start.elapsed().as_micros();
+                self.fallbacks += 1;
+                return false;
+            };
+            let raster_us = raster_start.elapsed().as_micros();
+            if raster_us >= 2_000 {
+                fika_log!(
+                    "[fika-wgpu] icon-raster-slow path={} size={} elapsed={}us",
+                    key.path.display(),
+                    size_px,
+                    raster_us
+                );
+            }
+            self.raster_us += raster_us;
+            self.raster_cache.insert(key, raster)
         };
 
         self.role_raster_cache.insert(role_key, raster.clone());
@@ -409,7 +407,13 @@ impl<'a> IconFrameBuilder<'a> {
         self.icons += 1;
         let resolve_start = Instant::now();
         let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0);
-        let Some(snapshot) = self.resolver.resolve_named(icon_name, fallback, icon_size) else {
+        let snapshot = if self.raster_miss_budget > 0 {
+            self.resolver
+                .resolve_named_fast(icon_name, fallback, icon_size)
+        } else {
+            self.resolver.resolve_named(icon_name, fallback, icon_size)
+        };
+        let Some(snapshot) = snapshot else {
             self.resolve_us += resolve_start.elapsed().as_micros();
             self.deferred += 1;
             self.fallbacks += 1;
@@ -432,8 +436,8 @@ impl<'a> IconFrameBuilder<'a> {
             raster
         } else {
             self.cache_misses += 1;
-            self.icon_rasters.queue_visible(key.clone());
             if self.raster_miss_budget == 0 {
+                self.icon_rasters.queue_visible(key.clone());
                 self.raster_deferred += 1;
                 self.fallbacks += 1;
                 return false;
@@ -623,6 +627,16 @@ impl<'a> IconFrameBuilder<'a> {
             pack_icon_batches(&self.draws, &self.slots, self.surface_size);
         let (overlay_vertices, overlay_batches) =
             pack_icon_batches(&self.overlay_draws, &self.slots, self.surface_size);
+        let (content_hash, geometry_hash, vertex_hash, slot_hash) = if fika_log_enabled() {
+            (
+                icon_draw_content_hash(&self.draws, &self.overlay_draws, &self.slots),
+                icon_draw_geometry_hash(&self.draws, &self.overlay_draws),
+                vertex_pair_hash(&content_vertices, &overlay_vertices).unwrap_or_default(),
+                icon_slot_hash(&self.slots),
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
         let cache_entries = self.raster_cache.len();
         let cache_bytes = self.raster_cache.bytes();
         let thumbnail_ready_entries = self.thumbnails.ready_len();
@@ -681,6 +695,10 @@ impl<'a> IconFrameBuilder<'a> {
                 raster_deferred: self.raster_deferred,
                 cache_entries,
                 cache_bytes,
+                content_hash,
+                geometry_hash,
+                vertex_hash,
+                slot_hash,
                 resolve_us: self.resolve_us,
                 raster_us: self.raster_us,
             },

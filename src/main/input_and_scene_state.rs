@@ -32,7 +32,11 @@ impl FikaWgpuApp {
         renderer.prewarm_scene_caches(&mut self.scene, reason);
     }
 
-    fn render_create_dialog_now(&mut self, reason: &'static str) {
+    fn render_create_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         let Some(dialog_state) = self.scene.create_dialog.as_ref() else {
             self.close_create_dialog_window();
             return;
@@ -46,6 +50,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog_window.renderer_and_window_mut();
         renderer.render_create_dialog(
             window,
+            event_loop,
             dialog_state,
             DialogRenderViewport {
                 popup_theme,
@@ -56,7 +61,11 @@ impl FikaWgpuApp {
         );
     }
 
-    fn render_rename_dialog_now(&mut self, reason: &'static str) {
+    fn render_rename_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         let Some(dialog_state) = self.scene.rename_dialog.as_ref() else {
             self.close_rename_dialog_window();
             return;
@@ -70,6 +79,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog_window.renderer_and_window_mut();
         renderer.render_rename_dialog(
             window,
+            event_loop,
             dialog_state,
             DialogRenderViewport {
                 popup_theme,
@@ -82,6 +92,7 @@ impl FikaWgpuApp {
 
     fn render_open_with_dialog_now(
         &mut self,
+        event_loop: &ActiveEventLoop,
         reason: &'static str,
     ) {
         let Some(chooser) = self.scene.open_with_chooser.as_ref() else {
@@ -98,6 +109,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog.renderer_and_window_mut();
         renderer.render_open_with_dialog(
             window,
+            event_loop,
             chooser,
             DialogRenderViewport {
                 popup_theme,
@@ -109,7 +121,11 @@ impl FikaWgpuApp {
         );
     }
 
-    fn render_properties_dialog_now(&mut self, reason: &'static str) {
+    fn render_properties_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         let Some(overlay) = self.scene.properties_overlay.as_ref() else {
             self.close_properties_dialog_window();
             return;
@@ -123,6 +139,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog.renderer_and_window_mut();
         renderer.render_properties_dialog(
             window,
+            event_loop,
             overlay,
             DialogRenderViewport {
                 popup_theme,
@@ -133,7 +150,11 @@ impl FikaWgpuApp {
         );
     }
 
-    fn render_task_detail_dialog_now(&mut self, reason: &'static str) {
+    fn render_task_detail_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         if self.scene.task_detail_dialog.is_none() {
             self.close_task_detail_dialog_window();
             return;
@@ -147,6 +168,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog.renderer_and_window_mut();
         renderer.render_task_detail_dialog(
             window,
+            event_loop,
             &self.scene.task_statuses,
             DialogRenderViewport {
                 popup_theme,
@@ -157,7 +179,11 @@ impl FikaWgpuApp {
         );
     }
 
-    fn render_trash_conflict_dialog_now(&mut self, reason: &'static str) {
+    fn render_trash_conflict_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         let Some(dialog_state) = self.scene.trash_conflict_dialog.as_ref() else {
             self.close_trash_conflict_dialog_window();
             return;
@@ -174,6 +200,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog.renderer_and_window_mut();
         renderer.render_trash_conflict_dialog(
             window,
+            event_loop,
             dialog_state,
             DialogRenderViewport {
                 popup_theme,
@@ -190,6 +217,9 @@ impl FikaWgpuApp {
         reason: &'static str,
         force_log: bool,
     ) {
+        if !self.ensure_main_renderer(event_loop) {
+            return;
+        }
         if self.scene.is_properties_overlay_open()
             && !self.dialog_windows.is_open(ShellDialogWindowKind::Properties)
         {

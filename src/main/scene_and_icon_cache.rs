@@ -150,17 +150,15 @@ enum ShellSurfaceFrameContext {
     DetachedDialog { dialog_label: &'static str },
 }
 impl ShellSurfaceFrameContext {
-    fn reconfigure_on_suboptimal(self) -> bool {
-        matches!(self, Self::Main { .. })
-    }
-
-    fn log_retry(self, reason: &'static str) {
+    fn log_retry(self, reason: &'static str, status: &'static str) {
         if let Self::Main {
             view,
             force_log: true,
         } = self
         {
-            fika_log!("[fika-wgpu] frame-retry reason={reason} view={view} surface=reconfigure");
+            fika_log!(
+                "[fika-wgpu] frame-retry reason={reason} view={view} surface={status} action=reconfigure"
+            );
         }
     }
 
@@ -253,6 +251,10 @@ struct IconFrameStats {
     raster_deferred: usize,
     cache_entries: usize,
     cache_bytes: usize,
+    content_hash: u64,
+    geometry_hash: u64,
+    vertex_hash: u64,
+    slot_hash: u64,
     resolve_us: u128,
     raster_us: u128,
 }

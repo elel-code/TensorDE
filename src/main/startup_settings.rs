@@ -100,8 +100,9 @@ use shell::menu_geometry::{
     drop_menu_row_at_screen_point,
 };
 use shell::metadata_roles::{
-    MetadataRolePrewarmStats, ShellMetadataRoleRuntime, entry_with_metadata_role, shell_entry_path,
-    shell_metadata_entry_index, shell_pane_id_for_core_pane,
+    MetadataRolePrewarmStats, MetadataRoleSyncStats, ShellMetadataRoleRuntime,
+    entry_with_metadata_role, shell_entry_path, shell_metadata_entry_index,
+    shell_pane_id_for_core_pane,
 };
 #[cfg(test)]
 use shell::metadata_roles::{
@@ -157,6 +158,7 @@ use shell::prewarm::{
     icon_role_read_ahead_queue_budget_for_frame, text_label_prewarm_budget_for_mode,
     text_label_prewarm_mode_for_frame, text_label_prewarm_mode_for_scene_prewarm,
     text_label_raster_miss_budget_for_mode, visible_exact_icon_roles_enabled_for_frame,
+    icon_work_reason_for_frame,
 };
 #[cfg(test)]
 use shell::privilege::{run_privileged_command_sync, should_attempt_privileged_operation};
@@ -442,13 +444,6 @@ impl DialogLifecycleSmoke {
             close_frame: 0,
             cycles_remaining: dialog_lifecycle_autosmoke_cycles_from_env(),
         })
-    }
-
-    fn pending(self) -> bool {
-        !matches!(
-            self.step,
-            DialogLifecycleSmokeStep::Complete | DialogLifecycleSmokeStep::Failed
-        )
     }
 }
 fn dialog_lifecycle_autosmoke_cycles_from_env() -> usize {

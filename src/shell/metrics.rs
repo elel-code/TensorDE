@@ -43,11 +43,22 @@ pub(crate) const ICON_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ICON_ROLE_RASTER_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const ICON_RASTER_VISIBLE_SYNC_BUDGET: usize = 128;
 pub(crate) const ICON_ROLE_READ_AHEAD_LIMIT: usize = 512;
-pub(crate) const ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 1;
+pub(crate) const ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 64;
 pub(crate) const METADATA_ROLE_BATCH_SIZE: usize = 64;
 pub(crate) const METADATA_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 64;
+/// Dolphin `ResolveAllItemsLimit` — small directories resolve fully; larger ones
+/// only touch the visible + read-ahead window.
 pub(crate) const DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT: usize = 500;
+/// Dolphin `KFileItemModel::determineMimeTypes` / role-updater block budget
+/// (~200 ms) for visible metadata/icon work before yielding the frame.
 pub(crate) const DOLPHIN_MAX_BLOCK_TIMEOUT: Duration = Duration::from_millis(200);
+/// Dolphin `KFileItemListView` short delay before applying a new visible range
+/// after scroll (avoids thrashing expensive icon loads mid-fling).
+#[allow(dead_code)]
+pub(crate) const DOLPHIN_VISIBLE_RANGE_UPDATE_MS: u64 = 50;
+/// Dolphin long delay after icon-size / zoom changes before regenerating previews.
+#[allow(dead_code)]
+pub(crate) const DOLPHIN_ICON_SIZE_UPDATE_MS: u64 = 300;
 pub(crate) const VISIBLE_ICON_ROLE_PREWARM_BUDGET: Duration = Duration::from_millis(8);
 pub(crate) const THUMBNAIL_READY_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const THUMBNAIL_READ_AHEAD_PAGES: usize = 5;

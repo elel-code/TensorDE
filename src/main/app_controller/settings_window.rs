@@ -47,7 +47,11 @@ impl FikaWgpuApp {
         self.request_dialog_redraw(ShellDialogWindowKind::Settings);
     }
 
-    fn render_settings_dialog_now(&mut self, reason: &'static str) {
+    fn render_settings_dialog_now(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        reason: &'static str,
+    ) {
         let state = self.settings_dialog;
         let snapshot = self.settings_snapshot();
         let scale = self.scene.ui_scale();
@@ -59,6 +63,7 @@ impl FikaWgpuApp {
         let (renderer, window) = dialog.renderer_and_window_mut();
         renderer.render_settings_dialog(
             window,
+            event_loop,
             state,
             snapshot,
             DialogRenderViewport {
@@ -241,7 +246,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_settings_dialog_now("settings-dialog-redraw");
+                self.render_settings_dialog_now(event_loop, "settings-dialog-redraw");
             }
             _ => {}
         }

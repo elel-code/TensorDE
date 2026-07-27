@@ -166,22 +166,39 @@ impl IconRasterResolver {
     }
 
     fn drain_results(&mut self, raster_cache: &mut IconRasterCache) -> usize {
-        let mut changed = 0usize;
+        let (visible, deferred) = self.drain_results_by_priority(raster_cache);
+        visible + deferred
+    }
+
+    fn drain_results_by_priority(
+        &mut self,
+        raster_cache: &mut IconRasterCache,
+    ) -> (usize, usize) {
+        let mut visible = 0usize;
+        let mut deferred = 0usize;
         while let Ok(result) = self.result_rx.try_recv() {
-            self.pending.remove(&result.key);
+            match self
+                .pending
+                .remove(&result.key)
+                .unwrap_or(WorkerRequestPriority::Deferred)
+            {
+                WorkerRequestPriority::Visible => visible += 1,
+                WorkerRequestPriority::Deferred => deferred += 1,
+            }
             if let Some(raster) = result.raster {
                 raster_cache.insert(result.key, raster);
             } else {
                 self.failed.insert(result.key);
             }
-            changed += 1;
         }
-        changed
+        (visible, deferred)
     }
 
-    fn has_pending(&mut self, raster_cache: &mut IconRasterCache) -> bool {
+    fn has_visible_pending(&mut self, raster_cache: &mut IconRasterCache) -> bool {
         self.drain_results(raster_cache);
-        !self.pending.is_empty()
+        self.pending
+            .values()
+            .any(|priority| *priority == WorkerRequestPriority::Visible)
     }
 }
 fn icon_raster_worker(

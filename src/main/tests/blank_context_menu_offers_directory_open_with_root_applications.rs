@@ -481,3 +481,59 @@
                 .contains_key(&IconRasterCacheKey::icon(resolved_path, 16))
         );
     }
+
+    #[test]
+    fn synchronous_file_icon_raster_does_not_queue_duplicate_worker_request() {
+        let mut harness = FileIconResolverTestHarness::new();
+        let directory = PathBuf::from("/tmp/fika-sync-icon-raster");
+        let entry = test_entry_with_mime("payload", false, "text/plain");
+        assert!(
+            harness
+                .resolver
+                .resolve_entry(&directory, &entry, 16.0)
+                .is_none()
+        );
+        let request_key = harness.next_request_key().unwrap();
+        harness.complete(
+            request_key,
+            Some(PathBuf::from("/missing/fika-sync-icon-raster.svg")),
+        );
+        harness.resolver.drain_results();
+
+        let mut thumbnails = ThumbnailRasterResolver::new();
+        let mut icon_rasters = IconRasterResolver::new();
+        let mut raster_cache = IconRasterCache::new(ICON_CACHE_MAX_BYTES);
+        let mut role_raster_cache = IconRoleRasterCache::new(ICON_ROLE_RASTER_CACHE_MAX_BYTES);
+        let rect = ViewRect {
+            x: 4.0,
+            y: 4.0,
+            width: 16.0,
+            height: 16.0,
+        };
+        {
+            let mut builder = IconFrameBuilder::new(
+                IconFrameResources::new(
+                    &mut harness.resolver,
+                    &mut thumbnails,
+                    &mut icon_rasters,
+                    &mut raster_cache,
+                    &mut role_raster_cache,
+                ),
+                IconFrameConfig::new(PhysicalSize::new(128, 96), 1.0, 1),
+            );
+            assert!(!builder.push_icon(
+                &directory,
+                &entry,
+                rect,
+                ViewRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 128.0,
+                    height: 96.0,
+                },
+                IconDrawLayer::Content,
+            ));
+        }
+
+        assert!(icon_rasters.pending.is_empty());
+    }

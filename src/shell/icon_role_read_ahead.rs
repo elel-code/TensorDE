@@ -33,6 +33,7 @@ impl ShellIconRoleReadAheadQueue {
         Some(request)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }

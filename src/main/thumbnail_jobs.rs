@@ -107,17 +107,29 @@ impl ThumbnailRasterResolver {
     }
 
     fn drain_results(&mut self) -> usize {
-        let mut changed = 0usize;
+        let (visible, deferred) = self.drain_results_by_priority();
+        visible + deferred
+    }
+
+    fn drain_results_by_priority(&mut self) -> (usize, usize) {
+        let mut visible = 0usize;
+        let mut deferred = 0usize;
         while let Ok(result) = self.result_rx.try_recv() {
-            self.pending.remove(&result.key);
+            match self
+                .pending
+                .remove(&result.key)
+                .unwrap_or(ThumbnailRequestPriority::Deferred)
+            {
+                ThumbnailRequestPriority::Visible => visible += 1,
+                ThumbnailRequestPriority::Deferred => deferred += 1,
+            }
             if let Some(raster) = result.raster {
                 self.insert_ready(result.key, raster);
             } else if let Some(key) = ThumbnailProbeCacheKey::from_raster_key(&result.key) {
                 self.failed.insert(key);
             }
-            changed += 1;
         }
-        changed
+        (visible, deferred)
     }
 
     fn insert_ready(&mut self, key: IconRasterCacheKey, raster: IconRaster) {
@@ -162,8 +174,10 @@ impl ThumbnailRasterResolver {
         self.ready_bytes
     }
 
-    fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+    fn has_visible_pending(&self) -> bool {
+        self.pending
+            .values()
+            .any(|priority| *priority == ThumbnailRequestPriority::Visible)
     }
 }
 fn thumbnail_raster_worker(

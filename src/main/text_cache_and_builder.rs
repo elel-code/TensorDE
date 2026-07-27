@@ -25,7 +25,7 @@ impl Default for TextAtlasFrameCache {
         Self {
             entries: HashMap::new(),
             width: TEXT_ATLAS_WIDTH,
-            height: TEXT_ATLAS_MAX_HEIGHT,
+            height: 1,
             cursor_x: TEXT_PADDING,
             cursor_y: TEXT_PADDING,
             row_height: 0,
@@ -35,7 +35,7 @@ impl Default for TextAtlasFrameCache {
 impl TextAtlasFrameCache {
     fn reset(&mut self) {
         self.entries.clear();
-        self.height = TEXT_ATLAS_MAX_HEIGHT;
+        self.height = 1;
         self.cursor_x = TEXT_PADDING;
         self.cursor_y = TEXT_PADDING;
         self.row_height = 0;

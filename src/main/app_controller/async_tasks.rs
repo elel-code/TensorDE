@@ -89,7 +89,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_create_dialog_now("create-dialog-redraw");
+                self.render_create_dialog_now(event_loop, "create-dialog-redraw");
             }
             _ => {}
         }
@@ -173,7 +173,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_rename_dialog_now("rename-dialog-redraw");
+                self.render_rename_dialog_now(event_loop, "rename-dialog-redraw");
             }
             _ => {}
         }
@@ -181,7 +181,7 @@ impl FikaWgpuApp {
 
     fn open_with_dialog_window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         event: WindowEvent,
     ) {
         if self.handle_common_dialog_window_event(ShellDialogWindowKind::OpenWith, &event) {
@@ -309,7 +309,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_open_with_dialog_now("open-with-dialog-redraw");
+                self.render_open_with_dialog_now(event_loop, "open-with-dialog-redraw");
             }
             _ => {}
         }
@@ -317,7 +317,7 @@ impl FikaWgpuApp {
 
     fn properties_dialog_window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         event: WindowEvent,
     ) {
         if self.handle_common_dialog_window_event(ShellDialogWindowKind::Properties, &event) {
@@ -336,7 +336,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_properties_dialog_now("properties-dialog-redraw");
+                self.render_properties_dialog_now(event_loop, "properties-dialog-redraw");
             }
             _ => {}
         }
@@ -344,7 +344,7 @@ impl FikaWgpuApp {
 
     fn task_detail_dialog_window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         event: WindowEvent,
     ) {
         if self.handle_common_dialog_window_event(ShellDialogWindowKind::TaskDetail, &event) {
@@ -406,7 +406,7 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_task_detail_dialog_now("task-detail-dialog-redraw");
+                self.render_task_detail_dialog_now(event_loop, "task-detail-dialog-redraw");
             }
             _ => {}
         }
@@ -467,7 +467,10 @@ impl FikaWgpuApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_trash_conflict_dialog_now("trash-conflict-dialog-redraw");
+                self.render_trash_conflict_dialog_now(
+                    event_loop,
+                    "trash-conflict-dialog-redraw",
+                );
             }
             _ => {}
         }

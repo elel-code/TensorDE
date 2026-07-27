@@ -215,6 +215,29 @@ impl FileIconResolver {
         self.resolve_key(key, IconResolvePriority::Deferred)
     }
 
+    pub(crate) fn resolve_named_fast(
+        &mut self,
+        icon_name: &str,
+        fallback: NamedIconFallback,
+        icon_size: f32,
+    ) -> Option<ResolvedFileIcon> {
+        self.drain_results();
+        let icon_name = icon_name.trim();
+        if icon_name.is_empty() {
+            return None;
+        }
+        let key = FileIconPathCacheKey {
+            role: FileIconRoleCacheKey {
+                kind: FileIconKind::Named {
+                    icon_name: icon_name.to_string(),
+                    fallback,
+                },
+            },
+            size_px: icon_cache_size(icon_size),
+        };
+        Some(self.resolve_key_fast(key))
+    }
+
     pub(crate) fn resolve_named_exact_fast(
         &mut self,
         icon_name: &str,
@@ -288,18 +311,32 @@ impl FileIconResolver {
     }
 
     pub(crate) fn drain_results(&mut self) -> usize {
-        let mut changed = 0usize;
-        while let Ok(result) = self.result_rx.try_recv() {
-            self.pending.remove(&result.key);
-            self.cached.insert(result.key, result.icon);
-            changed += 1;
-        }
-        changed
+        let (visible, deferred) = self.drain_results_by_priority();
+        visible + deferred
     }
 
-    pub(crate) fn has_pending(&mut self) -> bool {
+    pub(crate) fn drain_results_by_priority(&mut self) -> (usize, usize) {
+        let mut visible = 0usize;
+        let mut deferred = 0usize;
+        while let Ok(result) = self.result_rx.try_recv() {
+            match self
+                .pending
+                .remove(&result.key)
+                .unwrap_or(IconResolvePriority::Deferred)
+            {
+                IconResolvePriority::Visible => visible += 1,
+                IconResolvePriority::Deferred => deferred += 1,
+            }
+            self.cached.insert(result.key, result.icon);
+        }
+        (visible, deferred)
+    }
+
+    pub(crate) fn has_visible_pending(&mut self) -> bool {
         self.drain_results();
-        !self.pending.is_empty()
+        self.pending
+            .values()
+            .any(|priority| *priority == IconResolvePriority::Visible)
     }
 
     #[cfg(test)]
@@ -464,6 +501,7 @@ mod tests {
             resolver.resolve_key(key.clone(), IconResolvePriority::Deferred),
             None
         );
+        assert!(!resolver.has_visible_pending());
         let deferred = request_rx
             .try_recv()
             .expect("deferred miss should queue worker request");
@@ -483,5 +521,6 @@ mod tests {
             resolver.pending.get(&key),
             Some(&IconResolvePriority::Visible)
         );
+        assert!(resolver.has_visible_pending());
     }
 }
