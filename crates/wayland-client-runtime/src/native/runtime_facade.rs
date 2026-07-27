@@ -12,12 +12,9 @@ use std::future::poll_fn;
 use std::task::Poll;
 use std::time::Duration;
 
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
-
 use crate::display_io::CompioFdReady;
 use crate::event::Event;
 use crate::geometry::{LogicalPosition, LogicalSize};
-use crate::input::CursorIcon;
 use crate::layer_shell::{LayerSurfaceAttributes, LayerSurfaceState};
 use crate::native::event_map::{NativeEventMapState, SurfaceIdMap};
 use crate::native::shell::{NativePopupPositioner, NativeShell, NativeSurfaceId};
@@ -46,7 +43,7 @@ enum WaitSource {
 /// reactor (`default-features = false`).
 pub struct NativeRuntime {
     pub(crate) shell: NativeShell,
-    surfaces: SurfaceIdMap,
+    pub(crate) surfaces: SurfaceIdMap,
     map_state: NativeEventMapState,
     pub(crate) native_ids: HashMap<SurfaceId, NativeSurfaceId>,
     /// Pending activation export requests: native surface → public request id.
@@ -61,7 +58,7 @@ pub struct NativeRuntime {
     wake_handle: WakeHandle,
     /// Owns the io_uring proactor used for display/wake waits.
     compio: compio::runtime::Runtime,
-    capabilities: RuntimeCapabilities,
+    pub(crate) capabilities: RuntimeCapabilities,
 }
 
 impl NativeRuntime {
@@ -359,49 +356,6 @@ impl NativeRuntime {
         self.shell.outputs_into(out)
     }
 
-    /// Bound seats (multi-seat compositors may advertise more than one).
-    pub fn seats(&self) -> Vec<crate::SeatInfo> {
-        self.shell.seats()
-    }
-
-    #[inline]
-    pub fn seat_count(&self) -> usize {
-        self.shell.seat_count()
-    }
-
-    pub fn primary_seat_id(&self) -> Option<crate::SeatId> {
-        self.shell.primary_seat_id()
-    }
-
-    pub fn seat_keyboard_focus(&self, seat: crate::SeatId) -> Option<SurfaceId> {
-        let native = self.shell.seat_keyboard_focus(seat)?;
-        self.surfaces.get(native)
-    }
-
-    pub fn seat_pointer_focus(&self, seat: crate::SeatId) -> Option<SurfaceId> {
-        let native = self.shell.seat_pointer_focus(seat)?;
-        self.surfaces.get(native)
-    }
-
-    pub fn seat_last_input_serial(&self, seat: crate::SeatId) -> Option<u32> {
-        self.shell.seat_last_input_serial(seat)
-    }
-
-    pub fn seat_input_serial(
-        &self,
-        seat: crate::SeatId,
-        source: crate::InputSerialSource,
-    ) -> Option<crate::InputSerial> {
-        self.shell.seat_input_serial(seat, source)
-    }
-
-    pub fn seat_has_data_device(&self, seat: crate::SeatId) -> bool {
-        self.shell.seat_has_data_device(seat)
-    }
-
-    pub fn seat_has_primary_device(&self, seat: crate::SeatId) -> bool {
-        self.shell.seat_has_primary_device(seat)
-    }
 
     pub fn create_popup(
         &mut self,
@@ -550,9 +504,6 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-    pub fn pointer_gestures_enabled(&self, _surface: SurfaceId) -> Result<bool, RuntimeError> {
-        Ok(self.capabilities.pointer_gestures_v1)
-    }
 
     pub fn set_min_size(
         &mut self,
@@ -576,37 +527,6 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-    pub fn set_cursor(&mut self, icon: CursorIcon) -> Result<(), RuntimeError> {
-        self.set_cursor_on_seat(icon, None)
-    }
-
-    /// Set the cursor shape on a specific seat's pointer (or auto-resolve).
-    pub fn set_cursor_on_seat(
-        &mut self,
-        icon: CursorIcon,
-        seat: Option<crate::SeatId>,
-    ) -> Result<(), RuntimeError> {
-        if !self.shell.has_cursor_shape() {
-            return Err(RuntimeError::Unsupported("wp_cursor_shape_manager_v1"));
-        }
-        let shape = match icon {
-            CursorIcon::Default => CursorShape::Default,
-            CursorIcon::Pointer => CursorShape::Pointer,
-            CursorIcon::Text => CursorShape::Text,
-            CursorIcon::ColResize => CursorShape::ColResize,
-            CursorIcon::NResize => CursorShape::NResize,
-            CursorIcon::SResize => CursorShape::SResize,
-            CursorIcon::EResize => CursorShape::EResize,
-            CursorIcon::WResize => CursorShape::WResize,
-            CursorIcon::NeResize => CursorShape::NeResize,
-            CursorIcon::NwResize => CursorShape::NwResize,
-            CursorIcon::SeResize => CursorShape::SeResize,
-            CursorIcon::SwResize => CursorShape::SwResize,
-        };
-        self.shell
-            .set_cursor_shape_on_seat(shape, seat)
-            .map_err(map_native_error)
-    }
 
     pub fn request_frame(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
@@ -813,220 +733,7 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-    pub fn set_pointer_gestures_enabled(
-        &mut self,
-        _surface: SurfaceId,
-        _enabled: bool,
-    ) -> Result<(), RuntimeError> {
-        if self.capabilities.pointer_gestures_v1 {
-            Ok(())
-        } else {
-            Err(RuntimeError::Unsupported("zwp_pointer_gestures_v1"))
-        }
-    }
 
-    pub fn set_pointer_capture_state(
-        &mut self,
-        surface: SurfaceId,
-        state: crate::PointerCaptureState,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_pointer_capture_state(native, state)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("pointer_constraints") => {
-                    RuntimeError::Unsupported("zwp-pointer-constraints-v1")
-                }
-                NativeError::Protocol(msg) if msg.contains("relative_pointer") => {
-                    RuntimeError::Unsupported("zwp-relative-pointer-v1")
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn set_pointer_constraint(
-        &mut self,
-        surface: SurfaceId,
-        constraint: crate::PointerConstraint,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_pointer_constraint(native, constraint)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("pointer_constraints") => {
-                    RuntimeError::Unsupported("zwp-pointer-constraints-v1")
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn set_relative_pointer_enabled(
-        &mut self,
-        surface: SurfaceId,
-        enabled: bool,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_relative_pointer_enabled(native, enabled)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("relative_pointer") => {
-                    RuntimeError::Unsupported("zwp-relative-pointer-v1")
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn set_pointer_constraint_region(
-        &mut self,
-        surface: SurfaceId,
-        region: crate::PointerConstraintRegion,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        let mut capture = self
-            .shell
-            .state
-            .toplevels
-            .get(&native)
-            .map(|r| r.pointer_capture.clone())
-            .ok_or(RuntimeError::SurfaceNotFound(surface))?;
-        capture.region = region;
-        self.shell
-            .set_pointer_capture_state(native, capture)
-            .map_err(map_native_error)
-    }
-
-    pub fn set_locked_pointer_position_hint(
-        &mut self,
-        surface: SurfaceId,
-        position: (f64, f64),
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_locked_pointer_position_hint(native, position)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("not locked") => {
-                    RuntimeError::PointerNotLocked(surface)
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        self.begin_interactive_move_on_seat(surface, None)
-    }
-
-    /// Start an interactive move using a specific seat's serial (or auto-resolve).
-    pub fn begin_interactive_move_on_seat(
-        &mut self,
-        surface: SurfaceId,
-        seat: Option<crate::SeatId>,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .begin_interactive_move_on_seat(native, seat)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("serial") => {
-                    RuntimeError::InvalidToplevelInteractionSerial
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn begin_interactive_resize(
-        &mut self,
-        surface: SurfaceId,
-        edge: crate::ResizeEdge,
-    ) -> Result<(), RuntimeError> {
-        self.begin_interactive_resize_on_seat(surface, edge, None)
-    }
-
-    /// Start an interactive resize using a specific seat's serial (or auto-resolve).
-    pub fn begin_interactive_resize_on_seat(
-        &mut self,
-        surface: SurfaceId,
-        edge: crate::ResizeEdge,
-        seat: Option<crate::SeatId>,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .begin_interactive_resize_on_seat(native, edge, seat)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("serial") => {
-                    RuntimeError::InvalidToplevelInteractionSerial
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn show_window_menu(
-        &mut self,
-        surface: SurfaceId,
-        position: LogicalPosition,
-    ) -> Result<(), RuntimeError> {
-        self.show_window_menu_on_seat(surface, position, None)
-    }
-
-    /// Show the window menu using a specific seat's serial (or auto-resolve).
-    pub fn show_window_menu_on_seat(
-        &mut self,
-        surface: SurfaceId,
-        position: LogicalPosition,
-        seat: Option<crate::SeatId>,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .show_window_menu_on_seat(native, position, seat)
-            .map_err(|e| match e {
-                NativeError::Protocol(msg) if msg.contains("serial") => {
-                    RuntimeError::InvalidToplevelInteractionSerial
-                }
-                other => map_native_error(other),
-            })
-    }
-
-    pub fn preferred_toplevel_icon_sizes(&self) -> Vec<u32> {
-        self.shell.preferred_icon_sizes().to_vec()
-    }
-
-    pub fn set_maximized(&mut self, surface: SurfaceId, maximized: bool) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_maximized(native, maximized)
-            .map_err(map_native_error)
-    }
-
-    pub fn set_fullscreen(
-        &mut self,
-        surface: SurfaceId,
-        fullscreen: bool,
-    ) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_fullscreen(native, fullscreen)
-            .map_err(map_native_error)
-    }
-
-    /// Enable/disable idle inhibit for a surface (no-op style error if unsupported).
-    pub fn set_idle_inhibit(
-        &mut self,
-        surface: SurfaceId,
-        inhibit: bool,
-    ) -> Result<(), RuntimeError> {
-        if !self.shell.has_idle_inhibit() {
-            return Err(RuntimeError::Unsupported("zwp_idle_inhibit_manager_v1"));
-        }
-        let native = self.native(surface)?;
-        self.shell
-            .set_idle_inhibit(native, inhibit)
-            .map_err(map_native_error)
-    }
-
-    pub fn set_minimized(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
-        let native = self.native(surface)?;
-        self.shell
-            .set_minimized(native)
-            .map_err(map_native_error)
-    }
 
     pub(crate) fn native(&self, surface: SurfaceId) -> Result<NativeSurfaceId, RuntimeError> {
         self.native_ids

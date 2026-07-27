@@ -15,6 +15,7 @@ mod api_output;
 mod api_popup;
 mod api_presentation;
 mod api_surface;
+mod api_text_input;
 mod api_transfer;
 mod csd;
 mod dispatch;

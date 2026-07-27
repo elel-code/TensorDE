@@ -26,7 +26,15 @@ mod shell;
 
 #[cfg(feature = "compio")]
 mod runtime_facade;
+#[cfg(feature = "compio")]
+mod runtime_constraints;
+#[cfg(feature = "compio")]
 mod runtime_dmabuf;
+#[cfg(feature = "compio")]
+mod runtime_interaction;
+#[cfg(feature = "compio")]
+mod runtime_seats;
+#[cfg(feature = "compio")]
 mod runtime_transfer;
 
 pub use connection::{NativeConnection, NativeError};
