@@ -32,7 +32,6 @@ use smithay::{
         },
         session_lock::SessionLockManagerState,
         shell::{wlr_layer::WlrLayerShellState, xdg::decoration::XdgDecorationState},
-        single_pixel_buffer::SinglePixelBufferState,
         tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
@@ -55,11 +54,13 @@ use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
+pub(in crate::protocol) mod single_pixel_buffer;
 #[cfg(feature = "tty")]
 mod syncobj;
 
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
+use single_pixel_buffer::SinglePixelBufferProtocol;
 #[cfg(feature = "tty")]
 pub(crate) use syncobj::DrmSyncPoint;
 #[cfg(feature = "tty")]
@@ -83,7 +84,7 @@ pub(crate) struct ProtocolGlobals {
     idle_notifier: IdleNotifierState<RuntimeState>,
     idle_inhibit: IdleInhibitManagerState,
     layer_shell: WlrLayerShellState,
-    single_pixel_buffer: SinglePixelBufferState,
+    single_pixel_buffer: SinglePixelBufferProtocol,
     keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState,
     tablet: TabletManagerState,
     text_input: TextInputManagerState,
@@ -157,7 +158,7 @@ impl ProtocolGlobals {
             idle_notifier: IdleNotifierState::new(display, loop_handle.clone()),
             idle_inhibit: IdleInhibitManagerState::new::<RuntimeState>(display),
             layer_shell: WlrLayerShellState::new::<RuntimeState>(display),
-            single_pixel_buffer: SinglePixelBufferState::new::<RuntimeState>(display),
+            single_pixel_buffer: SinglePixelBufferProtocol::new(display),
             keyboard_shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<RuntimeState>(display),
             tablet: TabletManagerState::new::<RuntimeState>(display),
             text_input: TextInputManagerState::new::<RuntimeState>(display),

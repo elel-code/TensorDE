@@ -8,7 +8,6 @@ use smithay::wayland::{
         SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
     },
     shm,
-    single_pixel_buffer::get_single_pixel_buffer,
     viewporter::{self, ViewportCachedState},
 };
 use tensor_protocol::SurfaceTransform;
@@ -19,6 +18,7 @@ use wayland_server::{
 
 #[cfg(feature = "tty")]
 use crate::protocol::globals::dmabuf::dmabuf_buffer;
+use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -197,6 +197,11 @@ pub(super) fn surface_buffer(surface: &WlSurface) -> Option<WlBuffer> {
     })
 }
 
+#[cfg(test)]
+pub(crate) fn test_surface_buffer(surface: &WlSurface) -> Option<WlBuffer> {
+    surface_buffer(surface)
+}
+
 #[cfg(feature = "tty")]
 pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRenderSnapshot> {
     let state = states
@@ -273,7 +278,7 @@ fn wire_buffer_size(buffer: &WlBuffer) -> Option<(i32, i32)> {
             i32::try_from(size.height).ok()?,
         ));
     }
-    if get_single_pixel_buffer(buffer).is_ok() {
+    if single_pixel_rgba(buffer).is_some() {
         return Some((1, 1));
     }
     shm::with_buffer_contents(buffer, |_, _, data| (data.width, data.height))

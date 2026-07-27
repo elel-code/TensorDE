@@ -85,9 +85,9 @@ use super::globals::ProtocolGlobals;
 use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
 use surfaces::SurfaceBufferRegistry;
-#[cfg(test)]
-pub(crate) use surfaces::test_surface_tree_states;
 pub(crate) use surfaces::{destroy_surface_state, on_commit_surface_handler};
+#[cfg(test)]
+pub(crate) use surfaces::{test_surface_buffer, test_surface_tree_states};
 #[cfg(feature = "tty")]
 pub(super) use sync::ExplicitSyncPoints;
 #[cfg(feature = "tty")]

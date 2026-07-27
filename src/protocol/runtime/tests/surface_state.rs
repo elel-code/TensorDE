@@ -11,12 +11,18 @@ use wayland_client::{
     },
 };
 use wayland_protocols::{
-    wp::viewporter::client::{wp_viewport, wp_viewporter},
+    wp::{
+        single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1,
+        viewporter::client::{wp_viewport, wp_viewporter},
+    },
     xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
 };
 
 use super::*;
-use crate::protocol::state::test_surface_tree_states;
+use crate::protocol::{
+    globals::single_pixel_buffer::single_pixel_rgba,
+    state::{test_surface_buffer, test_surface_tree_states},
+};
 
 #[derive(Debug, Eq, PartialEq)]
 enum Step {
@@ -25,6 +31,7 @@ enum Step {
     ViewportApplied,
     ChildDeferred { surface: u32, buffer: u32 },
     ChildApplied,
+    SinglePixelAttached { buffer: u32 },
     RootDetached { releases: u8 },
 }
 
@@ -100,6 +107,7 @@ delegate_noop!(SurfaceClient: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(SurfaceClient: ignore wl_surface::WlSurface);
 delegate_noop!(SurfaceClient: ignore wp_viewport::WpViewport);
 delegate_noop!(SurfaceClient: ignore wp_viewporter::WpViewporter);
+delegate_noop!(SurfaceClient: ignore wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1);
 delegate_noop!(SurfaceClient: ignore xdg_toplevel::XdgToplevel);
 
 #[test]
@@ -132,6 +140,13 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
             .unwrap();
         let viewporter = globals
             .bind::<wp_viewporter::WpViewporter, _, _>(&handle, 1..=1, ())
+            .unwrap();
+        let single_pixel = globals
+            .bind::<wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1, _, _>(
+                &handle,
+                1..=1,
+                (),
+            )
             .unwrap();
         let wm_base = globals
             .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
@@ -193,6 +208,28 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
         root.commit();
         queue.roundtrip(&mut state).unwrap();
         event_tx.send(Step::ChildApplied).unwrap();
+        release_rx.recv().unwrap();
+
+        let pixel = single_pixel.create_u32_rgba_buffer(
+            0x1122_3344,
+            0x5566_7788,
+            0x99aa_bbcc,
+            0xddee_ff00,
+            &handle,
+            (),
+        );
+        viewport.set_destination(9, 7);
+        root.set_buffer_scale(1);
+        root.set_buffer_transform(wl_output::Transform::Normal);
+        root.attach(Some(&pixel), 0, 0);
+        root.damage_buffer(0, 0, 1, 1);
+        root.commit();
+        queue.roundtrip(&mut state).unwrap();
+        event_tx
+            .send(Step::SinglePixelAttached {
+                buffer: pixel.id().protocol_id(),
+            })
+            .unwrap();
         release_rx.recv().unwrap();
 
         root.attach(None, 0, 0);
@@ -268,9 +305,29 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
     assert_eq!(child.commit, 1);
     release_tx.send(()).unwrap();
 
+    let pixel_id = match dispatch_until_step(&mut runtime, &event_rx) {
+        Step::SinglePixelAttached { buffer } => buffer,
+        step => panic!("expected single-pixel attach, got {step:?}"),
+    };
+    let state = test_surface_tree_states(&root)
+        .into_iter()
+        .find(|state| state.surface == root_id)
+        .expect("single-pixel root remains in the surface tree");
+    assert_eq!(state.buffer, Some(pixel_id));
+    assert_eq!(state.size, (9, 7));
+    assert_eq!(state.commit, 3);
+    assert_eq!(state.buffer_scale, 1);
+    assert_eq!(state.transform, SurfaceTransform::Normal);
+    let pixel = test_surface_buffer(&root).expect("single-pixel buffer is current");
+    assert_eq!(
+        single_pixel_rgba(&pixel),
+        Some(&[0x1122_3344, 0x5566_7788, 0x99aa_bbcc, 0xddee_ff00])
+    );
+    release_tx.send(()).unwrap();
+
     assert_eq!(
         dispatch_until_step(&mut runtime, &event_rx),
-        Step::RootDetached { releases: 1 }
+        Step::RootDetached { releases: 2 }
     );
     let states = test_surface_tree_states(&root);
     assert!(states.iter().all(|state| state.surface != root_id));
