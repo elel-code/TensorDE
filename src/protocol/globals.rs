@@ -14,10 +14,6 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
-        image_capture_source::{
-            ImageCaptureSourceState, OutputCaptureSourceState, ToplevelCaptureSourceState,
-        },
-        image_copy_capture::ImageCopyCaptureState,
         input_method::InputMethodManagerState,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         pointer_constraints::PointerConstraintsState,
@@ -53,6 +49,9 @@ use super::state::RuntimeState;
 
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
+pub(in crate::protocol) mod image_capture_source;
+pub(in crate::protocol) mod image_copy_capture;
+pub(in crate::protocol) mod shm;
 pub(in crate::protocol) mod single_pixel_buffer;
 #[cfg(feature = "tty")]
 mod syncobj;
@@ -60,6 +59,9 @@ pub(in crate::protocol) mod viewporter;
 
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
+use image_capture_source::ImageCaptureSourceProtocol;
+use image_copy_capture::ImageCopyCaptureProtocol;
+use shm::ShmProtocol;
 use single_pixel_buffer::SinglePixelBufferProtocol;
 #[cfg(feature = "tty")]
 pub(crate) use syncobj::DrmSyncPoint;
@@ -70,6 +72,7 @@ pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjSta
 use viewporter::ViewporterProtocol;
 
 pub(crate) struct ProtocolGlobals {
+    shm: ShmProtocol,
     viewporter: ViewporterProtocol,
     fractional_scale: FractionalScaleManagerState,
     xdg_decoration: XdgDecorationState,
@@ -110,11 +113,8 @@ pub(crate) struct ProtocolGlobals {
     gamma_control: GammaControlManagerState,
     ext_workspace: ExtWorkspaceManagerState,
     output_management: OutputManagementState,
-    /// Opaque capture sources (shared by output/toplevel managers).
-    image_capture_source: ImageCaptureSourceState,
-    output_capture_source: OutputCaptureSourceState,
-    toplevel_capture_source: ToplevelCaptureSourceState,
-    image_copy_capture: ImageCopyCaptureState,
+    image_capture_source: ImageCaptureSourceProtocol,
+    image_copy_capture: ImageCopyCaptureProtocol,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -144,6 +144,7 @@ impl ProtocolGlobals {
             unrestricted,
         );
         Self {
+            shm: ShmProtocol::new(display),
             viewporter: ViewporterProtocol::new(display),
             fractional_scale: FractionalScaleManagerState::new::<RuntimeState>(display),
             xdg_decoration: XdgDecorationState::new::<RuntimeState>(display),
@@ -200,13 +201,8 @@ impl ProtocolGlobals {
             // Community stopgap until a staging/stable output-management lands.
             output_management: OutputManagementState::new::<RuntimeState, _>(display, unrestricted),
             // ext-image-capture-source + ext-image-copy-capture (prefer over wlr-screencopy).
-            image_capture_source: ImageCaptureSourceState::new(),
-            output_capture_source: OutputCaptureSourceState::new::<RuntimeState>(display),
-            toplevel_capture_source: ToplevelCaptureSourceState::new::<RuntimeState>(display),
-            image_copy_capture: ImageCopyCaptureState::new_with_filter::<RuntimeState, _>(
-                display,
-                unrestricted,
-            ),
+            image_capture_source: ImageCaptureSourceProtocol::new(display, unrestricted),
+            image_copy_capture: ImageCopyCaptureProtocol::new(display, unrestricted),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -294,18 +290,6 @@ impl ProtocolGlobals {
         &mut self.output_management
     }
 
-    pub(crate) fn output_capture_source(&mut self) -> &mut OutputCaptureSourceState {
-        &mut self.output_capture_source
-    }
-
-    pub(crate) fn toplevel_capture_source(&mut self) -> &mut ToplevelCaptureSourceState {
-        &mut self.toplevel_capture_source
-    }
-
-    pub(crate) fn image_copy_capture(&mut self) -> &mut ImageCopyCaptureState {
-        &mut self.image_copy_capture
-    }
-
     pub(crate) fn capabilities(&self) -> ProtocolCapabilities {
         // Link the tier catalog into non-test builds (docs / AGENTS contract).
         let _tier_index = (
@@ -318,6 +302,7 @@ impl ProtocolGlobals {
             crate::protocol::ProtocolTier::Proprietary.as_str(),
         );
         let _global_owners = (
+            &self.shm,
             &self.viewporter,
             &self.fractional_scale,
             &self.xdg_decoration,
@@ -357,13 +342,12 @@ impl ProtocolGlobals {
             &self.ext_workspace,
             &self.output_management,
             &self.image_capture_source,
-            &self.output_capture_source,
-            &self.toplevel_capture_source,
             &self.image_copy_capture,
         );
         #[cfg(feature = "xwayland")]
         let _xwayland_global_owner = &self.xwayland_keyboard_grab;
         ProtocolCapabilities {
+            shm: true,
             viewporter: true,
             fractional_scale: true,
             xdg_decoration: true,
@@ -417,6 +401,7 @@ impl ProtocolGlobals {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProtocolCapabilities {
+    pub(crate) shm: bool,
     pub(crate) viewporter: bool,
     pub(crate) fractional_scale: bool,
     pub(crate) xdg_decoration: bool,
@@ -501,6 +486,7 @@ mod tests {
         assert_eq!(
             state.protocol_globals.capabilities(),
             ProtocolCapabilities {
+                shm: true,
                 viewporter: true,
                 fractional_scale: true,
                 xdg_decoration: true,

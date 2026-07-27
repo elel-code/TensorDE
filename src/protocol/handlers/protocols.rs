@@ -585,48 +585,6 @@ impl crate::protocol::extensions::gamma_control::GammaControlHandler for Runtime
     }
 }
 
-impl smithay::wayland::image_capture_source::ImageCaptureSourceHandler for RuntimeState {
-    fn source_destroyed(
-        &mut self,
-        _source: smithay::wayland::image_capture_source::ImageCaptureSource,
-    ) {
-    }
-}
-
-impl smithay::wayland::image_capture_source::OutputCaptureSourceHandler for RuntimeState {
-    fn output_capture_source_state(
-        &mut self,
-    ) -> &mut smithay::wayland::image_capture_source::OutputCaptureSourceState {
-        self.protocol_globals.output_capture_source()
-    }
-
-    fn output_source_created(
-        &mut self,
-        source: smithay::wayland::image_capture_source::ImageCaptureSource,
-        output: &smithay::output::Output,
-    ) {
-        source.user_data().insert_if_missing(|| output.downgrade());
-    }
-}
-
-impl smithay::wayland::image_capture_source::ToplevelCaptureSourceHandler for RuntimeState {
-    fn toplevel_capture_source_state(
-        &mut self,
-    ) -> &mut smithay::wayland::image_capture_source::ToplevelCaptureSourceState {
-        self.protocol_globals.toplevel_capture_source()
-    }
-
-    fn toplevel_source_created(
-        &mut self,
-        source: smithay::wayland::image_capture_source::ImageCaptureSource,
-        toplevel: smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
-    ) {
-        source
-            .user_data()
-            .insert_if_missing(|| toplevel.downgrade());
-    }
-}
-
 impl crate::protocol::extensions::ext_workspace::ExtWorkspaceHandler for RuntimeState {
     fn ext_workspace_manager_state(
         &mut self,
@@ -669,40 +627,5 @@ impl crate::protocol::extensions::output_management::OutputManagementHandler for
         &self,
     ) -> Vec<crate::protocol::extensions::output_management::HeadSnapshot> {
         self.output_management_heads()
-    }
-}
-
-impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for RuntimeState {
-    fn image_copy_capture_state(
-        &mut self,
-    ) -> &mut smithay::wayland::image_copy_capture::ImageCopyCaptureState {
-        self.protocol_globals.image_copy_capture()
-    }
-
-    fn capture_constraints(
-        &mut self,
-        source: &smithay::wayland::image_capture_source::ImageCaptureSource,
-    ) -> Option<smithay::wayland::image_copy_capture::BufferConstraints> {
-        self.capture_constraints_for_source(source)
-    }
-
-    fn new_session(&mut self, session: smithay::wayland::image_copy_capture::Session) {
-        self.store_capture_session(session);
-    }
-
-    fn new_cursor_session(&mut self, session: smithay::wayland::image_copy_capture::CursorSession) {
-        self.store_cursor_capture_session(session);
-    }
-
-    fn frame(
-        &mut self,
-        session: &smithay::wayland::image_copy_capture::SessionRef,
-        frame: smithay::wayland::image_copy_capture::Frame,
-    ) {
-        self.handle_capture_frame(session, frame);
-    }
-
-    fn session_destroyed(&mut self, session: smithay::wayland::image_copy_capture::SessionRef) {
-        self.drop_capture_session(&session);
     }
 }

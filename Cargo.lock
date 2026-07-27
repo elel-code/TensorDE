@@ -2029,6 +2029,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "signal-hook-registry",
  "smithay",
  "tensor-drm",
  "tensor-event",

@@ -4,11 +4,11 @@
 //! the pending assignment. DMA-only clients keep the silhouette. Never called
 //! from page-flip / submit.
 
-use smithay::wayland::shm::{BufferAccessError, with_buffer_contents};
 use tracing::trace;
 use wayland_server::protocol::{wl_shm, wl_surface::WlSurface};
 
 use crate::layout::Rect;
+use crate::protocol::globals::shm::{BufferAccessError, with_buffer_contents};
 
 use super::surfaces::surface_buffer;
 

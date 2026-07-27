@@ -2,12 +2,9 @@
 
 use std::sync::Mutex;
 
-use smithay::wayland::{
-    compositor::{
-        BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
-        SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
-    },
-    shm,
+use smithay::wayland::compositor::{
+    BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
+    SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
 };
 use tensor_protocol::{SurfaceSourceRect, SurfaceTransform};
 use wayland_server::{
@@ -17,6 +14,7 @@ use wayland_server::{
 
 #[cfg(feature = "tty")]
 use crate::protocol::globals::dmabuf::dmabuf_buffer;
+use crate::protocol::globals::shm::shm_buffer;
 use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
 use crate::protocol::globals::viewporter::{CommittedViewport, committed_viewport};
 
@@ -290,9 +288,8 @@ fn wire_buffer_size(buffer: &WlBuffer) -> Option<(i32, i32)> {
     if single_pixel_rgba(buffer).is_some() {
         return Some((1, 1));
     }
-    shm::with_buffer_contents(buffer, |_, _, data| (data.width, data.height))
-        .ok()
-        .and_then(valid_size)
+    let metadata = shm_buffer(buffer)?.metadata();
+    valid_size((metadata.width, metadata.height))
 }
 
 fn logical_buffer_size(

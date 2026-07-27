@@ -13,20 +13,13 @@
 
 use std::{
     collections::VecDeque,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use smithay::{
-    output::{Output, WeakOutput},
-    utils::{Buffer as BufferCoords, Size, Transform},
-    wayland::{
-        foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle},
-        image_capture_source::ImageCaptureSource,
-        image_copy_capture::{
-            BufferConstraints, CaptureFailureReason, CursorSession, Frame, Session, SessionRef,
-        },
-        shm::{BufferAccessError, with_buffer_contents_mut},
-    },
+    output::Output,
+    utils::{Buffer as BufferCoords, Size},
+    wayland::foreign_toplevel_list::ForeignToplevelHandle,
 };
 use tracing::{debug, trace, warn};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
@@ -35,6 +28,11 @@ use super::capture_shm;
 use super::{ObjectKey, RuntimeState};
 use crate::ecs::ViewId;
 use crate::layout::Rect;
+use crate::protocol::globals::image_capture_source::ImageCaptureSource;
+use crate::protocol::globals::image_copy_capture::{
+    BufferConstraints, CaptureFailureReason, Frame, FrameRef, Session, SessionRef,
+};
+use crate::protocol::globals::shm::{BufferAccessError, with_buffer_contents_mut};
 
 /// Max pending capture frames (drop oldest on overflow — capture is lossy).
 const MAX_PENDING_CAPTURES: usize = 4;
@@ -46,8 +44,7 @@ const CAPTURE_TIMER_ID: u64 = 0xC0_FF_EE;
 /// Side table for live capture sessions and deferred frame work.
 #[derive(Default)]
 pub(crate) struct CaptureSessions {
-    pub(crate) sessions: Vec<Session>,
-    pub(crate) cursor_sessions: Vec<CursorSession>,
+    sessions: Vec<Session>,
     pending: VecDeque<PendingCapture>,
 }
 
@@ -71,17 +68,14 @@ enum CaptureKind {
 }
 
 impl RuntimeState {
-    pub(crate) fn capture_constraints_for_source(
+    pub(in crate::protocol) fn capture_constraints_for_source(
         &self,
         source: &ImageCaptureSource,
     ) -> Option<BufferConstraints> {
-        if let Some(weak) = source.user_data().get::<WeakOutput>()
-            && let Some(output) = weak.upgrade()
-        {
+        if let Some(output) = source.output() {
             return constraints_for_output(&output);
         }
-        if let Some(weak) = source.user_data().get::<ForeignToplevelWeakHandle>()
-            && let Some(handle) = weak.upgrade()
+        if let Some(handle) = source.toplevel()
             && let Some((size, _)) = self.toplevel_capture_geometry(&handle)
         {
             return Some(shm_constraints(size));
@@ -114,22 +108,25 @@ impl RuntimeState {
         None
     }
 
-    pub(crate) fn store_capture_session(&mut self, session: Session) {
+    pub(in crate::protocol) fn store_capture_session(&mut self, session: Session) {
         self.protocol_side.capture.sessions.push(session);
     }
 
-    pub(crate) fn store_cursor_capture_session(&mut self, session: CursorSession) {
-        self.protocol_side.capture.cursor_sessions.push(session);
-    }
-
-    pub(crate) fn drop_capture_session(&mut self, session: &SessionRef) {
+    pub(in crate::protocol) fn drop_capture_session(&mut self, session: &SessionRef) {
         self.protocol_side
             .capture
             .sessions
-            .retain(|stored| stored.as_ref() != *session);
+            .retain(|stored| stored.as_ref() != session);
     }
 
-    pub(crate) fn handle_capture_frame(&mut self, session: &SessionRef, frame: Frame) {
+    pub(in crate::protocol) fn abort_capture_frame(&mut self, frame: &FrameRef) {
+        self.protocol_side
+            .capture
+            .pending
+            .retain(|pending| pending.frame.as_ref() != frame);
+    }
+
+    pub(in crate::protocol) fn handle_capture_frame(&mut self, session: &SessionRef, frame: Frame) {
         let Some(kind) = capture_kind_for_session(self, session) else {
             frame.fail(CaptureFailureReason::Unknown);
             return;
@@ -163,6 +160,13 @@ impl RuntimeState {
     /// Drain at most one pending capture fill (event idle turn).
     pub(crate) fn process_pending_captures(&mut self) {
         if let Some(pending) = self.protocol_side.capture.pending.pop_front() {
+            if !pending.frame.is_alive() {
+                return;
+            }
+            if pending.frame.session_stopped() {
+                pending.frame.fail(CaptureFailureReason::Stopped);
+                return;
+            }
             let wait = pending.queued_at.elapsed();
             if fill_capture_frame(self, pending.frame, pending.kind).is_ok() {
                 trace!(
@@ -176,9 +180,7 @@ impl RuntimeState {
 
 fn capture_kind_for_session(state: &RuntimeState, session: &SessionRef) -> Option<CaptureKind> {
     let source = session.source();
-    if let Some(weak) = source.user_data().get::<WeakOutput>()
-        && let Some(output) = weak.upgrade()
-    {
+    if let Some(output) = source.output() {
         let mode = output.current_mode()?;
         let origin = state
             .space
@@ -190,8 +192,7 @@ fn capture_kind_for_session(state: &RuntimeState, session: &SessionRef) -> Optio
             origin,
         });
     }
-    if let Some(weak) = source.user_data().get::<ForeignToplevelWeakHandle>()
-        && let Some(handle) = weak.upgrade()
+    if let Some(handle) = source.toplevel()
         && let Some((size, geometry)) = state.toplevel_capture_geometry(&handle)
     {
         return Some(CaptureKind::Toplevel { size, geometry });
@@ -221,10 +222,9 @@ fn fill_capture_frame(
     let blits = collect_shm_blits(state, kind);
     match write_capture_shm(&buffer, size, &rects, &blits) {
         Ok(()) => {
-            let presented = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO);
-            frame.success(Transform::Normal, None, presented);
+            let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+            let presented = Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
+            frame.success(presented);
             Ok(())
         }
         Err(reason) => {
@@ -520,7 +520,7 @@ fn constraints_for_output(output: &Output) -> Option<BufferConstraints> {
 fn shm_constraints(size: Size<i32, BufferCoords>) -> BufferConstraints {
     BufferConstraints {
         size,
-        shm: vec![wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888],
+        shm: [wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888],
     }
 }
 

@@ -54,7 +54,6 @@ use smithay::{
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelSurface, XdgShellState},
-        shm::ShmState,
     },
 };
 #[cfg(feature = "xwayland")]
@@ -116,7 +115,6 @@ pub(crate) struct RuntimeState {
     pub(crate) display_handle: DisplayHandle,
     pub(crate) compositor_state: CompositorState,
     pub(crate) xdg_shell_state: XdgShellState,
-    pub(crate) shm_state: ShmState,
     pub(crate) output_manager_state: OutputManagerState,
     pub(crate) seat_state: SeatState<Self>,
     pub(crate) data_device_state: DataDeviceState,
@@ -200,7 +198,6 @@ impl RuntimeState {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
-        let shm_state = ShmState::new::<Self>(&display_handle, []);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let protocol_globals = ProtocolGlobals::new(&display_handle, &loop_handle);
@@ -214,7 +211,6 @@ impl RuntimeState {
             display_handle,
             compositor_state,
             xdg_shell_state,
-            shm_state,
             output_manager_state,
             seat_state,
             data_device_state,

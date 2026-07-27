@@ -380,6 +380,99 @@ fn surface_state_applies_buffer_damage_viewport_and_synchronized_child_commits()
 }
 
 #[derive(Clone, Copy, Debug)]
+enum ShmViolation {
+    FileTooSmall,
+    InvalidStride,
+    UnsupportedFormat,
+    Shrink,
+}
+
+#[test]
+fn shm_reports_wire_errors_on_the_owning_protocol_objects() {
+    let cases = [
+        (
+            ShmViolation::FileTooSmall,
+            "wl_shm",
+            u32::from(wl_shm::Error::InvalidFd),
+        ),
+        (
+            ShmViolation::InvalidStride,
+            "wl_shm_pool",
+            u32::from(wl_shm::Error::InvalidStride),
+        ),
+        (
+            ShmViolation::UnsupportedFormat,
+            "wl_shm_pool",
+            u32::from(wl_shm::Error::InvalidFormat),
+        ),
+        (
+            ShmViolation::Shrink,
+            "wl_shm_pool",
+            u32::from(wl_shm::Error::InvalidFd),
+        ),
+    ];
+
+    for (violation, expected_interface, expected_code) in cases {
+        let (interface, code) = shm_protocol_error(violation);
+        assert_eq!(interface, expected_interface, "{violation:?}");
+        assert_eq!(code, expected_code, "{violation:?}");
+    }
+}
+
+fn shm_protocol_error(violation: ShmViolation) -> (String, u32) {
+    let mut runtime = WaylandRuntime::with_appearance(
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap();
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+    let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<SurfaceClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let shm = globals
+            .bind::<wl_shm::WlShm, _, _>(&handle, 1..=2, ())
+            .unwrap();
+        let fd = memfd_create("tensor-shm-wire-error-test", MemfdFlags::CLOEXEC).unwrap();
+        ftruncate(&fd, 4096).unwrap();
+        let pool_size = if matches!(violation, ShmViolation::FileTooSmall) {
+            8192
+        } else {
+            4096
+        };
+        let pool = shm.create_pool(fd.as_fd(), pool_size, &handle, ());
+        match violation {
+            ShmViolation::FileTooSmall => {}
+            ShmViolation::InvalidStride => {
+                let _buffer =
+                    pool.create_buffer(0, 16, 16, 63, wl_shm::Format::Argb8888, &handle, ());
+            }
+            ShmViolation::UnsupportedFormat => {
+                let _buffer = pool.create_buffer(0, 16, 16, 64, wl_shm::Format::C8, &handle, ());
+            }
+            ShmViolation::Shrink => pool.resize(2048),
+        }
+
+        assert!(queue.roundtrip(&mut SurfaceClient::default()).is_err());
+        let error = connection
+            .protocol_error()
+            .expect("expected protocol error");
+        result_tx
+            .send((error.object_interface, error.code))
+            .unwrap();
+    });
+
+    let result = dispatch_until_protocol_error(&mut runtime, &result_rx);
+    client.join().unwrap();
+    result
+}
+
+#[derive(Clone, Copy, Debug)]
 enum ViewportViolation {
     Duplicate,
     BadValue,
@@ -494,7 +587,7 @@ fn viewport_protocol_error(violation: ViewportViolation) -> (String, u32) {
             .unwrap();
     });
 
-    let result = dispatch_until_viewport_error(&mut runtime, &result_rx);
+    let result = dispatch_until_protocol_error(&mut runtime, &result_rx);
     client.join().unwrap();
     result
 }
@@ -549,7 +642,7 @@ fn dispatch_until_step(runtime: &mut WaylandRuntime, events: &mpsc::Receiver<Ste
     panic!("Wayland surface client did not complete before the dispatch limit");
 }
 
-fn dispatch_until_viewport_error(
+fn dispatch_until_protocol_error(
     runtime: &mut WaylandRuntime,
     results: &mpsc::Receiver<(String, u32)>,
 ) -> (String, u32) {
@@ -562,5 +655,5 @@ fn dispatch_until_viewport_error(
             return result;
         }
     }
-    panic!("Wayland viewporter client did not complete before the dispatch limit");
+    panic!("Wayland protocol-error client did not complete before the dispatch limit");
 }

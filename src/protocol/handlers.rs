@@ -34,7 +34,6 @@ use smithay::{
             PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
             XdgShellState, decoration::XdgDecorationHandler,
         },
-        shm::{ShmHandler, ShmState},
     },
 };
 use tracing::warn;
@@ -264,12 +263,6 @@ impl BufferHandler for RuntimeState {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
         #[cfg(feature = "tty")]
         self.buffer_destroyed(&_buffer.id());
-    }
-}
-
-impl ShmHandler for RuntimeState {
-    fn shm_state(&self) -> &ShmState {
-        &self.shm_state
     }
 }
 

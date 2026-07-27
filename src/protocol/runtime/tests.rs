@@ -32,6 +32,7 @@ use wayland_server::Resource;
 
 use super::*;
 
+mod capture;
 #[cfg(feature = "tty")]
 mod dmabuf;
 mod surface_callbacks;
@@ -757,6 +758,7 @@ pub(super) fn install_test_output(runtime: &mut WaylandRuntime) {
         Some(Scale::Fractional(1.25)),
         Some((0, 0).into()),
     );
+    let _global = output.create_global::<RuntimeState>(&runtime.state.display_handle);
     runtime.state.space.map_output(&output, (0, 0));
 }
 
