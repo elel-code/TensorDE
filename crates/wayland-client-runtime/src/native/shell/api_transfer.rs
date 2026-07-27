@@ -259,10 +259,21 @@ impl NativeShell {
         content: TransferContent,
         icon: Option<crate::DndIcon>,
     ) -> Result<u64, NativeError> {
-        let serial = self
-            .state
-            .last_input_serial
-            .ok_or_else(|| NativeError::Protocol("no input serial for start_drag".into()))?;
+        self.start_drag_content_with_icon_on_seat(origin, content, icon, None)
+    }
+
+    /// Start a drag on a specific seat (or the primary seat when `seat` is `None`).
+    ///
+    /// Uses that seat's `wl_data_device` and serial when available; falls back to
+    /// shell-wide primary fields for single-seat clients.
+    pub fn start_drag_content_with_icon_on_seat(
+        &mut self,
+        origin: NativeSurfaceId,
+        content: TransferContent,
+        icon: Option<crate::DndIcon>,
+        seat: Option<crate::SeatId>,
+    ) -> Result<u64, NativeError> {
+        let (serial, device) = self.transfer_serial_and_data_device(seat, "start_drag")?;
         let origin_wl = self
             .state
             .toplevels
@@ -287,11 +298,6 @@ impl NativeShell {
             .data_device_manager
             .as_ref()
             .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
-        let device = self
-            .state
-            .data_device
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
         let source = manager.create_data_source(&qh, ());
         for mime in content.mime_types() {
             source.offer(mime.to_string());
@@ -350,20 +356,21 @@ impl NativeShell {
         &mut self,
         content: TransferContent,
     ) -> Result<(), NativeError> {
-        let serial = self
-            .state
-            .last_input_serial
-            .ok_or_else(|| NativeError::Protocol("no input serial for set_selection".into()))?;
+        self.set_selection_content_on_seat(content, None)
+    }
+
+    /// Advertise clipboard content on a specific seat (or primary when `None`).
+    pub fn set_selection_content_on_seat(
+        &mut self,
+        content: TransferContent,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
+        let (serial, device) = self.transfer_serial_and_data_device(seat, "set_selection")?;
         let manager = self
             .state
             .data_device_manager
             .as_ref()
             .ok_or_else(|| NativeError::Protocol("wl_data_device_manager missing".into()))?;
-        let device = self
-            .state
-            .data_device
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
         let qh = self.queue.handle();
         if let Some(old) = self.state.selection_source.take() {
             old.destroy();
@@ -377,7 +384,7 @@ impl NativeShell {
         self.state.selection_content = Some(content.clone());
         // Dual-write primary selection when the global exists (SCTK apps often
         // keep both selections in sync for middle-click paste).
-        let _ = self.set_primary_selection_content_inner(content, serial);
+        let _ = self.set_primary_selection_content_inner(content, serial, seat);
         self.connection.mark_dirty();
         Ok(())
     }
@@ -387,24 +394,96 @@ impl NativeShell {
         &mut self,
         content: TransferContent,
     ) -> Result<(), NativeError> {
+        self.set_primary_selection_content_on_seat(content, None)
+    }
+
+    /// Set primary selection on a specific seat (or primary when `None`).
+    pub fn set_primary_selection_content_on_seat(
+        &mut self,
+        content: TransferContent,
+        seat: Option<crate::SeatId>,
+    ) -> Result<(), NativeError> {
         let serial = self
-            .state
-            .last_input_serial
+            .transfer_serial(seat)
             .ok_or_else(|| NativeError::Protocol("no input serial for primary selection".into()))?;
-        self.set_primary_selection_content_inner(content, serial)?;
+        self.set_primary_selection_content_inner(content, serial, seat)?;
         self.connection.mark_dirty();
         Ok(())
+    }
+
+    /// Resolve serial + data device for transfer APIs.
+    fn transfer_serial_and_data_device(
+        &self,
+        seat: Option<crate::SeatId>,
+        op: &str,
+    ) -> Result<(u32, wayland_client::protocol::wl_data_device::WlDataDevice), NativeError> {
+        let serial = self.transfer_serial(seat).ok_or_else(|| {
+            NativeError::Protocol(format!("no input serial for {op}"))
+        })?;
+        let device = self
+            .transfer_data_device(seat)
+            .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
+        Ok((serial, device))
+    }
+
+    fn transfer_serial(&self, seat: Option<crate::SeatId>) -> Option<u32> {
+        if let Some(id) = seat {
+            self.state
+                .seats
+                .get(&id.get())
+                .and_then(|s| s.last_input_serial)
+                .or(self.state.last_input_serial)
+        } else {
+            self.state.last_input_serial
+        }
+    }
+
+    fn transfer_data_device(
+        &self,
+        seat: Option<crate::SeatId>,
+    ) -> Option<wayland_client::protocol::wl_data_device::WlDataDevice> {
+        if let Some(id) = seat {
+            if let Some(dev) = self
+                .state
+                .seats
+                .get(&id.get())
+                .and_then(|s| s.data_device.clone())
+            {
+                return Some(dev);
+            }
+        }
+        self.state.data_device.clone()
+    }
+
+    fn transfer_primary_device(
+        &self,
+        seat: Option<crate::SeatId>,
+    ) -> Option<
+        wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+    > {
+        if let Some(id) = seat {
+            if let Some(dev) = self
+                .state
+                .seats
+                .get(&id.get())
+                .and_then(|s| s.primary_device.clone())
+            {
+                return Some(dev);
+            }
+        }
+        self.state.primary_device.clone()
     }
 
     fn set_primary_selection_content_inner(
         &mut self,
         content: TransferContent,
         serial: u32,
+        seat: Option<crate::SeatId>,
     ) -> Result<(), NativeError> {
         let Some(manager) = self.state.primary_selection_manager.as_ref() else {
             return Ok(());
         };
-        let Some(device) = self.state.primary_device.as_ref() else {
+        let Some(device) = self.transfer_primary_device(seat) else {
             return Ok(());
         };
         let qh = self.queue.handle();
