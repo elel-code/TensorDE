@@ -6,7 +6,6 @@ use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::native::connection::NativeError;
 use crate::native::protocols::core::shm;
 use wayland_client::Proxy;
-use wayland_protocols::xdg::dialog::v1::client::xdg_dialog_v1;
 
 impl NativeShell {
     pub fn create_toplevel(
@@ -393,8 +392,95 @@ impl NativeShell {
         let native = self.surface_handle(id)?;
         Ok(crate::SurfaceHandle::from_native(native))
     }
-}
 
-// Keep dialog type referenced for destroy paths in api.rs via record.dialog.
-#[allow(dead_code)]
-fn _dialog_type_keep(_: &xdg_dialog_v1::XdgDialogV1) {}
+    pub fn destroy_toplevel(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        // Drop idle inhibitor before the surface goes away.
+        let _ = self.set_idle_inhibit(id, false);
+        // Cancel any live touch points on this surface before proxies die.
+        self.state.cancel_touch_for_surface(id);
+        self.state.clear_surface_protocol_state(id);
+        // Drop surface-scoped dmabuf feedback.
+        if let Some(fb) = self.state.dmabuf_surface_feedback_objs.remove(&id) {
+            let pid = fb.id().protocol_id();
+            self.state.dmabuf_feedback_surfaces.remove(&pid);
+            self.state.dmabuf_feedback_pending.remove(&pid);
+            self.state.dmabuf_tranche_pending.remove(&pid);
+            fb.destroy();
+        }
+        self.state.dmabuf_surface_feedback.remove(&id);
+        // Destroy child popups first (parent must outlive them for some compositors).
+        let child_popups: Vec<_> = self
+            .state
+            .popups
+            .iter()
+            .filter(|(_, popup)| popup.parent == id)
+            .map(|(&popup_id, _)| popup_id)
+            .collect();
+        for popup_id in child_popups {
+            let _ = self.destroy_popup(popup_id);
+        }
+
+        // Also destroy child dialog toplevels that named us as parent.
+        let child_dialogs: Vec<_> = self
+            .state
+            .toplevels
+            .iter()
+            .filter(|(_, toplevel)| toplevel.parent == Some(id))
+            .map(|(&child_id, _)| child_id)
+            .collect();
+        for child_id in child_dialogs {
+            let _ = self.destroy_toplevel(child_id);
+        }
+
+        self.destroy_csd(id);
+        let Some(record) = self.state.toplevels.remove(&id) else {
+            return Err(NativeError::Protocol(format!("unknown surface {id:?}")));
+        };
+        self.state.clear_live_constraints_for(id);
+        self.state
+            .toplevel_objects
+            .remove(&record.toplevel.id().protocol_id());
+        self.state
+            .xdg_surface_objects
+            .remove(&record.xdg.id().protocol_id());
+        self.state
+            .wl_surface_objects
+            .remove(&record.wl.id().protocol_id());
+        if let Some(dialog) = record.dialog {
+            dialog.destroy();
+        }
+        if let Some(effect) = record.blur_effect {
+            effect.destroy();
+        }
+        if let Some(decoration) = record.decoration {
+            self.state
+                .decoration_objects
+                .remove(&decoration.id().protocol_id());
+            decoration.destroy();
+        }
+        for (_file, pool, buffer) in record.icon_shm {
+            buffer.destroy();
+            pool.destroy();
+        }
+        if let Some(fractional) = record.fractional {
+            self.state
+                .fractional_objects
+                .remove(&fractional.id().protocol_id());
+            fractional.destroy();
+        }
+        if let Some(viewport) = record.viewport {
+            viewport.destroy();
+        }
+        record.toplevel.destroy();
+        record.xdg.destroy();
+        if let Some(buffer) = record.buffer {
+            buffer.destroy();
+        }
+        if let Some(pool) = record._pool {
+            pool.destroy();
+        }
+        record.wl.destroy();
+        self.connection.mark_dirty();
+        Ok(())
+    }
+}
