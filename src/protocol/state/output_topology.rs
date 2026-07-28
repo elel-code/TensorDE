@@ -271,6 +271,7 @@ impl RuntimeState {
         }
         self.reflow_default_workspace_layout();
         self.refresh_cursor_surface_outputs();
+        self.refresh_dnd_icon_outputs();
         self.force_redraw_all();
     }
 }

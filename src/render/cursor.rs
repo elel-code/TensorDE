@@ -3,7 +3,7 @@ use tensor_util::Rect;
 
 use crate::ecs::SurfaceBufferId;
 
-pub(crate) const MAX_CURSOR_OVERLAYS: usize = 65;
+pub(crate) const MAX_CURSOR_OVERLAYS: usize = 66;
 
 /// A compositor-owned cursor primitive already expressed in one output's
 /// physical coordinate space. It deliberately contains no protocol object or
@@ -15,6 +15,7 @@ pub(crate) struct CursorOverlay {
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
     pub(crate) texture: Option<CursorTexture>,
+    underlay: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +30,7 @@ impl CursorOverlay {
         destination: Rect::new(0, 0, 0, 0),
         clip: Rect::new(0, 0, 0, 0),
         texture: None,
+        underlay: false,
     };
 
     pub(crate) fn new(source: u64, destination: Rect, viewport: Rect) -> Option<Self> {
@@ -38,6 +40,7 @@ impl CursorOverlay {
             destination,
             clip,
             texture: None,
+            underlay: false,
         })
     }
 
@@ -45,10 +48,15 @@ impl CursorOverlay {
         self.texture = Some(texture);
         self
     }
+
+    pub(crate) const fn below_cursors(mut self) -> Self {
+        self.underlay = true;
+        self
+    }
 }
 
-/// Fixed-capacity cursor batch for one output frame. Slot zero is available
-/// for the core pointer; the remaining slots cover Tensor's 64 tablet tools.
+/// Fixed-capacity pointer-adjacent overlay batch for one output frame. The
+/// slots cover the core pointer, 64 tablet tools, and one DnD icon.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CursorOverlays {
     entries: [CursorOverlay; MAX_CURSOR_OVERLAYS],
@@ -79,6 +87,19 @@ impl CursorOverlays {
 
     pub(crate) fn as_slice(&self) -> &[CursorOverlay] {
         &self.entries[..self.len]
+    }
+
+    pub(crate) fn draw_order(&self) -> impl Iterator<Item = (usize, &CursorOverlay)> {
+        self.as_slice()
+            .iter()
+            .enumerate()
+            .filter(|(_, overlay)| overlay.underlay)
+            .chain(
+                self.as_slice()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, overlay)| !overlay.underlay),
+            )
     }
 
     pub(crate) const fn is_empty(&self) -> bool {
@@ -124,5 +145,29 @@ mod tests {
         }
         assert!(!cursors.push(CursorOverlay::EMPTY));
         assert_eq!(cursors.as_slice().len(), MAX_CURSOR_OVERLAYS);
+    }
+
+    #[test]
+    fn draw_order_places_underlays_before_source_sorted_cursors() {
+        let mut cursors = CursorOverlays::default();
+        assert!(
+            cursors
+                .push(CursorOverlay::new(0, Rect::new(0, 0, 1, 1), Rect::new(0, 0, 2, 1)).unwrap())
+        );
+        assert!(
+            cursors.push(
+                CursorOverlay::new(u64::MAX, Rect::new(1, 0, 1, 1), Rect::new(0, 0, 2, 1))
+                    .unwrap()
+                    .below_cursors()
+            )
+        );
+
+        assert_eq!(
+            cursors
+                .draw_order()
+                .map(|(_, cursor)| cursor.source)
+                .collect::<Vec<_>>(),
+            [u64::MAX, 0]
+        );
     }
 }

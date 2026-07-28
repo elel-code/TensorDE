@@ -44,6 +44,8 @@ mod decoration;
 mod desktop_controls;
 #[cfg(feature = "tty")]
 mod dmabuf;
+#[cfg(feature = "tty")]
+mod dnd_icon;
 mod foreign_toplevel;
 mod idle_notify;
 mod inhibitors;

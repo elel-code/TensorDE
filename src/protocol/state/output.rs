@@ -16,6 +16,14 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
+    pub(crate) fn flush_queued_redraws(&mut self) {
+        if self.force_full_redraw {
+            return self.request_redraw_all();
+        }
+        self.redraw_queued_outputs();
+    }
+
+    #[cfg(feature = "tty")]
     pub(crate) fn submit_default_workspace_frame(&mut self) {
         self.request_redraw_workspace();
     }
@@ -45,6 +53,30 @@ impl RuntimeState {
             return;
         };
         self.queue_redraw(output_id);
+        self.redraw_queued_outputs();
+    }
+
+    /// Damage both heads when an overlay crosses an output boundary. Within
+    /// one head the renderer's retained cursor history handles old/new bounds.
+    #[cfg(feature = "tty")]
+    pub(crate) fn request_redraw_between(
+        &mut self,
+        previous: LogicalPoint<f64>,
+        current: LogicalPoint<f64>,
+    ) {
+        if self.force_full_redraw {
+            return self.request_redraw_all();
+        }
+        let previous = self.output_id_under(previous);
+        let current = self.output_id_under(current);
+        if let Some(output) = previous {
+            self.queue_redraw(output);
+        }
+        if let Some(output) = current
+            && Some(output) != previous
+        {
+            self.queue_redraw(output);
+        }
         self.redraw_queued_outputs();
     }
 
@@ -200,7 +232,7 @@ impl RuntimeState {
                 });
         }
         let surface_buffers = &self.surface_buffers;
-        let cursors = self.cursor.overlays_for_output(
+        let mut cursors = self.cursor.overlays_for_output(
             self.input_seat.pointer_location(),
             geometry,
             target.scale,
@@ -209,6 +241,17 @@ impl RuntimeState {
                 super::surfaces::cursor_surface_raster(surface_buffers, surface, scale)
             },
         );
+        if let Some(icon) = self.dnd_icon.overlay(
+            self.input_seat.pointer_location(),
+            geometry,
+            target.scale,
+            target.viewport,
+            |surface, scale, hotspot| {
+                super::surfaces::role_surface_raster(surface_buffers, surface, scale, hotspot)
+            },
+        ) {
+            assert!(cursors.push(icon), "DnD icon has one reserved overlay slot");
+        }
         let has_presented = self
             .outputs
             .get(&output_id)

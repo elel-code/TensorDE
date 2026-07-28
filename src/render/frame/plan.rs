@@ -212,6 +212,10 @@ impl FrameDrawPlan {
         self.cursors.as_slice()
     }
 
+    pub(crate) fn cursor_batch(&self) -> &CursorOverlays {
+        &self.cursors
+    }
+
     pub(crate) fn cursor_image_descriptors(&self) -> &[Option<u32>] {
         &self.cursor_image_descriptors
     }

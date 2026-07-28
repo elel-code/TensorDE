@@ -200,6 +200,11 @@ ordinary high-rate motion does not lock or rescan each output's protocol surface
 Presentation capture keeps the ordinary pointer cursor surface inline, so a pointer-only frame
 does not allocate a cursor-surface vector; storage grows only when tablet cursor surfaces are
 actually visible.
+Core `wl_data_device` drag icons use the same cached surface-image path and an inline presentation
+slot. Their committed `wl_surface.offset` moves the icon relative to the pointer hotspot, output
+enter/leave and preferred scale follow the visible icon rectangle, and accepted KMS submissions
+release their frame callbacks. The icon is a cursor underlay, so the pointer remains legible above
+it; old and new icon memberships queue only the affected outputs.
 
 This is a deliberately distilled contract from the local Niri, Hyprland, and Nourish references:
 Niri establishes pointer-as-topmost-render-element and output-aware relative motion; Hyprland

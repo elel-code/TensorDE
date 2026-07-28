@@ -259,6 +259,39 @@ fn pointer_redraw_targets_only_the_output_under_the_cursor() {
 }
 
 #[test]
+fn crossing_output_redraws_both_cursor_heads() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display,
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 1280)),
+        ])
+        .unwrap();
+    let primary = BackendOutputId::new(1, 1);
+    let secondary = BackendOutputId::new(1, 2);
+    state.redraw_states.insert(primary, OutputRedrawState::Idle);
+    state
+        .redraw_states
+        .insert(secondary, OutputRedrawState::Idle);
+
+    state.request_redraw_between((1919.0, 10.0).into(), (1920.0, 10.0).into());
+
+    assert_eq!(
+        state.redraw_states.get(&primary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+    assert_eq!(
+        state.redraw_states.get(&secondary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+}
+
+#[test]
 fn queue_marks_idle_and_waiting_outputs_dirty() {
     assert_eq!(OutputRedrawState::Idle.queue(), OutputRedrawState::Queued);
     assert_eq!(OutputRedrawState::Queued.queue(), OutputRedrawState::Queued);

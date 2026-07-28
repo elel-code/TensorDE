@@ -11,7 +11,9 @@ use crate::protocol::globals::compositor::{
     BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
     SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
 };
-use tensor_protocol::{SurfaceAlpha, SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform};
+#[cfg(feature = "tty")]
+use tensor_protocol::SurfaceSampleTransform;
+use tensor_protocol::{SurfaceAlpha, SurfaceSourceRect, SurfaceTransform};
 use wayland_server::{
     Resource,
     protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
@@ -327,31 +329,52 @@ pub(crate) fn apply_cursor_surface_delta(surface: &WlSurface) {
 }
 
 #[cfg(feature = "tty")]
+pub(crate) fn take_dnd_icon_surface_delta(surface: &WlSurface) -> Option<tensor_util::Point> {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<SurfaceAttributes>()
+            .current()
+            .buffer_delta
+            .take()
+    })
+}
+
+#[cfg(feature = "tty")]
 pub(super) fn cursor_surface_raster(
     registry: &SurfaceBufferRegistry,
     surface: &WlSurface,
     scale: tensor_util::OutputScale,
 ) -> Option<crate::protocol::cursor::CursorRaster> {
-    let (buffer, logical_size, buffer_scale, transform, source, hotspot) =
-        with_states(surface, |states| {
-            let state = states.data_map.get::<Mutex<SurfaceState>>()?.lock().ok()?;
-            let view = state.view?;
-            let buffer = state.buffer.as_ref()?.id();
-            let hotspot = states
-                .data_map
-                .get::<Mutex<crate::protocol::globals::seat::CursorSurfaceState>>()?
-                .lock()
-                .ok()?
-                .hotspot;
-            Some((
-                buffer,
-                view.size,
-                state.buffer_scale,
-                state.transform,
-                state.source,
-                hotspot,
-            ))
-        })?;
+    let hotspot = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<Mutex<crate::protocol::globals::seat::CursorSurfaceState>>()?
+            .lock()
+            .ok()
+            .map(|cursor| cursor.hotspot)
+    })?;
+    role_surface_raster(registry, surface, scale, hotspot)
+}
+
+#[cfg(feature = "tty")]
+pub(super) fn role_surface_raster(
+    registry: &SurfaceBufferRegistry,
+    surface: &WlSurface,
+    scale: tensor_util::OutputScale,
+    hotspot: tensor_util::Point,
+) -> Option<crate::protocol::cursor::CursorRaster> {
+    let (buffer, logical_size, buffer_scale, transform, source) = with_states(surface, |states| {
+        let state = states.data_map.get::<Mutex<SurfaceState>>()?.lock().ok()?;
+        let view = state.view?;
+        Some((
+            state.buffer.as_ref()?.id(),
+            view.size,
+            state.buffer_scale,
+            state.transform,
+            state.source,
+        ))
+    })?;
     let (buffer_id, buffer_size) = registry.imported_buffer(&buffer)?;
     let width = scale.physical_length_round(u32::try_from(logical_size.0).ok()?);
     let height = scale.physical_length_round(u32::try_from(logical_size.1).ok()?);

@@ -1,6 +1,19 @@
 use tracing::warn;
 
-use super::super::RuntimeState;
+use super::super::{OutputRedrawState, RuntimeState};
+
+fn queue_output(
+    redraw_states: &mut std::collections::HashMap<
+        crate::backend::BackendOutputId,
+        OutputRedrawState,
+    >,
+    output: crate::backend::BackendOutputId,
+) {
+    let state = redraw_states
+        .entry(output)
+        .or_insert(OutputRedrawState::Idle);
+    *state = state.queue();
+}
 
 impl RuntimeState {
     #[cfg(test)]
@@ -111,6 +124,117 @@ impl RuntimeState {
                 });
                 protocol_globals.set_preferred_fractional_scale(surface, scale);
             });
+    }
+
+    pub(crate) fn install_dnd_icon(
+        &mut self,
+        surface: Option<wayland_server::protocol::wl_surface::WlSurface>,
+    ) {
+        self.retire_dnd_icon();
+        self.dnd_icon.set(surface);
+        self.refresh_dnd_icon_outputs();
+    }
+
+    pub(crate) fn retire_dnd_icon(&mut self) {
+        let Some(surface) = self.dnd_icon.surface().cloned() else {
+            self.dnd_icon.clear();
+            return;
+        };
+        let redraw_states = &mut self.redraw_states;
+        for output in self.space.outputs() {
+            if self.dnd_icon.outputs.contains(&output.instance_id()) {
+                queue_output(redraw_states, output.id());
+            }
+            output.leave(&surface);
+        }
+        self.dnd_icon.clear();
+    }
+
+    pub(crate) fn destroy_dnd_icon(
+        &mut self,
+        surface: &wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        if !self.dnd_icon.uses_surface(surface) {
+            return false;
+        }
+        let redraw_states = &mut self.redraw_states;
+        for output in self.space.outputs() {
+            if self.dnd_icon.outputs.contains(&output.instance_id()) {
+                queue_output(redraw_states, output.id());
+            }
+            output.forget_surface(surface);
+        }
+        self.dnd_icon.clear();
+        true
+    }
+
+    pub(crate) fn refresh_dnd_icon_outputs(&mut self) {
+        let Some(surface) = self.dnd_icon.surface().cloned() else {
+            return;
+        };
+        let pointer = self.input_seat.pointer_location();
+        let view = crate::protocol::globals::compositor::with_states(&surface, |states| {
+            crate::protocol::state::surfaces::surface_view(states)
+        });
+        let bounds = pointer
+            .zip(view)
+            .and_then(|(pointer, view)| self.dnd_icon.logical_bounds(pointer, view.size));
+        let space = &self.space;
+        let redraw_states = &mut self.redraw_states;
+        self.dnd_icon.outputs.retain(|instance| {
+            space
+                .outputs()
+                .any(|output| output.instance_id() == *instance)
+        });
+        let mut preferred = None;
+        for output in space.outputs() {
+            let Some(geometry) = space.output_geometry(output) else {
+                continue;
+            };
+            let inside = geometry.size.w > 0
+                && geometry.size.h > 0
+                && bounds.is_some_and(|(left, top, right, bottom)| {
+                    right > f64::from(geometry.loc.x)
+                        && bottom > f64::from(geometry.loc.y)
+                        && left < f64::from(geometry.loc.x.saturating_add(geometry.size.w))
+                        && top < f64::from(geometry.loc.y.saturating_add(geometry.size.h))
+                });
+            let instance = output.instance_id();
+            let membership = self
+                .dnd_icon
+                .outputs
+                .iter()
+                .position(|current| *current == instance);
+            if inside || membership.is_some() {
+                queue_output(redraw_states, output.id());
+            }
+            if inside && membership.is_none() {
+                output.enter(&surface);
+                self.dnd_icon.outputs.push(instance);
+            } else if !inside && let Some(index) = membership {
+                output.leave(&surface);
+                self.dnd_icon.outputs.swap_remove(index);
+            }
+            if inside {
+                let scale = output.current_scale();
+                if preferred.is_none_or(|preferred| scale > preferred) {
+                    preferred = Some(scale);
+                }
+            }
+        }
+        let Some(scale) = preferred else {
+            return;
+        };
+        crate::protocol::globals::compositor::with_states(&surface, |states| {
+            crate::protocol::globals::compositor::send_surface_state(
+                &surface,
+                states,
+                super::super::output_values::output_integer_scale(scale),
+                wayland_server::protocol::wl_output::Transform::Normal,
+            );
+        });
+        self.protocol_globals
+            .set_preferred_fractional_scale(&surface, scale);
     }
 
     pub(crate) fn duplicate_cursor_animation_timer_fd(

@@ -7,6 +7,8 @@ mod xwayland;
 use dmabuf::{ExplicitSyncCommit, take_explicit_sync_points};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
+#[cfg(feature = "tty")]
+use super::state::take_dnd_icon_surface_delta;
 use super::{
     globals::compositor::{get_parent, is_sync_subsurface},
     state::{
@@ -40,6 +42,12 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         self.upload_shm_buffers(shm_uploads);
         apply_cursor_surface_delta(surface);
+        #[cfg(feature = "tty")]
+        let dnd_icon_commit = self.dnd_icon.uses_surface(surface);
+        #[cfg(feature = "tty")]
+        if dnd_icon_commit && let Some(delta) = take_dnd_icon_surface_delta(surface) {
+            self.dnd_icon.apply_delta(delta);
+        }
         #[cfg(feature = "tty")]
         let cursor_commit = self.cursor.uses_surface(surface);
         let fifo_activated = self
@@ -152,6 +160,11 @@ impl RuntimeState {
         if cursor_commit {
             self.refresh_cursor_surface_outputs();
             self.request_redraw_all();
+        }
+        #[cfg(feature = "tty")]
+        if dnd_icon_commit {
+            self.refresh_dnd_icon_outputs();
+            self.flush_queued_redraws();
         }
         #[cfg(feature = "tty")]
         if input_popup_commit {

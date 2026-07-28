@@ -56,6 +56,9 @@ one-state-owner-per-protocol layout, not ad hoc “whatever Niri ships.”
 ### Tier 0 — Core
 compositor, subcompositor, shm, seat, data-device, …
 
+Core data-device drag icons are rendered as pointer-relative cached surface overlays, including
+committed offsets, output membership/preferred scale, and submitted-frame callbacks.
+
 ### Tier 1 — Stable standard
 xdg-shell, xdg-output, xdg-decoration (CSD), xdg-activation, viewporter, presentation-time,
 linux-dmabuf, linux-drm-syncobj (when device supports), primary-selection, tablet-v2, …

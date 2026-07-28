@@ -59,12 +59,8 @@ pub(in crate::render::vulkan::frame) fn prepare_cursor_draws(
         return Ok(draws);
     }
     let viewport = validate_viewport(frame.target.viewport)?;
-    for (cursor, image_descriptor) in frame
-        .draw_plan
-        .cursors()
-        .iter()
-        .zip(frame.draw_plan.cursor_image_descriptors())
-    {
+    for (index, cursor) in frame.draw_plan.cursor_batch().draw_order() {
+        let image_descriptor = &frame.draw_plan.cursor_image_descriptors()[index];
         let scissor = vk::Rect2D {
             offset: vk::Offset2D {
                 x: cursor.clip.x,

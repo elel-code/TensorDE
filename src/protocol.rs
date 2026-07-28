@@ -2,6 +2,8 @@ mod clock;
 #[cfg(feature = "tty")]
 mod cursor;
 mod dispatch;
+#[cfg(feature = "tty")]
+mod dnd_icon;
 mod extensions;
 mod focus;
 mod globals;

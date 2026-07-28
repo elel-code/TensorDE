@@ -49,6 +49,7 @@ pub(super) struct CapturedPresentation {
 #[derive(Debug, Default)]
 struct CursorSurfaces {
     pointer: Option<WlSurface>,
+    dnd_icon: Option<WlSurface>,
     tablets: Vec<WlSurface>,
 }
 
@@ -56,17 +57,23 @@ impl CursorSurfaces {
     fn insert(&mut self, source: u64, surface: WlSurface) {
         if source == 0 {
             self.pointer = Some(surface);
+        } else if source == crate::protocol::dnd_icon::DND_ICON_SOURCE {
+            self.dnd_icon = Some(surface);
         } else if !self.tablets.iter().any(|current| current == &surface) {
             self.tablets.push(surface);
         }
     }
 
     fn iter(&self) -> impl Iterator<Item = &WlSurface> {
-        self.pointer.iter().chain(&self.tablets)
+        self.pointer
+            .iter()
+            .chain(&self.dnd_icon)
+            .chain(&self.tablets)
     }
 
     fn contains(&self, surface: &WlSurface) -> bool {
         self.pointer.as_ref() == Some(surface)
+            || self.dnd_icon.as_ref() == Some(surface)
             || self.tablets.iter().any(|current| current == surface)
     }
 
@@ -74,6 +81,10 @@ impl CursorSurfaces {
         self.pointer
             .as_ref()
             .is_some_and(|current| current.id() == *surface)
+            || self
+                .dnd_icon
+                .as_ref()
+                .is_some_and(|current| current.id() == *surface)
             || self.tablets.iter().any(|current| current.id() == *surface)
     }
 }
@@ -138,7 +149,12 @@ impl RuntimeState {
     ) -> CapturedPresentation {
         let mut cursor_surfaces = CursorSurfaces::default();
         for cursor in cursors.as_slice() {
-            let Some(surface) = self.cursor.surface_for_source(cursor.source) else {
+            let surface = if cursor.source == crate::protocol::dnd_icon::DND_ICON_SOURCE {
+                self.dnd_icon.surface().cloned()
+            } else {
+                self.cursor.surface_for_source(cursor.source)
+            };
+            let Some(surface) = surface else {
                 continue;
             };
             cursor_surfaces.insert(cursor.source, surface);

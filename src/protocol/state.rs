@@ -82,6 +82,8 @@ use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
 use surfaces::SurfaceBufferRegistry;
 pub(in crate::protocol) use surfaces::surface_contains_point;
+#[cfg(feature = "tty")]
+pub(crate) use surfaces::take_dnd_icon_surface_delta;
 pub(crate) use surfaces::{
     apply_cursor_surface_delta, apply_surface_alpha, destroy_surface_state,
     on_commit_surface_handler,
@@ -123,6 +125,9 @@ pub(crate) struct RuntimeState {
     pub(crate) protocol_side: ProtocolSideState,
     #[cfg(feature = "xwayland")]
     pub(crate) xwayland_shell_state: XWaylandShellState,
+    #[cfg(feature = "tty")]
+    pub(crate) dnd_icon: super::dnd_icon::DndIconState,
+    #[cfg(not(feature = "tty"))]
     pub(crate) dnd_icon: Option<WlSurface>,
     pub(crate) space: WindowSpace,
     pub(crate) popups: PopupManager,
@@ -207,6 +212,9 @@ impl RuntimeState {
             protocol_side: ProtocolSideState::default(),
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
+            #[cfg(feature = "tty")]
+            dnd_icon: super::dnd_icon::DndIconState::default(),
+            #[cfg(not(feature = "tty"))]
             dnd_icon: None,
             space: WindowSpace::default(),
             popups: PopupManager::default(),

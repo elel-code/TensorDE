@@ -544,11 +544,14 @@ impl RuntimeState {
             post_start_error(device, error);
             return;
         }
-        self.dnd_icon = icon;
         #[cfg(feature = "tty")]
-        if let Some(location) = self.input_seat.pointer_location() {
-            self.request_redraw_at(location);
+        self.install_dnd_icon(icon);
+        #[cfg(not(feature = "tty"))]
+        {
+            self.dnd_icon = icon;
         }
+        #[cfg(feature = "tty")]
+        self.flush_queued_redraws();
     }
 
     pub(super) fn selection_source_destroyed(&mut self, token: SourceToken) {
@@ -563,6 +566,11 @@ impl RuntimeState {
     }
 
     pub(in crate::protocol) fn selection_surface_destroyed(&mut self, surface: &WlSurface) {
+        #[cfg(feature = "tty")]
+        if self.destroy_dnd_icon(surface) {
+            self.flush_queued_redraws();
+        }
+        #[cfg(not(feature = "tty"))]
         if self.dnd_icon.as_ref() == Some(surface) {
             self.dnd_icon = None;
         }
@@ -578,16 +586,26 @@ impl RuntimeState {
 
     pub(in crate::protocol) fn finish_selection_dnd(&mut self) {
         self.protocol_globals.selection.drop_dnd();
-        self.dnd_icon = None;
         #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
+        self.retire_dnd_icon();
+        #[cfg(not(feature = "tty"))]
+        {
+            self.dnd_icon = None;
+        }
+        #[cfg(feature = "tty")]
+        self.flush_queued_redraws();
     }
 
     fn cancel_selection_dnd(&mut self) {
         self.protocol_globals.selection.cancel_dnd();
-        self.dnd_icon = None;
         #[cfg(feature = "tty")]
-        self.request_redraw_workspace();
+        self.retire_dnd_icon();
+        #[cfg(not(feature = "tty"))]
+        {
+            self.dnd_icon = None;
+        }
+        #[cfg(feature = "tty")]
+        self.flush_queued_redraws();
     }
 }
 

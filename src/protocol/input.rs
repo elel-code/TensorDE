@@ -454,7 +454,8 @@ impl RuntimeState {
                 .into_event(),
             );
             self.refresh_cursor_surface_outputs();
-            self.request_redraw_at(planned_location);
+            self.refresh_dnd_icon_outputs();
+            self.request_redraw_between(previous_location, planned_location);
             return;
         }
         self.reconcile_popup_grab(serial);
@@ -527,12 +528,13 @@ impl RuntimeState {
             tensor_event::Sample::pointer_motion(location.x, location.y, time_ns).into_event(),
         );
         self.refresh_cursor_surface_outputs();
+        self.refresh_dnd_icon_outputs();
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target
         // only the head under the pointer so dual high-refresh outputs do not
         // both resubmit on every relative move. Immediate redraw keeps pointer
         // latency off the idle-turn path; bus coalescing still records intent.
-        self.request_redraw_at(location);
+        self.request_redraw_between(previous_location, location);
     }
 
     pub(crate) fn forward_pointer_gesture(&mut self, event: PointerGestureEvent) {
