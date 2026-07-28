@@ -32,12 +32,13 @@ pub(crate) use format::{
 };
 #[cfg(feature = "tty")]
 pub(crate) use frame::{
-    DescriptorHeapLayout, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId,
+    DescriptorHeapLayout, FrameScheduler, FrameSubmission, NativeCursorTarget, NativeOutputTarget,
+    RenderOutputId,
 };
 pub use interop::NativeInteropCapabilities;
 pub use target::RendererTarget;
 #[cfg(feature = "tty")]
 pub(crate) use vulkan::ClientReleaseFence;
 #[cfg(feature = "tty")]
-pub(crate) use vulkan::NativeOutputBuffer;
+pub(crate) use vulkan::{NativeCursorBuffer, NativeOutputBuffer, NativeOutputBuffers};
 pub(crate) use vulkan::{RendererError, VulkanRenderer};

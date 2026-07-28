@@ -53,11 +53,23 @@ impl CursorPlaneCapabilities {
             .map(|plane| plane.as_ref().expect("populated cursor-plane prefix"))
     }
 
-    pub(in crate::backend::tty::kms) fn select_vulkan_target(
+    #[cfg(test)]
+    fn select_vulkan_target(
         &self,
         vulkan: &[VulkanFormatCapability],
     ) -> Option<CursorPlaneSelection> {
+        self.select_vulkan_target_excluding(vulkan, &[])
+    }
+
+    pub(in crate::backend::tty::kms) fn select_vulkan_target_excluding(
+        &self,
+        vulkan: &[VulkanFormatCapability],
+        claimed: &[plane::Handle],
+    ) -> Option<CursorPlaneSelection> {
         self.iter().find_map(|plane| {
+            if claimed.contains(&plane.handle) {
+                return None;
+            }
             plane
                 .preferred_vulkan_format(vulkan)
                 .map(|format| CursorPlaneSelection {
@@ -360,6 +372,23 @@ mod tests {
             .unwrap();
         assert_eq!(selection.plane(), plane_handle(2));
         assert_eq!(selection.format().format, tiled_argb);
+    }
+
+    #[test]
+    fn cursor_target_selection_skips_planes_claimed_by_other_outputs() {
+        let format = DrmFormat::new(Fourcc::ARGB8888, Modifier::from_raw(9));
+        let mut capabilities = CursorPlaneCapabilities::new(256, 256);
+        capabilities
+            .push(capability_with_formats(2, vec![format]))
+            .unwrap();
+        capabilities
+            .push(capability_with_formats(3, vec![format]))
+            .unwrap();
+
+        let selection = capabilities
+            .select_vulkan_target_excluding(&[vulkan_format(format)], &[plane_handle(2)])
+            .unwrap();
+        assert_eq!(selection.plane(), plane_handle(3));
     }
 
     #[test]

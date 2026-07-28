@@ -17,7 +17,8 @@ use vulkanalia::{
 
 #[cfg(feature = "tty")]
 use super::{
-    CursorOverlays, Dmabuf, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId,
+    CursorOverlays, Dmabuf, FrameScheduler, FrameSubmission, NativeCursorTarget,
+    NativeOutputTarget, RenderOutputId,
 };
 use super::{
     DescriptorHeapProperties, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId,
@@ -47,7 +48,7 @@ use probe::probe_devices;
 #[cfg(feature = "tty")]
 pub(crate) use sync::ClientReleaseFence;
 #[cfg(feature = "tty")]
-pub(crate) use target::NativeOutputBuffer;
+pub(crate) use target::{NativeCursorBuffer, NativeOutputBuffer, NativeOutputBuffers};
 
 #[cfg(feature = "tty")]
 const DESCRIPTOR_HEAP_BYTES: u64 = 16 * 1024 * 1024;
@@ -323,17 +324,21 @@ impl VulkanRenderer {
     pub(crate) fn register_output(
         &mut self,
         target: NativeOutputTarget,
-    ) -> Result<Vec<NativeOutputBuffer>, RendererError> {
-        if !self.selected.formats.iter().copied().any(|candidate| {
-            candidate.format == target.format.format
-                && candidate.plane_count == target.format.plane_count
-                && candidate.supports_output_export()
-        }) {
-            return Err(RendererError::UnsupportedOutputTarget {
-                format: target.format.format.code,
-                modifier: target.format.format.modifier.raw(),
-                plane_count: target.format.plane_count,
+        cursor: Option<NativeCursorTarget>,
+    ) -> Result<NativeOutputBuffers, RendererError> {
+        for format in std::iter::once(target.format).chain(cursor.map(|cursor| cursor.format)) {
+            let supported = self.selected.formats.iter().copied().any(|candidate| {
+                candidate.format == format.format
+                    && candidate.plane_count == format.plane_count
+                    && candidate.supports_output_export()
             });
+            if !supported {
+                return Err(RendererError::UnsupportedOutputTarget {
+                    format: format.format.code,
+                    modifier: format.format.modifier.raw(),
+                    plane_count: format.plane_count,
+                });
+            }
         }
         self.refresh_completed()?;
         let buffers = self
@@ -343,6 +348,7 @@ impl VulkanRenderer {
                 &self._owner.device,
                 self._owner._physical_device,
                 target,
+                cursor,
             )
             .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
         self.frames

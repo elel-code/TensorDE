@@ -11,8 +11,9 @@ use tracing::{info, warn};
 
 use crate::{
     backend::{BackendOutputId, OutputDescriptor},
-    render::{ExportedDmabuf, VulkanFormatCapability},
+    render::{ExportedDmabuf, NativeCursorTarget, RenderOutputId, VulkanFormatCapability},
 };
+use tensor_util::Size;
 
 use super::{BackendError, DrmDeviceFd, TtyBackend, device::DrmDevice};
 
@@ -24,7 +25,7 @@ use atomic::{
     AtomicError, AtomicSurface, CursorPlaneCapabilities, CursorPlaneSelection,
     discover_cursor_planes, select_primary_plane,
 };
-use framebuffer::{ScanoutFramebuffer, framebuffer_from_dmabuf};
+use framebuffer::{ScanoutFramebuffer, cursor_framebuffer_from_dmabuf, framebuffer_from_dmabuf};
 
 impl TtyBackend {
     pub(crate) fn reset_outputs_after_session_resume(&mut self) {
@@ -143,8 +144,87 @@ pub(super) struct KmsOutput {
     surface: AtomicSurface,
     _cursor_planes: CursorPlaneCapabilities,
     _cursor_target: Option<CursorPlaneSelection>,
+    _cursor_slots: Vec<KmsCursorSlot>,
     slots: Vec<KmsSlot>,
     scanout: ScanoutState,
+}
+
+pub(crate) struct PreparedCursorState {
+    capabilities: CursorPlaneCapabilities,
+    selection: Option<CursorPlaneSelection>,
+}
+
+impl PreparedCursorState {
+    pub(crate) fn render_target(&self, output: BackendOutputId) -> Option<NativeCursorTarget> {
+        let selection = self.selection?;
+        let (width, height) = self.capabilities.max_size();
+        Some(NativeCursorTarget {
+            output: RenderOutputId {
+                device_id: output.device_id,
+                connector_id: output.connector_id,
+            },
+            size: Size::new(width, height),
+            format: selection.format(),
+        })
+    }
+}
+
+pub(super) fn prepare_cursor_state(
+    device: &DrmDevice,
+    descriptor: &OutputDescriptor,
+    renderer_formats: &[VulkanFormatCapability],
+    claimed_planes: &[plane::Handle],
+) -> Result<PreparedCursorState, KmsError> {
+    let crtc = crtc_handle(descriptor.crtc)?;
+    let capabilities = match discover_cursor_planes(device, crtc) {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            warn!(
+                output = %descriptor.name,
+                %error,
+                "hardware cursor-plane discovery unavailable; retaining Vulkan composition"
+            );
+            CursorPlaneCapabilities::unavailable()
+        }
+    };
+    let (max_width, max_height) = capabilities.max_size();
+    let selection = capabilities.select_vulkan_target_excluding(renderer_formats, claimed_planes);
+    info!(
+        output = %descriptor.name,
+        planes = capabilities.len(),
+        max_width,
+        max_height,
+        "discovered bounded DRM cursor-plane capabilities"
+    );
+    for candidate in capabilities.iter() {
+        info!(
+            output = %descriptor.name,
+            plane = u32::from(candidate.handle()),
+            formats = candidate.format_count(),
+            claimed = claimed_planes.contains(&candidate.handle()),
+            "eligible DRM cursor plane"
+        );
+    }
+    match selection {
+        Some(target) => info!(
+            output = %descriptor.name,
+            plane = u32::from(target.plane()),
+            fourcc = %target.format().format.code,
+            modifier = %target.format().format.modifier,
+            planes = target.format().plane_count,
+            slots = crate::render::NativeCursorBuffer::COUNT,
+            "selected strict Vulkan/KMS cursor image contract"
+        ),
+        None if capabilities.iter().next().is_some() => warn!(
+            output = %descriptor.name,
+            "no unclaimed cursor-plane format is renderable and exportable by the selected Vulkan device"
+        ),
+        None => {}
+    }
+    Ok(PreparedCursorState {
+        capabilities,
+        selection,
+    })
 }
 
 pub(super) struct KmsOutputDevice<'a> {
@@ -167,9 +247,10 @@ impl KmsOutput {
     pub(super) fn new(
         device: KmsOutputDevice<'_>,
         descriptor: &OutputDescriptor,
-        renderer_formats: &[VulkanFormatCapability],
+        cursor_state: PreparedCursorState,
         mode: DrmMode,
         buffers: Vec<(u8, ExportedDmabuf)>,
+        cursor_buffers: Vec<(u8, ExportedDmabuf)>,
         claimed_planes: &[plane::Handle],
     ) -> Result<Self, KmsError> {
         let crtc = crtc_handle(descriptor.crtc)?;
@@ -180,49 +261,10 @@ impl KmsOutput {
             descriptor.native_format.format,
             claimed_planes,
         )?;
-        let cursor_planes = match discover_cursor_planes(device.drm, crtc) {
-            Ok(capabilities) => capabilities,
-            Err(error) => {
-                warn!(
-                    output = %descriptor.name,
-                    %error,
-                    "hardware cursor-plane discovery unavailable; retaining Vulkan composition"
-                );
-                CursorPlaneCapabilities::unavailable()
-            }
-        };
-        let (cursor_width, cursor_height) = cursor_planes.max_size();
-        let cursor_target = cursor_planes.select_vulkan_target(renderer_formats);
-        info!(
-            output = %descriptor.name,
-            planes = cursor_planes.len(),
-            max_width = cursor_width,
-            max_height = cursor_height,
-            "discovered bounded DRM cursor-plane capabilities"
-        );
-        for candidate in cursor_planes.iter() {
-            info!(
-                output = %descriptor.name,
-                plane = u32::from(candidate.handle()),
-                formats = candidate.format_count(),
-                "eligible DRM cursor plane"
-            );
-        }
-        match cursor_target {
-            Some(target) => info!(
-                output = %descriptor.name,
-                plane = u32::from(target.plane()),
-                fourcc = %target.format().format.code,
-                modifier = %target.format().format.modifier,
-                planes = target.format().plane_count,
-                "selected strict Vulkan/KMS cursor image contract"
-            ),
-            None if cursor_planes.iter().next().is_some() => warn!(
-                output = %descriptor.name,
-                "no discovered cursor-plane format is renderable and exportable by the selected Vulkan device"
-            ),
-            None => {}
-        }
+        let PreparedCursorState {
+            capabilities: cursor_planes,
+            selection: cursor_target,
+        } = cursor_state;
         let device_fd = device.drm.device_fd().clone();
 
         let mut slots = Vec::with_capacity(buffers.len());
@@ -241,6 +283,20 @@ impl KmsOutput {
             });
         }
         slots.sort_by_key(|slot| slot.slot);
+        let mut cursor_slots = Vec::with_capacity(cursor_buffers.len());
+        for (slot, dmabuf) in cursor_buffers {
+            let framebuffer = cursor_framebuffer_from_dmabuf(&device_fd, device.gbm, &dmabuf)
+                .map_err(|source| KmsError::CreateCursorFramebuffer {
+                    slot,
+                    message: source.to_string(),
+                })?;
+            cursor_slots.push(KmsCursorSlot {
+                _slot: slot,
+                _framebuffer: framebuffer,
+                _dmabuf: dmabuf,
+            });
+        }
+        cursor_slots.sort_by_key(|slot| slot._slot);
         let first_framebuffer = slots
             .first()
             .ok_or(KmsError::NoFramebuffers)?
@@ -262,6 +318,7 @@ impl KmsOutput {
             surface,
             _cursor_planes: cursor_planes,
             _cursor_target: cursor_target,
+            _cursor_slots: cursor_slots,
             slots,
             scanout: ScanoutState::default(),
         })
@@ -277,6 +334,10 @@ impl KmsOutput {
 
     pub(super) fn plane(&self) -> plane::Handle {
         self.surface.plane()
+    }
+
+    pub(super) fn cursor_plane(&self) -> Option<plane::Handle> {
+        self._cursor_target.map(CursorPlaneSelection::plane)
     }
 
     pub(super) fn submit(
@@ -354,6 +415,12 @@ impl Drop for KmsOutput {
 struct KmsSlot {
     slot: u8,
     framebuffer: ScanoutFramebuffer,
+    _dmabuf: ExportedDmabuf,
+}
+
+struct KmsCursorSlot {
+    _slot: u8,
+    _framebuffer: ScanoutFramebuffer,
     _dmabuf: ExportedDmabuf,
 }
 
@@ -466,6 +533,8 @@ pub(super) enum KmsError {
     Atomic(#[from] AtomicError),
     #[error("failed to create framebuffer for output slot {slot}: {message}")]
     CreateFramebuffer { slot: u8, message: String },
+    #[error("failed to create framebuffer for cursor slot {slot}: {message}")]
+    CreateCursorFramebuffer { slot: u8, message: String },
     #[error("renderer supplied no native output framebuffers")]
     NoFramebuffers,
     #[error("output scanout is waiting for timeline {0}")]

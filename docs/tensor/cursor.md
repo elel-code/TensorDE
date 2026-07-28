@@ -66,8 +66,12 @@ per plane. Candidates lacking `IN_FORMATS`, any required atomic geometry/object 
 pair. The first candidate with a strict Vulkan intersection is selected deterministically: only
 alpha-bearing formats with an exact explicit modifier and a renderable, exportable Vulkan
 capability are eligible, tiled modifiers precede linear ones, and the selected Vulkan plane count
-is preserved for dma-buf allocation. This does not yet assign a plane or allocate cursor scanout
-images, so the milestone remains open and software composition remains the correctness path.
+is preserved for dma-buf allocation. Output registration now allocates three fixed device-local
+cursor image slots with that exact modifier and plane count. Their dma-bufs are retained by the
+renderer and imported into Tensor-owned DRM framebuffers without stripping the alpha fourcc;
+planes already claimed by another output are skipped deterministically. The slots are not yet
+rendered or attached to atomic cursor-plane commits, so the milestone remains open and software
+composition remains the correctness path.
 
 ### 1. Capability and identity discovery
 

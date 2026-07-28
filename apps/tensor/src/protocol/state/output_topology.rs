@@ -193,20 +193,33 @@ impl RuntimeState {
         restore: Option<&OutputDescriptor>,
     ) -> Result<(), String> {
         let target = renderer_target(descriptor);
+        let cursor_state = self
+            .backend
+            .as_ref()
+            .map(|backend| backend.prepare_output_cursor(descriptor.id))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let cursor_target = cursor_state
+            .as_ref()
+            .and_then(|state| state.render_target(descriptor.id));
         let result = self
             .renderer
             .as_mut()
-            .map(|renderer| renderer.register_output(target));
+            .map(|renderer| renderer.register_output(target, cursor_target));
         let Some(result) = result else {
             return Ok(());
         };
         let buffers = result.map_err(|error| error.to_string())?;
         if let Some(backend) = self.backend.as_mut()
-            && let Err(error) = backend.install_output_buffers(descriptor.id, buffers)
+            && let Err(error) = backend.install_output_buffers(
+                descriptor.id,
+                buffers,
+                cursor_state.expect("a backend prepared cursor state before registration"),
+            )
         {
             if let Some(previous) = restore {
                 if let Some(renderer) = self.renderer.as_mut() {
-                    let _ = renderer.register_output(renderer_target(previous));
+                    let _ = renderer.register_output(renderer_target(previous), None);
                 }
             } else if let Some(renderer) = self.renderer.as_mut() {
                 renderer.unregister_output(target.output);

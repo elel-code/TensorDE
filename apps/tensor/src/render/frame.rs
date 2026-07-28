@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use tensor_util::OutputScale;
 use tensor_util::Rect;
+use tensor_util::Size;
 use thiserror::Error;
 
 use crate::scene::{DamageSet, SceneSnapshot};
@@ -28,6 +29,13 @@ pub(crate) struct NativeOutputTarget {
     pub(crate) viewport: Rect,
     pub(crate) format: OutputFormat,
     pub(crate) scale: OutputScale,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeCursorTarget {
+    pub(crate) output: RenderOutputId,
+    pub(crate) size: Size,
+    pub(crate) format: OutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

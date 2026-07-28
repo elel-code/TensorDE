@@ -12,17 +12,33 @@ use vulkanalia::vk::{
 };
 use vulkanalia::{Device, Instance, vk};
 
-use crate::render::{DmabufPlane, DrmNodeId, ExportedDmabuf, NativeOutputTarget, RenderOutputId};
+use crate::render::{
+    DmabufPlane, DrmNodeId, ExportedDmabuf, NativeCursorTarget, NativeOutputTarget, OutputFormat,
+    RenderOutputId,
+};
 
 use super::{native_image_usage, vulkan_format_for_fourcc};
 
 const OUTPUT_IMAGE_COUNT: usize = 3;
+const CURSOR_IMAGE_COUNT: usize = 3;
 const MAX_DMABUF_PLANES: usize = 4;
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeOutputBuffer {
     pub(crate) slot: u8,
     pub(crate) dmabuf: ExportedDmabuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NativeCursorBuffer {
+    pub(crate) slot: u8,
+    pub(crate) dmabuf: ExportedDmabuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NativeOutputBuffers {
+    pub(crate) primary: Vec<NativeOutputBuffer>,
+    pub(crate) cursor: Vec<NativeCursorBuffer>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -37,10 +53,16 @@ impl NativeOutputBuffer {
     pub(crate) const COUNT: usize = OUTPUT_IMAGE_COUNT;
 }
 
+impl NativeCursorBuffer {
+    pub(crate) const COUNT: usize = CURSOR_IMAGE_COUNT;
+}
+
 pub(super) struct NativeTargetManager {
     render_node: DrmNodeId,
     active: BTreeMap<RenderOutputId, NativeTargetSet>,
     retired: Vec<NativeTargetSet>,
+    cursor_active: BTreeMap<RenderOutputId, NativeCursorTargetSet>,
+    cursor_retired: Vec<NativeCursorTargetSet>,
 }
 
 impl NativeTargetManager {
@@ -49,6 +71,8 @@ impl NativeTargetManager {
             render_node,
             active: BTreeMap::new(),
             retired: Vec::new(),
+            cursor_active: BTreeMap::new(),
+            cursor_retired: Vec::new(),
         }
     }
 
@@ -58,19 +82,55 @@ impl NativeTargetManager {
         device: &Device,
         physical_device: vk::PhysicalDevice,
         target: NativeOutputTarget,
-    ) -> Result<Vec<NativeOutputBuffer>, NativeTargetError> {
-        if self
+        cursor: Option<NativeCursorTarget>,
+    ) -> Result<NativeOutputBuffers, NativeTargetError> {
+        let primary_matches = self
             .active
             .get(&target.output)
-            .is_some_and(|current| current.target == target)
-        {
+            .is_some_and(|current| current.target == target);
+        let cursor_matches = match cursor {
+            Some(cursor) => self
+                .cursor_active
+                .get(&target.output)
+                .is_some_and(|current| current.target == cursor),
+            None => !self.cursor_active.contains_key(&target.output),
+        };
+        if primary_matches && cursor_matches {
             return Ok(self.buffers(target.output));
         }
 
         let replacement =
             NativeTargetSet::create(instance, device, physical_device, self.render_node, target)?;
+        let cursor_replacement = match cursor {
+            Some(cursor) => match NativeCursorTargetSet::create(
+                instance,
+                device,
+                physical_device,
+                self.render_node,
+                cursor,
+            ) {
+                Ok(replacement) => Some(replacement),
+                Err(error) => {
+                    replacement.destroy(device);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
         if let Some(previous) = self.active.insert(target.output, replacement) {
             self.retired.push(previous);
+        }
+        match cursor_replacement {
+            Some(replacement) => {
+                if let Some(previous) = self.cursor_active.insert(target.output, replacement) {
+                    self.cursor_retired.push(previous);
+                }
+            }
+            None => {
+                if let Some(previous) = self.cursor_active.remove(&target.output) {
+                    self.cursor_retired.push(previous);
+                }
+            }
         }
         Ok(self.buffers(target.output))
     }
@@ -104,6 +164,9 @@ impl NativeTargetManager {
         if let Some(target) = self.active.remove(&output) {
             self.retired.push(target);
         }
+        if let Some(target) = self.cursor_active.remove(&output) {
+            self.cursor_retired.push(target);
+        }
     }
 
     pub(super) fn retire_completed(&mut self, device: &Device, completed_timeline: u64) {
@@ -116,6 +179,15 @@ impl NativeTargetManager {
             }
         }
         self.retired = retained;
+        let mut retained = Vec::with_capacity(self.cursor_retired.len());
+        for target in self.cursor_retired.drain(..) {
+            if target.last_use_timeline <= completed_timeline {
+                target.destroy(device);
+            } else {
+                retained.push(target);
+            }
+        }
+        self.cursor_retired = retained;
     }
 
     pub(super) fn destroy(&mut self, device: &Device) {
@@ -125,10 +197,17 @@ impl NativeTargetManager {
         for target in self.retired.drain(..) {
             target.destroy(device);
         }
+        for (_, target) in std::mem::take(&mut self.cursor_active) {
+            target.destroy(device);
+        }
+        for target in self.cursor_retired.drain(..) {
+            target.destroy(device);
+        }
     }
 
-    fn buffers(&self, output: RenderOutputId) -> Vec<NativeOutputBuffer> {
-        self.active
+    fn buffers(&self, output: RenderOutputId) -> NativeOutputBuffers {
+        let primary = self
+            .active
             .get(&output)
             .into_iter()
             .flat_map(|target| target.images.iter())
@@ -137,7 +216,19 @@ impl NativeTargetManager {
                 slot: u8::try_from(slot).expect("native output slot count fits in u8"),
                 dmabuf: image.dmabuf.clone(),
             })
-            .collect()
+            .collect();
+        let cursor = self
+            .cursor_active
+            .get(&output)
+            .into_iter()
+            .flat_map(|target| target.images.iter())
+            .enumerate()
+            .map(|(slot, image)| NativeCursorBuffer {
+                slot: u8::try_from(slot).expect("native cursor slot count fits in u8"),
+                dmabuf: image.dmabuf.clone(),
+            })
+            .collect();
+        NativeOutputBuffers { primary, cursor }
     }
 }
 
@@ -157,8 +248,13 @@ impl NativeTargetSet {
     ) -> Result<Self, NativeTargetError> {
         let mut images = Vec::with_capacity(OUTPUT_IMAGE_COUNT);
         for slot in 0..OUTPUT_IMAGE_COUNT {
-            match NativeOutputImage::create(instance, device, physical_device, render_node, target)
-            {
+            match NativeOutputImage::create(
+                instance,
+                device,
+                physical_device,
+                render_node,
+                ExportImageTarget::from_output(target),
+            ) {
                 Ok(image) => images.push(image),
                 Err(source) => {
                     for image in images {
@@ -182,6 +278,74 @@ impl NativeTargetSet {
     }
 }
 
+struct NativeCursorTargetSet {
+    target: NativeCursorTarget,
+    images: Vec<NativeOutputImage>,
+    last_use_timeline: u64,
+}
+
+impl NativeCursorTargetSet {
+    fn create(
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        render_node: DrmNodeId,
+        target: NativeCursorTarget,
+    ) -> Result<Self, NativeTargetError> {
+        let mut images = Vec::with_capacity(CURSOR_IMAGE_COUNT);
+        for slot in 0..CURSOR_IMAGE_COUNT {
+            match NativeOutputImage::create(
+                instance,
+                device,
+                physical_device,
+                render_node,
+                ExportImageTarget::from_cursor(target),
+            ) {
+                Ok(image) => images.push(image),
+                Err(source) => {
+                    for image in images {
+                        image.destroy(device);
+                    }
+                    return Err(NativeTargetError::CreateCursorSlot { slot, source });
+                }
+            }
+        }
+        Ok(Self {
+            target,
+            images,
+            last_use_timeline: 0,
+        })
+    }
+
+    fn destroy(self, device: &Device) {
+        for image in self.images {
+            image.destroy(device);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExportImageTarget {
+    size: tensor_util::Size,
+    format: OutputFormat,
+}
+
+impl ExportImageTarget {
+    fn from_output(target: NativeOutputTarget) -> Self {
+        Self {
+            size: target.viewport.size(),
+            format: target.format,
+        }
+    }
+
+    fn from_cursor(target: NativeCursorTarget) -> Self {
+        Self {
+            size: target.size,
+            format: target.format,
+        }
+    }
+}
+
 struct NativeOutputImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -197,7 +361,7 @@ impl NativeOutputImage {
         device: &Device,
         physical_device: vk::PhysicalDevice,
         render_node: DrmNodeId,
-        target: NativeOutputTarget,
+        target: ExportImageTarget,
     ) -> Result<Self, NativeImageError> {
         let vulkan_format = vulkan_format_for_fourcc(target.format.format.code).ok_or(
             NativeImageError::UnsupportedFourcc(target.format.format.code),
@@ -212,8 +376,8 @@ impl NativeOutputImage {
             .image_type(vk::ImageType::_2D)
             .format(vulkan_format)
             .extent(vk::Extent3D {
-                width: target.viewport.width,
-                height: target.viewport.height,
+                width: target.size.width,
+                height: target.size.height,
                 depth: 1,
             })
             .mip_levels(1)
@@ -250,7 +414,7 @@ impl NativeOutputImage {
         device: &Device,
         physical_device: vk::PhysicalDevice,
         render_node: DrmNodeId,
-        target: NativeOutputTarget,
+        target: ExportImageTarget,
         vulkan_format: vk::Format,
         drm_modifier: u64,
         image: vk::Image,
@@ -331,7 +495,7 @@ impl NativeOutputImage {
 fn export_dmabuf(
     device: &Device,
     render_node: DrmNodeId,
-    target: NativeOutputTarget,
+    target: ExportImageTarget,
     expected_modifier: u64,
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -375,7 +539,7 @@ fn export_dmabuf(
         });
     }
     Ok(ExportedDmabuf {
-        size: target.viewport.size(),
+        size: target.size,
         format: target.format.format,
         node: Some(render_node),
         planes,
@@ -413,6 +577,11 @@ fn select_memory_type(
 pub(super) enum NativeTargetError {
     #[error("failed to create native output image slot {slot}: {source}")]
     CreateSlot {
+        slot: usize,
+        source: NativeImageError,
+    },
+    #[error("failed to create native cursor image slot {slot}: {source}")]
+    CreateCursorSlot {
         slot: usize,
         source: NativeImageError,
     },

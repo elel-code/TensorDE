@@ -24,6 +24,23 @@ pub(super) fn framebuffer_from_dmabuf(
     gbm: &GbmDevice<DrmDeviceFd>,
     dmabuf: &ExportedDmabuf,
 ) -> Result<ScanoutFramebuffer, FramebufferError> {
+    framebuffer_from_dmabuf_kind(drm, gbm, dmabuf, FramebufferKind::Primary)
+}
+
+pub(super) fn cursor_framebuffer_from_dmabuf(
+    drm: &DrmDeviceFd,
+    gbm: &GbmDevice<DrmDeviceFd>,
+    dmabuf: &ExportedDmabuf,
+) -> Result<ScanoutFramebuffer, FramebufferError> {
+    framebuffer_from_dmabuf_kind(drm, gbm, dmabuf, FramebufferKind::Cursor)
+}
+
+fn framebuffer_from_dmabuf_kind(
+    drm: &DrmDeviceFd,
+    gbm: &GbmDevice<DrmDeviceFd>,
+    dmabuf: &ExportedDmabuf,
+    kind: FramebufferKind,
+) -> Result<ScanoutFramebuffer, FramebufferError> {
     let metadata = ImportMetadata::new(dmabuf)?;
     let bo: BufferObject<()> = gbm
         .import_buffer_object_from_dma_buf_with_modifiers(
@@ -41,7 +58,7 @@ pub(super) fn framebuffer_from_dmabuf(
     let buffer = ImportedBuffer {
         bo: &bo,
         size: metadata.size,
-        format: opaque_format(metadata.format),
+        format: framebuffer_format(metadata.format, kind),
         modifier: metadata.modifier,
         pitches: metadata.pitches,
         offsets: metadata.offsets,
@@ -53,6 +70,12 @@ pub(super) fn framebuffer_from_dmabuf(
         handle,
         drm: drm.clone(),
     })
+}
+
+#[derive(Clone, Copy)]
+enum FramebufferKind {
+    Primary,
+    Cursor,
 }
 
 #[derive(Debug)]
@@ -177,13 +200,13 @@ impl PlanarBuffer for ImportedBuffer<'_> {
 }
 
 #[inline]
-fn opaque_format(format: Format) -> Format {
-    match format {
-        Format::Argb8888 => Format::Xrgb8888,
-        Format::Abgr8888 => Format::Xbgr8888,
-        Format::Argb2101010 => Format::Xrgb2101010,
-        Format::Abgr2101010 => Format::Xbgr2101010,
-        format => format,
+fn framebuffer_format(format: Format, kind: FramebufferKind) -> Format {
+    match (kind, format) {
+        (FramebufferKind::Primary, Format::Argb8888) => Format::Xrgb8888,
+        (FramebufferKind::Primary, Format::Abgr8888) => Format::Xbgr8888,
+        (FramebufferKind::Primary, Format::Argb2101010) => Format::Xrgb2101010,
+        (FramebufferKind::Primary, Format::Abgr2101010) => Format::Xbgr2101010,
+        (_, format) => format,
     }
 }
 
@@ -278,9 +301,25 @@ mod tests {
 
     #[test]
     fn scanout_framebuffer_uses_opaque_output_formats() {
-        assert_eq!(opaque_format(Format::Argb8888), Format::Xrgb8888);
-        assert_eq!(opaque_format(Format::Abgr8888), Format::Xbgr8888);
-        assert_eq!(opaque_format(Format::Argb2101010), Format::Xrgb2101010);
-        assert_eq!(opaque_format(Format::Xrgb8888), Format::Xrgb8888);
+        assert_eq!(
+            framebuffer_format(Format::Argb8888, FramebufferKind::Primary),
+            Format::Xrgb8888
+        );
+        assert_eq!(
+            framebuffer_format(Format::Abgr2101010, FramebufferKind::Primary),
+            Format::Xbgr2101010
+        );
+    }
+
+    #[test]
+    fn cursor_framebuffer_preserves_alpha_formats() {
+        assert_eq!(
+            framebuffer_format(Format::Argb8888, FramebufferKind::Cursor),
+            Format::Argb8888
+        );
+        assert_eq!(
+            framebuffer_format(Format::Abgr2101010, FramebufferKind::Cursor),
+            Format::Abgr2101010
+        );
     }
 }
