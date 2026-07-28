@@ -81,6 +81,10 @@ impl ToolState {
     pub(super) const fn device(&self) -> DeviceId {
         self.descriptor.device
     }
+
+    pub(super) const fn id(&self) -> TabletToolId {
+        self.descriptor.id
+    }
 }
 
 pub(super) fn announce_tool(
@@ -400,7 +404,7 @@ impl TabletProtocol {
         })
     }
 
-    fn may_set_cursor(&self, id: TabletToolId, client: &ClientId, serial: u32) -> bool {
+    pub(crate) fn may_set_cursor(&self, id: TabletToolId, client: &ClientId, serial: u32) -> bool {
         self.tools.iter().any(|tool| {
             tool.descriptor.id == id
                 && tool
@@ -601,8 +605,8 @@ fn protocol_tool_type(tool_type: TabletToolType) -> zwp_tablet_tool_v2::Type {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ToolData {
-    id: TabletToolId,
+pub(super) struct ToolData {
+    pub(super) id: TabletToolId,
 }
 
 impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {

@@ -35,7 +35,10 @@ pub(in crate::protocol) struct CursorShapeGlobalData;
 
 pub(in crate::protocol) struct CursorShapeManagerData;
 
-pub(in crate::protocol) struct CursorShapeDeviceData(bool);
+pub(in crate::protocol) enum CursorShapeDeviceData {
+    Pointer(bool),
+    Tablet(Option<tensor_event::TabletToolId>),
+}
 
 impl GlobalDispatchDelegate<WpCursorShapeManagerV1, RuntimeState> for CursorShapeGlobalData {
     fn bind(
@@ -66,10 +69,17 @@ impl DispatchDelegate<WpCursorShapeManagerV1, RuntimeState> for CursorShapeManag
                 pointer,
             } => {
                 let pointer = state.protocol_globals.seat.owns_pointer(&pointer);
-                data_init.init(cursor_shape_device, CursorShapeDeviceData(pointer));
+                data_init.init(cursor_shape_device, CursorShapeDeviceData::Pointer(pointer));
             }
-            wp_cursor_shape_manager_v1::Request::GetTabletToolV2 { .. } => {
-                unreachable!("tablet tool resources are not advertised")
+            wp_cursor_shape_manager_v1::Request::GetTabletToolV2 {
+                cursor_shape_device,
+                tablet_tool,
+            } => {
+                let tool = state
+                    .protocol_globals
+                    .tablet
+                    .cursor_shape_tool(&tablet_tool);
+                data_init.init(cursor_shape_device, CursorShapeDeviceData::Tablet(tool));
             }
             wp_cursor_shape_manager_v1::Request::Destroy => {}
             _ => unreachable!(),
@@ -92,8 +102,23 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
                 serial,
                 shape: WEnum::Value(shape),
             } => {
-                if self.0 && pointer_may_set_cursor(state, Serial::from(serial), &device.id()) {
-                    set_named_pointer_cursor(state, shape_to_icon(shape));
+                let icon = shape_to_icon(shape);
+                match self {
+                    Self::Pointer(true)
+                        if pointer_may_set_cursor(state, Serial::from(serial), &device.id()) =>
+                    {
+                        set_named_pointer_cursor(state, icon);
+                    }
+                    Self::Tablet(Some(tool))
+                        if state.protocol_globals.tablet.may_set_cursor(
+                            *tool,
+                            &_client.id(),
+                            serial,
+                        ) =>
+                    {
+                        set_named_tablet_cursor(state, *tool, icon);
+                    }
+                    Self::Pointer(false) | Self::Pointer(true) | Self::Tablet(_) => {}
                 }
             }
             wp_cursor_shape_device_v1::Request::SetShape { .. } => {}
@@ -101,6 +126,22 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
             _ => unreachable!(),
         }
     }
+}
+
+fn set_named_tablet_cursor(
+    state: &mut RuntimeState,
+    tool: tensor_event::TabletToolId,
+    icon: CursorIcon,
+) {
+    #[cfg(feature = "tty")]
+    if state
+        .cursor
+        .set_tablet_image(tool, crate::protocol::cursor::CursorImage::Named(icon))
+    {
+        state.request_redraw_all();
+    }
+    #[cfg(not(feature = "tty"))]
+    let _ = (state, tool, icon);
 }
 
 fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, device: &ObjectId) -> bool {

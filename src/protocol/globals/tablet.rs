@@ -2,6 +2,7 @@
 
 use tensor_event::{DeviceChange, DeviceEvent, DeviceGroupId, DeviceId};
 use tracing::warn;
+use wayland_protocols::wp::tablet::zv2::server::zwp_tablet_tool_v2::ZwpTabletToolV2;
 use wayland_protocols::wp::tablet::zv2::server::{
     zwp_tablet_manager_v2::{self, ZwpTabletManagerV2},
     zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
@@ -72,6 +73,14 @@ impl TabletProtocol {
             cursor_surfaces: Vec::with_capacity(MAX_TOOLS),
             pads: Vec::with_capacity(MAX_PADS),
         }
+    }
+
+    pub(crate) fn cursor_shape_tool(
+        &self,
+        resource: &ZwpTabletToolV2,
+    ) -> Option<tensor_event::TabletToolId> {
+        let id = resource.data::<tool::ToolData>()?.id;
+        self.tools.iter().any(|tool| tool.id() == id).then_some(id)
     }
 
     fn register_seat(

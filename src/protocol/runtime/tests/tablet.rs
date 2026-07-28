@@ -10,6 +10,9 @@ use wayland_client::{
     globals::{GlobalListContents, registry_queue_init},
     protocol::{wl_compositor, wl_registry, wl_seat, wl_surface},
 };
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
 use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_manager_v2, zwp_tablet_pad_dial_v2, zwp_tablet_pad_group_v2, zwp_tablet_pad_ring_v2,
     zwp_tablet_pad_strip_v2, zwp_tablet_pad_v2, zwp_tablet_seat_v2, zwp_tablet_tool_v2,
@@ -258,6 +261,7 @@ struct TabletTreeClient {
     ring_frames: u8,
     strip_frames: u8,
     dial_frames: u8,
+    tool: Option<zwp_tablet_tool_v2::ZwpTabletToolV2>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -338,6 +342,8 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for TabletTreeClient 
 delegate_noop!(TabletTreeClient: ignore wl_seat::WlSeat);
 delegate_noop!(TabletTreeClient: ignore wl_compositor::WlCompositor);
 delegate_noop!(TabletTreeClient: ignore wl_surface::WlSurface);
+delegate_noop!(TabletTreeClient: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
+delegate_noop!(TabletTreeClient: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(TabletTreeClient: ignore zwp_tablet_manager_v2::ZwpTabletManagerV2);
 delegate_noop!(TabletTreeClient: ignore zwp_tablet_v2::ZwpTabletV2);
 
@@ -354,8 +360,9 @@ impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for TabletTreeClient {
             zwp_tablet_seat_v2::Event::TabletAdded { .. } => {
                 state.tablets = state.tablets.saturating_add(1)
             }
-            zwp_tablet_seat_v2::Event::ToolAdded { .. } => {
-                state.tools = state.tools.saturating_add(1)
+            zwp_tablet_seat_v2::Event::ToolAdded { id } => {
+                state.tools = state.tools.saturating_add(1);
+                state.tool = Some(id);
             }
             zwp_tablet_seat_v2::Event::PadAdded { .. } => state.pads = state.pads.saturating_add(1),
             _ => {}
@@ -546,6 +553,9 @@ fn tablet_tool_and_full_pad_topology_reach_the_wire() {
         let manager = globals
             .bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2, _, _>(&handle, 2..=2, ())
             .unwrap();
+        let cursor_manager = globals
+            .bind::<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, _, _>(&handle, 2..=2, ())
+            .unwrap();
         let tablet_seat = manager.get_tablet_seat(&seat, &handle, ());
         let surface = compositor.create_surface(&handle, ());
         let mut state = TabletTreeClient::default();
@@ -553,11 +563,20 @@ fn tablet_tool_and_full_pad_topology_reach_the_wire() {
         ready_tx.send(surface.id().protocol_id()).unwrap();
         advance_rx.recv().unwrap();
         queue.roundtrip(&mut state).unwrap();
+        let cursor_device = cursor_manager.get_tablet_tool_v2(
+            state.tool.as_ref().expect("tablet tool was announced"),
+            &handle,
+            (),
+        );
+        cursor_device.set_shape(0, wp_cursor_shape_device_v1::Shape::Crosshair);
+        queue.roundtrip(&mut state).unwrap();
         snapshot_tx.send(state.snapshot()).unwrap();
         advance_rx.recv().unwrap();
         queue.roundtrip(&mut state).unwrap();
         snapshot_tx.send(state.snapshot()).unwrap();
         surface.destroy();
+        cursor_device.destroy();
+        cursor_manager.destroy();
         tablet_seat.destroy();
         manager.destroy();
         seat.release();
