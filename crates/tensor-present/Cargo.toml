@@ -8,5 +8,4 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 tensor-host = { path = "../tensor-host" }
-tensor-util = { path = "../tensor-util" }
 thiserror = "2"

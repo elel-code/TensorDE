@@ -5,6 +5,3 @@ edition = "2024"
 rust-version = "1.97"
 description = "Value-only compositor event queue, phases, and coalescing"
 license = "MIT OR Apache-2.0"
-
-[dependencies]
-thiserror = "2"
