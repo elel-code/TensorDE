@@ -389,6 +389,30 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
         .map(std::borrow::Cow::into_owned)
         .expect("application is mapped");
     assert_eq!(runtime.state.surface_tree_member_count(&root), 2);
+    let output = runtime.state.space.outputs().next().unwrap().clone();
+    let logical = runtime.state.space.output_geometry(&output).unwrap();
+    let viewport = tensor_util::Rect::new(
+        logical.loc.x,
+        logical.loc.y,
+        u32::try_from(logical.size.w).unwrap(),
+        u32::try_from(logical.size.h).unwrap(),
+    );
+    let scene = runtime.state.scene_for_output(&output, viewport);
+    let node = scene
+        .nodes()
+        .iter()
+        .find(|node| scene.contents_for(node).len() == 2)
+        .expect("focused view and input-method popup reach scene extraction");
+    let popup = scene
+        .contents_for(node)
+        .iter()
+        .find(|content| content.layer == crate::scene::SurfaceLayer::Popup)
+        .expect("input-method SHM buffer reaches the popup draw layer");
+    let popup_global = popup
+        .local_geometry
+        .translated(node.placement.geometry.x, node.placement.geometry.y);
+    assert!(popup_global.intersection(scene.viewport).is_some());
+    assert_eq!(scene.buffer_ids().len(), 2);
 
     runtime
         .state

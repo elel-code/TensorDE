@@ -3,6 +3,7 @@ use vulkanalia::vk::Handle;
 use tensor_host::{DrmFormat, Fourcc, Modifier};
 use tensor_util::{OutputScale, Size};
 
+use crate::render::vulkan::import::ClientImageUpload;
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::LayoutPlacement,
@@ -21,6 +22,24 @@ fn client_image(first: bool) -> ClientImageInfo {
         view_info: vk::ImageViewCreateInfo::default(),
         foreign_owned: true,
         needs_initial_acquire: first,
+        upload: None,
+    }
+}
+
+fn shm_client_image(first: bool, upload: bool) -> ClientImageInfo {
+    ClientImageInfo {
+        image: vk::Image::from_raw(7),
+        view_info: vk::ImageViewCreateInfo::default(),
+        foreign_owned: false,
+        needs_initial_acquire: first,
+        upload: upload.then_some(ClientImageUpload {
+            buffer: vk::Buffer::from_raw(9),
+            extent: vk::Extent3D {
+                width: 80,
+                height: 32,
+                depth: 1,
+            },
+        }),
     }
 }
 
@@ -66,6 +85,31 @@ fn descriptor_push_index_includes_the_frame_heap_offset() {
         .unwrap(),
         7
     );
+}
+
+#[test]
+fn shm_upload_transitions_without_foreign_queue_ownership() {
+    let subresource = color_subresource();
+    let image = shm_client_image(true, true);
+    let upload = client_upload_acquire(image, subresource);
+    assert_eq!(upload.old_layout, vk::ImageLayout::UNDEFINED);
+    assert_eq!(upload.new_layout, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+    assert_eq!(upload.src_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+    assert_eq!(upload.dst_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+
+    let sample = client_acquire(image, subresource, 3);
+    assert_eq!(sample.old_layout, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+    assert_eq!(sample.new_layout, vk::ImageLayout::GENERAL);
+    let release = client_release(image, subresource, 3);
+    assert_eq!(release.src_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+    assert_eq!(release.dst_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+}
+
+#[test]
+fn reused_shm_image_preserves_general_layout_without_an_upload() {
+    let acquire = client_acquire(shm_client_image(false, false), color_subresource(), 3);
+    assert_eq!(acquire.old_layout, vk::ImageLayout::GENERAL);
+    assert_eq!(acquire.new_layout, vk::ImageLayout::GENERAL);
 }
 
 #[test]

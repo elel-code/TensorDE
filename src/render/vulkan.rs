@@ -383,6 +383,36 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
+    pub(crate) fn upload_client_shm(
+        &mut self,
+        id: SurfaceBufferId,
+        size: tensor_util::Size,
+        format: Fourcc,
+        fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
+    ) -> Result<(), RendererError> {
+        let completed = self.refresh_completed()?;
+        let memory_properties = unsafe {
+            self._owner
+                .instance
+                .instance
+                .get_physical_device_memory_properties(self._owner._physical_device)
+        };
+        self.client_images
+            .upload_shm(
+                &self._owner.device,
+                &memory_properties,
+                import::ShmUploadTarget {
+                    id,
+                    size,
+                    format,
+                    completed_timeline: completed,
+                },
+                fill,
+            )
+            .map_err(|error| RendererError::ClientImport(error.to_string()))
+    }
+
+    #[cfg(feature = "tty")]
     pub(crate) fn import_client_acquire(
         &mut self,
         surface: crate::ecs::SurfaceId,

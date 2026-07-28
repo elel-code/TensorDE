@@ -374,6 +374,45 @@ pub(super) unsafe fn record_scene(
         cursors,
     } = scene;
     let subresource = color_subresource();
+    let upload_acquires = clients
+        .iter()
+        .copied()
+        .filter(|image| image.upload.is_some())
+        .map(|image| client_upload_acquire(image, subresource))
+        .collect::<Vec<_>>();
+    if !upload_acquires.is_empty() {
+        let upload_dependency =
+            vk::DependencyInfo::builder().image_memory_barriers(&upload_acquires);
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &upload_dependency) };
+        for image in clients.iter().copied() {
+            let Some(upload) = image.upload else {
+                continue;
+            };
+            let region = vk::BufferImageCopy::builder()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1)
+                        .build(),
+                )
+                .image_offset(vk::Offset3D::default())
+                .image_extent(upload.extent);
+            unsafe {
+                device.cmd_copy_buffer_to_image(
+                    command_buffer,
+                    upload.buffer,
+                    image.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    std::slice::from_ref(&region),
+                );
+            }
+        }
+    }
     let mut acquires = Vec::with_capacity(1 + clients.len());
     acquires.push(output_acquire(output, subresource, graphics_queue_family));
     acquires.extend(
@@ -574,7 +613,7 @@ fn client_acquire(
     subresource: vk::ImageSubresourceRange,
     graphics_queue_family: u32,
 ) -> vk::ImageMemoryBarrier2 {
-    let (old_layout, source, destination) = if image.foreign_owned {
+    let (old_layout, source, destination, source_stage, source_access) = if image.foreign_owned {
         let old_layout = if image.needs_initial_acquire {
             // An imported dma-buf starts with Vulkan's UNDEFINED layout, but
             // its contents belong to the foreign producer.  Keeping the
@@ -590,17 +629,33 @@ fn client_acquire(
             old_layout,
             vk::QUEUE_FAMILY_FOREIGN_EXT,
             graphics_queue_family,
+            vk::PipelineStageFlags2::NONE,
+            vk::AccessFlags2::NONE,
+        )
+    } else if image.upload.is_some() {
+        (
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::QUEUE_FAMILY_IGNORED,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::TRANSFER_WRITE,
         )
     } else {
         (
-            vk::ImageLayout::UNDEFINED,
+            if image.needs_initial_acquire {
+                vk::ImageLayout::UNDEFINED
+            } else {
+                vk::ImageLayout::GENERAL
+            },
             vk::QUEUE_FAMILY_IGNORED,
             vk::QUEUE_FAMILY_IGNORED,
+            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            vk::AccessFlags2::SHADER_SAMPLED_READ,
         )
     };
     vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .src_access_mask(vk::AccessFlags2::NONE)
+        .src_stage_mask(source_stage)
+        .src_access_mask(source_access)
         .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
         .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
         .old_layout(old_layout)
@@ -612,11 +667,47 @@ fn client_acquire(
         .build()
 }
 
+fn client_upload_acquire(
+    image: ClientImageInfo,
+    subresource: vk::ImageSubresourceRange,
+) -> vk::ImageMemoryBarrier2 {
+    let (old_layout, source_stage, source_access) = if image.needs_initial_acquire {
+        (
+            vk::ImageLayout::UNDEFINED,
+            vk::PipelineStageFlags2::NONE,
+            vk::AccessFlags2::NONE,
+        )
+    } else {
+        (
+            vk::ImageLayout::GENERAL,
+            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            vk::AccessFlags2::SHADER_SAMPLED_READ,
+        )
+    };
+    vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(source_stage)
+        .src_access_mask(source_access)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .old_layout(old_layout)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image.image)
+        .subresource_range(subresource)
+        .build()
+}
+
 fn client_release(
     image: ClientImageInfo,
     subresource: vk::ImageSubresourceRange,
     graphics_queue_family: u32,
 ) -> vk::ImageMemoryBarrier2 {
+    let destination = if image.foreign_owned {
+        vk::QUEUE_FAMILY_FOREIGN_EXT
+    } else {
+        vk::QUEUE_FAMILY_IGNORED
+    };
     vk::ImageMemoryBarrier2::builder()
         .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
         .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
@@ -624,8 +715,12 @@ fn client_release(
         .dst_access_mask(vk::AccessFlags2::NONE)
         .old_layout(vk::ImageLayout::GENERAL)
         .new_layout(vk::ImageLayout::GENERAL)
-        .src_queue_family_index(graphics_queue_family)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+        .src_queue_family_index(if image.foreign_owned {
+            graphics_queue_family
+        } else {
+            vk::QUEUE_FAMILY_IGNORED
+        })
+        .dst_queue_family_index(destination)
         .image(image.image)
         .subresource_range(subresource)
         .build()

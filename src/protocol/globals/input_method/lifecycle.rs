@@ -219,9 +219,14 @@ impl InputMethodProtocol {
         });
         self.popups.push(InputPopupSurface {
             role: role.downgrade(),
-            surface,
+            surface: surface.clone(),
             owner: owner.id(),
         });
+        info!(
+            surface = surface.id().protocol_id(),
+            active_text_input = self.active_text_input.is_some(),
+            "input-method popup registered"
+        );
         if let Some(rectangle) = active_rectangle {
             role.text_input_rectangle(
                 rectangle.loc.x,

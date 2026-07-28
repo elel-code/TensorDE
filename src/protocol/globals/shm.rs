@@ -142,6 +142,26 @@ pub(in crate::protocol) fn with_buffer_contents<T>(
         .map_err(|()| post_bad_map(buffer))
 }
 
+/// Copy a SHM buffer into tightly packed renderer staging memory. This is the
+/// single unavoidable CPU copy at the wl_shm/Vulkan ownership boundary.
+pub(in crate::protocol) fn copy_buffer_contents(
+    buffer: &WlBuffer,
+    destination: &mut [u8],
+) -> Result<ShmBufferMetadata, BufferAccessError> {
+    let data = shm_buffer(buffer).ok_or(BufferAccessError::NotManaged)?;
+    let row_bytes = usize::try_from(data.metadata.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or(BufferAccessError::BadMap)?;
+    let source_stride =
+        usize::try_from(data.metadata.stride).map_err(|_| BufferAccessError::BadMap)?;
+    let rows = usize::try_from(data.metadata.height).map_err(|_| BufferAccessError::BadMap)?;
+    data.pool
+        .copy_rows(data.offset, source_stride, row_bytes, rows, destination)
+        .map_err(|()| post_bad_map(buffer))?;
+    Ok(data.metadata)
+}
+
 /// Mutably borrow the exact byte range belonging to one SHM buffer without
 /// staging or copying.
 pub(in crate::protocol) fn with_buffer_contents_mut<T>(

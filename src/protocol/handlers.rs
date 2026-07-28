@@ -22,7 +22,8 @@ impl RuntimeState {
             ExplicitSyncCommit::None => None,
             ExplicitSyncCommit::Points(points) => Some(points),
             ExplicitSyncCommit::Rejected => {
-                on_commit_surface_handler(surface);
+                let shm_uploads = on_commit_surface_handler(surface);
+                self.upload_shm_buffers(shm_uploads);
                 let root = self
                     .owning_view_root(surface)
                     .unwrap_or_else(|| surface_root(surface));
@@ -32,7 +33,12 @@ impl RuntimeState {
                 return;
             }
         };
-        on_commit_surface_handler(surface);
+        #[cfg(feature = "tty")]
+        let shm_uploads = on_commit_surface_handler(surface);
+        #[cfg(not(feature = "tty"))]
+        let _ = on_commit_surface_handler(surface);
+        #[cfg(feature = "tty")]
+        self.upload_shm_buffers(shm_uploads);
         let fifo_activated = self
             .protocol_globals
             .surface_timing

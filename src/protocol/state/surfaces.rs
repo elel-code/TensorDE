@@ -2,6 +2,11 @@
 
 use std::sync::Mutex;
 
+#[cfg(feature = "tty")]
+use std::collections::HashSet;
+#[cfg(feature = "tty")]
+use tracing::warn;
+
 use crate::protocol::globals::compositor::{
     BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
     SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
@@ -19,6 +24,8 @@ use crate::protocol::globals::single_pixel_buffer::single_pixel_rgba;
 use crate::protocol::globals::viewporter::{
     CommittedViewport, committed_viewport, pending_viewport_size,
 };
+#[cfg(feature = "tty")]
+use crate::protocol::state::RuntimeState;
 
 #[cfg(feature = "tty")]
 use wayland_server::backend::ObjectId;
@@ -74,9 +81,10 @@ impl Default for SurfaceState {
 }
 
 impl SurfaceState {
-    fn update(&mut self, states: &SurfaceData) {
+    fn update(&mut self, states: &SurfaceData) -> bool {
         let mut cached = states.cached_state.get::<SurfaceAttributes>();
         let attributes = cached.current();
+        let new_buffer = matches!(attributes.buffer, Some(BufferAssignment::NewBuffer(_)));
         match attributes.buffer.take() {
             Some(BufferAssignment::NewBuffer(buffer)) => {
                 let Some(buffer_size) = wire_buffer_size(&buffer) else {
@@ -84,20 +92,20 @@ impl SurfaceState {
                         buffer.release();
                     }
                     self.reset();
-                    return;
+                    return false;
                 };
                 self.replace_buffer(buffer);
                 self.buffer_size = Some(buffer_size);
             }
             Some(BufferAssignment::Removed) => {
                 self.reset();
-                return;
+                return false;
             }
             None => {}
         }
 
         let Some(buffer_size) = self.buffer_size else {
-            return;
+            return false;
         };
         self.buffer_scale = u32::try_from(attributes.buffer_scale).unwrap_or(1).max(1);
         self.transform = surface_transform(attributes.buffer_transform);
@@ -114,6 +122,7 @@ impl SurfaceState {
         }
         self.view = Some(view);
         self.source = viewport.source;
+        new_buffer || damaged
     }
 
     fn replace_buffer(&mut self, buffer: WlBuffer) {
@@ -143,10 +152,11 @@ impl SurfaceState {
     }
 }
 
-pub(crate) fn on_commit_surface_handler(surface: &WlSurface) {
+pub(crate) fn on_commit_surface_handler(surface: &WlSurface) -> Vec<WlBuffer> {
     if is_sync_subsurface(surface) {
-        return;
+        return Vec::new();
     }
+    let uploads = std::cell::RefCell::new(Vec::new());
     with_surface_tree_upward(
         surface,
         (),
@@ -155,16 +165,78 @@ pub(crate) fn on_commit_surface_handler(surface: &WlSurface) {
             states
                 .data_map
                 .insert_if_missing_threadsafe(|| Mutex::new(SurfaceState::default()));
-            states
+            let state = states
                 .data_map
                 .get::<Mutex<SurfaceState>>()
                 .expect("surface state was inserted above")
                 .lock()
-                .unwrap()
-                .update(states);
+                .unwrap();
+            let mut state = state;
+            if state.update(states)
+                && let Some(buffer) = state.buffer.as_ref()
+                && shm_buffer(buffer).is_some()
+            {
+                uploads.borrow_mut().push(buffer.clone());
+            }
         },
         |_, _, _| true,
     );
+    uploads.into_inner()
+}
+
+#[cfg(feature = "tty")]
+impl RuntimeState {
+    pub(crate) fn upload_shm_buffers(&mut self, buffers: Vec<WlBuffer>) {
+        let mut seen = HashSet::with_capacity(buffers.len());
+        for buffer in buffers {
+            if !seen.insert(buffer.id()) {
+                continue;
+            }
+            let Some(metadata) = shm_buffer(&buffer).map(|data| data.metadata()) else {
+                continue;
+            };
+            let (Ok(width), Ok(height)) = (
+                u32::try_from(metadata.width),
+                u32::try_from(metadata.height),
+            ) else {
+                continue;
+            };
+            let size = tensor_util::Size::new(width, height);
+            let format = match metadata.format {
+                wayland_server::protocol::wl_shm::Format::Argb8888 => tensor_host::Fourcc::ARGB8888,
+                wayland_server::protocol::wl_shm::Format::Xrgb8888 => tensor_host::Fourcc::XRGB8888,
+                _ => continue,
+            };
+            let existing = self.surface_buffers.imported_buffer(&buffer.id());
+            let Some(id) = existing
+                .map(|(id, _)| id)
+                .or_else(|| self.allocate_client_buffer_id())
+            else {
+                warn!("client SHM buffer identity space is exhausted");
+                continue;
+            };
+            let upload = self.renderer.as_mut().map(|renderer| {
+                renderer.upload_client_shm(id, size, format, |destination| {
+                    crate::protocol::globals::shm::copy_buffer_contents(&buffer, destination)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+            });
+            if let Some(Err(error)) = upload {
+                warn!(%error, "failed to upload client SHM buffer");
+                continue;
+            }
+            #[cfg(not(test))]
+            if upload.is_none() {
+                warn!("renderer is unavailable for client SHM upload");
+                continue;
+            }
+            if existing.is_none() && !self.register_imported_client_buffer(buffer.id(), id, size) {
+                self.release_client_buffers([id]);
+                warn!("failed to register uploaded client SHM buffer");
+            }
+        }
+    }
 }
 
 pub(crate) fn destroy_surface_state(surface: &WlSurface) {

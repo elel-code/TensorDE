@@ -442,7 +442,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(super) fn scene_for_output(
+    pub(crate) fn scene_for_output(
         &mut self,
         output: &crate::protocol::globals::output::Output,
         logical: Rect,

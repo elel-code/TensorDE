@@ -153,6 +153,11 @@ where
         true
     }
 
+    pub fn imported_buffer(&self, object: &K) -> Option<(SurfaceBufferId, Size)> {
+        let state = self.buffers.get(object)?;
+        (!state.destroyed).then_some((state.id, state.size))
+    }
+
     pub fn update_surface(&mut self, surface: &K, snapshot: &SurfaceCommit<K, C>) -> SurfaceUpdate {
         let Some(mut state) = self.surfaces.remove(surface) else {
             return SurfaceUpdate::default();

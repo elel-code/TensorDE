@@ -183,6 +183,40 @@ impl Pool {
         access.finish().map(|()| value)
     }
 
+    /// Copy validated rows out of the shared mapping while the SIGBUS guard is
+    /// active. The destination is tightly packed so Vulkan uploads never copy
+    /// client-provided row padding.
+    pub(super) fn copy_rows(
+        &self,
+        offset: usize,
+        source_stride: usize,
+        row_bytes: usize,
+        rows: usize,
+        destination: &mut [u8],
+    ) -> Result<(), ()> {
+        let source_len = source_stride.checked_mul(rows).ok_or(())?;
+        let destination_len = row_bytes.checked_mul(rows).ok_or(())?;
+        if destination.len() != destination_len || row_bytes > source_stride {
+            return Err(());
+        }
+        self.with_data(offset, source_len, |source| {
+            for row in 0..rows {
+                let source_offset = row
+                    .checked_mul(source_stride)
+                    .expect("validated SHM row offset");
+                let destination_offset = row
+                    .checked_mul(row_bytes)
+                    .expect("validated upload row offset");
+                unsafe {
+                    source.add(source_offset).copy_to_nonoverlapping(
+                        destination.as_mut_ptr().add(destination_offset),
+                        row_bytes,
+                    );
+                }
+            }
+        })
+    }
+
     fn storage(&self) -> &PoolStorage {
         self.storage.as_ref().expect("SHM pool storage is live")
     }
@@ -330,6 +364,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(value, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn row_copy_drops_source_padding() {
+        let (pool, _client) = pool(4096);
+        pool.with_data_mut(128, 12, |ptr| unsafe {
+            ptr.copy_from_nonoverlapping([1, 2, 3, 4, 99, 99, 5, 6, 7, 8, 88, 88].as_ptr(), 12);
+        })
+        .unwrap();
+        let mut destination = [0; 8];
+        pool.copy_rows(128, 6, 4, 2, &mut destination).unwrap();
+        assert_eq!(destination, [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
