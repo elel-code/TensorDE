@@ -146,8 +146,8 @@ not another.
 The compositor-owned arrow must be visible as soon as libinput publishes a
 pointer capability, including when that device appears after the first output
 frame. Moving it must erase the previous arrow location as well as draw the new
-one; named and client cursor-image requests currently retain this visible vector
-fallback until cursor raster upload is implemented.
+one. Named XCursor images and client cursor surfaces are uploaded once and then
+reuse stable renderer image IDs; the vector cursor is only the missing-image fallback.
 
 An X11-only application is still required to exercise XWayland client mapping
 and rendering itself.

@@ -40,8 +40,42 @@ pub(super) struct CapturedPresentation {
     feedback: OutputPresentationFeedback,
     submitted_surfaces: HashSet<SurfaceId>,
     submitted_views: HashSet<ViewId>,
-    cursor_surfaces: Vec<WlSurface>,
+    cursor_surfaces: CursorSurfaces,
     fifo_barriers: Vec<SurfaceBarrier>,
+}
+
+/// Keep the overwhelmingly common core-pointer cursor inline. Tablet cursor
+/// surfaces allocate only when a tablet is actually visible on this output.
+#[derive(Debug, Default)]
+struct CursorSurfaces {
+    pointer: Option<WlSurface>,
+    tablets: Vec<WlSurface>,
+}
+
+impl CursorSurfaces {
+    fn insert(&mut self, source: u64, surface: WlSurface) {
+        if source == 0 {
+            self.pointer = Some(surface);
+        } else if !self.tablets.iter().any(|current| current == &surface) {
+            self.tablets.push(surface);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &WlSurface> {
+        self.pointer.iter().chain(&self.tablets)
+    }
+
+    fn contains(&self, surface: &WlSurface) -> bool {
+        self.pointer.as_ref() == Some(surface)
+            || self.tablets.iter().any(|current| current == surface)
+    }
+
+    fn contains_id(&self, surface: &wayland_server::backend::ObjectId) -> bool {
+        self.pointer
+            .as_ref()
+            .is_some_and(|current| current.id() == *surface)
+            || self.tablets.iter().any(|current| current.id() == *surface)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -102,14 +136,12 @@ impl RuntimeState {
         scene: &SceneSnapshot,
         cursors: &CursorOverlays,
     ) -> CapturedPresentation {
-        let mut cursor_surfaces = Vec::with_capacity(cursors.as_slice().len());
+        let mut cursor_surfaces = CursorSurfaces::default();
         for cursor in cursors.as_slice() {
             let Some(surface) = self.cursor.surface_for_source(cursor.source) else {
                 continue;
             };
-            if !cursor_surfaces.iter().any(|current| current == &surface) {
-                cursor_surfaces.push(surface);
-            }
+            cursor_surfaces.insert(cursor.source, surface);
         }
         self.capture_presentation(
             output_id,
@@ -182,7 +214,7 @@ impl RuntimeState {
         output: &Output,
         scene: &SceneSnapshot,
         mut submitted: HashMap<SurfaceId, ViewId>,
-        cursor_surfaces: Vec<WlSurface>,
+        cursor_surfaces: CursorSurfaces,
     ) -> CapturedPresentation {
         let output_regions = self.output_regions();
         let bounds = scene_surface_bounds(scene);
@@ -202,14 +234,14 @@ impl RuntimeState {
                 surface_buffers
                     .surface_id(surface)
                     .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
-                    || cursor_surfaces.iter().any(|cursor| cursor.id() == *surface)
+                    || cursor_surfaces.contains_id(surface)
             });
         let mut feedback = OutputPresentationFeedback::new(output);
         let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
                 .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
-                || cursor_surfaces.iter().any(|cursor| cursor == surface)
+                || cursor_surfaces.contains(surface)
         };
         let mut feedback_flags =
             |_: &WlSurface, _: &SurfaceData| wp_presentation_feedback::Kind::empty();
@@ -250,7 +282,7 @@ impl RuntimeState {
                 }
             }
         }
-        for surface in &cursor_surfaces {
+        for surface in cursor_surfaces.iter() {
             take_presentation_feedback_surface_tree(
                 surface,
                 &mut feedback,
@@ -297,7 +329,7 @@ impl RuntimeState {
             surface_buffers
                 .surface_id(&surface.id())
                 .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
-                || cursor_surfaces.iter().any(|cursor| cursor == surface)
+                || cursor_surfaces.contains(surface)
         };
         for window in self.space.elements() {
             let Some(root) = window.wl_surface() else {
@@ -325,7 +357,7 @@ impl RuntimeState {
                 }
             }
         }
-        for surface in cursor_surfaces {
+        for surface in cursor_surfaces.iter() {
             send_frame_callbacks_surface_tree(surface, time, &mut is_submitted);
         }
     }

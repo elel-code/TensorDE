@@ -197,6 +197,9 @@ submitted cursor surfaces receive frame callbacks so client-driven animation can
 role state also tracks output-instance membership: crossing a head emits `wl_surface.enter/leave`
 and publishes that head's integer and fractional preferred scale. Stable membership is cached, so
 ordinary high-rate motion does not lock or rescan each output's protocol surface list.
+Presentation capture keeps the ordinary pointer cursor surface inline, so a pointer-only frame
+does not allocate a cursor-surface vector; storage grows only when tablet cursor surfaces are
+actually visible.
 
 This is a deliberately distilled contract from the local Niri, Hyprland, and Nourish references:
 Niri establishes pointer-as-topmost-render-element and output-aware relative motion; Hyprland
