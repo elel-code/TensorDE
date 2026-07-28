@@ -1,3 +1,20 @@
+impl IconVertex {
+    const WGPU_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32x2,
+        2 => Float32x4,
+        3 => Float32x2
+    ];
+
+    fn wgpu_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::WGPU_ATTRIBUTES,
+        }
+    }
+}
+
 impl IconRenderer {
     fn new(
         device: &wgpu::Device,
@@ -51,7 +68,7 @@ impl IconRenderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(IconVertex::layout())],
+                buffers: &[Some(IconVertex::wgpu_layout())],
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
