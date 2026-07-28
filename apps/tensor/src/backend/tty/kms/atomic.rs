@@ -38,6 +38,7 @@ pub(super) struct AtomicSurface {
     connector: connector::Handle,
     crtc: crtc::Handle,
     plane: plane::Handle,
+    cursor_plane: Option<plane::Handle>,
     mode: Mode,
     mode_blob: u64,
     properties: AtomicProperties,
@@ -45,24 +46,38 @@ pub(super) struct AtomicSurface {
     needs_modeset: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AtomicSurfaceConfig {
+    pub(super) connector: connector::Handle,
+    pub(super) crtc: crtc::Handle,
+    pub(super) primary_plane: plane::Handle,
+    pub(super) cursor_plane: Option<plane::Handle>,
+    pub(super) mode: Mode,
+}
+
 impl AtomicSurface {
     pub(super) fn new(
         device: DrmDeviceFd,
         active: Rc<std::cell::Cell<bool>>,
-        connector: connector::Handle,
-        crtc: crtc::Handle,
-        plane: plane::Handle,
-        mode: Mode,
+        config: AtomicSurfaceConfig,
         framebuffer: framebuffer::Handle,
     ) -> Result<Self, AtomicError> {
+        let AtomicSurfaceConfig {
+            connector,
+            crtc,
+            primary_plane: plane,
+            cursor_plane,
+            mode,
+        } = config;
         let mode_blob = create_mode_blob(&device, mode)?;
         let initialized = (|| {
-            let properties = AtomicProperties::load(&device, connector, crtc, plane)?;
+            let properties = AtomicProperties::load(&device, connector, crtc, plane, cursor_plane)?;
             let mut modeset = ModesetRequest::new(
                 &device,
                 connector,
                 crtc,
                 plane,
+                cursor_plane,
                 mode,
                 mode_blob,
                 &properties,
@@ -89,6 +104,7 @@ impl AtomicSurface {
             connector,
             crtc,
             plane,
+            cursor_plane,
             mode,
             mode_blob,
             properties,
@@ -158,13 +174,19 @@ impl AtomicSurface {
         }
         let mode_blob = create_mode_blob(&self.device, self.mode)?;
         let refreshed = (|| {
-            let properties =
-                AtomicProperties::load(&self.device, self.connector, self.crtc, self.plane)?;
+            let properties = AtomicProperties::load(
+                &self.device,
+                self.connector,
+                self.crtc,
+                self.plane,
+                self.cursor_plane,
+            )?;
             let mut modeset = ModesetRequest::new(
                 &self.device,
                 self.connector,
                 self.crtc,
                 self.plane,
+                self.cursor_plane,
                 self.mode,
                 mode_blob,
                 &properties,
@@ -199,27 +221,20 @@ impl AtomicSurface {
         if !self.active.get() {
             return Ok(());
         }
-        let mut objects = [
-            u32::from(self.connector),
-            u32::from(self.crtc),
-            u32::from(self.plane),
-        ];
-        let mut property_counts = [1, 2, 2];
-        let mut properties = [
-            u32::from(self.properties.connector_crtc),
-            u32::from(self.properties.crtc.active),
-            u32::from(self.properties.crtc.mode),
-            u32::from(self.properties.plane.crtc),
-            u32::from(self.properties.plane.framebuffer),
-        ];
-        let mut values = [0; 5];
+        let mut request = AtomicClearRequest::new(
+            self.connector,
+            self.crtc,
+            self.plane,
+            self.cursor_plane,
+            &self.properties,
+        );
         drm_ffi::mode::atomic_commit(
             self.device.as_fd(),
             AtomicCommitFlags::ALLOW_MODESET.bits(),
-            &mut objects,
-            &mut property_counts,
-            &mut properties,
-            &mut values,
+            &mut request.objects,
+            &mut request.property_counts,
+            &mut request.properties,
+            &mut request.values,
         )
         .map_err(AtomicError::Clear)?;
         self.needs_modeset = true;
@@ -242,6 +257,7 @@ struct AtomicProperties {
     connector_crtc: property::Handle,
     crtc: CrtcProperties,
     plane: PlaneProperties,
+    cursor: Option<PlaneProperties>,
 }
 
 impl AtomicProperties {
@@ -250,10 +266,17 @@ impl AtomicProperties {
         connector: connector::Handle,
         crtc: crtc::Handle,
         plane: plane::Handle,
+        cursor_plane: Option<plane::Handle>,
     ) -> Result<Self, AtomicError> {
         let connector_props = PropertySnapshot::load(device, connector)?;
         let crtc_props = PropertySnapshot::load(device, crtc)?;
         let plane_props = PropertySnapshot::load(device, plane)?;
+        let cursor = cursor_plane
+            .map(|plane| PropertySnapshot::load(device, plane))
+            .transpose()?
+            .as_ref()
+            .map(PlaneProperties::load)
+            .transpose()?;
         Ok(Self {
             connector_crtc: connector_props.required("CRTC_ID", PropertyKind::Crtc)?,
             crtc: CrtcProperties {
@@ -261,6 +284,7 @@ impl AtomicProperties {
                 mode: crtc_props.required("MODE_ID", PropertyKind::Blob)?,
             },
             plane: PlaneProperties::load(&plane_props)?,
+            cursor,
         })
     }
 }
@@ -327,17 +351,18 @@ impl ModesetRequest {
         connector: connector::Handle,
         crtc: crtc::Handle,
         plane: plane::Handle,
+        cursor_plane: Option<plane::Handle>,
         mode: Mode,
         mode_blob: u64,
         properties: &AtomicProperties,
     ) -> Result<Self, AtomicError> {
         let detached = connectors_to_detach(device, connector, crtc)?;
-        let object_count = 3 + detached.len();
+        let object_count = 3 + detached.len() + usize::from(cursor_plane.is_some());
         let mut request = Self {
             objects: Vec::with_capacity(object_count),
             property_counts: Vec::with_capacity(object_count),
-            properties: Vec::with_capacity(14 + detached.len()),
-            values: Vec::with_capacity(14 + detached.len()),
+            properties: Vec::with_capacity(14 + detached.len() + 2),
+            values: Vec::with_capacity(14 + detached.len() + 2),
             framebuffer_value: 0,
             fence_value: 0,
         };
@@ -374,6 +399,15 @@ impl ModesetRequest {
                 (properties.plane.input_fence, NO_INPUT_FENCE),
             ],
         );
+        if let Some((cursor_plane, cursor_properties)) = cursor_plane.zip(properties.cursor) {
+            request.push_object(
+                cursor_plane,
+                &[
+                    (cursor_properties.crtc, 0),
+                    (cursor_properties.framebuffer, 0),
+                ],
+            );
+        }
         request.framebuffer_value = request
             .properties
             .iter()
@@ -421,6 +455,53 @@ impl ModesetRequest {
         } else {
             AtomicError::Commit
         })
+    }
+}
+
+struct AtomicClearRequest {
+    objects: Vec<u32>,
+    property_counts: Vec<u32>,
+    properties: Vec<u32>,
+    values: Vec<u64>,
+}
+
+impl AtomicClearRequest {
+    fn new(
+        connector: connector::Handle,
+        crtc: crtc::Handle,
+        plane: plane::Handle,
+        cursor_plane: Option<plane::Handle>,
+        properties: &AtomicProperties,
+    ) -> Self {
+        let object_count = 3 + usize::from(cursor_plane.is_some());
+        let mut request = Self {
+            objects: Vec::with_capacity(object_count),
+            property_counts: Vec::with_capacity(object_count),
+            properties: Vec::with_capacity(5 + usize::from(cursor_plane.is_some()) * 2),
+            values: Vec::with_capacity(5 + usize::from(cursor_plane.is_some()) * 2),
+        };
+        request.push_object(connector, &[properties.connector_crtc]);
+        request.push_object(crtc, &[properties.crtc.active, properties.crtc.mode]);
+        request.push_object(
+            plane,
+            &[properties.plane.crtc, properties.plane.framebuffer],
+        );
+        if let Some((cursor_plane, cursor_properties)) = cursor_plane.zip(properties.cursor) {
+            request.push_object(
+                cursor_plane,
+                &[cursor_properties.crtc, cursor_properties.framebuffer],
+            );
+        }
+        request
+    }
+
+    fn push_object(&mut self, object: impl ResourceHandle, properties: &[property::Handle]) {
+        let object: drm::control::RawResourceHandle = object.into();
+        self.objects.push(u32::from(object));
+        self.property_counts.push(properties.len() as u32);
+        self.properties
+            .extend(properties.iter().map(|property| u32::from(*property)));
+        self.values.resize(self.properties.len(), 0);
     }
 }
 
@@ -640,4 +721,61 @@ pub(in crate::backend::tty) enum AtomicError {
     Commit(std::io::Error),
     #[error("atomic KMS clear failed: {0}")]
     Clear(std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use super::*;
+
+    fn handle<T: From<NonZeroU32>>(raw: u32) -> T {
+        NonZeroU32::new(raw).unwrap().into()
+    }
+
+    fn plane_properties(base: u32) -> PlaneProperties {
+        let mut next = base;
+        PlaneProperties::resolve(|_, _| {
+            let property = handle(next);
+            next += 1;
+            Ok(property)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn clear_request_disables_selected_primary_and_cursor_planes_together() {
+        let properties = AtomicProperties {
+            connector_crtc: handle(10),
+            crtc: CrtcProperties {
+                active: handle(11),
+                mode: handle(12),
+            },
+            plane: plane_properties(20),
+            cursor: Some(plane_properties(40)),
+        };
+        let request = AtomicClearRequest::new(
+            handle(1),
+            handle(2),
+            handle(3),
+            Some(handle(4)),
+            &properties,
+        );
+
+        assert_eq!(request.objects, [1, 2, 3, 4]);
+        assert_eq!(request.property_counts, [1, 2, 2, 2]);
+        assert_eq!(
+            request.properties,
+            [
+                10,
+                11,
+                12,
+                u32::from(properties.plane.crtc),
+                u32::from(properties.plane.framebuffer),
+                u32::from(properties.cursor.unwrap().crtc),
+                u32::from(properties.cursor.unwrap().framebuffer),
+            ]
+        );
+        assert_eq!(request.values, [0; 7]);
+    }
 }

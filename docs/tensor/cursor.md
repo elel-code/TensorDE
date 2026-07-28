@@ -70,8 +70,10 @@ is preserved for dma-buf allocation. Output registration now allocates three fix
 cursor image slots with that exact modifier and plane count. Their dma-bufs are retained by the
 renderer and imported into Tensor-owned DRM framebuffers without stripping the alpha fourcc;
 planes already claimed by another output are skipped deterministically. The slots are not yet
-rendered or attached to atomic cursor-plane commits, so the milestone remains open and software
-composition remains the correctness path.
+rendered or attached to atomic cursor-plane commits. The selected plane is nevertheless owned by
+the output's atomic modeset lifecycle: test-only modesets and session-resume rebuilds explicitly
+disable it, and teardown clears its `CRTC_ID` and `FB_ID` in the same request as the primary plane.
+The milestone remains open and software composition remains the correctness path.
 
 ### 1. Capability and identity discovery
 

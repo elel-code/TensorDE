@@ -22,7 +22,7 @@ mod framebuffer;
 
 pub(super) use atomic::primary_plane_formats;
 use atomic::{
-    AtomicError, AtomicSurface, CursorPlaneCapabilities, CursorPlaneSelection,
+    AtomicError, AtomicSurface, AtomicSurfaceConfig, CursorPlaneCapabilities, CursorPlaneSelection,
     discover_cursor_planes, select_primary_plane,
 };
 use framebuffer::{ScanoutFramebuffer, cursor_framebuffer_from_dmabuf, framebuffer_from_dmabuf};
@@ -305,10 +305,13 @@ impl KmsOutput {
         let surface = AtomicSurface::new(
             device_fd,
             device.active,
-            connector,
-            crtc,
-            plane,
-            mode,
+            AtomicSurfaceConfig {
+                connector,
+                crtc,
+                primary_plane: plane,
+                cursor_plane: cursor_target.map(CursorPlaneSelection::plane),
+                mode,
+            },
             first_framebuffer,
         )?;
 
