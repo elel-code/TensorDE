@@ -1,11 +1,11 @@
 # 性能对齐原则
 
 Fika 的性能工作以 Dolphin 为第一参考。本机 Dolphin 源码位于
-`/home/yk/Code/fika/apps/fi../../references/fika/dolphin`，它是文件管理器性能架构、行为保持型优化和
+`references/fika/dolphin`，它是文件管理器性能架构、行为保持型优化和
 回归 gate 的第一参考。
 
 功能形态和视觉美化现在也可以参考 Deepin File Manager。本机源码位于
-`/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager`，当前拉取自
+`references/fika/dde-file-manager`，当前拉取自
 `https://github.com/linuxdeepin/dde-file-manager.git` 的 `38e6d616`。Deepin reference
 主要用于 UI polish、DTK theme/palette、delegate paint、窗口/侧栏动画和功能组织；涉及
 model、I/O、role scheduling、trash/empty-trash 性能时仍优先以 Dolphin/KIO 为准。
@@ -32,7 +32,7 @@ Dolphin reference。
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
+- Source: references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
 - Symbol: KFileItemModelRolesUpdater::setVisibleIndexRange / startUpdating
 - Dolphin boundary: 可见项优先于后台 role work。
 - Fika mapping: src/ui/... 或 src/core/...
@@ -43,46 +43,46 @@ Dolphin reference:
 ## 常用参考入口
 
 - item model、refresh、filtering、sorting 和 role storage：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodel.h`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kfileitemmodelsortalgorithm.h`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kfileitemmodelfilter.cpp`。
+  `references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`、
+  `references/fika/dolphin/src/kitemviews/kfileitemmodel.h`、
+  `references/fika/dolphin/src/kitemviews/private/kfileitemmodelsortalgorithm.h`、
+  `references/fika/dolphin/src/kitemviews/private/kfileitemmodelfilter.cpp`。
 - metadata role、preview scheduling、visible index priority、异步 role 解析、
   directory size counting 和 MIME/Baloo role 更新：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.h`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kdirectorycontentscounter.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kbaloorolesprovider.cpp`。
+  `references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`、
+  `references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.h`、
+  `references/fika/dolphin/src/kitemviews/private/kdirectorycontentscounter.cpp`、
+  `references/fika/dolphin/src/kitemviews/private/kbaloorolesprovider.cpp`。
 - 可见项 virtualization、widget reuse、scroll/layout 边界、column sizing、
   rubber-band 和 item view geometry：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.h`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistviewlayouter.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp`。
+  `references/fika/dolphin/src/kitemviews/kitemlistview.cpp`、
+  `references/fika/dolphin/src/kitemviews/kitemlistview.h`、
+  `references/fika/dolphin/src/kitemviews/private/kitemlistviewlayouter.cpp`、
+  `references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp`。
 - item painting、icon/pixmap handling、text caching、role text layout 和
   selection/hover visuals：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kstandarditemlistwidget.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinfileitemlistwidget.cpp`。
+  `references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp`、
+  `references/fika/dolphin/src/kitemviews/kstandarditemlistwidget.cpp`、
+  `references/fika/dolphin/src/views/dolphinfileitemlistwidget.cpp`。
 - Dolphin view integration 和 mode-specific behavior：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinview.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinitemlistview.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/viewmodecontroller.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/viewproperties.cpp`。
+  `references/fika/dolphin/src/views/dolphinview.cpp`、
+  `references/fika/dolphin/src/views/dolphinitemlistview.cpp`、
+  `references/fika/dolphin/src/views/viewmodecontroller.cpp`、
+  `references/fika/dolphin/src/views/viewproperties.cpp`。
 - Places 行为和设备侧边栏集成：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/panels/places/placespanel.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`。
+  `references/fika/dolphin/src/panels/places/placespanel.cpp`、
+  `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`。
 - Dialog 生命周期、modal parent、尺寸 hint 和 Open With 初始尺寸：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/dolphinmainwindow.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinview.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/panels/folders/folderspanel.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/kio/src/widgets/kopenwithdialog.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/kio/src/widgets/widgetsopenwithhandler.cpp`。
+  `references/fika/dolphin/src/dolphinmainwindow.cpp`、
+  `references/fika/dolphin/src/views/dolphinview.cpp`、
+  `references/fika/dolphin/src/panels/folders/folderspanel.cpp`、
+  `references/fika/kio/src/widgets/kopenwithdialog.cpp`、
+  `references/fika/kio/src/widgets/widgetsopenwithhandler.cpp`。
 - Deepin theme、delegate paint、窗口布局和功能组织：
-  `/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/utils/viewdrawhelper.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/fileviewstatusbar.cpp`、
-  `/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/dfm-base/widgets/dfmwindow/filemanagerwindow.cpp`。
+  `references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp`、
+  `references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/utils/viewdrawhelper.cpp`、
+  `references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/fileviewstatusbar.cpp`、
+  `references/fika/dde-file-manager/src/dfm-base/widgets/dfmwindow/filemanagerwindow.cpp`。
 
 ## 可继续推进的性能方向
 
@@ -105,7 +105,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp
+- Source: references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp
 - Symbol: KItemListSizeHintResolver::sizeHint / itemsChanged / clearCache / updateCache
 - Dolphin boundary: item size hint 独立缓存，只有 item 插入、删除、移动、role 改变或显式 clear 时才重新解析。
 - Fika mapping: src/ui/pane_layout.rs IconsLayoutHeightCache；src/main.rs ShellScene::pane_icons_layout / invalidate_layout_caches。
@@ -117,7 +117,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: View paint 入口只处理 view/widget 绘制，窗口系统的 backing surface 与 expose/recover 由 Qt 图形栈统一承担。
 - Fika mapping: src/main.rs WgpuState::acquire_surface_frame / begin_surface_frame_encoding / submit_surface_frame / render / render_detached_dialog。
@@ -129,7 +129,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: view paint 入口只负责把已经准备好的 view/widget 内容交给 painter，窗口 backing surface、缓存 begin/end 和 expose/present 生命周期由 Qt 图形栈统一承载。
 - Fika mapping: src/ui/render/frame.rs::prepare_dialog_frame；src/main.rs::WgpuState::render_detached_dialog / encode_detached_dialog_pass。
@@ -141,7 +141,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: paint 阶段聚合 view/item/widget 绘制，局部 repaint 区域由 view/update 体系传入，具体 backing surface 复制和窗口 present 由 Qt 图形栈承担。
 - Fika mapping: src/ui/render/frame.rs::SceneFrame::upload_quads；src/main.rs::WgpuState::encode_retained_scene_pass / encode_retained_present_pass。
@@ -153,7 +153,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
+- Source: references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
 - Symbol: KFileItemModelRolesUpdater::setVisibleIndexRange / startUpdating / resolveNextPendingRoles
 - Dolphin boundary: expensive roles、icons 和 previews 的待处理状态集中在 roles updater，visible range 改变后统一决定继续异步更新，而不是由 paint/event handler 分散判断。
 - Fika mapping: src/ui/render/frame.rs::SceneFrame::work_pending / SceneFrameWorkPending；src/main.rs::WgpuState::render。
@@ -165,7 +165,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::doLayout / slotItemsChanged / m_visibleItems
 - Dolphin boundary: item view layout 维护一份 visible widget/item 集合，role 变化、paint 和局部更新复用该可见集合，而不是在每个判断点重新计算可见项。
 - Fika mapping: src/ui/render/dirty_key.rs::ShellRenderDirtyKey::*_with_projections；src/ui/render/damage_snapshot.rs::ShellRenderDamageSnapshot::from_scene；src/main.rs::WgpuState::render。
@@ -177,7 +177,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::doLayout / updateVisibleItems / paint
 - Dolphin boundary: layout 阶段维护的可见 item/widget 集合会被 paint、role update 和局部更新复用；paint 不再为同一帧重新计算可见集合。
 - Fika mapping: src/main.rs::ShellScene::prepare_frame_projection_layouts / update_visible_slot_pools_for_projection_layouts / pane_projections_from_layouts / WgpuState::render / prewarm_scene_caches / ShellScene::build_frame；src/ui/render/frame.rs::SceneFrameProjections / prepare_scene_frame。
@@ -189,7 +189,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::updateVisibleItems / m_visibleItems
 - Dolphin boundary: visible item/widget 集合在可见项更新阶段分配和复用 widget identity，paint 阶段直接使用已经维护好的 visible item，不再为每个 item 重新查找 identity。
 - Fika mapping: src/main.rs::ShellScene::update_visible_slot_pools_for_projection_layouts；src/ui/pane.rs::ShellVisibleItemSlotPool::update_visible_item_slots / ShellVisibleSlotItem；src/main.rs::ShellScene::pane_projection_from_prepared。
@@ -201,7 +201,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp
+- Source: references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp
 - Symbol: KItemListSizeHintResolver::updateCache / clearCache / itemsInserted / itemsRemoved / itemsMoved / itemsChanged
 - Dolphin boundary: size hint cache 是 view/model 维度的一份 logicalHeightHintCache；model 结构变化时就地更新或清空，不会为每次尺寸/缩放变化长期保留多份整目录高度数组。
 - Fika mapping: src/ui/pane_layout.rs::BoundedLayoutCache / CompactLayoutCache / IconsLayoutHeightCache；src/main.rs::ShellScene::pane_compact_layout / pane_icons_layout。
@@ -213,7 +213,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/dolphinviewcontainer.cpp；/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/statusbar/dolphinstatusbar.cpp
+- Source: references/fika/dolphin/src/dolphinviewcontainer.cpp；references/fika/dolphin/src/statusbar/dolphinstatusbar.cpp
 - Symbol: DolphinViewContainer::delayedStatusBarUpdate / updateStatusBar；DolphinStatusBar::setDefaultText / showProgress
 - Dolphin boundary: view container 计算 status text，status bar 负责展示与 progress/task 表现，二者不把任务状态和绘制细节散落进主窗口事件路径。
 - Fika mapping: src/ui/status.rs::ShellPaneStatus / ShellTaskStatusStore；src/ui/status/paint.rs::push_pane_status_bar / push_places_task_area；src/main.rs::ShellScene::push_pane_status_bar / push_places_task_area。
@@ -225,7 +225,7 @@ Dolphin reference:
 
 ```text
 Deepin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp；/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/dfm-base/widgets/dfmwindow/filemanagerwindow.cpp
+- Source: references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp；references/fika/dde-file-manager/src/dfm-base/widgets/dfmwindow/filemanagerwindow.cpp
 - Symbol: BaseItemDelegate uses DPalette/DPaletteHelper/DGuiApplicationHelper；FileManagerWindow connects DGuiApplicationHelper::themeTypeChanged and DPlatformTheme::iconThemeNameChanged
 - Deepin boundary: item delegate 和 window chrome 不直接散落 light/dark 常量，而从 DTK palette/theme helper 接收颜色和主题变更。
 - Fika mapping: src/ui/theme.rs::ShellTheme / ShellToolbarButtonColors；src/ui/paint.rs::ShellPaintPalettes；src/ui/dolphin/style.rs::DolphinItemPalette；src/ui/popup/style.rs::PopupTheme；src/ui/context_menu/paint.rs::ContextMenuPaintTheme；src/ui/status/paint.rs::PaneStatusBarPaint / PlacesTaskAreaPaint；src/ui/ui_chrome.rs::push_scrollbar / push_location_bar_icon / push_place_icon / FallbackIconPalette；src/main.rs::ShellScene::theme / build_frame / render_*_dialog.
@@ -237,11 +237,11 @@ Deepin reference:
 
 ```text
 Deepin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp；/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/utils/viewdrawhelper.cpp
+- Source: references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/views/baseitemdelegate.cpp；references/fika/dde-file-manager/src/plugins/filemanager/dfmplugin-workspace/utils/viewdrawhelper.cpp
 - Symbol: BaseItemDelegate::paintGroupBackground / paintGroupHeader；ViewDrawHelper::renderDragPixmap / drawDragCount / drawDragText
 - Deepin boundary: view delegate 和 drag pixmap 绘制使用 widget palette、DPaletteHelper 与局部 helper 生成视觉色和 drag badge/text，不把主题色散落在事件或 model 层。
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp；/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp
+- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp；references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp
 - Symbol: KItemListView::paint；KItemListWidget::paint
 - Dolphin boundary: item view paint 入口按 view/widget 状态消费已有 palette/paint option，布局、model 和 expensive role work 不在每个 item paint 中反复派生 UI chrome 状态。
 - Fika mapping: src/ui/theme.rs::ShellScrollbarColors / ShellRubberBandColors / ShellDropTargetColors / ShellDragPreviewColors；src/ui/paint.rs::ShellPaintPalettes；src/ui/popup/style.rs::PopupTheme::scrollbar；src/ui/ui_chrome.rs::push_scrollbar / push_location_bar_icon / push_place_icon / push_fallback_file_icon / FallbackIconPalette；src/main.rs::push_rubber_band_for_projection / push_drag_preview_overlay / ShellScene::push_pane_projection。
@@ -253,7 +253,7 @@ Dolphin reference:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp；/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/trash/dolphintrash.cpp
+- Source: references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp；references/fika/dolphin/src/trash/dolphintrash.cpp
 - Symbol: DolphinPlacesModel::data / slotTrashEmptinessChanged；Trash::emptinessChanged
 - Dolphin boundary: Places 的 trash icon 由 model 缓存的 empty/full 状态决定，Trash dirlister 发出 emptinessChanged 后只对 Trash row 发 dataChanged；paint/data 查询不每帧扫描 Trash 目录。
 - Fika mapping: src/main.rs::ShellScene::trash_has_items / record_trash_content_change / trash_place_has_items / push_places_sidebar。

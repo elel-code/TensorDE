@@ -13,8 +13,8 @@ tracks only this manifest so large upstream histories are not accidentally commi
 Refresh a worktree with:
 
 ```sh
-git -C references/niri pull --ff-only
-git -C references/hyprland pull --ff-only
-git -C references/nourish pull --ff-only
-git -C references/bevy pull --ff-only
+git -C references/tensor/niri pull --ff-only
+git -C references/tensor/hyprland pull --ff-only
+git -C references/tensor/nourish pull --ff-only
+git -C references/tensor/bevy pull --ff-only
 ```

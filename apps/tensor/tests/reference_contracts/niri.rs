@@ -1,4 +1,4 @@
-//! Contracts adapted from `references/niri/src/tests/window_opening.rs`,
+//! Contracts adapted from `references/tensor/niri/src/tests/window_opening.rs`,
 //! `transactions.rs`, and `remove_output.rs`.
 
 use tensor_compositor::{

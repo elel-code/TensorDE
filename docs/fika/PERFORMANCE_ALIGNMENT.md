@@ -1,7 +1,7 @@
 # Performance Alignment
 
 Fika performance work follows Dolphin first. The local Dolphin source tree at
-`/home/yk/Code/fika/apps/fi../../references/fika/dolphin` is the first reference for file-manager performance
+`references/fika/dolphin` is the first reference for file-manager performance
 architecture, behavior-preserving optimizations, and regression gates.
 
 ## Rule
@@ -28,7 +28,7 @@ implementation summary:
 
 ```text
 Dolphin reference:
-- Source: /home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
+- Source: references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
 - Symbol: KFileItemModelRolesUpdater::setVisibleIndexRange / startUpdating
 - Dolphin boundary: visible items are prioritized before background role work.
 - Fika mapping: src/ui/... or src/core/...
@@ -39,35 +39,35 @@ Dolphin reference:
 ## Common References
 
 - Item model, refresh, filtering, sorting, and role storage:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodel.h`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kfileitemmodelsortalgorithm.h`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kfileitemmodelfilter.cpp`.
+  `references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`,
+  `references/fika/dolphin/src/kitemviews/kfileitemmodel.h`,
+  `references/fika/dolphin/src/kitemviews/private/kfileitemmodelsortalgorithm.h`,
+  `references/fika/dolphin/src/kitemviews/private/kfileitemmodelfilter.cpp`.
 - Metadata roles, preview scheduling, visible index priority, async role
   resolution, directory size counting, and MIME/Baloo role updates:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.h`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kdirectorycontentscounter.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kbaloorolesprovider.cpp`.
+  `references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`,
+  `references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.h`,
+  `references/fika/dolphin/src/kitemviews/private/kdirectorycontentscounter.cpp`,
+  `references/fika/dolphin/src/kitemviews/private/kbaloorolesprovider.cpp`.
 - Visible item virtualization, widget reuse, scroll/layout boundaries,
   column sizing, rubber-band, and item view geometry:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistview.h`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistviewlayouter.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp`.
+  `references/fika/dolphin/src/kitemviews/kitemlistview.cpp`,
+  `references/fika/dolphin/src/kitemviews/kitemlistview.h`,
+  `references/fika/dolphin/src/kitemviews/private/kitemlistviewlayouter.cpp`,
+  `references/fika/dolphin/src/kitemviews/private/kitemlistsizehintresolver.cpp`.
 - Item painting, icon/pixmap handling, text caching, role text layout, and
   selection/hover visuals:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/kitemviews/kstandarditemlistwidget.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinfileitemlistwidget.cpp`.
+  `references/fika/dolphin/src/kitemviews/kitemlistwidget.cpp`,
+  `references/fika/dolphin/src/kitemviews/kstandarditemlistwidget.cpp`,
+  `references/fika/dolphin/src/views/dolphinfileitemlistwidget.cpp`.
 - Dolphin view integration and mode-specific behavior:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinview.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/dolphinitemlistview.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/viewmodecontroller.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/views/viewproperties.cpp`.
+  `references/fika/dolphin/src/views/dolphinview.cpp`,
+  `references/fika/dolphin/src/views/dolphinitemlistview.cpp`,
+  `references/fika/dolphin/src/views/viewmodecontroller.cpp`,
+  `references/fika/dolphin/src/views/viewproperties.cpp`.
 - Places behavior and device sidebar integration:
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/panels/places/placespanel.cpp`,
-  `/home/yk/Code/fika/apps/fi../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`.
+  `references/fika/dolphin/src/panels/places/placespanel.cpp`,
+  `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`.
 
 ## Review Checklist
 

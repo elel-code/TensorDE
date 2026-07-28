@@ -3,6 +3,14 @@ members = [
     "apps/desktop-shell",
     "apps/fika",
     "apps/gilder",
+    "apps/tensor",
+    "crates/tensor-drm",
+    "crates/tensor-event",
+    "crates/tensor-host",
+    "crates/tensor-present",
+    "crates/tensor-protocol",
+    "crates/tensor-runtime",
+    "crates/tensor-util",
     "crates/vulkan-renderer",
     "crates/wayland-client-runtime",
 ]
@@ -14,3 +22,7 @@ rust-version = "1.97"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

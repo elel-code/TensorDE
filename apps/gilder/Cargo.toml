@@ -3,8 +3,8 @@ name = "gilder"
 version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
-repository = "https://github.com/elel-code/Gilder"
-homepage = "https://github.com/elel-code/Gilder"
+repository = "https://github.com/elel-code/TensorDE"
+homepage = "https://github.com/elel-code/TensorDE"
 build = "build.rs"
 exclude = [
     ".claude/**",

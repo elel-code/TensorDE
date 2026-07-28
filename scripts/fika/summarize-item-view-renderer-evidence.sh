@@ -6,9 +6,8 @@ usage() {
 Usage: summarize-item-view-renderer-evidence.sh LOG [LOG ...]
 
 Runs the standard item-view runtime perf-log gate, then prints a Markdown
-evidence block that can be copied into docs/ITEM_VIEW_RENDERER_DECISIONS.md.
-This summarizes perf-log evidence only; manual DnD and rename smoke results must
-still be recorded by a human reviewer.
+evidence block for a task-local report. This summarizes perf-log evidence only;
+manual DnD and rename smoke results must still be recorded by a human reviewer.
 EOF
 }
 
@@ -35,8 +34,8 @@ cat <<EOF
 ## Item View Renderer Evidence
 
 - Logs:
-$log_list- Perf gate: \`scripts/check-item-view-runtime-log.sh $*\`
-- Manual review still required: DnD and rename checklist from \`docs/ITEM_VIEW_RUNTIME_SMOKE.md\`
+$log_list- Perf gate: \`scripts/fika/check-item-view-runtime-log.sh $*\`
+- Manual review still required: DnD and rename behavior.
 
 \`\`\`text
 $summary
@@ -50,6 +49,6 @@ Renderer decision follow-up:
 - Compact/Icons image layer: keep or revisit custom paint using item image maxima, custom paint maxima, and the image_sources counters above.
 - Details visual layer: keep or revisit custom paint using details visual,
   shape-cache, glyph-cache, and glyph-budget channels above.
-- Renderer surface counts: compare renderer_policy_frames against docs/ITEM_VIEW_RENDERER_DECISIONS.md.
+- Renderer surface counts: compare renderer_policy_frames across the candidate and baseline logs.
 - Retained hitbox drag start: keep gpui_drag_shell=0 and validate behavior with the DnD smoke checklist, not perf logs alone.
 EOF

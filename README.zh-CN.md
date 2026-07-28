@@ -9,8 +9,7 @@ TensorDE 以一个统一系统的形式开发原生、GPU-first 的桌面环境�
   概览和锁屏 surface。
 - `apps/fika`：Fika 文件管理器。
 - `apps/gilder`：Gilder 场景与壁纸引擎。
-
-Tensor 暂时保留为独立仓库，后续再单独迁移。
+- `apps/tensor`：Tensor compositor 与 session runtime。
 
 ## 共享基础设施
 
@@ -18,5 +17,10 @@ Tensor 暂时保留为独立仓库，后续再单独迁移。
   标准，默认 descriptor heap 与 FIFO latest-ready。
 - `crates/wayland-client-runtime`：由应用和桌面 Shell 共用的原生 Wayland
   协议及事件循环实现。
+- `crates/tensor-*`：与 compositor 共用的 value-only 事件、runtime、host、
+  DRM、present、protocol 和 geometry 边界。
 
 `desktop-shell` 保持职责导向的 crate 名；TensorDE 是仓库和桌面环境品牌。
+
+文档与自动化入口分别统一收录在 [docs](docs/README.md) 和
+[scripts](scripts/README.md)。

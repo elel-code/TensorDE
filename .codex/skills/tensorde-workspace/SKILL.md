@@ -1,6 +1,6 @@
 ---
 name: tensorde-workspace
-description: Evolve and validate the native GPU-first TensorDE monorepo containing Fika, Gilder, desktop-shell, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, DE shell surfaces and services, cross-product APIs, Gilder VM/evidence infrastructure, Fika integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
+description: Evolve and validate the native GPU-first TensorDE monorepo containing Fika, Gilder, Tensor, desktop-shell, shared tensor crates, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, compositor and DE shell surfaces or services, cross-product APIs, Gilder VM/evidence infrastructure, Fika or Tensor integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
 ---
 
 # TensorDE Workspace
@@ -27,6 +27,9 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 - For DE shell work, keep panel, launcher, notifications/OSD, control center,
   overview, and lock surfaces in `apps/desktop-shell`. Express strict surface
   plans before wiring protocol objects and GPU rendering.
+- For Tensor compositor, session, direct protocol, input, DRM/KMS, XWayland,
+  ECS, or renderer work, also use `.codex/skills/tensor-compositor/` and read
+  `apps/tensor/AGENTS.md` plus the relevant record under `docs/tensor/`.
 - For shared rendering work, evolve `crates/vulkan-renderer` through typed,
   WebGPU-style descriptors while preserving explicit Vulkan semantics.
 
@@ -45,13 +48,14 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 
 ## Handle durable local infrastructure
 
-- Treat `docs/gilder`, `reverse-engineered/gilder`, `references/gilder`, and
-  `artifacts/gilder` as durable ignored state. Inventory and verify these paths
-  before moving or deleting an old checkout.
+- Treat `docs/gilder`, `reverse-engineered/gilder`, `references/gilder`,
+  `artifacts/gilder`, `references/tensor`, and `artifacts/tensor` as durable
+  local state. Inventory and verify these paths before moving or deleting an
+  old checkout. Tensor's tracked design records remain under `docs/tensor`.
 - Before moving the Windows VM, confirm no QEMU/swtpm process or mount uses it.
   On the same filesystem prefer an atomic move; preserve qcow2 sparseness,
-  ownership, TPM state, and Podman storage. Keep an old-path compatibility link
-  until all scripts and checks use the new path.
+  ownership, TPM state, and Podman storage. Update every consumer to the final
+  path and remove the old checkout; never retain an old-path compatibility link.
 - Never stage secrets, VM state, generated scenes, traces, screenshots, or
   third-party reference repositories.
 

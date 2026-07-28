@@ -8,7 +8,8 @@ import tomllib
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+TENSOR_ROOT = WORKSPACE_ROOT / "apps/tensor"
 SMITHAY_DEPENDENCIES = {"smithay", "smithay-drm-extras"}
 READINESS_DEPENDENCIES = {"calloop", "mio", "polling"}
 REQUIRED_COMPIO_FEATURES = {"runtime", "async-fd", "io-uring"}
@@ -61,7 +62,7 @@ def check_compio_features(
 
 def main() -> int:
     failures: list[str] = []
-    root_manifest_path = ROOT / "Cargo.toml"
+    root_manifest_path = TENSOR_ROOT / "Cargo.toml"
     root_manifest = tomllib.loads(root_manifest_path.read_text(encoding="utf-8"))
     check_compio_features(root_manifest_path, root_manifest, failures)
     root_dependencies = set().union(
@@ -79,13 +80,13 @@ def main() -> int:
             f"{sorted(root_readiness)}"
         )
 
-    for source in sorted((ROOT / "src").glob("**/*.rs")):
+    for source in sorted((TENSOR_ROOT / "src").glob("**/*.rs")):
         if SMITHAY_CODE.search(source.read_text(encoding="utf-8")):
             failures.append(f"{source}: Smithay code paths are forbidden")
         if DEFAULT_COMPIO_RUNTIME.search(source.read_text(encoding="utf-8")):
             failures.append(f"{source}: use tensor_runtime::io_uring_runtime with a fixed budget")
 
-    for manifest_path in sorted((ROOT / "crates").glob("*/Cargo.toml")):
+    for manifest_path in sorted((WORKSPACE_ROOT / "crates").glob("tensor-*/Cargo.toml")):
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
         package = manifest["package"]["name"]
         if package == "tensor-smithay":

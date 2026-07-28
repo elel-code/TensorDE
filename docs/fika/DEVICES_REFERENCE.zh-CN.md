@@ -6,24 +6,24 @@
 
 ## Dolphin 源码
 
-- `../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
+- `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
   - Dolphin 的 Places model 继承 `KFilePlacesModel`。
   - 设备条目、分组、图标、挂载状态和隐藏行由 KDE Frameworks 和 Solid
     提供，而非 Dolphin 的视图代码。
   - `deviceForIndex()` 用于查找 Solid 设备以进行右键菜单和卸载操作。
   - `StorageAccess::teardownRequested` 转发到 Dolphin 的更高级存储卸载流程，
     使用户可见的卸载/弹出操作保持异步。
-- `../../references/fika/dolphin/src/panels/places/placespanel.cpp`
+- `references/fika/dolphin/src/panels/places/placespanel.cpp`
   - `PlacesPanel` 是一个绑定到单例 `DolphinPlacesModel` 的 `KFilePlacesView`。
   - 拖拽移动在允许内部 place 重排的同时拒绝外部拖拽的可写 place URL。
 
 ## Cosmic Files 源码
 
-- `../../references/fika/cosmic-files/src/mounter/mod.rs`
+- `references/fika/cosmic-files/src/mounter/mod.rs`
   - 定义与后端无关的 `Mounter` trait，暴露条目、挂载、卸载、网络扫描和
     mounter 事件订阅。
   - UI 代码消费 mounter 条目，而不是拥有发现后端。
-- `../../references/fika/cosmic-files/src/mounter/gvfs.rs`
+- `references/fika/cosmic-files/src/mounter/gvfs.rs`
   - 使用 `gio::VolumeMonitor` 枚举挂载和卷。
   - 隐藏影子挂载，尽可能将挂载根映射到本地路径，并暴露挂载名称、图标、
     URI、远程标志、挂载状态和路径。

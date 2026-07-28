@@ -2,7 +2,7 @@
 # Start every maintained interactive TTY smoke client without pasting a long command.
 set -euo pipefail
 
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 singbox="$HOME/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox"
 
 if (( $# > 1 )); then
@@ -24,7 +24,7 @@ if [[ ! -x "$singbox" ]]; then
     exit 127
 fi
 
-exec uv run "$root/scripts/tty.py" \
+exec uv run "$root/scripts/tensor/tty.py" \
     --fcitx \
     "${lifetime[@]}" \
     --client ghostty \

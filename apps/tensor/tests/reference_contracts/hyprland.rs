@@ -1,5 +1,5 @@
 //! Contracts adapted from Hyprland's monitor/layout/IPC tests under
-//! `references/hyprland/tests` and `hyprtester/src/tests`.
+//! `references/tensor/hyprland/tests` and `hyprtester/src/tests`.
 
 use tensor_compositor::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},

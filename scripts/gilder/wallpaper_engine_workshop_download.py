@@ -5,7 +5,7 @@
 """Download Wallpaper Engine Workshop items with SteamCMD.
 
 Invoke with:
-  uv run python scripts/wallpaper_engine_workshop_download.py --item-id <id>
+  uv run python scripts/gilder/wallpaper_engine_workshop_download.py --item-id <id>
 """
 
 from __future__ import annotations

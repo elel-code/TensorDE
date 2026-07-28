@@ -7,23 +7,23 @@ external archive tool when the user invokes archive actions.
 
 ## Dolphin Sources
 
-- `../../references/fika/dolphin/src/dolphincontextmenu.cpp`
+- `references/fika/dolphin/src/dolphincontextmenu.cpp`
   - `addAdditionalActions()` delegates context-menu extensions to
     `KFileItemActions::addActionsTo(..., MenuActionSource::All, ...)`.
   - Local directory targets can add local-only actions such as Open Terminal
     before the service-menu actions.
-- `../../references/fika/dolphin/src/dolphinviewcontainer.cpp`
+- `references/fika/dolphin/src/dolphinviewcontainer.cpp`
   - Item activation asks `DolphinView::openItemAsFolderUrl()` before launching
     a file, so archives can be browsed as folders when the setting allows it.
   - Middle-click falls back to opening archives in a tab when there is no second
     or third associated application.
-- `../../references/fika/dolphin/src/settings/dolphin_generalsettings.kcfg`
+- `references/fika/dolphin/src/settings/dolphin_generalsettings.kcfg`
   - `BrowseThroughArchives` controls archive-as-folder browsing.
-- `../../references/fika/dolphin/src/views/draganddrophelper.cpp`
+- `references/fika/dolphin/src/views/draganddrophelper.cpp`
   - Ark drag payloads carry a D-Bus service and object path.
   - Dolphin calls `org.kde.ark.DndExtract.extractSelectedFilesTo` with the drop
     destination when both Ark MIME payload fields are present.
-- `../../references/fika/dolphin/src/views/draganddrophelper.h`
+- `references/fika/dolphin/src/views/draganddrophelper.h`
   - Ark DnD MIME names are
     `application/x-kde-ark-dndextract-service` and
     `application/x-kde-ark-dndextract-path`.

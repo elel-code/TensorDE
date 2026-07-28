@@ -12,8 +12,15 @@ SOURCE_SUFFIXES = {".py", ".rs"}
 
 
 def source_files(root: Path) -> list[Path]:
+    tensor_root = root / "apps/tensor"
     files: list[Path] = []
-    for directory in (root / "src", root / "scripts", root / "crates", root / "tests"):
+    directories = [
+        tensor_root / "src",
+        tensor_root / "tests",
+        root / "scripts/tensor",
+    ]
+    directories.extend(sorted((root / "crates").glob("tensor-*")))
+    for directory in directories:
         if not directory.exists():
             continue
         files.extend(
@@ -31,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("MAX_FILE_LINES", "800")),
     )
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     return parser.parse_args()
 
 

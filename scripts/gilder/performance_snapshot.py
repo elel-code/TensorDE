@@ -5,7 +5,7 @@
 """Sample process memory/CPU evidence for Gilder runs.
 
 Invoke with:
-  uv run python scripts/performance_snapshot.py --duration 10 --pid <pid>
+  uv run python scripts/gilder/performance_snapshot.py --duration 10 --pid <pid>
 """
 
 from __future__ import annotations

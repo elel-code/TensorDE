@@ -61,7 +61,7 @@ path.
 - Rustix is preferred for Linux syscalls. Do not add direct `libc` use when rustix exposes the
   operation.
 
-`uv run scripts/check_crate_boundaries.py` enforces the dependency and import bans for the root
+`uv run scripts/tensor/check_crate_boundaries.py` enforces the dependency and import bans for the root
 package and every workspace crate.
 
 ## Verification
@@ -74,9 +74,9 @@ rg -n "smithay::|use smithay|extern crate smithay|smithay\\s*=" \
 cargo tree -i smithay
 cargo tree -i calloop
 cargo fmt --all -- --check
-uv run scripts/check_file_lines.py
-uv run scripts/check_crate_boundaries.py
-cargo test --all-targets
+uv run scripts/tensor/check_file_lines.py
+uv run scripts/tensor/check_crate_boundaries.py
+cargo test -p tensor-compositor --all-targets
 ```
 
 The two `cargo tree -i` commands are expected to report that no matching package exists.

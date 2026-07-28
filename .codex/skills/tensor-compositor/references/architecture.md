@@ -15,5 +15,6 @@ be introduced before the core design has stabilized.
 
 ## Reference Worktrees
 
-See `references/SOURCES.md` for the pinned local snapshots of Niri, Hyprland, Nourish, and Bevy.
+See `docs/tensor/reference-sources.md` for the pinned local snapshots of Niri,
+Hyprland, Nourish, and Bevy under `references/tensor/`.
 Use those trees for behavior and lifecycle research, not as dependencies or code to copy wholesale.

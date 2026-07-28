@@ -66,7 +66,7 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   `FIKA_WGPU_DIALOG_TRACE=1` 会记录
   `CloseRequested` / `Destroyed` / resize / redraw 等 window event 路由和 event-loop exit
   reason；高频 pointer move 默认折叠，需要时可加
-  `FIKA_WGPU_DIALOG_TRACE_VERBOSE=1`。`scripts/dialog-lifecycle-smoke.sh` 提供
+  `FIKA_WGPU_DIALOG_TRACE_VERBOSE=1`。`scripts/fika/dialog-lifecycle-smoke.sh` 提供
   open-with/create/rename/settings dialog 打开、关闭、主窗口继续渲染的 lifecycle smoke，用来排查 compositor
   尾随事件是否仍误关主窗口。Wayland 下 `Window::set_visible(false)` 是 no-op，隐藏停放
   会留下仍可获焦/吃输入的 zombie dialog；因此 dialog 关闭改为两阶段销毁：当前
@@ -263,7 +263,7 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
 - Theme token 系统：
   参考 Dolphin/Qt 通过 `KColorScheme` / `QPalette` 统一分发 view、window、text、
   highlight 等角色色的边界，并开始引入
-  `/home/yk/Code/fika/apps/fi../../references/fika/dde-file-manager` 作为功能和美化参考。Fika 新增
+  `references/fika/dde-file-manager` 作为功能和美化参考。Fika 新增
   `src/ui/theme.rs` 承载 light/dark palette、view surface/content、
   chrome/sidebar/divider、field/details header、文本角色、toolbar button 角色和
   task status 色。status paint、app toolbar、Places sidebar、filter bar、location

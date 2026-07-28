@@ -13,9 +13,10 @@ __pycache__/
 !.codex/skills/tensorde-workspace/**
 !.codex/skills/gilder-scene-engine/
 !.codex/skills/gilder-scene-engine/**
+!.codex/skills/tensor-compositor/
+!.codex/skills/tensor-compositor/**
 REFACTOR_REPLACEMENTS.md
 STEP4_PLAN.md
 .codewhale/
 .deepseek/state/
-apps/fika/artifacts/deepin-file-manager/
 artifacts/gilder/

@@ -77,4 +77,4 @@ The rootless XWM uses two completion paths:
 
 Protocol selection is independent of the I/O runtime. Tensor follows wayland-protocols tiers:
 core, stable, staging/`ext`, unstable, community, then proprietary. A higher standard tier wins for
-the same capability. See `docs/protocol-surface.md`.
+the same capability. See `docs/tensor/protocol-surface.md`.

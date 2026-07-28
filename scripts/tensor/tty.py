@@ -37,8 +37,8 @@ from tty_support import (
 )
 
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_LOG = ROOT / "artifacts" / "logs" / "tensor-tty.log"
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG = ROOT / "artifacts" / "tensor" / "logs" / "tensor-tty.log"
 DEFAULT_SMOKE_DURATION_SECONDS = 20.0
 SHUTDOWN_GRACE_SECONDS = 5.0
 KILL_GRACE_SECONDS = 2.0
@@ -54,7 +54,10 @@ def parse_args() -> argparse.Namespace:
         "--log",
         type=Path,
         default=DEFAULT_LOG,
-        help="append compositor output to this file (default: artifacts/logs/tensor-tty.log)",
+        help=(
+            "append compositor output to this file "
+            "(default: artifacts/tensor/logs/tensor-tty.log)"
+        ),
     )
     parser.add_argument(
         "--render-device",
@@ -208,7 +211,7 @@ def smoke_duration_for(args: argparse.Namespace) -> float | None:
 
 
 def build_binaries(dmabuf_smoke: bool) -> int:
-    command = ["cargo", "build", "--bin", "tensor-compositor"]
+    command = ["cargo", "build", "-p", "tensor-compositor", "--bin", "tensor-compositor"]
     if dmabuf_smoke:
         command.extend(["--bin", "tensor-dmabuf-smoke"])
     print("Building Tensor binaries...")

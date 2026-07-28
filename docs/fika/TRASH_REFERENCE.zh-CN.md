@@ -6,45 +6,45 @@ Fika 的回收站实现遵循 Dolphin 的 `trash:/` model role 和操作流程�
 
 ## Dolphin 源码
 
-- `../../references/fika/dolphin/src/trash/dolphintrash.cpp`
+- `references/fika/dolphin/src/trash/dolphintrash.cpp`
   - 拥有一个 `Trash` 单例，带有一个在 `trash:/` 上打开的 `KDirLister`。
   - 从 lister 完成和删除信号发出 `emptinessChanged`。
   - 当可移动存储可访问性变化时刷新 `trash:/`。
   - `Trash::empty()` 以 `EmptyTrash` 运行 `KIO::DeleteOrTrashJob`。
   - `Trash::isEmpty()` 读取 `trashrc` 状态用于菜单启用。
-- `../../references/fika/dolphin/src/views/dolphinview.cpp`
+- `references/fika/dolphin/src/views/dolphinview.cpp`
   - `trashSelectedItems()` 将选中 URL 以 `Trash` 发送到 `KIO::DeleteOrTrashJob`。
   - `deleteSelectedItems()` 以 `Delete` 使用相同的 job 类型。
   - 两个操作异步完成，让视图在 model 变化时保持下一个条目可见。
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
   - 在 `trash:/` 中，PathRole 从 `KIO::UDSEntry::UDS_EXTRA` 填充。
   - DeletionTimeRole 从 `KIO::UDSEntry::UDS_EXTRA + 1` 填充。
   - DeletionTimeRole 比较解析的日期时间值作为 model 排序 role。
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodel.h`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodel.h`
   - 将 `DeletionTimeRole` 定义为一等 model role。
-- `../../references/fika/dolphin/src/dolphincontextmenu.cpp`
+- `references/fika/dolphin/src/dolphincontextmenu.cpp`
   - 回收站视图的右键菜单包含 `Empty Trash`，由 `Trash::isEmpty()` 启用，
     由 `Trash::emptinessChanged` 更新。
-- `../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
+- `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
   - Places model 监听 `Trash::emptinessChanged` 并更新 `trash:/` 条目的
     Trash 装饰 role。
-- `../../references/fika/dolphin/src/views/viewproperties.cpp`
+- `references/fika/dolphin/src/views/viewproperties.cpp`
   - 回收站保持特殊文件夹默认视图，具有 Details 视图语义和可显示/排序的
     回收站专用 role。
 
 ## Nautilus 源码
 
-- `../../references/fika/nautilus/src/nautilus-files-view.c`
+- `references/fika/nautilus/src/nautilus-files-view.c`
   - `files_view_remove_files()` 在移除前把变化的文件映射到现有 view item，
     保留 view item identity 直到 model 更新。
   - `process_pending_files()` 将不再应显示的 changed files 按目录批量发出
     remove 操作。
-- `../../references/fika/nautilus/src/nautilus-view-model.c`
+- `references/fika/nautilus/src/nautilus-view-model.c`
   - `nautilus_view_model_remove_items()` 从后往前遍历 directory store，
     用 `g_list_store_splice()` 删除连续区间，减少 `items-changed` 发射次数。
   - 这是实现丝滑删除动画时要借鉴的核心行为：保持稳定 item identity，
     批量移除，并让视图把剩余项从旧 rect 插值到新 rect。
-- `../../references/fika/nautilus/src/nautilus-grid-view.c`
+- `references/fika/nautilus/src/nautilus-grid-view.c`
   - `on_model_changed()` 将 `NautilusViewModel` 绑定到 `GtkGridView`；
     GTK 的 list/grid 机制负责 model diff 后的可见项重排。
 

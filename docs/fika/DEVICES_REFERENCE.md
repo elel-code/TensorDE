@@ -5,7 +5,7 @@ mount-state model, and Places sidebar integration.
 
 ## Dolphin Sources
 
-- `../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
+- `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
   - Dolphin's Places model subclasses `KFilePlacesModel`.
   - Device entries, groups, icons, mount state, and hidden rows are provided by
     KDE Frameworks and Solid rather than by Dolphin's view code.
@@ -14,7 +14,7 @@ mount-state model, and Places sidebar integration.
   - `StorageAccess::teardownRequested` is forwarded to Dolphin's higher-level
     storage teardown flow so user-visible unmount/eject operations remain
     asynchronous.
-- `../../references/fika/dolphin/src/panels/places/placespanel.cpp`
+- `references/fika/dolphin/src/panels/places/placespanel.cpp`
   - `PlacesPanel` is a `KFilePlacesView` bound to the singleton
     `DolphinPlacesModel`.
   - Drag move rejects non-writable place URLs for external drags while still
@@ -22,11 +22,11 @@ mount-state model, and Places sidebar integration.
 
 ## Cosmic Files Sources
 
-- `../../references/fika/cosmic-files/src/mounter/mod.rs`
+- `references/fika/cosmic-files/src/mounter/mod.rs`
   - Defines a backend-neutral `Mounter` trait that exposes items, mount,
     unmount, network scan, and a subscription for mounter events.
   - UI code consumes mounter items instead of owning the discovery backend.
-- `../../references/fika/cosmic-files/src/mounter/gvfs.rs`
+- `references/fika/cosmic-files/src/mounter/gvfs.rs`
   - Uses `gio::VolumeMonitor` to enumerate mounts and volumes.
   - Hides shadowed mounts, maps mounted roots to local paths when possible, and
     exposes mount names, icons, URI, remote flag, mounted state, and path.

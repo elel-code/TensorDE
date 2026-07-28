@@ -13,11 +13,11 @@ Examples are `render: require descriptor heap`, `ecs: stabilize workspace orderi
 `docs: record startup gates`. Do not require `feat():` Conventional Commit prefixes. Add a concise
 body for non-obvious tradeoffs and list the verification commands used.
 
-Hand-written source files are limited to 800 lines by `uv run scripts/check_file_lines.py`. Generated
+Hand-written source files are limited to 800 lines by `uv run scripts/tensor/check_file_lines.py`. Generated
 protocol bindings and explicit data-heavy fixtures may be excluded only with a documented reason.
 Dependency ranges use broad compatible major/minor constraints, never `"*"`.
 
-The complete workspace must pass `uv run scripts/check_crate_boundaries.py`. No package may depend
+The complete workspace must pass `uv run scripts/tensor/check_crate_boundaries.py`. No package may depend
 on or import Smithay, and no adapter crate or compatibility feature may reintroduce it. The same
 check requires `tensor-runtime` to expose Compio async operations with the io_uring driver and
 rejects direct readiness-reactor dependencies. Compio's defaults and `polling` feature remain

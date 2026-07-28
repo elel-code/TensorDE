@@ -49,9 +49,9 @@ Run:
 
 ```sh
 cargo fmt --all
-uv run scripts/check_file_lines.py
-uv run scripts/check_crate_boundaries.py
-cargo test --all-targets
+uv run scripts/tensor/check_file_lines.py
+uv run scripts/tensor/check_crate_boundaries.py
+cargo test -p tensor-compositor --all-targets
 ```
 
 For IPC, renderer, or startup changes, add tests for malformed input, unavailable capabilities,

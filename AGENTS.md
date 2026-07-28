@@ -5,8 +5,8 @@ product-specific constraints and takes precedence within its directory.
 
 ## Repository boundaries
 
-- Keep product applications under `apps/`: `fika`, `gilder`, and
-  `desktop-shell`. Tensor remains external until an explicit migration task.
+- Keep product applications under `apps/`: `fika`, `gilder`, `tensor`, and
+  `desktop-shell`.
 - Keep reusable protocol, GPU, resource, and scheduling standards under
   `crates/`. Do not make a shared crate depend on an application.
 - Treat the DE shell as a product, not as application UI. Fika's internal UI
@@ -43,6 +43,10 @@ product-specific constraints and takes precedence within its directory.
   Never force add them. The Windows VM, qcow2 images, TPM state, Podman store,
   workshop corpus, and traces are durable development infrastructure, not
   disposable build output.
+- For Tensor compositor work, read `apps/tensor/AGENTS.md` and use
+  `$tensor-compositor`. Keep Tensor's ignored evidence under
+  `references/tensor/` and `artifacts/tensor/`, and its tracked design records
+  under `docs/tensor/`.
 - Use `target/` only for reproducible build output. Do not store irreplaceable
   evidence there.
 

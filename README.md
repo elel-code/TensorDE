@@ -10,9 +10,7 @@ standards live under `crates/`.
   OSD, control center, overview, and lock surfaces.
 - `apps/fika` — the Fika file manager.
 - `apps/gilder` — the Gilder scene and wallpaper engine.
-
-Tensor remains a separate repository for now and will be migrated in a later,
-explicit step.
+- `apps/tensor` — the Tensor compositor and session runtime.
 
 ## Shared foundations
 
@@ -21,6 +19,11 @@ explicit step.
   presentation.
 - `crates/wayland-client-runtime` — native Wayland protocols and event-loop
   integration shared by applications and the shell.
+- `crates/tensor-*` — value-only event, runtime, host, DRM, presentation,
+  protocol, and geometry boundaries shared with the compositor.
 
 `desktop-shell` remains a role-oriented crate name; TensorDE is the repository
 and desktop-environment brand.
+
+Documentation and automation are indexed under [docs](docs/README.md) and
+[scripts](scripts/README.md).

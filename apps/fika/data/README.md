@@ -1,6 +1,6 @@
 # data/ — Fika 桌面集成元数据
 
-`data/` 目录包含 Fika 的 D-Bus、Polkit 和 xdg-desktop-portal 集成所需的元数据文件。这些文件通过 `scripts/install-data.sh` 安装到系统标准路径。
+`data/` 目录包含 Fika 的 D-Bus、Polkit 和 xdg-desktop-portal 集成所需的元数据文件。这些文件通过 `scripts/fika/install-data.sh` 安装到系统标准路径。
 
 ## 目录结构
 
@@ -212,14 +212,14 @@ UseIn=fika
 
 ### 安装
 
-使用 `scripts/install-data.sh` 安装所有元数据：
+使用 `scripts/fika/install-data.sh` 安装所有元数据：
 
 ```sh
 # 本地测试安装到临时目录
-DESTDIR=/tmp/fika-root PREFIX=/usr BINDIR=/usr/lib/fika scripts/install-data.sh
+DESTDIR=/tmp/fika-root PREFIX=/usr BINDIR=/usr/lib/fika scripts/fika/install-data.sh
 
 # 正式安装（需 root）
-sudo PREFIX=/usr BINDIR=/usr/lib/fika scripts/install-data.sh
+sudo PREFIX=/usr BINDIR=/usr/lib/fika scripts/fika/install-data.sh
 ```
 
 环境变量说明：
@@ -237,7 +237,7 @@ sudo PREFIX=/usr BINDIR=/usr/lib/fika scripts/install-data.sh
 **安装产物自检**（不涉及运行中服务）：
 
 ```sh
-DESTDIR=/tmp/fika-root PREFIX=/usr BINDIR=/usr/lib/fika scripts/check-install-data.sh
+DESTDIR=/tmp/fika-root PREFIX=/usr BINDIR=/usr/lib/fika scripts/fika/check-install-data.sh
 ```
 
 此脚本会在临时 `DESTDIR` 中执行安装，然后验证：
@@ -251,9 +251,9 @@ DESTDIR=/tmp/fika-root PREFIX=/usr BINDIR=/usr/lib/fika scripts/check-install-da
 **完整的运行时集成检查**（需在已安装系统上运行）：
 
 ```sh
-scripts/check-runtime-integration.sh
-scripts/check-runtime-integration.sh --activate-system-helper  # 额外测试系统总线激活
-scripts/check-runtime-integration.sh --record validation.log   # 保存诊断结果
+scripts/fika/check-runtime-integration.sh
+scripts/fika/check-runtime-integration.sh --activate-system-helper  # 额外测试系统总线激活
+scripts/fika/check-runtime-integration.sh --record validation.log   # 保存诊断结果
 ```
 
 此脚本检查：
@@ -292,7 +292,7 @@ default=fika;gnome;gtk
 确认当前生效配置：
 
 ```sh
-scripts/check-runtime-integration.sh | grep -A5 "portals.conf"
+scripts/fika/check-runtime-integration.sh | grep -A5 "portals.conf"
 ```
 
 ---

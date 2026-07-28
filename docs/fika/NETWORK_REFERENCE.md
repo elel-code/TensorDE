@@ -7,7 +7,7 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
 
 ## Dolphin Sources
 
-- `../../references/fika/dolphin/src/dolphinpart.cpp`
+- `references/fika/dolphin/src/dolphinpart.cpp`
   - The Go menu adds `go_network_folders` with icon `folder-remote`, text
     `Network Folders`, and URL `remote:/`.
   - `openUrl()` asks KIO for `KIO::mostLocalUrl(url)` before updating the view,
@@ -16,37 +16,37 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
   - Non-local URLs disable local-only tools such as Find and Open Terminal.
   - Item activation uses the item's `targetUrl()`, including `network:/` items
     that redirect to another URL.
-- `../../references/fika/dolphin/src/dolphinnavigatorswidgetaction.cpp`
+- `references/fika/dolphin/src/dolphinnavigatorswidgetaction.cpp`
   - When the current scheme is `remote`, the navigator switches to editable
     text and shows a server URL placeholder such as `smb://[ip address]`.
   - The `Add Network Folder` affordance uses icon `folder-add`.
   - The button launches `org.kde.knetattach` through a
     `KIO::ApplicationLauncherJob` and is only shown on `remote:/` when the
     service exists.
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
   - Directory loading is delegated to `KCoreDirLister::openUrl(url)`.
   - `KCoreDirLister::redirection` is forwarded as `directoryRedirection`, which
     covers remote URL redirects such as `fish://localhost`.
   - Slow KIO slaves periodically dispatch pending inserted items before the
     final completed/canceled signal, avoiding a blank view during long remote
     scans.
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp`
   - Remote files get unknown size (`-1`) instead of recursive local size
     counting.
   - Directory content counts use `KIO::listDir(url, HideProgressInfo, flags)`
     when counting is needed, so remote counting remains an async KIO job.
-- `../../references/fika/dolphin/src/views/dolphinview.cpp`
+- `references/fika/dolphin/src/views/dolphinview.cpp`
   - Empty placeholders are protocol-aware: `smb` roots show
     `No shared folders found`, while `network` shows
     `No relevant network resources found`.
   - The view listens to the model's directory redirection signal and reloads
     through the same model/view pipeline.
-- `../../references/fika/dolphin/src/views/dolphinremoteencoding.cpp`
+- `references/fika/dolphin/src/views/dolphinremoteencoding.cpp`
   - Remote charset actions are enabled for non-local filesystem-style KIO
     protocols (`KProtocolInfo::T_FILESYSTEM`).
   - Charset choices are stored in `kio_<scheme>rc` by host and Dolphin asks
     `org.kde.KIO.Scheduler` to reparse slave configuration before reload.
-- `../../references/fika/dolphin/src/panels/terminal/terminalpanel.cpp`
+- `references/fika/dolphin/src/panels/terminal/terminalpanel.cpp`
   - The terminal panel first tries `KIO::mostLocalUrl()` for `:local`
     protocols.
   - If no local path exists, it calls the `org.kde.KIOFuse.VFS.mountUrl` D-Bus
@@ -54,14 +54,14 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
   - When Dolphin later detects that the view is inside a KIOFuse mount, it asks
     `remoteUrl()` for the original remote URL to avoid browsing the FUSE mount
     path directly.
-- `../../references/fika/dolphin/src/userfeedback/placesdatasource.cpp`
+- `references/fika/dolphin/src/userfeedback/placesdatasource.cpp`
   - Dolphin detects network shares through Solid `NetworkShare` devices.
   - SSHFS, Samba/CIFS, and NFS are distinguished from ordinary local devices;
     kdeconnect SSHFS mounts are explicitly ignored in that telemetry path.
 
 ## Cosmic Files Sources
 
-- `../../references/fika/cosmic-files/src/mounter/mod.rs`
+- `references/fika/cosmic-files/src/mounter/mod.rs`
   - Defines backend-neutral `MounterAuth`, `MounterItem`, `MounterMessage`, and
     the `Mounter` trait.
   - `MounterAuth` carries username, domain, password, remember, and anonymous
@@ -69,7 +69,7 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
   - The trait exposes `items`, `mount`, `network_drive`, `network_scan`,
     `dir_info`, `unmount`, and `subscription`, so UI code does not own the
     network backend.
-- `../../references/fika/cosmic-files/src/mounter/gvfs.rs`
+- `references/fika/cosmic-files/src/mounter/gvfs.rs`
   - Uses `gio::VolumeMonitor` to enumerate mounts and volumes, including URI,
     icon, local path when available, mount state, and remote flag.
   - `network_scan(uri, sizes)` resolves the URI, enumerates children with GIO,
@@ -82,7 +82,7 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
   - The backend runs a GLib main loop on its own thread and emits changed events
     for mount/volume add, remove, and change signals.
   - Unmount ejects when possible, otherwise it unmounts the GIO mount.
-- `../../references/fika/cosmic-files/src/tab.rs`
+- `references/fika/cosmic-files/src/tab.rs`
   - `FsKind::{Local, Remote, Gvfs}` classifies mounted filesystems using Linux
     mountinfo filesystem types.
   - Remote classes include SMB/CIFS, NFS, SSHFS, WebDAV, rclone, S3/GCS FUSE,
@@ -95,7 +95,7 @@ GIO/GVfs-backed network discovery, authentication, mounting, and scanning.
     directory child stats are avoided or simplified.
   - `network:///` is treated as the network root and exposes an Add Network
     Drive action.
-- `../../references/fika/cosmic-files/src/app.rs`
+- `references/fika/cosmic-files/src/app.rs`
   - Adds a Network root row to the sidebar when mounters are available.
   - Projects mounter items into either local `Location::Path` rows or remote
     `Location::Network` rows based on the mounter item path/remote state.

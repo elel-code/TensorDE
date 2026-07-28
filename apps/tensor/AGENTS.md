@@ -8,7 +8,7 @@ APIs for their own sake.
 
 - **Event layer (Tensor-owned):** `tensor-event` owns value-only events, fixed-capacity
   phase-bucketed queues, coalescing (pointer motion / per-output vblank), and dispatch order.
-  Policy must not depend on I/O completion arrival order. See `docs/event-layer.md`.
+  Policy must not depend on I/O completion arrival order. See `docs/tensor/event-layer.md`.
 - **Runtime (Compio = completion model, io_uring driver):** `tensor-runtime` owns Compio workers
   and turn contracts (`run_turn`, `EventfdWake`, `CompletionDriver::IoUring`). Compio is
   **submit → complete**, not a readiness poll loop. On Linux the product driver is **io_uring**;
@@ -21,7 +21,7 @@ APIs for their own sake.
   `wayland-server` owns wire resources; Tensor owns protocol, input, session, XWayland, DRM/KMS,
   geometry, and policy state directly. Page-flip and KMS submission stay on the compositor thread;
   Compio does not own scanout. Source-derived implementations retain their upstream license notices,
-  but source attribution is not architectural ownership. See `docs/smithay-exit.md`.
+  but source attribution is not architectural ownership. See `docs/tensor/smithay-exit.md`.
 - Vulkanalia is the renderer binding. The renderer requires Vulkan `VK_EXT_descriptor_heap` and
   models it as a first-class `DescriptorHeap`. Descriptor sets are not a backend and must not be
   added as a compatibility path. Native devices also require external dma-buf memory, explicit DRM
@@ -44,7 +44,7 @@ APIs for their own sake.
 - IPC is a versioned Unix-socket protocol with request IDs, bounded length-prefixed frames, and
   structured errors. It is a new protocol surface; do not add compatibility shims prematurely.
 - Wayland protocol work follows **wayland-protocols tiers** (see
-  `docs/protocol-surface.md`). Prefer higher tiers; never invent a twin in a lower tier for
+  `docs/tensor/protocol-surface.md`). Prefer higher tiers; never invent a twin in a lower tier for
   compositor-parity alone:
   1. **Core** — `wayland.xml` (compositor, seat, shm, …)
   2. **Stable standard** — `xdg-*`, mature `wp-*` (viewporter, presentation-time, linux-dmabuf, …)
@@ -74,8 +74,9 @@ Commit messages use a module-first scope: `where: imperative summary`, for examp
 `render: require descriptor heap`. Do not enforce `feat():`/Conventional Commits prefixes. Add a
 short body when the change has a non-obvious architectural tradeoff, followed by test commands.
 
-Repository automation under `scripts/` is Python run through `uv`. Do not grow long-lived policy in
-shell scripts. Session-manager policy belongs in the compiled `tensor-session` binary.
+Repository automation under `scripts/tensor/` is Python run through `uv`. Do
+not grow long-lived policy in shell scripts. Session-manager policy belongs in
+the compiled `tensor-session` binary.
 
 ## Module Layout
 
@@ -115,6 +116,8 @@ never launch configured commands.
 
 ## Verification
 
-Run `cargo fmt --all`, `uv run scripts/check_file_lines.py`, and `cargo test --all-targets` for every
-change. Changes to startup, IPC, ECS, or renderer contracts require focused tests for failure paths,
-not only happy-path construction.
+Run `cargo fmt --all`, `uv run scripts/tensor/check_file_lines.py`,
+`uv run scripts/tensor/check_crate_boundaries.py`, and
+`cargo test -p tensor-compositor --all-targets` for every change. Changes to
+startup, IPC, ECS, or renderer contracts require focused tests for failure
+paths, not only happy-path construction.

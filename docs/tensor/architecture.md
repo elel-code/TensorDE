@@ -3,7 +3,7 @@
 Tensor is a Rust Wayland compositor built around five ownership domains:
 
 1. **`tensor-event` / `tensor-runtime`** own compositor event semantics (phase order, coalescing,
-   fixed-capacity queues) and Compio-backed worker bridges. See `docs/event-layer.md`.
+   fixed-capacity queues) and Compio-backed worker bridges. See `docs/tensor/event-layer.md`.
 2. **Native host and protocol owners** (`tensor-host` / `tensor-drm` / `tensor-present` /
    `tensor-protocol` plus `src/protocol` and `src/backend`) own values, wire state, input/session,
    XWayland, and DRM/KMS directly. Smithay and calloop are absent from the dependency graph.
@@ -178,7 +178,7 @@ other subsystem's handles.
 The selected DRM identity is then passed to the tty backend as the sole native device choice. An explicit
 `render-device` filters Vulkan candidates by major/minor before ranking; Vulkan and the tty backend
 never choose devices independently. Pure ranking remains testable without a GPU. The complete
-buffer and synchronization contract is recorded in `docs/rendering.md`.
+buffer and synchronization contract is recorded in `docs/tensor/rendering.md`.
 
 Session-manager selection uses one `SystemdMode` policy for startup and child supervision. `auto`
 follows the detected user-manager environment, while `enabled` and `disabled` are explicit.
@@ -242,7 +242,7 @@ commit-timing, xwayland-keyboard-grab, ext-data-control (preferred) plus wlr-dat
 a non-empty validated client-import format list. Protocol work follows wayland-protocols
 **tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
 higher tiers win for the same capability, and `zwlr_*` is community-only when no standard path
-exists (see `docs/protocol-surface.md`). Tensor-local ports stay value-only at the ECS/event
+exists (see `docs/tensor/protocol-surface.md`). Tensor-local ports stay value-only at the ECS/event
 boundary. Stable tablet-v2 is also direct Tensor state: libinput device groups define physical
 tablets, compact fixed-size values carry tool and pad frames, and compositor-thread owners retain
 all Wayland resources. Tool focus is independent of pointer focus, respects session lock and

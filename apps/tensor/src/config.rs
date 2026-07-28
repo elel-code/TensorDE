@@ -625,7 +625,7 @@ pub enum ConfigError {
     #[error("failed to parse config {path}: {message}")]
     Parse { path: PathBuf, message: String },
     #[error(
-        "KDL configuration is no longer supported ({path}); migrate to config.toml (see docs/configuration.md)"
+        "KDL configuration is no longer supported ({path}); migrate to config.toml (see docs/tensor/configuration.md)"
     )]
     LegacyKdl { path: PathBuf },
     #[error(transparent)]

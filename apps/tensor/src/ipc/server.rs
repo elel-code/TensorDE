@@ -164,7 +164,12 @@ mod tests {
 
     #[test]
     fn socket_identity_is_stable_for_an_owned_path() {
-        let path = PathBuf::from(format!("target/tensor-identity-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "tensor-identity-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
         fs::write(&path, b"identity").unwrap();
 
         let first = SocketIdentity::read(&path).unwrap();
@@ -176,7 +181,8 @@ mod tests {
 
     #[test]
     fn completion_runtime_processes_multiple_requests_on_one_connection() {
-        let path = PathBuf::from(format!("target/tensor-ipc-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("tensor-ipc-{}-{}", std::process::id(), line!()));
         let _ = fs::remove_file(&path);
         let server = IpcServer::bind(&path).unwrap();
         let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);

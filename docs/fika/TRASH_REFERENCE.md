@@ -5,49 +5,49 @@ operation flow, while using the local XDG Trash layout as the backing store.
 
 ## Dolphin Sources
 
-- `../../references/fika/dolphin/src/trash/dolphintrash.cpp`
+- `references/fika/dolphin/src/trash/dolphintrash.cpp`
   - Owns a `Trash` singleton with a `KDirLister` opened on `trash:/`.
   - Emits `emptinessChanged` from lister completion and deletion signals.
   - Refreshes `trash:/` when removable storage accessibility changes.
   - `Trash::empty()` runs `KIO::DeleteOrTrashJob` with `EmptyTrash`.
   - `Trash::isEmpty()` reads `trashrc` status for menu enablement.
-- `../../references/fika/dolphin/src/views/dolphinview.cpp`
+- `references/fika/dolphin/src/views/dolphinview.cpp`
   - `trashSelectedItems()` sends selected URLs to `KIO::DeleteOrTrashJob`
     with `Trash`.
   - `deleteSelectedItems()` uses the same job type with `Delete`.
   - Both operations finish asynchronously and let the view keep the next item
     visible while the model changes.
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodel.cpp`
   - In `trash:/`, PathRole is populated from `KIO::UDSEntry::UDS_EXTRA`.
   - DeletionTimeRole is populated from `KIO::UDSEntry::UDS_EXTRA + 1`.
   - DeletionTimeRole compares parsed date-time values as a model sort role.
-- `../../references/fika/dolphin/src/kitemviews/kfileitemmodel.h`
+- `references/fika/dolphin/src/kitemviews/kfileitemmodel.h`
   - Defines `DeletionTimeRole` as a first-class model role.
-- `../../references/fika/dolphin/src/dolphincontextmenu.cpp`
+- `references/fika/dolphin/src/dolphincontextmenu.cpp`
   - Trash viewport context menu contains `Empty Trash`, enabled from
     `Trash::isEmpty()` and updated by `Trash::emptinessChanged`.
-- `../../references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
+- `references/fika/dolphin/src/dolphinplacesmodelsingleton.cpp`
   - Places model listens to `Trash::emptinessChanged` and updates the Trash
     decoration role for the `trash:/` entry.
-- `../../references/fika/dolphin/src/views/viewproperties.cpp`
+- `references/fika/dolphin/src/views/viewproperties.cpp`
   - Trash keeps a special-folder default view, with Details view semantics and
     trash-specific roles available for display/sort.
 
 ## Nautilus Sources
 
-- `../../references/fika/nautilus/src/nautilus-files-view.c`
+- `references/fika/nautilus/src/nautilus-files-view.c`
   - `files_view_remove_files()` maps changed files to existing view items
     before removal, preserving view-item identity until the model update.
   - `process_pending_files()` batches changed files that should no longer be
     shown and emits one remove operation per directory.
-- `../../references/fika/nautilus/src/nautilus-view-model.c`
+- `references/fika/nautilus/src/nautilus-view-model.c`
   - `nautilus_view_model_remove_items()` walks the directory store backwards
     and removes contiguous ranges with `g_list_store_splice()`, minimizing
     `items-changed` emissions.
   - The range-based update is the important behavior to mirror for smooth
     delete animations: keep stable item identity, remove in batches, and let
     the view animate surviving items from old rects to new rects.
-- `../../references/fika/nautilus/src/nautilus-grid-view.c`
+- `references/fika/nautilus/src/nautilus-grid-view.c`
   - `on_model_changed()` binds `NautilusViewModel` to `GtkGridView`; GTK's
     list/grid machinery handles the visible reflow after model differences.
 

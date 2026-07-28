@@ -2,7 +2,8 @@
 
 Tensor borrows test strategy from Niri and Hyprland without copying implementation code.
 The local Nourish checkout is used for the ECS and retained-scene contracts. The converted
-behavioral suite lives in [`tests/reference_contracts.rs`](../tests/reference_contracts.rs), with
+behavioral suite lives in
+[`apps/tensor/tests/reference_contracts.rs`](../../apps/tensor/tests/reference_contracts.rs), with
 one child module per reference project; it is an ordinary Tensor integration test and never links
 or executes an upstream test fixture.
 
@@ -48,7 +49,7 @@ binary sync-file handoff, real tablet cursor wire coverage, and TTY evidence, is
 From a Linux virtual terminal owned by the normal desktop user, run:
 
 ```sh
-uv run scripts/tty.py --dmabuf-smoke
+uv run scripts/tensor/tty.py --dmabuf-smoke
 ```
 
 The launcher waits for the new Tensor socket and then starts
@@ -60,9 +61,9 @@ implicit-modifier, or alternate-GPU fallback.
 Success requires all of the following for the same native surface: accepted
 dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
 and release of an older `wl_buffer`. Tensor itself writes its tracing stream
-to `artifacts/logs/tensor-tty.log` through its bounded Compio asynchronous
+to `artifacts/tensor/logs/tensor-tty.log` through its bounded Compio asynchronous
 drain; the launcher only tails new records for readiness and keeps control/client
-diagnostics in `artifacts/logs/tensor-tty.launcher.log`. It returns the smoke
+diagnostics in `artifacts/tensor/logs/tensor-tty.launcher.log`. It returns the smoke
 client's failure status, and neither logging path echoes compositor output onto
 the graphics TTY, avoiding terminal-output backpressure during shutdown.
 Each `tty.py` invocation also supplies a unique private IPC endpoint through
@@ -75,7 +76,7 @@ ordinary compositor startup never removes an existing control socket.
 From a Linux virtual terminal, run:
 
 ```sh
-uv run scripts/tty.py --duration 30 \
+uv run scripts/tensor/tty.py --duration 30 \
   --client ghostty \
   --client-arg=--gtk-single-instance=false
 ```
@@ -109,7 +110,7 @@ for diagnosis.
 To include the native Fcitx path, run:
 
 ```sh
-uv run scripts/tty.py --fcitx --duration 30 \
+uv run scripts/tensor/tty.py --fcitx --duration 30 \
   --client ghostty \
   --client-arg=--gtk-single-instance=false \
   --client /home/yk/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox
@@ -128,12 +129,12 @@ instead of silently testing without an input method.
 For a no-paste TTY smoke run that starts both Ghostty and GUI.for.SingBox, use:
 
 ```sh
-scripts/tty-all-clients.sh
+scripts/tensor/tty-all-clients.sh
 ```
 
 It enables Fcitx, waits for its Tensor input-method registration, then starts
 both clients for 60 seconds. Fcitx obtains its keyboard grab after a focused
-text input activates. `scripts/tty-all-clients.sh forever` leaves the session
+text input activates. `scripts/tensor/tty-all-clients.sh forever` leaves the session
 running until it is stopped.
 
 GUI.for.SingBox is a Wails application with a session-wide D-Bus
@@ -267,11 +268,11 @@ Every change runs:
 
 ```sh
 cargo fmt --all -- --check
-uv run scripts/check_file_lines.py
-uv run scripts/check_crate_boundaries.py
-cargo test --workspace --all-targets
-cargo test --workspace --all-targets --features systemd
-cargo test --workspace --all-targets --no-default-features
+uv run scripts/tensor/check_file_lines.py
+uv run scripts/tensor/check_crate_boundaries.py
+cargo test -p tensor-compositor --all-targets
+cargo test -p tensor-compositor --all-targets --features systemd
+cargo test -p tensor-compositor --all-targets --no-default-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 

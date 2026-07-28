@@ -9,10 +9,14 @@ Tensor is an early-stage Wayland compositor written in Rust. Its intended stack 
 - A bindless descriptor heap backed by `VK_EXT_descriptor_heap`.
 - Pluggable layouts: scrolling 1D, spatial 2D, and master-stack.
 
-Design records live in `docs/`: [architecture](docs/architecture.md),
-[rendering](docs/rendering.md), [startup](docs/startup.md), [configuration](docs/configuration.md),
-[IPC/portal gates](docs/ipc-and-portal.md), [testing](docs/testing.md), and
-[contributing](docs/contributing.md).
+Design records live in `docs/tensor/`:
+[architecture](../../docs/tensor/architecture.md),
+[rendering](../../docs/tensor/rendering.md),
+[startup](../../docs/tensor/startup.md),
+[configuration](../../docs/tensor/configuration.md),
+[IPC/portal gates](../../docs/tensor/ipc-and-portal.md),
+[testing](../../docs/tensor/testing.md), and
+[contributing](../../docs/tensor/contributing.md).
 
 The repository currently contains Tensor-owned protocol state (compositor, xdg-shell, SHM, output,
 seat, selection, and data-device globals), a direct rootless XWayland process and XWM,
@@ -44,14 +48,14 @@ explicit DRM modifier.
 ## Quick start
 
 ```sh
-cargo test
-cargo run -- --check
-TENSOR_LAYOUT=spatial-2d cargo run -- --check
-cargo run -- --config examples/config.toml --check
+cargo test -p tensor-compositor
+cargo run -p tensor-compositor -- --check
+TENSOR_LAYOUT=spatial-2d cargo run -p tensor-compositor -- --check
+cargo run -p tensor-compositor -- --config apps/tensor/examples/config.toml --check
 ```
 
 For a direct DRM/KMS smoke test, switch to a Linux virtual terminal, log in as
-the normal desktop user, and run `uv run scripts/tty.py`. The launcher builds
+the normal desktop user, and run `uv run scripts/tensor/tty.py`. The launcher builds
 the compositor, keeps automatic GPU selection intact, and starts the compiled
 `tensor-compositor --session` binary. Hardware smoke tests stop after 20
 seconds by default: they request orderly shutdown with `SIGTERM`, then force
@@ -61,15 +65,15 @@ VT recovery keys. The launcher refuses to enter the KMS event loop from a
 terminal emulator. Use `--render-device /dev/dri/renderD*` only to pin a
 hybrid-GPU test, and `--no-xwayland` to isolate the native Wayland path.
 `--check` remains safe to run from an ordinary terminal. In a TTY launch,
-Tensor itself appends tracing records to `artifacts/logs/tensor-tty.log` through
+Tensor itself appends tracing records to `artifacts/tensor/logs/tensor-tty.log` through
 its bounded Compio asynchronous drain; the launcher only watches that file for readiness
 and never relays compositor output through a terminal pipe. Its small control
 and client diagnostic log is kept separately in
-`artifacts/logs/tensor-tty.launcher.log`, so a smoke-test result can be
+`artifacts/tensor/logs/tensor-tty.launcher.log`, so a smoke-test result can be
 inspected after returning to the development session without terminal-output
 backpressure stalling shutdown.
 
-For the native presentation gate, use `uv run scripts/tty.py --dmabuf-smoke`.
+For the native presentation gate, use `uv run scripts/tensor/tty.py --dmabuf-smoke`.
 After Tensor creates its socket, the launcher runs a GBM client on the exact
 render node advertised by Tensor's linux-dmabuf feedback. It succeeds only
 after explicit-modifier dma-buf import, XDG configure, frame callbacks,
@@ -80,7 +84,7 @@ For the first interactive client test, leave XWayland enabled (the default) and
 run the following from a virtual terminal:
 
 ```sh
-uv run scripts/tty.py --duration 30 \
+uv run scripts/tensor/tty.py --duration 30 \
   --client ghostty \
   --client-arg=--gtk-single-instance=false
 ```
@@ -101,7 +105,7 @@ after the first visual check succeeds.
 Add `--fcitx` to make the TTY launcher attach the existing Fcitx daemon to
 Tensor before the generic client starts. For example, use
 `--client /absolute/path/to/app` to exercise a different native Wayland
-client. `scripts/tty-all-clients.sh` is the no-paste TTY shortcut for Fcitx,
+client. `scripts/tensor/tty-all-clients.sh` is the no-paste TTY shortcut for Fcitx,
 Ghostty, and GUI.for.SingBox; it runs for 60 seconds by default or accepts the
 single argument `forever`. Every client route removes the suspended host
 `DISPLAY`; none turns the test into an X11 fallback.
@@ -153,7 +157,7 @@ The module boundaries are deliberate ownership boundaries:
 ## Roadmap
 
 1. Complete the atomic hardware cursor-plane milestone in
-   [`docs/cursor.md`](docs/cursor.md) without splitting the protocol and presentation model.
+   [`docs/tensor/cursor.md`](../../docs/tensor/cursor.md) without splitting the protocol and presentation model.
 2. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
 3. Add damage-driven partial rendering and per-output redraw scheduling around the existing
    timeline/KMS presentation model.

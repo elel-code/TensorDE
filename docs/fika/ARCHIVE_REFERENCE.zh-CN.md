@@ -6,18 +6,18 @@
 
 ## Dolphin 源码
 
-- `../../references/fika/dolphin/src/dolphincontextmenu.cpp`
+- `references/fika/dolphin/src/dolphincontextmenu.cpp`
   - `addAdditionalActions()` 将右键扩展委托给 `KFileItemActions::addActionsTo(..., MenuActionSource::All, ...)`。
   - 本地目录目标可在 service-menu 动作前加入 Open Terminal 等本地动作。
-- `../../references/fika/dolphin/src/dolphinviewcontainer.cpp`
+- `references/fika/dolphin/src/dolphinviewcontainer.cpp`
   - 条目激活会先询问 `DolphinView::openItemAsFolderUrl()`，因此设置允许时归档可作为文件夹浏览。
   - 中键点击在没有第二/第三关联应用时，会退回到在标签页中打开归档。
-- `../../references/fika/dolphin/src/settings/dolphin_generalsettings.kcfg`
+- `references/fika/dolphin/src/settings/dolphin_generalsettings.kcfg`
   - `BrowseThroughArchives` 控制归档作为文件夹浏览。
-- `../../references/fika/dolphin/src/views/draganddrophelper.cpp`
+- `references/fika/dolphin/src/views/draganddrophelper.cpp`
   - Ark 拖放 payload 携带 D-Bus service 和 object path。
   - 当两个 Ark MIME payload 字段都存在时，Dolphin 调用 `org.kde.ark.DndExtract.extractSelectedFilesTo` 并传入 drop 目标。
-- `../../references/fika/dolphin/src/views/draganddrophelper.h`
+- `references/fika/dolphin/src/views/draganddrophelper.h`
   - Ark DnD MIME 名称为 `application/x-kde-ark-dndextract-service` 和 `application/x-kde-ark-dndextract-path`。
 
 ## Fika 映射
