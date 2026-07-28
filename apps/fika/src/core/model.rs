@@ -1,7 +1,6 @@
 use super::entries::{
     Entry, EntryMetadataRole, ItemId, ModelEntry, directory_entry_path, entry_name_cmp,
 };
-use super::file_ops;
 use super::mime::mime_magic_resolution_required;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -10,6 +9,10 @@ use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
+
+mod sort;
+
+pub use sort::{SortDescriptor, SortOrder, SortRole};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ItemRange {
@@ -51,64 +54,6 @@ pub enum DirectoryModelSignal {
     GroupsChanged,
     SortChanged,
     ModelReset,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SortRole {
-    Name,
-    Modified,
-    Size,
-    TrashOriginalPath,
-    TrashDeletionTime,
-}
-
-impl SortRole {
-    pub fn default_order(self) -> SortOrder {
-        match self {
-            Self::Name | Self::TrashOriginalPath => SortOrder::Ascending,
-            Self::Modified | Self::Size | Self::TrashDeletionTime => SortOrder::Descending,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SortDescriptor {
-    pub role: SortRole,
-    pub order: SortOrder,
-    pub folders_first: bool,
-    pub hidden_last: bool,
-}
-
-impl SortDescriptor {
-    pub fn for_directory(directory: &Path) -> Self {
-        if file_ops::is_trash_files_dir(directory) {
-            Self {
-                role: SortRole::TrashDeletionTime,
-                order: SortOrder::Descending,
-                folders_first: true,
-                hidden_last: false,
-            }
-        } else {
-            Self::default()
-        }
-    }
-}
-
-impl Default for SortDescriptor {
-    fn default() -> Self {
-        Self {
-            role: SortRole::Name,
-            order: SortOrder::Ascending,
-            folders_first: true,
-            hidden_last: false,
-        }
-    }
 }
 
 #[derive(Debug)]

@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::entries::EntryData;
+use crate::core::file_ops;
 use crate::core::mime::GENERIC_BINARY_MIME;
 
 fn entry(name: &str, is_dir: bool) -> Entry {
