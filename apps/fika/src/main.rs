@@ -10,6 +10,8 @@ mod native_vulkan_app;
 mod navigation_completion;
 #[path = "main/scene_types.rs"]
 mod scene_types;
+#[path = "main/svg_geometry.rs"]
+mod svg_geometry;
 #[path = "main/text_engine.rs"]
 mod text_engine;
 #[path = "main/text_frame.rs"]
@@ -35,6 +37,7 @@ include!("main/crate_prelude.rs");
 use icon_engine::*;
 use icon_frame::*;
 use scene_types::*;
+use svg_geometry::*;
 use text_engine::*;
 use text_frame::*;
 
