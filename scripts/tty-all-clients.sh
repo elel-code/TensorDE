@@ -23,12 +23,6 @@ if [[ ! -x "$singbox" ]]; then
     printf 'GUI.for.SingBox is not executable: %s\n' "$singbox" >&2
     exit 127
 fi
-for process in /proc/[0-9]*; do
-    if [[ "$process/exe" -ef "$singbox" ]]; then
-        printf 'Close the existing GUI.for.SingBox instance before this Tensor smoke run.\n' >&2
-        exit 1
-    fi
-done
 
 exec uv run "$root/scripts/tty.py" \
     --fcitx \

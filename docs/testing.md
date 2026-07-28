@@ -122,9 +122,7 @@ scripts/tty-all-clients.sh
 
 It enables Fcitx, waits for its Tensor input-method keyboard grab, then starts
 both clients for 60 seconds. `scripts/tty-all-clients.sh forever` leaves the
-session running until it is stopped. The shortcut refuses to use GUI.for.SingBox
-while its niri instance is still running, avoiding its shared port/state from
-turning a Tensor test into a false result.
+session running until it is stopped.
 
 Any client command follows this same path; it captures the application's output
 in the launcher log and never supplies the suspended host's `DISPLAY`. This is
