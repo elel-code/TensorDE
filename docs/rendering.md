@@ -190,7 +190,9 @@ images and draw after all client content. Core and cursor-shape requests require
 pointer-enter or tablet-proximity serial even when updating the current cursor surface. Pixel data
 is copied only once into the persistent Vulkan
 staging allocation when an image version is imported; normal cursor frames carry only stable buffer
-IDs and transforms. Animated XCursor frames of the selected nominal size are all uploaded during
+IDs and transforms. Cursor overlays and their descriptor indices share fixed 66-slot inline
+storage, so pointer/tablet/DnD descriptor preparation does not allocate per frame. Animated XCursor
+frames of the selected nominal size are all uploaded during
 that cold load, then a dedicated one-shot timerfd advances their IDs through Compio io_uring
 completions; there is no readiness loop or periodic polling. A completion advances only active
 named cursors and queues the outputs intersecting their complete old/new extents. The small

@@ -4,7 +4,7 @@ use tensor_util::Rect;
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
-    render::{CursorOverlay, CursorOverlays},
+    render::{CursorOverlay, CursorOverlays, cursor::MAX_CURSOR_OVERLAYS},
     scene::{
         ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceAlpha,
         SurfaceLayer, SurfaceSampleTransform,
@@ -24,7 +24,7 @@ pub(crate) struct FrameDrawPlan {
     focus_rings: Vec<FocusRingDraw>,
     scene_draws: Vec<SceneDrawCommand>,
     cursors: CursorOverlays,
-    cursor_image_descriptors: Vec<Option<u32>>,
+    cursor_image_descriptors: [Option<u32>; MAX_CURSOR_OVERLAYS],
 }
 
 /// One compositor scene command in back-to-front order.
@@ -169,18 +169,15 @@ impl FrameDrawPlan {
             }
         }
 
-        let cursor_image_descriptors = cursors
-            .as_slice()
-            .iter()
-            .map(|cursor| {
-                cursor
-                    .texture
-                    .map(|texture| {
-                        image_descriptor_for(texture.buffer_id, &mut images, &mut image_descriptors)
-                    })
-                    .transpose()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut cursor_image_descriptors = [None; MAX_CURSOR_OVERLAYS];
+        for (descriptor, cursor) in cursor_image_descriptors.iter_mut().zip(cursors.as_slice()) {
+            *descriptor = cursor
+                .texture
+                .map(|texture| {
+                    image_descriptor_for(texture.buffer_id, &mut images, &mut image_descriptors)
+                })
+                .transpose()?;
+        }
 
         Ok(Self {
             images,
@@ -217,7 +214,7 @@ impl FrameDrawPlan {
     }
 
     pub(crate) fn cursor_image_descriptors(&self) -> &[Option<u32>] {
-        &self.cursor_image_descriptors
+        &self.cursor_image_descriptors[..self.cursors.as_slice().len()]
     }
 }
 
