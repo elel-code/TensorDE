@@ -4,6 +4,7 @@ use std::{
 };
 
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
+use wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2;
 use wayland_server::{
     Resource,
     backend::ClientId,
@@ -47,6 +48,10 @@ impl KeymapFile {
     fn send(&self, keyboard: &WlKeyboard) {
         keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, self.fd.as_fd(), self.size);
     }
+
+    fn send_input_method(&self, keyboard: &ZwpInputMethodKeyboardGrabV2) {
+        keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, self.fd.as_fd(), self.size);
+    }
 }
 
 fn write_all_at(fd: &impl AsFd, mut offset: u64, mut bytes: &[u8]) -> io::Result<()> {
@@ -72,6 +77,15 @@ pub(super) struct KeyboardSnapshot {
 }
 
 impl SeatProtocol {
+    pub(crate) fn initialize_input_method_grab(&self, keyboard: &ZwpInputMethodKeyboardGrabV2) {
+        if self.keyboard_enabled
+            && let Some(keymap) = &self.keymap
+        {
+            keymap.send_input_method(keyboard);
+        }
+        keyboard.repeat_info(self.repeat_rate.max(0), self.repeat_delay.max(0));
+    }
+
     pub(crate) fn set_keyboard_enabled(
         &mut self,
         enabled: bool,

@@ -30,6 +30,14 @@ service's fixed maximum number of submitted operations. Capacities are rounded t
 once at startup; Tensor neither allocates Compio's 1024-entry default ring per service nor grows a
 ring on a latency-sensitive path.
 
+`wayland-backend` exposes one opaque aggregate fd whose internal client membership changes after
+an accepted connection is inserted. Tensor dispatches any already-buffered registry burst at that
+accept completion, then publishes one atomically coalesced refresh command. The existing
+`IORING_OP_POLL_ADD` is explicitly cancelled, its cancellation CQE is consumed, and only then is a
+replacement operation submitted. This is a submit → complete operation lifecycle; it is not an
+epoll/readiness loop, and the fixed command bridge reserves capacity for both one completion
+disposition and one concurrent membership refresh.
+
 Vulkan output submissions export a binary sync-file for KMS. Tensor duplicates only that sync-file
 and submits a one-shot io_uring fence wait on a Compio service; the worker never receives a Vulkan
 object, dma-buf, DRM device, or KMS state. Fence signal produces a value-only GPU timeline event and
@@ -241,6 +249,18 @@ fixed at 16 entries, and every unmap advances a mapping generation so a delayed 
 without authorizing a new mapping. A detach commit never emits the next initial configure; a new
 empty commit is required first. Popup placement uses saturating coordinates and bounded parent
 walks. There is no alternate XDG state, wrapper, cached state, or parallel path.
+
+Text entry is direct Tensor state: `zwp_text_input_v3` owns per-client double-buffered application
+state and commit serials, while the single `zwp_input_method_v2` owner receives
+activate/deactivate transactions and returns edits against the matching done serial. Text and
+preedit indices are validated as UTF-8 byte boundaries and strings are capped at 4000 bytes;
+invalid active objects fail closed, while an unavailable second input-method object is completely
+inert as required by the protocol. Keyboard grabs receive keymap, repeat, and modifier state and
+pin each press/release pair to its original application or input-method route. Input-method popup
+surfaces use a startup-reserved fixed-capacity stacking list and are ordinary Tensor surface trees
+anchored below the focused cursor rectangle. They inherit the owning view's fractional scale and
+transform, participate in output enter/leave, frame callbacks, presentation feedback, damage, and
+hit testing, and disappear on deactivation.
 
 Tensor also directly owns the wlr-layer-shell v5 global, wire requests, double-buffered role
 state, and fixed-capacity configure queues; there is no alternate layer-shell handler or wrapper.

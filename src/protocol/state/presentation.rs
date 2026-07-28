@@ -206,6 +206,18 @@ impl RuntimeState {
                     &mut is_submitted,
                     &mut feedback_flags,
                 );
+                if self.input_method_popup_root().as_ref() == Some(root.as_ref()) {
+                    self.protocol_globals
+                        .input_method
+                        .for_each_visible_popup(|popup| {
+                            take_presentation_feedback_surface_tree(
+                                popup.wl_surface(),
+                                &mut feedback,
+                                &mut is_submitted,
+                                &mut feedback_flags,
+                            );
+                        });
+                }
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
                     take_presentation_feedback_surface_tree(
@@ -264,6 +276,17 @@ impl RuntimeState {
                 .is_some_and(|view_id| submitted_views.contains(&view_id))
             {
                 window.send_frame(&self.popups, time, &mut is_submitted);
+                if self.input_method_popup_root().as_ref() == Some(root.as_ref()) {
+                    self.protocol_globals
+                        .input_method
+                        .for_each_visible_popup(|popup| {
+                            send_frame_callbacks_surface_tree(
+                                popup.wl_surface(),
+                                time,
+                                &mut is_submitted,
+                            );
+                        });
+                }
                 #[cfg(feature = "xwayland")]
                 for popup in self.x11_popup_surfaces_for_root(&root) {
                     send_frame_callbacks_surface_tree(&popup, time, &mut is_submitted);

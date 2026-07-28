@@ -4,6 +4,8 @@ mod capture_shm;
 mod client;
 mod display;
 mod event_loop;
+#[cfg(feature = "tty")]
+mod input_method;
 pub(in crate::protocol) mod layer;
 #[cfg(feature = "tty")]
 mod output;
@@ -527,10 +529,12 @@ impl RuntimeState {
     }
 
     pub(crate) fn update_surface_scale(&self, surface: &WlSurface) {
-        let mut root = surface.clone();
-        while let Some(parent) = get_parent(&root) {
-            root = parent;
-        }
+        #[cfg(feature = "tty")]
+        let root = self
+            .owning_view_root(surface)
+            .unwrap_or_else(|| self.protocol_role_root(surface));
+        #[cfg(not(feature = "tty"))]
+        let root = self.protocol_role_root(surface);
         let (scale, transform) = self
             .space
             .elements()
@@ -547,6 +551,22 @@ impl RuntimeState {
         });
         self.protocol_globals
             .set_preferred_fractional_scale(surface, scale);
+    }
+
+    fn protocol_role_root(&self, surface: &WlSurface) -> WlSurface {
+        let mut tree_root = surface.clone();
+        while let Some(parent) = get_parent(&tree_root) {
+            tree_root = parent;
+        }
+        if let Some(popup) = self.popups.find_popup(&tree_root)
+            && let Ok(root) = find_popup_root_surface(&popup)
+        {
+            return root;
+        }
+        if let Some(parent) = self.protocol_globals.input_method.popup_parent(&tree_root) {
+            return self.protocol_role_root(&parent);
+        }
+        tree_root
     }
 
     fn update_window_surface_state(&self, window: &ProtocolWindow) {

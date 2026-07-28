@@ -88,6 +88,9 @@ impl RuntimeState {
         {
             return Some(root);
         }
+        if let Some(parent) = self.protocol_globals.input_method.popup_parent(&tree_root) {
+            return self.owning_view_root(&parent);
+        }
         #[cfg(feature = "xwayland")]
         if let Some(root) = self.x11_popup_owner_for_surface(&tree_root) {
             return Some(root);
@@ -141,6 +144,37 @@ impl RuntimeState {
         #[cfg(feature = "xwayland")]
         for (popup, base) in self.x11_popup_surface_trees_for_root(root) {
             collect_surface_tree(&popup, base, SurfaceLayer::Popup, &mut commits);
+        }
+
+        let input_popup_base = self
+            .protocol_globals
+            .input_method
+            .active_popup_context()
+            .and_then(|(focused, rectangle)| {
+                let focused_offset = commits
+                    .iter()
+                    .find(|(surface, _)| *surface == focused.id())?
+                    .1
+                    .local_offset;
+                Some((
+                    focused_offset.0.saturating_add(rectangle.loc.x),
+                    focused_offset
+                        .1
+                        .saturating_add(rectangle.loc.y)
+                        .saturating_add(rectangle.size.h),
+                ))
+            });
+        if let Some(base) = input_popup_base {
+            self.protocol_globals
+                .input_method
+                .for_each_visible_popup(|popup| {
+                    collect_surface_tree(
+                        popup.wl_surface(),
+                        base,
+                        SurfaceLayer::Popup,
+                        &mut commits,
+                    );
+                });
         }
 
         let Some(update) = self.surface_buffers.update_view_tree(&root.id(), commits) else {

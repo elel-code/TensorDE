@@ -44,7 +44,9 @@ mod worker;
 
 pub use bridge::{BridgeStats, TrySendError, WorkerBridge, WorkerRx, WorkerTx};
 pub use completion::{CompletionRelayError, EventfdCompletionRelay};
-pub use fd_completion::{OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime};
+pub use fd_completion::{
+    OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime, OpaqueFdRefresh,
+};
 pub use inject::{InjectSummary, inject_events};
 pub use local::{LocalCompletionQueue, LocalQueueOverflow};
 pub use reactor::{

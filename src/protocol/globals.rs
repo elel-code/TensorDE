@@ -21,6 +21,7 @@ pub(in crate::protocol) mod idle_inhibit;
 pub(in crate::protocol) mod idle_notify;
 pub(in crate::protocol) mod image_capture_source;
 pub(in crate::protocol) mod image_copy_capture;
+pub(in crate::protocol) mod input_method;
 pub(in crate::protocol) mod layer_shell;
 pub(in crate::protocol) mod output;
 pub(in crate::protocol) mod pointer_constraints;
@@ -55,6 +56,7 @@ use idle_inhibit::IdleInhibitProtocol;
 use idle_notify::IdleNotifyProtocol;
 use image_capture_source::ImageCaptureSourceProtocol;
 use image_copy_capture::ImageCopyCaptureProtocol;
+use input_method::InputMethodProtocol;
 use layer_shell::LayerShellProtocol;
 use output::OutputProtocol;
 use pointer_constraints::PointerConstraintsProtocol;
@@ -114,6 +116,7 @@ pub(crate) struct ProtocolGlobals {
     output_management: OutputManagementState,
     image_capture_source: ImageCaptureSourceProtocol,
     image_copy_capture: ImageCopyCaptureProtocol,
+    pub(super) input_method: InputMethodProtocol,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -174,6 +177,7 @@ impl ProtocolGlobals {
             // ext-image-capture-source + ext-image-copy-capture (prefer over wlr-screencopy).
             image_capture_source: ImageCaptureSourceProtocol::new(display, unrestricted),
             image_copy_capture: ImageCopyCaptureProtocol::new(display, unrestricted),
+            input_method: InputMethodProtocol::new(display),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
@@ -197,6 +201,7 @@ impl ProtocolGlobals {
         &mut self,
         surface: &wayland_server::protocol::wl_surface::WlSurface,
     ) -> Vec<SurfaceBarrier> {
+        self.input_method.surface_destroyed(surface);
         self.pointer_constraints.remove_surface(surface);
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
@@ -309,6 +314,7 @@ impl ProtocolGlobals {
             &self.output_management,
             &self.image_capture_source,
             &self.image_copy_capture,
+            &self.input_method,
         );
         ProtocolCapabilities {
             shm: true,
@@ -349,6 +355,8 @@ impl ProtocolGlobals {
             output_management: true,
             image_capture_source: true,
             image_copy_capture: true,
+            text_input_v3: true,
+            input_method_v2: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -399,6 +407,8 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) output_management: bool,
     pub(crate) image_capture_source: bool,
     pub(crate) image_copy_capture: bool,
+    pub(crate) text_input_v3: bool,
+    pub(crate) input_method_v2: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -477,6 +487,8 @@ mod tests {
                 output_management: true,
                 image_capture_source: true,
                 image_copy_capture: true,
+                text_input_v3: true,
+                input_method_v2: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

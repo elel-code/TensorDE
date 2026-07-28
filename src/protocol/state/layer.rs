@@ -208,6 +208,11 @@ impl RuntimeState {
             self.focus_layer_surface(layer, serial);
             return;
         }
+        // Clicking an input-method candidate must not move keyboard focus away
+        // from the application whose text-input keeps that popup active.
+        if self.input_method_popup_under(location).is_some() {
+            return;
+        }
         let mut dnd_active = None;
         let window = self
             .space
@@ -539,6 +544,9 @@ impl RuntimeState {
         &self,
         location: LogicalPoint<f64>,
     ) -> Option<(WlSurface, LogicalPoint<f64>)> {
+        if let Some(hit) = self.input_method_popup_under(location) {
+            return Some(hit);
+        }
         let mut dnd_active = None;
         let hit = self.space.element_under(&self.popups, location, || {
             *dnd_active.get_or_insert_with(|| self.xwayland_dnd_pointer_grab_active())

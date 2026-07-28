@@ -8,7 +8,8 @@
 //! backend, preventing a level-triggered completion loop.
 
 use tensor_runtime::{
-    OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime, WorkerRx, WorkerTx,
+    OpaqueFdCompletion, OpaqueFdCompletionError, OpaqueFdCompletionRuntime, OpaqueFdRefresh,
+    WorkerRx, WorkerTx,
 };
 use wayland_server::Display;
 
@@ -38,6 +39,10 @@ impl WaylandDisplayRuntime {
             control,
         )
         .map(|runtime| Self { _runtime: runtime })
+    }
+
+    pub(crate) fn refresh_handle(&self) -> OpaqueFdRefresh {
+        self._runtime.refresh_handle()
     }
 }
 

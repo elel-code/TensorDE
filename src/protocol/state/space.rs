@@ -390,7 +390,7 @@ fn leave_window_output(window: &ProtocolWindow, output: &Output, popups: &PopupM
     }
 }
 
-fn update_surface_tree_output(
+pub(super) fn update_surface_tree_output(
     output: &Output,
     output_overlap: Option<LogicalRect<i32>>,
     surface: &WlSurface,

@@ -59,6 +59,12 @@ impl RuntimeState {
         let mut reflowed = false;
         let root = surface_root(surface);
         #[cfg(feature = "tty")]
+        let input_popup_commit = self
+            .protocol_globals
+            .input_method
+            .popup_parent(&root)
+            .is_some();
+        #[cfg(feature = "tty")]
         let root = self.owning_view_root(surface).unwrap_or(root);
 
         if is_sync_subsurface(surface) {
@@ -133,6 +139,10 @@ impl RuntimeState {
                 self.request_redraw_workspace();
             }
         }
+        #[cfg(feature = "tty")]
+        if input_popup_commit {
+            self.refresh_input_method_popup_outputs();
+        }
 
         if let Some(popup) = self.protocol_globals.xdg_shell.popup_for_surface(surface)
             && !popup.initial_configure_sent()
@@ -147,6 +157,8 @@ impl RuntimeState {
     }
 
     pub(in crate::protocol) fn surface_destroyed_applied(&mut self, surface: &WlSurface) {
+        #[cfg(feature = "tty")]
+        let previous_input_popup_root = self.input_method_popup_root();
         self.input_seat.surface_destroyed(surface);
         self.selection_surface_destroyed(surface);
         self.layer_surface_wl_destroyed(surface);
@@ -162,6 +174,8 @@ impl RuntimeState {
         }
         self.protocol_globals.xdg_shell.remove_wl_surface(surface);
         let released = self.protocol_globals.remove_surface(surface);
+        #[cfg(feature = "tty")]
+        self.refresh_input_method_popups(previous_input_popup_root);
         let notify_destroyed_client = !released.is_empty();
         self.release_surface_barriers(released);
         if notify_destroyed_client && let Some(client) = surface.client() {

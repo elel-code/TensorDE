@@ -163,6 +163,7 @@ impl RuntimeState {
         managed.output.deactivate();
         self.unregister_present_output(id);
         self.remove_layer_output(&managed.output);
+        self.leave_input_method_popups_from_output(&managed.output);
         self.space.unmap_output(&managed.output, &self.popups);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.unregister_output(RenderOutputId {

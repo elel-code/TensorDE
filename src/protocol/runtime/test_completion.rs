@@ -20,6 +20,7 @@ pub(super) struct TestCompletionBridges {
     pub(super) socket_control: WorkerRx<WaylandSocketControlEvent>,
     pub(super) display: WorkerRx<WaylandDisplayEvent>,
     pub(super) display_control: WorkerRx<WaylandDisplayControlEvent>,
+    pub(super) display_refresh: tensor_runtime::OpaqueFdRefresh,
     #[cfg(feature = "xwayland")]
     pub(super) xwayland: WorkerRx<XWaylandStartupEvent>,
     #[cfg(feature = "xwayland")]
@@ -64,8 +65,16 @@ impl TestCompletionLoop {
         }
 
         let bridges = self.bridges.as_ref().expect("checked test bridges");
-        drain_wayland_socket_events(&bridges.clients, &bridges.socket_control, state)
-            .map_err(ProtocolError::TestCompletion)?;
+        let inserted =
+            drain_wayland_socket_events(&bridges.clients, &bridges.socket_control, state)
+                .map_err(ProtocolError::TestCompletion)?;
+        if inserted {
+            bridges.display_refresh.refresh().map_err(|error| {
+                ProtocolError::TestCompletion(format!(
+                    "Wayland display refresh was rejected: {error:?}"
+                ))
+            })?;
+        }
         drain_wayland_display_events(&bridges.display, &bridges.display_control, state)
             .map_err(ProtocolError::TestCompletion)?;
         #[cfg(feature = "xwayland")]

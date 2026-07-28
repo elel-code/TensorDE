@@ -68,6 +68,7 @@ pub(crate) struct KeyboardState {
     keymap: String,
     pressed: [u64; KEY_WORDS],
     forwarded: [u64; KEY_WORDS],
+    input_method_forwarded: [u64; KEY_WORDS],
     modifiers: ModifiersState,
     focus: Option<WlSurface>,
     last_press_serial: Option<Serial>,
@@ -93,6 +94,7 @@ impl KeyboardState {
             keymap: keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1),
             pressed: [0; KEY_WORDS],
             forwarded: [0; KEY_WORDS],
+            input_method_forwarded: [0; KEY_WORDS],
             modifiers,
             focus: None,
             last_press_serial: None,
@@ -246,10 +248,28 @@ impl InputSeat {
         }
     }
 
+    pub(crate) fn set_key_forwarded_to_input_method(&mut self, key: u32, forwarded: bool) {
+        if let Some(keyboard) = self.keyboard.as_mut() {
+            set_bit(&mut keyboard.input_method_forwarded, key, forwarded);
+        }
+    }
+
     pub(crate) fn key_was_forwarded(&self, key: u32) -> bool {
         self.keyboard
             .as_ref()
             .is_some_and(|keyboard| bit_is_set(&keyboard.forwarded, key))
+    }
+
+    pub(crate) fn key_was_forwarded_to_input_method(&self, key: u32) -> bool {
+        self.keyboard
+            .as_ref()
+            .is_some_and(|keyboard| bit_is_set(&keyboard.input_method_forwarded, key))
+    }
+
+    pub(crate) fn clear_input_method_key_routes(&mut self) {
+        if let Some(keyboard) = self.keyboard.as_mut() {
+            keyboard.input_method_forwarded.fill(0);
+        }
     }
 
     pub(crate) fn keyboard_modifiers(&self) -> ModifiersState {
@@ -392,6 +412,8 @@ impl RuntimeState {
         {
             return;
         }
+        #[cfg(feature = "tty")]
+        let previous_input_popup_root = self.input_method_popup_root();
         let old = self.input_seat.set_keyboard_focus(focus.clone());
         if let Some(old) = old {
             self.protocol_globals.seat.keyboard_leave(&old, serial);
@@ -414,6 +436,9 @@ impl RuntimeState {
         self.protocol_globals
             .activation
             .sync_keyboard_focus(focus.as_ref());
+        self.protocol_globals.input_method.set_focus(focus.as_ref());
+        #[cfg(feature = "tty")]
+        self.refresh_input_method_popups(previous_input_popup_root);
         self.protocol_globals
             .selection
             .set_focus(focus.and_then(|surface| surface.client().map(|client| client.id())));

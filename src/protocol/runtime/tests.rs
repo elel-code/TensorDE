@@ -47,6 +47,8 @@ mod dmabuf;
 mod foreign_toplevel;
 mod idle_notify;
 mod inhibitors;
+#[cfg(feature = "tty")]
+mod input_method;
 mod invariants;
 mod output;
 #[cfg(feature = "tty")]

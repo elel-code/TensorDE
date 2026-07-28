@@ -119,7 +119,9 @@ impl RuntimeState {
             return;
         }
         let popup = super::super::PopupKind::from(popup);
+        let surface = popup.wl_surface().clone();
         self.unconstrain_popup(&popup);
         self.popups.commit(&popup);
+        self.update_surface_scale(&surface);
     }
 }

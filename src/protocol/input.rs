@@ -114,6 +114,20 @@ impl RuntimeState {
                         .set_keyboard_enabled(true, Some(&keymap))
                 }) {
                 Ok(()) => {
+                    if let Some(grab) = self.protocol_globals.input_method.keyboard_grab_resource()
+                    {
+                        self.protocol_globals
+                            .seat
+                            .initialize_input_method_grab(&grab);
+                        let modifiers = self.input_seat.keyboard_modifiers().serialized;
+                        grab.modifiers(
+                            next_serial().into(),
+                            modifiers.depressed,
+                            modifiers.latched,
+                            modifiers.locked,
+                            modifiers.layout,
+                        );
+                    }
                     if self.session_is_locked() {
                         if let Some(surface) =
                             self.protocol_globals.session_lock.first_active_surface()
@@ -218,23 +232,43 @@ impl RuntimeState {
                 intercepted = true;
             }
         }
-        if !update.pressed && !self.input_seat.key_was_forwarded(update.evdev_key) {
+        let application_route = self.input_seat.key_was_forwarded(update.evdev_key);
+        let input_method_route = self
+            .input_seat
+            .key_was_forwarded_to_input_method(update.evdev_key);
+        if !update.pressed && !application_route && !input_method_route {
             intercepted = true;
         }
         if !intercepted {
-            if update.modifiers_changed {
-                self.protocol_globals
-                    .seat
-                    .modifiers(update.modifiers, serial);
+            let start_input_method_route = update.pressed
+                && !application_route
+                && self.protocol_globals.input_method.keyboard_grab_active();
+            if input_method_route || start_input_method_route {
+                let _ = self.protocol_globals.input_method.forward_key(
+                    update.evdev_key,
+                    update.pressed,
+                    serial,
+                    event.time_msec(),
+                    update.modifiers_changed.then_some(update.modifiers),
+                );
+                self.input_seat
+                    .set_key_forwarded_to_input_method(update.evdev_key, update.pressed);
+                intercepted = true;
+            } else {
+                if update.modifiers_changed {
+                    self.protocol_globals
+                        .seat
+                        .modifiers(update.modifiers, serial);
+                }
+                self.protocol_globals.seat.key(
+                    update.evdev_key,
+                    update.pressed,
+                    serial,
+                    event.time_msec(),
+                );
+                self.input_seat
+                    .set_key_forwarded(update.evdev_key, update.pressed);
             }
-            self.protocol_globals.seat.key(
-                update.evdev_key,
-                update.pressed,
-                serial,
-                event.time_msec(),
-            );
-            self.input_seat
-                .set_key_forwarded(update.evdev_key, update.pressed);
         }
         if update.pressed && !intercepted {
             self.protocol_globals

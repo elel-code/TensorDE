@@ -73,6 +73,14 @@ pointer-gestures, pointer-constraints, relative-pointer, tablet-v2, idle-inhibit
 keyboard-shortcuts-inhibit, input-method-v2, virtual-keyboard-v1, xwayland-keyboard-grab, …
 (Prefer staging replacements when they supersede these.)
 
+`text-input-v3` and `input-method-v2` are paired direct implementations, not advertised marker
+globals. Tensor owns focus enter/leave, double-buffered state, commit/done serial validation, the
+single-input-method rule, and exclusive keyboard routing. The input-method global is hidden from
+security-context sandbox clients. Candidate popups are compositor-thread surface trees attached
+to the active text cursor; they use the focused view's output scale/transform and normal Tensor
+scene, output, callback, presentation, and input paths. There is no Smithay adapter or alternate
+popup placement path.
+
 ### Tier 4 — Community (documented exceptions)
 wlr-layer-shell (no ext equivalent; full stack),
 wlr-data-control (compat beside ext-data-control),

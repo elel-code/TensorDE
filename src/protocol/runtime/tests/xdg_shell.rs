@@ -11,6 +11,9 @@ use wayland_client::{
     globals::{GlobalListContents, registry_queue_init},
     protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
 };
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
@@ -20,6 +23,7 @@ use super::*;
 #[derive(Default)]
 struct XdgClient {
     configures: Vec<u32>,
+    preferred_scales: Vec<u32>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for XdgClient {
@@ -42,6 +46,22 @@ delegate_noop!(XdgClient: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(XdgClient: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(XdgClient: ignore xdg_popup::XdgPopup);
 delegate_noop!(XdgClient: ignore xdg_toplevel::XdgToplevel);
+delegate_noop!(XdgClient: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for XdgClient {
+    fn event(
+        state: &mut Self,
+        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.preferred_scales.push(scale);
+        }
+    }
+}
 
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for XdgClient {
     fn event(
@@ -245,6 +265,64 @@ fn stale_configure_cannot_authorize_an_xdg_toplevel_remap() {
     client.join().unwrap();
 }
 
+#[test]
+fn xdg_popup_inherits_fractional_scale_after_role_attachment() {
+    let mut runtime = test_runtime();
+    install_test_output(&mut runtime);
+    let socket_path = runtime_socket(&runtime);
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (result_tx, result_rx) = mpsc::sync_channel(0);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<XdgClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+            .unwrap();
+        let shm = globals
+            .bind::<wl_shm::WlShm, _, _>(&handle, 1..=2, ())
+            .unwrap();
+        let base = globals
+            .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
+            .unwrap();
+        let fractional = globals
+            .bind::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
+                &handle,
+                1..=1,
+                (),
+            )
+            .unwrap();
+
+        let root = compositor.create_surface(&handle, ());
+        let root_xdg = base.get_xdg_surface(&root, &handle, ());
+        let _toplevel = root_xdg.get_toplevel(&handle, ());
+        let buffer = create_shm_buffer(&shm, &handle, 64, 48);
+        let mut state = XdgClient::default();
+        root.commit();
+        dispatch_until_configures(&mut queue, &mut state, 1);
+        root_xdg.ack_configure(state.configures[0]);
+        root.attach(Some(&buffer), 0, 0);
+        root.commit();
+        queue.roundtrip(&mut state).unwrap();
+
+        let popup_surface = compositor.create_surface(&handle, ());
+        let _popup_scale = fractional.get_fractional_scale(&popup_surface, &handle, ());
+        let popup_xdg = base.get_xdg_surface(&popup_surface, &handle, ());
+        let positioner = base.create_positioner(&handle, ());
+        positioner.set_size(32, 24);
+        positioner.set_anchor_rect(0, 0, 1, 1);
+        let _popup = popup_xdg.get_popup(Some(&root_xdg), &positioner, &handle, ());
+        queue.roundtrip(&mut state).unwrap();
+        result_tx.send(state.preferred_scales).unwrap();
+    });
+
+    let scales = dispatch_until_result(&mut runtime, &result_rx);
+    assert_eq!(scales.last(), Some(&150));
+    client.join().unwrap();
+}
+
 fn test_runtime() -> WaylandRuntime {
     WaylandRuntime::with_appearance(
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
@@ -305,4 +383,17 @@ fn dispatch_until_error(
         }
     }
     panic!("XDG protocol error did not arrive before the dispatch limit");
+}
+
+fn dispatch_until_result<T>(runtime: &mut WaylandRuntime, results: &mpsc::Receiver<T>) -> T {
+    for _ in 0..200 {
+        runtime
+            .event_loop
+            .dispatch(Duration::from_millis(5), &mut runtime.state)
+            .unwrap();
+        if let Ok(result) = results.try_recv() {
+            return result;
+        }
+    }
+    panic!("XDG client result did not arrive before the dispatch limit");
 }

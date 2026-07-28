@@ -11,9 +11,11 @@ use super::{Popup, Toplevel};
 impl RuntimeState {
     pub(in crate::protocol) fn register_xdg_popup(&mut self, popup: Popup) {
         let popup = PopupKind::from(popup);
+        let surface = popup.wl_surface().clone();
         self.unconstrain_popup(&popup);
-        if let Err(error) = self.popups.track_popup(popup) {
-            warn!(%error, "failed to track xdg popup");
+        match self.popups.track_popup(popup) {
+            Ok(()) => self.update_surface_scale(&surface),
+            Err(error) => warn!(%error, "failed to track xdg popup"),
         }
     }
 

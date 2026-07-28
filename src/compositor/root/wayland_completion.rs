@@ -21,6 +21,7 @@ pub(super) struct WaylandCompletionBridges {
     socket_control: WorkerRx<WaylandSocketControlEvent>,
     display: WorkerRx<WaylandDisplayEvent>,
     display_control: WorkerRx<WaylandDisplayControlEvent>,
+    display_refresh: tensor_runtime::OpaqueFdRefresh,
     #[cfg(feature = "xwayland")]
     xwayland: WorkerRx<XWaylandStartupEvent>,
     #[cfg(feature = "xwayland")]
@@ -51,6 +52,9 @@ impl WaylandCompletionBridges {
             Arc::clone(&wake),
         );
         protocol.install_display_runtime(display_sender, display_control_sender)?;
+        let display_refresh = protocol
+            .display_refresh_handle()
+            .expect("display runtime was installed above");
 
         #[cfg(feature = "xwayland")]
         let (xwayland_sender, xwayland) =
@@ -81,6 +85,7 @@ impl WaylandCompletionBridges {
             socket_control,
             display,
             display_control,
+            display_refresh,
             #[cfg(feature = "xwayland")]
             xwayland,
             #[cfg(feature = "xwayland")]
@@ -93,8 +98,13 @@ impl WaylandCompletionBridges {
     }
 
     pub(super) fn drain(&self, state: &mut RuntimeState) -> Result<(), String> {
-        drain_wayland_socket_events(&self.clients, &self.socket_control, state)
+        let inserted = drain_wayland_socket_events(&self.clients, &self.socket_control, state)
             .map_err(|message| format!("Wayland accept completion failed: {message}"))?;
+        if inserted {
+            self.display_refresh
+                .refresh()
+                .map_err(|error| format!("Wayland display refresh was rejected: {error:?}"))?;
+        }
         drain_wayland_display_events(&self.display, &self.display_control, state)
             .map_err(|message| format!("Wayland display completion failed: {message}"))?;
         #[cfg(feature = "xwayland")]

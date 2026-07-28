@@ -166,19 +166,35 @@ pub(crate) fn drain_wayland_socket_events(
     clients: &WorkerRx<StdUnixStream>,
     control: &WorkerRx<WaylandSocketControlEvent>,
     state: &mut RuntimeState,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let mut inserted = false;
     while let Some(stream) = clients.try_recv() {
         if let Err(error) = state
             .display_handle
             .insert_client(stream, Arc::new(WaylandClientState::default()))
         {
             warn!(%error, "failed to insert Wayland client");
+        } else {
+            inserted = true;
         }
+    }
+    // An accepted client can have its registry burst buffered before it is
+    // inserted into wayland-backend's aggregate fd. Consume that burst at the
+    // accept-completion boundary so no outer aggregate-fd edge can be lost
+    // between epoll membership change and io_uring poll rearm.
+    if inserted {
+        state
+            .dispatch_wayland_clients()
+            .map_err(|error| error.to_string())?;
+        state
+            .display_handle
+            .flush_clients()
+            .map_err(|error| error.to_string())?;
     }
     if let Some(WaylandSocketControlEvent::RuntimeFailed(message)) = control.try_recv() {
         return Err(message);
     }
-    Ok(())
+    Ok(inserted)
 }
 
 #[derive(Debug, Error)]

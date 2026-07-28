@@ -34,7 +34,17 @@ use crate::{
 #[derive(Clone, Copy)]
 enum CompletionCommand {
     Rearm,
+    Refresh,
     Finish,
+}
+
+struct CompletionLoopState {
+    pending_commands: WorkerRx<CompletionCommand>,
+    commands: WorkerTx<CompletionCommand>,
+    refresh_pending: Arc<AtomicBool>,
+    completions: WorkerTx<OpaqueFdCompletion>,
+    failures: WorkerTx<String>,
+    stopping: Arc<AtomicBool>,
 }
 
 /// One completed opaque-fd operation and its single-use disposition command.
@@ -57,8 +67,31 @@ impl OpaqueFdCompletion {
 /// Owns one Compio thread and at most one submitted opaque-fd operation.
 pub struct OpaqueFdCompletionRuntime {
     wake: Arc<EventfdWake>,
+    commands: WorkerTx<CompletionCommand>,
+    refresh_pending: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+}
+
+/// Cloneable command handle that cancels and resubmits the current opaque-fd
+/// operation after the source's internal membership changes.
+#[derive(Clone)]
+pub struct OpaqueFdRefresh {
+    commands: WorkerTx<CompletionCommand>,
+    pending: Arc<AtomicBool>,
+}
+
+impl OpaqueFdRefresh {
+    pub fn refresh(&self) -> Result<(), TrySendError> {
+        if self.pending.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if let Err(error) = self.commands.try_send(CompletionCommand::Refresh) {
+            self.pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 impl OpaqueFdCompletionRuntime {
@@ -72,9 +105,14 @@ impl OpaqueFdCompletionRuntime {
         let poll_fd = fcntl_dupfd_cloexec(source.as_fd(), 0)
             .map_err(|error| OpaqueFdCompletionError::Duplicate(io::Error::from(error)))?;
         let wake = Arc::new(EventfdWake::new()?);
+        // One disposition plus one concurrent membership refresh. Both are
+        // fixed-capacity and coalesced by the eventfd completion.
         let (commands, pending_commands) =
-            WorkerBridge::bounded_with_wake(1, Arc::clone(&wake) as Arc<dyn WakeSink>);
+            WorkerBridge::bounded_with_wake(2, Arc::clone(&wake) as Arc<dyn WakeSink>);
+        let refresh_pending = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
+        let runtime_commands = commands.clone();
+        let runtime_refresh_pending = Arc::clone(&refresh_pending);
         let thread_wake = Arc::clone(&wake);
         let thread_stopping = Arc::clone(&stopping);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -111,11 +149,14 @@ impl OpaqueFdCompletionRuntime {
                     run_completion_loop(
                         &poll_fd,
                         &mut command_completion,
-                        pending_commands,
-                        commands,
-                        completions,
-                        failures,
-                        thread_stopping,
+                        CompletionLoopState {
+                            pending_commands,
+                            commands,
+                            refresh_pending,
+                            completions,
+                            failures,
+                            stopping: thread_stopping,
+                        },
                     )
                     .await;
                 });
@@ -125,6 +166,8 @@ impl OpaqueFdCompletionRuntime {
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 wake,
+                commands: runtime_commands,
+                refresh_pending: runtime_refresh_pending,
                 stopping,
                 join: Some(join),
             }),
@@ -136,6 +179,13 @@ impl OpaqueFdCompletionRuntime {
                 let _ = join.join();
                 Err(OpaqueFdCompletionError::StartupDisconnected)
             }
+        }
+    }
+
+    pub fn refresh_handle(&self) -> OpaqueFdRefresh {
+        OpaqueFdRefresh {
+            commands: self.commands.clone(),
+            pending: Arc::clone(&self.refresh_pending),
         }
     }
 }
@@ -153,64 +203,123 @@ impl Drop for OpaqueFdCompletionRuntime {
 async fn run_completion_loop(
     poll_fd: &PollFd<OwnedFd>,
     command_completion: &mut EventfdCompletion,
-    pending_commands: WorkerRx<CompletionCommand>,
-    commands: WorkerTx<CompletionCommand>,
-    completions: WorkerTx<OpaqueFdCompletion>,
-    failures: WorkerTx<String>,
-    stopping: Arc<AtomicBool>,
+    state: CompletionLoopState,
 ) {
+    let CompletionLoopState {
+        pending_commands,
+        commands,
+        refresh_pending,
+        completions,
+        failures,
+        stopping,
+    } = state;
     loop {
-        let source_cancel = CancelToken::new();
-        let source_wait = poll_fd.read_ready().with_cancel(source_cancel.clone());
-        let command_wait = command_completion.completed();
-        pin_mut!(source_wait, command_wait);
-        match select(source_wait, command_wait).await {
-            Either::Right((result, mut source_wait)) => {
-                if let Err(error) = result {
-                    source_cancel.cancel();
-                    let _ = source_wait.as_mut().await;
-                    emit_failure_unless_stopping(&failures, &stopping, error);
-                    return;
-                }
-                if stopping.load(Ordering::Acquire) {
-                    source_cancel.cancel();
-                    let _ = source_wait.as_mut().await;
+        // A replacement operation observes every membership change that
+        // happened before submission, so consume already-coalesced refreshes
+        // without spending queue capacity on an unnecessary cancel cycle.
+        while let Some(command) = pending_commands.try_recv() {
+            match command {
+                CompletionCommand::Refresh => {}
+                CompletionCommand::Rearm | CompletionCommand::Finish => {
+                    emit_failure(
+                        &failures,
+                        "opaque fd disposition arrived without a published completion",
+                    );
                     return;
                 }
             }
-            Either::Left((result, command_wait)) => {
-                if let Err(error) = result {
-                    emit_failure_unless_stopping(&failures, &stopping, error);
-                    return;
+        }
+        refresh_pending.store(false, Ordering::Release);
+        let source_completed = {
+            let source_cancel = CancelToken::new();
+            let source_wait = poll_fd.read_ready().with_cancel(source_cancel.clone());
+            let command_wait = command_completion.completed();
+            pin_mut!(source_wait, command_wait);
+            match select(source_wait, command_wait).await {
+                Either::Right((result, mut source_wait)) => {
+                    if let Err(error) = result {
+                        source_cancel.cancel();
+                        let _ = source_wait.as_mut().await;
+                        emit_failure_unless_stopping(&failures, &stopping, error);
+                        return;
+                    }
+                    if stopping.load(Ordering::Acquire) {
+                        source_cancel.cancel();
+                        let _ = source_wait.as_mut().await;
+                        return;
+                    }
+                    while let Some(command) = pending_commands.try_recv() {
+                        match command {
+                            CompletionCommand::Refresh => {}
+                            CompletionCommand::Rearm | CompletionCommand::Finish => {
+                                emit_failure(
+                                    &failures,
+                                    "opaque fd disposition arrived without a published completion",
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    // The opaque source changed its internal fd membership.
+                    // Cancellation is itself completed before submitting the
+                    // replacement operation, so there is always at most one live
+                    // io_uring poll operation for this source.
+                    source_cancel.cancel();
+                    let _ = source_wait.as_mut().await;
+                    false
                 }
-                if stopping.load(Ordering::Acquire) {
-                    return;
-                }
-                if completions
-                    .try_send(OpaqueFdCompletion {
-                        commands: commands.clone(),
-                    })
-                    .is_err()
-                {
-                    emit_failure(&failures, "opaque fd completion bridge is unavailable");
-                    return;
-                }
+                Either::Left((result, command_wait)) => {
+                    if let Err(error) = result {
+                        emit_failure_unless_stopping(&failures, &stopping, error);
+                        return;
+                    }
+                    if stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if completions
+                        .try_send(OpaqueFdCompletion {
+                            commands: commands.clone(),
+                        })
+                        .is_err()
+                    {
+                        emit_failure(&failures, "opaque fd completion bridge is unavailable");
+                        return;
+                    }
 
-                // Preserve this submitted read until its CQE. Cancelling and replacing it can
-                // let the abandoned operation consume a stop write, leaving the replacement
-                // pending forever.
-                if let Err(error) = command_wait.await {
-                    emit_failure_unless_stopping(&failures, &stopping, error);
-                    return;
+                    // Preserve the submitted command read until its CQE. Refresh
+                    // may race the owner's disposition; only Rearm/Finish consumes
+                    // the published completion, while Refresh is coalesced into
+                    // the next submitted source operation.
+                    if let Err(error) = command_wait.await {
+                        emit_failure_unless_stopping(&failures, &stopping, error);
+                        return;
+                    }
+                    true
                 }
-                if stopping.load(Ordering::Acquire) {
-                    return;
+            }
+        };
+        if !source_completed {
+            continue;
+        }
+
+        loop {
+            if stopping.load(Ordering::Acquire) {
+                return;
+            }
+            let mut disposition = None;
+            while let Some(command) = pending_commands.try_recv() {
+                match command {
+                    CompletionCommand::Refresh => {}
+                    CompletionCommand::Rearm => disposition = Some(false),
+                    CompletionCommand::Finish => disposition = Some(true),
                 }
-                match pending_commands.try_recv() {
-                    Some(CompletionCommand::Rearm) => {}
-                    Some(CompletionCommand::Finish) => return,
-                    None => {
-                        emit_failure(&failures, "opaque fd completion command was not published");
+            }
+            match disposition {
+                Some(true) => return,
+                Some(false) => break,
+                None => {
+                    if let Err(error) = command_completion.completed().await {
+                        emit_failure_unless_stopping(&failures, &stopping, error);
                         return;
                     }
                 }
@@ -284,6 +393,44 @@ mod tests {
         completion.rearm().unwrap();
         writer.write_all(&[2]).unwrap();
         let completion = completions.recv_timeout(Duration::from_secs(2)).unwrap();
+        completion.finish().unwrap();
+
+        assert!(failures.try_recv().is_none());
+        drop(runtime);
+    }
+
+    #[test]
+    fn refreshes_coalesce_across_cancel_completion_and_resubmit() {
+        let (mut source, mut writer) = UnixStream::pair().unwrap();
+        let (completion_tx, completions) = WorkerBridge::bounded(1);
+        let (failure_tx, failures) = WorkerBridge::bounded(1);
+        let runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-opaque-fd-refresh-test",
+            &source,
+            completion_tx,
+            failure_tx,
+        )
+        .unwrap();
+        let refresh = runtime.refresh_handle();
+
+        for _ in 0..128 {
+            refresh.refresh().unwrap();
+        }
+        writer.write_all(&[1]).unwrap();
+        let completion = completions.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(completions.recv_timeout(Duration::from_millis(30)).is_err());
+
+        // Exercise the race in which membership changes after the source CQE
+        // is published but before the owner provides its disposition.
+        for _ in 0..128 {
+            refresh.refresh().unwrap();
+        }
+        let mut byte = [0];
+        source.read_exact(&mut byte).unwrap();
+        completion.rearm().unwrap();
+        writer.write_all(&[2]).unwrap();
+        let completion = completions.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(completions.recv_timeout(Duration::from_millis(30)).is_err());
         completion.finish().unwrap();
 
         assert!(failures.try_recv().is_none());

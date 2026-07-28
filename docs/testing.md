@@ -175,6 +175,13 @@ and rendering itself.
 - Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
   conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
   quarantine across session resume.
+- Input-method wire coverage uses independent real application and input-method clients. It checks
+  focus activation, double-buffered surrounding/content/cursor state, stale serial rejection,
+  inactive-state reset, a fully inert unavailable second input method, keymap/repeat/modifier
+  initialization, fixed press/release keyboard routing, and edit delivery. Its mapped candidate
+  popup inherits `150/120` scale, joins the focused view's scene and output, and disappears on
+  deactivate. The aggregate Wayland-fd tests separately exercise atomically coalesced membership
+  refresh, cancellation completion, replacement submission, and exactly-once source completion.
 - Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
 - Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
   and invalid configured node paths without requiring a Vulkan driver.

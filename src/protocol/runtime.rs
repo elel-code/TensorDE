@@ -150,6 +150,12 @@ impl WaylandRuntime {
         self.display_runtime.take()
     }
 
+    pub(crate) fn display_refresh_handle(&self) -> Option<tensor_runtime::OpaqueFdRefresh> {
+        self.display_runtime
+            .as_ref()
+            .map(WaylandDisplayRuntime::refresh_handle)
+    }
+
     #[cfg(test)]
     pub(crate) fn prepare_for_test(
         &mut self,
@@ -218,6 +224,9 @@ impl WaylandRuntime {
                 socket_control: control,
                 display: display_events,
                 display_control,
+                display_refresh: self
+                    .display_refresh_handle()
+                    .expect("display runtime was installed above"),
                 #[cfg(feature = "xwayland")]
                 xwayland: xwayland_events,
                 #[cfg(feature = "xwayland")]
