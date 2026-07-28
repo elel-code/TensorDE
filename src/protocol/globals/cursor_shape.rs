@@ -102,7 +102,20 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
                 serial,
                 shape: WEnum::Value(shape),
             } => {
-                let icon = shape_to_icon(shape);
+                if device.version() < 2 && matches!(shape, Shape::DndAsk | Shape::AllResize) {
+                    device.post_error(
+                        wp_cursor_shape_device_v1::Error::InvalidShape,
+                        "cursor shape requires wp_cursor_shape_device_v1 version 2",
+                    );
+                    return;
+                }
+                let Some(icon) = shape_to_icon(shape) else {
+                    device.post_error(
+                        wp_cursor_shape_device_v1::Error::InvalidShape,
+                        "cursor shape is newer than the advertised protocol version",
+                    );
+                    return;
+                };
                 match self {
                     Self::Pointer(true)
                         if pointer_may_set_cursor(state, Serial::from(serial), &device.id()) =>
@@ -121,7 +134,13 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
                     Self::Pointer(false) | Self::Pointer(true) | Self::Tablet(_) => {}
                 }
             }
-            wp_cursor_shape_device_v1::Request::SetShape { .. } => {}
+            wp_cursor_shape_device_v1::Request::SetShape {
+                shape: WEnum::Unknown(shape),
+                ..
+            } => device.post_error(
+                wp_cursor_shape_device_v1::Error::InvalidShape,
+                format!("unknown cursor shape {shape}"),
+            ),
             wp_cursor_shape_device_v1::Request::Destroy => {}
             _ => unreachable!(),
         }
@@ -174,8 +193,8 @@ fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {
     let _ = (state, icon);
 }
 
-fn shape_to_icon(shape: Shape) -> CursorIcon {
-    match shape {
+fn shape_to_icon(shape: Shape) -> Option<CursorIcon> {
+    Some(match shape {
         Shape::Default => CursorIcon::Default,
         Shape::ContextMenu => CursorIcon::ContextMenu,
         Shape::Help => CursorIcon::Help,
@@ -212,8 +231,8 @@ fn shape_to_icon(shape: Shape) -> CursorIcon {
         Shape::ZoomOut => CursorIcon::ZoomOut,
         Shape::DndAsk => CursorIcon::DndAsk,
         Shape::AllResize => CursorIcon::AllResize,
-        _ => CursorIcon::Default,
-    }
+        _ => return None,
+    })
 }
 
 delegate_global_dispatch!(RuntimeState, WpCursorShapeManagerV1, CursorShapeGlobalData);

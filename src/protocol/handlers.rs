@@ -173,6 +173,13 @@ impl RuntimeState {
     pub(in crate::protocol) fn surface_destroyed_applied(&mut self, surface: &WlSurface) {
         #[cfg(feature = "tty")]
         let previous_input_popup_root = self.input_method_popup_root();
+        #[cfg(feature = "tty")]
+        if self.cursor.surface_destroyed(surface) {
+            for output in self.space.outputs() {
+                output.forget_surface(surface);
+            }
+            self.request_redraw_all();
+        }
         self.input_seat.surface_destroyed(surface);
         #[cfg(feature = "xwayland")]
         if self

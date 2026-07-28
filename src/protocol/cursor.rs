@@ -465,6 +465,25 @@ impl CursorState {
         }
     }
 
+    /// Remove every reference to a cursor-role surface before its Wayland
+    /// resource state disappears. A live tool keeps its compositor-provided
+    /// default cursor; output membership is cleaned by the runtime boundary.
+    pub(in crate::protocol) fn surface_destroyed(&mut self, surface: &WlSurface) -> bool {
+        let mut changed = false;
+        if matches!(&self.image, CursorImage::Surface(current) if current == surface) {
+            self.image = CursorImage::default_named();
+            changed = true;
+        }
+        for tablet in &mut self.tablets {
+            if matches!(&tablet.image, CursorImage::Surface(current) if current == surface) {
+                tablet.image = CursorImage::default_named();
+                changed = true;
+            }
+        }
+        self.retired_surfaces.retain(|retired| retired != surface);
+        changed
+    }
+
     pub(in crate::protocol) fn for_each_surface_position(
         &self,
         pointer: Option<LogicalPoint<f64>>,
@@ -589,6 +608,21 @@ impl CursorState {
             || self.tablets.iter().any(
                 |tablet| matches!(&tablet.image, CursorImage::Surface(current) if current == surface),
             )
+    }
+
+    pub(in crate::protocol) fn pointer_uses_surface(&self, surface: &WlSurface) -> bool {
+        matches!(&self.image, CursorImage::Surface(current) if current == surface)
+    }
+
+    pub(in crate::protocol) fn tablet_uses_surface(
+        &self,
+        tool: tensor_event::TabletToolId,
+        surface: &WlSurface,
+    ) -> bool {
+        self.tablets.iter().any(|tablet| {
+            tablet.tool == tool
+                && matches!(&tablet.image, CursorImage::Surface(current) if current == surface)
+        })
     }
 
     pub(in crate::protocol) fn surface_for_source(&self, source: u64) -> Option<WlSurface> {

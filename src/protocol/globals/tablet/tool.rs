@@ -626,10 +626,17 @@ impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {
                 hotspot_x,
                 hotspot_y,
             } => {
-                if !state
-                    .protocol_globals
-                    .tablet
-                    .may_set_cursor(self.id, &client.id(), serial)
+                #[cfg(feature = "tty")]
+                let current_surface = surface
+                    .as_ref()
+                    .is_some_and(|surface| state.cursor.tablet_uses_surface(self.id, surface));
+                #[cfg(not(feature = "tty"))]
+                let current_surface = false;
+                if !current_surface
+                    && !state
+                        .protocol_globals
+                        .tablet
+                        .may_set_cursor(self.id, &client.id(), serial)
                 {
                     return;
                 }

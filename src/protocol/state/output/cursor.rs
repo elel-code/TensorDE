@@ -42,7 +42,19 @@ impl RuntimeState {
                     >>() else {
                         return;
                     };
+                    let view = crate::protocol::state::surfaces::surface_view(states);
                     let mut cursor = storage.lock().unwrap();
+                    let bounds = view.and_then(|view| {
+                        let width = f64::from(view.size.0);
+                        let height = f64::from(view.size.1);
+                        let left = location.x - f64::from(cursor.hotspot.x);
+                        let top = location.y - f64::from(cursor.hotspot.y);
+                        (location.x.is_finite()
+                            && location.y.is_finite()
+                            && width > 0.0
+                            && height > 0.0)
+                            .then_some((left, top, left + width, top + height))
+                    });
                     cursor.outputs.retain(|instance| {
                         space
                             .outputs()
@@ -52,14 +64,20 @@ impl RuntimeState {
                         let Some(geometry) = space.output_geometry(output) else {
                             continue;
                         };
+                        let output_left = f64::from(geometry.loc.x);
+                        let output_top = f64::from(geometry.loc.y);
+                        let output_right =
+                            f64::from(geometry.loc.x.saturating_add(geometry.size.w));
+                        let output_bottom =
+                            f64::from(geometry.loc.y.saturating_add(geometry.size.h));
                         let inside = geometry.size.w > 0
                             && geometry.size.h > 0
-                            && location.x >= f64::from(geometry.loc.x)
-                            && location.y >= f64::from(geometry.loc.y)
-                            && location.x
-                                < f64::from(geometry.loc.x.saturating_add(geometry.size.w))
-                            && location.y
-                                < f64::from(geometry.loc.y.saturating_add(geometry.size.h));
+                            && bounds.is_some_and(|(left, top, right, bottom)| {
+                                right > output_left
+                                    && bottom > output_top
+                                    && left < output_right
+                                    && top < output_bottom
+                            });
                         let instance = output.instance_id();
                         let membership = cursor
                             .outputs

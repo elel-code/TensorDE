@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
     sync::mpsc,
@@ -37,6 +38,11 @@ enum CursorStep {
     ClientSurfaceSent,
     OffsetSent,
     SurfaceRetired,
+    SurfaceRestored,
+    StraddledOutputs,
+    CrossedOutput,
+    CurrentSurfaceUpdated,
+    SurfaceDestroyed,
     Destroyed,
 }
 
@@ -46,8 +52,9 @@ struct CursorClient {
     pointer: Option<wl_pointer::WlPointer>,
     enter_serial: Option<u32>,
     cursor_surface: Option<ObjectId>,
-    cursor_entered: bool,
-    cursor_left: bool,
+    cursor_outputs: HashSet<ObjectId>,
+    cursor_enter_count: u32,
+    cursor_leave_count: u32,
     cursor_scale: Option<i32>,
 }
 
@@ -111,8 +118,14 @@ impl Dispatch<wl_surface::WlSurface, ()> for CursorClient {
             return;
         }
         match event {
-            wl_surface::Event::Enter { .. } => state.cursor_entered = true,
-            wl_surface::Event::Leave { .. } => state.cursor_left = true,
+            wl_surface::Event::Enter { output } => {
+                state.cursor_outputs.insert(output.id());
+                state.cursor_enter_count = state.cursor_enter_count.saturating_add(1);
+            }
+            wl_surface::Event::Leave { output } => {
+                state.cursor_outputs.remove(&output.id());
+                state.cursor_leave_count = state.cursor_leave_count.saturating_add(1);
+            }
             wl_surface::Event::PreferredBufferScale { factor } => {
                 state.cursor_scale = Some(factor);
             }
@@ -165,6 +178,54 @@ delegate_noop!(CursorClient: ignore wp_viewporter::WpViewporter);
 delegate_noop!(CursorClient: ignore xdg_toplevel::XdgToplevel);
 
 #[test]
+fn cursor_shape_v1_rejects_v2_shapes() {
+    let mut runtime = WaylandRuntime::with_appearance(
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap();
+    runtime.state.input_devices.insert(
+        tensor_event::DeviceId::new(1),
+        crate::protocol::state::InputDeviceCapabilities {
+            pointer: true,
+            ..Default::default()
+        },
+    );
+    runtime.state.reconcile_seat_capabilities();
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is required");
+    let socket_path = PathBuf::from(runtime_dir).join(runtime.socket_name());
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (result_tx, result_rx) = mpsc::sync_channel(0);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<CursorClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let seat = globals
+            .bind::<wl_seat::WlSeat, _, _>(&handle, 1..=9, ())
+            .unwrap();
+        let manager = globals
+            .bind::<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, _, _>(&handle, 1..=1, ())
+            .unwrap();
+        let mut state = CursorClient::default();
+        while state.pointer.is_none() {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        let device = manager.get_pointer(state.pointer.as_ref().unwrap(), &handle, ());
+        device.set_shape(0, wp_cursor_shape_device_v1::Shape::DndAsk);
+        result_tx
+            .send(queue.roundtrip(&mut state).is_err())
+            .unwrap();
+        seat.release();
+    });
+
+    let rejected = dispatch_until_cursor_result(&mut runtime, &result_rx);
+    assert!(rejected, "a version-1 device must reject version-2 shapes");
+    client.join().unwrap();
+}
+
+#[test]
 fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
     let mut runtime = WaylandRuntime::with_appearance(
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
@@ -172,6 +233,7 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
     )
     .unwrap();
     install_test_output(&mut runtime);
+    install_second_cursor_test_output(&mut runtime);
     runtime.state.input_devices.insert(
         tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
@@ -270,6 +332,57 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
 
     assert_eq!(
         dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::SurfaceRestored
+    );
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 1);
+    runtime
+        .state
+        .input_seat
+        .set_pointer_location((799.0, pointer_location.y).into());
+    runtime.state.refresh_cursor_surface_outputs();
+    runtime.state.flush_wayland_clients();
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::StraddledOutputs
+    );
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 2);
+    runtime
+        .state
+        .input_seat
+        .set_pointer_location((810.0, pointer_location.y).into());
+    runtime.state.refresh_cursor_surface_outputs();
+    runtime.state.flush_wayland_clients();
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::CrossedOutput
+    );
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 1);
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::CurrentSurfaceUpdated
+    );
+    assert_eq!(cursor_hotspot(&runtime), tensor_util::Point::new(9, 11));
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::SurfaceDestroyed
+    );
+    assert_eq!(
+        runtime.state.cursor.image(),
+        &CursorImage::Named(CursorIcon::Default)
+    );
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 0);
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
         CursorStep::Destroyed
     );
     client.join().unwrap();
@@ -294,9 +407,20 @@ fn spawn_cursor_client(
         let seat = globals
             .bind::<wl_seat::WlSeat, _, _>(&handle, 1..=9, ())
             .unwrap();
-        let _output = globals
-            .bind::<wl_output::WlOutput, _, _>(&handle, 1..=4, ())
-            .unwrap();
+        let _outputs = globals
+            .contents()
+            .clone_list()
+            .into_iter()
+            .filter(|global| global.interface == wl_output::WlOutput::interface().name)
+            .map(|global| {
+                globals.registry().bind::<wl_output::WlOutput, _, _>(
+                    global.name,
+                    global.version.min(4),
+                    &handle,
+                    (),
+                )
+            })
+            .collect::<Vec<_>>();
         let shm = globals
             .bind::<wl_shm::WlShm, _, _>(&handle, 1..=2, ())
             .unwrap();
@@ -376,18 +500,47 @@ fn spawn_cursor_client(
         steps.send(CursorStep::OffsetSent).unwrap();
         advances.recv().unwrap();
 
-        assert!(state.cursor_entered);
+        assert_eq!(state.cursor_outputs.len(), 1);
         assert_eq!(state.cursor_scale, Some(2));
         cursor_device.set_shape(serial, wp_cursor_shape_device_v1::Shape::Pointer);
         queue.roundtrip(&mut state).unwrap();
-        assert!(state.cursor_left);
+        assert!(state.cursor_outputs.is_empty());
+        assert_eq!(state.cursor_leave_count, 1);
         steps.send(CursorStep::SurfaceRetired).unwrap();
+        advances.recv().unwrap();
+
+        pointer.set_cursor(serial, Some(&cursor_surface), 3, 4);
+        queue.roundtrip(&mut state).unwrap();
+        assert_eq!(state.cursor_outputs.len(), 1);
+        assert_eq!(state.cursor_enter_count, 2);
+        steps.send(CursorStep::SurfaceRestored).unwrap();
+        advances.recv().unwrap();
+
+        queue.roundtrip(&mut state).unwrap();
+        assert_eq!(state.cursor_outputs.len(), 2);
+        assert_eq!(state.cursor_scale, Some(3));
+        steps.send(CursorStep::StraddledOutputs).unwrap();
+        advances.recv().unwrap();
+
+        queue.roundtrip(&mut state).unwrap();
+        assert_eq!(state.cursor_outputs.len(), 1);
+        assert_eq!(state.cursor_scale, Some(3));
+        steps.send(CursorStep::CrossedOutput).unwrap();
+        advances.recv().unwrap();
+
+        pointer.set_cursor(serial.wrapping_add(17), Some(&cursor_surface), 9, 11);
+        queue.roundtrip(&mut state).unwrap();
+        steps.send(CursorStep::CurrentSurfaceUpdated).unwrap();
         advances.recv().unwrap();
 
         cursor_device.destroy();
         cursor_buffer.destroy();
         cursor_viewport.destroy();
         cursor_surface.destroy();
+        queue.roundtrip(&mut state).unwrap();
+        steps.send(CursorStep::SurfaceDestroyed).unwrap();
+        advances.recv().unwrap();
+
         buffer.destroy();
         viewport.destroy();
         toplevel.destroy();
@@ -400,6 +553,22 @@ fn spawn_cursor_client(
         queue.roundtrip(&mut state).unwrap();
         steps.send(CursorStep::Destroyed).unwrap();
     })
+}
+
+fn install_second_cursor_test_output(runtime: &mut WaylandRuntime) {
+    let mode = tensor_host::PhysicalMode::new(500, 800, 60_000);
+    let output = crate::protocol::globals::output::Output::new(
+        tensor_host::ConnectorId::new(2, 2),
+        "cursor-test-output-2".to_owned(),
+        (300, 340),
+        tensor_host::SubpixelLayout::Unknown,
+        vec![mode],
+        mode,
+        mode,
+        tensor_util::OutputScale::from_f64(2.5).unwrap(),
+    );
+    let _global = output.create_global(&runtime.state.display_handle);
+    runtime.state.space.map_output(&output, (800, 0));
 }
 
 fn cursor_hotspot(runtime: &WaylandRuntime) -> tensor_util::Point {
@@ -455,4 +624,20 @@ fn dispatch_until_cursor_step(
         }
     }
     panic!("cursor-shape client did not complete before the dispatch limit");
+}
+
+fn dispatch_until_cursor_result(
+    runtime: &mut WaylandRuntime,
+    result: &mpsc::Receiver<bool>,
+) -> bool {
+    for _ in 0..300 {
+        runtime
+            .event_loop
+            .dispatch(Duration::from_millis(5), &mut runtime.state)
+            .unwrap();
+        if let Ok(result) = result.try_recv() {
+            return result;
+        }
+    }
+    panic!("cursor-shape client did not report a protocol result");
 }

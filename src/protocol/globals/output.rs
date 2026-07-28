@@ -439,6 +439,17 @@ impl Output {
         }
     }
 
+    /// Forget a destroyed surface without attempting to send a leave event
+    /// to the already-dead protocol object.
+    pub(crate) fn forget_surface(&self, surface: &WlSurface) {
+        self.0
+            .resources
+            .lock()
+            .unwrap()
+            .surfaces
+            .retain(|entry| entry.id() != surface.id());
+    }
+
     #[cfg(test)]
     pub(crate) fn contains_surface(&self, surface: &WlSurface) -> bool {
         self.0
