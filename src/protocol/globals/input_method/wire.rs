@@ -246,7 +246,7 @@ impl DispatchDelegate<ZwpInputMethodV2, RuntimeState> for InputMethodData {
         _client: &Client,
         resource: &ZwpInputMethodV2,
         request: zwp_input_method_v2::Request,
-        _display: &DisplayHandle,
+        display: &DisplayHandle,
         data_init: &mut DataInit<'_, RuntimeState>,
     ) {
         match request {
@@ -327,10 +327,14 @@ impl DispatchDelegate<ZwpInputMethodV2, RuntimeState> for InputMethodData {
                     .input_method
                     .input_method_available(resource)
                 {
-                    state
+                    if !state
                         .protocol_globals
                         .input_method
-                        .register_keyboard_grab(resource, &grab);
+                        .register_keyboard_grab(resource, &grab)
+                    {
+                        resource.post_error(0_u32, "input-method keyboard-grab capacity exceeded");
+                        return;
+                    }
                     state
                         .protocol_globals
                         .seat
@@ -345,16 +349,50 @@ impl DispatchDelegate<ZwpInputMethodV2, RuntimeState> for InputMethodData {
                     );
                 }
             }
-            zwp_input_method_v2::Request::Destroy => {}
+            zwp_input_method_v2::Request::Destroy => {
+                let available = state
+                    .protocol_globals
+                    .input_method
+                    .input_method_available(resource);
+                #[cfg(feature = "tty")]
+                let previous_root = state.input_method_popup_root();
+                #[cfg(feature = "tty")]
+                if available {
+                    state.leave_all_input_method_popups();
+                }
+                if available {
+                    let backend = display.backend_handle();
+                    if state
+                        .protocol_globals
+                        .input_method
+                        .destroy_children(resource, |id| {
+                            let _ = backend.destroy_object::<RuntimeState>(&id);
+                        })
+                    {
+                        state.input_seat.clear_input_method_key_routes();
+                    }
+                }
+                #[cfg(feature = "tty")]
+                if available {
+                    state.refresh_input_method_popups(previous_root);
+                }
+            }
             _ => unreachable!(),
         }
     }
 
     fn destroyed(&self, state: &mut RuntimeState, _client: ClientId, resource: &ZwpInputMethodV2) {
         #[cfg(feature = "tty")]
+        let available = state
+            .protocol_globals
+            .input_method
+            .input_method_available(resource);
+        #[cfg(feature = "tty")]
         let previous_root = state.input_method_popup_root();
         #[cfg(feature = "tty")]
-        state.leave_all_input_method_popups();
+        if available {
+            state.leave_all_input_method_popups();
+        }
         if state
             .protocol_globals
             .input_method
@@ -363,7 +401,9 @@ impl DispatchDelegate<ZwpInputMethodV2, RuntimeState> for InputMethodData {
             state.input_seat.clear_input_method_key_routes();
         }
         #[cfg(feature = "tty")]
-        state.refresh_input_method_popups(previous_root);
+        if available {
+            state.refresh_input_method_popups(previous_root);
+        }
     }
 }
 

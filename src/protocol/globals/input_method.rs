@@ -5,6 +5,7 @@
 //! activation, and focus are validated here rather than delegated to an
 //! adapter library.
 
+mod lifecycle;
 mod wire;
 
 use std::collections::{HashMap, HashSet};
@@ -30,6 +31,7 @@ const TEXT_INPUT_VERSION: u32 = 1;
 const INPUT_METHOD_VERSION: u32 = 1;
 const MAX_TEXT_BYTES: usize = 4_000;
 const MAX_INPUT_POPUPS: usize = 16;
+const MAX_INPUT_METHOD_KEYBOARD_GRABS: usize = 16;
 
 #[derive(Clone, Debug)]
 struct SurroundingText {
@@ -101,6 +103,12 @@ pub(crate) struct InputPopupSurface {
     owner: ObjectId,
 }
 
+#[derive(Clone, Debug)]
+struct InputMethodKeyboardGrab {
+    resource: Weak<ZwpInputMethodKeyboardGrabV2>,
+    owner: ObjectId,
+}
+
 impl InputPopupSurface {
     pub(crate) fn wl_surface(&self) -> &WlSurface {
         &self.surface
@@ -128,7 +136,8 @@ pub(crate) struct InputMethodProtocol {
     // cold and the list is normally one element; startup reserves the hard
     // limit so role creation never grows this storage.
     popups: Vec<InputPopupSurface>,
-    keyboard_grab: Option<Weak<ZwpInputMethodKeyboardGrabV2>>,
+    keyboard_grabs: Vec<InputMethodKeyboardGrab>,
+    active_keyboard_grab: Option<Weak<ZwpInputMethodKeyboardGrabV2>>,
 }
 
 impl InputMethodProtocol {
@@ -142,266 +151,8 @@ impl InputMethodProtocol {
             input_method: None,
             unavailable_input_methods: HashSet::new(),
             popups: Vec::with_capacity(MAX_INPUT_POPUPS),
-            keyboard_grab: None,
-        }
-    }
-
-    fn focused_surface(&self) -> Option<WlSurface> {
-        self.focused_surface.as_ref()?.upgrade().ok()
-    }
-
-    fn focused_client(&self) -> Option<ClientId> {
-        self.focused_surface()?.client().map(|client| client.id())
-    }
-
-    fn input_method_resource(&self) -> Option<ZwpInputMethodV2> {
-        self.input_method.as_ref()?.resource.upgrade().ok()
-    }
-
-    fn active_text_input_resource(&self) -> Option<ZwpTextInputV3> {
-        let id = self.active_text_input.as_ref()?;
-        self.text_inputs.get(id)?.resource.upgrade().ok()
-    }
-
-    pub(crate) fn set_focus(&mut self, focus: Option<&WlSurface>) {
-        let previous = self.focused_surface();
-        if previous.as_ref().map(Resource::id) == focus.map(Resource::id) {
-            return;
-        }
-        if let Some(previous) = previous.as_ref()
-            && let Some(previous_client) = previous.client().map(|client| client.id())
-        {
-            for instance in self.text_inputs.values() {
-                if instance.client == previous_client
-                    && let Ok(resource) = instance.resource.upgrade()
-                {
-                    resource.leave(previous);
-                }
-            }
-        }
-        if self.active_text_input.take().is_some() {
-            self.deactivate_input_method();
-        }
-        for instance in self.text_inputs.values_mut() {
-            instance.pending = PendingTextInputState::default();
-            instance.current = TextInputState::default();
-        }
-        self.focused_surface = focus.map(Resource::downgrade);
-        if let Some(focus) = focus {
-            let Some(client) = focus.client().map(|client| client.id()) else {
-                return;
-            };
-            for instance in self.text_inputs.values() {
-                if instance.client == client
-                    && let Ok(resource) = instance.resource.upgrade()
-                {
-                    resource.enter(focus);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn surface_destroyed(&mut self, surface: &WlSurface) {
-        if self
-            .focused_surface
-            .as_ref()
-            .is_some_and(|focused| focused.id() == surface.id())
-        {
-            self.set_focus(None);
-        }
-        self.popups
-            .retain(|popup| popup.surface.id() != surface.id());
-    }
-
-    fn register_text_input(&mut self, resource: &ZwpTextInputV3, client: ClientId) {
-        let id = resource.id();
-        self.text_inputs.insert(
-            id,
-            TextInputInstance {
-                resource: resource.downgrade(),
-                client: client.clone(),
-                serial: 0,
-                pending: PendingTextInputState::default(),
-                current: TextInputState::default(),
-            },
-        );
-        if self.focused_client().as_ref() == Some(&client)
-            && let Some(surface) = self.focused_surface()
-        {
-            resource.enter(&surface);
-        }
-    }
-
-    fn remove_text_input(&mut self, resource: &ZwpTextInputV3) {
-        let id = resource.id();
-        self.text_inputs.remove(&id);
-        if self.active_text_input.as_ref() == Some(&id) {
-            self.active_text_input = None;
-            self.deactivate_input_method();
-        }
-    }
-
-    fn register_input_method(&mut self, resource: &ZwpInputMethodV2) {
-        self.cleanup_input_method();
-        if self.input_method.is_some() {
-            resource.unavailable();
-            self.unavailable_input_methods.insert(resource.id());
-            return;
-        }
-        self.input_method = Some(InputMethodInstance {
-            resource: resource.downgrade(),
-            serial: 0,
-            pending: PendingInputMethodState::default(),
-        });
-        if self.active_text_input.is_some() {
-            self.activate_input_method();
-        }
-    }
-
-    fn remove_input_method(&mut self, resource: &ZwpInputMethodV2) -> bool {
-        let id = resource.id();
-        self.unavailable_input_methods.remove(&id);
-        if self
-            .input_method
-            .as_ref()
-            .is_some_and(|instance| instance.resource.id() == id)
-        {
-            self.input_method = None;
-            self.popups.retain(|popup| popup.owner != id);
-            self.keyboard_grab = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn cleanup_input_method(&mut self) {
-        if self
-            .input_method
-            .as_ref()
-            .is_some_and(|instance| instance.resource.upgrade().is_err())
-        {
-            self.input_method = None;
-        }
-    }
-
-    fn input_method_available(&self, resource: &ZwpInputMethodV2) -> bool {
-        !self.unavailable_input_methods.contains(&resource.id())
-            && self
-                .input_method
-                .as_ref()
-                .is_some_and(|instance| instance.resource.id() == resource.id())
-    }
-
-    fn register_popup(
-        &mut self,
-        owner: &ZwpInputMethodV2,
-        role: &ZwpInputPopupSurfaceV2,
-        surface: WlSurface,
-    ) -> bool {
-        if !self.input_method_available(owner) {
-            return true;
-        }
-        if self.popups.len() == MAX_INPUT_POPUPS {
-            return false;
-        }
-        let active_rectangle = self.active_text_input.as_ref().and_then(|active| {
-            self.text_inputs
-                .get(active)
-                .and_then(|instance| instance.current.cursor_rectangle)
-        });
-        self.popups.push(InputPopupSurface {
-            role: role.downgrade(),
-            surface,
-            owner: owner.id(),
-        });
-        if let Some(rectangle) = active_rectangle {
-            role.text_input_rectangle(
-                rectangle.loc.x,
-                rectangle.loc.y,
-                rectangle.size.w,
-                rectangle.size.h,
-            );
-        }
-        true
-    }
-
-    fn remove_popup(&mut self, role: &ZwpInputPopupSurfaceV2) {
-        self.popups.retain(|popup| popup.role.id() != role.id());
-    }
-
-    fn register_keyboard_grab(
-        &mut self,
-        owner: &ZwpInputMethodV2,
-        grab: &ZwpInputMethodKeyboardGrabV2,
-    ) {
-        if self.input_method_available(owner) {
-            self.keyboard_grab = Some(grab.downgrade());
-        }
-    }
-
-    fn remove_keyboard_grab(&mut self, grab: &ZwpInputMethodKeyboardGrabV2) -> bool {
-        if self
-            .keyboard_grab
-            .as_ref()
-            .is_some_and(|current| current.id() == grab.id())
-        {
-            self.keyboard_grab = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(crate) fn keyboard_grab_active(&self) -> bool {
-        self.keyboard_grab
-            .as_ref()
-            .is_some_and(|grab| grab.upgrade().is_ok())
-    }
-
-    pub(crate) fn keyboard_grab_resource(&self) -> Option<ZwpInputMethodKeyboardGrabV2> {
-        self.keyboard_grab.as_ref()?.upgrade().ok()
-    }
-
-    pub(crate) fn popup_parent(&self, surface: &WlSurface) -> Option<WlSurface> {
-        if !self
-            .popups
-            .iter()
-            .any(|popup| popup.surface.id() == surface.id() && popup.role.upgrade().is_ok())
-        {
-            return None;
-        }
-        self.focused_surface()
-    }
-
-    pub(crate) fn active_popup_context(&self) -> Option<(WlSurface, LogicalRect<i32>)> {
-        let active = self.active_text_input.as_ref()?;
-        let instance = self.text_inputs.get(active)?;
-        Some((
-            self.focused_surface()?,
-            instance
-                .current
-                .cursor_rectangle
-                .unwrap_or_else(LogicalRect::zero),
-        ))
-    }
-
-    pub(crate) fn for_each_visible_popup(&self, mut visit: impl FnMut(&InputPopupSurface)) {
-        if self.active_text_input.is_none() {
-            return;
-        }
-        for popup in &self.popups {
-            if popup.surface.is_alive() && popup.role.upgrade().is_ok() {
-                visit(popup);
-            }
-        }
-    }
-
-    pub(crate) fn for_each_popup(&self, mut visit: impl FnMut(&InputPopupSurface)) {
-        for popup in &self.popups {
-            if popup.surface.is_alive() && popup.role.upgrade().is_ok() {
-                visit(popup);
-            }
+            keyboard_grabs: Vec::with_capacity(MAX_INPUT_METHOD_KEYBOARD_GRABS),
+            active_keyboard_grab: None,
         }
     }
 
@@ -414,7 +165,7 @@ impl InputMethodProtocol {
         modifiers: Option<ModifiersState>,
     ) -> bool {
         let Some(grab) = self
-            .keyboard_grab
+            .active_keyboard_grab
             .as_ref()
             .and_then(|grab| grab.upgrade().ok())
         else {

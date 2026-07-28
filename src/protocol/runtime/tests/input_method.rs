@@ -29,6 +29,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 use super::*;
 
 mod errors;
+mod lifecycle_tests;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ResultEvent {
@@ -547,6 +548,7 @@ fn spawn_input_method(
         {
             queue.blocking_dispatch(&mut state).unwrap();
         }
+        unavailable_input_method.destroy();
         popup_surface.attach(Some(&buffer), 0, 0);
         popup_surface.commit();
         queue.roundtrip(&mut state).unwrap();

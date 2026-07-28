@@ -4,6 +4,9 @@ use super::*;
 enum InvalidRequest {
     SurroundingUtf8Boundary,
     PopupRoleConflict,
+    PopupCapacity,
+    KeyboardGrabCapacity,
+    PopupSurfaceDestroyedFirst,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -38,6 +41,7 @@ delegate_noop!(FailureClient: ignore zwp_text_input_v3::ZwpTextInputV3);
 delegate_noop!(FailureClient: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
 delegate_noop!(FailureClient: ignore zwp_input_method_v2::ZwpInputMethodV2);
 delegate_noop!(FailureClient: ignore zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2);
+delegate_noop!(FailureClient: ignore zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2);
 
 #[test]
 fn text_input_rejects_non_boundary_utf8_indices_on_the_wire() {
@@ -47,6 +51,21 @@ fn text_input_rejects_non_boundary_utf8_indices_on_the_wire() {
 #[test]
 fn input_popup_rejects_a_surface_with_an_existing_role() {
     assert_protocol_failure(InvalidRequest::PopupRoleConflict);
+}
+
+#[test]
+fn input_popup_rejects_the_seventeenth_live_role() {
+    assert_protocol_failure(InvalidRequest::PopupCapacity);
+}
+
+#[test]
+fn input_method_rejects_the_seventeenth_live_keyboard_grab() {
+    assert_protocol_failure(InvalidRequest::KeyboardGrabCapacity);
+}
+
+#[test]
+fn input_popup_rejects_destroying_its_surface_first() {
+    assert_protocol_failure(InvalidRequest::PopupSurfaceDestroyedFirst);
 }
 
 fn assert_protocol_failure(request: InvalidRequest) {
@@ -99,6 +118,52 @@ fn assert_protocol_failure(request: InvalidRequest) {
                 let _toplevel = xdg_surface.get_toplevel(&handle, ());
                 let input_method = manager.get_input_method(&seat, &handle, ());
                 let _popup = input_method.get_input_popup_surface(&surface, &handle, ());
+            }
+            InvalidRequest::PopupCapacity => {
+                let compositor = globals
+                    .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+                    .unwrap();
+                let manager = globals
+                    .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2, _, _>(
+                        &handle,
+                        1..=1,
+                        (),
+                    )
+                    .unwrap();
+                let input_method = manager.get_input_method(&seat, &handle, ());
+                for _ in 0..=16 {
+                    let surface = compositor.create_surface(&handle, ());
+                    let _popup = input_method.get_input_popup_surface(&surface, &handle, ());
+                }
+            }
+            InvalidRequest::KeyboardGrabCapacity => {
+                let manager = globals
+                    .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2, _, _>(
+                        &handle,
+                        1..=1,
+                        (),
+                    )
+                    .unwrap();
+                let input_method = manager.get_input_method(&seat, &handle, ());
+                for _ in 0..=16 {
+                    let _keyboard = input_method.grab_keyboard(&handle, ());
+                }
+            }
+            InvalidRequest::PopupSurfaceDestroyedFirst => {
+                let compositor = globals
+                    .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+                    .unwrap();
+                let manager = globals
+                    .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2, _, _>(
+                        &handle,
+                        1..=1,
+                        (),
+                    )
+                    .unwrap();
+                let surface = compositor.create_surface(&handle, ());
+                let input_method = manager.get_input_method(&seat, &handle, ());
+                let _popup = input_method.get_input_popup_surface(&surface, &handle, ());
+                surface.destroy();
             }
         }
         connection.flush().unwrap();
