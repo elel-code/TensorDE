@@ -63,8 +63,11 @@ dimensions from the already Vulkan-selected DRM device, orders compatible cursor
 ID, and retains at most eight candidates with at most 128 sorted explicit format/modifier pairs
 per plane. Candidates lacking `IN_FORMATS`, any required atomic geometry/object property, or
 `IN_FENCE_FD` are diagnosed and excluded; an unspecified modifier is never promoted to an explicit
-pair. This does not yet assign a plane or allocate cursor scanout images, so the milestone remains
-open and software composition remains the correctness path.
+pair. The first candidate with a strict Vulkan intersection is selected deterministically: only
+alpha-bearing formats with an exact explicit modifier and a renderable, exportable Vulkan
+capability are eligible, tiled modifiers precede linear ones, and the selected Vulkan plane count
+is preserved for dma-buf allocation. This does not yet assign a plane or allocate cursor scanout
+images, so the milestone remains open and software composition remains the correctness path.
 
 ### 1. Capability and identity discovery
 

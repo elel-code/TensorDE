@@ -25,7 +25,9 @@ const NO_INPUT_FENCE: u64 = u64::MAX;
 mod cursor;
 mod formats;
 
-pub(in crate::backend::tty::kms) use cursor::{CursorPlaneCapabilities, discover_cursor_planes};
+pub(in crate::backend::tty::kms) use cursor::{
+    CursorPlaneCapabilities, CursorPlaneSelection, discover_cursor_planes,
+};
 pub(in crate::backend::tty) use formats::primary_plane_formats;
 pub(super) use formats::select_primary_plane;
 

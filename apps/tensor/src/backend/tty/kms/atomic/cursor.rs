@@ -4,8 +4,10 @@ use drm::{
     DriverCapability,
     control::{Device as ControlDevice, PlaneType, crtc, plane},
 };
-use tensor_host::DrmFormat;
+use tensor_host::{DrmFormat, Fourcc, OutputFormat};
 use tracing::warn;
+
+use crate::render::VulkanFormatCapability;
 
 use super::formats::parse_format_modifier_blob;
 use super::{AtomicError, PlaneProperties, PropertyKind, PropertySnapshot};
@@ -51,6 +53,20 @@ impl CursorPlaneCapabilities {
             .map(|plane| plane.as_ref().expect("populated cursor-plane prefix"))
     }
 
+    pub(in crate::backend::tty::kms) fn select_vulkan_target(
+        &self,
+        vulkan: &[VulkanFormatCapability],
+    ) -> Option<CursorPlaneSelection> {
+        self.iter().find_map(|plane| {
+            plane
+                .preferred_vulkan_format(vulkan)
+                .map(|format| CursorPlaneSelection {
+                    plane: plane.handle,
+                    format,
+                })
+        })
+    }
+
     fn push(&mut self, candidate: CursorPlaneCapability) -> Result<(), plane::Handle> {
         if self.len == MAX_CURSOR_PLANES {
             return Err(candidate.handle);
@@ -58,6 +74,22 @@ impl CursorPlaneCapabilities {
         self.planes[self.len] = Some(candidate);
         self.len += 1;
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::backend::tty::kms) struct CursorPlaneSelection {
+    plane: plane::Handle,
+    format: OutputFormat,
+}
+
+impl CursorPlaneSelection {
+    pub(in crate::backend::tty::kms) fn plane(self) -> plane::Handle {
+        self.plane
+    }
+
+    pub(in crate::backend::tty::kms) fn format(self) -> OutputFormat {
+        self.format
     }
 }
 
@@ -75,6 +107,46 @@ impl CursorPlaneCapability {
 
     pub(in crate::backend::tty::kms) fn format_count(&self) -> usize {
         self.formats.entries.len()
+    }
+
+    fn preferred_vulkan_format(&self, vulkan: &[VulkanFormatCapability]) -> Option<OutputFormat> {
+        let mut compatible = vulkan
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.supports_output_export())
+            .filter(|candidate| candidate.plane_count > 0)
+            .filter(|candidate| !candidate.format.modifier.is_invalid())
+            .filter(|candidate| cursor_format_rank(candidate.format.code).is_some())
+            .filter(|candidate| self.formats.entries.contains(&candidate.format))
+            .map(|candidate| OutputFormat {
+                format: candidate.format,
+                plane_count: candidate.plane_count,
+            })
+            .collect::<Vec<_>>();
+        compatible.sort_unstable_by_key(|candidate| {
+            (
+                cursor_format_rank(candidate.format.code).expect("alpha format was filtered"),
+                candidate.format.modifier.is_linear(),
+                candidate.format.modifier.raw(),
+                candidate.plane_count,
+            )
+        });
+        compatible.dedup();
+        compatible.into_iter().next()
+    }
+}
+
+const fn cursor_format_rank(format: Fourcc) -> Option<u8> {
+    if format.raw() == Fourcc::ARGB8888.raw() {
+        Some(0)
+    } else if format.raw() == Fourcc::ABGR8888.raw() {
+        Some(1)
+    } else if format.raw() == Fourcc::ARGB2101010.raw() {
+        Some(2)
+    } else if format.raw() == Fourcc::ABGR2101010.raw() {
+        Some(3)
+    } else {
+        None
     }
 }
 
@@ -213,16 +285,29 @@ mod tests {
         NonZeroU32::new(raw).unwrap().into()
     }
 
-    fn capability(raw: u32) -> CursorPlaneCapability {
+    fn capability_with_formats(raw: u32, formats: Vec<DrmFormat>) -> CursorPlaneCapability {
         CursorPlaneCapability {
             handle: plane_handle(raw),
-            formats: ExplicitFormats::new(
-                plane_handle(raw),
-                vec![DrmFormat::new(Fourcc::ARGB8888, Modifier::from_raw(7))],
-            )
-            .unwrap(),
+            formats: ExplicitFormats::new(plane_handle(raw), formats).unwrap(),
             _properties: PlaneProperties::resolve(|_, _| Ok(NonZeroU32::new(1).unwrap().into()))
                 .unwrap(),
+        }
+    }
+
+    fn capability(raw: u32) -> CursorPlaneCapability {
+        capability_with_formats(
+            raw,
+            vec![DrmFormat::new(Fourcc::ARGB8888, Modifier::from_raw(7))],
+        )
+    }
+
+    fn vulkan_format(format: DrmFormat) -> VulkanFormatCapability {
+        VulkanFormatCapability {
+            format,
+            plane_count: 1,
+            renderable: true,
+            importable: true,
+            exportable: true,
         }
     }
 
@@ -249,6 +334,49 @@ mod tests {
         let xrgb = DrmFormat::new(Fourcc::XRGB8888, Modifier::from_raw(3));
         let formats = ExplicitFormats::new(plane_handle(3), vec![xrgb, argb, xrgb]).unwrap();
         assert_eq!(formats.as_slice(), &[argb, xrgb]);
+    }
+
+    #[test]
+    fn cursor_target_selection_requires_exact_alpha_export_and_stable_plane_order() {
+        let tiled_argb = DrmFormat::new(Fourcc::ARGB8888, Modifier::from_raw(9));
+        let linear_argb = DrmFormat::linear(Fourcc::ARGB8888);
+        let tiled_abgr = DrmFormat::new(Fourcc::ABGR8888, Modifier::from_raw(3));
+        let xrgb = DrmFormat::new(Fourcc::XRGB8888, Modifier::from_raw(4));
+        let mut capabilities = CursorPlaneCapabilities::new(256, 256);
+        capabilities
+            .push(capability_with_formats(2, vec![linear_argb, tiled_argb]))
+            .unwrap();
+        capabilities
+            .push(capability_with_formats(3, vec![tiled_abgr, xrgb]))
+            .unwrap();
+
+        let selection = capabilities
+            .select_vulkan_target(&[
+                vulkan_format(xrgb),
+                vulkan_format(tiled_abgr),
+                vulkan_format(linear_argb),
+                vulkan_format(tiled_argb),
+            ])
+            .unwrap();
+        assert_eq!(selection.plane(), plane_handle(2));
+        assert_eq!(selection.format().format, tiled_argb);
+    }
+
+    #[test]
+    fn cursor_target_selection_rejects_non_exportable_and_unspecified_formats() {
+        let explicit = DrmFormat::new(Fourcc::ARGB8888, Modifier::from_raw(5));
+        let mut capabilities = CursorPlaneCapabilities::new(64, 64);
+        capabilities
+            .push(capability_with_formats(1, vec![explicit]))
+            .unwrap();
+        let mut not_exportable = vulkan_format(explicit);
+        not_exportable.exportable = false;
+        let unspecified = vulkan_format(DrmFormat::new(Fourcc::ARGB8888, Modifier::INVALID));
+        assert!(
+            capabilities
+                .select_vulkan_target(&[not_exportable, unspecified])
+                .is_none()
+        );
     }
 
     #[test]

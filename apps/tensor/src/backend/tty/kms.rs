@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::{
     backend::{BackendOutputId, OutputDescriptor},
-    render::ExportedDmabuf,
+    render::{ExportedDmabuf, VulkanFormatCapability},
 };
 
 use super::{BackendError, DrmDeviceFd, TtyBackend, device::DrmDevice};
@@ -21,8 +21,8 @@ mod framebuffer;
 
 pub(super) use atomic::primary_plane_formats;
 use atomic::{
-    AtomicError, AtomicSurface, CursorPlaneCapabilities, discover_cursor_planes,
-    select_primary_plane,
+    AtomicError, AtomicSurface, CursorPlaneCapabilities, CursorPlaneSelection,
+    discover_cursor_planes, select_primary_plane,
 };
 use framebuffer::{ScanoutFramebuffer, framebuffer_from_dmabuf};
 
@@ -142,25 +142,45 @@ pub(super) struct KmsOutput {
     name: String,
     surface: AtomicSurface,
     _cursor_planes: CursorPlaneCapabilities,
+    _cursor_target: Option<CursorPlaneSelection>,
     slots: Vec<KmsSlot>,
     scanout: ScanoutState,
 }
 
+pub(super) struct KmsOutputDevice<'a> {
+    drm: &'a DrmDevice,
+    gbm: &'a GbmDevice<DrmDeviceFd>,
+    active: Rc<std::cell::Cell<bool>>,
+}
+
+impl<'a> KmsOutputDevice<'a> {
+    pub(super) fn new(
+        drm: &'a DrmDevice,
+        gbm: &'a GbmDevice<DrmDeviceFd>,
+        active: Rc<std::cell::Cell<bool>>,
+    ) -> Self {
+        Self { drm, gbm, active }
+    }
+}
+
 impl KmsOutput {
     pub(super) fn new(
-        drm: &DrmDevice,
-        gbm: &GbmDevice<DrmDeviceFd>,
-        active: Rc<std::cell::Cell<bool>>,
+        device: KmsOutputDevice<'_>,
         descriptor: &OutputDescriptor,
+        renderer_formats: &[VulkanFormatCapability],
         mode: DrmMode,
         buffers: Vec<(u8, ExportedDmabuf)>,
         claimed_planes: &[plane::Handle],
     ) -> Result<Self, KmsError> {
         let crtc = crtc_handle(descriptor.crtc)?;
         let connector = connector_handle(descriptor.id.connector_id)?;
-        let plane =
-            select_primary_plane(drm, crtc, descriptor.native_format.format, claimed_planes)?;
-        let cursor_planes = match discover_cursor_planes(drm, crtc) {
+        let plane = select_primary_plane(
+            device.drm,
+            crtc,
+            descriptor.native_format.format,
+            claimed_planes,
+        )?;
+        let cursor_planes = match discover_cursor_planes(device.drm, crtc) {
             Ok(capabilities) => capabilities,
             Err(error) => {
                 warn!(
@@ -172,6 +192,7 @@ impl KmsOutput {
             }
         };
         let (cursor_width, cursor_height) = cursor_planes.max_size();
+        let cursor_target = cursor_planes.select_vulkan_target(renderer_formats);
         info!(
             output = %descriptor.name,
             planes = cursor_planes.len(),
@@ -187,12 +208,27 @@ impl KmsOutput {
                 "eligible DRM cursor plane"
             );
         }
-        let device_fd = drm.device_fd().clone();
+        match cursor_target {
+            Some(target) => info!(
+                output = %descriptor.name,
+                plane = u32::from(target.plane()),
+                fourcc = %target.format().format.code,
+                modifier = %target.format().format.modifier,
+                planes = target.format().plane_count,
+                "selected strict Vulkan/KMS cursor image contract"
+            ),
+            None if cursor_planes.iter().next().is_some() => warn!(
+                output = %descriptor.name,
+                "no discovered cursor-plane format is renderable and exportable by the selected Vulkan device"
+            ),
+            None => {}
+        }
+        let device_fd = device.drm.device_fd().clone();
 
         let mut slots = Vec::with_capacity(buffers.len());
         for (slot, dmabuf) in buffers {
             let framebuffer =
-                framebuffer_from_dmabuf(&device_fd, gbm, &dmabuf).map_err(|source| {
+                framebuffer_from_dmabuf(&device_fd, device.gbm, &dmabuf).map_err(|source| {
                     KmsError::CreateFramebuffer {
                         slot,
                         message: source.to_string(),
@@ -212,7 +248,7 @@ impl KmsOutput {
             .handle();
         let surface = AtomicSurface::new(
             device_fd,
-            active,
+            device.active,
             connector,
             crtc,
             plane,
@@ -225,6 +261,7 @@ impl KmsOutput {
             name: descriptor.name.clone(),
             surface,
             _cursor_planes: cursor_planes,
+            _cursor_target: cursor_target,
             slots,
             scanout: ScanoutState::default(),
         })

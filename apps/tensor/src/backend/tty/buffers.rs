@@ -3,7 +3,10 @@ use crate::{
     render::{DrmNodeId, ExportedDmabuf, NativeOutputBuffer, OutputFormat},
 };
 
-use super::{BackendError, TtyBackend, kms::KmsOutput};
+use super::{
+    BackendError, TtyBackend,
+    kms::{KmsOutput, KmsOutputDevice},
+};
 
 impl TtyBackend {
     pub(crate) fn install_output_buffers(
@@ -21,6 +24,7 @@ impl TtyBackend {
         let expected_format = descriptor.native_format;
         let expected_render_node =
             DrmNodeId::new(self.render_node.major(), self.render_node.minor());
+        let renderer_formats = &self.renderer_formats;
         let device_id = output_id.device_id;
         let device = self
             .devices
@@ -91,10 +95,9 @@ impl TtyBackend {
             .map(KmsOutput::plane)
             .collect::<Vec<_>>();
         let target = KmsOutput::new(
-            &device.drm,
-            &device.gbm,
-            device.drm.active_handle(),
+            KmsOutputDevice::new(&device.drm, &device.gbm, device.drm.active_handle()),
             &descriptor,
+            renderer_formats,
             drm_mode,
             imported,
             &claimed_planes,
