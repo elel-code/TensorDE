@@ -47,7 +47,9 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   启动时间、显存峰值和双设备生命周期复杂度，又不能证明持久原生主线。后续只继续迁移
   并删除 `WgpuState`，不再增加临时双 renderer 入口。dma-buf cold-path 协商结果也已删除
   可由 DRM fourcc 推导的 `wgpu::TextureFormat` 字段，只保留 fourcc、modifier、device 与
-  scanout 偏好；旧 wgpu 格式映射被限制在待删除 importer 的最终调用边界。
+  scanout 偏好；import descriptor 的 usage 也已改为 `vulkan-renderer` 公开的 Vulkan typed
+  flags，旧 wgpu 格式与 usage 映射都被限制在待删除 importer 的最终调用边界，并对无法
+  表达的 usage 显式失败。
 - 独立 dialog window host：
   `src/ui/dialog_window.rs` 管理 dialog window 创建、同步、关闭、cursor、resize、
   renderer size、scale factor 和 window id 路由。

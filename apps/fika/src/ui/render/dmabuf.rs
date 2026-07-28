@@ -26,8 +26,9 @@ pub(crate) struct DmabufImportDesc {
     /// DRM fourcc (see [`wayland_client_runtime::fourcc`]).
     pub fourcc: u32,
     pub plane: DmabufImportPlane,
-    /// wgpu texture usages after import (e.g. TEXTURE_BINDING | COPY_SRC).
-    pub usage: wgpu::TextureUsages,
+    /// Vulkan usages required after import. The legacy importer translates
+    /// these only at its private wgpu boundary.
+    pub usage: vulkan_renderer::vk::ImageUsageFlags,
     pub label: Option<&'static str>,
 }
 
@@ -44,6 +45,7 @@ pub(crate) enum DmabufImportError {
     NotVulkan,
     UnsupportedFourcc(u32),
     InvalidSize(u32, u32),
+    UnsupportedUsage(vulkan_renderer::vk::ImageUsageFlags),
     Hal(String),
 }
 
@@ -58,6 +60,9 @@ impl std::fmt::Display for DmabufImportError {
                 write!(f, "unsupported DRM fourcc 0x{code:08x}")
             }
             Self::InvalidSize(w, h) => write!(f, "invalid dimensions {w}x{h}"),
+            Self::UnsupportedUsage(usage) => {
+                write!(f, "unsupported dma-buf image usage {usage:?}")
+            }
             Self::Hal(msg) => write!(f, "hal import failed: {msg}"),
         }
     }
@@ -235,7 +240,7 @@ pub(crate) fn import_desc_from_plan(
     width: u32,
     height: u32,
     plane: DmabufImportPlane,
-    usage: wgpu::TextureUsages,
+    usage: vulkan_renderer::vk::ImageUsageFlags,
     label: Option<&'static str>,
 ) -> DmabufImportDesc {
     DmabufImportDesc {
@@ -288,8 +293,9 @@ impl ExternalTexture {
 }
 
 /// Default usages for sampleable external content (icons, video frames, …).
-pub(crate) fn external_sample_usages() -> wgpu::TextureUsages {
-    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
+pub(crate) fn external_sample_usages() -> vulkan_renderer::vk::ImageUsageFlags {
+    vulkan_renderer::vk::ImageUsageFlags::SAMPLED
+        | vulkan_renderer::vk::ImageUsageFlags::TRANSFER_SRC
 }
 
 /// Allocate a single-plane linear ARGB8888 dmabuf via `/dev/udmabuf` when available.
@@ -417,6 +423,7 @@ pub(crate) fn import_dmabuf_texture(
     let format = texture_format_for_fourcc(desc.fourcc)
         .ok_or(DmabufImportError::UnsupportedFourcc(desc.fourcc))?;
 
+    let (wgpu_usage, hal_usage) = translate_image_usage(desc.usage)?;
     let wgpu_desc = wgpu::TextureDescriptor {
         label: desc.label,
         size: wgpu::Extent3d {
@@ -428,27 +435,9 @@ pub(crate) fn import_dmabuf_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: desc.usage,
+        usage: wgpu_usage,
         view_formats: &[],
     };
-
-    // Translate public usages into hal TextureUses for the import descriptor.
-    let mut hal_usage = wgpu::TextureUses::empty();
-    if desc.usage.contains(wgpu::TextureUsages::COPY_SRC) {
-        hal_usage |= wgpu::TextureUses::COPY_SRC;
-    }
-    if desc.usage.contains(wgpu::TextureUsages::COPY_DST) {
-        hal_usage |= wgpu::TextureUses::COPY_DST;
-    }
-    if desc.usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-        hal_usage |= wgpu::TextureUses::RESOURCE;
-    }
-    if desc.usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
-        hal_usage |= wgpu::TextureUses::COLOR_TARGET;
-    }
-    if hal_usage.is_empty() {
-        hal_usage = wgpu::TextureUses::RESOURCE;
-    }
 
     let hal_desc = wgpu::hal::TextureDescriptor {
         label: desc.label,
@@ -500,6 +489,40 @@ pub(crate) fn import_dmabuf_texture(
     Ok(texture)
 }
 
+fn translate_image_usage(
+    usage: vulkan_renderer::vk::ImageUsageFlags,
+) -> Result<(wgpu::TextureUsages, wgpu::TextureUses), DmabufImportError> {
+    use vulkan_renderer::vk::ImageUsageFlags as VkUsage;
+
+    let supported = VkUsage::TRANSFER_SRC
+        | VkUsage::TRANSFER_DST
+        | VkUsage::SAMPLED
+        | VkUsage::COLOR_ATTACHMENT;
+    if usage.is_empty() || usage & supported != usage {
+        return Err(DmabufImportError::UnsupportedUsage(usage));
+    }
+
+    let mut public = wgpu::TextureUsages::empty();
+    let mut hal = wgpu::TextureUses::empty();
+    if usage.contains(VkUsage::TRANSFER_SRC) {
+        public |= wgpu::TextureUsages::COPY_SRC;
+        hal |= wgpu::TextureUses::COPY_SRC;
+    }
+    if usage.contains(VkUsage::TRANSFER_DST) {
+        public |= wgpu::TextureUsages::COPY_DST;
+        hal |= wgpu::TextureUses::COPY_DST;
+    }
+    if usage.contains(VkUsage::SAMPLED) {
+        public |= wgpu::TextureUsages::TEXTURE_BINDING;
+        hal |= wgpu::TextureUses::RESOURCE;
+    }
+    if usage.contains(VkUsage::COLOR_ATTACHMENT) {
+        public |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+        hal |= wgpu::TextureUses::COLOR_TARGET;
+    }
+    Ok((public, hal))
+}
+
 /// Allocate a compositor-compatible GBM buffer and import it into wgpu.
 ///
 /// wgpu-hal owns the Vulkan import. Fika only negotiates the dma-buf layout and
@@ -514,7 +537,8 @@ pub(crate) fn create_exportable_dmabuf_texture(
     if width == 0 || height == 0 {
         return Err(DmabufImportError::InvalidSize(width, height));
     }
-    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    let usage = vulkan_renderer::vk::ImageUsageFlags::COLOR_ATTACHMENT
+        | vulkan_renderer::vk::ImageUsageFlags::SAMPLED;
     let format = gbm::Format::try_from(plan.fourcc)
         .map_err(|_| DmabufImportError::UnsupportedFourcc(plan.fourcc))?;
     let modifier = gbm::Modifier::from(plan.modifier);
@@ -636,146 +660,4 @@ fn gbm_device_candidates(main_device: u64) -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fourcc_maps_common_formats() {
-        assert_eq!(
-            texture_format_for_fourcc(fourcc::ARGB8888),
-            Some(wgpu::TextureFormat::Bgra8Unorm)
-        );
-        assert_eq!(
-            texture_format_for_fourcc(fourcc::BGRA8888),
-            Some(wgpu::TextureFormat::Bgra8Unorm)
-        );
-        assert_eq!(
-            texture_format_for_fourcc(fourcc::ABGR8888),
-            Some(wgpu::TextureFormat::Rgba8Unorm)
-        );
-        assert!(texture_format_for_fourcc(0xdead_beef).is_none());
-    }
-
-    #[test]
-    fn pick_import_format_prefers_argb_from_feedback() {
-        use wayland_client_runtime::{DmabufFeedback, DmabufFeedbackTranche, DmabufFormat};
-
-        let feedback = DmabufFeedback {
-            main_device: 0,
-            formats: vec![
-                DmabufFormat::new(fourcc::RGBA8888, fourcc::MOD_LINEAR),
-                DmabufFormat::new(fourcc::ARGB8888, fourcc::MOD_LINEAR),
-            ],
-            tranches: vec![DmabufFeedbackTranche {
-                device: 0,
-                flags: wayland_client_runtime::DmabufTrancheFlags::empty(),
-                formats: vec![0, 1],
-            }],
-        };
-        // Preference list puts ARGB before RGBA, even if tranche lists RGBA first.
-        let picked = pick_import_format(&feedback).expect("pick");
-        assert_eq!(picked.format, fourcc::ARGB8888);
-    }
-
-    #[test]
-    fn assess_readiness_needs_vulkan_and_feedback() {
-        use wayland_client_runtime::{DmabufFeedback, DmabufFormat};
-
-        let feedback = DmabufFeedback {
-            main_device: 42,
-            formats: vec![DmabufFormat::new(fourcc::ARGB8888, fourcc::MOD_LINEAR)],
-            tranches: vec![],
-        };
-        let not_ready = assess_readiness(false, true, Some(&feedback));
-        assert!(!not_ready.import_ready());
-        assert!(not_ready.plan.is_none());
-
-        let ready = assess_readiness(true, true, Some(&feedback));
-        assert!(ready.import_ready());
-        let plan = ready.plan.expect("plan");
-        assert_eq!(plan.fourcc, fourcc::ARGB8888);
-        assert_eq!(plan.main_device, 42);
-    }
-
-    #[test]
-    fn import_udmabuf_into_wgpu_when_available() {
-        let Some((fd, stride)) = try_allocate_udmabuf_argb8888(64, 64) else {
-            eprintln!("skip: /dev/udmabuf unavailable or permission denied");
-            return;
-        };
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            flags: wgpu::InstanceFlags::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            display: None,
-        });
-        let adapter = match futures_lite::future::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            },
-        )) {
-            Ok(a) => a,
-            Err(_) => {
-                eprintln!("skip: no Vulkan adapter");
-                return;
-            }
-        };
-        if !adapter_supports_dmabuf_import(&adapter) {
-            eprintln!("skip: adapter lacks VULKAN_EXTERNAL_MEMORY_DMA_BUF");
-            return;
-        }
-        let features = optional_dmabuf_features(&adapter);
-        let (device, _queue) =
-            match futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("dmabuf-import-test"),
-                required_features: features,
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-            })) {
-                Ok(dq) => dq,
-                Err(e) => {
-                    eprintln!("skip: request_device failed: {e}");
-                    return;
-                }
-            };
-
-        let plan = DmabufImportPlan {
-            fourcc: fourcc::ARGB8888,
-            modifier: fourcc::MOD_LINEAR,
-            main_device: 0,
-            scanout_preferred: false,
-        };
-        let desc = import_desc_from_plan(
-            plan,
-            64,
-            64,
-            DmabufImportPlane {
-                fd,
-                offset: 0,
-                stride,
-                modifier: fourcc::MOD_LINEAR,
-            },
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            Some("udmabuf-test"),
-        );
-        match import_dmabuf_texture(&device, desc) {
-            Ok(texture) => {
-                assert_eq!(texture.size().width, 64);
-                assert_eq!(texture.size().height, 64);
-                assert_eq!(texture.format(), wgpu::TextureFormat::Bgra8Unorm);
-                texture.destroy();
-            }
-            Err(e) => {
-                // Some drivers reject linear udmabuf without DRM modifiers; still useful signal.
-                eprintln!("import failed (driver may reject linear udmabuf): {e}");
-            }
-        }
-    }
-}
+mod tests;

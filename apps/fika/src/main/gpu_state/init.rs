@@ -247,7 +247,7 @@ impl WgpuState {
         width: u32,
         height: u32,
         plane: crate::ui::render::dmabuf::DmabufImportPlane,
-        usage: wgpu::TextureUsages,
+        usage: vulkan_renderer::vk::ImageUsageFlags,
         label: Option<&'static str>,
     ) -> Result<wgpu::Texture, crate::ui::render::dmabuf::DmabufImportError> {
         let desc = crate::ui::render::dmabuf::import_desc_from_plan(
