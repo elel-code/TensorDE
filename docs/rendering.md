@@ -190,8 +190,9 @@ images and draw after all client content. Pixel data is copied only once into th
 staging allocation when an image version is imported; normal cursor frames carry only stable buffer
 IDs and transforms. Animated XCursor frames of the selected nominal size are all uploaded during
 that cold load, then a dedicated one-shot timerfd advances their IDs through Compio io_uring
-completions; there is no readiness loop or periodic polling. The small descriptor-free vector arrow remains only for a missing theme image
-or a client surface without committed image content. Hotspots include committed `wl_surface.offset`
+completions; there is no readiness loop or periodic polling. A completion advances only active
+named cursors and queues the outputs intersecting their complete old/new extents. The small
+descriptor-free vector arrow remains only for a missing theme image. Hotspots include committed `wl_surface.offset`
 deltas, cursor image or geometry changes damage the old and new physical bounds, and successfully
 submitted cursor surfaces receive frame callbacks so client-driven animation can advance. Cursor
 role state also tracks output-instance membership: crossing a head emits `wl_surface.enter/leave`

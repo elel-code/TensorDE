@@ -110,6 +110,28 @@ impl RuntimeState {
         self.flush_queued_redraws();
     }
 
+    fn queue_named_cursor_extents(&mut self) {
+        let pointer = self.input_seat.pointer_location();
+        let cursor = &self.cursor;
+        let space = &self.space;
+        let redraw_states = &mut self.redraw_states;
+        for output in space.outputs() {
+            let Some(geometry) = space.output_geometry(output) else {
+                continue;
+            };
+            let scale = output.current_scale();
+            let viewport = tensor_util::Rect::new(
+                0,
+                0,
+                scale.physical_length_round(u32::try_from(geometry.size.w).unwrap_or(0)),
+                scale.physical_length_round(u32::try_from(geometry.size.h).unwrap_or(0)),
+            );
+            if cursor.named_cursor_intersects_output(pointer, geometry, scale, viewport) {
+                queue_output(redraw_states, output.id());
+            }
+        }
+    }
+
     pub(crate) fn queue_cursor_surface_memberships(
         &mut self,
         surface: &wayland_server::protocol::wl_surface::WlSurface,
@@ -352,7 +374,16 @@ impl RuntimeState {
         match self.cursor.complete_animation_timer() {
             Ok(redraw) => {
                 if redraw {
-                    self.request_redraw_all();
+                    let now = std::time::Instant::now();
+                    let changed = self.cursor.named_animation_will_change(now);
+                    if changed {
+                        self.queue_named_cursor_extents();
+                    }
+                    self.cursor.advance_named_animation(now);
+                    if changed {
+                        self.queue_named_cursor_extents();
+                        self.flush_queued_redraws();
+                    }
                 }
                 true
             }

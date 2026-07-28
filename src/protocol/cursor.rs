@@ -1,15 +1,10 @@
 use std::{
     collections::HashMap,
-    io,
     os::fd::OwnedFd,
     time::{Duration, Instant},
 };
 
 use cursor_icon::CursorIcon;
-use rustix::time::{
-    Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, timerfd_create,
-    timerfd_settime,
-};
 use tensor_protocol::SurfaceSampleTransform;
 use tensor_util::{LogicalPoint, LogicalRect, OutputScale, Point, Rect, Size};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
@@ -18,6 +13,8 @@ use crate::{
     ecs::SurfaceBufferId,
     render::{CursorOverlay, CursorOverlays, CursorTexture},
 };
+
+mod animation;
 
 const MAX_TABLET_CURSORS: usize = 64;
 
@@ -107,26 +104,6 @@ impl CursorRasterSequence {
     }
 }
 
-fn create_animation_timer() -> Option<OwnedFd> {
-    match timerfd_create(
-        TimerfdClockId::Monotonic,
-        TimerfdFlags::CLOEXEC | TimerfdFlags::NONBLOCK,
-    ) {
-        Ok(timer) => Some(timer),
-        Err(error) => {
-            tracing::warn!(%error, "cursor animation timerfd is unavailable");
-            None
-        }
-    }
-}
-
-fn duration_timespec(duration: Duration) -> Timespec {
-    Timespec {
-        tv_sec: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-        tv_nsec: i64::from(duration.subsec_nanos()),
-    }
-}
-
 impl Default for CursorState {
     fn default() -> Self {
         Self {
@@ -139,7 +116,7 @@ impl Default for CursorState {
             theme: xcursor::CursorTheme::load("default"),
             named_rasters: HashMap::with_capacity(16),
             animation_epoch: Instant::now(),
-            animation_timer: create_animation_timer(),
+            animation_timer: animation::create_timer(),
             animation_deadline: None,
             retired_surfaces: Vec::with_capacity(MAX_TABLET_CURSORS + 1),
         }
@@ -286,93 +263,6 @@ impl CursorState {
             return Some(images);
         }
         None
-    }
-
-    fn select_named_frame(&mut self, icon: CursorIcon, scale: OutputScale, now: Instant) {
-        let Some(Some(sequence)) = self.named_rasters.get_mut(&(icon, scale)) else {
-            return;
-        };
-        let Some((current, remaining)) =
-            sequence.frame_at(now.duration_since(self.animation_epoch))
-        else {
-            return;
-        };
-        sequence.current = current;
-        self.arm_animation_timer(now, remaining);
-    }
-
-    pub(crate) fn duplicate_animation_timer_fd(&self) -> io::Result<Option<OwnedFd>> {
-        self.animation_timer
-            .as_ref()
-            .map(|timer| rustix::io::fcntl_dupfd_cloexec(timer, 0).map_err(io::Error::from))
-            .transpose()
-    }
-
-    pub(crate) fn complete_animation_timer(&mut self) -> io::Result<bool> {
-        let Some(timer) = &self.animation_timer else {
-            return Ok(false);
-        };
-        let mut expirations = [0_u8; 8];
-        let read = rustix::io::read(timer, &mut expirations).map_err(io::Error::from)?;
-        if read != expirations.len() {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        self.animation_deadline = None;
-        Ok(true)
-    }
-
-    pub(crate) fn animation_timer_failed(&mut self) {
-        self.animation_timer = None;
-        self.animation_deadline = None;
-    }
-
-    fn arm_animation_timer(&mut self, now: Instant, delay: Duration) {
-        let Some(timer) = &self.animation_timer else {
-            return;
-        };
-        let deadline = now.checked_add(delay).unwrap_or(now);
-        if self
-            .animation_deadline
-            .is_some_and(|current| current <= deadline)
-        {
-            return;
-        }
-        let delay = deadline
-            .saturating_duration_since(Instant::now())
-            .max(Duration::from_nanos(1));
-        let value = duration_timespec(delay);
-        if let Err(error) = timerfd_settime(
-            timer,
-            TimerfdTimerFlags::empty(),
-            &Itimerspec {
-                it_interval: Timespec::default(),
-                it_value: value,
-            },
-        ) {
-            tracing::warn!(%error, "cursor animation timerfd could not be armed");
-            self.animation_timer = None;
-            self.animation_deadline = None;
-            return;
-        }
-        self.animation_deadline = Some(deadline);
-    }
-
-    fn disarm_animation_timer(&mut self) {
-        let Some(timer) = &self.animation_timer else {
-            return;
-        };
-        if let Err(error) = timerfd_settime(
-            timer,
-            TimerfdTimerFlags::empty(),
-            &Itimerspec {
-                it_interval: Timespec::default(),
-                it_value: Timespec::default(),
-            },
-        ) {
-            tracing::warn!(%error, "cursor animation timerfd could not be disarmed");
-            self.animation_timer = None;
-        }
-        self.animation_deadline = None;
     }
 
     pub(in crate::protocol) fn set_image(&mut self, image: CursorImage) -> bool {
@@ -605,6 +495,40 @@ impl CursorState {
             },
             &mut resolve,
         )
+    }
+
+    pub(in crate::protocol) fn named_cursor_intersects_output(
+        &self,
+        pointer: Option<LogicalPoint<f64>>,
+        output: LogicalRect<i32>,
+        scale: OutputScale,
+        viewport: Rect,
+    ) -> bool {
+        let output = CursorOutput {
+            logical: output,
+            scale,
+            viewport,
+        };
+        if !self.hidden_for_typing
+            && let (Some(pointer), CursorImage::Named(_)) = (pointer, &self.image)
+            && self
+                .overlay(0, pointer, &self.image, output, &mut |_, _| None)
+                .is_some()
+        {
+            return true;
+        }
+        self.tablets.iter().any(|tablet| {
+            matches!(tablet.image, CursorImage::Named(_))
+                && self
+                    .overlay(
+                        tablet.tool.get(),
+                        tablet.location,
+                        &tablet.image,
+                        output,
+                        &mut |_, _| None,
+                    )
+                    .is_some()
+        })
     }
 
     fn overlay(

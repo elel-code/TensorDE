@@ -185,6 +185,53 @@ fn animated_raster_selects_frames_and_exact_next_deadlines() {
 }
 
 #[test]
+fn animation_tick_advances_only_active_named_shapes() {
+    let frame = |buffer_id, delay_ms| CursorRasterFrame {
+        raster: CursorRaster {
+            buffer_id: SurfaceBufferId::new(buffer_id),
+            size: Size::new(24, 24),
+            hotspot: Point::new(0, 0),
+            sample_transform: SurfaceSampleTransform::IDENTITY,
+        },
+        delay_ms,
+    };
+    let sequence = |first, second| {
+        Some(CursorRasterSequence {
+            frames: vec![frame(first, 10), frame(second, 20)],
+            duration_ms: 30,
+            current: 0,
+        })
+    };
+    let mut cursor = CursorState::default();
+    cursor
+        .named_rasters
+        .insert((CursorIcon::Default, OutputScale::ONE), sequence(1, 2));
+    cursor
+        .named_rasters
+        .insert((CursorIcon::Wait, OutputScale::ONE), sequence(3, 4));
+    let now = Instant::now();
+    cursor.animation_epoch = now - Duration::from_millis(15);
+
+    assert!(cursor.named_animation_will_change(now));
+    cursor.advance_named_animation(now);
+
+    assert_eq!(
+        cursor.named_rasters[&(CursorIcon::Default, OutputScale::ONE)]
+            .as_ref()
+            .unwrap()
+            .current,
+        1
+    );
+    assert_eq!(
+        cursor.named_rasters[&(CursorIcon::Wait, OutputScale::ONE)]
+            .as_ref()
+            .unwrap()
+            .current,
+        0
+    );
+}
+
+#[test]
 fn theme_change_releases_every_uploaded_animation_frame() {
     let raster = |buffer_id| CursorRasterFrame {
         raster: CursorRaster {
