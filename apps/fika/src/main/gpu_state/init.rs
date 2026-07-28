@@ -15,7 +15,7 @@ impl WgpuState {
             .create_surface(window.surface_handle())
             .map_err(|error| format!("create surface: {error}"))?;
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter = futures_lite::future::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
@@ -34,7 +34,7 @@ impl WgpuState {
         // texture_from_dmabuf_fd). Present still uses RWH/swapchain; this only
         // unlocks sampling external dmabuf textures.
         let dmabuf_features = crate::ui::render::dmabuf::optional_dmabuf_features(&adapter);
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("fika-wgpu-device"),
             required_features: dmabuf_features,
             required_limits: wgpu::Limits::default(),

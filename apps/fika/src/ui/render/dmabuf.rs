@@ -703,26 +703,27 @@ mod tests {
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             display: None,
         });
-        let adapter =
-            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter = match futures_lite::future::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
-            })) {
-                Ok(a) => a,
-                Err(_) => {
-                    eprintln!("skip: no Vulkan adapter");
-                    return;
-                }
-            };
+            },
+        )) {
+            Ok(a) => a,
+            Err(_) => {
+                eprintln!("skip: no Vulkan adapter");
+                return;
+            }
+        };
         if !adapter_supports_dmabuf_import(&adapter) {
             eprintln!("skip: adapter lacks VULKAN_EXTERNAL_MEMORY_DMA_BUF");
             return;
         }
         let features = optional_dmabuf_features(&adapter);
         let (device, _queue) =
-            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            match futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("dmabuf-import-test"),
                 required_features: features,
                 required_limits: wgpu::Limits::default(),

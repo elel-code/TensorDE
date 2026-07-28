@@ -29,7 +29,6 @@ roxmltree = "0.21"
 # `fs` covers memfd/seals used by dmabuf import smoke tests.
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 svgtypes = "0.16"
-pollster = "1"
 # Default features include Compio event-loop integration.
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", features = ["compio"] }
 vulkan-renderer = { path = "../../crates/vulkan-renderer" }

@@ -20,7 +20,7 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         display: None,
     });
-    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = match futures_lite::future::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
@@ -37,7 +37,7 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
         return;
     }
     let features = crate::ui::render::dmabuf::optional_dmabuf_features(&adapter);
-    let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = match futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("icon-dmabuf-slot-test"),
         required_features: features,
         required_limits: wgpu::Limits::default(),
@@ -135,7 +135,7 @@ fn gpu_icon_sources_and_preview_composite_without_readback() {
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         display: None,
     });
-    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = match futures_lite::future::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
@@ -147,7 +147,7 @@ fn gpu_icon_sources_and_preview_composite_without_readback() {
             return;
         }
     };
-    let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = match futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("gpu-icon-source-smoke"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),

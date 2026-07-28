@@ -1466,7 +1466,6 @@ dependencies = [
  "image",
  "lyon",
  "notify",
- "pollster",
  "roxmltree 0.21.1",
  "rustix 1.1.4",
  "svgtypes",
@@ -3291,12 +3290,6 @@ dependencies = [
  "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "pollster"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
 
 [[package]]
 name = "polycool"
