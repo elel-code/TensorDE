@@ -53,6 +53,26 @@ fn hidden_and_off_output_cursors_do_not_create_an_overlay() {
 }
 
 #[test]
+fn cursor_extent_can_cross_an_output_boundary_before_its_hotspot() {
+    let mut cursor = CursorState::default();
+    let adjacent = LogicalRect::new((110, 20).into(), (100, 80).into());
+    let overlays = cursor.overlays_for_output(
+        Some((105.0, 30.0).into()),
+        adjacent,
+        OutputScale::ONE,
+        Rect::new(0, 0, 100, 80),
+        |_, _| None,
+    );
+
+    assert_eq!(overlays.as_slice().len(), 1);
+    assert_eq!(
+        overlays.as_slice()[0].destination,
+        Rect::new(-5, 10, 24, 24)
+    );
+    assert_eq!(overlays.as_slice()[0].clip, Rect::new(0, 10, 19, 24));
+}
+
+#[test]
 fn pointer_and_tablet_cursors_remain_independent() {
     let mut cursor = CursorState::default();
     assert!(cursor.note_tablet_activity(tensor_event::TabletToolId::new(1), (40.0, 50.0).into()));

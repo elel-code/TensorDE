@@ -1,7 +1,7 @@
 #[cfg(feature = "tty")]
 use std::os::fd::AsFd;
 
-use tensor_util::{LogicalPoint, Rect};
+use tensor_util::Rect;
 use tracing::{debug, info, warn};
 
 use crate::{backend::BackendOutputId, render::NativeOutputBuffer, scene::SceneSnapshot};
@@ -38,43 +38,6 @@ impl RuntimeState {
             return;
         }
         for output in targets {
-            self.queue_redraw(output);
-        }
-        self.redraw_queued_outputs();
-    }
-
-    /// Redraw only the output that contains a logical seat point (pointer).
-    #[cfg(feature = "tty")]
-    pub(crate) fn request_redraw_at(&mut self, location: LogicalPoint<f64>) {
-        if self.force_full_redraw {
-            return self.request_redraw_all();
-        }
-        let Some(output_id) = self.output_id_under(location) else {
-            return;
-        };
-        self.queue_redraw(output_id);
-        self.redraw_queued_outputs();
-    }
-
-    /// Damage both heads when an overlay crosses an output boundary. Within
-    /// one head the renderer's retained cursor history handles old/new bounds.
-    #[cfg(feature = "tty")]
-    pub(crate) fn request_redraw_between(
-        &mut self,
-        previous: LogicalPoint<f64>,
-        current: LogicalPoint<f64>,
-    ) {
-        if self.force_full_redraw {
-            return self.request_redraw_all();
-        }
-        let previous = self.output_id_under(previous);
-        let current = self.output_id_under(current);
-        if let Some(output) = previous {
-            self.queue_redraw(output);
-        }
-        if let Some(output) = current
-            && Some(output) != previous
-        {
             self.queue_redraw(output);
         }
         self.redraw_queued_outputs();
@@ -135,15 +98,6 @@ impl RuntimeState {
             matches = self.outputs.keys().copied().collect();
         }
         matches
-    }
-
-    #[cfg(feature = "tty")]
-    fn output_id_under(&self, location: LogicalPoint<f64>) -> Option<BackendOutputId> {
-        let output = self.space.output_under(location).next()?;
-        self.outputs
-            .iter()
-            .find(|(_, managed)| managed.output == *output)
-            .map(|(id, _)| *id)
     }
 
     #[cfg(feature = "tty")]

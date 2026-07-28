@@ -90,6 +90,8 @@ impl RuntimeState {
         };
         let target = origin + local;
         #[cfg(feature = "tty")]
+        let previous = self.input_seat.pointer_location().unwrap_or(target);
+        #[cfg(feature = "tty")]
         if let Some(bounds) = self.pointer_coordinate_space() {
             self.input_seat.set_pointer_location(
                 crate::protocol::input::constrain_pointer_location(target, bounds),
@@ -101,7 +103,7 @@ impl RuntimeState {
         self.input_seat.set_pointer_location(target);
         #[cfg(feature = "tty")]
         if let Some(location) = self.input_seat.pointer_location() {
-            self.request_redraw_at(location);
+            self.request_cursor_redraw_between(0, previous, location);
         }
     }
 }

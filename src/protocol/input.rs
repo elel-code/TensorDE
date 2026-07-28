@@ -2,6 +2,7 @@ mod device;
 mod focus;
 mod pointer_geometry;
 mod session_lock;
+mod tablet;
 #[cfg(test)]
 mod tests;
 
@@ -19,7 +20,7 @@ use xkbcommon::xkb::keysyms;
 
 use tensor_event::{
     AbsoluteMotionEvent, BackendInputEvent, KeyboardEvent, PointerAxisEvent, PointerButtonEvent,
-    PointerGestureEvent, RelativeMotionEvent, TabletToolAxesEvent, TabletToolProximityEvent,
+    PointerGestureEvent, RelativeMotionEvent,
 };
 
 use crate::backend::LibinputEvent;
@@ -89,67 +90,6 @@ impl RuntimeState {
         if activity {
             self.notify_idle_activity();
         }
-    }
-
-    pub(super) fn forward_tablet_proximity(&mut self, event: TabletToolProximityEvent) {
-        let target = event
-            .in_proximity
-            .then(|| self.tablet_target(event.x, event.y))
-            .flatten();
-        let cursor_location = target.as_ref().map(|target| target.location);
-        self.protocol_globals.tablet.tool_proximity(event, target);
-        let changed = if let Some(location) = cursor_location {
-            self.cursor.note_tablet_activity(event.id, location)
-        } else {
-            self.cursor.clear_tablet(event.id)
-        };
-        if changed {
-            self.refresh_cursor_surface_outputs();
-            self.request_redraw_all();
-        }
-    }
-
-    pub(super) fn forward_tablet_axes(&mut self, event: TabletToolAxesEvent) {
-        let Some((x, y)) = self.protocol_globals.tablet.normalized_after_axes(event) else {
-            return;
-        };
-        let target = self.tablet_target(x, y);
-        let cursor_location = target.as_ref().map(|target| target.location);
-        self.protocol_globals.tablet.tool_axes(event, target);
-        if let Some(location) = cursor_location
-            && self.cursor.note_tablet_activity(event.id, location)
-        {
-            self.refresh_cursor_surface_outputs();
-            self.request_redraw_at(location);
-        }
-    }
-
-    fn tablet_target(
-        &self,
-        normalized_x: f32,
-        normalized_y: f32,
-    ) -> Option<super::globals::tablet::tool::TabletTarget> {
-        let bounds = self.pointer_coordinate_space()?;
-        let location = LogicalPoint::from((
-            f64::from(normalized_x) * f64::from(bounds.size.w),
-            f64::from(normalized_y) * f64::from(bounds.size.h),
-        )) + bounds.loc.to_f64();
-        let location = constrain_pointer_location(location, bounds);
-        let (surface, origin) = if self.session_is_locked() {
-            self.session_lock_pointer_focus(location)?
-        } else {
-            self.pointer_focus_under(location)?
-        };
-        let scale = surface
-            .client()
-            .map(|client| self.client_scale(&client))
-            .unwrap_or(1.0);
-        Some(super::globals::tablet::tool::TabletTarget {
-            surface,
-            origin,
-            location,
-            scale,
-        })
     }
 
     /// Publish the aggregate libinput capabilities on the single Wayland
@@ -268,10 +208,14 @@ impl RuntimeState {
                 .seat
                 .modifiers(self.input_seat.keyboard_modifiers(), serial);
         }
-        if event.pressed && self.cursor.note_keyboard_activity() {
-            // Typing hid the software cursor; repaint the pointer head.
-            if let Some(location) = self.input_seat.pointer_location() {
-                self.request_redraw_at(location);
+        if event.pressed && self.cursor.will_hide_for_keyboard_activity() {
+            let location = self.input_seat.pointer_location();
+            if let Some(location) = location {
+                self.queue_cursor_redraw_between(0, location, location);
+            }
+            assert!(self.cursor.note_keyboard_activity());
+            if location.is_some() {
+                self.flush_queued_redraws();
             } else {
                 self.request_redraw_all();
             }
@@ -455,7 +399,7 @@ impl RuntimeState {
             );
             self.refresh_cursor_surface_outputs();
             self.refresh_dnd_icon_outputs();
-            self.request_redraw_between(previous_location, planned_location);
+            self.request_cursor_redraw_between(0, previous_location, planned_location);
             return;
         }
         self.reconcile_popup_grab(serial);
@@ -534,7 +478,7 @@ impl RuntimeState {
         // only the head under the pointer so dual high-refresh outputs do not
         // both resubmit on every relative move. Immediate redraw keeps pointer
         // latency off the idle-turn path; bus coalescing still records intent.
-        self.request_redraw_between(previous_location, location);
+        self.request_cursor_redraw_between(0, previous_location, location);
     }
 
     pub(crate) fn forward_pointer_gesture(&mut self, event: PointerGestureEvent) {

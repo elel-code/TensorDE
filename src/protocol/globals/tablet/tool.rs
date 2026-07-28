@@ -640,6 +640,12 @@ impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {
                 {
                     return;
                 }
+                #[cfg(feature = "tty")]
+                let cursor_location = state.cursor.tablet_location(self.id);
+                #[cfg(feature = "tty")]
+                if let Some(location) = cursor_location {
+                    state.queue_cursor_redraw_between(self.id.get(), location, location);
+                }
                 let surface = match surface {
                     Some(surface) => {
                         let owner = state
@@ -697,7 +703,7 @@ impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {
                 };
                 #[cfg(feature = "tty")]
                 {
-                    let changed = state.cursor.set_tablet_image(
+                    state.cursor.set_tablet_image(
                         self.id,
                         match surface {
                             Some(surface) => CursorImage::Surface(surface),
@@ -705,8 +711,9 @@ impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {
                         },
                     );
                     state.refresh_cursor_surface_outputs();
-                    if changed {
-                        state.request_redraw_all();
+                    if let Some(location) = cursor_location {
+                        state.queue_cursor_redraw_between(self.id.get(), location, location);
+                        state.flush_queued_redraws();
                     }
                 }
                 #[cfg(not(feature = "tty"))]

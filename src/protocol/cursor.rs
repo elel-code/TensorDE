@@ -386,7 +386,15 @@ impl CursorState {
         true
     }
 
+    pub(in crate::protocol) fn image_matches(&self, image: &CursorImage) -> bool {
+        &self.image == image
+    }
+
     /// Hide the software cursor after a keyboard press when configured.
+    pub(crate) fn will_hide_for_keyboard_activity(&self) -> bool {
+        self.hide_when_typing && !self.hidden_for_typing
+    }
+
     pub(crate) fn note_keyboard_activity(&mut self) -> bool {
         if !self.hide_when_typing || self.hidden_for_typing {
             return false;
@@ -430,6 +438,16 @@ impl CursorState {
         true
     }
 
+    pub(in crate::protocol) fn tablet_location(
+        &self,
+        tool: tensor_event::TabletToolId,
+    ) -> Option<LogicalPoint<f64>> {
+        self.tablets
+            .iter()
+            .find(|tablet| tablet.tool == tool)
+            .map(|tablet| tablet.location)
+    }
+
     pub(in crate::protocol) fn set_tablet_image(
         &mut self,
         tool: tensor_event::TabletToolId,
@@ -446,6 +464,17 @@ impl CursorState {
         }
         tablet.image = image;
         true
+    }
+
+    pub(in crate::protocol) fn tablet_image_matches(
+        &self,
+        tool: tensor_event::TabletToolId,
+        image: &CursorImage,
+    ) -> bool {
+        self.tablets
+            .iter()
+            .find(|tablet| tablet.tool == tool)
+            .is_some_and(|tablet| &tablet.image == image)
     }
 
     pub(in crate::protocol) fn clear_tablet(&mut self, tool: tensor_event::TabletToolId) -> bool {
@@ -544,6 +573,40 @@ impl CursorState {
         overlays
     }
 
+    pub(in crate::protocol) fn overlay_for_source_at(
+        &self,
+        source: u64,
+        location: LogicalPoint<f64>,
+        output: LogicalRect<i32>,
+        scale: OutputScale,
+        viewport: Rect,
+        mut resolve: impl FnMut(&WlSurface, OutputScale) -> Option<CursorRaster>,
+    ) -> Option<CursorOverlay> {
+        let image = if source == 0 {
+            if self.hidden_for_typing {
+                return None;
+            }
+            &self.image
+        } else {
+            &self
+                .tablets
+                .iter()
+                .find(|tablet| tablet.tool.get() == source)?
+                .image
+        };
+        self.overlay(
+            source,
+            location,
+            image,
+            CursorOutput {
+                logical: output,
+                scale,
+                viewport,
+            },
+            &mut resolve,
+        )
+    }
+
     fn overlay(
         &self,
         source: u64,
@@ -557,43 +620,25 @@ impl CursorState {
         }
         let local_x = location.x - f64::from(output.logical.loc.x);
         let local_y = location.y - f64::from(output.logical.loc.y);
-        if output.logical.size.w <= 0
-            || output.logical.size.h <= 0
-            || local_x < 0.0
-            || local_y < 0.0
-            || local_x >= f64::from(output.logical.size.w)
-            || local_y >= f64::from(output.logical.size.h)
-        {
+        if output.logical.size.w <= 0 || output.logical.size.h <= 0 {
             return None;
         }
         let x = output.scale.physical_coordinate_round(local_x)?;
         let y = output.scale.physical_coordinate_round(local_y)?;
         let raster = match image {
-            CursorImage::Hidden => None,
+            CursorImage::Hidden => return None,
             CursorImage::Named(icon) => self
                 .named_rasters
                 .get(&(*icon, output.scale))
                 .and_then(Option::as_ref)
                 .and_then(CursorRasterSequence::current),
-            CursorImage::Surface(surface) => resolve(surface, output.scale),
+            CursorImage::Surface(surface) => {
+                let raster = resolve(surface, output.scale)?;
+                return textured_overlay(source, x, y, raster, output.viewport);
+            }
         };
         if let Some(raster) = raster {
-            return CursorOverlay::new(
-                source,
-                Rect::new(
-                    x.saturating_sub(raster.hotspot.x),
-                    y.saturating_sub(raster.hotspot.y),
-                    raster.size.width,
-                    raster.size.height,
-                ),
-                output.viewport,
-            )
-            .map(|overlay| {
-                overlay.with_texture(CursorTexture {
-                    buffer_id: raster.buffer_id,
-                    sample_transform: raster.sample_transform,
-                })
-            });
+            return textured_overlay(source, x, y, raster, output.viewport);
         }
         let fallback_size = output.scale.physical_length_round(self.logical_size).max(1);
         CursorOverlay::new(
@@ -656,6 +701,31 @@ impl CursorState {
     pub(in crate::protocol) fn image(&self) -> &CursorImage {
         &self.image
     }
+}
+
+fn textured_overlay(
+    source: u64,
+    x: i32,
+    y: i32,
+    raster: CursorRaster,
+    viewport: Rect,
+) -> Option<CursorOverlay> {
+    CursorOverlay::new(
+        source,
+        Rect::new(
+            x.saturating_sub(raster.hotspot.x),
+            y.saturating_sub(raster.hotspot.y),
+            raster.size.width,
+            raster.size.height,
+        ),
+        viewport,
+    )
+    .map(|overlay| {
+        overlay.with_texture(CursorTexture {
+            buffer_id: raster.buffer_id,
+            sample_transform: raster.sample_transform,
+        })
+    })
 }
 
 #[cfg(test)]

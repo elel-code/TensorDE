@@ -153,12 +153,23 @@ fn set_named_tablet_cursor(
     icon: CursorIcon,
 ) {
     #[cfg(feature = "tty")]
-    if state
-        .cursor
-        .set_tablet_image(tool, crate::protocol::cursor::CursorImage::Named(icon))
     {
+        let image = crate::protocol::cursor::CursorImage::Named(icon);
+        if state.cursor.tablet_image_matches(tool, &image) {
+            return;
+        }
+        let location = state.cursor.tablet_location(tool);
+        if let Some(location) = location {
+            state.queue_cursor_redraw_between(tool.get(), location, location);
+        }
+        if !state.cursor.set_tablet_image(tool, image) {
+            return;
+        }
         state.refresh_cursor_surface_outputs();
-        state.request_redraw_all();
+        if let Some(location) = location {
+            state.queue_cursor_redraw_between(tool.get(), location, location);
+            state.flush_queued_redraws();
+        }
     }
     #[cfg(not(feature = "tty"))]
     let _ = (state, tool, icon);
@@ -178,13 +189,22 @@ fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, device: &ObjectI
 
 fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {
     #[cfg(feature = "tty")]
-    if state
-        .cursor
-        .set_image(crate::protocol::cursor::CursorImage::Named(icon))
     {
+        let image = crate::protocol::cursor::CursorImage::Named(icon);
+        if state.cursor.image_matches(&image) {
+            return;
+        }
+        let location = state.input_seat.pointer_location();
+        if let Some(location) = location {
+            state.queue_cursor_redraw_between(0, location, location);
+        }
+        if !state.cursor.set_image(image) {
+            return;
+        }
         state.refresh_cursor_surface_outputs();
-        if let Some(location) = state.input_seat.pointer_location() {
-            state.request_redraw_at(location);
+        if let Some(location) = location {
+            state.queue_cursor_redraw_between(0, location, location);
+            state.flush_queued_redraws();
         } else {
             state.request_redraw_workspace();
         }

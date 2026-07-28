@@ -246,7 +246,7 @@ fn pointer_redraw_targets_only_the_output_under_the_cursor() {
         .insert(secondary, OutputRedrawState::Idle);
 
     // Secondary head is laid out at x=1920 after reflow.
-    state.request_redraw_at((2000.0, 10.0).into());
+    state.request_cursor_redraw_between(0, (2000.0, 10.0).into(), (2000.0, 10.0).into());
 
     assert_eq!(
         state.redraw_states.get(&primary).copied(),
@@ -259,7 +259,7 @@ fn pointer_redraw_targets_only_the_output_under_the_cursor() {
 }
 
 #[test]
-fn crossing_output_redraws_both_cursor_heads() {
+fn straddling_pointer_and_tablet_extents_redraw_both_heads() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(
         display,
@@ -279,7 +279,28 @@ fn crossing_output_redraws_both_cursor_heads() {
         .redraw_states
         .insert(secondary, OutputRedrawState::Idle);
 
-    state.request_redraw_between((1919.0, 10.0).into(), (1920.0, 10.0).into());
+    state.request_cursor_redraw_between(0, (1900.0, 10.0).into(), (1900.0, 10.0).into());
+
+    assert_eq!(
+        state.redraw_states.get(&primary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+    assert_eq!(
+        state.redraw_states.get(&secondary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+
+    state.redraw_states.insert(primary, OutputRedrawState::Idle);
+    state
+        .redraw_states
+        .insert(secondary, OutputRedrawState::Idle);
+    let tool = tensor_event::TabletToolId::new(7);
+    assert!(
+        state
+            .cursor
+            .note_tablet_activity(tool, (1900.0, 20.0).into())
+    );
+    state.request_cursor_redraw_between(tool.get(), (1900.0, 20.0).into(), (1900.0, 20.0).into());
 
     assert_eq!(
         state.redraw_states.get(&primary).copied(),

@@ -152,6 +152,12 @@ impl DispatchDelegate<WlPointer, RuntimeState> for PointerData {
                 {
                     return;
                 }
+                #[cfg(feature = "tty")]
+                let cursor_location = state.input_seat.pointer_location();
+                #[cfg(feature = "tty")]
+                if let Some(location) = cursor_location {
+                    state.queue_cursor_redraw_between(0, location, location);
+                }
                 let surface = match surface {
                     Some(surface) => {
                         if give_role(&surface, CURSOR_IMAGE_ROLE).is_err()
@@ -180,17 +186,16 @@ impl DispatchDelegate<WlPointer, RuntimeState> for PointerData {
                 };
                 #[cfg(feature = "tty")]
                 {
-                    let changed = state.cursor.set_image(match surface {
+                    state.cursor.set_image(match surface {
                         Some(surface) => CursorImage::Surface(surface),
                         None => CursorImage::Hidden,
                     });
                     state.refresh_cursor_surface_outputs();
-                    if changed {
-                        if let Some(location) = state.input_seat.pointer_location() {
-                            state.request_redraw_at(location);
-                        } else {
-                            state.request_redraw_workspace();
-                        }
+                    if let Some(location) = cursor_location {
+                        state.queue_cursor_redraw_between(0, location, location);
+                        state.flush_queued_redraws();
+                    } else {
+                        state.request_redraw_workspace();
                     }
                 }
                 #[cfg(not(feature = "tty"))]

@@ -112,6 +112,7 @@ impl RuntimeState {
         if !self.input_seat.pointer_enabled() {
             return;
         }
+        let previous = self.input_seat.pointer_location().unwrap_or(location);
         let focus = self.session_lock_pointer_focus(location);
         let serial = next_serial();
         let time = (time_ns / 1_000_000) as u32;
@@ -121,7 +122,7 @@ impl RuntimeState {
             .activation
             .sync_pointer_focus(self.input_seat.pointer_focus());
         let _ = self.cursor.note_pointer_activity();
-        self.request_redraw_at(location);
+        self.request_cursor_redraw_between(0, previous, location);
     }
 
     pub(super) fn session_lock_pointer_focus(

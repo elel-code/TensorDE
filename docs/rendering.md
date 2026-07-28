@@ -197,6 +197,10 @@ submitted cursor surfaces receive frame callbacks so client-driven animation can
 role state also tracks output-instance membership: crossing a head emits `wl_surface.enter/leave`
 and publishes that head's integer and fractional preferred scale. Stable membership is cached, so
 ordinary high-rate motion does not lock or rescan each output's protocol surface list.
+Pointer and tablet damage is selected from the complete old/new cursor rectangles rather than the
+hotspot alone. A cursor can therefore straddle differently scaled CRTCs without either clipping its
+adjacent-output pixels or leaving stale pixels behind. A client cursor surface with no committed
+buffer is invisible; it never falls through to the compositor's vector cursor.
 Presentation capture keeps the ordinary pointer cursor surface inline, so a pointer-only frame
 does not allocate a cursor-surface vector; storage grows only when tablet cursor surfaces are
 actually visible.

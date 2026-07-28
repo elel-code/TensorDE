@@ -27,6 +27,89 @@ impl RuntimeState {
             .count()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_pointer_cursor_visible(&self) -> bool {
+        let Some(location) = self.input_seat.pointer_location() else {
+            return false;
+        };
+        self.space.outputs().any(|output| {
+            let Some(geometry) = self.space.output_geometry(output) else {
+                return false;
+            };
+            let scale = output.current_scale();
+            let viewport = tensor_util::Rect::new(
+                0,
+                0,
+                scale.physical_length_round(u32::try_from(geometry.size.w).unwrap_or(0)),
+                scale.physical_length_round(u32::try_from(geometry.size.h).unwrap_or(0)),
+            );
+            self.cursor
+                .overlay_for_source_at(0, location, geometry, scale, viewport, |surface, scale| {
+                    crate::protocol::state::surfaces::cursor_surface_raster(
+                        &self.surface_buffers,
+                        surface,
+                        scale,
+                    )
+                })
+                .is_some()
+        })
+    }
+
+    pub(crate) fn queue_cursor_redraw_between(
+        &mut self,
+        source: u64,
+        previous: tensor_util::LogicalPoint<f64>,
+        current: tensor_util::LogicalPoint<f64>,
+    ) {
+        let cursor = &self.cursor;
+        let surface_buffers = &self.surface_buffers;
+        let space = &self.space;
+        let redraw_states = &mut self.redraw_states;
+        for output in space.outputs() {
+            let Some(geometry) = space.output_geometry(output) else {
+                continue;
+            };
+            let scale = output.current_scale();
+            let viewport = tensor_util::Rect::new(
+                0,
+                0,
+                scale.physical_length_round(u32::try_from(geometry.size.w).unwrap_or(0)),
+                scale.physical_length_round(u32::try_from(geometry.size.h).unwrap_or(0)),
+            );
+            let visible = [previous, current].into_iter().any(|location| {
+                cursor
+                    .overlay_for_source_at(
+                        source,
+                        location,
+                        geometry,
+                        scale,
+                        viewport,
+                        |surface, scale| {
+                            crate::protocol::state::surfaces::cursor_surface_raster(
+                                surface_buffers,
+                                surface,
+                                scale,
+                            )
+                        },
+                    )
+                    .is_some()
+            });
+            if visible {
+                queue_output(redraw_states, output.id());
+            }
+        }
+    }
+
+    pub(crate) fn request_cursor_redraw_between(
+        &mut self,
+        source: u64,
+        previous: tensor_util::LogicalPoint<f64>,
+        current: tensor_util::LogicalPoint<f64>,
+    ) {
+        self.queue_cursor_redraw_between(source, previous, current);
+        self.flush_queued_redraws();
+    }
+
     pub(crate) fn refresh_cursor_surface_outputs(&mut self) {
         let space = &self.space;
         self.cursor.drain_retired_surfaces(|surface| {

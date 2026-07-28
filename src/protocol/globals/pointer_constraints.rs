@@ -464,8 +464,7 @@ impl RuntimeState {
             location = crate::protocol::input::constrain_pointer_location(location, bounds);
         }
         self.input_seat.set_pointer_location(location);
-        self.request_redraw_at(previous);
-        self.request_redraw_at(location);
+        self.request_cursor_redraw_between(0, previous, location);
     }
 
     fn detach_pointer_constraint(&mut self, surface: &WlSurface, resource: &ObjectId) {

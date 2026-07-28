@@ -42,6 +42,7 @@ enum CursorStep {
     StraddledOutputs,
     CrossedOutput,
     CurrentSurfaceUpdated,
+    SurfaceBufferDetached,
     SurfaceDestroyed,
     Destroyed,
 }
@@ -372,6 +373,14 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
 
     assert_eq!(
         dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::SurfaceBufferDetached
+    );
+    assert!(!runtime.state.test_pointer_cursor_visible());
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 0);
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
         CursorStep::SurfaceDestroyed
     );
     assert_eq!(
@@ -531,6 +540,12 @@ fn spawn_cursor_client(
         pointer.set_cursor(serial.wrapping_add(17), Some(&cursor_surface), 9, 11);
         queue.roundtrip(&mut state).unwrap();
         steps.send(CursorStep::CurrentSurfaceUpdated).unwrap();
+        advances.recv().unwrap();
+
+        cursor_surface.attach(None, 0, 0);
+        cursor_surface.commit();
+        queue.roundtrip(&mut state).unwrap();
+        steps.send(CursorStep::SurfaceBufferDetached).unwrap();
         advances.recv().unwrap();
 
         cursor_device.destroy();
