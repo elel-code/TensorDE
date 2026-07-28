@@ -76,7 +76,7 @@ fn shared_navigation_completion_keeps_generation_and_history_atomic() {
         reason: "test",
         result: Ok(vec![test_entry("stale.txt", false)]),
     };
-    assert!(!crate::app_actions::apply_navigation_completion(
+    assert!(!crate::navigation_completion::apply_navigation_completion(
         &mut scene,
         &[4, 0],
         stale,
@@ -94,7 +94,7 @@ fn shared_navigation_completion_keeps_generation_and_history_atomic() {
         reason: "test",
         result: Ok(vec![test_entry("welcome.txt", false)]),
     };
-    assert!(crate::app_actions::apply_navigation_completion(
+    assert!(crate::navigation_completion::apply_navigation_completion(
         &mut scene,
         &[4, 0],
         completion,

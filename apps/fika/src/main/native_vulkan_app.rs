@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::app_actions::apply_navigation_completion;
+use crate::navigation_completion::apply_navigation_completion;
 use crate::ui::window_semantics::{ShellWindowRole, apply_window_semantics};
 use crate::ui::{
     selection::SelectionClick,

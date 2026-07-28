@@ -17,7 +17,6 @@ mod view;
 
 use crate::windowing::ActiveEventLoop;
 
-pub(crate) use self::navigation::apply_navigation_completion;
 pub(crate) use self::outcome::ShellActionOutcome;
 use crate::ui::action::{
     ContextMenuActionDispatch, ContextMenuCommandDispatch, FileKeyboardCommandDispatch,

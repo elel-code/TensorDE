@@ -2,6 +2,8 @@ mod windowing;
 
 #[path = "main/native_vulkan_app.rs"]
 mod native_vulkan_app;
+#[path = "main/navigation_completion.rs"]
+mod navigation_completion;
 #[path = "main/vulkan_frame.rs"]
 mod vulkan_frame;
 #[path = "main/vulkan_icon.rs"]
