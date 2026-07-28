@@ -534,6 +534,33 @@ struct IconRenderer {
     /// Lifetime stats (reset never; useful for logs).
     dmabuf_imports: u64,
     gpu_source_renderer: Option<GpuIconSourceRenderer>,
+    engine: IconEngine,
+}
+
+struct IconEngine {
     resolver: FileIconResolver,
     thumbnails: ThumbnailSourceResolver,
+}
+
+impl IconEngine {
+    fn new() -> Self {
+        Self {
+            resolver: FileIconResolver::new(),
+            thumbnails: ThumbnailSourceResolver::new(),
+        }
+    }
+}
+
+impl std::ops::Deref for IconRenderer {
+    type Target = IconEngine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+
+impl std::ops::DerefMut for IconRenderer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.engine
+    }
 }

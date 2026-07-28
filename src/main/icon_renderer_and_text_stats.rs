@@ -94,8 +94,7 @@ impl IconRenderer {
             // Create SVG/composite pipelines lazily only when an encoded source
             // first needs a GPU draw. Dmabuf/resident-only frames avoid them.
             gpu_source_renderer: None,
-            resolver: FileIconResolver::new(),
-            thumbnails: ThumbnailSourceResolver::new(),
+            engine: IconEngine::new(),
         }
     }
 

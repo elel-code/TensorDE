@@ -25,6 +25,24 @@ fn native_text_frame(scene: &mut ShellScene, size: PhysicalSize<u32>) -> TextFra
 }
 
 #[test]
+fn icon_engine_builds_frame_without_a_wgpu_renderer() {
+    let mut engine = IconEngine::new();
+    let frame = IconFrameBuilder::new(
+        IconFrameResources::from_engine(&mut engine, IconGpuResidentIndex::default()),
+        IconFrameConfig {
+            surface_size: PhysicalSize::new(720, 420),
+            ui_scale: 1.0,
+            sync_resolve_budget: 0,
+            folder_preview_cache: FolderPreviewCacheStats::default(),
+        },
+    )
+    .finish();
+
+    assert!(frame.slots.is_empty());
+    assert!(frame.content_vertices.is_empty());
+}
+
+#[test]
 fn native_frame_layers_keep_structural_and_interaction_chrome_analytic() {
     let mut scene = test_scene(
         vec![test_entry("alpha.txt", false), test_entry("beta.txt", false)],

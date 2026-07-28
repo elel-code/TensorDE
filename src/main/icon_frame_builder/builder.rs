@@ -20,11 +20,11 @@ impl<'a> IconFrameResources<'a> {
 
     fn from_renderer(renderer: &'a mut IconRenderer) -> Self {
         let gpu_resident = renderer.gpu_resident_index();
-        Self::new(
-            &mut renderer.resolver,
-            &mut renderer.thumbnails,
-            gpu_resident,
-        )
+        Self::from_engine(&mut renderer.engine, gpu_resident)
+    }
+
+    fn from_engine(engine: &'a mut IconEngine, gpu_resident: IconGpuResidentIndex) -> Self {
+        Self::new(&mut engine.resolver, &mut engine.thumbnails, gpu_resident)
     }
 }
 
