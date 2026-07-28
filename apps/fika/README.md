@@ -23,9 +23,8 @@ client runtime; the previous UI runtimes have been removed from the source tree.
 - `fika-core` stays UI-neutral and owns filesystem/domain behavior.
 - Clipboard and DnD use Wayland `wl_data_device`; rendering handles can be
   consumed by wgpu or direct Vulkan, and KDE blur keeps full region semantics.
-- `FIKA_VULKAN_PROBE=1` exercises native swapchain clear plus a real
-  device-local position/color quad upload and draw before wgpu initialization,
-  without mixing the two logical devices in one frame.
+- The obsolete one-frame Vulkan-before-wgpu probe has been removed. Vulkan
+  resources are created only by the persistent native renderer path.
 - Parented dialogs, popup positioning/repositioning, cursor-shape fallback and
   drag icons are owned by the reusable Wayland layer.
 - Local and inter-application drag-and-drop share the same Wayland

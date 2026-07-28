@@ -11,12 +11,9 @@ use vulkan_renderer::{
 
 use crate::IconFrame;
 use crate::TextFrame;
-use crate::ViewRect;
 use crate::vulkan_frame::{FrameVertexBuffer, compile_frame_barriers};
 use crate::vulkan_icon::VulkanIconRenderer;
-use crate::vulkan_rect::{
-    NativeFrameLayerRefs, VulkanRectInstance, VulkanRectRenderer, VulkanRectStream,
-};
+use crate::vulkan_rect::{NativeFrameLayerRefs, VulkanRectRenderer, VulkanRectStream};
 use crate::vulkan_text::VulkanTextRenderer;
 use crate::windowing::{ActiveEventLoop, PhysicalSize, Window};
 
@@ -27,8 +24,8 @@ struct FrameSlot {
     in_flight: Option<FrameToken>,
 }
 
-/// Native Vulkan migration path. It deliberately owns a complete logical
-/// device and swapchain so no frame mixes wgpu and vulkan-renderer resources.
+/// Persistent native Vulkan renderer. It owns one complete logical device and
+/// swapchain; its frames contain only vulkan-renderer resources.
 pub(crate) struct VulkanState {
     _instance: Instance,
     adapter: Adapter,
@@ -418,63 +415,6 @@ impl VulkanState {
             slot.in_flight = None;
         }
         Ok(())
-    }
-
-    pub(crate) fn run_probe(
-        event_loop: &ActiveEventLoop,
-        window: Arc<Window>,
-    ) -> Result<(), String> {
-        let mut renderer = Self::new(Arc::clone(&window))?;
-        let size = renderer.size();
-        let screen = ViewRect {
-            x: 0.0,
-            y: 0.0,
-            width: size.width.max(1) as f32,
-            height: size.height.max(1) as f32,
-        };
-        let probe = VulkanRectInstance::fill(
-            ViewRect {
-                x: screen.width * 0.175,
-                y: screen.height * 0.275,
-                width: screen.width * 0.65,
-                height: screen.height * 0.45,
-            },
-            screen,
-            12.0,
-            [0.15, 0.48, 0.92, 0.92],
-            size,
-        )
-        .ok_or_else(|| "create Vulkan analytic probe rectangle".to_string())?;
-        let probes = [probe];
-        renderer.present_layers(
-            event_loop,
-            &window,
-            [0.035, 0.045, 0.065, 1.0],
-            NativeFrameLayerRefs {
-                base_rects: &probes,
-                overlay_rects: &[],
-            },
-            &mut IconFrame {
-                slots: Vec::new(),
-                content_batches: Vec::new(),
-                overlay_batches: Vec::new(),
-                content_vertices: Vec::new(),
-                overlay_vertices: Vec::new(),
-                stats: crate::IconFrameStats::default(),
-            },
-            &mut TextFrame {
-                vertices: Vec::new(),
-                pixels: Vec::new(),
-                uploads: Vec::new(),
-                width: 1,
-                height: 1,
-                stats: crate::TextFrameStats::default(),
-            },
-        )?;
-        renderer
-            .queue
-            .wait_idle()
-            .map_err(|error| format!("finish Vulkan migration probe: {error}"))
     }
 }
 

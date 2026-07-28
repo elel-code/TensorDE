@@ -22,9 +22,8 @@ UI runtime 已经从源码树移除。
 - `fika-core` 保持 UI-neutral，负责文件系统和领域行为。
 - 剪贴板和 DnD 使用 Wayland `wl_data_device`；渲染句柄可供 wgpu 或直接
   Vulkan 使用，KDE blur 保留完整的 region 语义。
-- 原生 Vulkan 迁移链可用 `FIKA_VULKAN_PROBE=1` 验证：它在 wgpu 初始化前通过
-  `crates/vulkan-renderer` 完成 swapchain clear、device-local quad 上传和真实 draw，
-  不在同一帧混用两个逻辑设备。
+- 已删除在 wgpu 初始化前临时创建第二套 Vulkan device 的单帧 probe。Vulkan 资源现在
+  只由持久原生 renderer 路径创建和持有。
 - 父子 dialog、popup 定位/重定位、cursor-shape 回退和 drag icon 均由通用
   Wayland 层管理。
 - Portal 与 privileged helper 继续作为独立集成二进制保留。

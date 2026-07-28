@@ -43,10 +43,9 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   dynamic vertex buffer 和 `VK_EXT_descriptor_heap` push-index pipeline 绘制；atlas 换槽只
   push 两个 descriptor byte offset，image/view 和 descriptor allocation 均按 submission
   timeline 保活、retire 与 reclaim。原生路径不运行 icon resolver，也不生成 CPU quad。
-  `FIKA_VULKAN_PROBE=1` 会在现有 wgpu renderer 初始化前运行一次原生 clear/quad/present
-  probe，完成后销毁整套 Vulkan 状态，禁止同一帧或同一资源混用两个逻辑设备。该入口
-  是迁移验证门，不是长期双后端策略；quad/text/icon/retained renderer 迁移完成后应删除
-  probe 和 `WgpuState`。
+  早期在 wgpu 初始化前临时创建第二套 Vulkan device 的单帧 probe 已删除；它会增加
+  启动时间、显存峰值和双设备生命周期复杂度，又不能证明持久原生主线。后续只继续迁移
+  并删除 `WgpuState`，不再增加临时双 renderer 入口。
 - 独立 dialog window host：
   `src/ui/dialog_window.rs` 管理 dialog window 创建、同步、关闭、cursor、resize、
   renderer size、scale factor 和 window id 路由。
