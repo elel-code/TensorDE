@@ -18,6 +18,9 @@ Fika 是一个面向 Wayland 桌面的 Rust 文件管理器。当前 UI 主线�
 - `fika-core` 保持 UI-neutral，负责文件系统和领域行为。
 - 剪贴板和 DnD 使用 Wayland `wl_data_device`；渲染句柄可供 wgpu 或直接
   Vulkan 使用，KDE blur 保留完整的 region 语义。
+- 原生 Vulkan 迁移链可用 `FIKA_VULKAN_PROBE=1` 验证：它在 wgpu 初始化前通过
+  `crates/vulkan-renderer` 完成 swapchain clear、device-local quad 上传和真实 draw，
+  不在同一帧混用两个逻辑设备。
 - 父子 dialog、popup 定位/重定位、cursor-shape 回退和 drag icon 均由通用
   Wayland 层管理。
 - Portal 与 privileged helper 继续作为独立集成二进制保留。
@@ -28,9 +31,9 @@ Fika 是一个面向 Wayland 桌面的 Rust 文件管理器。当前 UI 主线�
 src/
   lib.rs                         UI-neutral core 导出
   main.rs                        Wayland/wgpu shell 入口
-  platform.rs                    Fika 到通用 runtime 的适配层
-  platform_event_loop.rs         Fika 调度和事件翻译
-  platform_types.rs              Fika 自有 platform 类型
+  windowing.rs                   窗口、输入与剪贴板集成
+  windowing_event_loop.rs        Fika 调度和事件翻译
+  windowing_types.rs             Fika 自有窗口与输入类型
   core.rs                        Core 模块重导出
   cli.rs                         共享 CLI 解析入口
   cli/

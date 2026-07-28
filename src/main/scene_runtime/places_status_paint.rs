@@ -99,6 +99,55 @@ impl ShellScene {
         );
     }
 
+    /// Native Vulkan counterpart of the texture-free filter field. Text is
+    /// intentionally left to the text stage; the field itself is analytic.
+    fn push_native_filter_bar_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.filter_bar_rect(size) else {
+            return;
+        };
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: rect.x,
+                y: rect.bottom() - 1.0,
+                width: rect.width,
+                height: 1.0,
+            },
+            rect,
+            theme.divider(),
+            size,
+        );
+        let field = ViewRect {
+            x: rect.x + self.scale_metric(62.0),
+            y: rect.y + self.scale_metric(4.0),
+            width: (rect.width - self.scale_metric(74.0)).max(1.0),
+            height: (rect.height - self.scale_metric(8.0)).max(1.0),
+        };
+        push_native_rounded_rect_fill(
+            instances,
+            field,
+            rect,
+            self.scale_metric(7.0),
+            theme.field_separator(),
+            size,
+        );
+        if let Some(inner) = inset_rect(field, self.scale_metric(1.0)) {
+            push_native_rounded_rect_fill(
+                instances,
+                inner,
+                rect,
+                self.scale_metric(6.0),
+                theme.field(),
+                size,
+            );
+        }
+    }
+
     fn push_rubber_band_for_projection(
         &self,
         vertices: &mut Vec<QuadVertex>,
@@ -106,14 +155,55 @@ impl ShellScene {
         theme: ShellTheme,
         size: PhysicalSize<u32>,
     ) {
-        let Some(rect) = self.rubber_band.as_ref().and_then(RubberBand::active_rect) else {
+        let Some(rect) = self.rubber_band_screen_rect_for_projection(projection) else {
             return;
         };
         let content_clip = projection.geometry.content;
-        let rect = pane_content_rect_to_screen(rect, projection);
         let rubber_band = theme.rubber_band();
         push_clipped_rect(vertices, rect, content_clip, rubber_band.fill, size);
         push_clipped_rect_outline(vertices, rect, content_clip, 1.5, rubber_band.border, size);
+    }
+
+    fn push_native_rubber_band_for_projection(
+        &self,
+        instances: &mut Vec<VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        theme: ShellTheme,
+        size: PhysicalSize<u32>,
+    ) {
+        let Some(rect) = self.rubber_band_screen_rect_for_projection(projection) else {
+            return;
+        };
+        let rubber_band = theme.rubber_band();
+        if let Some(instance) = VulkanRectInstance::fill(
+            rect,
+            projection.geometry.content,
+            0.0,
+            rubber_band.fill,
+            size,
+        ) {
+            instances.push(instance);
+        }
+        if let Some(instance) = VulkanRectInstance::outline(
+            rect,
+            projection.geometry.content,
+            0.0,
+            1.5,
+            rubber_band.border,
+            size,
+        ) {
+            instances.push(instance);
+        }
+    }
+
+    fn rubber_band_screen_rect_for_projection(
+        &self,
+        projection: &ShellPaneProjection<'_>,
+    ) -> Option<ViewRect> {
+        self.rubber_band
+            .as_ref()
+            .and_then(RubberBand::active_rect)
+            .map(|rect| pane_content_rect_to_screen(rect, projection))
     }
 
     fn pane_status(&self, pane: ShellPaneView<'_>, visible_items: usize) -> ShellPaneStatus {
@@ -192,6 +282,39 @@ impl ShellScene {
             height: size.height.max(1) as f32,
         };
         push_scrollbar(vertices, track, thumb, screen, theme.scrollbar(), size);
+        true
+    }
+
+    /// Native Vulkan counterpart of [`Self::push_content_scrollbar_for_projection`].
+    ///
+    /// Scrollbar capsules are analytic rectangles, so resizing or scrolling a
+    /// large directory updates two compact instances instead of CPU-tessellated
+    /// rounded geometry.
+    fn push_native_content_scrollbar_for_projection(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        theme: ShellTheme,
+        size: PhysicalSize<u32>,
+    ) -> bool {
+        let Some((track, thumb)) = self.content_scrollbar_rects_for_projection(projection) else {
+            return false;
+        };
+        let screen = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: size.width.max(1) as f32,
+            height: size.height.max(1) as f32,
+        };
+        let colors = theme.scrollbar();
+        for (rect, color) in [(track, colors.track), (thumb, colors.thumb)] {
+            let radius = rect.width.min(rect.height) * 0.5;
+            if let Some(instance) = crate::vulkan_rect::VulkanRectInstance::fill(
+                rect, screen, radius, color, size,
+            ) {
+                instances.push(instance);
+            }
+        }
         true
     }
 

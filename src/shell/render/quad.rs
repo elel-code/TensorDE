@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use bytemuck::{Pod, Zeroable};
 #[cfg(test)]
 use fika_core::ViewPoint;

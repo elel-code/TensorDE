@@ -1,4 +1,4 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewRect;
 
 use crate::shell::file_item_view::style::BREEZE_ITEM_ROUNDNESS;

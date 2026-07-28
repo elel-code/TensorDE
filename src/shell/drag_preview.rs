@@ -4,7 +4,7 @@
 //! `DragIcon`. This module only measures geometry (hotspot, icon/label rects)
 //! from the live item layout — it does not paint an in-window overlay.
 
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewPoint;
 
 use crate::shell::drag_preview_layout::{

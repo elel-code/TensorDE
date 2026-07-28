@@ -3,11 +3,11 @@ use std::sync::mpsc;
 
 /// Clipboard access backed by the event loop's existing Wayland connection.
 pub struct WaylandClipboard {
-    runtime: Rc<RefCell<PlatformBackend>>,
+    runtime: Rc<RefCell<WindowRuntime>>,
 }
 
 impl WaylandClipboard {
-    fn new(runtime: Rc<RefCell<PlatformBackend>>) -> Self {
+    fn new(runtime: Rc<RefCell<WindowRuntime>>) -> Self {
         Self { runtime }
     }
 

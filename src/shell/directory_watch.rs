@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use crate::platform::EventLoopProxy;
+use crate::windowing::EventLoopProxy;
 use fika_core::is_network_path;
 use notify::{Event as NotifyEvent, RecursiveMode as NotifyRecursiveMode};
 

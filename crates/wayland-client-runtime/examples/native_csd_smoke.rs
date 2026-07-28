@@ -66,7 +66,7 @@ fn main() {
                         }
                         wayland_client_runtime::NativeShellEvent::Frame { time, .. } => {
                             frames += 1;
-                            if frames % 60 == 0 {
+                            if frames.is_multiple_of(60) {
                                 println!("frame time={time} csd={}", shell.csd_frame_count());
                             }
                             let _ = shell.request_frame(id);

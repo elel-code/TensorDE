@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::platform::ActiveEventLoop;
+use crate::windowing::ActiveEventLoop;
 
 use crate::FikaWgpuApp;
 use crate::shell::animation::ShellAnimationKind;

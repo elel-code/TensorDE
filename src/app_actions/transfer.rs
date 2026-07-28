@@ -1,4 +1,4 @@
-use crate::platform::ActiveEventLoop;
+use crate::windowing::ActiveEventLoop;
 
 use super::outcome::ShellActionOutcome;
 use crate::FikaWgpuApp;

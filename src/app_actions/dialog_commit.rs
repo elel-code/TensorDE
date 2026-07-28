@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::platform::{ActiveEventLoop, PhysicalSize};
+use crate::windowing::{ActiveEventLoop, PhysicalSize};
 
 use super::outcome::ShellActionOutcome;
 use crate::shell::operation_request::ShellOperationRequest;

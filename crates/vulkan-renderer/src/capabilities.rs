@@ -11,6 +11,7 @@ pub const ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &[
     "VK_KHR_get_surface_capabilities2",
     "VK_KHR_surface_maintenance1",
 ];
+pub const STANDARD_REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_surface"];
 
 /// Khronos `VP_KHR_roadmap_2026`, revision 11 (2026-01-28).
 pub const ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS: &[&str] = &[
@@ -78,7 +79,7 @@ impl BackendProfile {
 
     pub const fn required_instance_extensions(self) -> &'static [&'static str] {
         match self {
-            Self::Vulkan14 => &[],
+            Self::Vulkan14 => STANDARD_REQUIRED_INSTANCE_EXTENSIONS,
             Self::Roadmap2026 => ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS,
         }
     }
@@ -95,6 +96,8 @@ pub struct CoreFeatures {
     pub dynamic_rendering_local_read: bool,
     pub descriptor_heap: bool,
     pub present_mode_fifo_latest_ready: bool,
+    pub external_memory_dma_buf: bool,
+    pub external_semaphore_sync_fd: bool,
 }
 
 impl CoreFeatures {
@@ -158,12 +161,22 @@ impl Features {
     pub const DYNAMIC_RENDERING_LOCAL_READ: Self = Self(1 << 6);
     pub const DESCRIPTOR_HEAP: Self = Self(1 << 7);
     pub const FIFO_LATEST_READY: Self = Self(1 << 8);
+    pub const EXTERNAL_MEMORY_DMA_BUF: Self = Self(1 << 9);
+    pub const EXTERNAL_SEMAPHORE_SYNC_FD: Self = Self(1 << 10);
 
     pub const VULKAN14_RENDERER_BASELINE: Self = Self(
         Self::TIMELINE_SEMAPHORE.0
+            | Self::BUFFER_DEVICE_ADDRESS.0
             | Self::SYNCHRONIZATION2.0
             | Self::DYNAMIC_RENDERING.0
             | Self::MAINTENANCE5.0,
+    );
+
+    /// Default contract of this renderer. Descriptor heaps are the sole
+    /// shader-resource binding model and FIFO latest-ready is the preferred
+    /// low-latency FIFO presentation path.
+    pub const STANDARD_DEFAULTS: Self = Self(
+        Self::VULKAN14_RENDERER_BASELINE.0 | Self::DESCRIPTOR_HEAP.0 | Self::FIFO_LATEST_READY.0,
     );
 
     pub const fn empty() -> Self {
@@ -180,6 +193,16 @@ impl Features {
 
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
+    }
+
+    /// Expands feature dependencies that Vulkan requires to be enabled on the
+    /// logical device. The expanded set is the device's reported contract.
+    pub const fn with_dependencies(self) -> Self {
+        if self.contains(Self::DESCRIPTOR_HEAP) {
+            Self(self.0 | Self::BUFFER_DEVICE_ADDRESS.0 | Self::MAINTENANCE5.0)
+        } else {
+            self
+        }
     }
 
     pub const fn from_core(features: CoreFeatures) -> Self {
@@ -210,6 +233,12 @@ impl Features {
         }
         if features.present_mode_fifo_latest_ready {
             bits |= Self::FIFO_LATEST_READY.0;
+        }
+        if features.external_memory_dma_buf {
+            bits |= Self::EXTERNAL_MEMORY_DMA_BUF.0;
+        }
+        if features.external_semaphore_sync_fd {
+            bits |= Self::EXTERNAL_SEMAPHORE_SYNC_FD.0;
         }
         Self(bits)
     }
@@ -357,7 +386,7 @@ impl DescriptorHeapLimits {
     }
 
     /// Whether the advertised heap can hold real descriptors after the
-    /// implementation-reserved prefixes while obeying every power-of-two
+    /// implementation-reserved ranges while obeying every power-of-two
     /// alignment constraint.
     pub const fn is_usable(self) -> bool {
         self.sampler_heap_alignment.is_power_of_two()
@@ -492,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_heap_requires_aligned_payload_after_reserved_ranges() {
+    fn descriptor_heap_requires_payload_beside_aligned_reserved_ranges() {
         let usable = DescriptorHeapLimits {
             sampler_heap_alignment: 32,
             resource_heap_alignment: 64,

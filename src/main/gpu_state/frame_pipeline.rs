@@ -6,7 +6,7 @@ struct DialogRenderViewport {
 }
 
 struct DetachedDialogRenderRequest<'a> {
-    window: &'a WaylandWindow,
+    window: &'a Window,
     event_loop: &'a ActiveEventLoop,
     viewport: DialogRenderViewport,
     reason: &'static str,
@@ -114,7 +114,7 @@ impl WgpuState {
 
     fn render_open_with_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         chooser: &ShellOpenWithChooser,
         viewport: DialogRenderViewport,
@@ -153,7 +153,7 @@ impl WgpuState {
 
     fn render_settings_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         state: ShellSettingsDialogState,
         snapshot: ShellSettingsSnapshot,
@@ -189,7 +189,7 @@ impl WgpuState {
 
     fn render_create_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         dialog: &ShellCreateDialog,
         viewport: DialogRenderViewport,
@@ -223,7 +223,7 @@ impl WgpuState {
 
     fn render_rename_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         dialog: &ShellRenameDialog,
         viewport: DialogRenderViewport,
@@ -257,7 +257,7 @@ impl WgpuState {
 
     fn render_properties_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         overlay: &ShellPropertiesOverlay,
         viewport: DialogRenderViewport,
@@ -291,7 +291,7 @@ impl WgpuState {
 
     fn render_task_detail_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         statuses: &ShellTaskStatusStore,
         viewport: DialogRenderViewport,
@@ -325,7 +325,7 @@ impl WgpuState {
 
     fn render_trash_conflict_dialog(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         dialog: &ShellTrashConflictDialog,
         viewport: DialogRenderViewport,
@@ -359,7 +359,7 @@ impl WgpuState {
 
     fn render(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         scene: &mut ShellScene,
         reason: &'static str,

@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vulkanalia::{
     Device, Entry, Instance, Version,
@@ -11,10 +12,18 @@ use vulkanalia::{
 };
 
 use crate::capabilities::{BackendProfile, CoreFeatures, DescriptorHeapLimits, Features, Limits};
-use crate::frame::{FrameClock, FrameToken};
+use crate::command::{CommandEncoder, CommandEncoderDescriptor};
+use crate::frame::FrameToken;
+use crate::memory::MemoryTypeInfo;
 use crate::queue::{QueueFamilyInfo, QueuePlan};
 use crate::roadmap_2026::query_roadmap_2026_device_requirements;
 use crate::{Error, Result};
+
+mod retirement;
+mod submission;
+
+use retirement::SubmissionRetirement;
+use submission::submit_to_graphics_queue;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DevicePreference {
@@ -45,7 +54,7 @@ impl Default for BackendConfig {
             device_preference: DevicePreference::Discrete,
             extra_instance_extensions: Vec::new(),
             extra_device_extensions: Vec::new(),
-            required_features: Features::VULKAN14_RENDERER_BASELINE,
+            required_features: Features::STANDARD_DEFAULTS,
             required_limits: Limits::downlevel_defaults(),
         }
     }
@@ -62,7 +71,10 @@ pub struct DeviceInfo {
     pub features: CoreFeatures,
     pub supported_features: Features,
     pub limits: Limits,
+    pub memory_types: Vec<MemoryTypeInfo>,
+    pub non_coherent_atom_size: u64,
     pub queues: QueuePlan,
+    pub queue_families: Vec<QueueFamilyInfo>,
     pub extensions: BTreeSet<String>,
     pub roadmap_2026_ready: bool,
     pub roadmap_2026_failures: Vec<String>,
@@ -79,36 +91,8 @@ pub struct DeviceQueues {
 /// device alive independently of the `Device` handle returned beside it.
 #[derive(Clone)]
 pub struct Queue {
-    owner: Arc<DeviceOwner>,
-}
-
-impl fmt::Debug for Queue {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Queue")
-            .field("graphics", &self.owner.queues.graphics)
-            .field("timeline", &self.owner.timeline)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Queue {
-    pub fn raw(&self) -> vk::Queue {
-        self.owner.queues.graphics
-    }
-
-    pub fn timeline_semaphore(&self) -> vk::Semaphore {
-        self.owner.timeline
-    }
-
-    pub fn submit(
-        &self,
-        frame: FrameToken,
-        command_buffers: &[vk::CommandBuffer],
-        waits: &[SemaphoreWait],
-    ) -> Result<()> {
-        submit_to_graphics_queue(&self.owner, frame, command_buffers, waits)
-    }
+    pub(crate) owner: Arc<DeviceOwner>,
+    submission_retirement: Arc<SubmissionRetirement>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,7 +107,7 @@ pub struct Backend {
     config: BackendConfig,
     info: DeviceInfo,
     owner: Arc<DeviceOwner>,
-    frame_clock: FrameClock,
+    submission_retirement: Arc<SubmissionRetirement>,
 }
 
 impl fmt::Debug for Backend {
@@ -135,7 +119,10 @@ impl fmt::Debug for Backend {
             .field("queues", &self.owner.queues)
             .field("command_pool", &self.owner.command_pool)
             .field("timeline", &self.owner.timeline)
-            .field("frame_clock", &self.frame_clock)
+            .field(
+                "completed_timeline",
+                &self.owner.completed_timeline.load(Ordering::Acquire),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -145,6 +132,7 @@ impl Backend {
         if config.profile == BackendProfile::Roadmap2026 {
             config.required_features |= Features::FIFO_LATEST_READY;
         }
+        config.required_features = config.required_features.with_dependencies();
         let entry = load_entry()?;
         let loader_version = entry
             .version()
@@ -226,17 +214,27 @@ impl Backend {
             }
         };
 
+        let max_push_data_size = candidate.info.limits.descriptor_heap.max_push_data_size;
+        let owner = Arc::new(DeviceOwner {
+            device,
+            instance,
+            physical_device: candidate.handle,
+            queues,
+            max_push_data_size,
+            command_pool,
+            timeline,
+            next_timeline: AtomicU64::new(1),
+            completed_timeline: AtomicU64::new(0),
+            submit_lock: Mutex::new(()),
+            command_pool_lock: Mutex::new(()),
+            pending_command_buffers: Mutex::new(Vec::new()),
+        });
+        let submission_retirement = Arc::new(SubmissionRetirement::new(Arc::clone(&owner)));
         Ok(Self {
             config,
             info: candidate.info,
-            owner: Arc::new(DeviceOwner {
-                device,
-                instance,
-                queues,
-                command_pool,
-                timeline,
-            }),
-            frame_clock: FrameClock::default(),
+            owner,
+            submission_retirement,
         })
     }
 
@@ -275,7 +273,12 @@ impl Backend {
     pub fn queue(&self) -> Queue {
         Queue {
             owner: Arc::clone(&self.owner),
+            submission_retirement: Arc::clone(&self.submission_retirement),
         }
+    }
+
+    pub(crate) fn shared_owner(&self) -> Arc<DeviceOwner> {
+        Arc::clone(&self.owner)
     }
 
     pub fn command_pool(&self) -> vk::CommandPool {
@@ -286,51 +289,43 @@ impl Backend {
         self.owner.timeline
     }
 
-    pub fn next_frame(&mut self) -> Result<FrameToken> {
-        self.frame_clock.allocate()
+    pub fn next_frame(&self) -> Result<FrameToken> {
+        self.owner.allocate_frame()
     }
 
-    pub fn completed_timeline(&mut self) -> Result<u64> {
-        let completed = unsafe {
-            self.owner
-                .device
-                .get_semaphore_counter_value(self.owner.timeline)
-        }
-        .map_err(|source| Error::vulkan("vkGetSemaphoreCounterValue", source))?;
-        self.frame_clock.retire(completed);
-        Ok(completed)
+    pub fn completed_timeline(&self) -> Result<u64> {
+        self.queue().completed_timeline()
     }
 
-    pub fn wait_for(&mut self, frame: FrameToken, timeout_ns: u64) -> Result<()> {
-        let semaphores = [self.owner.timeline];
-        let values = [frame.value()];
-        let wait = vk::SemaphoreWaitInfo::builder()
-            .semaphores(&semaphores)
-            .values(&values);
-        unsafe { self.owner.device.wait_semaphores(&wait, timeout_ns) }
-            .map_err(|source| Error::vulkan("vkWaitSemaphores", source))?;
-        self.frame_clock.retire(frame.value());
-        Ok(())
+    pub fn wait_for(&self, frame: FrameToken, timeout_ns: u64) -> Result<()> {
+        self.queue().wait_for(frame, timeout_ns)
+    }
+
+    pub fn wait_idle(&self) -> Result<()> {
+        self.queue().wait_idle()
     }
 
     pub fn allocate_primary_command_buffer(&self) -> Result<vk::CommandBuffer> {
-        let info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(self.owner.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        unsafe { self.owner.device.allocate_command_buffers(&info) }
-            .map_err(|source| Error::vulkan("vkAllocateCommandBuffers", source))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                Error::NoCompatibleDevice(vec!["Vulkan returned no command buffer".into()])
-            })
+        self.owner.allocate_primary_command_buffer()
+    }
+
+    /// Creates and begins a primary, one-time-submit command encoder.
+    pub fn create_command_encoder(
+        &self,
+        descriptor: &CommandEncoderDescriptor,
+    ) -> Result<CommandEncoder> {
+        CommandEncoder::new(Arc::clone(&self.owner), descriptor)
     }
 
     /// Submits command buffers and signals this backend's timeline. State
     /// owners should commit resource/frame bookkeeping only after this returns
     /// successfully.
-    pub fn submit(
+    ///
+    /// # Safety
+    ///
+    /// Every command buffer must be executable, belong to this device and its
+    /// graphics command-pool family, and remain alive until `frame` completes.
+    pub unsafe fn submit_raw(
         &self,
         frame: FrameToken,
         command_buffers: &[vk::CommandBuffer],
@@ -341,56 +336,14 @@ impl Backend {
 
     /// The caller must ensure every command buffer has completed before it is
     /// freed. Pair this with the frame timeline value used for submission.
+    ///
+    /// # Safety
+    ///
+    /// Each command buffer must have been allocated from this backend's command
+    /// pool and must no longer be pending or referenced by any host thread.
     pub unsafe fn free_command_buffers(&self, command_buffers: &[vk::CommandBuffer]) {
-        unsafe {
-            self.owner
-                .device
-                .free_command_buffers(self.owner.command_pool, command_buffers)
-        };
+        self.owner.free_command_buffers(command_buffers);
     }
-}
-
-fn submit_to_graphics_queue(
-    owner: &DeviceOwner,
-    frame: FrameToken,
-    command_buffers: &[vk::CommandBuffer],
-    waits: &[SemaphoreWait],
-) -> Result<()> {
-    let wait_infos = waits
-        .iter()
-        .map(|wait| {
-            vk::SemaphoreSubmitInfo::builder()
-                .semaphore(wait.semaphore)
-                .value(wait.value)
-                .stage_mask(wait.stages)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let command_infos = command_buffers
-        .iter()
-        .copied()
-        .map(|command_buffer| {
-            vk::CommandBufferSubmitInfo::builder()
-                .command_buffer(command_buffer)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let signals = [vk::SemaphoreSubmitInfo::builder()
-        .semaphore(owner.timeline)
-        .value(frame.value())
-        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .build()];
-    let submissions = [vk::SubmitInfo2::builder()
-        .wait_semaphore_infos(&wait_infos)
-        .command_buffer_infos(&command_infos)
-        .signal_semaphore_infos(&signals)
-        .build()];
-    unsafe {
-        owner
-            .device
-            .queue_submit2(owner.queues.graphics, &submissions, vk::Fence::null())
-    }
-    .map_err(|source| Error::vulkan("vkQueueSubmit2", source))
 }
 
 pub(crate) struct InstanceOwner {
@@ -405,12 +358,119 @@ impl Drop for InstanceOwner {
     }
 }
 
-struct DeviceOwner {
-    device: Device,
+pub(crate) struct DeviceOwner {
+    pub(crate) device: Device,
     instance: Arc<InstanceOwner>,
+    physical_device: vk::PhysicalDevice,
     queues: DeviceQueues,
+    pub(crate) max_push_data_size: u64,
     command_pool: vk::CommandPool,
     timeline: vk::Semaphore,
+    next_timeline: AtomicU64,
+    completed_timeline: AtomicU64,
+    submit_lock: Mutex<()>,
+    command_pool_lock: Mutex<()>,
+    pending_command_buffers: Mutex<Vec<(u64, Vec<vk::CommandBuffer>)>>,
+}
+
+impl DeviceOwner {
+    pub(crate) fn instance_owner(&self) -> &Arc<InstanceOwner> {
+        &self.instance
+    }
+
+    pub(crate) fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
+
+    pub(crate) fn timeline(&self) -> vk::Semaphore {
+        self.timeline
+    }
+
+    fn allocate_frame(&self) -> Result<FrameToken> {
+        self.next_timeline
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+                next.checked_add(1)
+            })
+            .map(FrameToken::from_value)
+            .map_err(|_| Error::TimelineExhausted)
+    }
+
+    fn retire_timeline(&self, completed: u64) {
+        self.completed_timeline
+            .fetch_max(completed, Ordering::AcqRel);
+    }
+
+    pub(crate) fn allocate_primary_command_buffer(&self) -> Result<vk::CommandBuffer> {
+        let _pool_guard = self
+            .command_pool_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(self.command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        unsafe { self.device.allocate_command_buffers(&info) }
+            .map_err(|source| Error::vulkan("vkAllocateCommandBuffers", source))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Validation("Vulkan returned no command buffer".into()))
+    }
+
+    pub(crate) fn free_command_buffers(&self, command_buffers: &[vk::CommandBuffer]) {
+        if command_buffers.is_empty() {
+            return;
+        }
+        let _pool_guard = self
+            .command_pool_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe {
+            self.device
+                .free_command_buffers(self.command_pool, command_buffers)
+        };
+    }
+
+    fn retire_command_buffers_after(
+        &self,
+        frame: FrameToken,
+        command_buffers: Vec<vk::CommandBuffer>,
+    ) {
+        if command_buffers.is_empty() {
+            return;
+        }
+        self.pending_command_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((frame.value(), command_buffers));
+        // A waiter may observe completion between vkQueueSubmit2 returning and
+        // this retirement entry being installed. Recheck the cached value so
+        // that race cannot strand the command buffers until another poll.
+        let completed = self.completed_timeline.load(Ordering::Acquire);
+        if completed >= frame.value() {
+            self.retire_completed_command_buffers(completed);
+        }
+    }
+
+    fn retire_completed_command_buffers(&self, completed: u64) {
+        let retired = {
+            let mut pending = self
+                .pending_command_buffers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut retired = Vec::new();
+            let mut still_pending = Vec::with_capacity(pending.len());
+            for (timeline, command_buffers) in pending.drain(..) {
+                if timeline <= completed {
+                    retired.extend(command_buffers);
+                } else {
+                    still_pending.push((timeline, command_buffers));
+                }
+            }
+            *pending = still_pending;
+            retired
+        };
+        self.free_command_buffers(&retired);
+    }
 }
 
 impl Drop for DeviceOwner {
@@ -535,6 +595,20 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
                 max_push_constants_size: properties.limits.max_push_constants_size,
                 descriptor_heap,
             };
+            let memory_properties =
+                unsafe { instance.get_physical_device_memory_properties(handle) };
+            let memory_types = (0..memory_properties.memory_type_count)
+                .map(|index| {
+                    let memory_type = memory_properties.memory_types[index as usize];
+                    let heap = memory_properties.memory_heaps[memory_type.heap_index as usize];
+                    MemoryTypeInfo {
+                        index,
+                        heap_index: memory_type.heap_index,
+                        properties: memory_type.property_flags,
+                        heap_size: heap.size,
+                    }
+                })
+                .collect();
             Ok(Candidate {
                 handle,
                 info: DeviceInfo {
@@ -547,7 +621,10 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
                     features,
                     supported_features,
                     limits,
+                    memory_types,
+                    non_coherent_atom_size: properties.limits.non_coherent_atom_size,
                     queues,
+                    queue_families,
                     extensions,
                     roadmap_2026_ready,
                     roadmap_2026_failures,
@@ -593,6 +670,16 @@ fn query_features(
     } else {
         DescriptorHeapLimits::default()
     };
+    let external_memory_dma_buf = [
+        "VK_KHR_external_memory_fd",
+        "VK_EXT_external_memory_dma_buf",
+        "VK_EXT_image_drm_format_modifier",
+        "VK_EXT_queue_family_foreign",
+    ]
+    .iter()
+    .all(|extension| extensions.contains(*extension));
+    let external_semaphore_sync_fd = extensions.contains("VK_KHR_external_semaphore_fd")
+        && supports_sync_fd_semaphore(instance, physical_device);
     (
         CoreFeatures {
             timeline_semaphore: vulkan12.timeline_semaphore != 0,
@@ -604,9 +691,31 @@ fn query_features(
             dynamic_rendering_local_read: vulkan14.dynamic_rendering_local_read != 0,
             descriptor_heap,
             present_mode_fifo_latest_ready,
+            external_memory_dma_buf,
+            external_semaphore_sync_fd,
         },
         descriptor_heap_limits,
     )
+}
+
+fn supports_sync_fd_semaphore(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    let info = vk::PhysicalDeviceExternalSemaphoreInfo::builder()
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    let mut properties = vk::ExternalSemaphoreProperties::default();
+    unsafe {
+        instance.get_physical_device_external_semaphore_properties(
+            physical_device,
+            &info,
+            &mut properties,
+        )
+    };
+    properties
+        .compatible_handle_types
+        .contains(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        && properties.external_semaphore_features.contains(
+            vk::ExternalSemaphoreFeatureFlags::IMPORTABLE
+                | vk::ExternalSemaphoreFeatureFlags::EXPORTABLE,
+        )
 }
 
 fn query_descriptor_heap_limits(
@@ -723,7 +832,15 @@ fn create_device(
                 .build()
         })
         .collect::<Vec<_>>();
-    let extension_names = c_strings(extension_names)?;
+    let mut enabled_extension_names = extension_names.to_vec();
+    if required_features.contains(Features::DESCRIPTOR_HEAP)
+        && candidate.info.extensions.contains("VK_KHR_maintenance5")
+    {
+        enabled_extension_names.push("VK_KHR_maintenance5".into());
+        enabled_extension_names.sort();
+        enabled_extension_names.dedup();
+    }
+    let extension_names = c_strings(&enabled_extension_names)?;
     let extension_pointers = extension_names
         .iter()
         .map(|name| name.as_ptr())
@@ -776,7 +893,17 @@ pub(crate) fn append_feature_extensions(features: Features, extensions: &mut Vec
         extensions.push("VK_EXT_descriptor_heap".into());
     }
     if features.contains(Features::FIFO_LATEST_READY) {
+        extensions.push("VK_KHR_swapchain".into());
         extensions.push("VK_KHR_present_mode_fifo_latest_ready".into());
+    }
+    if features.contains(Features::EXTERNAL_MEMORY_DMA_BUF) {
+        extensions.push("VK_KHR_external_memory_fd".into());
+        extensions.push("VK_EXT_external_memory_dma_buf".into());
+        extensions.push("VK_EXT_image_drm_format_modifier".into());
+        extensions.push("VK_EXT_queue_family_foreign".into());
+    }
+    if features.contains(Features::EXTERNAL_SEMAPHORE_SYNC_FD) {
+        extensions.push("VK_KHR_external_semaphore_fd".into());
     }
 }
 

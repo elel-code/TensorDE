@@ -1,4 +1,4 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::{Entry, ViewRect};
 
 use crate::shell::icon_roles::{FILE_ICON_CORNER_RADIUS_RATIO, FOLDER_ICON_CORNER_RADIUS_RATIO};

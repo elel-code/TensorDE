@@ -24,7 +24,7 @@ struct FikaWgpuApp {
     text_input: FikaTextInputRuntime,
     settings_dialog: ShellSettingsDialogState,
     clipboard: Option<ShellClipboard>,
-    window: Option<Arc<WaylandWindow>>,
+    window: Option<Arc<Window>>,
     cursor_icon: CursorIcon,
     pending_redraw_frames: u8,
     pending_render_reason: Option<&'static str>,
@@ -87,6 +87,12 @@ include!("app_controller/async_tasks.rs");
 include!("app_controller/settings_window.rs");
 impl ApplicationHandler for FikaWgpuApp {
     fn proxy_wake_up(&mut self, event_loop: &ActiveEventLoop) {
+        // Directory enumeration completes on worker threads. Drain its result
+        // on the wake itself, rather than depending on a later idle turn: a
+        // first open of a directory must become visible without another input
+        // event. This is the equivalent of Dolphin handling its model's
+        // directoryLoadingCompleted signal on the UI loop.
+        self.drain_async_task_results(event_loop);
         self.drive_directory_watchers(event_loop);
         if let Some(deadline) = self.directory_watchers.next_reload_deadline() {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -116,7 +122,7 @@ impl ApplicationHandler for FikaWgpuApp {
             .with_title(window_title(&self.scene))
             .with_transparent(true)
             .with_surface_size(PhysicalSize::new(1100, 720));
-        let attrs = apply_window_platform_semantics(event_loop, attrs, ShellWindowRole::Main);
+        let attrs = apply_window_semantics(event_loop, attrs, ShellWindowRole::Main);
 
         let window = match event_loop.create_window(attrs) {
             Ok(window) => window,

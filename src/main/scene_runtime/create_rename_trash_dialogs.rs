@@ -428,7 +428,7 @@ impl ShellScene {
         self.pane_projection_from_prepared(prepared)
     }
 
-    fn prepare_frame_projection_layouts(
+    pub(crate) fn prepare_frame_projection_layouts(
         &self,
         size: PhysicalSize<u32>,
     ) -> ShellPreparedFrameProjectionLayouts {

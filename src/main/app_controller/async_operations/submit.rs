@@ -1,3 +1,31 @@
+struct AsyncTransferRequest {
+    source: ShellAsyncTransferSource,
+    target_dir: PathBuf,
+    mode: FileTransferMode,
+    paths: Vec<PathBuf>,
+    label: &'static str,
+    clear_clipboard: bool,
+    privileged: bool,
+}
+
+struct AsyncTransferTaskConfig<'a> {
+    source: ShellAsyncTransferSource,
+    target_dir: &'a Path,
+    mode: FileTransferMode,
+    item_count: usize,
+    clear_clipboard: bool,
+    privileged: bool,
+}
+
+struct AsyncTransferFailure {
+    source: ShellAsyncTransferSource,
+    target_dir: PathBuf,
+    mode: FileTransferMode,
+    label: &'static str,
+    clear_clipboard: bool,
+    privileged: bool,
+}
+
 impl FikaWgpuApp {
     /// Single entry point for typed operation requests from UI actions.
     fn submit_operation_request(&mut self, request: ShellOperationRequest) {
@@ -10,7 +38,7 @@ impl FikaWgpuApp {
                 label,
                 clear_clipboard,
                 privileged,
-            } => self.start_async_transfer_with_privilege(
+            } => self.start_async_transfer_with_privilege(AsyncTransferRequest {
                 source,
                 target_dir,
                 mode,
@@ -18,7 +46,7 @@ impl FikaWgpuApp {
                 label,
                 clear_clipboard,
                 privileged,
-            ),
+            }),
             ShellOperationRequest::PasteText { target_dir, text } => {
                 self.start_async_paste_text(target_dir, text);
             }
@@ -337,26 +365,36 @@ impl FikaWgpuApp {
         });
     }
 
-    fn start_async_transfer_with_privilege(
-        &mut self,
-        source: ShellAsyncTransferSource,
-        target_dir: PathBuf,
-        mode: FileTransferMode,
-        paths: Vec<PathBuf>,
-        label: &'static str,
-        clear_clipboard: bool,
-        privileged: bool,
-    ) {
-        let controller = OperationController::new();
-        let task_id = self.begin_async_transfer_task(
+    fn start_async_transfer_with_privilege(&mut self, request: AsyncTransferRequest) {
+        let AsyncTransferRequest {
             source,
-            &target_dir,
+            target_dir,
             mode,
-            paths.len(),
+            paths,
+            label,
             clear_clipboard,
             privileged,
+        } = request;
+        let controller = OperationController::new();
+        let task_id = self.begin_async_transfer_task(
+            AsyncTransferTaskConfig {
+                source,
+                target_dir: &target_dir,
+                mode,
+                item_count: paths.len(),
+                clear_clipboard,
+                privileged,
+            },
             controller.clone(),
         );
+        let failure = AsyncTransferFailure {
+            source,
+            target_dir: target_dir.clone(),
+            mode,
+            label,
+            clear_clipboard,
+            privileged,
+        };
         let work_target = target_dir.clone();
         if let Err(error) = self.spawn_async_transfer_completion(
             task_id,
@@ -375,28 +413,21 @@ impl FikaWgpuApp {
                 .await
             },
         ) {
-            self.fail_async_transfer_spawn(
-                task_id,
-                source,
-                target_dir,
-                mode,
-                label,
-                clear_clipboard,
-                privileged,
-                error,
-            );
+            self.fail_async_transfer_spawn(task_id, failure, error);
         }
     }
 
     fn start_async_paste_text(&mut self, target_dir: PathBuf, text: String) {
         let controller = OperationController::new();
         let task_id = self.begin_async_transfer_task(
-            ShellAsyncTransferSource::Paste,
-            &target_dir,
-            FileTransferMode::Copy,
-            1,
-            false,
-            false,
+            AsyncTransferTaskConfig {
+                source: ShellAsyncTransferSource::Paste,
+                target_dir: &target_dir,
+                mode: FileTransferMode::Copy,
+                item_count: 1,
+                clear_clipboard: false,
+                privileged: false,
+            },
             controller,
         );
         let work_target = target_dir.clone();
@@ -408,12 +439,14 @@ impl FikaWgpuApp {
         ) {
             self.fail_async_transfer_spawn(
                 task_id,
-                ShellAsyncTransferSource::Paste,
-                target_dir,
-                FileTransferMode::Copy,
-                "Paste",
-                false,
-                false,
+                AsyncTransferFailure {
+                    source: ShellAsyncTransferSource::Paste,
+                    target_dir,
+                    mode: FileTransferMode::Copy,
+                    label: "Paste",
+                    clear_clipboard: false,
+                    privileged: false,
+                },
                 error,
             );
         }
@@ -421,14 +454,17 @@ impl FikaWgpuApp {
 
     fn begin_async_transfer_task(
         &mut self,
-        source: ShellAsyncTransferSource,
-        target_dir: &Path,
-        mode: FileTransferMode,
-        item_count: usize,
-        clear_clipboard: bool,
-        privileged: bool,
+        config: AsyncTransferTaskConfig<'_>,
         controller: OperationController,
     ) -> ShellTaskId {
+        let AsyncTransferTaskConfig {
+            source,
+            target_dir,
+            mode,
+            item_count,
+            clear_clipboard,
+            privileged,
+        } = config;
         let task_id = self.register_active_task(controller);
         let base_detail = async_transfer_task_detail(target_dir, item_count, clear_clipboard);
         self.active_task_base_details
@@ -468,14 +504,17 @@ impl FikaWgpuApp {
     fn fail_async_transfer_spawn(
         &mut self,
         task_id: ShellTaskId,
-        source: ShellAsyncTransferSource,
-        target_dir: PathBuf,
-        mode: FileTransferMode,
-        label: &'static str,
-        clear_clipboard: bool,
-        privileged: bool,
+        failure: AsyncTransferFailure,
         error: impl std::fmt::Display,
     ) {
+        let AsyncTransferFailure {
+            source,
+            target_dir,
+            mode,
+            label,
+            clear_clipboard,
+            privileged,
+        } = failure;
         let mut transfer =
             transfer_runtime_failure(target_dir.clone(), mode, label, clear_clipboard, error);
         transfer.privileged = privileged;
@@ -541,11 +580,8 @@ impl FikaWgpuApp {
             .record_async_trash_view_started(task_id, operation, paths.len());
 
         if let Err(error) = self.spawn_async_task_result(
-            {
-                let paths = paths;
-                move || async move {
-                    trash_view_operation_result_async(WGPU_SHELL_PANE_ID, operation, paths).await
-                }
+            move || async move {
+                trash_view_operation_result_async(WGPU_SHELL_PANE_ID, operation, paths).await
             },
             move |result| {
                 ShellAsyncTaskResult::TrashView(ShellAsyncTrashViewCompletion {

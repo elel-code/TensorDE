@@ -12,7 +12,9 @@ mod tests {
     include!("tests/folder_preview_role_resolves_encoded_chinese_named_jpeg_when_video_is_present.rs");
     include!("tests/icon_dmabuf_slot_upload_smoke.rs");
     include!("tests/location_draft_replaces_completes_and_cancels.rs");
+    include!("tests/native_frame_layers_share_item_chrome.rs");
     include!("tests/open_with_chooser_builds_launch_plan_for_selected_application.rs");
+    include!("tests/pending_navigation_publishes_target_before_listing_completion.rs");
     include!("tests/pane_folder_drag_to_places_gap_adds_place_at_gap.rs");
     include!("tests/pane_projection_assigns_reused_visible_slots.rs");
     include!("tests/path_history_tracks_back_forward_and_clears_forward_on_new_navigation.rs");

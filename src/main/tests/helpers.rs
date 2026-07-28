@@ -534,6 +534,7 @@
             pane,
             ShellPaneState {
                 path,
+                pending_path: None,
                 view_mode,
                 zoom_step,
                 dir_count,

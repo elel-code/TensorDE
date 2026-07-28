@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
-use crate::platform::ActiveEventLoop;
-use crate::platform::PhysicalSize;
+use crate::windowing::ActiveEventLoop;
+use crate::windowing::PhysicalSize;
 
 use super::outcome::ShellActionOutcome;
-use crate::FikaWgpuApp;
 use crate::shell::location::LocationDraftPurpose;
 use crate::shell::operation_request::ShellOperationRequest;
 use crate::shell::pane::ShellPaneId;
 use crate::shell::shortcuts::PathNavigationAction;
 use crate::shell::tasks::ShellTaskStatus;
 use crate::shell::transfer::{ShellAsyncNavigationCompletion, ShellNavigationHistoryUpdate};
+use crate::{FikaWgpuApp, ShellScene};
 use fika_core::default_user_places_path;
 
 impl FikaWgpuApp {
@@ -178,6 +178,31 @@ impl FikaWgpuApp {
             return false;
         };
         if source_path == target_path {
+            // A request back to the committed path cancels a still-pending
+            // listing instead of making the user wait for it (or requiring a
+            // second activation after it completes).
+            let cancelled = self.scene.cancel_pane_navigation(pane);
+            if cancelled {
+                self.navigation_generations[pane.index()] =
+                    self.navigation_generations[pane.index()].wrapping_add(1);
+                self.apply_window_action_outcome(ShellActionOutcome::Redraw);
+            }
+            return cancelled;
+        }
+        if self
+            .scene
+            .pending_pane_navigation_matches(pane, &target_path)
+        {
+            return false;
+        }
+
+        let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
+            return false;
+        };
+        if !self
+            .scene
+            .begin_pane_navigation(pane, target_path.clone(), size)
+        {
             return false;
         }
 
@@ -191,6 +216,10 @@ impl FikaWgpuApp {
             history,
             reason,
         ));
+        // Present the pending target and an empty content model immediately.
+        // The completion arrives through EventLoopProxy and atomically replaces
+        // this transaction only when its generation and target still match.
+        self.apply_window_action_outcome(ShellActionOutcome::Redraw);
 
         true
     }
@@ -200,56 +229,71 @@ impl FikaWgpuApp {
         completion: ShellAsyncNavigationCompletion,
         size: PhysicalSize<u32>,
     ) -> bool {
-        let pane = completion.pane;
-        if self.navigation_generations[pane.index()] != completion.generation {
-            return false;
-        }
-        if !self
-            .scene
-            .pane_state(pane)
-            .is_some_and(|state| state.path == completion.source_path)
-        {
-            return false;
-        }
-
-        let entries = match completion.result {
-            Ok(entries) => entries,
-            Err(error) => {
-                fika_log!(
-                    "[fika-wgpu] async-navigation-error reason={} path={} error={error}",
-                    completion.reason,
-                    completion.target_path.display()
-                );
-                self.scene.record_task_status(ShellTaskStatus::failed(
-                    "Open folder failed",
-                    error,
-                    false,
-                ));
-                return true;
-            }
-        };
-
-        let history = self.scene.pane_history_mut(pane);
-        match completion.history {
-            ShellNavigationHistoryUpdate::Push => {
-                history.push_back(completion.source_path);
-                history.clear_forward();
-            }
-            ShellNavigationHistoryUpdate::Back => {
-                if history.back.last() == Some(&completion.target_path) {
-                    history.back.pop();
-                }
-                history.push_forward(completion.source_path);
-            }
-            ShellNavigationHistoryUpdate::Forward => {
-                if history.forward.last() == Some(&completion.target_path) {
-                    history.forward.pop();
-                }
-                history.push_back(completion.source_path);
-            }
-        }
-        self.scene
-            .apply_loaded_path_to_pane(pane, completion.target_path, entries, size);
-        true
+        apply_navigation_completion(
+            &mut self.scene,
+            &self.navigation_generations,
+            completion,
+            size,
+        )
     }
+}
+
+/// Commits one background directory listing only when it still belongs to the
+/// displayed navigation transaction. Both rendering hosts use this exact
+/// boundary so a stale completion cannot repopulate a pane after another
+/// target has already been published.
+pub(crate) fn apply_navigation_completion(
+    scene: &mut ShellScene,
+    navigation_generations: &[u64; 2],
+    completion: ShellAsyncNavigationCompletion,
+    size: PhysicalSize<u32>,
+) -> bool {
+    let pane = completion.pane;
+    if navigation_generations[pane.index()] != completion.generation {
+        return false;
+    }
+    if !scene
+        .pane_state(pane)
+        .is_some_and(|state| state.path == completion.source_path)
+    {
+        return false;
+    }
+    if !scene.pending_pane_navigation_matches(pane, &completion.target_path) {
+        return false;
+    }
+
+    let entries = match completion.result {
+        Ok(entries) => entries,
+        Err(error) => {
+            fika_log!(
+                "[fika] async-navigation-error reason={} path={} error={error}",
+                completion.reason,
+                completion.target_path.display()
+            );
+            let _ = scene.cancel_pane_navigation(pane);
+            scene.record_task_status(ShellTaskStatus::failed("Open folder failed", error, false));
+            return true;
+        }
+    };
+
+    let history = scene.pane_history_mut(pane);
+    match completion.history {
+        ShellNavigationHistoryUpdate::Push => {
+            history.push_back(completion.source_path);
+            history.clear_forward();
+        }
+        ShellNavigationHistoryUpdate::Back => {
+            if history.back.last() == Some(&completion.target_path) {
+                history.back.pop();
+            }
+            history.push_forward(completion.source_path);
+        }
+        ShellNavigationHistoryUpdate::Forward => {
+            if history.forward.last() == Some(&completion.target_path) {
+                history.forward.pop();
+            }
+            history.push_back(completion.source_path);
+        }
+    }
+    scene.complete_pane_navigation(pane, completion.target_path, entries, size)
 }

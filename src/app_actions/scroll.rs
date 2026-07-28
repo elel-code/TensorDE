@@ -1,4 +1,4 @@
-use crate::platform::{ActiveEventLoop, MouseScrollDelta, PinchGesture, SwipeGesture};
+use crate::windowing::{ActiveEventLoop, MouseScrollDelta, PinchGesture, SwipeGesture};
 
 use super::outcome::ShellActionOutcome;
 use crate::shell::animation::ShellAnimationKind;

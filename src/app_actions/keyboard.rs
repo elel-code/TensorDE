@@ -1,5 +1,5 @@
-use crate::platform::PhysicalSize;
-use crate::platform::{ActiveEventLoop, ElementState, KeyEvent};
+use crate::windowing::PhysicalSize;
+use crate::windowing::{ActiveEventLoop, ElementState, KeyEvent};
 
 use super::outcome::{ShellActionEffect, ShellActionOutcome};
 use crate::FikaWgpuApp;

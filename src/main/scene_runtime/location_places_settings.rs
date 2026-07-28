@@ -436,7 +436,7 @@ impl ShellScene {
         self.panes[ShellPaneId::SLOT_0].filtered_indexes.len()
     }
 
-    fn set_scale_factor(&mut self, scale_factor: f32, size: PhysicalSize<u32>) -> bool {
+    pub(crate) fn set_scale_factor(&mut self, scale_factor: f32, size: PhysicalSize<u32>) -> bool {
         let next = normalized_scale_factor(scale_factor);
         if (self.scale_factor - next).abs() <= 0.01 {
             self.scale_factor = next;

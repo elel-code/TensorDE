@@ -1,6 +1,6 @@
 impl EventLoop {
     pub fn new() -> Result<Self, RuntimeError> {
-        let runtime = PlatformBackend::connect()?;
+        let runtime = WindowRuntime::connect()?;
         let wake = runtime.wake_handle();
         let shared = Arc::new(LoopShared {
             wake,
@@ -265,7 +265,7 @@ impl EventLoop {
                         };
                         // Verbose format table only when FIKA_LOG / FIKA_WGPU_LOG is set.
                         // App-level readiness still logs via dmabuf_feedback_updated.
-                        if platform_verbose_log_enabled() {
+                        if windowing_verbose_log_enabled() {
                             let pick =
                                 crate::shell::render::dmabuf::pick_import_format(&feedback);
                             let scope = match surface_id {
@@ -282,17 +282,17 @@ impl EventLoop {
                         app.dmabuf_feedback_updated(&self.active, surface_id);
                     }
                     wayland_client_runtime::DmabufEvent::BufferCreated { id } => {
-                        if platform_verbose_log_enabled() {
+                        if windowing_verbose_log_enabled() {
                             eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");
                         }
                     }
                     wayland_client_runtime::DmabufEvent::BufferFailed => {
-                        if platform_verbose_log_enabled() {
+                        if windowing_verbose_log_enabled() {
                             eprintln!("[fika-wgpu] dmabuf-buffer-failed");
                         }
                     }
                     wayland_client_runtime::DmabufEvent::BufferReleased { id } => {
-                        if platform_verbose_log_enabled() {
+                        if windowing_verbose_log_enabled() {
                             eprintln!("[fika-wgpu] dmabuf-buffer-released id={id:?}");
                         }
                     }
@@ -443,7 +443,7 @@ impl EventLoop {
                         window,
                         WindowEvent::OutgoingDragDropped {
                             id: DataTransferId(source.get()),
-                            action: action.map(platform_dnd_action),
+                            action: action.map(dnd_action_from_runtime),
                         },
                     );
                 }
@@ -744,14 +744,14 @@ impl EventLoop {
             })
     }
 
-    fn window(&self, id: SurfaceId) -> Option<Arc<WaylandWindow>> {
+    fn window(&self, id: SurfaceId) -> Option<Arc<Window>> {
         self.active.windows.borrow().get(&id).and_then(Weak::upgrade)
     }
 }
 
-/// Verbose platform diagnostics (`FIKA_LOG` / `FIKA_WGPU_LOG`), same policy as
-/// the main binary's `fika_log!` but usable from the platform module.
-fn platform_verbose_log_enabled() -> bool {
+/// Verbose window-runtime diagnostics (`FIKA_LOG` / `FIKA_WGPU_LOG`), using
+/// the same policy as the main binary's `fika_log!`.
+fn windowing_verbose_log_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {

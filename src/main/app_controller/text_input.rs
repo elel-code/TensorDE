@@ -6,7 +6,7 @@ struct FikaTextInputRuntime {
 }
 
 impl FikaTextInputRuntime {
-    fn sync_window(&mut self, window: &WaylandWindow, desired: Option<ImeState>) {
+    fn sync_window(&mut self, window: &Window, desired: Option<ImeState>) {
         let window_id = window.id();
         let input_method_change = self.input_method_changes.remove(&window_id);
         let Some(mut state) = desired else {
@@ -55,7 +55,7 @@ impl FikaTextInputRuntime {
         self.input_method_changes.insert(window);
     }
 
-    fn consumes_text_key(&self, window: WindowId, event: &platform::KeyEvent) -> bool {
+    fn consumes_text_key(&self, window: WindowId, event: &windowing::KeyEvent) -> bool {
         if !self.entered.contains(&window) || !self.synchronized.contains_key(&window) {
             return false;
         }
@@ -250,7 +250,7 @@ impl FikaWgpuApp {
         self.request_dialog_redraw(kind);
     }
 
-    fn text_input_consumes_key(&self, window: WindowId, event: &platform::KeyEvent) -> bool {
+    fn text_input_consumes_key(&self, window: WindowId, event: &windowing::KeyEvent) -> bool {
         self.text_input.consumes_text_key(window, event)
     }
 }

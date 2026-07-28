@@ -1,4 +1,4 @@
-use crate::platform::{Key, KeyCode, KeyEvent, MouseButton, NamedKey, PhysicalKey};
+use crate::windowing::{Key, KeyCode, KeyEvent, MouseButton, NamedKey, PhysicalKey};
 
 use crate::shell::create_rename::CreateEntryKind;
 use crate::shell::options::ShellViewMode;

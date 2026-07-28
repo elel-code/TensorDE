@@ -1,5 +1,5 @@
 impl WgpuState {
-    fn new(window: Arc<WaylandWindow>) -> Result<Self, String> {
+    fn new(window: Arc<Window>) -> Result<Self, String> {
         let size = nonzero_size(window.surface_size());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             // The icon and dmabuf pipelines require the native Vulkan backend.
@@ -55,7 +55,7 @@ impl WgpuState {
         Self::from_surface_parts(size, instance, adapter, device, queue, surface)
     }
 
-    fn new_with_shared_device(window: Arc<WaylandWindow>, shared: &Self) -> Result<Self, String> {
+    fn new_with_shared_device(window: Arc<Window>, shared: &Self) -> Result<Self, String> {
         let size = nonzero_size(window.surface_size());
         let instance = shared.instance.clone();
         let adapter = shared.adapter.clone();
@@ -349,7 +349,7 @@ impl WgpuState {
 
     fn acquire_surface_frame(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         reason: &'static str,
         context: ShellSurfaceFrameContext,
     ) -> Option<wgpu::SurfaceTexture> {
@@ -379,7 +379,7 @@ impl WgpuState {
 
     fn acquire_surface_frame_after_reconfigure(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         reason: &'static str,
         context: ShellSurfaceFrameContext,
     ) -> Option<wgpu::SurfaceTexture> {
@@ -404,7 +404,7 @@ impl WgpuState {
 
     fn submit_surface_frame(
         &mut self,
-        window: &WaylandWindow,
+        window: &Window,
         event_loop: &ActiveEventLoop,
         frame: wgpu::SurfaceTexture,
         encoder: wgpu::CommandEncoder,

@@ -70,7 +70,7 @@ impl ShellAnimationKind {
 pub(crate) fn animation_redraw_frames(duration: Duration, frame: Duration) -> u8 {
     let frame_ms = frame.as_millis().max(1);
     let duration_ms = duration.as_millis().max(frame_ms);
-    let frames = (duration_ms + frame_ms - 1) / frame_ms;
+    let frames = duration_ms.div_ceil(frame_ms);
     frames.clamp(1, u128::from(u8::MAX)) as u8
 }
 

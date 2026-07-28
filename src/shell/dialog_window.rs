@@ -2,14 +2,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::platform::{
-    ActiveEventLoop, CursorIcon, Modifiers, PhysicalSize, Theme, WaylandWindow, WindowAttributes,
+use crate::windowing::{
+    ActiveEventLoop, CursorIcon, Modifiers, PhysicalSize, Theme, Window, WindowAttributes,
     WindowEvent, WindowId,
 };
 
 use crate::WgpuState;
 use crate::shell::window_semantics::{
-    ShellDialogWindowRole, ShellWindowRole, apply_window_platform_semantics,
+    ShellDialogWindowRole, ShellWindowRole, apply_window_semantics,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -87,7 +87,7 @@ impl ShellDialogWindowSpec {
         if let Some(max_surface_size) = self.max_surface_size {
             attrs = attrs.with_max_surface_size(max_surface_size);
         }
-        apply_window_platform_semantics(
+        apply_window_semantics(
             event_loop,
             attrs,
             ShellWindowRole::Dialog(kind.window_role()),
@@ -98,7 +98,7 @@ impl ShellDialogWindowSpec {
 pub(crate) struct ShellDetachedDialogWindow {
     kind: ShellDialogWindowKind,
     renderer: WgpuState,
-    window: Arc<WaylandWindow>,
+    window: Arc<Window>,
     layout_size: PhysicalSize<u32>,
     cursor_icon: CursorIcon,
 }
@@ -142,7 +142,7 @@ impl ShellDetachedDialogWindow {
         self.window.id()
     }
 
-    pub(crate) fn window(&self) -> &WaylandWindow {
+    pub(crate) fn window(&self) -> &Window {
         self.window.as_ref()
     }
 
@@ -202,7 +202,7 @@ impl ShellDetachedDialogWindow {
         self.renderer.wait_idle("dialog-window-drop");
     }
 
-    pub(crate) fn renderer_and_window_mut(&mut self) -> (&mut WgpuState, &WaylandWindow) {
+    pub(crate) fn renderer_and_window_mut(&mut self) -> (&mut WgpuState, &Window) {
         (&mut self.renderer, self.window.as_ref())
     }
 }

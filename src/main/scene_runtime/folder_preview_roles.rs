@@ -229,6 +229,67 @@ impl ShellScene {
         }
     }
 
+    /// Emits the non-text portion of the Details header into the analytic
+    /// Vulkan stream. Column labels continue through the text renderer.
+    fn push_native_details_header_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let header_height = self.details_header_height();
+        let header = ViewRect {
+            x: projection.geometry.content.x,
+            y: (projection.geometry.content.y - header_height).max(projection.geometry.top_bar.y),
+            width: projection.geometry.content.width,
+            height: header_height,
+        };
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: header.x,
+                y: header.y,
+                width: header.width,
+                height: self.scale_metric(1.0).max(1.0),
+            },
+            header,
+            theme.field_separator(),
+            size,
+        );
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: header.x,
+                y: header.bottom() - 1.0,
+                width: header.width,
+                height: 1.0,
+            },
+            header,
+            theme.divider(),
+            size,
+        );
+        let name_separator_x = header.x + self.details_name_width() - projection.view.scroll_x;
+        let size_separator_x = header.x + self.details_name_width() + self.details_size_width()
+            - projection.view.scroll_x;
+        for separator_x in [name_separator_x, size_separator_x] {
+            if separator_x > header.x && separator_x < header.right() {
+                push_native_rect_fill(
+                    instances,
+                    ViewRect {
+                        x: separator_x.round(),
+                        y: header.y + self.scale_metric(6.0),
+                        width: self.scale_metric(1.0).max(1.0),
+                        height: (header.height - self.scale_metric(12.0)).max(1.0),
+                    },
+                    header,
+                    theme.field_separator(),
+                    size,
+                );
+            }
+        }
+    }
+
     fn push_pane_status_bar(
         &self,
         vertices: &mut Vec<QuadVertex>,
@@ -255,6 +316,112 @@ impl ShellScene {
                 size,
             },
         );
+    }
+
+    /// Emits status-bar separators, the active-pane marker, and the zoom
+    /// slider through analytic rectangles. Status labels remain a text-stage
+    /// responsibility.
+    fn push_native_pane_status_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let pane = projection.view;
+        let rect = projection.geometry.status_bar;
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: 1.0,
+            },
+            rect,
+            theme.divider(),
+            size,
+        );
+        if projection.geometry.kind == self.active_pane() {
+            let mark_width = self.scale_metric(3.0).max(2.0);
+            let mark_height = (rect.height - self.scale_metric(12.0))
+                .max(self.scale_metric(10.0))
+                .min(rect.height);
+            push_native_rounded_rect_fill(
+                instances,
+                ViewRect {
+                    x: rect.x + self.scale_metric(6.0),
+                    y: rect.y + (rect.height - mark_height) / 2.0,
+                    width: mark_width,
+                    height: mark_height,
+                },
+                rect,
+                mark_width / 2.0,
+                theme.accent(),
+                size,
+            );
+        }
+
+        let Some(zoom) = shell::status::paint::pane_status_zoom_indicator_rects(
+            rect,
+            self.ui_scale(),
+            self.text_line_height(),
+            self.zoom_fraction_for_step(pane.zoom_step),
+        ) else {
+            return;
+        };
+        let radius = zoom.outer.height / 2.0;
+        push_native_rounded_rect_fill(
+            instances,
+            zoom.outer,
+            rect,
+            radius,
+            theme.divider(),
+            size,
+        );
+        push_native_rounded_rect_fill(
+            instances,
+            zoom.inner,
+            rect,
+            (radius - self.scale_metric(1.0)).max(1.0),
+            theme.field(),
+            size,
+        );
+        let scrollbar = theme.scrollbar();
+        push_native_rounded_rect_fill(
+            instances,
+            zoom.track,
+            rect,
+            zoom.track.height / 2.0,
+            scrollbar.track,
+            size,
+        );
+        push_native_rounded_rect_fill(
+            instances,
+            zoom.filled,
+            rect,
+            zoom.track.height / 2.0,
+            theme.accent(),
+            size,
+        );
+        push_native_rounded_rect_fill(
+            instances,
+            zoom.thumb_outer,
+            rect,
+            zoom.thumb_outer.height / 2.0,
+            theme.divider(),
+            size,
+        );
+        if let Some(thumb_inner) = inset_rect(zoom.thumb_outer, self.scale_metric(2.0)) {
+            push_native_rounded_rect_fill(
+                instances,
+                thumb_inner,
+                rect,
+                thumb_inner.width.min(thumb_inner.height) / 2.0,
+                theme.accent(),
+                size,
+            );
+        }
     }
 
     fn push_places_sidebar(
@@ -518,5 +685,192 @@ impl ShellScene {
             push_scrollbar(vertices, track, thumb, panel, theme.scrollbar(), size);
         }
         self.push_places_task_area(vertices, text, size, theme);
+    }
+
+    /// Emits places-list state that does not require a themed icon or glyph
+    /// atlas. This keeps row selection, hover, drop targeting, and scrolling
+    /// on the same analytic GPU path as file-item chrome.
+    fn push_native_places_rows_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        size: PhysicalSize<u32>,
+        paint: ShellPaintPalettes,
+    ) {
+        let theme = paint.shell;
+        let sidebar = self.places_sidebar_rect(size);
+        if sidebar.width <= 0.0 || sidebar.height <= 0.0 {
+            return;
+        }
+        let panel = self.places_panel_rect(size);
+        let active_place_path = self
+            .pane_state(self.active_pane())
+            .map(|pane| pane.path.as_path())
+            .unwrap_or_else(|| self.panes[ShellPaneId::SLOT_0].path.as_path());
+        let active_place = active_shell_place_index(&self.places, active_place_path);
+        let top_padding = self.scale_metric(PLACES_SIDEBAR_TOP_PADDING);
+        let title_height = self.scale_metric(PLACES_TITLE_HEIGHT);
+        let padding_x = self.scale_metric(PLACES_SIDEBAR_PADDING_X);
+        let section_height = self.scale_metric(PLACES_SECTION_HEIGHT);
+        let row_height = self.scale_metric(PLACES_ROW_HEIGHT);
+        let row_gap = self.scale_metric(PLACES_ROW_GAP);
+        let small_text_height = self.small_text_line_height();
+        let item_palette = paint.file_manager_item;
+        let mut y = panel.y + top_padding + title_height - self.places_scroll_y;
+        let mut previous_group = None;
+        for (index, place) in self.places.iter().enumerate() {
+            if !place.group.is_empty() && previous_group != Some(place.group) {
+                let section = ViewRect {
+                    x: panel.x + padding_x + self.scale_metric(8.0),
+                    y: y + self.scale_metric(4.0),
+                    width: (panel.width - padding_x * 2.0 - self.scale_metric(16.0)).max(1.0),
+                    height: small_text_height,
+                };
+                if section.y < panel.bottom() && section.bottom() > panel.y {
+                    let line_height = self.scale_metric(1.0).max(1.0);
+                    push_native_rounded_rect_fill(
+                        instances,
+                        ViewRect {
+                            x: section.x,
+                            y: section.y + small_text_height + self.scale_metric(3.0),
+                            width: (section.width * 0.42).max(self.scale_metric(28.0)),
+                            height: line_height,
+                        },
+                        panel,
+                        line_height / 2.0,
+                        theme.field_separator(),
+                        size,
+                    );
+                }
+                y += section_height;
+            }
+
+            let row = ViewRect {
+                x: panel.x + padding_x,
+                y,
+                width: (panel.width - padding_x * 2.0).max(1.0),
+                height: row_height,
+            };
+            if row.y < panel.bottom() && row.bottom() > panel.y {
+                let active = active_place == Some(index);
+                let hovered = self.hovered_place == Some(index);
+                let hover_progress = if hovered {
+                    self.hover_animation_factor()
+                } else {
+                    1.0
+                };
+                let dnd_hovered = matches!(
+                    self.dnd_hover_target,
+                    Some(ShellDropTarget::Place {
+                        index: target_index,
+                        ..
+                    }) if target_index == index
+                );
+                if active || hovered {
+                    push_native_rounded_rect_fill(
+                        instances,
+                        row,
+                        panel,
+                        self.scale_metric(BREEZE_ITEM_ROUNDNESS),
+                        place_row_background_color_for_palette_with_hover_progress(
+                            active,
+                            hovered,
+                            item_palette,
+                            hover_progress,
+                        ),
+                        size,
+                    );
+                }
+                if active {
+                    let rail_width = self.scale_metric(3.0).max(2.0);
+                    push_native_rounded_rect_fill(
+                        instances,
+                        ViewRect {
+                            x: row.x + self.scale_metric(3.0),
+                            y: row.y + self.scale_metric(6.0),
+                            width: rail_width,
+                            height: (row.height - self.scale_metric(12.0)).max(1.0),
+                        },
+                        panel,
+                        rail_width / 2.0,
+                        theme.accent(),
+                        size,
+                    );
+                }
+                if dnd_hovered {
+                    let drop_target = theme.drop_target();
+                    let radius = self.scale_metric(8.0);
+                    push_native_rounded_rect_fill(
+                        instances,
+                        row,
+                        panel,
+                        radius,
+                        drop_target.fill,
+                        size,
+                    );
+                    push_native_rect_outline(
+                        instances,
+                        row,
+                        panel,
+                        radius,
+                        self.scale_metric(1.0),
+                        drop_target.border,
+                        size,
+                    );
+                }
+                if self.trash_place_has_items(place) {
+                    let dot_size = self.scale_metric(7.0);
+                    push_native_rounded_rect_fill(
+                        instances,
+                        ViewRect {
+                            x: row.right() - self.scale_metric(8.0) - dot_size,
+                            y: row.y + (row.height - dot_size) / 2.0,
+                            width: dot_size,
+                            height: dot_size,
+                        },
+                        panel,
+                        dot_size / 2.0,
+                        theme.accent(),
+                        size,
+                    );
+                }
+            }
+
+            y += row_height + row_gap;
+            previous_group = Some(place.group);
+        }
+
+        if let Some(ShellDropTarget::PlacesGap { index }) = self.dnd_hover_target.as_ref()
+            && let Some(gap) = self.place_gap_rect_for_index(*index, size)
+        {
+            let drop_target = theme.drop_target();
+            let line_height = self.scale_metric(3.0).max(2.0);
+            push_native_rounded_rect_fill(
+                instances,
+                ViewRect {
+                    x: gap.x + self.scale_metric(8.0),
+                    y: gap.y + (gap.height - line_height) / 2.0,
+                    width: (gap.width - self.scale_metric(16.0)).max(1.0),
+                    height: line_height,
+                },
+                panel,
+                line_height / 2.0,
+                drop_target.marker,
+                size,
+            );
+        }
+
+        if let Some((track, thumb)) = self.places_scrollbar_rects(size) {
+            let colors = theme.scrollbar();
+            for (rect, color) in [(track, colors.track), (thumb, colors.thumb)] {
+                push_native_rounded_rect_fill(
+                    instances,
+                    rect,
+                    panel,
+                    rect.width.min(rect.height) / 2.0,
+                    color,
+                    size,
+                );
+            }
+        }
     }
 }

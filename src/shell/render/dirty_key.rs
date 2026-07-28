@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::{ViewPoint, is_network_path};
 
 use crate::shell::context_menu::ShellContextMenu;
@@ -163,6 +163,7 @@ impl ShellRenderDirtyKey {
                 Some(pane) => {
                     push_bool(&mut values, true);
                     push_hash(&mut values, &pane.path);
+                    push_hash(&mut values, &pane.pending_path);
                     push_hash(&mut values, pane.view_mode.as_str());
                     push_u64(&mut values, pane.zoom_step as i64 as u64);
                     push_u64(&mut values, pane.entries.len() as u64);

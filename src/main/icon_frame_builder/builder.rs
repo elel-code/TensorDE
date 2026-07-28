@@ -54,6 +54,18 @@ impl IconFrameConfig {
     }
 }
 
+#[cfg(test)]
+struct IconDmabufDraw {
+    identity: IconGpuUploadKey,
+    width: u32,
+    height: u32,
+    content_hash: u64,
+    rect: ViewRect,
+    screen: ViewRect,
+    layer: IconDrawLayer,
+    plane: crate::shell::render::dmabuf::DmabufImportPlane,
+}
+
 impl<'a> IconFrameBuilder<'a> {
     #[cfg(test)]
     fn new_for_test(
@@ -578,17 +590,17 @@ impl<'a> IconFrameBuilder<'a> {
 
     /// Attach a dmabuf plane to a logical GPU slot (zero-copy producer).
     #[cfg(test)]
-    fn push_dmabuf_draw(
-        &mut self,
-        identity: IconGpuUploadKey,
-        width: u32,
-        height: u32,
-        content_hash: u64,
-        rect: ViewRect,
-        screen: ViewRect,
-        layer: IconDrawLayer,
-        plane: crate::shell::render::dmabuf::DmabufImportPlane,
-    ) {
+    fn push_dmabuf_draw(&mut self, draw: IconDmabufDraw) {
+        let IconDmabufDraw {
+            identity,
+            width,
+            height,
+            content_hash,
+            rect,
+            screen,
+            layer,
+            plane,
+        } = draw;
         let width = width.max(1);
         let height = height.max(1);
         let slot = self.slots.len() as u32;

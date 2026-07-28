@@ -21,6 +21,26 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
 
 ## 已完成边界
 
+- `vulkan-renderer` 独立仓库边界：
+  crate manifest 不继承父 workspace dependency/package 字段，许可证、README、标准文档、
+  examples 和全部源码均位于 crate 目录内；把该目录单独复制到 workspace 外后可以独立
+  解析依赖、构建并通过全部测试，也可以独立完成 `cargo package`。后续抽仓只剩仓库位置、
+  remote 与 Fika dependency URL 的发布决策，不需要再切代码依赖边界。
+- 原生 Vulkan renderer 迁移第一条垂直链：
+  根 crate 已直接依赖 `crates/vulkan-renderer`，`src/main/vulkan_state.rs` 独立拥有
+  Vulkan 1.4 instance、surface-compatible adapter、descriptor-heap/FIFO-latest-ready
+  device、Wayland swapchain、三帧 acquire 槽和按 swapchain image 分配的 present
+  semaphore。当前 frame 已使用 pipeline cache、device-local 持久 quad vertex buffer、
+  bounded UploadBelt 和 position/color SPIR-V pipeline；未变化的顶点跳过上传，扩容按
+  next-power-of-two，Buffer submission lease 保证旧帧完成前不会释放。render graph 生成
+  image `UNDEFINED/PRESENT -> ATTACHMENT_OPTIMAL -> PRESENT` 与
+  buffer `COPY/TRANSFER_WRITE -> VERTEX_ATTRIBUTE_INPUT/READ` barrier，并完整执行
+  acquire -> submit2 timeline/binary signal -> `pre_present_notify` -> present；swapchain
+  replacement 使用 `oldSwapchain` 并只在 infrequent reconfigure 边界等待 device idle。
+  `FIKA_VULKAN_PROBE=1` 会在现有 wgpu renderer 初始化前运行一次原生 clear/quad/present
+  probe，完成后销毁整套 Vulkan 状态，禁止同一帧或同一资源混用两个逻辑设备。该入口
+  是迁移验证门，不是长期双后端策略；quad/text/icon/retained renderer 迁移完成后应删除
+  probe 和 `WgpuState`。
 - 独立 dialog window host：
   `src/shell/dialog_window.rs` 管理 dialog window 创建、同步、关闭、cursor、resize、
   renderer size、scale factor 和 window id 路由。
@@ -60,7 +80,7 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   Create / Rename 的输入框从旧的居中文本 + `|` 字符伪光标切换为 start-aligned
   no-wrap 文本和独立 caret rect，和 Open With search box 使用同一类
   `measure_label_cursor_x` 光标定位边界。
-- Window platform semantics 边界：
+- Window semantics 边界：
   `src/shell/window_semantics.rs` 集中设置主窗口和 detached dialog 的 Wayland app-id /
   instance。父子窗口 API 不可用期间，detached dialog 与主窗口按普通独立窗口处理，不再
   模拟 modal 输入拦截、attention、recently-closed 路由或 close guard。
@@ -489,7 +509,7 @@ SCTK `include!` 单模块可见性（delegate 宏与 private 状态同模块）�
 - 用 **Compio** 作为唯一异步执行与 I/O 模型：`async`/`await` 同步书写，
   `wl_display` fd、pipe、文件与 shell 任务同一 executor。
 - 保留 crate **公共语义面**（`Runtime` / `SurfaceId` / `Event` / capabilities），
-  Fika `platform_*` 只换 dispatch 入口，不改业务事件映射。
+  Fika `windowing_*` 只换 dispatch 入口，不改业务事件映射。
 
 原则：
 

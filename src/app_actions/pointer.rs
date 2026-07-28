@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::platform::{
+use crate::windowing::{
     ActiveEventLoop, ButtonSource, CursorIcon, ElementState, PhysicalPosition, PhysicalSize,
 };
 

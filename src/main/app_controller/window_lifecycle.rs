@@ -61,6 +61,16 @@ impl FikaWgpuApp {
         let Some(window) = self.window.clone() else {
             return false;
         };
+        if env_flag_enabled("FIKA_VULKAN_PROBE") {
+            match crate::vulkan_state::VulkanState::run_probe(event_loop, Arc::clone(&window)) {
+                Ok(()) => eprintln!("[fika-vulkan] migration probe presented"),
+                Err(error) => {
+                    eprintln!("[fika-vulkan] migration probe failed: {error}");
+                    self.exit_event_loop(event_loop, "vulkan-migration-probe-failed");
+                    return false;
+                }
+            }
+        }
         let mut renderer = match WgpuState::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(error) => {

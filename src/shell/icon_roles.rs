@@ -128,9 +128,8 @@ fn file_icon_kind_with_stamp(
 
 fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Option<String> {
     const MAX_ENTRIES: usize = 512;
-    static CACHE: OnceLock<
-        Mutex<std::collections::HashMap<(std::path::PathBuf, u64), Option<String>>>,
-    > = OnceLock::new();
+    type DesktopIconCache = std::collections::HashMap<(std::path::PathBuf, u64), Option<String>>;
+    static CACHE: OnceLock<Mutex<DesktopIconCache>> = OnceLock::new();
 
     let Some(stamp) = modified_secs else {
         return desktop_entry_icon_name(path);

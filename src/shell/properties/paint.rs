@@ -1,4 +1,4 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewRect;
 
 use crate::shell::metrics::{PROPERTIES_ROW_HEIGHT, PROPERTIES_TITLE_HEIGHT, scaled_dialog_metric};

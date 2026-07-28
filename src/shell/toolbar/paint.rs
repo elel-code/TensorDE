@@ -1,13 +1,92 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewRect;
 
 use crate::shell::options::ShellViewMode;
 use crate::shell::pane::ShellPaneId;
 use crate::shell::render::quad::{
-    QuadVertex, push_clipped_rect, push_clipped_rect_outline, push_clipped_rounded_rect, push_rect,
+    QuadVertex, push_clipped_rect_outline, push_clipped_rounded_rect,
+    push_clipped_rounded_rect_outline,
 };
 use crate::shell::theme::ShellTheme;
+use crate::vulkan_rect::VulkanRectInstance;
 use crate::{ShellScene, shell::toolbar::ShellToolbarViewModeControl};
+
+/// The application toolbar is a small, texture-free scene. Both renderers use
+/// this sink so hover/active state and icon geometry have one source of truth.
+trait ToolbarRectSink {
+    fn fill(&mut self, rect: ViewRect, clip: ViewRect, radius: f32, color: [f32; 4]);
+
+    fn outline(
+        &mut self,
+        rect: ViewRect,
+        clip: ViewRect,
+        radius: f32,
+        stroke_width: f32,
+        color: [f32; 4],
+    );
+}
+
+struct CpuToolbarRectSink<'a> {
+    vertices: &'a mut Vec<QuadVertex>,
+    size: PhysicalSize<u32>,
+}
+
+impl ToolbarRectSink for CpuToolbarRectSink<'_> {
+    fn fill(&mut self, rect: ViewRect, clip: ViewRect, radius: f32, color: [f32; 4]) {
+        push_clipped_rounded_rect(self.vertices, rect, clip, radius, color, self.size);
+    }
+
+    fn outline(
+        &mut self,
+        rect: ViewRect,
+        clip: ViewRect,
+        radius: f32,
+        stroke_width: f32,
+        color: [f32; 4],
+    ) {
+        if radius <= 1.0 {
+            push_clipped_rect_outline(self.vertices, rect, clip, stroke_width, color, self.size);
+        } else {
+            push_clipped_rounded_rect_outline(
+                self.vertices,
+                rect,
+                clip,
+                radius,
+                stroke_width,
+                color,
+                self.size,
+            );
+        }
+    }
+}
+
+struct NativeToolbarRectSink<'a> {
+    instances: &'a mut Vec<VulkanRectInstance>,
+    size: PhysicalSize<u32>,
+}
+
+impl ToolbarRectSink for NativeToolbarRectSink<'_> {
+    fn fill(&mut self, rect: ViewRect, clip: ViewRect, radius: f32, color: [f32; 4]) {
+        if let Some(instance) = VulkanRectInstance::fill(rect, clip, radius, color, self.size) {
+            self.instances.push(instance);
+        }
+    }
+
+    fn outline(
+        &mut self,
+        rect: ViewRect,
+        clip: ViewRect,
+        radius: f32,
+        stroke_width: f32,
+        color: [f32; 4],
+    ) {
+        if let Some(instance) =
+            VulkanRectInstance::outline(rect, clip, radius, stroke_width, color, self.size)
+        {
+            self.instances.push(instance);
+        }
+    }
+}
 
 impl ShellScene {
     pub(crate) fn push_app_toolbar(
@@ -16,18 +95,40 @@ impl ShellScene {
         size: PhysicalSize<u32>,
         theme: ShellTheme,
     ) {
+        let mut sink = CpuToolbarRectSink { vertices, size };
+        self.paint_app_toolbar(&mut sink, size, theme);
+    }
+
+    /// Emits the exact same toolbar scene as [`Self::push_app_toolbar`] into
+    /// Vulkan analytic-rectangle instances instead of CPU-tessellated quads.
+    pub(crate) fn push_native_app_toolbar(
+        &self,
+        instances: &mut Vec<VulkanRectInstance>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let mut sink = NativeToolbarRectSink { instances, size };
+        self.paint_app_toolbar(&mut sink, size, theme);
+    }
+
+    fn paint_app_toolbar<S: ToolbarRectSink>(
+        &self,
+        sink: &mut S,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
         let layout = self.app_toolbar_layout(size);
         let toolbar = layout.toolbar;
-        push_rect(
-            vertices,
+        sink.fill(
             ViewRect {
                 x: toolbar.x,
                 y: toolbar.bottom() - self.scale_metric(1.0).max(1.0),
                 width: toolbar.width,
                 height: self.scale_metric(1.0).max(1.0),
             },
+            toolbar,
+            0.0,
             theme.divider(),
-            size,
         );
 
         let button = layout.places_toggle;
@@ -38,14 +139,7 @@ impl ShellScene {
         let places_active = self.places_visible || places_hovered;
         let button_colors = theme.toolbar_button(places_active);
         if places_active {
-            push_clipped_rounded_rect(
-                vertices,
-                button,
-                toolbar,
-                self.scale_metric(6.0),
-                button_colors.fill,
-                size,
-            );
+            sink.fill(button, toolbar, self.scale_metric(6.0), button_colors.fill);
         }
 
         let icon = ViewRect {
@@ -55,8 +149,7 @@ impl ShellScene {
             height: self.scale_metric(18.0),
         };
         let rail = self.scale_metric(2.0);
-        push_clipped_rect(
-            vertices,
+        sink.fill(
             ViewRect {
                 x: icon.x + self.scale_metric(2.0),
                 y: icon.y + self.scale_metric(2.0),
@@ -64,11 +157,10 @@ impl ShellScene {
                 height: icon.height - self.scale_metric(4.0),
             },
             toolbar,
+            0.0,
             button_colors.icon,
-            size,
         );
-        push_clipped_rect_outline(
-            vertices,
+        sink.outline(
             ViewRect {
                 x: icon.x + self.scale_metric(1.0),
                 y: icon.y + self.scale_metric(3.0),
@@ -76,13 +168,13 @@ impl ShellScene {
                 height: icon.height - self.scale_metric(6.0),
             },
             toolbar,
+            0.0,
             self.scale_metric(1.0),
             button_colors.icon,
-            size,
         );
 
         if let Some(control) = view_mode {
-            self.push_toolbar_view_mode_control(vertices, control, toolbar, theme, size);
+            self.paint_toolbar_view_mode_control(sink, control, toolbar, theme);
         }
 
         let split_open = self.panes.is_open(ShellPaneId::SLOT_1);
@@ -92,13 +184,11 @@ impl ShellScene {
         let split_active = split_open || split_hovered;
         let split_colors = theme.toolbar_button(split_active);
         if split_active {
-            push_clipped_rounded_rect(
-                vertices,
+            sink.fill(
                 split_button,
                 toolbar,
                 self.scale_metric(6.0),
                 split_colors.fill,
-                size,
             );
         }
         let split_icon = ViewRect {
@@ -107,8 +197,7 @@ impl ShellScene {
             width: self.scale_metric(18.0),
             height: self.scale_metric(18.0),
         };
-        push_clipped_rect_outline(
-            vertices,
+        sink.outline(
             ViewRect {
                 x: split_icon.x + self.scale_metric(1.0),
                 y: split_icon.y + self.scale_metric(2.0),
@@ -116,12 +205,11 @@ impl ShellScene {
                 height: split_icon.height - self.scale_metric(4.0),
             },
             toolbar,
+            0.0,
             self.scale_metric(1.0),
             split_colors.icon,
-            size,
         );
-        push_clipped_rect(
-            vertices,
+        sink.fill(
             ViewRect {
                 x: split_icon.x + split_icon.width / 2.0 - self.scale_metric(0.5),
                 y: split_icon.y + self.scale_metric(2.0),
@@ -129,8 +217,8 @@ impl ShellScene {
                 height: split_icon.height - self.scale_metric(4.0),
             },
             toolbar,
+            0.0,
             split_colors.icon,
-            size,
         );
         if split_open {
             let close_center_x = if self.active_pane() == ShellPaneId::SLOT_0 {
@@ -138,8 +226,7 @@ impl ShellScene {
             } else {
                 split_icon.x + split_icon.width * 0.75
             };
-            push_clipped_rect(
-                vertices,
+            sink.fill(
                 ViewRect {
                     x: close_center_x - self.scale_metric(3.0),
                     y: split_icon.y + split_icon.height / 2.0 - self.scale_metric(0.5),
@@ -147,24 +234,21 @@ impl ShellScene {
                     height: self.scale_metric(1.0),
                 },
                 toolbar,
+                0.0,
                 split_colors.icon,
-                size,
             );
         }
 
         let overflow_hovered = self
             .pointer
             .is_some_and(|point| overflow_button.contains(point));
-        let overflow_active = overflow_hovered;
-        let overflow_colors = theme.toolbar_button(overflow_active);
-        if overflow_active {
-            push_clipped_rounded_rect(
-                vertices,
+        let overflow_colors = theme.toolbar_button(overflow_hovered);
+        if overflow_hovered {
+            sink.fill(
                 overflow_button,
                 toolbar,
                 self.scale_metric(6.0),
                 overflow_colors.fill,
-                size,
             );
         }
         let dot_size = self.scale_metric(3.0);
@@ -173,8 +257,7 @@ impl ShellScene {
         let dot_y = overflow_button.y + (overflow_button.height - dot_size) / 2.0;
         let dot_x = overflow_button.x + (overflow_button.width - dots_width) / 2.0;
         for index in 0..3 {
-            push_clipped_rounded_rect(
-                vertices,
+            sink.fill(
                 ViewRect {
                     x: dot_x + index as f32 * (dot_size + dot_gap),
                     y: dot_y,
@@ -184,47 +267,34 @@ impl ShellScene {
                 toolbar,
                 dot_size / 2.0,
                 overflow_colors.icon,
-                size,
             );
         }
     }
 
-    fn push_toolbar_view_mode_control(
+    fn paint_toolbar_view_mode_control<S: ToolbarRectSink>(
         &self,
-        vertices: &mut Vec<QuadVertex>,
+        sink: &mut S,
         control: ShellToolbarViewModeControl,
         clip: ViewRect,
         theme: ShellTheme,
-        size: PhysicalSize<u32>,
     ) {
         let rect = control.outer;
         let hovered = self.pointer.is_some_and(|point| rect.contains(point));
         let colors = theme.toolbar_button(hovered);
         if hovered {
-            push_clipped_rounded_rect(
-                vertices,
-                rect,
-                clip,
-                self.scale_metric(7.0),
-                colors.fill,
-                size,
-            );
+            sink.fill(rect, clip, self.scale_metric(7.0), colors.fill);
         }
-        let segments = control.segments;
-        for segment in segments {
+        for segment in control.segments {
             let segment_hovered = self
                 .pointer
                 .is_some_and(|point| segment.rect.contains(point));
             let active = segment.mode == self.active_view_mode();
             if active || segment_hovered {
-                let fill = theme.toolbar_button(active || segment_hovered).fill;
-                push_clipped_rounded_rect(
-                    vertices,
+                sink.fill(
                     segment.rect,
                     rect,
                     self.scale_metric(5.0),
-                    fill,
-                    size,
+                    theme.toolbar_button(active || segment_hovered).fill,
                 );
             }
             let glyph_size = self.scale_metric(15.0).min(segment.rect.height).max(1.0);
@@ -234,18 +304,17 @@ impl ShellScene {
                 width: glyph_size,
                 height: glyph_size,
             };
-            self.push_view_mode_glyph(vertices, segment.mode, icon_rect, rect, theme, size);
+            self.paint_view_mode_glyph(sink, segment.mode, icon_rect, rect, theme);
         }
     }
 
-    fn push_view_mode_glyph(
+    fn paint_view_mode_glyph<S: ToolbarRectSink>(
         &self,
-        vertices: &mut Vec<QuadVertex>,
+        sink: &mut S,
         mode: ShellViewMode,
         rect: ViewRect,
         clip: ViewRect,
         theme: ShellTheme,
-        size: PhysicalSize<u32>,
     ) {
         let active = mode == self.active_view_mode();
         let color = if active {
@@ -262,8 +331,7 @@ impl ShellScene {
                 let origin_y = rect.y + (rect.height - content_size) / 2.0;
                 for row in 0..2 {
                     for column in 0..2 {
-                        push_clipped_rounded_rect(
-                            vertices,
+                        sink.fill(
                             ViewRect {
                                 x: origin_x + column as f32 * (dot + gap),
                                 y: origin_y + row as f32 * (dot + gap),
@@ -273,7 +341,6 @@ impl ShellScene {
                             clip,
                             dot / 2.0,
                             color,
-                            size,
                         );
                     }
                 }
@@ -291,8 +358,7 @@ impl ShellScene {
                 let line_width = (rect.right() - line_x).max(1.0);
                 for row in 0..3 {
                     let y = content_y + row as f32 * row_step;
-                    push_clipped_rounded_rect(
-                        vertices,
+                    sink.fill(
                         ViewRect {
                             x: rect.x,
                             y,
@@ -302,10 +368,8 @@ impl ShellScene {
                         clip,
                         self.scale_metric(1.5),
                         color,
-                        size,
                     );
-                    push_clipped_rounded_rect(
-                        vertices,
+                    sink.fill(
                         ViewRect {
                             x: line_x,
                             y,
@@ -319,7 +383,6 @@ impl ShellScene {
                         } else {
                             color
                         },
-                        size,
                     );
                 }
             }
@@ -329,12 +392,10 @@ impl ShellScene {
                 let content_height = row_height + row_step * 2.0;
                 let content_y = rect.y + (rect.height - content_height) / 2.0;
                 for row in 0..3 {
-                    let y = content_y + row as f32 * row_step;
-                    push_clipped_rounded_rect(
-                        vertices,
+                    sink.fill(
                         ViewRect {
                             x: rect.x,
-                            y,
+                            y: content_y + row as f32 * row_step,
                             width: rect.width,
                             height: row_height,
                         },
@@ -345,7 +406,6 @@ impl ShellScene {
                         } else {
                             theme.field_separator()
                         },
-                        size,
                     );
                 }
             }

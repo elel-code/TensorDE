@@ -1,4 +1,15 @@
-mod platform;
+mod windowing;
+
+#[path = "main/native_vulkan_app.rs"]
+mod native_vulkan_app;
+#[path = "main/vulkan_frame.rs"]
+mod vulkan_frame;
+#[path = "main/vulkan_rect.rs"]
+mod vulkan_rect;
+#[path = "main/vulkan_rect_spirv.rs"]
+mod vulkan_rect_spirv;
+#[path = "main/vulkan_state.rs"]
+mod vulkan_state;
 
 include!("main/crate_prelude.rs");
 

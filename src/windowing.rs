@@ -1,4 +1,4 @@
-//! Fika's Wayland-facing platform adapter.
+//! Fika window, input, clipboard, and event-loop integration.
 //!
 //! The reusable protocol and event machinery lives in `wayland-client-runtime`.
 //! This module only translates those Wayland-native events into Fika's input
@@ -28,10 +28,10 @@ use wayland_client_runtime::{
     TextInputSurroundingText as RuntimeTextInputSurroundingText, ToplevelAttributes,
     ToplevelIcon as RuntimeToplevelIcon, TransferContent, WakeHandle,
 };
-include!("platform_backend.rs");
-include!("platform_types.rs");
-include!("platform_text_input.rs");
-include!("platform_clipboard.rs");
+include!("windowing_runtime.rs");
+include!("windowing_types.rs");
+include!("windowing_text_input.rs");
+include!("windowing_clipboard.rs");
 #[derive(Clone, Debug)]
 pub struct WindowAttributes {
     title: String,
@@ -181,23 +181,23 @@ fn queue_ime_command(
     commands.push(RuntimeCommand::SetIme(surface, state));
 }
 
-pub struct WaylandWindow {
+pub struct Window {
     id: SurfaceId,
     handle: SurfaceHandle,
     state: Mutex<WindowState>,
     shared: Arc<LoopShared>,
 }
 
-impl fmt::Debug for WaylandWindow {
+impl fmt::Debug for Window {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WaylandWindow")
+            .debug_struct("Window")
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
 }
 
-impl WaylandWindow {
+impl Window {
     pub fn id(&self) -> WindowId {
         self.id
     }
@@ -292,7 +292,7 @@ impl WaylandWindow {
     }
 }
 
-impl Drop for WaylandWindow {
+impl Drop for Window {
     fn drop(&mut self) {
         self.shared.push(RuntimeCommand::Destroy(self.id));
     }
@@ -331,9 +331,9 @@ pub trait ApplicationHandler {
 }
 
 pub struct ActiveEventLoop {
-    runtime: Rc<RefCell<PlatformBackend>>,
+    runtime: Rc<RefCell<WindowRuntime>>,
     shared: Arc<LoopShared>,
-    windows: Rc<RefCell<HashMap<SurfaceId, Weak<WaylandWindow>>>>,
+    windows: Rc<RefCell<HashMap<SurfaceId, Weak<Window>>>>,
     primary_surface: Cell<Option<SurfaceId>>,
     dnd_transfers: RefCell<HashMap<DataTransferId, ActiveDndTransfer>>,
     dnd_sources: RefCell<HashMap<DndSourceId, WindowId>>,
@@ -413,10 +413,7 @@ impl ActiveEventLoop {
         }
     }
 
-    pub fn create_window(
-        &self,
-        attributes: WindowAttributes,
-    ) -> Result<Arc<WaylandWindow>, RuntimeError> {
+    pub fn create_window(&self, attributes: WindowAttributes) -> Result<Arc<Window>, RuntimeError> {
         let WindowAttributes {
             title,
             app_id,
@@ -503,7 +500,7 @@ impl ActiveEventLoop {
             .borrow()
             .surface_handle(id)
             .ok_or(RuntimeError::SurfaceNotFound(id))?;
-        let window = Arc::new(WaylandWindow {
+        let window = Arc::new(Window {
             id,
             handle,
             state: Mutex::new(WindowState {
@@ -525,17 +522,16 @@ impl ActiveEventLoop {
     /// events arrive. Dialogs inherit the primary window's scale; otherwise
     /// use the highest advertised output scale (integer).
     fn best_initial_scale_factor(&self) -> f64 {
-        if let Some(primary) = self.primary_surface.get() {
-            if let Some(window) = self
+        if let Some(primary) = self.primary_surface.get()
+            && let Some(window) = self
                 .windows
                 .borrow()
                 .get(&primary)
                 .and_then(|weak| weak.upgrade())
-            {
-                let scale = window.scale_factor();
-                if scale.is_finite() && scale > 0.0 {
-                    return scale;
-                }
+        {
+            let scale = window.scale_factor();
+            if scale.is_finite() && scale > 0.0 {
+                return scale;
             }
         }
         self.runtime
@@ -685,7 +681,7 @@ pub struct EventLoop {
     active: ActiveEventLoop,
 }
 
-include!("platform_event_loop.rs");
+include!("windowing_event_loop.rs");
 
 fn normalize_wayland_scale_factor(scale_factor: f64) -> f64 {
     if scale_factor.is_finite() && scale_factor > 0.0 {
@@ -767,7 +763,7 @@ fn preferred_runtime_dnd_action(actions: &[DndAction]) -> Option<RuntimeDndActio
     }
 }
 
-fn platform_dnd_action(action: RuntimeDndAction) -> DndAction {
+fn dnd_action_from_runtime(action: RuntimeDndAction) -> DndAction {
     match action {
         RuntimeDndAction::Copy => DndAction::Copy,
         RuntimeDndAction::Move => DndAction::Move,
@@ -919,137 +915,4 @@ fn physical_key(raw_code: u32) -> PhysicalKey {
 }
 
 #[cfg(test)]
-mod scaling_tests {
-    use super::*;
-
-    #[test]
-    fn physical_key_uses_linux_evdev_codes_without_xkb_offset() {
-        // wl_keyboard / SCTK raw_code values are already Linux keycodes.
-        assert_eq!(physical_key(46), PhysicalKey::Code(KeyCode::KeyC));
-        assert_eq!(physical_key(38), PhysicalKey::Code(KeyCode::KeyL));
-        assert_eq!(physical_key(30), PhysicalKey::Code(KeyCode::KeyA));
-        assert_eq!(physical_key(47), PhysicalKey::Code(KeyCode::KeyV));
-        assert_eq!(physical_key(45), PhysicalKey::Code(KeyCode::KeyX));
-        // X11-style keycodes (evdev + 8) must not silently remap onto neighbors.
-        assert!(matches!(physical_key(54), PhysicalKey::Unidentified(_)));
-    }
-
-    #[test]
-    fn fractional_scale_rounds_toplevel_sizes_half_away_from_zero() {
-        let logical = LogicalSize::new(801, 641);
-
-        assert_eq!(
-            logical_to_physical_rounded(logical, 1.25),
-            PhysicalSize::new(1001, 801)
-        );
-        assert_eq!(
-            logical_to_physical_rounded(logical, 1.5),
-            PhysicalSize::new(1202, 962)
-        );
-        assert_eq!(
-            logical_to_physical_rounded(LogicalSize::new(800, 640), 0.75),
-            PhysicalSize::new(600, 480)
-        );
-    }
-
-    #[test]
-    fn physical_size_requests_use_the_fractional_scale() {
-        assert_eq!(
-            physical_to_logical_rounded(PhysicalSize::new(1001, 801), 1.25),
-            LogicalSize::new(801, 641)
-        );
-        assert_eq!(
-            physical_to_logical_rounded(PhysicalSize::new(1202, 962), 1.5),
-            LogicalSize::new(801, 641)
-        );
-    }
-
-    #[test]
-    fn repeated_same_size_configure_skips_surface_state_commit_and_resize() {
-        let logical = LogicalSize::new(847, 1015);
-        let physical = PhysicalSize::new(1271, 1523);
-        let mut state = WindowState {
-            logical_size: logical,
-            physical_size: physical,
-            scale_factor: 1.5,
-            configured: true,
-            redraw_requested: false,
-        };
-
-        let (next_physical, surface_state_changed, resized) =
-            apply_configured_logical_size(&mut state, logical);
-
-        assert_eq!(next_physical, physical);
-        assert!(!surface_state_changed);
-        assert!(!resized);
-        assert!(state.redraw_requested);
-    }
-
-    #[test]
-    fn initial_and_resized_configures_update_surface_state() {
-        let initial_logical = LogicalSize::new(847, 1015);
-        let mut state = WindowState {
-            logical_size: initial_logical,
-            physical_size: PhysicalSize::new(1271, 1523),
-            scale_factor: 1.5,
-            configured: false,
-            redraw_requested: false,
-        };
-
-        let (_, surface_state_changed, resized) =
-            apply_configured_logical_size(&mut state, initial_logical);
-        assert!(surface_state_changed);
-        assert!(resized);
-
-        let resized_logical = LogicalSize::new(900, 700);
-        let (physical, surface_state_changed, resized) =
-            apply_configured_logical_size(&mut state, resized_logical);
-        assert_eq!(physical, PhysicalSize::new(1350, 1050));
-        assert!(surface_state_changed);
-        assert!(resized);
-    }
-
-    #[test]
-    fn pointer_axis_prefers_value120_steps_over_continuous_pixels() {
-        let horizontal = PointerAxisValue::default();
-        let vertical = PointerAxisValue {
-            continuous: 12.0,
-            value120: 30,
-            discrete: 1,
-            ..Default::default()
-        };
-        assert_eq!(
-            map_pointer_axis_to_scroll_delta(horizontal, vertical, 1.25),
-            MouseScrollDelta::LineDelta { x: 0.0, y: -0.25 }
-        );
-    }
-
-    #[test]
-    fn pointer_axis_falls_back_to_scaled_continuous_pixels() {
-        let horizontal = PointerAxisValue {
-            continuous: -2.0,
-            ..Default::default()
-        };
-        let vertical = PointerAxisValue {
-            continuous: 4.0,
-            ..Default::default()
-        };
-        assert_eq!(
-            map_pointer_axis_to_scroll_delta(horizontal, vertical, 1.5),
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, -6.0))
-        );
-    }
-
-    #[test]
-    fn pointer_axis_uses_deprecated_discrete_when_value120_is_absent() {
-        let vertical = PointerAxisValue {
-            discrete: -2,
-            continuous: 8.0,
-            ..Default::default()
-        };
-        assert_eq!(
-            map_pointer_axis_to_scroll_delta(PointerAxisValue::default(), vertical, 2.0),
-            MouseScrollDelta::LineDelta { x: 0.0, y: 2.0 }
-        );
-    }
-}
+include!("windowing_scaling_tests.rs");

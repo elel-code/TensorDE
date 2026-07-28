@@ -263,9 +263,9 @@ impl FikaWgpuApp {
         }
     }
 }
-/// Content-space scroll deltas `(dx, dy)` from a platform wheel event.
+/// Content-space scroll deltas `(dx, dy)` from a window-runtime wheel event.
 ///
-/// Platform already applied the Wayland sign flip for continuous axes; negate
+/// The window runtime already applied the protocol sign flip for continuous axes; negate
 /// once more so positive dy scrolls content down (thumb moves down).
 fn scroll_delta_xy(delta: MouseScrollDelta, scale_factor: f32) -> (f32, f32) {
     match delta {

@@ -108,11 +108,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 NativeShellEvent::SeatKeyboardKey {
-                    key,
+                    key: 1,
                     pressed: true,
                     seat,
                     ..
-                } if key == 1 => {
+                } => {
                     println!("ESC seat={seat:?}");
                     let _ = shell.destroy_toplevel(surface);
                     return Ok(());

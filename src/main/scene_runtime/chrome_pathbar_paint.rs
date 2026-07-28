@@ -180,6 +180,169 @@ impl ShellScene {
         }
     }
 
+    /// Emits the texture-free location-bar chrome for the native Vulkan path.
+    /// Labels and the text-measured caret remain with the text renderer, while
+    /// every field, focus treatment, and folder glyph is analytic geometry.
+    fn push_native_location_bar_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        pane: ShellPaneId,
+        top_bar: ViewRect,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.pane_path_bar_rect(pane, size) else {
+            return;
+        };
+        let radius = self.scale_metric(7.0);
+        push_native_rounded_rect_fill(instances, rect, top_bar, radius, theme.divider(), size);
+        if let Some(inner) = inset_rect(rect, self.scale_metric(1.0)) {
+            push_native_rounded_rect_fill(
+                instances,
+                inner,
+                top_bar,
+                (radius - self.scale_metric(1.0)).max(1.0),
+                theme.field(),
+                size,
+            );
+        }
+
+        let editing = self.location_bar_active_for_pane(pane)
+            && self.location_cursor_for_pane(pane).is_some();
+        if editing {
+            if let Some(shine_value) = self.location_focus_shine_value() {
+                self.push_native_location_focus_shine(
+                    instances,
+                    rect,
+                    top_bar,
+                    shine_value,
+                    size,
+                );
+            }
+            let mut focus_border = theme.accent();
+            focus_border[3] = 0.92;
+            push_native_rect_outline(
+                instances,
+                rect,
+                top_bar,
+                radius,
+                (0.75 * self.ui_scale()).clamp(1.0, 1.5),
+                focus_border,
+                size,
+            );
+        }
+
+        let icon_size = self
+            .scale_metric(18.0)
+            .min((rect.height - self.scale_metric(8.0)).max(1.0));
+        let icon_rect = ViewRect {
+            x: rect.x + self.scale_metric(8.0),
+            y: rect.y + (rect.height - icon_size) / 2.0,
+            width: icon_size,
+            height: icon_size,
+        };
+        let icon_colors = theme.toolbar_button(false);
+        push_native_rounded_rect_fill(
+            instances,
+            icon_rect,
+            top_bar,
+            self.scale_metric(5.0),
+            icon_colors.fill,
+            size,
+        );
+        let icon_metric = |value: f32| {
+            (value * icon_rect.width.min(icon_rect.height) / 18.0)
+                .round()
+                .max(1.0)
+        };
+        push_native_rounded_rect_fill(
+            instances,
+            ViewRect {
+                x: icon_rect.x + icon_metric(5.0),
+                y: icon_rect.y + icon_metric(6.0),
+                width: icon_metric(7.0),
+                height: icon_metric(3.0),
+            },
+            top_bar,
+            icon_metric(1.0),
+            icon_colors.icon,
+            size,
+        );
+        push_native_rounded_rect_fill(
+            instances,
+            ViewRect {
+                x: icon_rect.x + icon_metric(4.0),
+                y: icon_rect.y + icon_metric(8.0),
+                width: icon_rect.width - icon_metric(8.0),
+                height: icon_rect.height - icon_metric(11.0),
+            },
+            top_bar,
+            icon_metric(2.0),
+            icon_colors.icon,
+            size,
+        );
+        let separator_x = icon_rect.right() + self.scale_metric(8.0);
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: separator_x,
+                y: rect.y + self.scale_metric(7.0),
+                width: self.scale_metric(1.0),
+                height: (rect.height - self.scale_metric(14.0)).max(1.0),
+            },
+            top_bar,
+            theme.field_separator(),
+            size,
+        );
+    }
+
+    fn push_native_location_focus_shine(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        rect: ViewRect,
+        clip: ViewRect,
+        current_value: f32,
+        size: PhysicalSize<u32>,
+    ) {
+        let Some(inner) = inset_rect(rect, self.scale_metric(2.0)) else {
+            return;
+        };
+        let Some(clip) = intersect_rect(inner, clip) else {
+            return;
+        };
+        let min_width = (48.0 * self.ui_scale()).min(inner.width.max(1.0));
+        let band_width = (114.0 * self.ui_scale()).clamp(min_width, inner.width.max(min_width));
+        let shine_x = rect.x + (rect.width + band_width) * current_value - band_width;
+        let strips = 24;
+        let strip_width = band_width / strips as f32;
+        let peak = 0.666_463_6;
+        for index in 0..strips {
+            let local = (index as f32 + 0.5) / strips as f32;
+            let falloff = if local <= peak {
+                local / peak
+            } else {
+                1.0 - (local - peak) / (1.0 - peak)
+            }
+            .clamp(0.0, 1.0);
+            let alpha = 0.20 * falloff;
+            if alpha <= 0.0 {
+                continue;
+            }
+            push_native_rect_fill(
+                instances,
+                ViewRect {
+                    x: shine_x + strip_width * index as f32,
+                    y: inner.y,
+                    width: strip_width + 1.0,
+                    height: inner.height,
+                },
+                clip,
+                [0.173, 0.655, 0.973, alpha],
+                size,
+            );
+        }
+    }
+
     fn prewarm_file_metadata_roles(
         &self,
         projections: &[ShellPaneProjection<'_>],

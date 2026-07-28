@@ -339,6 +339,7 @@
             ShellPaneId::SLOT_1,
             ShellPaneState {
                 path: PathBuf::from("/right-root"),
+                pending_path: None,
                 view_mode: ShellViewMode::Icons,
                 zoom_step: 0,
                 dir_count: 1,
@@ -429,6 +430,7 @@
             ShellPaneId::SLOT_1,
             ShellPaneState {
                 path: PathBuf::from("/right-root"),
+                pending_path: None,
                 view_mode: ShellViewMode::Icons,
                 zoom_step: 0,
                 dir_count: 1,

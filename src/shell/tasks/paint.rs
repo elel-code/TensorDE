@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewRect;
 
 use crate::shell::metrics::{TASK_DETAIL_TITLE_HEIGHT, scaled_dialog_metric};

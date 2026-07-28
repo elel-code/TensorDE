@@ -49,8 +49,10 @@ fn native_shell_creates_popup_when_compositor_present() {
         let _ = shell.destroy_toplevel(parent);
         return;
     }
-    let mut positioner = NativePopupPositioner::default();
-    positioner.anchor_rect = crate::geometry::LogicalRect::new(0, 0, 100, 40);
+    let positioner = NativePopupPositioner {
+        anchor_rect: crate::geometry::LogicalRect::new(0, 0, 100, 40),
+        ..NativePopupPositioner::default()
+    };
     let popup = shell
         .create_popup(parent, &positioner, None)
         .expect("create popup");

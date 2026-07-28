@@ -7,6 +7,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use vulkanalia::vk::{self, KhrSurfaceExtensionInstanceCommands};
 
 use crate::backend::{
@@ -14,7 +15,10 @@ use crate::backend::{
     append_feature_extensions, create_instance, extension_union, load_entry, probe_devices,
     select_device,
 };
-use crate::{BackendProfile, Error, Features, Limits, Result, SurfacePresentCapabilities};
+use crate::{
+    BackendProfile, Error, Features, Limits, MemoryTypeSelector, Result, Surface,
+    SurfaceCapabilities, SurfacePresentCapabilities,
+};
 
 /// Describes loader/instance creation and the capability profile shared by all
 /// adapters requested from the instance.
@@ -35,6 +39,29 @@ impl Default for InstanceDescriptor {
     }
 }
 
+impl InstanceDescriptor {
+    /// Builds the instance-extension contract required by a raw-window-handle
+    /// target. Unsupported handle kinds fail before instance creation.
+    pub fn for_window(profile: BackendProfile, window: &dyn HasWindowHandle) -> Result<Self> {
+        let extra_instance_extensions = match window
+            .window_handle()
+            .map_err(|error| Error::Validation(format!("obtain window handle: {error}")))?
+            .as_raw()
+        {
+            RawWindowHandle::Wayland(_) => vec!["VK_KHR_wayland_surface".into()],
+            _ => {
+                return Err(Error::Validation(
+                    "this build currently supports Wayland Vulkan surfaces".into(),
+                ));
+            }
+        };
+        Ok(Self {
+            profile,
+            extra_instance_extensions,
+        })
+    }
+}
+
 /// GPU class preference used only for ranking compatible adapters.
 ///
 /// It never weakens required features, limits, API version, or extension
@@ -43,20 +70,23 @@ pub type PowerPreference = DevicePreference;
 
 /// Adapter-selection constraints, corresponding to WebGPU's
 /// `RequestAdapterOptions`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RequestAdapterOptions {
+#[derive(Clone, Copy, Debug)]
+pub struct RequestAdapterOptions<'a> {
     /// Preferred GPU class after all hard capability gates pass.
     pub power_preference: PowerPreference,
     /// Restrict selection to Vulkan CPU devices for deterministic fallback
     /// testing. No software fallback is silently selected otherwise.
     pub force_fallback_adapter: bool,
+    /// Optional surface that the selected graphics queue MUST present to.
+    pub compatible_surface: Option<&'a Surface>,
 }
 
-impl Default for RequestAdapterOptions {
+impl Default for RequestAdapterOptions<'_> {
     fn default() -> Self {
         Self {
             power_preference: PowerPreference::Discrete,
             force_fallback_adapter: false,
+            compatible_surface: None,
         }
     }
 }
@@ -78,7 +108,7 @@ impl Default for DeviceDescriptor {
     fn default() -> Self {
         Self {
             label: None,
-            required_features: Features::VULKAN14_RENDERER_BASELINE,
+            required_features: Features::STANDARD_DEFAULTS,
             required_limits: Limits::downlevel_defaults(),
             required_extensions: Vec::new(),
         }
@@ -122,6 +152,10 @@ impl Instance {
         Ok(Self { descriptor, owner })
     }
 
+    pub(crate) fn shared_owner(&self) -> Arc<InstanceOwner> {
+        Arc::clone(&self.owner)
+    }
+
     /// Returns every Vulkan physical device without treating unsupported
     /// devices as compatible. Callers inspect features/limits before requesting
     /// a logical device.
@@ -138,7 +172,7 @@ impl Instance {
 
     /// Selects the highest-ranked adapter satisfying the instance profile and
     /// the Vulkan 1.4 renderer baseline.
-    pub fn request_adapter(&self, options: RequestAdapterOptions) -> Result<Adapter> {
+    pub fn request_adapter(&self, options: RequestAdapterOptions<'_>) -> Result<Adapter> {
         let mut candidates = probe_devices(&self.owner.instance)?;
         if options.force_fallback_adapter {
             candidates
@@ -147,10 +181,54 @@ impl Instance {
         if candidates.is_empty() {
             return Err(Error::NoPhysicalDevice);
         }
-        let mut required_features = Features::VULKAN14_RENDERER_BASELINE;
-        if self.descriptor.profile == BackendProfile::Roadmap2026 {
-            required_features |= Features::FIFO_LATEST_READY;
+        if let Some(surface) = options.compatible_surface {
+            if !surface.belongs_to(&self.owner) {
+                return Err(Error::Validation(
+                    "compatible surface was created by a different Instance".into(),
+                ));
+            }
+            for candidate in &mut candidates {
+                let mut present_graphics = None;
+                for family in &candidate.info.queue_families {
+                    if family.queue_count == 0 || !family.flags.contains(vk::QueueFlags::GRAPHICS) {
+                        continue;
+                    }
+                    let supported = unsafe {
+                        self.owner.instance.get_physical_device_surface_support_khr(
+                            candidate.handle,
+                            family.index,
+                            surface.raw(),
+                        )
+                    }
+                    .map_err(|source| {
+                        Error::vulkan("vkGetPhysicalDeviceSurfaceSupportKHR", source)
+                    })?;
+                    if supported {
+                        present_graphics = Some(family.index);
+                        break;
+                    }
+                }
+                if let Some(graphics) = present_graphics {
+                    let previous = candidate.info.queues.graphics;
+                    candidate.info.queues.graphics = graphics;
+                    if candidate.info.queues.compute == previous {
+                        candidate.info.queues.compute = graphics;
+                    }
+                    if candidate.info.queues.transfer == previous {
+                        candidate.info.queues.transfer = graphics;
+                    }
+                } else {
+                    candidate.info.queues.graphics = u32::MAX;
+                }
+            }
+            candidates.retain(|candidate| candidate.info.queues.graphics != u32::MAX);
+            if candidates.is_empty() {
+                return Err(Error::NoCompatibleDevice(vec![
+                    "no graphics queue can present to the compatible surface".into(),
+                ]));
+            }
         }
+        let required_features = Features::STANDARD_DEFAULTS;
         let mut feature_extensions = Vec::new();
         append_feature_extensions(required_features, &mut feature_extensions);
         let extensions = extension_union(
@@ -191,6 +269,14 @@ impl fmt::Debug for Adapter {
 }
 
 impl Adapter {
+    pub(crate) fn instance_owner(&self) -> &Arc<InstanceOwner> {
+        &self.owner
+    }
+
+    pub(crate) const fn physical_device(&self) -> vk::PhysicalDevice {
+        self.candidate.handle
+    }
+
     /// Immutable physical-device identity and raw capability snapshot.
     pub const fn info(&self) -> &DeviceInfo {
         &self.candidate.info
@@ -204,6 +290,22 @@ impl Adapter {
     /// Maximum adapter limits used for device-request validation.
     pub const fn limits(&self) -> Limits {
         self.candidate.info.limits
+    }
+
+    /// Returns the deterministic memory-type policy input for resource
+    /// allocators owned by higher-level modules.
+    pub fn memory_type_selector(&self) -> MemoryTypeSelector {
+        MemoryTypeSelector::new(self.candidate.info.memory_types.iter().copied())
+    }
+
+    /// Queries the complete capability contract for this adapter/surface pair.
+    pub fn surface_capabilities(&self, surface: &Surface) -> Result<SurfaceCapabilities> {
+        SurfaceCapabilities::query(
+            &self.owner,
+            self.candidate.handle,
+            self.candidate.info.queues.graphics,
+            surface,
+        )
     }
 
     /// Queries the present modes of one concrete surface. The surface must
@@ -232,6 +334,7 @@ impl Adapter {
         if self.descriptor.profile == BackendProfile::Roadmap2026 {
             required_features |= Features::FIFO_LATEST_READY;
         }
+        required_features = required_features.with_dependencies();
         let mut feature_extensions = descriptor.required_extensions.clone();
         append_feature_extensions(required_features, &mut feature_extensions);
         let extensions = extension_union(
@@ -283,12 +386,33 @@ mod tests {
             vec![
                 "VK_EXT_descriptor_heap".to_owned(),
                 "VK_KHR_present_mode_fifo_latest_ready".to_owned(),
+                "VK_KHR_swapchain".to_owned(),
             ]
         );
     }
 
     #[test]
-    fn device_descriptor_never_enables_optional_features_by_default() {
+    fn linux_interop_features_map_to_complete_extension_sets() {
+        let mut extensions = Vec::new();
+        append_feature_extensions(
+            Features::EXTERNAL_MEMORY_DMA_BUF | Features::EXTERNAL_SEMAPHORE_SYNC_FD,
+            &mut extensions,
+        );
+        extensions.sort();
+        assert_eq!(
+            extensions,
+            vec![
+                "VK_EXT_external_memory_dma_buf".to_owned(),
+                "VK_EXT_image_drm_format_modifier".to_owned(),
+                "VK_EXT_queue_family_foreign".to_owned(),
+                "VK_KHR_external_memory_fd".to_owned(),
+                "VK_KHR_external_semaphore_fd".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn device_descriptor_requires_descriptor_heap_and_fifo_latest_ready_by_default() {
         let descriptor = DeviceDescriptor::default();
         assert!(
             descriptor
@@ -296,14 +420,19 @@ mod tests {
                 .contains(Features::VULKAN14_RENDERER_BASELINE)
         );
         assert!(
-            !descriptor
+            descriptor
                 .required_features
                 .contains(Features::DESCRIPTOR_HEAP)
         );
         assert!(
-            !descriptor
+            descriptor
                 .required_features
                 .contains(Features::FIFO_LATEST_READY)
+        );
+        assert!(
+            descriptor
+                .required_features
+                .contains(Features::BUFFER_DEVICE_ADDRESS)
         );
     }
 }

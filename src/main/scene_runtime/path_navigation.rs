@@ -1,5 +1,80 @@
 impl ShellScene {
 
+    /// Starts a visible directory-navigation transaction before background
+    /// enumeration begins.
+    ///
+    /// This mirrors Dolphin's `setUrl()` ordering: publish the requested URL,
+    /// clear the visible model, then let the directory job populate it. The
+    /// committed entry storage remains owned by the previous path until the
+    /// completion succeeds, so a failed read can simply reveal it again.
+    fn begin_pane_navigation(
+        &mut self,
+        pane: ShellPaneId,
+        target_path: PathBuf,
+        size: PhysicalSize<u32>,
+    ) -> bool {
+        let pane = self.normalized_pane_id(pane);
+        let Some(state) = self.pane_state_mut(pane) else {
+            return false;
+        };
+        if state.path == target_path || state.pending_path.as_ref() == Some(&target_path) {
+            return false;
+        }
+
+        let previous_path = state.path.clone();
+        let selection_changed = state.selection.clear();
+        state.pending_path = Some(target_path);
+        state.scroll_x = 0.0;
+        state.scroll_y = 0.0;
+
+        if selection_changed {
+            self.selection_changes += 1;
+        }
+        self.cancel_metadata_role_work_for_pane(pane);
+        self.folder_preview_roles
+            .borrow_mut()
+            .clear_path_prefix(&previous_path);
+        self.invalidate_layout_caches_for_pane(pane);
+        self.active_pane = pane;
+        self.clear_transient_after_pane_content_change(pane, true);
+        self.clamp_scroll(size);
+        true
+    }
+
+    /// Cancels the displayed loading state without modifying the committed
+    /// directory. The caller invalidates its generation before using this for
+    /// a newer request, so an older completion cannot repopulate the pane.
+    fn cancel_pane_navigation(&mut self, pane: ShellPaneId) -> bool {
+        let pane = self.normalized_pane_id(pane);
+        let Some(state) = self.pane_state_mut(pane) else {
+            return false;
+        };
+        let changed = state.pending_path.take().is_some();
+        if changed {
+            self.invalidate_layout_caches_for_pane(pane);
+        }
+        changed
+    }
+
+    fn pending_pane_navigation_matches(&self, pane: ShellPaneId, target_path: &Path) -> bool {
+        self.pane_state(self.normalized_pane_id(pane))
+            .is_some_and(|state| state.pending_path_matches(target_path))
+    }
+
+    fn complete_pane_navigation(
+        &mut self,
+        pane: ShellPaneId,
+        target_path: PathBuf,
+        entries: Vec<Entry>,
+        size: PhysicalSize<u32>,
+    ) -> bool {
+        if !self.pending_pane_navigation_matches(pane, &target_path) {
+            return false;
+        }
+        self.apply_loaded_path_to_pane(pane, target_path, entries, size);
+        true
+    }
+
     fn apply_loaded_path_to_pane(
         &mut self,
         pane: ShellPaneId,
@@ -342,7 +417,7 @@ impl ShellScene {
             .into_owned();
         }
         self.pane_state(pane)
-            .map(|pane| pane.path.display().to_string())
+            .map(|pane| pane.display_path().display().to_string())
             .unwrap_or_default()
     }
 

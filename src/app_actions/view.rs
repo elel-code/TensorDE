@@ -1,5 +1,5 @@
-use crate::platform::ActiveEventLoop;
-use crate::platform::PhysicalSize;
+use crate::windowing::ActiveEventLoop;
+use crate::windowing::PhysicalSize;
 
 use super::outcome::ShellActionOutcome;
 use crate::shell::options::ShellViewMode;

@@ -60,31 +60,31 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
         PhysicalSize::new(128, 128),
     );
 
-    builder.push_dmabuf_draw(
-        IconGpuUploadKey::theme_asset(PathBuf::from("/test/dmabuf-icon.png")),
-        W,
-        H,
-        1,
-        ViewRect {
+    builder.push_dmabuf_draw(IconDmabufDraw {
+        identity: IconGpuUploadKey::theme_asset(PathBuf::from("/test/dmabuf-icon.png")),
+        width: W,
+        height: H,
+        content_hash: 1,
+        rect: ViewRect {
             x: 0.0,
             y: 0.0,
             width: W as f32,
             height: H as f32,
         },
-        ViewRect {
+        screen: ViewRect {
             x: 0.0,
             y: 0.0,
             width: W as f32,
             height: H as f32,
         },
-        IconDrawLayer::Content,
-        DmabufImportPlane {
+        layer: IconDrawLayer::Content,
+        plane: DmabufImportPlane {
             fd,
             offset: 0,
             stride,
             modifier: fourcc::MOD_LINEAR,
         },
-    );
+    });
 
     let mut frame = builder.finish();
     assert_eq!(frame.slots.len(), 1);

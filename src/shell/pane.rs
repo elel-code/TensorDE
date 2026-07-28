@@ -46,6 +46,12 @@ pub(crate) struct ShellPaneGeometry {
 #[derive(Clone, Debug)]
 pub(crate) struct ShellPaneState {
     pub(crate) path: PathBuf,
+    /// Target currently being enumerated. The committed `path` and its entry
+    /// storage stay intact until the asynchronous listing has succeeded, but
+    /// projections expose this path with an empty model meanwhile. That makes
+    /// navigation a visible one-shot transaction rather than leaving the old
+    /// directory interactable until completion.
+    pub(crate) pending_path: Option<PathBuf>,
     pub(crate) view_mode: ShellViewMode,
     pub(crate) zoom_step: i32,
     pub(crate) entries: Vec<Entry>,
@@ -68,6 +74,7 @@ impl ShellPaneState {
         let filtered_indexes = filtered_indexes_for_entries(&entries, show_hidden, filter_pattern);
         Self {
             path,
+            pending_path: None,
             view_mode,
             zoom_step: 0,
             entries,
@@ -101,6 +108,7 @@ impl ShellPaneState {
         );
         Ok(Self {
             path,
+            pending_path: None,
             view_mode,
             zoom_step: 0,
             entries,
@@ -120,6 +128,14 @@ impl ShellPaneState {
         self.filtered_indexes =
             filtered_indexes_for_entries(&self.entries, show_hidden, filter_pattern);
         self.selection.retain_indexes(&self.filtered_indexes)
+    }
+
+    pub(crate) fn display_path(&self) -> &Path {
+        self.pending_path.as_deref().unwrap_or(&self.path)
+    }
+
+    pub(crate) fn pending_path_matches(&self, path: &Path) -> bool {
+        self.pending_path.as_deref() == Some(path)
     }
 }
 
@@ -185,13 +201,18 @@ pub(crate) struct ShellPaneView<'a> {
 
 impl<'a> ShellPaneView<'a> {
     pub(crate) fn from_state(state: &'a ShellPaneState) -> Self {
+        let loading = state.pending_path.is_some();
         Self {
-            path: &state.path,
+            path: state.display_path(),
             view_mode: state.view_mode,
             zoom_step: state.zoom_step,
-            entries: &state.entries,
-            dir_count: state.dir_count,
-            filtered_indexes: &state.filtered_indexes,
+            entries: if loading { &[] } else { &state.entries },
+            dir_count: if loading { 0 } else { state.dir_count },
+            filtered_indexes: if loading {
+                &[]
+            } else {
+                &state.filtered_indexes
+            },
             selection: &state.selection,
             scroll_x: state.scroll_x,
             scroll_y: state.scroll_y,

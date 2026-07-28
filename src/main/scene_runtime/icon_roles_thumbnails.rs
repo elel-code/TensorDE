@@ -1,3 +1,6 @@
+use crate::shell::file_item_view::item_paint::FileManagerItemPaint;
+use crate::vulkan_rect::VulkanRectInstance;
+
 #[derive(Clone, Copy)]
 struct PaneItemPaintContext {
     palette: FileManagerItemPalette,
@@ -5,7 +8,262 @@ struct PaneItemPaintContext {
     theme: ShellTheme,
 }
 
+/// Screen-space geometry shared by texture-free item chrome and the later
+/// icon/text stages. Keeping this in one preparation step prevents the native
+/// Vulkan path from drifting from Fika's regular frame projection.
+#[derive(Clone, Copy)]
+struct PreparedPaneItem {
+    entry_index: usize,
+    item_rect: ViewRect,
+    visual_rect: ViewRect,
+    icon_rect: ViewRect,
+    text_rect: ViewRect,
+    content_clip: ViewRect,
+    reflow_dx: f32,
+}
+
+#[derive(Clone, Copy)]
+struct PaneItemChrome {
+    paint: FileManagerItemPaint,
+    dnd_hovered: bool,
+}
+
 impl ShellScene {
+
+    fn prepare_pane_item(
+        &self,
+        projection: &ShellPaneProjection<'_>,
+        item: ShellPaneVisibleItem,
+    ) -> Option<PreparedPaneItem> {
+        let layout = item.layout;
+        let entry_index = projection
+            .view
+            .filtered_indexes
+            .get(layout.model_index)
+            .copied()?;
+        projection.view.entries.get(entry_index)?;
+        let entry_path = self.entry_path_for_pane_view(projection.view, entry_index);
+        let (reflow_dx, reflow_dy) = entry_path
+            .as_deref()
+            .and_then(|path| self.item_reflow_offset_for_path(projection.geometry.kind, path))
+            .unwrap_or((0.0, 0.0));
+        Some(PreparedPaneItem {
+            entry_index,
+            item_rect: translated_rect(
+                pane_content_rect_to_screen(layout.item_rect, projection),
+                reflow_dx,
+                reflow_dy,
+            ),
+            visual_rect: translated_rect(
+                pane_content_rect_to_screen(layout.visual_rect, projection),
+                reflow_dx,
+                reflow_dy,
+            ),
+            icon_rect: translated_rect(
+                pane_content_rect_to_screen(layout.icon_rect, projection),
+                reflow_dx,
+                reflow_dy,
+            ),
+            text_rect: translated_rect(
+                pane_content_rect_to_screen(layout.text_rect, projection),
+                reflow_dx,
+                reflow_dy,
+            ),
+            content_clip: projection.geometry.content,
+            reflow_dx,
+        })
+    }
+
+    fn pane_item_chrome(
+        &self,
+        projection: &ShellPaneProjection<'_>,
+        item: PreparedPaneItem,
+        context: PaneItemPaintContext,
+    ) -> PaneItemChrome {
+        let selected = projection.view.selection.contains(item.entry_index);
+        let hovered = self.hovered_item
+            == Some(ShellPaneItemTarget {
+                pane: projection.geometry.kind,
+                index: item.entry_index,
+            });
+        let dnd_hovered = matches!(
+            self.dnd_hover_target,
+            Some(ShellDropTarget::PaneItem {
+                pane,
+                index,
+                is_dir: true,
+                ..
+            }) if pane == projection.geometry.kind && index == item.entry_index
+        );
+        let current = projection.geometry.kind == self.active_pane()
+            && projection.view.selection.focus == Some(item.entry_index);
+        let hover_progress = if hovered {
+            self.hover_animation_factor()
+        } else {
+            1.0
+        };
+        PaneItemChrome {
+            paint: file_manager_item_paint_with_palette_and_hover_progress(
+            projection.view.view_mode,
+            FileManagerItemGeometry {
+                item: item.item_rect,
+                visual: item.visual_rect,
+                content: item.visual_rect,
+            },
+            FileManagerItemInteraction {
+                selected,
+                hovered,
+                current,
+                alternate: item.entry_index % 2 == 1,
+            },
+            self.ui_scale(),
+            context.palette,
+            hover_progress,
+            ),
+            dnd_hovered,
+        }
+    }
+
+    fn push_pane_item_chrome(
+        &self,
+        vertices: &mut Vec<QuadVertex>,
+        projection: &ShellPaneProjection<'_>,
+        item: PreparedPaneItem,
+        context: PaneItemPaintContext,
+    ) {
+        let PaneItemChrome { paint, dnd_hovered } =
+            self.pane_item_chrome(projection, item, context);
+
+        if let Some(background) = paint.alternate_background {
+            push_clipped_rect(
+                vertices,
+                background.rect,
+                item.content_clip,
+                background.color,
+                context.size,
+            );
+        }
+        if let Some(background) = paint.background {
+            if background.radius <= 0.0 {
+                push_clipped_rect(
+                    vertices,
+                    background.rect,
+                    item.content_clip,
+                    background.color,
+                    context.size,
+                );
+            } else {
+                push_clipped_rounded_rect(
+                    vertices,
+                    background.rect,
+                    item.content_clip,
+                    background.radius,
+                    background.color,
+                    context.size,
+                );
+            }
+        }
+        if let Some(focus) = paint.focus {
+            push_clipped_rounded_highlight(
+                vertices,
+                focus.rect,
+                item.content_clip,
+                focus.radius,
+                RoundedHighlightStyle {
+                    fill: [0.0, 0.0, 0.0, 0.0],
+                    border: focus.color,
+                    border_width: focus.stroke_width,
+                },
+                context.size,
+            );
+        }
+        if dnd_hovered {
+            let radius = self.scale_metric(7.0);
+            let drop_target = context.theme.drop_target();
+            push_clipped_rounded_highlight(
+                vertices,
+                item.visual_rect,
+                item.content_clip,
+                radius,
+                RoundedHighlightStyle {
+                    fill: drop_target.fill,
+                    border: drop_target.border,
+                    border_width: self.scale_metric(1.0),
+                },
+                context.size,
+            );
+        }
+    }
+
+    /// Emits the same item chrome state as [`Self::push_pane_item_chrome`],
+    /// but keeps rounded corners and outlines as GPU-evaluated instances.
+    fn push_native_pane_item_chrome(
+        &self,
+        instances: &mut Vec<VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        item: PreparedPaneItem,
+        context: PaneItemPaintContext,
+    ) {
+        let PaneItemChrome { paint, dnd_hovered } =
+            self.pane_item_chrome(projection, item, context);
+        if let Some(background) = paint.alternate_background
+            && let Some(instance) = VulkanRectInstance::fill(
+                background.rect,
+                item.content_clip,
+                0.0,
+                background.color,
+                context.size,
+            )
+        {
+            instances.push(instance);
+        }
+        if let Some(background) = paint.background
+            && let Some(instance) = VulkanRectInstance::fill(
+                background.rect,
+                item.content_clip,
+                background.radius,
+                background.color,
+                context.size,
+            )
+        {
+            instances.push(instance);
+        }
+        if let Some(focus) = paint.focus
+            && let Some(instance) = VulkanRectInstance::outline(
+                focus.rect,
+                item.content_clip,
+                focus.radius,
+                focus.stroke_width,
+                focus.color,
+                context.size,
+            )
+        {
+            instances.push(instance);
+        }
+        if dnd_hovered {
+            let radius = self.scale_metric(7.0);
+            let drop_target = context.theme.drop_target();
+            if let Some(instance) = VulkanRectInstance::fill(
+                item.visual_rect,
+                item.content_clip,
+                radius,
+                drop_target.fill,
+                context.size,
+            ) {
+                instances.push(instance);
+            }
+            if let Some(instance) = VulkanRectInstance::outline(
+                item.visual_rect,
+                item.content_clip,
+                radius,
+                self.scale_metric(1.0),
+                drop_target.border,
+                context.size,
+            ) {
+                instances.push(instance);
+            }
+        }
+    }
 
     fn enqueue_file_manager_small_directory_icon_roles(
         &self,
@@ -239,157 +497,27 @@ impl ShellScene {
         context: PaneItemPaintContext,
     ) {
         let PaneItemPaintContext {
-            palette: item_palette,
             size,
             theme,
+            ..
         } = context;
-        let layout = item.layout;
-        let _slot_id = item.slot_id;
-        let Some(entry_index) = projection
-            .view
-            .filtered_indexes
-            .get(layout.model_index)
-            .copied()
-        else {
+        let Some(item) = self.prepare_pane_item(projection, item) else {
             return;
         };
+        let entry_index = item.entry_index;
         let Some(entry) = projection.view.entries.get(entry_index) else {
             return;
         };
-        let entry_path = self.entry_path_for_pane_view(projection.view, entry_index);
-        let (reflow_dx, reflow_dy) = entry_path
-            .as_deref()
-            .and_then(|path| self.item_reflow_offset_for_path(projection.geometry.kind, path))
-            .unwrap_or((0.0, 0.0));
-        let content_clip = projection.geometry.content;
-        let item_rect = translated_rect(
-            pane_content_rect_to_screen(layout.item_rect, projection),
-            reflow_dx,
-            reflow_dy,
-        );
-        let visual_rect = translated_rect(
-            pane_content_rect_to_screen(layout.visual_rect, projection),
-            reflow_dx,
-            reflow_dy,
-        );
-        let icon_rect = translated_rect(
-            pane_content_rect_to_screen(layout.icon_rect, projection),
-            reflow_dx,
-            reflow_dy,
-        );
-        let text_rect = translated_rect(
-            pane_content_rect_to_screen(layout.text_rect, projection),
-            reflow_dx,
-            reflow_dy,
-        );
-        let untransformed_item_rect = item_rect;
-        let untransformed_text_rect = text_rect;
-        let content_rect = visual_rect;
+        self.push_pane_item_chrome(vertices, projection, item, context);
+        let untransformed_item_rect = item.item_rect;
+        let untransformed_text_rect = item.text_rect;
         let pixmap_layout = ItemPixmapLayout {
             view_mode: projection.view.view_mode,
-            icon_rect,
-            text_rect,
+            icon_rect: item.icon_rect,
+            text_rect: item.text_rect,
             text_midline_shift: text.file_manager_midline_shift(),
         };
         let selected = projection.view.selection.contains(entry_index);
-        let hovered = self.hovered_item
-            == Some(ShellPaneItemTarget {
-                pane: projection.geometry.kind,
-                index: entry_index,
-            });
-        let dnd_hovered = matches!(
-                self.dnd_hover_target,
-                Some(ShellDropTarget::PaneItem {
-                    pane,
-                    index,
-                    is_dir: true,
-                    ..
-                }) if pane == projection.geometry.kind && index == entry_index
-            );
-        let current = projection.geometry.kind == self.active_pane()
-            && projection.view.selection.focus == Some(entry_index);
-        let hover_progress = if hovered {
-            self.hover_animation_factor()
-        } else {
-            1.0
-        };
-        let paint = file_manager_item_paint_with_palette_and_hover_progress(
-            projection.view.view_mode,
-            FileManagerItemGeometry {
-                item: item_rect,
-                visual: visual_rect,
-                content: content_rect,
-            },
-            FileManagerItemInteraction {
-                selected,
-                hovered,
-                current,
-                alternate: entry_index % 2 == 1,
-            },
-            self.ui_scale(),
-            item_palette,
-            hover_progress,
-        );
-
-        if let Some(background) = paint.alternate_background {
-            push_clipped_rect(
-                vertices,
-                background.rect,
-                content_clip,
-                background.color,
-                size,
-            );
-        }
-        if let Some(background) = paint.background {
-            if background.radius <= 0.0 {
-                push_clipped_rect(
-                    vertices,
-                    background.rect,
-                    content_clip,
-                    background.color,
-                    size,
-                );
-            } else {
-                push_clipped_rounded_rect(
-                    vertices,
-                    background.rect,
-                    content_clip,
-                    background.radius,
-                    background.color,
-                    size,
-                );
-            }
-        }
-        if let Some(focus) = paint.focus {
-            push_clipped_rounded_highlight(
-                vertices,
-                focus.rect,
-                content_clip,
-                focus.radius,
-                RoundedHighlightStyle {
-                    fill: [0.0, 0.0, 0.0, 0.0],
-                    border: focus.color,
-                    border_width: focus.stroke_width,
-                },
-                size,
-            );
-        }
-        if dnd_hovered {
-            let radius = self.scale_metric(7.0);
-            let drop_target = theme.drop_target();
-            push_clipped_rounded_highlight(
-                vertices,
-                content_rect,
-                content_clip,
-                radius,
-                RoundedHighlightStyle {
-                    fill: drop_target.fill,
-                    border: drop_target.border,
-                    border_width: self.scale_metric(1.0),
-                },
-                size,
-            );
-        }
 
         let folder_preview =
             self.folder_preview_role_for_pane_entry(projection.view, entry_index, pixmap_layout);
@@ -398,9 +526,16 @@ impl ShellScene {
             entry,
             folder_preview.as_ref(),
             pixmap_layout,
-            content_clip,
+            item.content_clip,
         ) {
-            push_fallback_file_icon(vertices, entry, icon_rect, content_clip, theme, size);
+            push_fallback_file_icon(
+                vertices,
+                entry,
+                item.icon_rect,
+                item.content_clip,
+                theme,
+                size,
+            );
         }
 
         let base_text_color =
@@ -412,9 +547,9 @@ impl ShellScene {
                 text.push_label_aligned_wrapped_with_layout(
                     entry.name.as_ref(),
                     TextLabelLayout {
-                        draw: text_rect,
+                        draw: item.text_rect,
                         layout: untransformed_text_rect,
-                        clip: content_clip,
+                        clip: item.content_clip,
                     },
                     TextLabelStyle {
                         color: text_color,
@@ -426,9 +561,9 @@ impl ShellScene {
             ShellViewMode::Details => {
                 text.push_filename_label_aligned_no_wrap_with_layout(
                     entry.name.as_ref(),
-                    text_rect,
+                    item.text_rect,
                     untransformed_text_rect,
-                    content_clip,
+                    item.content_clip,
                     text_color,
                     LabelAlignment::Start,
                 );
@@ -436,9 +571,9 @@ impl ShellScene {
             ShellViewMode::Icons => {
                 text.push_filename_label_wrapped_with_layout(
                     entry.name.as_ref(),
-                    text_rect,
+                    item.text_rect,
                     untransformed_text_rect,
-                    content_clip,
+                    item.content_clip,
                     text_color,
                 );
             }
@@ -449,9 +584,9 @@ impl ShellScene {
             let metadata_y = untransformed_item_rect.y
                 + (untransformed_item_rect.height - text_height).max(0.0) / 2.0;
             let size_rect = ViewRect {
-                x: content_clip.x + self.details_name_width() + self.scale_metric(8.0)
+                x: item.content_clip.x + self.details_name_width() + self.scale_metric(8.0)
                     - projection.view.scroll_x
-                    + reflow_dx,
+                    + item.reflow_dx,
                 y: metadata_y,
                 width: self.details_size_width() - self.scale_metric(16.0),
                 height: text_height,
@@ -459,17 +594,17 @@ impl ShellScene {
             text.push_label_aligned_no_wrap(
                 &details_size_label(entry),
                 size_rect,
-                content_clip,
+                item.content_clip,
                 muted_text,
                 LabelAlignment::Start,
             );
             let modified_rect = ViewRect {
-                x: content_clip.x
+                x: item.content_clip.x
                     + self.details_name_width()
                     + self.details_size_width()
                     + self.scale_metric(8.0)
                     - projection.view.scroll_x
-                    + reflow_dx,
+                    + item.reflow_dx,
                 y: metadata_y,
                 width: self.details_modified_width() - self.scale_metric(16.0),
                 height: text_height,
@@ -477,7 +612,7 @@ impl ShellScene {
             text.push_label_aligned_no_wrap(
                 &format_modified_secs(entry.modified_secs),
                 modified_rect,
-                content_clip,
+                item.content_clip,
                 muted_text,
                 LabelAlignment::Start,
             );

@@ -1,6 +1,179 @@
-use vulkanalia::vk;
+use std::any::Any;
+use std::fmt;
+use std::sync::Arc;
 
-use crate::Features;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use vulkanalia::vk::{
+    self, HasBuilder, KhrSurfaceExtensionInstanceCommands,
+    KhrWaylandSurfaceExtensionInstanceCommands,
+};
+
+use crate::backend::InstanceOwner;
+use crate::{Error, Features, Instance, Result};
+
+mod swapchain;
+
+pub use swapchain::{
+    AcquiredSurfaceTexture, PresentStatus, SurfaceConfiguration, SurfaceConfigurationRequest,
+    Swapchain, SwapchainDescriptor,
+};
+
+/// Vulkan presentation surface retaining the host window/display lease and
+/// instance lifetime.
+#[derive(Clone)]
+pub struct Surface {
+    inner: Arc<SurfaceInner>,
+}
+
+struct SurfaceInner {
+    owner: Arc<InstanceOwner>,
+    raw: vk::SurfaceKHR,
+    _host: Arc<dyn Any + Send + Sync>,
+}
+
+impl fmt::Debug for Surface {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Surface")
+            .field("raw", &self.inner.raw)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Surface {
+    pub fn raw(&self) -> vk::SurfaceKHR {
+        self.inner.raw
+    }
+
+    pub(crate) fn belongs_to(&self, owner: &Arc<InstanceOwner>) -> bool {
+        Arc::ptr_eq(&self.inner.owner, owner)
+    }
+}
+
+impl Drop for SurfaceInner {
+    fn drop(&mut self) {
+        unsafe {
+            self.owner.instance.destroy_surface_khr(self.raw, None);
+        }
+    }
+}
+
+impl Instance {
+    /// Creates a Vulkan surface and retains `host` until the last surface or
+    /// swapchain owner is dropped.
+    pub fn create_surface<T>(&self, host: Arc<T>) -> Result<Surface>
+    where
+        T: HasDisplayHandle + HasWindowHandle + Send + Sync + 'static,
+    {
+        let display = host
+            .display_handle()
+            .map_err(|error| Error::Validation(format!("obtain display handle: {error}")))?
+            .as_raw();
+        let window = host
+            .window_handle()
+            .map_err(|error| Error::Validation(format!("obtain window handle: {error}")))?
+            .as_raw();
+        let raw = match (display, window) {
+            (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => {
+                let create = vk::WaylandSurfaceCreateInfoKHR::builder()
+                    .display(display.display.as_ptr())
+                    .surface(window.surface.as_ptr());
+                unsafe {
+                    self.shared_owner()
+                        .instance
+                        .create_wayland_surface_khr(&create, None)
+                }
+                .map_err(|source| Error::vulkan("vkCreateWaylandSurfaceKHR", source))?
+            }
+            _ => {
+                return Err(Error::Validation(
+                    "display and window handles must both be Wayland handles".into(),
+                ));
+            }
+        };
+        Ok(Surface {
+            inner: Arc::new(SurfaceInner {
+                owner: self.shared_owner(),
+                raw,
+                _host: host,
+            }),
+        })
+    }
+}
+
+/// Complete capabilities for one adapter/surface pair.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurfaceCapabilities {
+    pub present_supported: bool,
+    pub min_image_count: u32,
+    pub max_image_count: Option<u32>,
+    pub current_extent: Option<vk::Extent2D>,
+    pub min_image_extent: vk::Extent2D,
+    pub max_image_extent: vk::Extent2D,
+    pub max_image_array_layers: u32,
+    pub supported_transforms: vk::SurfaceTransformFlagsKHR,
+    pub current_transform: vk::SurfaceTransformFlagsKHR,
+    pub supported_composite_alpha: vk::CompositeAlphaFlagsKHR,
+    pub supported_usage: vk::ImageUsageFlags,
+    pub formats: Vec<vk::SurfaceFormatKHR>,
+    pub present_modes: SurfacePresentCapabilities,
+}
+
+impl SurfaceCapabilities {
+    pub(crate) fn query(
+        owner: &Arc<InstanceOwner>,
+        physical_device: vk::PhysicalDevice,
+        graphics_queue_family: u32,
+        surface: &Surface,
+    ) -> Result<Self> {
+        if !surface.belongs_to(owner) {
+            return Err(Error::Validation(
+                "surface was created by a different Instance".into(),
+            ));
+        }
+        let present_supported = unsafe {
+            owner.instance.get_physical_device_surface_support_khr(
+                physical_device,
+                graphics_queue_family,
+                surface.raw(),
+            )
+        }
+        .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfaceSupportKHR", source))?;
+        let raw = unsafe {
+            owner
+                .instance
+                .get_physical_device_surface_capabilities_khr(physical_device, surface.raw())
+        }
+        .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", source))?;
+        let formats = unsafe {
+            owner
+                .instance
+                .get_physical_device_surface_formats_khr(physical_device, surface.raw())
+        }
+        .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfaceFormatsKHR", source))?;
+        let modes = unsafe {
+            owner
+                .instance
+                .get_physical_device_surface_present_modes_khr(physical_device, surface.raw())
+        }
+        .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfacePresentModesKHR", source))?;
+        Ok(Self {
+            present_supported,
+            min_image_count: raw.min_image_count,
+            max_image_count: (raw.max_image_count != 0).then_some(raw.max_image_count),
+            current_extent: (raw.current_extent.width != u32::MAX).then_some(raw.current_extent),
+            min_image_extent: raw.min_image_extent,
+            max_image_extent: raw.max_image_extent,
+            max_image_array_layers: raw.max_image_array_layers,
+            supported_transforms: raw.supported_transforms,
+            current_transform: raw.current_transform,
+            supported_composite_alpha: raw.supported_composite_alpha,
+            supported_usage: raw.supported_usage_flags,
+            formats,
+            present_modes: SurfacePresentCapabilities::from_vk(&modes),
+        })
+    }
+}
 
 /// Backend-neutral present modes with a one-to-one Vulkan mapping.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

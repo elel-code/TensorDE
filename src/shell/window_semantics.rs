@@ -1,4 +1,4 @@
-use crate::platform::{ActiveEventLoop, WindowAttributes};
+use crate::windowing::{ActiveEventLoop, WindowAttributes};
 
 const FIKA_WAYLAND_APP_ID: &str = "fika";
 
@@ -44,7 +44,7 @@ impl ShellWindowRole {
     }
 }
 
-pub(crate) fn apply_window_platform_semantics(
+pub(crate) fn apply_window_semantics(
     _event_loop: &ActiveEventLoop,
     attrs: WindowAttributes,
     role: ShellWindowRole,

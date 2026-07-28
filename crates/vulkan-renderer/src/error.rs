@@ -18,6 +18,7 @@ pub enum Error {
     },
     NoPhysicalDevice,
     NoCompatibleDevice(Vec<String>),
+    Validation(String),
     TimelineExhausted,
 }
 
@@ -43,6 +44,7 @@ impl fmt::Display for Error {
                 "no compatible Vulkan device: {}",
                 rejections.join("; ")
             ),
+            Self::Validation(message) => formatter.write_str(message),
             Self::TimelineExhausted => formatter.write_str("timeline value space exhausted"),
         }
     }

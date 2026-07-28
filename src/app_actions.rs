@@ -15,8 +15,9 @@ mod transfer;
 mod trash;
 mod view;
 
-use crate::platform::ActiveEventLoop;
+use crate::windowing::ActiveEventLoop;
 
+pub(crate) use self::navigation::apply_navigation_completion;
 pub(crate) use self::outcome::ShellActionOutcome;
 use crate::shell::action::{
     ContextMenuActionDispatch, ContextMenuCommandDispatch, FileKeyboardCommandDispatch,

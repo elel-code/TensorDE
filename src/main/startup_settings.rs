@@ -264,7 +264,7 @@ use shell::ui_chrome::{
     PlaceIconPaint, push_fallback_file_icon, push_location_bar_icon, push_place_icon,
     push_scrollbar,
 };
-use shell::window_semantics::{ShellWindowRole, apply_window_platform_semantics};
+use shell::window_semantics::{ShellWindowRole, apply_window_semantics};
 fn startup_view_mode(
     requested: ShellViewMode,
     explicit: bool,
@@ -383,13 +383,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let event_loop_proxy = event_loop.create_proxy();
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let app = FikaWgpuApp::new(
-        scene,
-        options.auto_cycle_views,
-        settings_path,
-        event_loop_proxy,
-    );
-    event_loop.run_app(app)?;
+    if env_flag_enabled("FIKA_VULKAN_RENDERER") {
+        event_loop.run_app(crate::native_vulkan_app::FikaNativeVulkanApp::new(
+            scene,
+            event_loop_proxy,
+        ))?;
+    } else {
+        let app = FikaWgpuApp::new(
+            scene,
+            options.auto_cycle_views,
+            settings_path,
+            event_loop_proxy,
+        );
+        event_loop.run_app(app)?;
+    }
     Ok(())
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -463,14 +470,14 @@ fn window_title(scene: &ShellScene) -> String {
     if let Some(split_pane) = scene.panes.get(ShellPaneId::SLOT_1) {
         format!(
             "{} | {} [{}]",
-            scene.panes[ShellPaneId::SLOT_0].path.display(),
-            split_pane.path.display(),
+            scene.panes[ShellPaneId::SLOT_0].display_path().display(),
+            split_pane.display_path().display(),
             view_mode.as_str()
         )
     } else {
         format!(
             "{} [{}]",
-            scene.panes[ShellPaneId::SLOT_0].path.display(),
+            scene.panes[ShellPaneId::SLOT_0].display_path().display(),
             view_mode.as_str()
         )
     }

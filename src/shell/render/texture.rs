@@ -1,4 +1,4 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use bytemuck::{Pod, Zeroable};
 use fika_core::ViewRect;
 

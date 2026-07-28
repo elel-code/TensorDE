@@ -32,7 +32,7 @@ impl ShellScene {
         })
     }
 
-    fn pane_projections_from_layouts(
+    pub(crate) fn pane_projections_from_layouts(
         &self,
         layouts: ShellPreparedFrameProjectionLayouts,
     ) -> SceneFrameProjections<'_> {
@@ -44,7 +44,7 @@ impl ShellScene {
         SceneFrameProjections::new(projections, layouts.layout_us)
     }
 
-    fn update_visible_slot_pools_for_projection_layouts(
+    pub(crate) fn update_visible_slot_pools_for_projection_layouts(
         &mut self,
         layouts: &mut ShellPreparedFrameProjectionLayouts,
     ) -> ShellVisibleItemSlotStats {
@@ -467,5 +467,242 @@ impl ShellScene {
             icon_stats: IconFrameStats::default(),
             vertex_upload_stats: VertexBufferUploadStats::default(),
         }
+    }
+
+    /// Builds the structural quad layers that do not depend on a glyph atlas,
+    /// texture sampling, or icon decode. The native Vulkan migration path uses
+    /// this to present real Fika chrome without creating a wgpu device.
+    pub(crate) fn build_native_frame_layers(
+        &self,
+        size: PhysicalSize<u32>,
+        projections: &[ShellPaneProjection<'_>],
+    ) -> crate::vulkan_rect::NativeFrameLayers {
+        let mut layers = crate::vulkan_rect::NativeFrameLayers::with_capacities(192, 0);
+        let width = size.width.max(1) as f32;
+        let height = size.height.max(1) as f32;
+        let Some(slot0_projection) = projections
+            .iter()
+            .find(|projection| projection.geometry.kind == ShellPaneId::SLOT_0)
+        else {
+            return layers;
+        };
+        let paint = ShellPaintPalettes::from_shell_theme(self.theme());
+        let theme = paint.shell;
+        let screen = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+
+        push_native_rect_fill(
+            &mut layers.base_rects,
+            screen,
+            screen,
+            theme.view_mode_surface(slot0_projection.view.view_mode),
+            size,
+        );
+        self.push_native_app_toolbar(&mut layers.base_rects, size, theme);
+        self.push_native_places_chrome(&mut layers.base_rects, size, theme);
+        self.push_native_places_rows_chrome(&mut layers.base_rects, size, paint);
+        if let Some(metrics) = self.split_pane_metrics(size) {
+            push_native_rect_fill(
+                &mut layers.base_rects,
+                metrics.divider,
+                screen,
+                theme.divider(),
+                size,
+            );
+        }
+
+        for projection in projections {
+            push_native_rect_fill(
+                &mut layers.base_rects,
+                projection.geometry.top_bar,
+                screen,
+                theme.field(),
+                size,
+            );
+            self.push_native_location_bar_chrome(
+                &mut layers.base_rects,
+                projection.geometry.kind,
+                projection.geometry.top_bar,
+                size,
+                theme,
+            );
+            self.push_native_pane_body_border(
+                &mut layers.base_rects,
+                projection,
+                theme,
+                size,
+            );
+            if projection.geometry.kind == ShellPaneId::SLOT_0 {
+                self.push_native_filter_bar_chrome(&mut layers.base_rects, size, theme);
+            }
+            if projection.view.view_mode == ShellViewMode::Details {
+                self.push_native_details_header_chrome(&mut layers.base_rects, projection, size, theme);
+            }
+            let item_context = PaneItemPaintContext {
+                palette: paint.file_manager_item,
+                size,
+                theme,
+            };
+            for item in projection.visible_items.iter().copied() {
+                let Some(item) = self.prepare_pane_item(projection, item) else {
+                    continue;
+                };
+                self.push_native_pane_item_chrome(
+                    &mut layers.base_rects,
+                    projection,
+                    item,
+                    item_context,
+                );
+            }
+            if projection.geometry.kind == self.active_pane() {
+                self.push_native_rubber_band_for_projection(
+                    &mut layers.base_rects,
+                    projection,
+                    theme,
+                    size,
+                );
+            }
+            push_native_rect_fill(
+                &mut layers.base_rects,
+                projection.geometry.status_bar,
+                screen,
+                theme.field(),
+                size,
+            );
+            self.push_native_pane_status_chrome(
+                &mut layers.base_rects,
+                projection,
+                size,
+                theme,
+            );
+            self.push_native_content_scrollbar_for_projection(
+                &mut layers.base_rects,
+                projection,
+                theme,
+                size,
+            );
+            push_native_rect_outline(
+                &mut layers.base_rects,
+                projection.geometry.pane,
+                screen,
+                0.0,
+                self.scale_metric(1.0).max(1.0),
+                theme.divider(),
+                size,
+            );
+        }
+        layers
+    }
+
+    fn push_native_places_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let sidebar = self.places_sidebar_rect(size);
+        if sidebar.width <= 0.0 || sidebar.height <= 0.0 {
+            return;
+        }
+        let panel = self.places_panel_rect(size);
+        push_native_rect_outline(
+            instances,
+            panel,
+            sidebar,
+            self.scale_metric(12.0),
+            self.scale_metric(1.0),
+            theme.divider(),
+            size,
+        );
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: sidebar.right(),
+                y: sidebar.y,
+                width: self.scale_metric(PLACES_SIDEBAR_SPLITTER_WIDTH),
+                height: sidebar.height,
+            },
+            sidebar,
+            theme.divider(),
+            size,
+        );
+    }
+
+    fn push_native_pane_body_border(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        projection: &ShellPaneProjection<'_>,
+        theme: ShellTheme,
+        size: PhysicalSize<u32>,
+    ) {
+        let body = ViewRect {
+            x: projection.geometry.pane.x,
+            y: projection.geometry.top_bar.bottom(),
+            width: projection.geometry.pane.width,
+            height: (projection.geometry.status_bar.y - projection.geometry.top_bar.bottom())
+                .max(1.0),
+        };
+        push_native_rect_fill(
+            instances,
+            ViewRect {
+                x: body.x,
+                y: body.y,
+                width: body.width,
+                height: 1.0,
+            },
+            projection.geometry.pane,
+            theme.divider(),
+            size,
+        );
+    }
+}
+
+fn push_native_rect_fill(
+    instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+    rect: ViewRect,
+    clip: ViewRect,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    push_native_rounded_rect_fill(instances, rect, clip, 0.0, color, size);
+}
+
+fn push_native_rounded_rect_fill(
+    instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+    rect: ViewRect,
+    clip: ViewRect,
+    radius: f32,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    if let Some(instance) =
+        crate::vulkan_rect::VulkanRectInstance::fill(rect, clip, radius, color, size)
+    {
+        instances.push(instance);
+    }
+}
+
+fn push_native_rect_outline(
+    instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+    rect: ViewRect,
+    clip: ViewRect,
+    radius: f32,
+    stroke_width: f32,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    if let Some(instance) = crate::vulkan_rect::VulkanRectInstance::outline(
+        rect,
+        clip,
+        radius,
+        stroke_width,
+        color,
+        size,
+    ) {
+        instances.push(instance);
     }
 }

@@ -1,10 +1,10 @@
 // Fika uses NativeRuntime (Compio io_uring completion waits, no SCTK).
 /// Active protocol backend for the Fika event loop.
-struct PlatformBackend {
+struct WindowRuntime {
     inner: NativeRuntime,
 }
 
-impl PlatformBackend {
+impl WindowRuntime {
     fn connect() -> Result<Self, RuntimeError> {
         use std::sync::atomic::{AtomicBool, Ordering};
         static WARNED_LEGACY_BACKEND: AtomicBool = AtomicBool::new(false);

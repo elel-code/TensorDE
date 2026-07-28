@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::platform::{
+use crate::windowing::{
     ActiveEventLoop, AsyncRequestSerial, DataTransferId, DataTransferSendBuilder, DndAction,
     DragIcon, PhysicalPosition, SendData, TypeHint, TypedData,
 };

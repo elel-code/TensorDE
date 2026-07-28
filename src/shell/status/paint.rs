@@ -1,4 +1,4 @@
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use cosmic_text::Color as TextColor;
 use fika_core::ViewRect;
 

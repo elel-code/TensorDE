@@ -279,7 +279,7 @@ impl ShellScene {
         shell::item_reflow::visible_item_rects_by_path_for_open_panes(self, size)
     }
 
-    fn reflow_pane_items_after_window_resize(
+    pub(crate) fn reflow_pane_items_after_window_resize(
         &mut self,
         previous_size: PhysicalSize<u32>,
         next_size: PhysicalSize<u32>,

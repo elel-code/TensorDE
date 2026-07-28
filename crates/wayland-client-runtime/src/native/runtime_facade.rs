@@ -814,9 +814,11 @@ mod tests {
             .set_app_id(parent, "dev.fika.ParentRenamed")
             .expect("app_id");
 
-        let mut positioner = PopupPositioner::default();
-        positioner.size = LogicalSize::new(120, 80);
-        positioner.anchor_rect = crate::geometry::LogicalRect::new(0, 0, 40, 20);
+        let positioner = PopupPositioner {
+            size: LogicalSize::new(120, 80),
+            anchor_rect: crate::geometry::LogicalRect::new(0, 0, 40, 20),
+            ..PopupPositioner::default()
+        };
         let popup = runtime
             .create_popup(
                 parent,

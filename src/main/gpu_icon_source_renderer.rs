@@ -121,6 +121,16 @@ struct GpuPreviewCompositeDraw {
     params: GpuPreviewCompositeParams,
 }
 
+struct GpuPreviewCompositeRequest<'a> {
+    view: &'a wgpu::TextureView,
+    rect: ViewRect,
+    canvas: [u32; 2],
+    radius: f32,
+    mode: f32,
+    color: [u8; 4],
+    effects: [f32; 4],
+}
+
 struct GpuIconSourceRenderer {
     svg_renderer: GpuSvgRenderer,
     composite_bind_group_layout: wgpu::BindGroupLayout,
@@ -303,13 +313,15 @@ impl GpuIconSourceRenderer {
             };
             draws.push(self.composite_draw(
                 device,
-                &view,
-                shadow_rect,
-                [side, side],
-                0.0,
-                2.0,
-                [0, 0, 0, 255],
-                [angle, shadow_inset, border.max(1.0), 0.45],
+                GpuPreviewCompositeRequest {
+                    view: &view,
+                    rect: shadow_rect,
+                    canvas: [side, side],
+                    radius: 0.0,
+                    mode: 2.0,
+                    color: [0, 0, 0, 255],
+                    effects: [angle, shadow_inset, border.max(1.0), 0.45],
+                },
             ));
             let frame = ViewRect {
                 x: destination.x - border,
@@ -319,23 +331,27 @@ impl GpuIconSourceRenderer {
             };
             draws.push(self.composite_draw(
                 device,
-                &self.composite_white_view,
-                frame,
-                [side, side],
-                0.0,
-                1.0,
-                [255; 4],
-                [angle, 0.0, 0.0, 0.0],
+                GpuPreviewCompositeRequest {
+                    view: &self.composite_white_view,
+                    rect: frame,
+                    canvas: [side, side],
+                    radius: 0.0,
+                    mode: 1.0,
+                    color: [255; 4],
+                    effects: [angle, 0.0, 0.0, 0.0],
+                },
             ));
             draws.push(self.composite_draw(
                 device,
-                &view,
-                destination,
-                [side, side],
-                0.0,
-                0.0,
-                [255; 4],
-                [angle, 0.0, 0.0, 0.0],
+                GpuPreviewCompositeRequest {
+                    view: &view,
+                    rect: destination,
+                    canvas: [side, side],
+                    radius: 0.0,
+                    mode: 0.0,
+                    color: [255; 4],
+                    effects: [angle, 0.0, 0.0, 0.0],
+                },
             ));
         }
         self.submit_composite_draws(device, queue, texture, [side, side], draws)
@@ -352,13 +368,15 @@ impl GpuIconSourceRenderer {
         if let Some((rect, radius, color)) = preview.background {
             draws.push(self.composite_draw(
                 device,
-                &self.composite_white_view,
-                rect,
-                [preview.width, preview.height],
-                radius,
-                1.0,
-                color,
-                [0.0; 4],
+                GpuPreviewCompositeRequest {
+                    view: &self.composite_white_view,
+                    rect,
+                    canvas: [preview.width, preview.height],
+                    radius,
+                    mode: 1.0,
+                    color,
+                    effects: [0.0; 4],
+                },
             ));
         }
         for draw in &preview.draws {
@@ -370,13 +388,15 @@ impl GpuIconSourceRenderer {
             let view = source_texture.create_view(&wgpu::TextureViewDescriptor::default());
             draws.push(self.composite_draw(
                 device,
-                &view,
-                draw.rect,
-                [preview.width, preview.height],
-                0.0,
-                0.0,
-                [255; 4],
-                [0.0; 4],
+                GpuPreviewCompositeRequest {
+                    view: &view,
+                    rect: draw.rect,
+                    canvas: [preview.width, preview.height],
+                    radius: 0.0,
+                    mode: 0.0,
+                    color: [255; 4],
+                    effects: [0.0; 4],
+                },
             ));
         }
         if let Some(label) = &preview.label {
@@ -386,13 +406,15 @@ impl GpuIconSourceRenderer {
                 let view = label_texture.create_view(&wgpu::TextureViewDescriptor::default());
                 draws.push(self.composite_draw(
                     device,
-                    &view,
-                    label.rect,
-                    [preview.width, preview.height],
-                    0.0,
-                    0.0,
-                    [255; 4],
-                    [0.0; 4],
+                    GpuPreviewCompositeRequest {
+                        view: &view,
+                        rect: label.rect,
+                        canvas: [preview.width, preview.height],
+                        radius: 0.0,
+                        mode: 0.0,
+                        color: [255; 4],
+                        effects: [0.0; 4],
+                    },
                 ));
             }
         }
@@ -408,14 +430,17 @@ impl GpuIconSourceRenderer {
     fn composite_draw(
         &self,
         device: &wgpu::Device,
-        view: &wgpu::TextureView,
-        rect: ViewRect,
-        canvas: [u32; 2],
-        radius: f32,
-        mode: f32,
-        color: [u8; 4],
-        effects: [f32; 4],
+        request: GpuPreviewCompositeRequest<'_>,
     ) -> GpuPreviewCompositeDraw {
+        let GpuPreviewCompositeRequest {
+            view,
+            rect,
+            canvas,
+            radius,
+            mode,
+            color,
+            effects,
+        } = request;
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fika-gpu-preview-composite-bind-group"),
             layout: &self.composite_bind_group_layout,
@@ -567,18 +592,20 @@ impl GpuIconSourceRenderer {
                 let view = source_texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let draw = self.composite_draw(
                     device,
-                    &view,
-                    ViewRect {
-                        x: (width as f32 - draw_width) * 0.5,
-                        y: (height as f32 - draw_height) * 0.5,
-                        width: draw_width,
-                        height: draw_height,
+                    GpuPreviewCompositeRequest {
+                        view: &view,
+                        rect: ViewRect {
+                            x: (width as f32 - draw_width) * 0.5,
+                            y: (height as f32 - draw_height) * 0.5,
+                            width: draw_width,
+                            height: draw_height,
+                        },
+                        canvas: [width, height],
+                        radius: 0.0,
+                        mode: 0.0,
+                        color: [255; 4],
+                        effects: [0.0; 4],
                     },
-                    [width, height],
-                    0.0,
-                    0.0,
-                    [255; 4],
-                    [0.0; 4],
                 );
                 self.submit_composite_draws(device, queue, texture, [width, height], vec![draw])
             }

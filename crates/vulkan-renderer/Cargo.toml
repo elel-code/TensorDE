@@ -6,6 +6,11 @@ rust-version = "1.97"
 license = "MIT"
 publish = false
 description = "Reusable Vulkanalia-based Vulkan 1.4 rendering backend primitives"
+documentation = "https://docs.rs/vulkan-renderer"
+readme = "README.md"
+keywords = ["vulkan", "graphics", "gpu", "renderer"]
+categories = ["graphics", "rendering::engine"]
 
 [dependencies]
+raw-window-handle = "0.6"
 vulkanalia = { version = "0.35", features = ["libloading"] }

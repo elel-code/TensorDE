@@ -42,14 +42,14 @@ use fika_core::{
     spawn_operation_task_with_completion, thumbnail_request_may_have_preview,
     trash_view_operation_result_async, perform_device_place_operation,
 };
-use platform::{
+use windowing::{
     ActiveEventLoop, ApplicationHandler, AsyncRequestSerial, ControlFlow, CursorIcon,
     DataTransferId, ElementState, EventLoop, EventLoopProxy, ImeChangeCause, ImeCursorArea,
     ImeEvent, ImeState, Key, Modifiers, MouseButton, MouseScrollDelta, NamedKey, PhysicalPosition,
-    PhysicalSize, Theme, WaylandWindow, WindowAttributes, WindowEvent, WindowId,
+    PhysicalSize, Theme, Window, WindowAttributes, WindowEvent, WindowId,
 };
 #[cfg(test)]
-use platform::{KeyCode, NativeKey, NativeKeyCode, PhysicalKey};
+use windowing::{KeyCode, NativeKey, NativeKeyCode, PhysicalKey};
 use wayland_client_runtime::{TextInputContentHint, TextInputContentPurpose};
 macro_rules! fika_log {
     ($($arg:tt)*) => {{

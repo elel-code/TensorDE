@@ -2,7 +2,7 @@ use std::io::Result as IoResult;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 
-use crate::platform::{ActiveEventLoop, WaylandClipboard};
+use crate::windowing::{ActiveEventLoop, WaylandClipboard};
 use fika_core::{FileClipboardRole, encode_file_clipboard_text};
 use wayland_client_runtime::data_transfer::{
     MIME_STRING, MIME_TEXT, MIME_TEXT_PLAIN, MIME_TEXT_PLAIN_UTF8, MIME_UTF8_STRING, MimePayload,

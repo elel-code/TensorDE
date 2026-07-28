@@ -1,8 +1,15 @@
 # vulkan-renderer
 
-`vulkan-renderer` is a reusable Vulkan 1.4 backend foundation built directly
-on `vulkanalia`. It has no dependency on Fika, Gilder, Tensor, wgpu, a window
-system, or a scene format.
+`vulkan-renderer` is a standalone Vulkan 1.4 backend foundation built directly
+on `vulkanalia`. It has no dependency on a consumer project, wgpu, a scene
+format, or a CPU rasterizer. Its manifest uses no parent-workspace dependency
+inheritance, so the crate directory can move into an independent repository.
+
+The crate implements its own [native rendering standard](docs/rendering-standard.md).
+It uses WebGPU's strict discovery/descriptor/validation experience as a base,
+then deliberately exposes native descriptor heaps, explicit synchronization,
+timeline lifetime, memory residency, and Vulkan 1.4/2026 capabilities that a
+browser portability contract cannot express.
 
 The public model follows WebGPU/wgpu's strict separation of discovery and
 enablement:
@@ -19,6 +26,11 @@ Adapter + DeviceDescriptor -> Device + Queue
 - `Device::features()` reports the enabled contract, not every adapter feature.
 - `Queue` owns the logical-device lifetime independently, like `wgpu::Queue`.
 - `Backend::new` is only a convenience path over the same validation rules.
+
+The default device contract requires and enables `VK_EXT_descriptor_heap` and
+`VK_KHR_present_mode_fifo_latest_ready`. Applications that construct a custom
+descriptor may request a stricter superset, but the standard constructors do
+not silently fall back to legacy descriptor sets or another present policy.
 
 ## Profiles
 
@@ -39,20 +51,58 @@ application.
 also records the complete heap property block:
 
 - sampler/resource heap alignments and maximum sizes;
-- implementation-reserved prefixes, including the embedded-sampler variant;
+- implementation-reserved ranges, including the embedded-sampler variant;
 - sampler/image/buffer descriptor sizes and alignments;
 - push-data size and embedded-sampler count.
 
 A device request fails if the feature bit is absent, the extension is absent,
 the requested limits exceed the adapter, an alignment is invalid, or no usable
-payload remains after the reserved prefix. Extension-name presence alone is
+payload remains beside the aligned reserved range. Extension-name presence alone is
 not treated as support.
+
+`Device::create_descriptor_heap` realizes that contract as a persistently
+mapped buffer with `DESCRIPTOR_HEAP_EXT | SHADER_DEVICE_ADDRESS` usage. The
+application descriptor region comes first and the aligned implementation
+reserved range is appended; both values are copied into `VkBindHeapInfoEXT`.
+Resource and sampler descriptor types are size/alignment checked against the
+queried properties before `vkWriteResourceDescriptorsEXT` or
+`vkWriteSamplerDescriptorsEXT`. Non-coherent writes flush atom-aligned ranges.
+`CommandEncoder::bind_descriptor_heap` dispatches to the resource or sampler
+heap command without a legacy descriptor-set path.
+
+Sampled images, storage images, input attachments, uniform/storage buffers,
+and samplers use the corresponding descriptor-heap representations. Small
+graphics/compute parameters use bounded `vkCmdPushDataEXT`; standard pipelines
+never reintroduce a legacy pipeline layout merely to push constants.
+
+Shader modules accept owned, structurally validated SPIR-V 1.0–1.6 words.
+`ShaderBindingMap` canonicalizes set/binding ranges and rejects empty,
+overflowing, or overlapping mappings before it constructs the borrowed
+`VkShaderDescriptorSetAndBindingMappingInfoEXT` chain. Graphics pipeline
+creation always sets `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT`, always
+uses a null pipeline layout, and always uses dynamic rendering. Pipeline caches
+are host-synchronized and checked against the creating device.
+
+`CommandEncoder::begin_rendering` creates a borrowed rendering scope whose drop
+records `vkCmdEndRendering`. Attachment ownership, layouts, resolve contracts,
+formats, and sample counts are validated before recording. Pipeline binding
+then requires an exact match with the active rendering scope; viewport and
+scissor are mandatory dynamic state before drawing. Resource lifetime and
+render-graph state transitions remain explicit obligations; callers can attach
+type-erased ownership directly to a submission instead of maintaining a
+separate per-project frame-retirement queue.
+The primitives do not impose a fixed frame template: one encoder may compose
+upload, transfer, graphics, compute, external-image, and presentation work in
+the order declared by the consumer's render graph.
 
 ## FIFO latest-ready
 
 `Features::FIFO_LATEST_READY` maps to
 `VK_KHR_present_mode_fifo_latest_ready` and
 `PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR`.
+It also enables the required `VK_KHR_swapchain` device extension; the standard
+instance contract enables `VK_KHR_surface`, while the embedding project adds
+its platform surface extension.
 
 Using `VK_PRESENT_MODE_FIFO_LATEST_READY_KHR` has three independent gates:
 
@@ -65,14 +115,113 @@ Using `VK_PRESENT_MODE_FIFO_LATEST_READY_KHR` has three independent gates:
 implicit fallback. Include `PresentMode::Fifo` in the preference list when FIFO
 fallback is acceptable.
 
+Wayland surfaces are created directly from raw-window-handle 0.6 with
+`vkCreateWaylandSurfaceKHR`; no `vulkanalia/window`, Cocoa, or Metal support
+package is pulled into this Linux backend. `Surface` retains the supplied host
+lease, compatible-adapter selection requires a graphics/present queue, and
+swapchain configuration validates the complete surface capability snapshot.
+Acquire, synchronization2 submit, timeline/binary signal, and present are
+exposed as one explicit chain with queue-wide host synchronization.
+
 ## Submission and resource lifetime
 
 The device owns a resettable graphics command pool and a timeline semaphore.
-Every submission signals a monotonic `FrameToken`. Resource owners place
-objects into `RetirementQueue<T>` and destroy them only after the completed
-timeline reaches the token. Submission bookkeeping is committed only after
-`vkQueueSubmit2` succeeds.
+`Device::create_command_encoder` begins a primary one-time command buffer;
+`CommandEncoder::finish` is the only transition to the executable state.
+`Queue::submit` consumes finished buffers, signals a monotonic `FrameToken`,
+and frees their Vulkan handles only after the completed timeline reaches that
+token. Command-pool allocation and reclamation are host-synchronized, and
+timeline allocation plus `vkQueueSubmit2` form one serialized transaction so
+concurrent callers cannot submit value N+1 before value N. Raw command-buffer
+submission remains available only as an explicitly unsafe interoperability
+path.
+
+Other resource owners place objects into `RetirementQueue<T>` and destroy them
+only after the completed timeline reaches the token. Submission bookkeeping is
+committed only after `vkQueueSubmit2` succeeds. `Queue::submit_retained` and the
+matching upload/binary-signal forms accept `SubmissionLease` values for decoder
+frames, dma-buf owners, transient resources, or any other `Arc<T: Send + Sync>`.
+Leases are installed only after successful submission,
+are reclaimed by `completed_timeline` or `wait_for`, and keep the logical device
+alive until resource destruction has completed without making the device own a
+cyclic retirement queue.
+
+`CommandEncoder::retain` and `retain_resource` move that ownership into the
+finished command buffer, so ordinary `Queue::submit` performs the same timeline
+retirement automatically. `SubmissionResource` is implemented by buffers, owned images,
+graphics/compute pipelines, retained decoder images/views and timelines, and
+imported/exported dma-buf images. Image copy and pipeline binding register their
+owned operands automatically. Buffer update/copy and vertex/index binding also
+register their buffers automatically, so growing a persistent geometry buffer
+cannot destroy storage still referenced by an older frame. Descriptor heaps,
+borrowed attachments, and raw render-graph bindings remain explicit because
+their mutation and host-ownership contracts are application-defined.
+
+`MemoryAllocator` suballocates buffers from reusable blocks keyed by memory
+location and Vulkan memory type. Device-local blocks default to 64 MiB;
+persistently mapped upload/readback blocks default to 16 MiB; allocations at
+or above the configurable 32 MiB threshold use isolated blocks. Upload writes
+flush non-coherent atom-aligned ranges, readback invalidates them, and `trim`
+releases unused dedicated/excess pooled blocks. Buffer, linear-image, and
+optimal-image memory classes are kept separate, so `bufferImageGranularity`
+cannot be violated by accidental mixed suballocation. Images and image views
+use shared RAII ownership, and dynamic-rendering compatibility can query their
+format and sample count without raw Vulkan calls.
+
+`UploadBelt` replaces repeated queue-side write allocations with bounded,
+persistently mapped staging chunks. A batch can stage buffer and image copies,
+record subsequent barriers/rendering into the same encoder, and submit once.
+Touched chunks are reused only after the returned timeline completes; failed
+or abandoned batches roll their cursors back. The default policy retains at
+most eight chunks and 32 MiB, and `trim` releases completed excess chunks.
+
+`UploadBatch::write_image_data` validates texel-block geometry, mip/array/3D
+footprints, row and image strides, compressed-format edge blocks, and exact
+source lengths for R8, RGBA/BGRA, and BC1-BC7 uploads. The upload remains a GPU
+buffer-to-image copy; no CPU raster or conversion path is present.
 
 The render graph uses explicit resource states (stage mask, access mask, image
 layout, queue family), derives write/layout/ownership dependencies, rejects
-cycles, and emits Vulkan synchronization2 barrier plans without CPU readback.
+cycles, and resolves abstract resources into owned
+`VkBufferMemoryBarrier2`/`VkImageMemoryBarrier2` batches. Recording executes
+one `vkCmdPipelineBarrier2` at the corresponding pass boundary without CPU
+readback. Equal queue families are encoded as `VK_QUEUE_FAMILY_IGNORED`;
+different families remain explicit ownership transfers.
+
+## Linux compositor interop
+
+`Features::EXTERNAL_MEMORY_DMA_BUF` is a complete compositor capability, not a
+single extension alias. It requires external-memory fd, dma-buf, explicit DRM
+modifier, and FOREIGN queue-family extensions. Adapter/device modifier queries
+validate the exact Vulkan format and image usage and report per-modifier plane
+count, tiling features, importability, and exportability.
+
+`Device::import_dma_buf_image` accepts one to four explicit memory planes in a
+single fd, duplicates that fd, creates a dedicated imported allocation, and
+exposes descriptor-heap, render-graph, and attachment views.
+`Device::import_disjoint_dma_buf_image` handles separate per-plane fds with
+per-plane memory-requirement queries and `MEMORY_PLANE_i_EXT` bindings when the
+modifier advertises `DISJOINT` support.
+`Device::create_exportable_dma_buf_image`
+creates a dedicated output image from an explicit modifier list, reports the
+driver-selected modifier and every memory-plane layout, and duplicates its
+dma-buf fd for Wayland or DRM ownership transfer. Neither object enters the
+ordinary suballocator.
+
+`Features::EXTERNAL_SEMAPHORE_SYNC_FD` separately verifies importable and
+exportable Linux `SYNC_FD` support. Temporary semaphore import, semaphore fd
+export, FOREIGN acquire/release barriers, and timeline retirement form the
+standard external-compute compositor path without a CPU copy or descriptor-set
+fallback.
+
+`Device::retain_external_image` adapts decoder/host-owned images from the same
+logical device, including FFmpeg `AVVkFrame` multiplanar images. Selected
+plane/layer metadata can be written directly to descriptor heaps without
+allocating a `VkImageView`; a real retained view is materialized only when an
+API such as dynamic rendering needs its handle. Both forms retain the supplied
+host lease and never copy or map decoded pixels.
+
+`Device::retain_external_timeline_semaphore` similarly adapts the
+`AVVkFrame.sem[]` timeline semaphore without taking destruction ownership. Its
+wait descriptors preserve FFmpeg's exact timeline value and Vulkan stage mask;
+the same retained AVFrame owner can back both image and semaphore objects.

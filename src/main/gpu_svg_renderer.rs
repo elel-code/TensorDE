@@ -530,19 +530,19 @@ fn parse_svg_gradient(document: &roxmltree::Document<'_>, id: &str) -> Option<Sv
     let stops = svg_gradient_stops(node, document, 0);
     if stops.is_empty() { return None; }
     let object_bounding_box = svg_gradient_attribute(node, "gradientUnits", document, 0)
-        .map_or(true, |units| units != "userSpaceOnUse");
+        != Some("userSpaceOnUse");
     let transform = svg_gradient_attribute(node, "gradientTransform", document, 0)
         .map(parse_svg_transform)
         .unwrap_or(SvgAffine::IDENTITY);
     match node.tag_name().name() {
         "linearGradient" => Some(SvgPaint::Linear {
             start: [
-                svg_gradient_coordinate(svg_gradient_attribute(node, "x1", document, 0), object_bounding_box, 0.0),
-                svg_gradient_coordinate(svg_gradient_attribute(node, "y1", document, 0), object_bounding_box, 0.0),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "x1", document, 0), 0.0),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "y1", document, 0), 0.0),
             ],
             end: [
-                svg_gradient_coordinate(svg_gradient_attribute(node, "x2", document, 0), object_bounding_box, if object_bounding_box { 1.0 } else { 1.0 }),
-                svg_gradient_coordinate(svg_gradient_attribute(node, "y2", document, 0), object_bounding_box, 0.0),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "x2", document, 0), 1.0),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "y2", document, 0), 0.0),
             ],
             object_bounding_box,
             transform,
@@ -550,10 +550,10 @@ fn parse_svg_gradient(document: &roxmltree::Document<'_>, id: &str) -> Option<Sv
         }),
         "radialGradient" => Some(SvgPaint::Radial {
             center: [
-                svg_gradient_coordinate(svg_gradient_attribute(node, "cx", document, 0), object_bounding_box, 0.5),
-                svg_gradient_coordinate(svg_gradient_attribute(node, "cy", document, 0), object_bounding_box, 0.5),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "cx", document, 0), 0.5),
+                svg_gradient_coordinate(svg_gradient_attribute(node, "cy", document, 0), 0.5),
             ],
-            radius: svg_gradient_coordinate(svg_gradient_attribute(node, "r", document, 0), object_bounding_box, 0.5),
+            radius: svg_gradient_coordinate(svg_gradient_attribute(node, "r", document, 0), 0.5),
             object_bounding_box,
             transform,
             stops: stops.into(),
@@ -581,7 +581,7 @@ fn svg_gradient_stops(
     document: &roxmltree::Document<'_>,
     depth: usize,
 ) -> Vec<SvgGradientStop> {
-    let mut stops = node.children().filter(|child| child.has_tag_name("stop")).filter_map(|stop| {
+    let mut stops = node.children().filter(|child| child.has_tag_name("stop")).map(|stop| {
         let mut color = [0.0, 0.0, 0.0, 1.0];
         let mut offset = 0.0;
         let mut declarations = Vec::new();
@@ -597,7 +597,7 @@ fn svg_gradient_stops(
                 _ => {}
             }
         }
-        Some(SvgGradientStop { offset, color })
+        SvgGradientStop { offset, color }
     }).collect::<Vec<_>>();
     if stops.is_empty() && depth < 8 {
         let href = node.attribute("href").or_else(|| node.attributes().find(|attribute| attribute.name() == "href").map(|attribute| attribute.value()));
@@ -609,13 +609,12 @@ fn svg_gradient_stops(
     stops
 }
 
-fn svg_gradient_coordinate(value: Option<&str>, object_bounding_box: bool, default: f32) -> f32 {
+fn svg_gradient_coordinate(value: Option<&str>, default: f32) -> f32 {
     let Some(value) = value else { return default };
     if value.trim().ends_with('%') {
         return svg_percentage_or_number(value).unwrap_or(default);
     }
-    let parsed = svg_number(value).unwrap_or(default);
-    if object_bounding_box { parsed } else { parsed }
+    svg_number(value).unwrap_or(default)
 }
 
 fn svg_percentage_or_number(value: &str) -> Option<f32> {

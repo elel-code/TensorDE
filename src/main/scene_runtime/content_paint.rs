@@ -252,7 +252,7 @@ impl ShellScene {
             .filter(|(_, rects)| status_zoom_control_contains_point(*rects, point))
     }
 
-    fn clamp_scroll(&mut self, size: PhysicalSize<u32>) {
+    pub(crate) fn clamp_scroll(&mut self, size: PhysicalSize<u32>) {
         self.clamp_pane_scroll(ShellPaneId::SLOT_0, size);
         self.clamp_pane_scroll(ShellPaneId::SLOT_1, size);
         self.clamp_places_scroll(size);

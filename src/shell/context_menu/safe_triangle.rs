@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::platform::PhysicalSize;
+use crate::windowing::PhysicalSize;
 use fika_core::ViewPoint;
 
 use crate::shell::context_menu::{
