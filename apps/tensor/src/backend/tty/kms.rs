@@ -7,7 +7,7 @@ use std::{
 use drm::control::{Mode as DrmMode, connector, crtc, plane};
 use gbm::Device as GbmDevice;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     backend::{BackendOutputId, OutputDescriptor},
@@ -20,7 +20,10 @@ mod atomic;
 mod framebuffer;
 
 pub(super) use atomic::primary_plane_formats;
-use atomic::{AtomicError, AtomicSurface, select_primary_plane};
+use atomic::{
+    AtomicError, AtomicSurface, CursorPlaneCapabilities, discover_cursor_planes,
+    select_primary_plane,
+};
 use framebuffer::{ScanoutFramebuffer, framebuffer_from_dmabuf};
 
 impl TtyBackend {
@@ -138,6 +141,7 @@ pub(super) struct KmsOutput {
     id: BackendOutputId,
     name: String,
     surface: AtomicSurface,
+    _cursor_planes: CursorPlaneCapabilities,
     slots: Vec<KmsSlot>,
     scanout: ScanoutState,
 }
@@ -156,6 +160,33 @@ impl KmsOutput {
         let connector = connector_handle(descriptor.id.connector_id)?;
         let plane =
             select_primary_plane(drm, crtc, descriptor.native_format.format, claimed_planes)?;
+        let cursor_planes = match discover_cursor_planes(drm, crtc) {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                warn!(
+                    output = %descriptor.name,
+                    %error,
+                    "hardware cursor-plane discovery unavailable; retaining Vulkan composition"
+                );
+                CursorPlaneCapabilities::unavailable()
+            }
+        };
+        let (cursor_width, cursor_height) = cursor_planes.max_size();
+        info!(
+            output = %descriptor.name,
+            planes = cursor_planes.len(),
+            max_width = cursor_width,
+            max_height = cursor_height,
+            "discovered bounded DRM cursor-plane capabilities"
+        );
+        for candidate in cursor_planes.iter() {
+            info!(
+                output = %descriptor.name,
+                plane = u32::from(candidate.handle()),
+                formats = candidate.format_count(),
+                "eligible DRM cursor plane"
+            );
+        }
         let device_fd = drm.device_fd().clone();
 
         let mut slots = Vec::with_capacity(buffers.len());
@@ -193,6 +224,7 @@ impl KmsOutput {
             id: descriptor.id,
             name: descriptor.name.clone(),
             surface,
+            _cursor_planes: cursor_planes,
             slots,
             scanout: ScanoutState::default(),
         })

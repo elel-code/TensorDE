@@ -1,4 +1,4 @@
-//! Primary-plane discovery and strict `IN_FORMATS` parsing.
+//! Primary-plane discovery and strict shared `IN_FORMATS` parsing.
 
 use drm::{
     DriverCapability,
@@ -104,7 +104,7 @@ struct PrimaryPlane {
     formats: Vec<DrmFormat>,
 }
 
-fn parse_format_modifier_blob(data: &[u8]) -> Result<Vec<DrmFormat>, AtomicError> {
+pub(super) fn parse_format_modifier_blob(data: &[u8]) -> Result<Vec<DrmFormat>, AtomicError> {
     if data.len() < FORMAT_BLOB_HEADER_SIZE {
         return Err(AtomicError::MalformedFormatBlob("header is truncated"));
     }
@@ -156,6 +156,9 @@ fn parse_format_modifier_blob(data: &[u8]) -> Result<Vec<DrmFormat>, AtomicError
             ));
         }
         let modifier = Modifier::from_raw(read_u64(modifiers, base + 16)?);
+        if modifier.is_invalid() {
+            return Err(AtomicError::ImplicitFormatModifier(index));
+        }
         for bit in 0..64 {
             if mask & (1_u64 << bit) == 0 {
                 continue;
@@ -280,6 +283,16 @@ mod tests {
                 format: 2,
                 count: 2,
             })
+        ));
+    }
+
+    #[test]
+    fn format_blob_rejects_the_unspecified_modifier_sentinel() {
+        let mut blob = format_blob(1, 0);
+        blob[48..56].copy_from_slice(&u64::MAX.to_ne_bytes());
+        assert!(matches!(
+            parse_format_modifier_blob(&blob),
+            Err(AtomicError::ImplicitFormatModifier(0))
         ));
     }
 

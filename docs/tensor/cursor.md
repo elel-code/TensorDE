@@ -58,6 +58,14 @@ The corresponding implementation is concentrated in `src/protocol/cursor.rs`,
 Hardware cursor support is the next cursor milestone. It is complete only when all of the following
 gates are implemented; merely discovering a plane or setting `FB_ID` is not completion.
 
+The capability-discovery foundation is now implemented on the output cold path. It queries cursor
+dimensions from the already Vulkan-selected DRM device, orders compatible cursor planes by object
+ID, and retains at most eight candidates with at most 128 sorted explicit format/modifier pairs
+per plane. Candidates lacking `IN_FORMATS`, any required atomic geometry/object property, or
+`IN_FENCE_FD` are diagnosed and excluded; an unspecified modifier is never promoted to an explicit
+pair. This does not yet assign a plane or allocate cursor scanout images, so the milestone remains
+open and software composition remains the correctness path.
+
 ### 1. Capability and identity discovery
 
 - Enumerate DRM planes and select only `DRM_PLANE_TYPE_CURSOR` planes compatible with a planned

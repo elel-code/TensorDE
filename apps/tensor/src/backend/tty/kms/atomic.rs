@@ -22,8 +22,10 @@ use super::super::DrmDeviceFd;
 
 const NO_INPUT_FENCE: u64 = u64::MAX;
 
+mod cursor;
 mod formats;
 
+pub(in crate::backend::tty::kms) use cursor::{CursorPlaneCapabilities, discover_cursor_planes};
 pub(in crate::backend::tty) use formats::primary_plane_formats;
 pub(super) use formats::select_primary_plane;
 
@@ -256,19 +258,7 @@ impl AtomicProperties {
                 active: crtc_props.required("ACTIVE", PropertyKind::Boolean)?,
                 mode: crtc_props.required("MODE_ID", PropertyKind::Blob)?,
             },
-            plane: PlaneProperties {
-                crtc: plane_props.required("CRTC_ID", PropertyKind::Crtc)?,
-                framebuffer: plane_props.required("FB_ID", PropertyKind::Framebuffer)?,
-                source_x: plane_props.required("SRC_X", PropertyKind::Unsigned)?,
-                source_y: plane_props.required("SRC_Y", PropertyKind::Unsigned)?,
-                source_width: plane_props.required("SRC_W", PropertyKind::Unsigned)?,
-                source_height: plane_props.required("SRC_H", PropertyKind::Unsigned)?,
-                crtc_x: plane_props.required("CRTC_X", PropertyKind::Signed)?,
-                crtc_y: plane_props.required("CRTC_Y", PropertyKind::Signed)?,
-                crtc_width: plane_props.required("CRTC_W", PropertyKind::Unsigned)?,
-                crtc_height: plane_props.required("CRTC_H", PropertyKind::Unsigned)?,
-                input_fence: plane_props.required("IN_FENCE_FD", PropertyKind::Signed)?,
-            },
+            plane: PlaneProperties::load(&plane_props)?,
         })
     }
 }
@@ -279,7 +269,7 @@ struct CrtcProperties {
     mode: property::Handle,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct PlaneProperties {
     crtc: property::Handle,
     framebuffer: property::Handle,
@@ -292,6 +282,30 @@ struct PlaneProperties {
     crtc_width: property::Handle,
     crtc_height: property::Handle,
     input_fence: property::Handle,
+}
+
+impl PlaneProperties {
+    fn load(snapshot: &PropertySnapshot) -> Result<Self, AtomicError> {
+        Self::resolve(|name, kind| snapshot.required(name, kind))
+    }
+
+    fn resolve(
+        mut required: impl FnMut(&'static str, PropertyKind) -> Result<property::Handle, AtomicError>,
+    ) -> Result<Self, AtomicError> {
+        Ok(Self {
+            crtc: required("CRTC_ID", PropertyKind::Crtc)?,
+            framebuffer: required("FB_ID", PropertyKind::Framebuffer)?,
+            source_x: required("SRC_X", PropertyKind::Unsigned)?,
+            source_y: required("SRC_Y", PropertyKind::Unsigned)?,
+            source_width: required("SRC_W", PropertyKind::Unsigned)?,
+            source_height: required("SRC_H", PropertyKind::Unsigned)?,
+            crtc_x: required("CRTC_X", PropertyKind::Signed)?,
+            crtc_y: required("CRTC_Y", PropertyKind::Signed)?,
+            crtc_width: required("CRTC_W", PropertyKind::Unsigned)?,
+            crtc_height: required("CRTC_H", PropertyKind::Unsigned)?,
+            input_fence: required("IN_FENCE_FD", PropertyKind::Signed)?,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -580,10 +594,18 @@ pub(in crate::backend::tty) enum AtomicError {
         crtc: crtc::Handle,
         format: DrmFormat,
     },
-    #[error("primary plane {0:?} has a zero IN_FORMATS blob")]
+    #[error("DRM plane {0:?} has a zero IN_FORMATS blob")]
     EmptyFormatBlob(plane::Handle),
-    #[error("primary plane {0:?} advertises no explicit formats")]
+    #[error("DRM plane {0:?} advertises no explicit formats")]
     NoExplicitFormats(plane::Handle),
+    #[error("DRM cursor plane {plane:?} advertises {count} explicit formats; limit is {limit}")]
+    CursorFormatCapacity {
+        plane: plane::Handle,
+        count: usize,
+        limit: usize,
+    },
+    #[error("DRM cursor dimensions {width}x{height} are invalid")]
+    InvalidCursorDimensions { width: u64, height: u64 },
     #[error("failed to read the IN_FORMATS property blob: {0}")]
     FormatBlob(std::io::Error),
     #[error("unsupported IN_FORMATS blob version {0}")]
@@ -604,6 +626,8 @@ pub(in crate::backend::tty) enum AtomicError {
         format: usize,
         count: usize,
     },
+    #[error("IN_FORMATS modifier row {0} uses the invalid/unspecified modifier sentinel")]
+    ImplicitFormatModifier(usize),
     #[error("failed to create the KMS mode blob: {0}")]
     CreateModeBlob(std::io::Error),
     #[error("DRM returned a zero KMS mode blob")]
