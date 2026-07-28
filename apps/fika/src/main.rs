@@ -4,6 +4,8 @@ mod windowing;
 mod native_vulkan_app;
 #[path = "main/navigation_completion.rs"]
 mod navigation_completion;
+#[path = "main/scene_types.rs"]
+mod scene_types;
 #[path = "main/vulkan_frame.rs"]
 mod vulkan_frame;
 #[path = "main/vulkan_icon.rs"]
@@ -22,6 +24,7 @@ mod vulkan_text;
 mod vulkan_text_spirv;
 
 include!("main/crate_prelude.rs");
+use scene_types::*;
 
 mod app_actions;
 mod ui;
