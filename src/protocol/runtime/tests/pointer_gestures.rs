@@ -1,6 +1,6 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use tensor_input::PointerGestureEvent;
+use tensor_event::PointerGestureEvent;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -247,7 +247,7 @@ fn pointer_gestures_send_complete_value_sequences_and_release_resources() {
     .unwrap();
     install_test_output(&mut runtime);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             pointer: true,
             ..Default::default()
@@ -294,7 +294,7 @@ fn pointer_gestures_send_complete_value_sequences_and_release_resources() {
         .set_pointer_location(pointer_location);
     runtime
         .state
-        .forward_pointer_motion(tensor_input::RelativeMotionEvent {
+        .forward_pointer_motion(tensor_event::RelativeMotionEvent {
             delta_x: 1.0,
             delta_y: 1.0,
             unaccelerated_x: 1.0,
@@ -313,7 +313,7 @@ fn pointer_gestures_send_complete_value_sequences_and_release_resources() {
         });
     runtime
         .state
-        .forward_pointer_motion(tensor_input::RelativeMotionEvent {
+        .forward_pointer_motion(tensor_event::RelativeMotionEvent {
             delta_x: 100.0,
             delta_y: 0.0,
             unaccelerated_x: 100.0,

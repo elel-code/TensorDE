@@ -16,12 +16,11 @@ the dependency.
 | Core and extension wire resources | `wayland-server`, `wayland-protocols`, and Tensor dispatch state |
 | Surface/subsurface transactions, SHM, XDG, seat, selection, output, capture | `src/protocol` and `tensor-protocol` |
 | Geometry and scaling | `tensor-util` |
-| Input normalization and device capability values | `tensor-input` |
+| Input normalization, device capabilities, and semantic event order | `tensor-event` |
 | Session, libinput, udev, DRM scanout, atomic KMS, GBM | Tensor tty backend using native crates |
 | Output planning and present policy | `tensor-host`, `tensor-drm`, `tensor-present` |
 | Rootless XWayland process, shell association, XWM | Tensor protocol state plus `x11rb` |
 | Renderer and synchronization | Vulkanalia renderer; Tensor atomic KMS consumes exported dma-bufs and sync files |
-| Semantic event ordering | `tensor-event` |
 | Asynchronous I/O | Compio completion operations with the io_uring driver |
 
 Thread-affine Wayland, X11, Vulkan, and KMS objects remain on their owning compositor boundary.

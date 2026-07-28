@@ -152,7 +152,7 @@ fn relative_pointer_sends_unclipped_motion_and_removes_destroyed_resource() {
     .unwrap();
     install_test_output(&mut runtime);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             pointer: true,
             ..Default::default()
@@ -200,7 +200,7 @@ fn relative_pointer_sends_unclipped_motion_and_removes_destroyed_resource() {
     let time_usec = (1_u64 << 32) | 17;
     runtime
         .state
-        .forward_pointer_motion(tensor_input::RelativeMotionEvent {
+        .forward_pointer_motion(tensor_event::RelativeMotionEvent {
             delta_x: 3.5,
             delta_y: -2.25,
             unaccelerated_x: 7.0,

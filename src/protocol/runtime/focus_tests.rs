@@ -180,7 +180,7 @@ fn focused_toplevel_is_activated_and_receives_late_keyboard_enter() {
             .is_some()
     );
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         super::super::state::InputDeviceCapabilities {
             keyboard: true,
             ..Default::default()
@@ -374,7 +374,7 @@ fn close_time_focus_transfers_activation_keyboard_and_scene_selection() {
         LifecycleEvent::FirstActivated
     );
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         super::super::state::InputDeviceCapabilities {
             keyboard: true,
             ..Default::default()

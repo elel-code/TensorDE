@@ -26,10 +26,9 @@ CQE, and is explicitly rearmed after owner-side consumption. It is not a readine
 ## Crate map
 
 ```text
-tensor-event       value events, phases, fixed queues, coalescing
+tensor-event       input/device values, phases, fixed queues, coalescing
 tensor-runtime     io_uring runtime construction, completion helpers, bounded bridges
-tensor-host        mode, connector, format, present-intent, and raw-input values
-tensor-input       device capabilities and Sample -> Event normalization
+tensor-host        mode, connector, format, and present-intent values
 tensor-drm         topology plans and output rules
 tensor-present     present-slot readiness and intent queue
 tensor-protocol    stable protocol IDs, lifecycle, and tier catalog

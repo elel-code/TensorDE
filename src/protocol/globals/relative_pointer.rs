@@ -58,7 +58,7 @@ impl RelativePointerProtocol {
         &self,
         client: &ClientId,
         client_scale: f64,
-        event: tensor_input::RelativeMotionEvent,
+        event: tensor_event::RelativeMotionEvent,
     ) {
         let Some(pointers) = self.clients.get(client) else {
             return;

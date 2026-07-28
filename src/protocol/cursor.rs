@@ -22,15 +22,24 @@ impl CursorImage {
 /// value-only `CursorOverlay` it needs for the current output frame.
 pub(crate) struct CursorState {
     image: CursorImage,
+    tablet: Option<TabletCursor>,
     logical_size: u32,
     hide_when_typing: bool,
     hidden_for_typing: bool,
+}
+
+#[derive(Clone)]
+struct TabletCursor {
+    tool: tensor_event::TabletToolId,
+    image: CursorImage,
+    location: LogicalPoint<f64>,
 }
 
 impl Default for CursorState {
     fn default() -> Self {
         Self {
             image: CursorImage::default_named(),
+            tablet: None,
             logical_size: 24,
             hide_when_typing: false,
             hidden_for_typing: false,
@@ -66,11 +75,62 @@ impl CursorState {
 
     /// Reveal the cursor again after pointer motion.
     pub(crate) fn note_pointer_activity(&mut self) -> bool {
+        let tablet_active = self.tablet.take().is_some();
         if !self.hidden_for_typing {
-            return false;
+            return tablet_active;
         }
         self.hidden_for_typing = false;
         true
+    }
+
+    pub(in crate::protocol) fn note_tablet_activity(
+        &mut self,
+        tool: tensor_event::TabletToolId,
+        location: LogicalPoint<f64>,
+    ) -> bool {
+        if let Some(tablet) = self.tablet.as_mut()
+            && tablet.tool == tool
+        {
+            let changed = tablet.location != location || self.hidden_for_typing;
+            tablet.location = location;
+            self.hidden_for_typing = false;
+            return changed;
+        }
+        self.tablet = Some(TabletCursor {
+            tool,
+            image: CursorImage::default_named(),
+            location,
+        });
+        self.hidden_for_typing = false;
+        true
+    }
+
+    pub(in crate::protocol) fn set_tablet_image(
+        &mut self,
+        tool: tensor_event::TabletToolId,
+        image: CursorImage,
+    ) -> bool {
+        let Some(tablet) = self.tablet.as_mut().filter(|tablet| tablet.tool == tool) else {
+            return false;
+        };
+        if tablet.image == image {
+            return false;
+        }
+        tablet.image = image;
+        true
+    }
+
+    pub(in crate::protocol) fn clear_tablet(&mut self, tool: tensor_event::TabletToolId) -> bool {
+        if self
+            .tablet
+            .as_ref()
+            .is_some_and(|tablet| tablet.tool == tool)
+        {
+            self.tablet = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Produce the universal software fallback for a visible pointer source.
@@ -85,9 +145,15 @@ impl CursorState {
         viewport: Rect,
     ) -> Option<CursorOverlay> {
         self.normalize_surface_liveness();
-        if self.hidden_for_typing || matches!(&self.image, CursorImage::Hidden) {
+        let (location, image) = self
+            .tablet
+            .as_ref()
+            .map(|tablet| (tablet.location, &tablet.image))
+            .unwrap_or((pointer, &self.image));
+        if self.hidden_for_typing || matches!(image, CursorImage::Hidden) {
             return None;
         }
+        let pointer = location;
         let local_x = pointer.x - f64::from(output.loc.x);
         let local_y = pointer.y - f64::from(output.loc.y);
         if output.size.w <= 0
@@ -108,6 +174,12 @@ impl CursorState {
     fn normalize_surface_liveness(&mut self) {
         if matches!(&self.image, CursorImage::Surface(surface) if !surface.is_alive()) {
             self.image = CursorImage::default_named();
+        }
+        if self.tablet.as_ref().is_some_and(
+            |tablet| matches!(&tablet.image, CursorImage::Surface(surface) if !surface.is_alive()),
+        ) && let Some(tablet) = self.tablet.as_mut()
+        {
+            tablet.image = CursorImage::default_named();
         }
     }
 

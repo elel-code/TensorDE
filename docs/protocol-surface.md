@@ -58,7 +58,7 @@ compositor, subcompositor, shm, seat, data-device, …
 
 ### Tier 1 — Stable standard
 xdg-shell, xdg-output, xdg-decoration (CSD), xdg-activation, viewporter, presentation-time,
-linux-dmabuf, linux-drm-syncobj (when device supports), primary-selection, …
+linux-dmabuf, linux-drm-syncobj (when device supports), primary-selection, tablet-v2, …
 
 ### Tier 2 — Staging / ext (and mature wp used as desktop baseline)
 fractional-scale, cursor-shape, content-type, alpha-modifier, single-pixel-buffer, fifo,
@@ -69,7 +69,7 @@ commit-timing, pointer-warp, idle-notify, security-context, text-input-v3,
 xdg-foreign, xdg-system-bell, xdg-toplevel-icon/tag, …
 
 ### Tier 3 — Unstable (as still common in the ecosystem)
-pointer-gestures, pointer-constraints, relative-pointer, tablet-v2, idle-inhibit,
+pointer-gestures, pointer-constraints, relative-pointer, idle-inhibit,
 keyboard-shortcuts-inhibit, input-method-v2, virtual-keyboard-v1, xwayland-keyboard-grab, …
 (Prefer staging replacements when they supersede these.)
 
@@ -86,6 +86,14 @@ security-context sandbox clients, accepts only bounded valid XKB keymaps, reuses
 memfds on the key path, and tracks a fixed 32-device set plus aggregate pressed-key ownership.
 Keymap replacement and object destruction synthesize the required releases before lifetime state
 is removed.
+
+`tablet-v2` is the stable wayland-protocols definition and a direct Tensor implementation.
+Libinput devices are coalesced by physical device-group, while tools and pads retain distinct
+fixed-capacity identities. Tool focus uses scene hit testing independently of pointer focus and is
+intercepted by session lock; proximity, grabs, tip/buttons, all axes, pad groups/modes,
+rings/strips/dials, and validated tool cursors are emitted from compositor-thread state. The Linux
+adapter expands a hardware frame only through a fixed ring of compact value events; no libinput or
+Wayland object crosses into an async worker.
 
 ### Tier 4 — Community (documented exceptions)
 wlr-layer-shell (no ext equivalent; full stack),

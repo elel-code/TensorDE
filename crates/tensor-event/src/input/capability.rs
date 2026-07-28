@@ -1,4 +1,4 @@
-//! Device capability bits (value-only).
+//! Device capability bits independent of libinput object lifetimes.
 
 /// Opaque device identity from the adapter (stable for the session).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -6,6 +6,40 @@
 pub struct DeviceId(pub u64);
 
 impl DeviceId {
+    #[inline]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Session-local identity for a libinput physical device group.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct DeviceGroupId(pub u64);
+
+impl DeviceGroupId {
+    #[inline]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Session-local identity assigned to one libinput tablet tool.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct TabletToolId(pub u64);
+
+impl TabletToolId {
     #[inline]
     pub const fn new(raw: u64) -> Self {
         Self(raw)

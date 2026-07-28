@@ -46,6 +46,26 @@ impl RuntimeState {
             LibinputEvent::Input(BackendInputEvent::PointerGesture(event)) => {
                 self.forward_pointer_gesture(event)
             }
+            LibinputEvent::Input(BackendInputEvent::TabletToolAdded(event)) => self
+                .protocol_globals
+                .tablet
+                .add_tool(&self.display_handle, event),
+            LibinputEvent::Input(BackendInputEvent::TabletToolProximity(event)) => {
+                self.forward_tablet_proximity(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolAxes(event)) => {
+                self.forward_tablet_axes(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolTip(event)) => {
+                self.protocol_globals.tablet.tool_tip(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolButton(event)) => {
+                self.protocol_globals.tablet.tool_button(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletPad(event)) => self
+                .protocol_globals
+                .tablet
+                .pad_event(&self.display_handle, event),
             LibinputEvent::Input(BackendInputEvent::Activity) | LibinputEvent::Device(_) => {}
         }
     }
@@ -104,7 +124,7 @@ impl RuntimeState {
         self.request_redraw_at(location);
     }
 
-    fn session_lock_pointer_focus(
+    pub(super) fn session_lock_pointer_focus(
         &self,
         location: LogicalPoint<f64>,
     ) -> Option<(WlSurface, LogicalPoint<f64>)> {

@@ -1,8 +1,9 @@
-//! Value events produced by an OS input adapter before seat dispatch.
+//! Value events produced by native and virtual input sources before seat dispatch.
 
-use tensor_host::AxisSource;
+use crate::{AxisSource, DeviceCapabilities, DeviceGroupId, DeviceId, Sample, TimeNs};
 
-use crate::{DeviceCapabilities, DeviceId, Sample, TimeNs};
+mod tablet;
+pub use tablet::*;
 
 /// A physical input device entering or leaving the active seat.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,6 +16,10 @@ pub enum DeviceChange {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceEvent {
     pub id: DeviceId,
+    pub group: DeviceGroupId,
+    pub bus_type: u32,
+    pub vendor_id: u32,
+    pub product_id: u32,
     pub capabilities: DeviceCapabilities,
     pub change: DeviceChange,
 }
@@ -309,6 +314,12 @@ pub enum BackendInputEvent {
     PointerButton(PointerButtonEvent),
     PointerAxis(PointerAxisEvent),
     PointerGesture(PointerGestureEvent),
+    TabletToolAdded(TabletToolDescriptor),
+    TabletToolProximity(TabletToolProximityEvent),
+    TabletToolAxes(TabletToolAxesEvent),
+    TabletToolTip(TabletToolTipEvent),
+    TabletToolButton(TabletToolButtonEvent),
+    TabletPad(TabletPadEvent),
     /// Activity from an event whose protocol routing is not implemented yet.
     Activity,
 }

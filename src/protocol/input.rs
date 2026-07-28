@@ -16,9 +16,10 @@ use tracing::{debug, warn};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use xkbcommon::xkb::keysyms;
 
-use tensor_input::{
+use tensor_event::{
     AbsoluteMotionEvent, BackendInputEvent, DeviceChange, KeyboardEvent, PointerAxisEvent,
-    PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent,
+    PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent, TabletToolAxesEvent,
+    TabletToolProximityEvent,
 };
 
 use crate::backend::LibinputEvent;
@@ -63,6 +64,26 @@ impl RuntimeState {
             LibinputEvent::Input(BackendInputEvent::PointerGesture(event)) => {
                 self.forward_pointer_gesture(event)
             }
+            LibinputEvent::Input(BackendInputEvent::TabletToolAdded(event)) => self
+                .protocol_globals
+                .tablet
+                .add_tool(&self.display_handle, event),
+            LibinputEvent::Input(BackendInputEvent::TabletToolProximity(event)) => {
+                self.forward_tablet_proximity(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolAxes(event)) => {
+                self.forward_tablet_axes(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolTip(event)) => {
+                self.protocol_globals.tablet.tool_tip(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletToolButton(event)) => {
+                self.protocol_globals.tablet.tool_button(event)
+            }
+            LibinputEvent::Input(BackendInputEvent::TabletPad(event)) => self
+                .protocol_globals
+                .tablet
+                .pad_event(&self.display_handle, event),
             LibinputEvent::Input(BackendInputEvent::Activity) => {}
         }
         if activity {
@@ -70,7 +91,10 @@ impl RuntimeState {
         }
     }
 
-    fn process_input_device_change(&mut self, event: tensor_input::DeviceEvent) {
+    fn process_input_device_change(&mut self, event: tensor_event::DeviceEvent) {
+        self.protocol_globals
+            .tablet
+            .device_changed(&self.display_handle, event);
         match event.change {
             DeviceChange::Added => {
                 self.input_devices.insert(event.id, event.capabilities);
@@ -80,6 +104,65 @@ impl RuntimeState {
             }
         }
         self.reconcile_seat_capabilities();
+    }
+
+    pub(super) fn forward_tablet_proximity(&mut self, event: TabletToolProximityEvent) {
+        let target = event
+            .in_proximity
+            .then(|| self.tablet_target(event.x, event.y))
+            .flatten();
+        let cursor_location = target.as_ref().map(|target| target.location);
+        self.protocol_globals.tablet.tool_proximity(event, target);
+        let changed = if let Some(location) = cursor_location {
+            self.cursor.note_tablet_activity(event.id, location)
+        } else {
+            self.cursor.clear_tablet(event.id)
+        };
+        if changed {
+            self.request_redraw_all();
+        }
+    }
+
+    pub(super) fn forward_tablet_axes(&mut self, event: TabletToolAxesEvent) {
+        let Some((x, y)) = self.protocol_globals.tablet.normalized_after_axes(event) else {
+            return;
+        };
+        let target = self.tablet_target(x, y);
+        let cursor_location = target.as_ref().map(|target| target.location);
+        self.protocol_globals.tablet.tool_axes(event, target);
+        if let Some(location) = cursor_location
+            && self.cursor.note_tablet_activity(event.id, location)
+        {
+            self.request_redraw_at(location);
+        }
+    }
+
+    fn tablet_target(
+        &self,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) -> Option<super::globals::tablet::tool::TabletTarget> {
+        let bounds = self.pointer_coordinate_space()?;
+        let location = LogicalPoint::from((
+            f64::from(normalized_x) * f64::from(bounds.size.w),
+            f64::from(normalized_y) * f64::from(bounds.size.h),
+        )) + bounds.loc.to_f64();
+        let location = constrain_pointer_location(location, bounds);
+        let (surface, origin) = if self.session_is_locked() {
+            self.session_lock_pointer_focus(location)?
+        } else {
+            self.pointer_focus_under(location)?
+        };
+        let scale = surface
+            .client()
+            .map(|client| self.client_scale(&client))
+            .unwrap_or(1.0);
+        Some(super::globals::tablet::tool::TabletTarget {
+            surface,
+            origin,
+            location,
+            scale,
+        })
     }
 
     /// Publish the aggregate libinput capabilities on the single Wayland
@@ -376,7 +459,7 @@ impl RuntimeState {
                 .selection
                 .dnd_motion(target, serial, time);
             let _ = self.push_event(
-                tensor_input::Sample::pointer_motion(
+                tensor_event::Sample::pointer_motion(
                     planned_location.x,
                     planned_location.y,
                     time_ns,
@@ -453,7 +536,7 @@ impl RuntimeState {
         // Value bus: coalesce motion samples for the event layer (device Hz
         // must not expand the queue). Seat path already applied the sample.
         let _ = self.push_event(
-            tensor_input::Sample::pointer_motion(location.x, location.y, time_ns).into_event(),
+            tensor_event::Sample::pointer_motion(location.x, location.y, time_ns).into_event(),
         );
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target

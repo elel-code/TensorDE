@@ -322,7 +322,7 @@ fn activation_runtime() -> WaylandRuntime {
     .unwrap();
     install_test_output(&mut runtime);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             keyboard: true,
             ..Default::default()

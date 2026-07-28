@@ -97,6 +97,11 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
         tier: ProtocolTier::Stable,
         prefer_over_community: false,
     },
+    ProtocolCapabilityRef {
+        name: "tablet-v2",
+        tier: ProtocolTier::Stable,
+        prefer_over_community: false,
+    },
     // Tier 2 — staging / ext
     ProtocolCapabilityRef {
         name: "fractional-scale",
@@ -181,11 +186,6 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
     },
     ProtocolCapabilityRef {
         name: "relative-pointer",
-        tier: ProtocolTier::Unstable,
-        prefer_over_community: false,
-    },
-    ProtocolCapabilityRef {
-        name: "tablet-v2",
         tier: ProtocolTier::Unstable,
         prefer_over_community: false,
     },

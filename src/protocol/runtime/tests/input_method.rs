@@ -300,7 +300,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
     );
     let input_method = spawn_input_method(socket_path, result_tx, input_method_command_rx);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             keyboard: true,
             ..Default::default()
@@ -334,7 +334,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
     runtime
         .state
         .process_input_event(crate::backend::LibinputEvent::Input(
-            tensor_input::BackendInputEvent::Keyboard(tensor_input::KeyboardEvent {
+            tensor_event::BackendInputEvent::Keyboard(tensor_event::KeyboardEvent {
                 key: 30,
                 pressed: true,
                 time_ns: 10_000_000,
@@ -343,7 +343,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
     runtime
         .state
         .process_input_event(crate::backend::LibinputEvent::Input(
-            tensor_input::BackendInputEvent::Keyboard(tensor_input::KeyboardEvent {
+            tensor_event::BackendInputEvent::Keyboard(tensor_event::KeyboardEvent {
                 key: 30,
                 pressed: false,
                 time_ns: 11_000_000,

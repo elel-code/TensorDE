@@ -201,7 +201,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
     .unwrap();
     install_test_output(&mut runtime);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             pointer: true,
             ..Default::default()
@@ -330,8 +330,8 @@ fn relative_motion(
     delta_x: f64,
     delta_y: f64,
     time_msec: u64,
-) -> tensor_input::RelativeMotionEvent {
-    tensor_input::RelativeMotionEvent {
+) -> tensor_event::RelativeMotionEvent {
+    tensor_event::RelativeMotionEvent {
         delta_x,
         delta_y,
         unaccelerated_x: delta_x,

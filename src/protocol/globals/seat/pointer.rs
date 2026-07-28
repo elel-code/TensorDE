@@ -1,5 +1,4 @@
-use tensor_host::AxisSource;
-use tensor_input::{AxisDirection, PointerAxisEvent};
+use tensor_event::{AxisDirection, AxisSource, PointerAxisEvent};
 use wayland_server::{
     Resource,
     backend::ClientId,

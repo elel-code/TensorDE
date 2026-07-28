@@ -3,9 +3,9 @@ use std::sync::Mutex;
 
 use tracing::warn;
 
-use tensor_host::AxisSource;
-use tensor_input::{
-    AbsoluteMotionEvent, AxisDirection, PointerAxisEvent, PointerButtonEvent, RelativeMotionEvent,
+use tensor_event::{
+    AbsoluteMotionEvent, AxisDirection, AxisSource, PointerAxisEvent, PointerButtonEvent,
+    RelativeMotionEvent,
 };
 use wayland_protocols_wlr::virtual_pointer::v1::server::{
     zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1,

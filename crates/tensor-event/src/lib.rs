@@ -19,6 +19,7 @@
 mod coalesce;
 mod event;
 mod ids;
+mod input;
 mod phase;
 mod queue;
 
@@ -27,5 +28,14 @@ pub use event::{
     Event, GpuTimeline, InputEvent, IpcCommandId, LaunchOutcome, OutputEvent, TimerId,
 };
 pub use ids::{OutputId, SurfaceId, ViewId};
+pub use input::{
+    AbsoluteMotionEvent, AxisDirection, AxisSource, BackendInputEvent, ButtonCode,
+    DeviceCapabilities, DeviceChange, DeviceEvent, DeviceGroupId, DeviceId, KeyCode, KeyState,
+    KeyboardEvent, PointerAxis, PointerAxisEvent, PointerButton, PointerButtonEvent,
+    PointerGestureEvent, PointerMotion, RelativeMotionEvent, Sample, TabletPadDescriptor,
+    TabletPadEvent, TabletPadGroupDescriptor, TabletPadRingEvent, TabletPadStripEvent,
+    TabletToolAxesEvent, TabletToolButtonEvent, TabletToolCapabilities, TabletToolDescriptor,
+    TabletToolId, TabletToolProximityEvent, TabletToolTipEvent, TabletToolType, TimeNs,
+};
 pub use phase::{PHASES, Phase};
 pub use queue::{EventQueue, PushResult, QueueStats};

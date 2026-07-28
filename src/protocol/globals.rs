@@ -39,6 +39,7 @@ pub(in crate::protocol) mod surface_metadata;
 pub(in crate::protocol) mod surface_timing;
 #[cfg(feature = "tty")]
 mod syncobj;
+pub(in crate::protocol) mod tablet;
 pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod virtual_keyboard;
 pub(in crate::protocol) mod xdg_decoration;
@@ -80,6 +81,7 @@ pub(crate) use syncobj::DrmSyncPoint;
 use syncobj::DrmSyncobjProtocol;
 #[cfg(feature = "tty")]
 pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
+use tablet::TabletProtocol;
 use viewporter::ViewporterProtocol;
 use virtual_keyboard::VirtualKeyboardProtocol;
 use xdg_decoration::XdgDecorationProtocol;
@@ -124,6 +126,7 @@ pub(crate) struct ProtocolGlobals {
     image_copy_capture: ImageCopyCaptureProtocol,
     pub(super) input_method: InputMethodProtocol,
     pub(super) virtual_keyboard: VirtualKeyboardProtocol,
+    pub(super) tablet: TabletProtocol,
     #[cfg(feature = "xwayland")]
     pub(super) xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol,
     #[cfg(feature = "tty")]
@@ -188,6 +191,7 @@ impl ProtocolGlobals {
             image_copy_capture: ImageCopyCaptureProtocol::new(display, unrestricted),
             input_method: InputMethodProtocol::new(display),
             virtual_keyboard: VirtualKeyboardProtocol::new(display, unrestricted),
+            tablet: TabletProtocol::new(display),
             #[cfg(feature = "xwayland")]
             xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol::new(display),
             #[cfg(feature = "tty")]
@@ -214,6 +218,7 @@ impl ProtocolGlobals {
         surface: &wayland_server::protocol::wl_surface::WlSurface,
     ) -> Vec<SurfaceBarrier> {
         self.input_method.surface_destroyed(surface);
+        self.tablet.tablet_surface_destroyed(surface);
         self.pointer_constraints.remove_surface(surface);
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
@@ -327,6 +332,7 @@ impl ProtocolGlobals {
             &self.image_capture_source,
             &self.image_copy_capture,
             &self.input_method,
+            &self.tablet,
         );
         ProtocolCapabilities {
             shm: true,
@@ -370,6 +376,7 @@ impl ProtocolGlobals {
             text_input_v3: true,
             input_method_v2: true,
             virtual_keyboard_v1: true,
+            tablet_v2: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -423,6 +430,7 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) text_input_v3: bool,
     pub(crate) input_method_v2: bool,
     pub(crate) virtual_keyboard_v1: bool,
+    pub(crate) tablet_v2: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -504,6 +512,7 @@ mod tests {
                 text_input_v3: true,
                 input_method_v2: true,
                 virtual_keyboard_v1: true,
+                tablet_v2: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

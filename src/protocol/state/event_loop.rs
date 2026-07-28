@@ -154,16 +154,16 @@ impl RuntimeState {
 
     /// Notify the bus of a pointer sample (coalesced; seat already applied).
     ///
-    /// Built through `tensor_input::Sample` so the bus never depends on
+    /// Built through `tensor_event::Sample` so the bus never depends on
     /// libinput event types. `time_ns` is monotonic nanoseconds.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn push_pointer_motion_sample(&mut self, x: f64, y: f64, time_ns: u64) {
-        let sample = tensor_input::Sample::pointer_motion(x, y, time_ns);
+        let sample = tensor_event::Sample::pointer_motion(x, y, time_ns);
         let _ = self.push_event(sample.into_event());
     }
 
     /// Keyboard sample (Linux keycode, not keysym).
-    pub(crate) fn push_key_sample(&mut self, sample: tensor_input::Sample) {
+    pub(crate) fn push_key_sample(&mut self, sample: tensor_event::Sample) {
         let _ = self.push_event(sample.into_event());
     }
 

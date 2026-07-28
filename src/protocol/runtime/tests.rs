@@ -65,6 +65,7 @@ mod surface_callbacks;
 mod surface_metadata;
 mod surface_state;
 mod surface_timing;
+mod tablet;
 #[cfg(feature = "tty")]
 mod xdg_foreign;
 mod xdg_shell;
@@ -695,7 +696,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         assert!(runtime.state.world.is_focused(focused_view));
         assert!(!runtime.state.input_seat.keyboard_enabled());
         runtime.state.input_devices.insert(
-            tensor_input::DeviceId::new(1),
+            tensor_event::DeviceId::new(1),
             super::super::state::InputDeviceCapabilities {
                 keyboard: true,
                 ..Default::default()

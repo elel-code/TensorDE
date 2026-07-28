@@ -130,7 +130,7 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
     .unwrap();
     install_test_output(&mut runtime);
     runtime.state.input_devices.insert(
-        tensor_input::DeviceId::new(1),
+        tensor_event::DeviceId::new(1),
         crate::protocol::state::InputDeviceCapabilities {
             pointer: true,
             ..Default::default()
@@ -168,7 +168,7 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
         .set_pointer_location(pointer_location);
     runtime
         .state
-        .forward_pointer_motion(tensor_input::RelativeMotionEvent {
+        .forward_pointer_motion(tensor_event::RelativeMotionEvent {
             delta_x: 1.0,
             delta_y: 1.0,
             unaccelerated_x: 1.0,

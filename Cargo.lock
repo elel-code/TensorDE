@@ -1834,7 +1834,6 @@ dependencies = [
  "tensor-drm",
  "tensor-event",
  "tensor-host",
- "tensor-input",
  "tensor-present",
  "tensor-protocol",
  "tensor-runtime",
@@ -1878,14 +1877,6 @@ dependencies = [
  "tensor-event",
  "tensor-util",
  "thiserror",
-]
-
-[[package]]
-name = "tensor-input"
-version = "0.1.0"
-dependencies = [
- "tensor-event",
- "tensor-host",
 ]
 
 [[package]]

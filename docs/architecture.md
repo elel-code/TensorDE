@@ -23,7 +23,8 @@ Logging, IPC, Wayland listener/display operations, X11 property reads, udev hotp
 waits, libseat session waits, blocked process signals, and worker notifications use Compio
 completions and bounded bridges. Workers never own Wayland objects or DRM/KMS descriptors. Present
 and Vulkan record stay on the compositor thread
-for latency predictability. Input samples go through `tensor-input` at the bus edge.
+for latency predictability. Native and virtual input sources publish Tensor-owned values directly
+into `tensor-event` at the bus edge.
 
 Every Compio service constructs its ring through `tensor_runtime::io_uring_runtime` with the
 service's fixed maximum number of submitted operations. Capacities are rounded to a power of two
@@ -242,7 +243,13 @@ a non-empty validated client-import format list. Protocol work follows wayland-p
 **tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
 higher tiers win for the same capability, and `zwlr_*` is community-only when no standard path
 exists (see `docs/protocol-surface.md`). Tensor-local ports stay value-only at the ECS/event
-boundary. Tensor directly owns stable xdg-shell v7: `xdg_wm_base`, positioners, surfaces,
+boundary. Stable tablet-v2 is also direct Tensor state: libinput device groups define physical
+tablets, compact fixed-size values carry tool and pad frames, and compositor-thread owners retain
+all Wayland resources. Tool focus is independent of pointer focus, respects session lock and
+button/tip grabs, and pad groups expose buttons, modes, rings, strips, and version-2 dials without
+placing libinput or Wayland handles in Compio workers.
+
+Tensor directly owns stable xdg-shell v7: `xdg_wm_base`, positioners, surfaces,
 toplevels, popups, client/server double-buffering, metadata, parents, and configure ACK lifecycle.
 Role and root lookup use exact resource/surface indices. Toplevel and popup configure backlogs are
 fixed at 16 entries, and every unmap advances a mapping generation so a delayed ACK can be consumed
