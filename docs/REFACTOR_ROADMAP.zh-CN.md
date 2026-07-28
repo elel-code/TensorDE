@@ -37,8 +37,9 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   buffer `COPY/TRANSFER_WRITE -> VERTEX_ATTRIBUTE_INPUT/READ` barrier，并完整执行
   acquire -> submit2 timeline/binary signal -> `pre_present_notify` -> present；swapchain
   replacement 使用 `oldSwapchain` 并只在 infrequent reconfigure 边界等待 device idle。
-  `FIKA_VULKAN_RENDERER=1` 已作为不创建 wgpu 对象的原生主窗口入口：可见文件名直接从
-  retained pane projection 进入共享 text recipe，再由原生 R8 atlas、子矩形 upload、
+  `FIKA_VULKAN_RENDERER=1` 已作为不创建 wgpu 对象的原生主窗口入口：Places、地址栏、
+  Filter、Details、可见文件项和 pane status 直接从 retained scene/projection 进入与默认
+  renderer 相同的 text recipe，再由原生 R8 atlas、子矩形 upload、
   dynamic vertex buffer 和 `VK_EXT_descriptor_heap` push-index pipeline 绘制；atlas 换槽只
   push 两个 descriptor byte offset，image/view 和 descriptor allocation 均按 submission
   timeline 保活、retire 与 reclaim。原生路径不运行 icon resolver，也不生成 CPU quad。

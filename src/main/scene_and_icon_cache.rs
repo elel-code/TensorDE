@@ -98,6 +98,7 @@ include!("scene_runtime/projection_layouts.rs");
 include!("scene_runtime/chrome_pathbar_paint.rs");
 include!("scene_runtime/icon_roles_thumbnails.rs");
 include!("scene_runtime/folder_preview_roles.rs");
+include!("scene_runtime/places_text.rs");
 include!("scene_runtime/places_status_paint.rs");
 include!("scene_runtime/content_paint.rs");
 include!("scene_runtime/dialog_controls.rs");

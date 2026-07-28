@@ -8,6 +8,22 @@ fn native_frame_layers(
     scene.build_native_frame_layers(size, projections.projections())
 }
 
+fn native_text_frame(scene: &mut ShellScene, size: PhysicalSize<u32>) -> TextFrame {
+    let mut layouts = scene.prepare_frame_projection_layouts(size);
+    scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
+    let projections = scene.pane_projections_from_layouts(layouts);
+    let mut engine = TextEngine::new();
+    engine.begin_frame();
+    let mut text = TextFrameBuilder::new(
+        TextFrameResources::from_engine(&mut engine),
+        size,
+        scene.ui_scale(),
+        Vec::new(),
+    );
+    scene.push_native_frame_text(&mut text, projections.projections(), size);
+    text.finish()
+}
+
 #[test]
 fn native_frame_layers_keep_structural_and_interaction_chrome_analytic() {
     let mut scene = test_scene(
@@ -64,28 +80,37 @@ fn native_frame_layers_encode_filter_and_details_chrome_as_instances() {
 }
 
 #[test]
-fn native_text_atlas_uses_retained_item_label_recipe_without_cpu_quads() {
+fn native_text_atlas_uses_retained_shell_label_recipes_without_cpu_quads() {
     let mut scene = test_scene(
         vec![test_entry("alpha.txt", false), test_entry("beta.txt", false)],
         ShellViewMode::Icons,
     );
     let size = PhysicalSize::new(720, 420);
-    let mut layouts = scene.prepare_frame_projection_layouts(size);
-    scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
-    let projections = scene.pane_projections_from_layouts(layouts);
-    let mut engine = TextEngine::new();
-    engine.begin_frame();
-    let mut text = TextFrameBuilder::new(
-        TextFrameResources::from_engine(&mut engine),
-        size,
-        scene.ui_scale(),
-        Vec::new(),
-    );
+    let frame = native_text_frame(&mut scene, size);
 
-    scene.push_native_frame_text(&mut text, projections.projections());
-    let frame = text.finish();
-
-    assert_eq!(frame.stats.labels, 2);
-    assert_eq!(frame.vertices.len(), 12);
+    assert!(frame.stats.labels > 2);
+    assert_eq!(frame.vertices.len(), frame.stats.quads * 6);
     assert!(!frame.uploads.is_empty());
+}
+
+#[test]
+fn native_text_atlas_tracks_places_filter_and_details_recipes() {
+    let size = PhysicalSize::new(720, 420);
+    let mut icons = test_scene(Vec::new(), ShellViewMode::Icons);
+    let with_places = native_text_frame(&mut icons, size).stats.labels;
+
+    icons.places_visible = false;
+    let without_places = native_text_frame(&mut icons, size).stats.labels;
+    assert!(with_places > without_places);
+
+    icons.filter_active = true;
+    let with_filter = native_text_frame(&mut icons, size).stats.labels;
+    assert!(with_filter > without_places);
+
+    let mut details = TestShellSceneBuilder::new()
+        .with_places_visible(false)
+        .with_view_mode(ShellViewMode::Details)
+        .build();
+    let with_details = native_text_frame(&mut details, size).stats.labels;
+    assert!(with_details >= without_places + 3);
 }

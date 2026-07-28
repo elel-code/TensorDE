@@ -345,7 +345,7 @@ impl FikaNativeVulkanApp {
             text_pixels,
         );
         self.scene
-            .push_native_frame_text(&mut text_builder, projections.projections());
+            .push_native_frame_text(&mut text_builder, projections.projections(), size);
         let mut text_frame = text_builder.finish();
         drop(projections);
         let result = renderer.present_layers(

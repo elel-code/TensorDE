@@ -70,6 +70,24 @@ impl ShellScene {
                 size,
             );
         }
+        self.push_filter_bar_text(text, size, theme);
+    }
+
+    fn push_filter_bar_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.filter_bar_rect(size) else {
+            return;
+        };
+        let field = ViewRect {
+            x: rect.x + self.scale_metric(62.0),
+            y: rect.y + self.scale_metric(4.0),
+            width: (rect.width - self.scale_metric(74.0)).max(1.0),
+            height: (rect.height - self.scale_metric(8.0)).max(1.0),
+        };
         text.push_label(
             "Filter:",
             ViewRect {

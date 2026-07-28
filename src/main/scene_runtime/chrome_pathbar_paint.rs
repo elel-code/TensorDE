@@ -148,13 +148,7 @@ impl ShellScene {
                 LabelWrap::None,
             )
         });
-        text.push_label_aligned_no_wrap(
-            label,
-            text_rect,
-            clip,
-            theme.primary_text(),
-            LabelAlignment::Start,
-        );
+        self.push_location_bar_text(text, rect, clip, label, theme);
         if editing && self.text_caret_visible() {
             let caret_width = self.scale_metric(1.25);
             let caret_height = self
@@ -178,6 +172,38 @@ impl ShellScene {
                 size,
             );
         }
+    }
+
+    fn push_location_bar_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        rect: ViewRect,
+        clip: ViewRect,
+        label: &str,
+        theme: ShellTheme,
+    ) {
+        text.push_label_aligned_no_wrap(
+            label,
+            self.location_text_rect_for_path_bar_rect(rect),
+            clip,
+            theme.primary_text(),
+            LabelAlignment::Start,
+        );
+    }
+
+    fn push_native_location_bar_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        pane: ShellPaneId,
+        top_bar: ViewRect,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.pane_path_bar_rect(pane, size) else {
+            return;
+        };
+        let label = self.location_label_for_pane(pane);
+        self.push_location_bar_text(text, rect, top_bar, &label, theme);
     }
 
     /// Emits the texture-free location-bar chrome for the native Vulkan path.

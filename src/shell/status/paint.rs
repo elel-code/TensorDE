@@ -127,6 +127,22 @@ pub(crate) fn push_pane_status_bar(
         );
     }
 
+    let zoom_layout = pane_status_zoom_indicator_rects(
+        paint.rect,
+        paint.scale,
+        paint.line_height,
+        paint.zoom_fraction,
+    );
+    if let Some(zoom_layout) = zoom_layout {
+        push_zoom_indicator(vertices, &paint, zoom_layout);
+    }
+    push_pane_status_bar_text(text, &paint);
+}
+
+pub(crate) fn push_pane_status_bar_text(
+    text: &mut TextFrameBuilder<'_>,
+    paint: &PaneStatusBarPaint<'_>,
+) {
     let left_x = paint.rect.x + scale_metric(16.0, paint.scale);
     let text_y = paint.rect.y + (paint.rect.height - paint.line_height) / 2.0;
     let qualifier = paint.status.qualifier_text();
@@ -139,7 +155,13 @@ pub(crate) fn push_pane_status_bar(
     let zoom_width = zoom_layout.map(|layout| layout.outer.width).unwrap_or(0.0);
     let right_edge = paint.rect.right() - scale_metric(12.0, paint.scale);
     if let Some(zoom_layout) = zoom_layout {
-        push_zoom_indicator(vertices, text, &paint, zoom_layout);
+        text.push_label_aligned_no_wrap(
+            &format!("{}%", paint.zoom_percent),
+            zoom_layout.label,
+            paint.rect,
+            paint.theme.muted_text(),
+            LabelAlignment::End,
+        );
     }
     let right_width = if qualifier.is_empty() {
         0.0
@@ -195,7 +217,6 @@ pub(crate) fn push_pane_status_bar(
 
 fn push_zoom_indicator(
     vertices: &mut Vec<QuadVertex>,
-    text: &mut TextFrameBuilder<'_>,
     paint: &PaneStatusBarPaint<'_>,
     layout: StatusZoomIndicatorRects,
 ) {
@@ -257,13 +278,6 @@ fn push_zoom_indicator(
             paint.size,
         );
     }
-    text.push_label_aligned_no_wrap(
-        &format!("{}%", paint.zoom_percent),
-        layout.label,
-        paint.rect,
-        paint.theme.muted_text(),
-        LabelAlignment::End,
-    );
 }
 
 pub(crate) struct PlacesTaskAreaPaint<'a> {

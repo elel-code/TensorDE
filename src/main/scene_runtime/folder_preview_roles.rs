@@ -197,6 +197,22 @@ impl ShellScene {
                 );
             }
         }
+        self.push_details_header_text(text, projection, theme);
+    }
+
+    fn push_details_header_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        projection: &ShellPaneProjection<'_>,
+        theme: ShellTheme,
+    ) {
+        let header_height = self.details_header_height();
+        let header = ViewRect {
+            x: projection.geometry.content.x,
+            y: (projection.geometry.content.y - header_height).max(projection.geometry.top_bar.y),
+            width: projection.geometry.content.width,
+            height: header_height,
+        };
         for (label, x, width) in [
             (
                 "Name",
@@ -306,6 +322,31 @@ impl ShellScene {
             text,
             PaneStatusBarPaint {
                 rect,
+                status: &status,
+                active: projection.geometry.kind == self.active_pane(),
+                zoom_percent: self.zoom_percent_for_step(pane.zoom_step),
+                zoom_fraction: self.zoom_fraction_for_step(pane.zoom_step),
+                theme,
+                scale: self.ui_scale(),
+                line_height: self.text_line_height(),
+                size,
+            },
+        );
+    }
+
+    fn push_native_pane_status_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        projection: &ShellPaneProjection<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let pane = projection.view;
+        let status = self.pane_status(pane, projection.visible_items.len());
+        shell::status::paint::push_pane_status_bar_text(
+            text,
+            &PaneStatusBarPaint {
+                rect: projection.geometry.status_bar,
                 status: &status,
                 active: projection.geometry.kind == self.active_pane(),
                 zoom_percent: self.zoom_percent_for_step(pane.zoom_step),
@@ -472,7 +513,6 @@ impl ShellScene {
         let row_height = self.scale_metric(PLACES_ROW_HEIGHT);
         let row_gap = self.scale_metric(PLACES_ROW_GAP);
         let icon_size = self.scale_metric(PLACES_ICON_SIZE);
-        let text_height = self.text_line_height();
         let small_text_height = self.small_text_line_height();
         let item_palette = paint.file_manager_item;
         let mut y = panel.y + top_padding + title_height - self.places_scroll_y;
@@ -499,13 +539,6 @@ impl ShellScene {
                         line_height / 2.0,
                         theme.field_separator(),
                         size,
-                    );
-                    text.push_label_aligned(
-                        place.group,
-                        section,
-                        panel,
-                        theme.section_text(),
-                        LabelAlignment::Start,
                     );
                 }
                 y += section_height;
@@ -622,22 +655,6 @@ impl ShellScene {
                         size,
                     );
                 }
-                text.push_label_aligned(
-                    &place.label,
-                    ViewRect {
-                        x: icon.right() + self.scale_metric(8.0),
-                        y: row.y + (row.height - text_height) / 2.0,
-                        width: (row.right() - icon.right() - self.scale_metric(16.0)).max(1.0),
-                        height: text_height,
-                    },
-                    panel,
-                    if active {
-                        theme.accent_text()
-                    } else {
-                        theme.primary_text()
-                    },
-                    LabelAlignment::Start,
-                );
                 if trash_has_items {
                     let dot_size = self.scale_metric(7.0);
                     push_clipped_rounded_rect(
@@ -684,6 +701,7 @@ impl ShellScene {
         if let Some((track, thumb)) = self.places_scrollbar_rects(size) {
             push_scrollbar(vertices, track, thumb, panel, theme.scrollbar(), size);
         }
+        self.push_places_sidebar_text(text, size, theme);
         self.push_places_task_area(vertices, text, size, theme);
     }
 
