@@ -408,7 +408,7 @@ def launch(
             nonlocal interactive_failed, interactive_failure_status
             if not clients:
                 return
-            if fcitx and not input_method_keyboard_grab:
+            if fcitx and not input_method_registered:
                 return
             socket = ready_socket()
             if socket is None:
@@ -617,10 +617,10 @@ def launch(
                 note(
                     log,
                     output_lock,
-                    "a Wayland input-method client registered but did not request its "
-                    "keyboard grab",
+                    "a Wayland input-method client registered but no focused text input "
+                    "requested its keyboard grab",
                 )
-            if fcitx and (fcitx_process is None or not input_method_keyboard_grab):
+            if fcitx and (fcitx_process is None or not input_method_registered):
                 fcitx_failed = True
             compositor_status = process.poll()
             if compositor_status is None:

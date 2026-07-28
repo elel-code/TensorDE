@@ -106,13 +106,14 @@ uv run scripts/tty.py --fcitx --duration 30 \
 ```
 
 `--fcitx` runs Fcitx's `fcitx5-wayland-launcher` after Tensor publishes its
-socket, then waits for Tensor to record `input-method client registered` and
-`input-method keyboard grab registered` before it starts the generic client.
+socket, then waits for Tensor to record `input-method client registered` before
+it starts the generic clients. The keyboard grab is requested only after a
+focused client activates text input, so it is deliberately not a startup gate.
 The launcher asks the existing Fcitx daemon to attach a second Wayland
 connection; it never uses `fcitx5 --replace`, so the Fcitx instance serving a
-suspended niri session is not restarted or taken over. A missing Fcitx daemon,
-missing launcher, or missing keyboard grab fails this focused smoke instead of
-silently testing without an input method.
+suspended niri session is not restarted or taken over. A missing Fcitx daemon
+or launcher, or a missing input-method registration, fails this focused smoke
+instead of silently testing without an input method.
 
 For a no-paste TTY smoke run that starts both Ghostty and GUI.for.SingBox, use:
 
@@ -120,9 +121,10 @@ For a no-paste TTY smoke run that starts both Ghostty and GUI.for.SingBox, use:
 scripts/tty-all-clients.sh
 ```
 
-It enables Fcitx, waits for its Tensor input-method keyboard grab, then starts
-both clients for 60 seconds. `scripts/tty-all-clients.sh forever` leaves the
-session running until it is stopped.
+It enables Fcitx, waits for its Tensor input-method registration, then starts
+both clients for 60 seconds. Fcitx obtains its keyboard grab after a focused
+text input activates. `scripts/tty-all-clients.sh forever` leaves the session
+running until it is stopped.
 
 Any client command follows this same path; it captures the application's output
 in the launcher log and never supplies the suspended host's `DISPLAY`. This is
