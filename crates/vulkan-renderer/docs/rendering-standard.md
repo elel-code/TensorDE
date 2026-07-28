@@ -138,6 +138,14 @@ still declares the transfer-to-read transition in its render graph. Replaced
 buffers remain safe because the command encoder retains recorded buffers until
 their submission timeline completes.
 
+`SampledTextureBinding` is the matching descriptor-heap convenience for
+texture-atlas, material, and visualization consumers. It writes separate
+sampled-image and sampler descriptors, produces a checked SPIR-V binding map,
+and keeps allocation reuse explicit: unused setup is released immediately,
+while submitted bindings retire only after their final timeline token. It does
+not hide image layout transitions, descriptor heap binding, or image-view
+submission retention.
+
 ## Memory classes
 
 Buffer, linear-image, and optimal-image suballocations are distinct classes.

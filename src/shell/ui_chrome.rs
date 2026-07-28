@@ -131,24 +131,69 @@ pub(crate) fn push_place_icon(
     scale_factor: f32,
     size: PhysicalSize<u32>,
 ) {
-    let (fg, bg) = place_icon_colors(paint, theme);
-    push_clipped_rounded_rect(
-        vertices,
+    emit_place_icon(
         rect,
         clip,
-        (6.0 * scale_factor).round().max(1.0),
-        bg,
-        size,
+        paint,
+        theme,
+        scale_factor,
+        |shape, shape_clip, radius, color| {
+            if radius <= 0.0 {
+                push_clipped_rect(vertices, shape, shape_clip, color, size);
+            } else {
+                push_clipped_rounded_rect(vertices, shape, shape_clip, radius, color, size);
+            }
+        },
     );
+}
+
+/// Native analytic counterpart of [`push_place_icon`]. The semantic icon
+/// recipe is shared with the regular path, while every rounded primitive is
+/// evaluated in the Vulkan fragment shader instead of CPU-tessellated.
+pub(crate) fn push_native_place_icon(
+    instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+    rect: ViewRect,
+    clip: ViewRect,
+    paint: PlaceIconPaint,
+    theme: ShellTheme,
+    scale_factor: f32,
+    size: PhysicalSize<u32>,
+) {
+    emit_place_icon(
+        rect,
+        clip,
+        paint,
+        theme,
+        scale_factor,
+        |shape, shape_clip, radius, color| {
+            if let Some(instance) =
+                crate::vulkan_rect::VulkanRectInstance::fill(shape, shape_clip, radius, color, size)
+            {
+                instances.push(instance);
+            }
+        },
+    );
+}
+
+fn emit_place_icon(
+    rect: ViewRect,
+    clip: ViewRect,
+    paint: PlaceIconPaint,
+    theme: ShellTheme,
+    scale_factor: f32,
+    mut push_shape: impl FnMut(ViewRect, ViewRect, f32, UiColor),
+) {
+    let (fg, bg) = place_icon_colors(paint, theme);
+    push_shape(rect, clip, (6.0 * scale_factor).round().max(1.0), bg);
     match paint.shape {
         PlaceIconShape::Folder => {
-            push_place_folder_icon(vertices, rect, clip, fg, scale_factor, size)
+            emit_place_folder_icon(rect, clip, fg, scale_factor, &mut push_shape)
         }
         PlaceIconShape::Drive => {
-            push_place_drive_icon(vertices, rect, clip, fg, scale_factor, size)
+            emit_place_drive_icon(rect, clip, fg, scale_factor, &mut push_shape)
         }
         PlaceIconShape::Trash => {
-            push_place_trash_icon(vertices, rect, clip, fg, scale_factor, size)
+            emit_place_trash_icon(rect, clip, fg, scale_factor, &mut push_shape)
         }
     }
 }
@@ -178,17 +223,15 @@ fn place_icon_metric(value: f32, scale_factor: f32) -> f32 {
     (value * scale_factor).round().max(1.0)
 }
 
-fn push_place_folder_icon(
-    vertices: &mut Vec<QuadVertex>,
+fn emit_place_folder_icon(
     bounds: ViewRect,
     clip: ViewRect,
     fg: UiColor,
     scale_factor: f32,
-    size: PhysicalSize<u32>,
+    push_shape: &mut impl FnMut(ViewRect, ViewRect, f32, UiColor),
 ) {
     let s = |value| place_icon_metric(value, scale_factor);
-    push_clipped_rounded_rect(
-        vertices,
+    push_shape(
         ViewRect {
             x: bounds.x + s(5.0),
             y: bounds.y + s(6.0),
@@ -198,10 +241,8 @@ fn push_place_folder_icon(
         clip,
         s(1.0),
         fg,
-        size,
     );
-    push_clipped_rounded_rect(
-        vertices,
+    push_shape(
         ViewRect {
             x: bounds.x + s(4.0),
             y: bounds.y + s(8.0),
@@ -211,17 +252,15 @@ fn push_place_folder_icon(
         clip,
         s(2.0),
         fg,
-        size,
     );
 }
 
-fn push_place_drive_icon(
-    vertices: &mut Vec<QuadVertex>,
+fn emit_place_drive_icon(
     bounds: ViewRect,
     clip: ViewRect,
     fg: UiColor,
     scale_factor: f32,
-    size: PhysicalSize<u32>,
+    push_shape: &mut impl FnMut(ViewRect, ViewRect, f32, UiColor),
 ) {
     let s = |value| place_icon_metric(value, scale_factor);
     let body = ViewRect {
@@ -230,9 +269,8 @@ fn push_place_drive_icon(
         width: bounds.width - s(8.0),
         height: bounds.height - s(10.0),
     };
-    push_clipped_rounded_rect(vertices, body, clip, s(2.0), fg, size);
-    push_clipped_rect(
-        vertices,
+    push_shape(body, clip, s(2.0), fg);
+    push_shape(
         ViewRect {
             x: body.x + s(3.0),
             y: body.bottom() - s(4.0),
@@ -240,22 +278,20 @@ fn push_place_drive_icon(
             height: s(1.0),
         },
         clip,
+        0.0,
         [1.000, 1.000, 1.000, 0.75],
-        size,
     );
 }
 
-fn push_place_trash_icon(
-    vertices: &mut Vec<QuadVertex>,
+fn emit_place_trash_icon(
     bounds: ViewRect,
     clip: ViewRect,
     fg: UiColor,
     scale_factor: f32,
-    size: PhysicalSize<u32>,
+    push_shape: &mut impl FnMut(ViewRect, ViewRect, f32, UiColor),
 ) {
     let s = |value| place_icon_metric(value, scale_factor);
-    push_clipped_rect(
-        vertices,
+    push_shape(
         ViewRect {
             x: bounds.x + s(6.0),
             y: bounds.y + s(5.0),
@@ -263,11 +299,10 @@ fn push_place_trash_icon(
             height: s(2.0),
         },
         clip,
+        0.0,
         fg,
-        size,
     );
-    push_clipped_rounded_rect(
-        vertices,
+    push_shape(
         ViewRect {
             x: bounds.x + s(5.0),
             y: bounds.y + s(8.0),
@@ -277,7 +312,6 @@ fn push_place_trash_icon(
         clip,
         s(2.0),
         fg,
-        size,
     );
 }
 
@@ -288,6 +322,51 @@ pub(crate) fn push_fallback_file_icon(
     content_clip: ViewRect,
     theme: ShellTheme,
     size: PhysicalSize<u32>,
+) {
+    emit_fallback_file_icon(
+        entry,
+        icon_rect,
+        content_clip,
+        theme,
+        |rect, clip, radius, color| {
+            push_clipped_rounded_rect(vertices, rect, clip, radius, color, size);
+        },
+    );
+}
+
+/// Emits the deterministic file-manager fallback icon through Fika's native
+/// analytic-rectangle stream. This is intentionally shared with the regular
+/// scene path, so texture-free native Vulkan has the same MIME-sensitive
+/// folder/file semantics rather than a second icon vocabulary.
+pub(crate) fn push_native_fallback_file_icon(
+    instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+    entry: &Entry,
+    icon_rect: ViewRect,
+    content_clip: ViewRect,
+    theme: ShellTheme,
+    size: PhysicalSize<u32>,
+) {
+    emit_fallback_file_icon(
+        entry,
+        icon_rect,
+        content_clip,
+        theme,
+        |rect, clip, radius, color| {
+            if let Some(instance) =
+                crate::vulkan_rect::VulkanRectInstance::fill(rect, clip, radius, color, size)
+            {
+                instances.push(instance);
+            }
+        },
+    );
+}
+
+fn emit_fallback_file_icon(
+    entry: &Entry,
+    icon_rect: ViewRect,
+    content_clip: ViewRect,
+    theme: ShellTheme,
+    mut push_rounded_rect: impl FnMut(ViewRect, ViewRect, f32, UiColor),
 ) {
     let palette = FallbackIconPalette::from_shell_theme(theme);
     if entry.is_dir {
@@ -306,22 +385,8 @@ pub(crate) fn push_fallback_file_icon(
         let radius =
             (icon_rect.width.min(icon_rect.height) * FOLDER_ICON_CORNER_RADIUS_RATIO * 0.8)
                 .max(1.0);
-        push_clipped_rounded_rect(
-            vertices,
-            tab,
-            content_clip,
-            radius,
-            palette.folder_tab,
-            size,
-        );
-        push_clipped_rounded_rect(
-            vertices,
-            body,
-            content_clip,
-            radius,
-            palette.folder_body,
-            size,
-        );
+        push_rounded_rect(tab, content_clip, radius, palette.folder_tab);
+        push_rounded_rect(body, content_clip, radius, palette.folder_body);
         let highlight_inset = radius * 0.55;
         let highlight = ViewRect {
             x: body.x + highlight_inset,
@@ -329,13 +394,11 @@ pub(crate) fn push_fallback_file_icon(
             width: (body.width - highlight_inset * 2.0).max(1.0),
             height: (body.height * 0.10).max(1.0),
         };
-        push_clipped_rounded_rect(
-            vertices,
+        push_rounded_rect(
             highlight,
             content_clip,
             highlight.height / 2.0,
             palette.folder_highlight,
-            size,
         );
     } else {
         let body = ViewRect {
@@ -345,17 +408,14 @@ pub(crate) fn push_fallback_file_icon(
             height: icon_rect.height * 0.78,
         };
         let radius = (body.width.min(body.height) * FILE_ICON_CORNER_RADIUS_RATIO).max(1.0);
-        push_clipped_rounded_rect(
-            vertices,
+        push_rounded_rect(
             body,
             content_clip,
             radius,
             fallback_file_color(entry, palette),
-            size,
         );
         let fold = icon_rect.width.min(icon_rect.height) * 0.18;
-        push_clipped_rounded_rect(
-            vertices,
+        push_rounded_rect(
             ViewRect {
                 x: body.right() - fold,
                 y: body.y,
@@ -365,25 +425,22 @@ pub(crate) fn push_fallback_file_icon(
             content_clip,
             radius * 0.65,
             palette.file_fold,
-            size,
         );
-        push_fallback_file_glyph(vertices, entry, body, content_clip, palette, size);
+        emit_fallback_file_glyph(entry, body, content_clip, palette, &mut push_rounded_rect);
     }
 }
 
-fn push_fallback_file_glyph(
-    vertices: &mut Vec<QuadVertex>,
+fn emit_fallback_file_glyph(
     entry: &Entry,
     body: ViewRect,
     content_clip: ViewRect,
     palette: FallbackIconPalette,
-    size: PhysicalSize<u32>,
+    push_rounded_rect: &mut impl FnMut(ViewRect, ViewRect, f32, UiColor),
 ) {
     let mime = entry.mime_type.as_deref().unwrap_or_default();
     if mime.starts_with("image/") {
         let dot = body.width.min(body.height) * 0.12;
-        push_clipped_rounded_rect(
-            vertices,
+        push_rounded_rect(
             ViewRect {
                 x: body.x + body.width * 0.60,
                 y: body.y + body.height * 0.36,
@@ -393,11 +450,9 @@ fn push_fallback_file_glyph(
             content_clip,
             dot / 2.0,
             palette.file_stripe,
-            size,
         );
         for step in 0..3 {
-            push_clipped_rounded_rect(
-                vertices,
+            push_rounded_rect(
                 ViewRect {
                     x: body.x + body.width * (0.18 + step as f32 * 0.12),
                     y: body.y + body.height * (0.68 - step as f32 * 0.08),
@@ -407,15 +462,13 @@ fn push_fallback_file_glyph(
                 content_clip,
                 (body.height * 0.025).max(1.0),
                 palette.file_stripe,
-                size,
             );
         }
         return;
     }
     if mime.starts_with("video/") || mime.starts_with("audio/") {
         for step in 0..3 {
-            push_clipped_rounded_rect(
-                vertices,
+            push_rounded_rect(
                 ViewRect {
                     x: body.x + body.width * (0.24 + step as f32 * 0.12),
                     y: body.y + body.height * (0.42 + step as f32 * 0.08),
@@ -425,15 +478,13 @@ fn push_fallback_file_glyph(
                 content_clip,
                 (body.height * 0.035).max(1.0),
                 palette.file_stripe,
-                size,
             );
         }
         return;
     }
     for row in 0..3 {
         let line_width = body.width * if row == 2 { 0.36 } else { 0.52 };
-        push_clipped_rounded_rect(
-            vertices,
+        push_rounded_rect(
             ViewRect {
                 x: body.x + body.width * 0.18,
                 y: body.y + body.height * 0.42 + row as f32 * body.height * 0.14,
@@ -443,7 +494,6 @@ fn push_fallback_file_glyph(
             content_clip,
             (body.height * 0.025).max(1.0),
             palette.file_stripe,
-            size,
         );
     }
 }
@@ -510,6 +560,8 @@ fn fallback_file_color_for_mime(mime: &str, palette: FallbackIconPalette) -> UiC
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -547,6 +599,90 @@ mod tests {
         assert_eq!(
             place_icon_colors(folder, dark),
             ([0.953, 0.612, 0.071, 1.0], [0.286, 0.196, 0.102, 1.0])
+        );
+    }
+
+    #[test]
+    fn native_fallback_file_icons_share_the_regular_geometry_recipe() {
+        let entry = Entry::new(fika_core::EntryData {
+            name: Arc::from("preview.png"),
+            name_width_units: 11,
+            target_path: None,
+            size_bytes: 0,
+            modified_secs: None,
+            metadata_complete: true,
+            mime_type: Some(Arc::from("image/png")),
+            mime_magic_checked: true,
+            trash_original_path: None,
+            trash_deletion_time: None,
+            is_dir: false,
+        });
+        let icon = ViewRect {
+            x: 8.0,
+            y: 12.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let clip = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 96.0,
+            height: 96.0,
+        };
+        let size = PhysicalSize::new(96, 96);
+        let theme = ShellTheme::for_dark_mode(false);
+        let mut native = Vec::new();
+        let mut recipe_rects = 0;
+        emit_fallback_file_icon(&entry, icon, clip, theme, |_, _, _, _| {
+            recipe_rects += 1;
+        });
+        push_native_fallback_file_icon(&mut native, &entry, icon, clip, theme, size);
+
+        assert_eq!(recipe_rects, native.len());
+        assert_eq!(native.len(), 6);
+        assert!(
+            native
+                .iter()
+                .any(|instance| instance.color() == [0.500, 0.700, 0.560, 1.0])
+        );
+        assert!(
+            native
+                .iter()
+                .any(|instance| instance.color() == [0.760, 0.800, 0.860, 1.0])
+        );
+    }
+
+    #[test]
+    fn native_place_icons_share_the_semantic_recipe_without_cpu_tessellation() {
+        let paint = PlaceIconPaint::from_flags(false, true, false, false, false);
+        let bounds = ViewRect {
+            x: 4.0,
+            y: 8.0,
+            width: 24.0,
+            height: 24.0,
+        };
+        let theme = ShellTheme::for_dark_mode(false);
+        let mut recipe_rects = 0;
+        let mut native = Vec::new();
+        emit_place_icon(bounds, bounds, paint, theme, 1.0, |_, _, _, _| {
+            recipe_rects += 1;
+        });
+        push_native_place_icon(
+            &mut native,
+            bounds,
+            bounds,
+            paint,
+            theme,
+            1.0,
+            PhysicalSize::new(40, 40),
+        );
+
+        assert_eq!(recipe_rects, native.len());
+        assert_eq!(native.len(), 3);
+        assert!(
+            native
+                .iter()
+                .any(|instance| instance.color() == theme.accent())
         );
     }
 }

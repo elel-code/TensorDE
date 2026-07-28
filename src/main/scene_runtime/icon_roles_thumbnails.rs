@@ -204,6 +204,9 @@ impl ShellScene {
         item: PreparedPaneItem,
         context: PaneItemPaintContext,
     ) {
+        let Some(entry) = projection.view.entries.get(item.entry_index) else {
+            return;
+        };
         let PaneItemChrome { paint, dnd_hovered } =
             self.pane_item_chrome(projection, item, context);
         if let Some(background) = paint.alternate_background
@@ -263,6 +266,14 @@ impl ShellScene {
                 instances.push(instance);
             }
         }
+        crate::shell::ui_chrome::push_native_fallback_file_icon(
+            instances,
+            entry,
+            item.icon_rect,
+            item.content_clip,
+            context.theme,
+            context.size,
+        );
     }
 
     fn enqueue_file_manager_small_directory_icon_roles(

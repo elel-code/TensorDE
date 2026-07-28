@@ -713,6 +713,7 @@ impl ShellScene {
         let section_height = self.scale_metric(PLACES_SECTION_HEIGHT);
         let row_height = self.scale_metric(PLACES_ROW_HEIGHT);
         let row_gap = self.scale_metric(PLACES_ROW_GAP);
+        let icon_size = self.scale_metric(PLACES_ICON_SIZE);
         let small_text_height = self.small_text_line_height();
         let item_palette = paint.file_manager_item;
         let mut y = panel.y + top_padding + title_height - self.places_scroll_y;
@@ -817,6 +818,21 @@ impl ShellScene {
                         size,
                     );
                 }
+                let icon = ViewRect {
+                    x: row.x + self.scale_metric(8.0),
+                    y: row.y + (row.height - icon_size) / 2.0,
+                    width: icon_size,
+                    height: icon_size,
+                };
+                crate::shell::ui_chrome::push_native_place_icon(
+                    instances,
+                    icon,
+                    panel,
+                    place_icon_paint(place),
+                    theme,
+                    self.ui_scale(),
+                    size,
+                );
                 if self.trash_place_has_items(place) {
                     let dot_size = self.scale_metric(7.0);
                     push_native_rounded_rect_fill(

@@ -342,6 +342,12 @@ impl ImageView {
     }
 }
 
+impl crate::SubmissionResource for ImageView {
+    fn submission_lease(&self) -> crate::SubmissionLease {
+        crate::SubmissionLease::new(Arc::clone(&self.image))
+    }
+}
+
 impl Drop for ImageView {
     fn drop(&mut self) {
         unsafe {

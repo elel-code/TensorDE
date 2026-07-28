@@ -75,6 +75,14 @@ and samplers use the corresponding descriptor-heap representations. Small
 graphics/compute parameters use bounded `vkCmdPushDataEXT`; standard pipelines
 never reintroduce a legacy pipeline layout merely to push constants.
 
+`SampledTextureBinding` is the standard path for a separately declared SPIR-V
+sampled image plus sampler. It atomically allocates/writes the resource and
+sampler heap descriptors for an `ImageView`, produces a checked
+`ShaderBindingMap` from explicit set/binding locations, and has explicit
+`release` (never submitted) and `retire` (timeline-safe reuse) transitions.
+The image view implements `SubmissionResource`, so command recording can retain
+it without an application-owned per-frame lifetime list.
+
 Shader modules accept owned, structurally validated SPIR-V 1.0–1.6 words.
 `ShaderBindingMap` canonicalizes set/binding ranges and rejects empty,
 overflowing, or overlapping mappings before it constructs the borrowed

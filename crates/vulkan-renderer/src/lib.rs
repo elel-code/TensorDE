@@ -48,7 +48,9 @@ pub use command::{
 };
 pub use descriptor_heap::{
     DescriptorAllocation, DescriptorHeap, DescriptorHeapAllocator, DescriptorHeapDescriptor,
-    DescriptorHeapError, DescriptorHeapKind, HeapDescriptorType,
+    DescriptorHeapError, DescriptorHeapKind, HeapDescriptorType, SampledTextureBinding,
+    SampledTextureShaderBindings, SamplerAddressMode, SamplerBorderColor, SamplerCompareFunction,
+    SamplerDescriptor, SamplerFilterMode,
 };
 pub use dynamic_buffer::{DynamicBuffer, DynamicBufferDescriptor, DynamicBufferUpload};
 pub use error::{Error, Result};

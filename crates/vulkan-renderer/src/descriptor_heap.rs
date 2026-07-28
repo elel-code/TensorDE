@@ -11,7 +11,13 @@ use crate::{
     MemoryLocation, MemoryTypeSelector, Result as BackendResult,
 };
 
+mod texture;
 mod write;
+
+pub use texture::{
+    SampledTextureBinding, SampledTextureShaderBindings, SamplerAddressMode, SamplerBorderColor,
+    SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
+};
 
 /// Byte range inside a descriptor heap buffer.
 #[derive(Debug, Eq, PartialEq)]
@@ -176,6 +182,22 @@ impl DescriptorHeapAllocator {
             self.normalize_free_ranges();
         }
         reclaimed
+    }
+
+    /// Returns an allocation to the free list before it has been referenced
+    /// by any submitted command buffer.
+    ///
+    /// This is the cancellation counterpart of [`Self::retire`]. Callers
+    /// MUST use `retire` with the final submission token once a descriptor
+    /// has been visible to GPU work instead.
+    pub fn release(&mut self, allocation: DescriptorAllocation) -> Result<(), DescriptorHeapError> {
+        if !self.owns(&allocation) {
+            return Err(DescriptorHeapError::WrongAllocator);
+        }
+        debug_assert!(allocation.range.end <= self.reserved_range_offset);
+        self.free.push(allocation.range);
+        self.normalize_free_ranges();
+        Ok(())
     }
 
     pub fn available_bytes(&self) -> u64 {
@@ -521,6 +543,19 @@ impl DescriptorHeap {
             .retire(allocation, after)
     }
 
+    /// Releases an allocation that was never referenced by submitted GPU
+    /// work. Descriptors used by a command buffer MUST instead be retired
+    /// with that submission's [`FrameToken`].
+    pub fn release(
+        &self,
+        allocation: DescriptorAllocation,
+    ) -> std::result::Result<(), DescriptorHeapError> {
+        self.allocator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(allocation)
+    }
+
     pub fn reclaim(&self, completed_timeline: u64) -> usize {
         self.allocator
             .lock()
@@ -543,6 +578,13 @@ impl DescriptorHeap {
 
     pub(crate) fn belongs_to(&self, owner: &Arc<DeviceOwner>) -> bool {
         Arc::ptr_eq(&self.owner, owner)
+    }
+
+    pub(crate) fn owns(&self, allocation: &DescriptorAllocation) -> bool {
+        self.allocator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owns(allocation)
     }
 
     fn descriptor_layout(
@@ -638,5 +680,13 @@ mod tests {
             second.retire(allocation, frame),
             Err(DescriptorHeapError::WrongAllocator)
         );
+    }
+
+    #[test]
+    fn unsubmitted_allocation_is_immediately_reusable() {
+        let mut heap = DescriptorHeapAllocator::new(256, 64, 64).unwrap();
+        let allocation = heap.allocate(128, 64).unwrap();
+        heap.release(allocation).unwrap();
+        assert_eq!(heap.allocate(192, 64).unwrap().range(), &(0..192));
     }
 }

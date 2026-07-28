@@ -91,6 +91,28 @@ For descriptor heaps, device creation additionally requires:
 6. Descriptor storage and every referenced Vulkan resource MUST remain live
    and unmodified until the submission timeline completes.
 
+### Separately sampled textures
+
+`SampledTextureBinding` is the standard convenience object for a SPIR-V
+sampled-image binding plus a separate sampler binding. It MUST allocate one
+`SAMPLED_IMAGE` descriptor from a resource heap and one `SAMPLER` descriptor
+from a sampler heap owned by the same logical device as its `ImageView`.
+
+1. `SampledTextureShaderBindings` MUST use distinct bindings for image and
+   sampler. The generated `ShaderBindingMap` MUST retain exact heap offsets,
+   reject offsets that do not fit Vulkan's `u32` mapping fields, and use zero
+   array stride for its one-element mappings.
+2. The caller MUST retain the `ImageView` through every command submission
+   that samples it. `ImageView` implements `SubmissionResource` for this
+   purpose; descriptor heaps themselves remain explicit application-owned
+   storage.
+3. A binding abandoned before command submission MUST be released immediately.
+   A binding visible to GPU work MUST be retired using the final frame token;
+   it MUST NOT be reused merely because its Rust owner was dropped.
+4. The declared descriptor image layout MUST match the render graph's sampled
+   image state. The helper does not insert an implicit layout transition or
+   create a descriptor-set compatibility path.
+
 ## FIFO latest-ready
 
 The device-level feature is necessary but insufficient. A surface configuration
