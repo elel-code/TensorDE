@@ -21,7 +21,7 @@ pub use rendering::{
     AttachmentView, ColorAttachment, DepthAttachment, IndexFormat, LoadOp, RenderingDescriptor,
     RenderingEncoder, StencilAttachment, StoreOp,
 };
-pub use transfer::{BufferCopy, BufferImageCopy, ImageCopy};
+pub use transfer::{BufferCopy, BufferImageCopy, ImageBlit, ImageBlitFilter, ImageCopy};
 
 /// Describes one primary command encoder.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -43,8 +43,9 @@ pub use capabilities::{
 };
 pub use command::{
     AttachmentView, BufferCopy, BufferImageCopy, ColorAttachment, CommandBuffer, CommandEncoder,
-    CommandEncoderDescriptor, ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageCopy,
-    IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder, StencilAttachment, StoreOp,
+    CommandEncoderDescriptor, ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageBlit,
+    ImageBlitFilter, ImageCopy, IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder,
+    StencilAttachment, StoreOp,
 };
 pub use descriptor_heap::{
     DescriptorAllocation, DescriptorHeap, DescriptorHeapAllocator, DescriptorHeapDescriptor,
