@@ -37,7 +37,7 @@ pub(crate) struct ModifiersState {
 }
 
 impl ModifiersState {
-    fn from_xkb(state: &xkb::State) -> Self {
+    pub(crate) fn from_xkb(state: &xkb::State) -> Self {
         Self {
             ctrl: state.mod_name_is_active(&xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE),
             alt: state.mod_name_is_active(&xkb::MOD_NAME_ALT, xkb::STATE_MODS_EFFECTIVE),

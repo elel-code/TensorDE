@@ -339,7 +339,7 @@ impl DispatchDelegate<ZwpInputMethodV2, RuntimeState> for InputMethodData {
                         .protocol_globals
                         .seat
                         .initialize_input_method_grab(&grab);
-                    let modifiers = state.input_seat.keyboard_modifiers().serialized;
+                    let modifiers = state.protocol_globals.seat.keyboard_modifiers().serialized;
                     grab.modifiers(
                         crate::protocol::serial::next_serial().into(),
                         modifiers.depressed,

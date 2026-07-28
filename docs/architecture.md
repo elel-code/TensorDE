@@ -262,6 +262,12 @@ anchored below the focused cursor rectangle. They inherit the owning view's frac
 transform, participate in output enter/leave, frame callbacks, presentation feedback, damage, and
 hit testing, and disappear on deactivation.
 
+Virtual keyboard injection is direct Tensor state as well: only unrestricted clients can bind
+`zwp_virtual_keyboard_manager_v1`; each device has a bounded, validated XKB keymap and modifier
+state, while sealed keymap memfds are shared by identity on the event path. Device count, keycode
+range, and aggregate pressed-key ownership are fixed-capacity, and replacing a keymap or destroying
+a device releases its remaining keys before removing the seat capability.
+
 Tensor also directly owns the wlr-layer-shell v5 global, wire requests, double-buffered role
 state, and fixed-capacity configure queues; there is no alternate layer-shell handler or wrapper.
 Layer surfaces map through compositor-thread Tensor state: exact root/output indices make commit

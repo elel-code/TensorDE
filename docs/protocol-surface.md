@@ -81,6 +81,12 @@ to the active text cursor; they use the focused view's output scale/transform an
 scene, output, callback, presentation, and input paths. There is no Smithay adapter or alternate
 popup placement path.
 
+`virtual-keyboard-v1` is a direct implementation, not a marker global. It is hidden from
+security-context sandbox clients, accepts only bounded valid XKB keymaps, reuses sealed keymap
+memfds on the key path, and tracks a fixed 32-device set plus aggregate pressed-key ownership.
+Keymap replacement and object destruction synthesize the required releases before lifetime state
+is removed.
+
 ### Tier 4 — Community (documented exceptions)
 wlr-layer-shell (no ext equivalent; full stack),
 wlr-data-control (compat beside ext-data-control),

@@ -1,6 +1,7 @@
 use std::{
     io,
     os::fd::{AsFd, OwnedFd},
+    sync::Arc,
 };
 
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
@@ -18,13 +19,13 @@ use super::{SeatProtocol, remove_resource};
 use crate::protocol::{seat::ModifiersState, serial::Serial, state::RuntimeState};
 
 #[derive(Debug)]
-pub(super) struct KeymapFile {
+pub(in crate::protocol::globals) struct KeymapFile {
     fd: OwnedFd,
     size: u32,
 }
 
 impl KeymapFile {
-    fn new(keymap: &str) -> io::Result<Self> {
+    pub(in crate::protocol::globals) fn new(keymap: &str) -> io::Result<Self> {
         let size = keymap
             .len()
             .checked_add(1)
@@ -92,18 +93,9 @@ impl SeatProtocol {
         keymap: Option<&str>,
     ) -> io::Result<()> {
         if let Some(keymap) = keymap {
-            let file = KeymapFile::new(keymap)?;
-            self.keymap = Some(file);
-            if let Some(file) = &self.keymap {
-                for keyboards in self.keyboards.values() {
-                    for keyboard in keyboards {
-                        file.send(keyboard);
-                        if keyboard.version() >= 4 {
-                            keyboard.repeat_info(self.repeat_rate, self.repeat_delay);
-                        }
-                    }
-                }
-            }
+            let file = Arc::new(KeymapFile::new(keymap)?);
+            self.default_keymap = Some(file.clone());
+            self.activate_keymap(file);
         }
         if self.keyboard_enabled != enabled {
             self.keyboard_enabled = enabled;
@@ -115,6 +107,36 @@ impl SeatProtocol {
             self.send_capabilities();
         }
         Ok(())
+    }
+
+    pub(in crate::protocol::globals) fn activate_keymap(
+        &mut self,
+        keymap: Arc<KeymapFile>,
+    ) -> bool {
+        if self
+            .keymap
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &keymap))
+        {
+            return false;
+        }
+        for keyboards in self.keyboards.values() {
+            for keyboard in keyboards {
+                keymap.send(keyboard);
+                if keyboard.version() >= 4 {
+                    keyboard.repeat_info(self.repeat_rate, self.repeat_delay);
+                }
+            }
+        }
+        self.keymap = Some(keymap);
+        true
+    }
+
+    pub(crate) fn activate_default_keymap(&mut self) -> bool {
+        let Some(keymap) = self.default_keymap.clone() else {
+            return false;
+        };
+        self.activate_keymap(keymap)
     }
 
     pub(crate) fn keyboard_enter(&mut self, surface: &WlSurface, pressed: Vec<u8>, serial: Serial) {
@@ -170,7 +192,8 @@ impl SeatProtocol {
         }
     }
 
-    pub(crate) fn modifiers(&self, modifiers: ModifiersState, serial: Serial) {
+    pub(crate) fn modifiers(&mut self, modifiers: ModifiersState, serial: Serial) {
+        self.keyboard_modifiers = modifiers;
         let Some(client) = self.keyboard_focus.as_ref() else {
             return;
         };
@@ -223,6 +246,10 @@ impl SeatProtocol {
     pub(crate) fn keyboard_focus_surface(&self) -> Option<WlSurface> {
         self.keyboard_focus_surface.as_ref()?.upgrade().ok()
     }
+
+    pub(crate) const fn keyboard_modifiers(&self) -> ModifiersState {
+        self.keyboard_modifiers
+    }
 }
 
 impl RuntimeState {
@@ -236,7 +263,7 @@ impl RuntimeState {
             surface,
             serial,
             pressed: self.input_seat.pressed_key_bytes(),
-            modifiers: self.input_seat.keyboard_modifiers(),
+            modifiers: self.protocol_globals.seat.keyboard_modifiers(),
         })
     }
 }

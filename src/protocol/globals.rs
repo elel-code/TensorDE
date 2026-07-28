@@ -40,6 +40,7 @@ pub(in crate::protocol) mod surface_timing;
 #[cfg(feature = "tty")]
 mod syncobj;
 pub(in crate::protocol) mod viewporter;
+pub(in crate::protocol) mod virtual_keyboard;
 pub(in crate::protocol) mod xdg_decoration;
 pub(in crate::protocol) mod xdg_foreign;
 pub(in crate::protocol) mod xdg_shell;
@@ -80,6 +81,7 @@ use syncobj::DrmSyncobjProtocol;
 #[cfg(feature = "tty")]
 pub(super) use syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use viewporter::ViewporterProtocol;
+use virtual_keyboard::VirtualKeyboardProtocol;
 use xdg_decoration::XdgDecorationProtocol;
 use xdg_foreign::XdgForeignProtocol;
 use xdg_shell::XdgShellProtocol;
@@ -121,6 +123,7 @@ pub(crate) struct ProtocolGlobals {
     image_capture_source: ImageCaptureSourceProtocol,
     image_copy_capture: ImageCopyCaptureProtocol,
     pub(super) input_method: InputMethodProtocol,
+    pub(super) virtual_keyboard: VirtualKeyboardProtocol,
     #[cfg(feature = "xwayland")]
     pub(super) xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol,
     #[cfg(feature = "tty")]
@@ -184,6 +187,7 @@ impl ProtocolGlobals {
             image_capture_source: ImageCaptureSourceProtocol::new(display, unrestricted),
             image_copy_capture: ImageCopyCaptureProtocol::new(display, unrestricted),
             input_method: InputMethodProtocol::new(display),
+            virtual_keyboard: VirtualKeyboardProtocol::new(display, unrestricted),
             #[cfg(feature = "xwayland")]
             xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol::new(display),
             #[cfg(feature = "tty")]
@@ -365,6 +369,7 @@ impl ProtocolGlobals {
             image_copy_capture: true,
             text_input_v3: true,
             input_method_v2: true,
+            virtual_keyboard_v1: true,
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
@@ -417,6 +422,7 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) image_copy_capture: bool,
     pub(crate) text_input_v3: bool,
     pub(crate) input_method_v2: bool,
+    pub(crate) virtual_keyboard_v1: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
     #[cfg(feature = "tty")]
@@ -497,6 +503,7 @@ mod tests {
                 image_copy_capture: true,
                 text_input_v3: true,
                 input_method_v2: true,
+                virtual_keyboard_v1: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
                 #[cfg(feature = "tty")]

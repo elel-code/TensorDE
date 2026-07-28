@@ -1,6 +1,6 @@
 //! Tensor-owned core seat wire state.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use tensor_util::Point;
 use wayland_server::{
@@ -15,6 +15,7 @@ use wayland_server::{
     },
 };
 
+use crate::protocol::seat::ModifiersState;
 use crate::protocol::serial::Serial;
 use crate::protocol::state::RuntimeState;
 
@@ -22,7 +23,7 @@ mod keyboard;
 mod pointer;
 mod wire;
 
-use keyboard::KeymapFile;
+pub(super) use keyboard::KeymapFile;
 use pointer::PointerResource;
 use wire::{PointerData, SeatData, SeatGlobalData};
 
@@ -43,12 +44,14 @@ pub(crate) struct SeatProtocol {
     keyboard_enabled: bool,
     pointer_enabled: bool,
     touch_enabled: bool,
-    keymap: Option<KeymapFile>,
+    keymap: Option<Arc<KeymapFile>>,
+    default_keymap: Option<Arc<KeymapFile>>,
     repeat_rate: i32,
     repeat_delay: i32,
     keyboard_focus: Option<ClientId>,
     keyboard_focus_surface: Option<Weak<WlSurface>>,
     keyboard_enter_serial: Option<Serial>,
+    keyboard_modifiers: ModifiersState,
     pointer_focus: Option<ClientId>,
     pointer_focus_surface: Option<ObjectId>,
     pointer_enter_serial: Option<Serial>,
@@ -66,11 +69,13 @@ impl SeatProtocol {
             pointer_enabled: false,
             touch_enabled: false,
             keymap: None,
+            default_keymap: None,
             repeat_rate: 25,
             repeat_delay: 200,
             keyboard_focus: None,
             keyboard_focus_surface: None,
             keyboard_enter_serial: None,
+            keyboard_modifiers: ModifiersState::default(),
             pointer_focus: None,
             pointer_focus_surface: None,
             pointer_enter_serial: None,

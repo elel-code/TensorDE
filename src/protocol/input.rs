@@ -103,7 +103,9 @@ impl RuntimeState {
             .filter(|capabilities| capabilities.touch)
             .count();
 
-        if keyboard_count > 0 && !self.input_seat.keyboard_enabled() {
+        let keyboard_present =
+            keyboard_count > 0 || self.protocol_globals.virtual_keyboard.is_active();
+        if keyboard_present && !self.input_seat.keyboard_enabled() {
             match self
                 .input_seat
                 .enable_keyboard()
@@ -143,7 +145,7 @@ impl RuntimeState {
                     warn!(%error, "failed to publish keyboard capability");
                 }
             }
-        } else if keyboard_count == 0 && self.input_seat.keyboard_enabled() {
+        } else if !keyboard_present && self.input_seat.keyboard_enabled() {
             self.set_keyboard_focus(None, next_serial());
             self.input_seat.disable_keyboard();
             let _ = self.protocol_globals.seat.set_keyboard_enabled(false, None);
@@ -186,6 +188,16 @@ impl RuntimeState {
             return;
         }
         let serial = next_serial();
+        if self.protocol_globals.seat.activate_default_keymap() {
+            if let Some(grab) = self.protocol_globals.input_method.keyboard_grab_resource() {
+                self.protocol_globals
+                    .seat
+                    .initialize_input_method_grab(&grab);
+            }
+            self.protocol_globals
+                .seat
+                .modifiers(self.input_seat.keyboard_modifiers(), serial);
+        }
         if event.pressed && self.cursor.note_keyboard_activity() {
             // Typing hid the software cursor; repaint the pointer head.
             if let Some(location) = self.input_seat.pointer_location() {
