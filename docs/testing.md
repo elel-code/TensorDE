@@ -72,7 +72,7 @@ From a Linux virtual terminal, run:
 ```sh
 uv run scripts/tty.py --duration 30 \
   --client ghostty \
-  --client=--gtk-single-instance=false
+  --client-arg=--gtk-single-instance=false
 ```
 
 Do not add `--no-xwayland`: the default configuration starts rootless XWayland
@@ -82,9 +82,10 @@ entered its compositor event loop, then starts the supplied client argv with
 selection; Tensor does not set `GDK_BACKEND`. The launcher's parent process is
 not part of the new session, so it removes the host session's stale `DISPLAY`,
 just as Tensor's `ProcessLauncher` clears managed session values before
-installing Tensor's published environment. Each repeated `--client ARG` adds
-one direct argv item without invoking a shell. Use `--client=ARG` when an
-argument begins with `-`. In the Ghostty example,
+installing Tensor's published environment. Each `--client PROGRAM` starts one
+direct child process; repeat it to start multiple clients. `--client-arg ARG`
+adds a direct argv item to the most recent client without invoking a shell. Use
+`--client-arg=ARG` when an argument begins with `-`. In the Ghostty example,
 `--gtk-single-instance=false` only ensures that an existing host Ghostty cannot
 receive the request over D-Bus; it does not select a client backend.
 
@@ -100,7 +101,8 @@ To include the native Fcitx path, run:
 ```sh
 uv run scripts/tty.py --fcitx --duration 30 \
   --client ghostty \
-  --client=--gtk-single-instance=false
+  --client-arg=--gtk-single-instance=false \
+  --client /home/yk/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox
 ```
 
 `--fcitx` runs Fcitx's `fcitx5-wayland-launcher` after Tensor publishes its
@@ -112,13 +114,17 @@ suspended niri session is not restarted or taken over. A missing Fcitx daemon,
 missing launcher, or missing keyboard grab fails this focused smoke instead of
 silently testing without an input method.
 
-For example, run the GUI.for.SingBox binary under the same native Wayland
-environment with:
+For a no-paste TTY smoke run that starts both Ghostty and GUI.for.SingBox, use:
 
 ```sh
-uv run scripts/tty.py --duration 30 \
-  --client /home/yk/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox
+scripts/tty-all-clients.sh
 ```
+
+It enables Fcitx, waits for its Tensor input-method keyboard grab, then starts
+both clients for 60 seconds. `scripts/tty-all-clients.sh forever` leaves the
+session running until it is stopped. The shortcut refuses to use GUI.for.SingBox
+while its niri instance is still running, avoiding its shared port/state from
+turning a Tensor test into a false result.
 
 Any client command follows this same path; it captures the application's output
 in the launcher log and never supplies the suspended host's `DISPLAY`. This is

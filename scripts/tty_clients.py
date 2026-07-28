@@ -2,10 +2,33 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import shutil
+
+
+class ClientArgvAction(argparse.Action):
+    """Build direct client argv vectors while preserving option order."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        value: str,
+        option_string: str | None = None,
+    ) -> None:
+        clients = getattr(namespace, self.dest, None)
+        if clients is None:
+            clients = []
+            setattr(namespace, self.dest, clients)
+        if self.option_strings[0] == "--client":
+            clients.append([value])
+            return
+        if not clients:
+            parser.error("--client-arg requires a preceding --client PROGRAM")
+        clients[-1].append(value)
 
 
 @dataclass(frozen=True)

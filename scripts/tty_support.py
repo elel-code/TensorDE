@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -21,6 +22,57 @@ def smoke_command(root: Path, socket: Path, duration: float | None) -> list[str]
     if duration is not None:
         command.extend(["--timeout", str(max(1, int(duration - 2)))])
     return command
+
+
+def launcher_log_path_for(tensor_log_path: Path) -> Path:
+    """Keep launcher/client diagnostics separate from Tensor-owned tracing."""
+    if tensor_log_path.suffix:
+        name = f"{tensor_log_path.stem}.launcher{tensor_log_path.suffix}"
+    else:
+        name = f"{tensor_log_path.name}.launcher.log"
+    return tensor_log_path.with_name(name)
+
+
+def runtime_dir_for_client() -> Path:
+    value = os.environ.get("XDG_RUNTIME_DIR")
+    if not value:
+        raise SystemExit("TTY client tests require XDG_RUNTIME_DIR")
+    return Path(value)
+
+
+def tensor_sockets(runtime_dir: Path) -> dict[Path, tuple[int, int, int]]:
+    """Return live Tensor sockets keyed by their filesystem identity.
+
+    A previous compositor can leave ``tensor-0`` behind until teardown races
+    with the next launch. The new compositor may legitimately reuse that
+    pathname, so callers distinguish the replacement inode from the old socket
+    rather than comparing paths alone.
+    """
+    try:
+        entries = runtime_dir.iterdir()
+    except OSError:
+        return {}
+    sockets = {}
+    for entry in entries:
+        if not entry.name.startswith("tensor-"):
+            continue
+        try:
+            metadata = entry.stat()
+            if stat.S_ISSOCK(metadata.st_mode):
+                sockets[entry] = (metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns)
+        except OSError:
+            continue
+    return sockets
+
+
+def new_tensor_socket(
+    runtime_dir: Path, known_sockets: dict[Path, tuple[int, int, int]]
+) -> Path | None:
+    current = tensor_sockets(runtime_dir)
+    return next(
+        (path for path in sorted(current) if known_sockets.get(path) != current[path]),
+        None,
+    )
 
 
 def write_launcher_log(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:

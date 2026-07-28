@@ -11,22 +11,26 @@ import secrets
 import selectors
 import shlex
 import signal
-import stat
 import subprocess
 import sys
 import threading
 
 from tty_clients import (
+    ClientArgvAction,
     InteractiveClient,
     client_from_argv,
     fcitx_launcher_command,
     session_client_environment,
 )
 from tty_support import (
+    launcher_log_path_for,
+    new_tensor_socket,
     note,
+    runtime_dir_for_client,
     send_process_group_signal,
     send_signal,
     smoke_command,
+    tensor_sockets,
     terminate_process_group,
     wait_for_exit,
     write_launcher_log,
@@ -77,11 +81,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--client",
-        action="append",
+        dest="clients",
+        action=ClientArgvAction,
+        metavar="PROGRAM",
+        help=(
+            "start a native Wayland smoke client; repeat to start multiple clients"
+        ),
+    )
+    parser.add_argument(
+        "--client-arg",
+        dest="clients",
+        action=ClientArgvAction,
         metavar="ARG",
         help=(
-            "one argv item for a native Wayland smoke client; repeat in command order "
-            "(use --client=ARG for an argument beginning with -)"
+            "append one direct argv item to the most recent --client PROGRAM "
+            "(use --client-arg=ARG for an argument beginning with -)"
         ),
     )
     parser.add_argument(
@@ -115,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration <= 0:
         parser.error("--duration must be greater than zero")
-    interactive_client = bool(args.client)
+    interactive_client = bool(args.clients)
     if args.check and (args.dmabuf_smoke or interactive_client or args.fcitx):
         parser.error("TTY smoke clients require a real compositor session, not --check")
     if args.forever and args.dmabuf_smoke:
@@ -123,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     if args.dmabuf_smoke and interactive_client:
         parser.error("run --dmabuf-smoke and an interactive client as separate focused tests")
     if args.fcitx and not interactive_client:
-        parser.error("--fcitx requires at least one --client ARG")
+        parser.error("--fcitx requires at least one --client PROGRAM")
     return args
 
 
@@ -187,15 +201,6 @@ def log_path_for(path: Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-def launcher_log_path_for(tensor_log_path: Path) -> Path:
-    """Keep launcher/client diagnostics separate from Tensor-owned tracing."""
-    if tensor_log_path.suffix:
-        name = f"{tensor_log_path.stem}.launcher{tensor_log_path.suffix}"
-    else:
-        name = f"{tensor_log_path.name}.launcher.log"
-    return tensor_log_path.with_name(name)
-
-
 def smoke_duration_for(args: argparse.Namespace) -> float | None:
     if args.check or args.forever:
         return None
@@ -212,59 +217,13 @@ def build_binaries(dmabuf_smoke: bool) -> int:
     ).returncode
 
 
-def tensor_sockets(runtime_dir: Path) -> dict[Path, tuple[int, int, int]]:
-    """Return live Tensor sockets keyed by their filesystem identity.
-
-    A previous compositor can leave ``tensor-0`` behind until teardown races
-    with the next launch.  The new compositor may legitimately reuse that
-    pathname, so callers must distinguish the replacement inode from the old
-    socket instead of comparing paths alone.
-    """
-    try:
-        entries = runtime_dir.iterdir()
-    except OSError:
-        return {}
-    sockets = {}
-    for entry in entries:
-        if not entry.name.startswith("tensor-"):
-            continue
-        try:
-            metadata = entry.stat()
-            if stat.S_ISSOCK(metadata.st_mode):
-                sockets[entry] = (metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns)
-        except OSError:
-            continue
-    return sockets
-
-
-def new_tensor_socket(
-    runtime_dir: Path, known_sockets: dict[Path, tuple[int, int, int]]
-) -> Path | None:
-    current = tensor_sockets(runtime_dir)
-    return next(
-        (
-            path
-            for path in sorted(current)
-            if known_sockets.get(path) != current[path]
-        ),
-        None,
-    )
-
-
-def runtime_dir_for_client() -> Path:
-    value = os.environ.get("XDG_RUNTIME_DIR")
-    if not value:
-        raise SystemExit("TTY client tests require XDG_RUNTIME_DIR")
-    return Path(value)
-
-
 def launch(
     command: list[str],
     environment: dict[str, str],
     tensor_log_path: Path,
     duration: float | None,
     dmabuf_smoke: bool,
-    client: InteractiveClient | None,
+    clients: list[InteractiveClient],
     fcitx: bool,
 ) -> int:
     launcher_log_path = launcher_log_path_for(tensor_log_path)
@@ -274,7 +233,7 @@ def launch(
     force_kill_sent = threading.Event()
     shutdown_unresponsive = threading.Event()
     output_lock = threading.Lock()
-    runtime_dir = runtime_dir_for_client() if dmabuf_smoke or client is not None else None
+    runtime_dir = runtime_dir_for_client() if dmabuf_smoke or clients else None
     known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else {}
     try:
         tensor_log_offset = tensor_log_path.stat().st_size
@@ -283,11 +242,12 @@ def launch(
 
     with launcher_log_path.open("ab", buffering=0) as log:
         started = datetime.now().astimezone().isoformat(timespec="seconds")
+        interactive_names = ", ".join(client.name for client in clients) or "none"
         header = (
             f"\n=== Tensor TTY run {started} ===\n"
             f"$ {shlex.join(command)}\n"
             f"clients: dmabuf-smoke={dmabuf_smoke} "
-            f"interactive={client.name if client is not None else 'none'} fcitx={fcitx} "
+            f"interactive={interactive_names} fcitx={fcitx} "
             f"duration={duration if duration is not None else 'forever'}\n"
             f"ipc-socket: {environment['TENSOR_IPC_SOCKET']}\n"
             f"compositor-log: {tensor_log_path}\n"
@@ -305,9 +265,10 @@ def launch(
         selector.register(process.stdout, selectors.EVENT_READ, "tensor")
         smoke_process: subprocess.Popen[bytes] | None = None
         smoke_status: int | None = None
-        interactive_process: subprocess.Popen[bytes] | None = None
-        interactive_status: int | None = None
+        interactive_processes: list[subprocess.Popen[bytes] | None] = [None] * len(clients)
+        interactive_statuses: list[int | None] = [None] * len(clients)
         interactive_failed = False
+        interactive_failure_status: int | None = None
         fcitx_process: subprocess.Popen[bytes] | None = None
         fcitx_status: int | None = None
         fcitx_failed = False
@@ -443,53 +404,69 @@ def launch(
                 fcitx_failed = True
                 request_shutdown("Fcitx Wayland launcher exited before Tensor stopped")
 
-        def start_interactive_client() -> None:
-            nonlocal interactive_process, interactive_status, interactive_failed
-            if client is None or interactive_process is not None or interactive_status is not None:
+        def start_interactive_clients() -> None:
+            nonlocal interactive_failed, interactive_failure_status
+            if not clients:
                 return
             if fcitx and not input_method_keyboard_grab:
                 return
             socket = ready_socket()
             if socket is None:
                 return
-            client_command = list(client.command)
-            note(
-                log,
-                output_lock,
-                f"Tensor is ready on Wayland socket {socket.name}; starting {client.name} "
-                f"with its normal backend selection: {shlex.join(client_command)}",
-            )
-            try:
-                interactive_process = subprocess.Popen(
-                    client_command,
-                    cwd=client.cwd or ROOT,
-                    env=session_client_environment(environment, socket),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
+            for index, client in enumerate(clients):
+                if shutdown_requested.is_set():
+                    return
+                if (
+                    interactive_processes[index] is not None
+                    or interactive_statuses[index] is not None
+                ):
+                    continue
+                client_command = list(client.command)
+                note(
+                    log,
+                    output_lock,
+                    f"Tensor is ready on Wayland socket {socket.name}; starting {client.name} "
+                    f"with its normal backend selection: {shlex.join(client_command)}",
                 )
-            except OSError as error:
-                interactive_status = 127
-                interactive_failed = True
-                note(log, output_lock, f"failed to start {client.name}: {error}")
-                request_shutdown(f"{client.name} could not start")
-                return
-            assert interactive_process.stdout is not None
-            selector.register(interactive_process.stdout, selectors.EVENT_READ, "interactive")
+                try:
+                    interactive_processes[index] = subprocess.Popen(
+                        client_command,
+                        cwd=client.cwd or ROOT,
+                        env=session_client_environment(environment, socket),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                except OSError as error:
+                    interactive_statuses[index] = 127
+                    interactive_failed = True
+                    interactive_failure_status = 127
+                    note(log, output_lock, f"failed to start {client.name}: {error}")
+                    request_shutdown(f"{client.name} could not start")
+                    return
+                interactive_process = interactive_processes[index]
+                assert interactive_process is not None and interactive_process.stdout is not None
+                selector.register(interactive_process.stdout, selectors.EVENT_READ, "interactive")
 
-        def observe_interactive_client_exit() -> None:
-            nonlocal interactive_status, interactive_failed
-            if interactive_process is None or interactive_status is not None:
-                return
-            status = interactive_process.poll()
-            if status is None:
-                return
-            interactive_status = status
-            assert client is not None
-            note(log, output_lock, f"{client.name} exited with status {status}")
-            if not shutdown_requested.is_set():
-                interactive_failed = status != 0
-                request_shutdown(f"{client.name} closed")
+        def observe_interactive_client_exits() -> None:
+            nonlocal interactive_failed, interactive_failure_status
+            for index, (client, interactive_process) in enumerate(
+                zip(clients, interactive_processes)
+            ):
+                if interactive_process is None or interactive_statuses[index] is not None:
+                    continue
+                status = interactive_process.poll()
+                if status is None:
+                    continue
+                interactive_statuses[index] = status
+                note(log, output_lock, f"{client.name} exited with status {status}")
+                if not shutdown_requested.is_set() and status != 0:
+                    interactive_failed = True
+                    interactive_failure_status = status
+                    request_shutdown(f"{client.name} failed")
+                    return
+            if clients and all(status is not None for status in interactive_statuses):
+                request_shutdown("all interactive clients closed")
 
         def stop_smoke_client(reason: str) -> None:
             if not send_signal(smoke_process, signal.SIGTERM):
@@ -501,19 +478,17 @@ def launch(
                 return
             note(log, output_lock, f"{reason}; sent SIGTERM to Fcitx Wayland launcher")
 
-        def stop_interactive_client(reason: str) -> None:
-            if not send_process_group_signal(interactive_process, signal.SIGTERM):
-                return
-            assert client is not None
-            note(log, output_lock, f"{reason}; sent SIGTERM to {client.name}")
-
         def request_shutdown(reason: str) -> None:
             if completed.is_set() or shutdown_requested.is_set():
                 return
             shutdown_requested.set()
             smoke_stopped = send_signal(smoke_process, signal.SIGTERM)
             fcitx_stopped = send_signal(fcitx_process, signal.SIGTERM)
-            interactive_stopped = send_process_group_signal(interactive_process, signal.SIGTERM)
+            interactive_stopped = [
+                client
+                for client, interactive_process in zip(clients, interactive_processes)
+                if send_process_group_signal(interactive_process, signal.SIGTERM)
+            ]
             tensor_stopped = send_signal(process, signal.SIGTERM)
 
             def force_shutdown() -> None:
@@ -524,7 +499,8 @@ def launch(
                 force_kill_sent.set()
                 send_signal(smoke_process, signal.SIGKILL)
                 send_signal(fcitx_process, signal.SIGKILL)
-                send_process_group_signal(interactive_process, signal.SIGKILL)
+                for interactive_process in interactive_processes:
+                    send_process_group_signal(interactive_process, signal.SIGKILL)
                 if completed.wait(KILL_GRACE_SECONDS) or process.poll() is not None:
                     note(log, output_lock, "Tensor did not exit after SIGTERM; sent SIGKILL")
                     return
@@ -543,8 +519,7 @@ def launch(
                 note(log, output_lock, f"{reason}; sent SIGTERM to dma-buf smoke client")
             if fcitx_stopped:
                 note(log, output_lock, f"{reason}; sent SIGTERM to Fcitx Wayland launcher")
-            if interactive_stopped:
-                assert client is not None
+            for client in interactive_stopped:
                 note(log, output_lock, f"{reason}; sent SIGTERM to {client.name}")
             if tensor_stopped:
                 note(log, output_lock, f"{reason}; sent SIGTERM to Tensor")
@@ -570,8 +545,8 @@ def launch(
                     start_smoke_client()
                     start_fcitx()
                     observe_fcitx_exit()
-                    start_interactive_client()
-                    observe_interactive_client_exit()
+                    start_interactive_clients()
+                    observe_interactive_client_exits()
                     events = selector.select(timeout=0.1)
                 except KeyboardInterrupt:
                     request_shutdown("interrupt received")
@@ -621,13 +596,16 @@ def launch(
                     output_lock,
                     "Tensor exited before opening the dma-buf smoke launch gate",
                 )
-            if client is not None and interactive_process is None:
-                interactive_failed = True
-                note(
-                    log,
-                    output_lock,
-                    f"Tensor exited before opening the {client.name} launch gate",
-                )
+            for client, interactive_process, interactive_status in zip(
+                clients, interactive_processes, interactive_statuses
+            ):
+                if interactive_process is None and interactive_status is None:
+                    interactive_failed = True
+                    note(
+                        log,
+                        output_lock,
+                        f"Tensor exited before opening the {client.name} launch gate",
+                    )
             if fcitx and not input_method_registered:
                 note(
                     log,
@@ -663,8 +641,8 @@ def launch(
                     return 1
                 if smoke_status != 0:
                     return smoke_status
-            if client is not None and (interactive_process is None or interactive_failed):
-                return interactive_status if interactive_status is not None else 1
+            if clients and (any(process is None for process in interactive_processes) or interactive_failed):
+                return interactive_failure_status if interactive_failure_status is not None else 1
             if fcitx and fcitx_failed:
                 return fcitx_status if fcitx_status is not None else 1
             return compositor_status
@@ -705,11 +683,10 @@ def launch(
                         note(log, output_lock, "sent SIGKILL to Fcitx Wayland launcher")
                     if wait_for_exit(fcitx_process, KILL_GRACE_SECONDS) is None:
                         note(log, output_lock, "Fcitx Wayland launcher remained alive after SIGKILL")
-            if interactive_process is not None:
+            for client, interactive_process in zip(clients, interactive_processes):
                 stopped, killed = terminate_process_group(
                     interactive_process, SHUTDOWN_GRACE_SECONDS, KILL_GRACE_SECONDS
                 )
-                assert client is not None
                 if killed:
                     note(log, output_lock, f"sent SIGKILL to {client.name}'s process group")
                 if not stopped:
@@ -731,7 +708,7 @@ def main() -> int:
     command = command_for(args)
     environment = environment_for(args)
     try:
-        client = client_from_argv(args.client) if args.client else None
+        clients = [client_from_argv(argv) for argv in args.clients or []]
     except ValueError as error:
         raise SystemExit(error) from error
     # Tensor itself owns its tracing file. The launcher only watches appended
@@ -754,9 +731,10 @@ def main() -> int:
                 "health gate: wait for Tensor to enter its event loop, then require native "
                 "linux-dmabuf import, KMS presentation, and wl_buffer release"
             )
-        if client is not None:
+        for client in clients:
             print(
-                f"client: wait for Tensor to enter its event loop, then start {client.name} "
+                "client: wait for Tensor to enter its event loop, then start "
+                f"{shlex.join(client.command)} "
                 "with normal backend selection on Tensor's session endpoint"
             )
         if args.fcitx:
@@ -777,7 +755,7 @@ def main() -> int:
         return build_status
     print(f"Tensor log: {log_path}")
     print(f"Launcher log: {launcher_log_path_for(log_path)}")
-    return launch(command, environment, log_path, duration, args.dmabuf_smoke, client, args.fcitx)
+    return launch(command, environment, log_path, duration, args.dmabuf_smoke, clients, args.fcitx)
 
 
 if __name__ == "__main__":
