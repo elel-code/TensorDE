@@ -152,13 +152,15 @@ The module boundaries are deliberate ownership boundaries:
 
 ## Roadmap
 
-1. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
-2. Add damage-driven partial rendering and per-output redraw scheduling around the existing
+1. Complete the atomic hardware cursor-plane milestone in
+   [`docs/cursor.md`](docs/cursor.md) without splitting the protocol and presentation model.
+2. Add multi-plane/YUV client import and an explicit policy for implicit dma-buf reservation fences.
+3. Add damage-driven partial rendering and per-output redraw scheduling around the existing
    timeline/KMS presentation model.
-3. Add direct-scanout candidate selection inside the Tensor tty/KMS adapter.
-4. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
+4. Add direct-scanout candidate selection inside the Tensor tty/KMS adapter.
+5. Complete rootless XWayland surface association using the same protocol-owned lifecycle and
    stable ECS view IDs.
-5. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
+6. Add the dedicated xdg-desktop-portal/PipeWire gate for screencasting without leaking internal
    handles into IPC or ECS.
 
 ## IPC contract

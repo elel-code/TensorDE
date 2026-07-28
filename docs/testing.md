@@ -22,6 +22,7 @@ the reference projects are never linked into the build and their fixtures are no
 | Smithay/Niri surface-tree transactions | subsurface order is stable, synchronized children defer to the parent transaction, and popups escape tile clipping without escaping output damage | `protocol::state::surfaces`, `protocol::state::tree`, `render::frame::plan`, `scene::damage` |
 | Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
 | Niri/Hyprland/Nourish pointer and cursor paths | relative motion may cross adjacent outputs but not gaps; absolute coordinates and invalid axes stay bounded; the topmost software cursor damages both positions and a GPU-busy repaint remains pending | `protocol::input`, `protocol::cursor`, `protocol::state::output`, `render::frame::cursor_tests` |
+| Cursor protocol and allocation contract | core/cursor-shape serial authority is device-bound; animation and tablet removal damage only complete affected extents; overlay and descriptor storage stays fixed-capacity | `protocol::runtime::tests::cursor_shape`, `protocol::state::tests`, `protocol::cursor::tests`, `render::frame::cursor_tests` |
 | Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
 | Hyprland IPC and client protocol checks | bounded framed requests, request IDs, version errors, and protocol-global ownership | `tests/reference_contracts/hyprland.rs`, `ipc`, `compositor::root`, `protocol::globals` |
 | Nourish 2-D scene/ECS invariants | stable view IDs, unique focus, lifecycle invalidation, geometry independent of draw order | `tests/reference_contracts/nourish.rs`, `ecs::world`, `scene::model` |
@@ -37,6 +38,10 @@ represented by a vacuous passing test.
 Hardware-dependent tests remain split into a deterministic state-machine layer and an optional TTY
 smoke layer. A missing Vulkan descriptor heap or a missing native dma-buf capability is a reported
 selection result, never a silently skipped compatibility path.
+
+The hardware cursor-plane verification backlog, including property parsing, fixed slot retirement,
+binary sync-file handoff, real tablet cursor wire coverage, and TTY evidence, is maintained in
+[`cursor.md`](cursor.md). None of those items is complete solely from a successful plane probe.
 
 ## Native dma-buf presentation gate
 

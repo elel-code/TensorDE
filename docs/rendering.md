@@ -224,6 +224,10 @@ establishes an explicit logical-to-output-physical cursor boundary. Tensor keeps
 state and geometry value-only at the renderer boundary, without adopting any reference project's
 renderer or KMS ownership model.
 
+The completed software-composition baseline and the gated atomic hardware cursor-plane work are
+tracked in [`cursor.md`](cursor.md). That document is authoritative for cursor follow-up work,
+performance acceptance, and completion criteria.
+
 The current command stream is deliberately limited to:
 
 1. upload native/client image descriptors and bind the resource and sampler heaps;

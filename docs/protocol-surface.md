@@ -98,6 +98,10 @@ rings/strips/dials, and validated tool cursors are emitted from compositor-threa
 adapter expands a hardware frame only through a fixed ring of compact value events; no libinput or
 Wayland object crosses into an async worker.
 
+Core pointer, cursor-shape, tablet cursor, and data-device drag-icon status plus their remaining
+native plane work are tracked together in [`cursor.md`](cursor.md). Hardware-plane assignment must
+not fork these protocol owners.
+
 ### Tier 4 — Community (documented exceptions)
 wlr-layer-shell (no ext equivalent; full stack),
 wlr-data-control (compat beside ext-data-control),
