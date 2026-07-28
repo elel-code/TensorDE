@@ -283,6 +283,173 @@ pub struct SampledTextureHeapOffsets {
     pub sampler: u32,
 }
 
+impl SampledTextureHeapOffsets {
+    /// Resolves one independently allocated sampled image and sampler into
+    /// the push-index pair consumed by a separately sampled texture shader.
+    pub fn from_bindings(image: &SampledImageBinding, sampler: &SamplerBinding) -> Result<Self> {
+        Ok(Self {
+            image: image.push_index_heap_offset()?,
+            sampler: sampler.push_index_heap_offset()?,
+        })
+    }
+}
+
+/// One sampled-image descriptor allocation in a resource heap.
+///
+/// This is the reusable image half of [`SampledTextureBinding`]. It allows a
+/// texture cache to pair many images with one [`SamplerBinding`] instead of
+/// duplicating identical sampler descriptors for every resident image.
+#[derive(Debug)]
+pub struct SampledImageBinding {
+    image: DescriptorAllocation,
+}
+
+impl SampledImageBinding {
+    /// Allocates and writes one `SAMPLED_IMAGE` descriptor.
+    ///
+    /// `layout` must match the image state at shader access time. The view and
+    /// its parent image must remain alive through the last submitted use.
+    pub fn new(
+        resource_heap: &DescriptorHeap,
+        view: &ImageView,
+        layout: vk::ImageLayout,
+    ) -> Result<Self> {
+        validate_resource_heap_and_view(resource_heap, view)?;
+        let image = resource_heap
+            .allocate(HeapDescriptorType::SampledImage)
+            .map_err(descriptor_error)?;
+        let view_create_info = view.create_info();
+        if let Err(error) = unsafe {
+            resource_heap.write_image(
+                &image,
+                HeapDescriptorType::SampledImage,
+                &view_create_info,
+                layout,
+            )
+        } {
+            let _ = resource_heap.release(image);
+            return Err(error);
+        }
+        Ok(Self { image })
+    }
+
+    /// Byte offset of this descriptor in its resource heap.
+    pub const fn offset(&self) -> u64 {
+        self.image.offset()
+    }
+
+    /// Checked 32-bit descriptor byte offset for a push-index mapping.
+    pub fn push_index_heap_offset(&self) -> Result<u32> {
+        u32::try_from(self.offset())
+            .map_err(|_| Error::Validation("sampled-image descriptor offset exceeds u32".into()))
+    }
+
+    /// Retires this descriptor after its final submitted use.
+    pub fn retire(
+        self,
+        resource_heap: &DescriptorHeap,
+        after: FrameToken,
+    ) -> std::result::Result<(), DescriptorHeapError> {
+        if resource_heap.kind() != DescriptorHeapKind::Resource || !resource_heap.owns(&self.image)
+        {
+            return Err(DescriptorHeapError::WrongAllocator);
+        }
+        resource_heap.retire(self.image, after)
+    }
+
+    /// Releases an allocation that has never been visible to submitted work.
+    pub fn release(
+        self,
+        resource_heap: &DescriptorHeap,
+    ) -> std::result::Result<(), DescriptorHeapError> {
+        if resource_heap.kind() != DescriptorHeapKind::Resource || !resource_heap.owns(&self.image)
+        {
+            return Err(DescriptorHeapError::WrongAllocator);
+        }
+        resource_heap.release(self.image)
+    }
+}
+
+/// One sampler descriptor allocation in a sampler heap.
+///
+/// A renderer can keep this allocation for its filtering policy and reuse its
+/// offset with every compatible [`SampledImageBinding`].
+#[derive(Debug)]
+pub struct SamplerBinding {
+    sampler: DescriptorAllocation,
+}
+
+impl SamplerBinding {
+    /// Allocates and writes one validated sampler descriptor.
+    pub fn new(sampler_heap: &DescriptorHeap, sampler: SamplerDescriptor) -> Result<Self> {
+        let sampler_info = sampler.to_vk()?;
+        // SAFETY: `SamplerDescriptor` produces a validated, self-contained
+        // VkSamplerCreateInfo with no borrowed pNext chain.
+        unsafe { Self::new_raw(sampler_heap, &sampler_info) }
+    }
+
+    /// Raw interoperability variant of [`Self::new`].
+    ///
+    /// # Safety
+    ///
+    /// `sampler` and any pNext chain it references must be valid for
+    /// `vkWriteSamplerDescriptorsEXT` during this call.
+    pub unsafe fn new_raw(
+        sampler_heap: &DescriptorHeap,
+        sampler: &vk::SamplerCreateInfo,
+    ) -> Result<Self> {
+        if sampler_heap.kind() != DescriptorHeapKind::Sampler {
+            return Err(Error::Validation(
+                "sampler bindings require a sampler descriptor heap".into(),
+            ));
+        }
+        let allocation = sampler_heap
+            .allocate(HeapDescriptorType::Sampler)
+            .map_err(descriptor_error)?;
+        if let Err(error) = unsafe { sampler_heap.write_sampler(&allocation, sampler) } {
+            let _ = sampler_heap.release(allocation);
+            return Err(error);
+        }
+        Ok(Self {
+            sampler: allocation,
+        })
+    }
+
+    /// Byte offset of this descriptor in its sampler heap.
+    pub const fn offset(&self) -> u64 {
+        self.sampler.offset()
+    }
+
+    /// Checked 32-bit descriptor byte offset for a push-index mapping.
+    pub fn push_index_heap_offset(&self) -> Result<u32> {
+        u32::try_from(self.offset())
+            .map_err(|_| Error::Validation("sampler descriptor offset exceeds u32".into()))
+    }
+
+    /// Retires this descriptor after its final submitted use.
+    pub fn retire(
+        self,
+        sampler_heap: &DescriptorHeap,
+        after: FrameToken,
+    ) -> std::result::Result<(), DescriptorHeapError> {
+        if sampler_heap.kind() != DescriptorHeapKind::Sampler || !sampler_heap.owns(&self.sampler) {
+            return Err(DescriptorHeapError::WrongAllocator);
+        }
+        sampler_heap.retire(self.sampler, after)
+    }
+
+    /// Releases an allocation that has never been visible to submitted work.
+    pub fn release(
+        self,
+        sampler_heap: &DescriptorHeap,
+    ) -> std::result::Result<(), DescriptorHeapError> {
+        if sampler_heap.kind() != DescriptorHeapKind::Sampler || !sampler_heap.owns(&self.sampler) {
+            return Err(DescriptorHeapError::WrongAllocator);
+        }
+        sampler_heap.release(self.sampler)
+    }
+}
+
 /// A pair of descriptor-heap allocations for one sampled image and sampler.
 ///
 /// The binding is deliberately tied to descriptor offsets rather than a
@@ -292,8 +459,8 @@ pub struct SampledTextureHeapOffsets {
 /// is abandoned before submission, call [`Self::release`] instead.
 #[derive(Debug)]
 pub struct SampledTextureBinding {
-    image: DescriptorAllocation,
-    sampler: DescriptorAllocation,
+    image: SampledImageBinding,
+    sampler: SamplerBinding,
 }
 
 impl SampledTextureBinding {
@@ -338,32 +505,14 @@ impl SampledTextureBinding {
         sampler: &vk::SamplerCreateInfo,
     ) -> Result<Self> {
         validate_heaps_and_view(resource_heap, sampler_heap, view)?;
-        let image = resource_heap
-            .allocate(HeapDescriptorType::SampledImage)
-            .map_err(descriptor_error)?;
-        let sampler_allocation = match sampler_heap.allocate(HeapDescriptorType::Sampler) {
+        let image = SampledImageBinding::new(resource_heap, view, layout)?;
+        let sampler_allocation = match unsafe { SamplerBinding::new_raw(sampler_heap, sampler) } {
             Ok(allocation) => allocation,
             Err(error) => {
-                let _ = resource_heap.release(image);
-                return Err(descriptor_error(error));
+                let _ = image.release(resource_heap);
+                return Err(error);
             }
         };
-        let view_create_info = view.create_info();
-        if let Err(error) = unsafe {
-            resource_heap.write_image(
-                &image,
-                HeapDescriptorType::SampledImage,
-                &view_create_info,
-                layout,
-            )
-        } {
-            release_pair(resource_heap, sampler_heap, image, sampler_allocation);
-            return Err(error);
-        }
-        if let Err(error) = unsafe { sampler_heap.write_sampler(&sampler_allocation, sampler) } {
-            release_pair(resource_heap, sampler_heap, image, sampler_allocation);
-            return Err(error);
-        }
         Ok(Self {
             image,
             sampler: sampler_allocation,
@@ -384,13 +533,7 @@ impl SampledTextureBinding {
     /// Vulkan's mapping representation is 32-bit, so oversized heaps fail
     /// explicitly instead of truncating.
     pub fn push_index_heap_offsets(&self) -> Result<SampledTextureHeapOffsets> {
-        Ok(SampledTextureHeapOffsets {
-            image: u32::try_from(self.image.offset()).map_err(|_| {
-                Error::Validation("sampled-image descriptor offset exceeds u32".into())
-            })?,
-            sampler: u32::try_from(self.sampler.offset())
-                .map_err(|_| Error::Validation("sampler descriptor offset exceeds u32".into()))?,
-        })
+        SampledTextureHeapOffsets::from_bindings(&self.image, &self.sampler)
     }
 
     /// Produces the descriptor-heap SPIR-V mapping for this binding.
@@ -447,8 +590,8 @@ impl SampledTextureBinding {
         after: FrameToken,
     ) -> std::result::Result<(), DescriptorHeapError> {
         validate_owned_heaps(resource_heap, sampler_heap, &self)?;
-        resource_heap.retire(self.image, after)?;
-        sampler_heap.retire(self.sampler, after)
+        self.image.retire(resource_heap, after)?;
+        self.sampler.retire(sampler_heap, after)
     }
 
     /// Immediately returns both ranges when no command buffer has referenced
@@ -459,8 +602,8 @@ impl SampledTextureBinding {
         sampler_heap: &DescriptorHeap,
     ) -> std::result::Result<(), DescriptorHeapError> {
         validate_owned_heaps(resource_heap, sampler_heap, &self)?;
-        resource_heap.release(self.image)?;
-        sampler_heap.release(self.sampler)
+        self.image.release(resource_heap)?;
+        self.sampler.release(sampler_heap)
     }
 }
 
@@ -469,21 +612,29 @@ fn validate_heaps_and_view(
     sampler_heap: &DescriptorHeap,
     view: &ImageView,
 ) -> Result<()> {
-    if resource_heap.kind() != DescriptorHeapKind::Resource {
-        return Err(Error::Validation(
-            "sampled textures require a resource descriptor heap".into(),
-        ));
-    }
+    validate_resource_heap_and_view(resource_heap, view)?;
     if sampler_heap.kind() != DescriptorHeapKind::Sampler {
         return Err(Error::Validation(
             "sampled textures require a sampler descriptor heap".into(),
         ));
     }
-    if !Arc::ptr_eq(view.owner(), &resource_heap.owner)
-        || !Arc::ptr_eq(&resource_heap.owner, &sampler_heap.owner)
-    {
+    if !Arc::ptr_eq(&resource_heap.owner, &sampler_heap.owner) {
         return Err(Error::Validation(
             "sampled texture view and descriptor heaps must share one Device".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_resource_heap_and_view(resource_heap: &DescriptorHeap, view: &ImageView) -> Result<()> {
+    if resource_heap.kind() != DescriptorHeapKind::Resource {
+        return Err(Error::Validation(
+            "sampled images require a resource descriptor heap".into(),
+        ));
+    }
+    if !Arc::ptr_eq(view.owner(), &resource_heap.owner) {
+        return Err(Error::Validation(
+            "sampled image view and descriptor heap must share one Device".into(),
         ));
     }
     Ok(())
@@ -496,8 +647,8 @@ fn validate_owned_heaps(
 ) -> std::result::Result<(), DescriptorHeapError> {
     if resource_heap.kind() != DescriptorHeapKind::Resource
         || sampler_heap.kind() != DescriptorHeapKind::Sampler
-        || !resource_heap.owns(&binding.image)
-        || !sampler_heap.owns(&binding.sampler)
+        || !resource_heap.owns(&binding.image.image)
+        || !sampler_heap.owns(&binding.sampler.sampler)
     {
         return Err(DescriptorHeapError::WrongAllocator);
     }
@@ -508,29 +659,23 @@ fn descriptor_error(error: DescriptorHeapError) -> Error {
     Error::Validation(format!("allocate sampled-texture descriptor: {error}"))
 }
 
-fn release_pair(
-    resource_heap: &DescriptorHeap,
-    sampler_heap: &DescriptorHeap,
-    image: DescriptorAllocation,
-    sampler: DescriptorAllocation,
-) {
-    let _ = resource_heap.release(image);
-    let _ = sampler_heap.release(sampler);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn binding(image_offset: u64, sampler_offset: u64) -> SampledTextureBinding {
         SampledTextureBinding {
-            image: DescriptorAllocation {
-                range: image_offset..image_offset + 32,
-                allocator_id: 1,
+            image: SampledImageBinding {
+                image: DescriptorAllocation {
+                    range: image_offset..image_offset + 32,
+                    allocator_id: 1,
+                },
             },
-            sampler: DescriptorAllocation {
-                range: sampler_offset..sampler_offset + 16,
-                allocator_id: 2,
+            sampler: SamplerBinding {
+                sampler: DescriptorAllocation {
+                    range: sampler_offset..sampler_offset + 16,
+                    allocator_id: 2,
+                },
             },
         }
     }

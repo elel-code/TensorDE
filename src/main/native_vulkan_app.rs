@@ -23,15 +23,16 @@ use crate::windowing::{
     WindowAttributes, WindowEvent, WindowId,
 };
 use crate::{
+    FolderPreviewCacheStats, IconEngine, IconFrameBuilder, IconFrameConfig, IconFrameResources,
     ShellItemActivation, ShellScene, TextEngine, TextFrameBuilder, TextFrameResources,
     read_shell_entries_sync, scroll_delta_xy, view_point_from_physical_position, window_title,
 };
 
-/// Native Vulkan migration host for Fika's analytic chrome and R8 atlas text.
+/// Native Vulkan host for analytic chrome, sampled resident icons, and R8 text.
 ///
 /// This deliberately creates no wgpu object. It is selected only by
-/// `FIKA_VULKAN_RENDERER=1` while icons, SVG, and retained textures move to the
-/// same native submission path in later vertical slices.
+/// `FIKA_VULKAN_RENDERER=1`; unsupported SVG/composite source generation stays
+/// encoded until its corresponding Vulkan pipeline is available.
 pub(crate) struct FikaNativeVulkanApp {
     scene: ShellScene,
     event_loop_proxy: EventLoopProxy,
@@ -39,6 +40,7 @@ pub(crate) struct FikaNativeVulkanApp {
     navigation_rx: Receiver<ShellAsyncNavigationCompletion>,
     navigation_generations: [u64; 2],
     modifiers: Modifiers,
+    icon_engine: IconEngine,
     text_engine: TextEngine,
     // Drop before the Wayland window because its swapchain retains the surface.
     renderer: Option<VulkanState>,
@@ -55,6 +57,7 @@ impl FikaNativeVulkanApp {
             navigation_rx,
             navigation_generations: [0; 2],
             modifiers: Modifiers::default(),
+            icon_engine: IconEngine::new(),
             text_engine: TextEngine::new(),
             renderer: None,
             window: None,
@@ -344,15 +347,42 @@ impl FikaNativeVulkanApp {
             self.scene.ui_scale(),
             text_pixels,
         );
+        let resident_icons = renderer.icon_resident_index();
+        let mut icon_builder = IconFrameBuilder::new(
+            IconFrameResources::from_engine(&mut self.icon_engine, resident_icons),
+            IconFrameConfig {
+                surface_size: size,
+                ui_scale: self.scene.ui_scale(),
+                sync_resolve_budget: crate::shell::prewarm::icon_sync_resolve_budget_for_frame(
+                    if renderer.frame_count() == 0 {
+                        "startup"
+                    } else {
+                        "native-vulkan-frame"
+                    },
+                ),
+                folder_preview_cache: FolderPreviewCacheStats {
+                    ready_entries: self.scene.folder_preview_roles.borrow().ready_len(),
+                    ready_bytes: self.scene.folder_preview_roles.borrow().ready_bytes(),
+                },
+            },
+        );
         self.scene
             .push_native_frame_text(&mut text_builder, projections.projections(), size);
+        self.scene.push_native_frame_icons(
+            &mut icon_builder,
+            projections.projections(),
+            size,
+            text_builder.file_manager_midline_shift(),
+        );
         let mut text_frame = text_builder.finish();
+        let mut icon_frame = icon_builder.finish();
         drop(projections);
         let result = renderer.present_layers(
             event_loop,
             window,
             [0.0, 0.0, 0.0, 0.0],
             layers.as_refs(),
+            &mut icon_frame,
             &mut text_frame,
         );
         self.text_engine.staging_pixels = std::mem::take(&mut text_frame.pixels);
@@ -392,7 +422,7 @@ impl FikaNativeVulkanApp {
 
     fn exit(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_ref()
-            && let Err(error) = renderer.wait_idle("native-quad-shutdown")
+            && let Err(error) = renderer.wait_idle("native-renderer-shutdown")
         {
             eprintln!("[fika-vulkan] shutdown wait failed: {error}");
         }
@@ -412,7 +442,7 @@ impl ApplicationHandler for FikaNativeVulkanApp {
             return;
         }
         if let Err(error) = self.create_window_and_renderer(event_loop) {
-            eprintln!("[fika-vulkan] native quad startup failed: {error}");
+            eprintln!("[fika-vulkan] native renderer startup failed: {error}");
             self.exit(event_loop);
             return;
         }
@@ -427,7 +457,9 @@ impl ApplicationHandler for FikaNativeVulkanApp {
         if animations_finished {
             self.request_redraw();
         }
-        if self.scene.animation_active() {
+        let icon_work_pending = self.icon_engine.resolver.has_visible_pending()
+            || self.icon_engine.thumbnails.has_visible_pending();
+        if self.scene.animation_active() || icon_work_pending {
             self.request_redraw();
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 self.scene
@@ -498,7 +530,7 @@ impl ApplicationHandler for FikaNativeVulkanApp {
             _ => Ok(()),
         };
         if let Err(error) = outcome {
-            eprintln!("[fika-vulkan] native quad frame failed: {error}");
+            eprintln!("[fika-vulkan] native renderer frame failed: {error}");
             self.exit(event_loop);
             return;
         }

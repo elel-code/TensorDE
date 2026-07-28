@@ -4,6 +4,10 @@ mod windowing;
 mod native_vulkan_app;
 #[path = "main/vulkan_frame.rs"]
 mod vulkan_frame;
+#[path = "main/vulkan_icon.rs"]
+mod vulkan_icon;
+#[path = "main/vulkan_icon_spirv.rs"]
+mod vulkan_icon_spirv;
 #[path = "main/vulkan_rect.rs"]
 mod vulkan_rect;
 #[path = "main/vulkan_rect_spirv.rs"]

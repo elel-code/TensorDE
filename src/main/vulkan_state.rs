@@ -9,9 +9,11 @@ use vulkan_renderer::{
     SwapchainDescriptor, UploadBelt, UploadBeltDescriptor, vk,
 };
 
+use crate::IconFrame;
 use crate::TextFrame;
 use crate::ViewRect;
 use crate::vulkan_frame::{FrameVertexBuffer, compile_frame_barriers};
+use crate::vulkan_icon::VulkanIconRenderer;
 use crate::vulkan_rect::{
     NativeFrameLayerRefs, VulkanRectInstance, VulkanRectRenderer, VulkanRectStream,
 };
@@ -37,6 +39,7 @@ pub(crate) struct VulkanState {
     pipeline_cache: PipelineCache,
     allocator: MemoryAllocator,
     rect_renderer: VulkanRectRenderer,
+    icon_renderer: VulkanIconRenderer,
     text_renderer: VulkanTextRenderer,
     base_rect_stream: VulkanRectStream,
     overlay_rect_stream: VulkanRectStream,
@@ -105,6 +108,12 @@ impl VulkanState {
             .map_err(|error| format!("create Fika Vulkan pipeline cache: {error}"))?;
         let rect_renderer =
             VulkanRectRenderer::new(&device, &pipeline_cache, swapchain.configuration().format)?;
+        let icon_renderer = VulkanIconRenderer::new(
+            &device,
+            &allocator,
+            &pipeline_cache,
+            swapchain.configuration().format,
+        )?;
         let text_renderer = VulkanTextRenderer::new(
             &device,
             &allocator,
@@ -152,6 +161,7 @@ impl VulkanState {
             pipeline_cache,
             allocator,
             rect_renderer,
+            icon_renderer,
             text_renderer,
             base_rect_stream,
             overlay_rect_stream,
@@ -174,6 +184,10 @@ impl VulkanState {
         self.frame_count
     }
 
+    pub(crate) fn icon_resident_index(&self) -> crate::IconGpuResidentIndex {
+        self.icon_renderer.resident_index()
+    }
+
     /// Replaces the swapchain only when its configured extent differs from
     /// the window's current physical extent.
     pub(crate) fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), String> {
@@ -192,14 +206,15 @@ impl VulkanState {
             .map_err(|error| format!("idle Vulkan device for {label}: {error}"))
     }
 
-    /// Records analytic chrome and R8-atlas text in one dynamic-rendering scope
-    /// and one acquire/submit/present transaction.
+    /// Records analytic chrome, resident icons, and R8-atlas text in one
+    /// dynamic-rendering scope and one acquire/submit/present transaction.
     pub(crate) fn present_layers(
         &mut self,
         event_loop: &ActiveEventLoop,
         window: &Window,
         clear: [f32; 4],
         layers: NativeFrameLayerRefs<'_>,
+        icons: &mut IconFrame,
         text: &mut TextFrame,
     ) -> Result<(), String> {
         let slot_index = self.next_frame_slot;
@@ -215,6 +230,7 @@ impl VulkanState {
             .completed_timeline()
             .map_err(|error| format!("query completed Vulkan text frames: {error}"))?;
         self.text_renderer.reclaim(completed);
+        self.icon_renderer.reclaim(completed);
 
         let acquired = unsafe { self.swapchain.acquire_next_image(u64::MAX, &slot.acquire) }
             .map_err(|error| format!("acquire Vulkan swapchain image: {error}"))?;
@@ -243,7 +259,13 @@ impl VulkanState {
             self.last_submission,
             queue_family,
         )?;
-        let mut vertex_buffers = Vec::with_capacity(3);
+        let icon_vertex_uploaded = self.icon_renderer.upload(
+            &self.allocator,
+            &mut uploads,
+            icons,
+            self.last_submission,
+        )?;
+        let mut vertex_buffers = Vec::with_capacity(4);
         if let Some(buffer) = self.base_rect_stream.vertex_buffer() {
             vertex_buffers.push(FrameVertexBuffer {
                 buffer,
@@ -260,6 +282,12 @@ impl VulkanState {
             vertex_buffers.push(FrameVertexBuffer {
                 buffer,
                 uploaded: text_vertex_uploaded,
+            });
+        }
+        if let Some(buffer) = self.icon_renderer.vertex_buffer() {
+            vertex_buffers.push(FrameVertexBuffer {
+                buffer,
+                uploaded: icon_vertex_uploaded,
             });
         }
         let barriers = compile_frame_barriers(
@@ -313,9 +341,11 @@ impl VulkanState {
                 .map_err(|error| format!("set Vulkan scissor: {error}"))?;
             self.rect_renderer
                 .draw(&mut rendering, &self.base_rect_stream)?;
+            self.icon_renderer.draw_content(&mut rendering)?;
             self.text_renderer.draw(&mut rendering)?;
             self.rect_renderer
                 .draw(&mut rendering, &self.overlay_rect_stream)?;
+            self.icon_renderer.draw_overlay(&mut rendering)?;
             rendering.end();
             encoder.pipeline_barrier(&barriers.before_present);
         }
@@ -375,6 +405,11 @@ impl VulkanState {
             &self.pipeline_cache,
             replacement.configuration().format,
         )?;
+        self.icon_renderer.set_format(
+            &self.device,
+            &self.pipeline_cache,
+            replacement.configuration().format,
+        )?;
         let present_complete = create_present_semaphores(&self.device, replacement.image_count())?;
         self.swapchain = replacement;
         self.present_complete = present_complete;
@@ -418,6 +453,14 @@ impl VulkanState {
             NativeFrameLayerRefs {
                 base_rects: &probes,
                 overlay_rects: &[],
+            },
+            &mut IconFrame {
+                slots: Vec::new(),
+                content_batches: Vec::new(),
+                overlay_batches: Vec::new(),
+                content_vertices: Vec::new(),
+                overlay_vertices: Vec::new(),
+                stats: crate::IconFrameStats::default(),
             },
             &mut TextFrame {
                 vertices: Vec::new(),
