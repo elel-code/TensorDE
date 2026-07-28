@@ -17,20 +17,20 @@ class InteractiveClient:
     cwd: Path | None = None
 
 
-def ghostty_client() -> InteractiveClient:
-    # This only makes the command a new process. It does not choose a GTK/GDK
-    # backend: Ghostty still performs its ordinary Wayland-vs-X11 selection.
-    # Without it, a Ghostty already serving the suspended host desktop can
-    # accept this request over D-Bus and leave Tensor with no client at all.
-    return InteractiveClient("Ghostty", ("ghostty", "--gtk-single-instance=false"))
-
-
-def application_client(path: Path) -> InteractiveClient:
-    """Describe one executable application without invoking a shell."""
-    path = path.expanduser().resolve()
-    if not path.is_file() or not os.access(path, os.X_OK):
-        raise ValueError(f"application is not an executable file: {path}")
-    return InteractiveClient(path.name, (str(path),), path.parent)
+def client_from_argv(argv: list[str]) -> InteractiveClient:
+    """Describe one executable argv without invoking a shell."""
+    if not argv:
+        raise ValueError("--client requires at least one argv item")
+    program, *arguments = argv
+    if "/" in program:
+        path = Path(program).expanduser().resolve()
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise ValueError(f"client is not an executable file: {path}")
+        return InteractiveClient(path.name, (str(path), *arguments), path.parent)
+    executable = shutil.which(program)
+    if executable is None:
+        raise ValueError(f"client executable was not found on PATH: {program}")
+    return InteractiveClient(program, (executable, *arguments))
 
 
 def fcitx_launcher_command() -> tuple[str, ...]:

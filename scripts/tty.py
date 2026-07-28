@@ -18,9 +18,8 @@ import threading
 
 from tty_clients import (
     InteractiveClient,
-    application_client,
+    client_from_argv,
     fcitx_launcher_command,
-    ghostty_client,
     session_client_environment,
 )
 from tty_support import (
@@ -76,22 +75,13 @@ def parse_args() -> argparse.Namespace:
             "it requires real buffer import, KMS presentation, and release before succeeding"
         ),
     )
-    client = parser.add_mutually_exclusive_group()
-    client.add_argument(
-        "--ghostty",
-        action="store_true",
+    parser.add_argument(
+        "--client",
+        action="append",
+        metavar="ARG",
         help=(
-            "start a fresh Ghostty after Tensor enters its event loop; it uses Ghostty's "
-            "normal backend selection with Tensor's session Wayland endpoint"
-        ),
-    )
-    client.add_argument(
-        "--application",
-        type=Path,
-        metavar="PATH",
-        help=(
-            "start one executable application after Tensor enters its event loop, "
-            "with Tensor's native Wayland session environment"
+            "one argv item for a native Wayland smoke client; repeat in command order "
+            "(use --client=ARG for an argument beginning with -)"
         ),
     )
     parser.add_argument(
@@ -125,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration <= 0:
         parser.error("--duration must be greater than zero")
-    interactive_client = args.ghostty or args.application is not None
+    interactive_client = bool(args.client)
     if args.check and (args.dmabuf_smoke or interactive_client or args.fcitx):
         parser.error("TTY smoke clients require a real compositor session, not --check")
     if args.forever and args.dmabuf_smoke:
@@ -133,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     if args.dmabuf_smoke and interactive_client:
         parser.error("run --dmabuf-smoke and an interactive client as separate focused tests")
     if args.fcitx and not interactive_client:
-        parser.error("--fcitx requires --ghostty or --application")
+        parser.error("--fcitx requires at least one --client ARG")
     return args
 
 
@@ -638,14 +628,14 @@ def launch(
                     output_lock,
                     f"Tensor exited before opening the {client.name} launch gate",
                 )
-            if client is not None and not input_method_registered:
+            if fcitx and not input_method_registered:
                 note(
                     log,
                     output_lock,
                     "no Wayland input-method client registered; the active IM did not bind "
                     "Tensor's socket",
                 )
-            elif client is not None and not input_method_keyboard_grab:
+            elif fcitx and not input_method_keyboard_grab:
                 note(
                     log,
                     output_lock,
@@ -741,11 +731,7 @@ def main() -> int:
     command = command_for(args)
     environment = environment_for(args)
     try:
-        client = (
-            ghostty_client()
-            if args.ghostty
-            else application_client(args.application) if args.application is not None else None
-        )
+        client = client_from_argv(args.client) if args.client else None
     except ValueError as error:
         raise SystemExit(error) from error
     # Tensor itself owns its tracing file. The launcher only watches appended

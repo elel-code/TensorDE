@@ -65,52 +65,65 @@ Each `tty.py` invocation also supplies a unique private IPC endpoint through
 socket from blocking the TTY smoke run; it does not weaken IPC's rule that an
 ordinary compositor startup never removes an existing control socket.
 
-## Ghostty native-client smoke
+## Native client smoke
 
 From a Linux virtual terminal, run:
 
 ```sh
-uv run scripts/tty.py --ghostty --duration 30
+uv run scripts/tty.py --duration 30 \
+  --client ghostty \
+  --client=--gtk-single-instance=false
 ```
 
 Do not add `--no-xwayland`: the default configuration starts rootless XWayland
 as part of this session. The launcher waits until Tensor reports that it has
-entered its compositor event loop, then starts a new Ghostty with
-`WAYLAND_DISPLAY` set to Tensor's socket. Ghostty retains its normal backend
+entered its compositor event loop, then starts the supplied client argv with
+`WAYLAND_DISPLAY` set to Tensor's socket. The client retains its normal backend
 selection; Tensor does not set `GDK_BACKEND`. The launcher's parent process is
 not part of the new session, so it removes the host session's stale `DISPLAY`,
 just as Tensor's `ProcessLauncher` clears managed session values before
-installing Tensor's published environment. `--gtk-single-instance=false` only
-ensures that an existing host Ghostty cannot receive the request over D-Bus;
-it does not select a client backend.
+installing Tensor's published environment. Each repeated `--client ARG` adds
+one direct argv item without invoking a shell. Use `--client=ARG` when an
+argument begins with `-`. In the Ghostty example,
+`--gtk-single-instance=false` only ensures that an existing host Ghostty cannot
+receive the request over D-Bus; it does not select a client backend.
 
 This is a native Wayland rendering and input test, not an X11-client test. The
 Tensor log should contain `entering compositor event loop`; the launcher log
-should contain `client launch gate opened` and `starting Ghostty with its
-normal backend selection`. The terminal must appear and accept input before
-the bounded launch restores the previous session. Ghostty's stdout and stderr
-are retained in the launcher log for diagnosis.
+should contain `client launch gate opened` and the supplied client command. The
+client window must appear and accept input before the bounded launch restores
+the previous session. Its stdout and stderr are retained in the launcher log
+for diagnosis.
 
 To include the native Fcitx path, run:
 
 ```sh
-uv run scripts/tty.py --ghostty --fcitx --duration 30
+uv run scripts/tty.py --fcitx --duration 30 \
+  --client ghostty \
+  --client=--gtk-single-instance=false
 ```
 
 `--fcitx` runs Fcitx's `fcitx5-wayland-launcher` after Tensor publishes its
 socket, then waits for Tensor to record `input-method client registered` and
-`input-method keyboard grab registered` before it starts Ghostty. The launcher
-asks the existing Fcitx daemon to attach a second Wayland connection; it never
-uses `fcitx5 --replace`, so the Fcitx instance serving a suspended niri session
-is not restarted or taken over. A missing Fcitx daemon, missing launcher, or
-missing keyboard grab fails this focused smoke instead of silently testing
-without an input method.
+`input-method keyboard grab registered` before it starts the generic client.
+The launcher asks the existing Fcitx daemon to attach a second Wayland
+connection; it never uses `fcitx5 --replace`, so the Fcitx instance serving a
+suspended niri session is not restarted or taken over. A missing Fcitx daemon,
+missing launcher, or missing keyboard grab fails this focused smoke instead of
+silently testing without an input method.
 
-Use `--application PATH` to run another executable under the same native
-Wayland environment. It is mutually exclusive with `--ghostty`, captures the
-application's output in the launcher log, and never supplies the suspended
-host's `DISPLAY`. This is the appropriate route for an application that works
-under one compositor but not another.
+For example, run the GUI.for.SingBox binary under the same native Wayland
+environment with:
+
+```sh
+uv run scripts/tty.py --duration 30 \
+  --client /home/yk/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox
+```
+
+Any client command follows this same path; it captures the application's output
+in the launcher log and never supplies the suspended host's `DISPLAY`. This is
+the appropriate route for an application that works under one compositor but
+not another.
 
 The compositor-owned arrow must be visible as soon as libinput publishes a
 pointer capability, including when that device appears after the first output

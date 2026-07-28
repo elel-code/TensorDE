@@ -77,21 +77,30 @@ after explicit-modifier dma-buf import, XDG configure, frame callbacks,
 SHM or implicit-modifier fallback.
 
 For the first interactive client test, leave XWayland enabled (the default) and
-run `uv run scripts/tty.py --ghostty --duration 30` from a virtual terminal.
+run the following from a virtual terminal:
+
+```sh
+uv run scripts/tty.py --duration 30 \
+  --client ghostty \
+  --client=--gtk-single-instance=false
+```
+
 The launcher waits until Tensor has entered its compositor event loop before
-starting a fresh Ghostty. It supplies Tensor's `WAYLAND_DISPLAY` session value
-and lets Ghostty choose its usual backend; it does not set `GDK_BACKEND`. A
-stale `DISPLAY` belonging to the suspended host session is removed, matching
-Tensor's own autostart environment hygiene. `--gtk-single-instance=false` only
-prevents an already-running host Ghostty from receiving the request over D-Bus;
-it does not force the client backend. The bounded run returns to the prior
-session automatically; use `--forever` only after the first visual check
-succeeds.
+starting the supplied direct client argv. It supplies Tensor's `WAYLAND_DISPLAY`
+session value and lets the client choose its usual backend; it does not set
+`GDK_BACKEND`. Repeat `--client ARG` for each argv item (use `--client=ARG` for
+an item beginning with `-`). A stale `DISPLAY` belonging to the suspended host
+session is removed, matching Tensor's own autostart environment hygiene. In
+the example, `--gtk-single-instance=false` only prevents an already-running
+host Ghostty from receiving the request over D-Bus; it does not force the client
+backend. The bounded run returns to the prior session automatically; use
+`--forever` only after the first visual check succeeds.
 
 Add `--fcitx` to make the TTY launcher attach the existing Fcitx daemon to
-Tensor before Ghostty starts, and use `--application /absolute/path/to/app` to
-exercise a different native Wayland client. Both routes remove the suspended
-host `DISPLAY`; neither turns the test into an X11 fallback.
+Tensor before the generic client starts. For example, use
+`--client /absolute/path/to/app` to exercise a different native Wayland
+client. Every client route removes the suspended host `DISPLAY`; none turns the
+test into an X11 fallback.
 
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
