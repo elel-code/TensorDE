@@ -655,6 +655,20 @@ impl CursorState {
             )
     }
 
+    pub(in crate::protocol) fn source_position_for_surface(
+        &self,
+        surface: &WlSurface,
+        pointer: Option<LogicalPoint<f64>>,
+    ) -> Option<(u64, LogicalPoint<f64>)> {
+        if matches!(&self.image, CursorImage::Surface(current) if current == surface) {
+            return pointer.map(|location| (0, location));
+        }
+        self.tablets.iter().find_map(|tablet| {
+            matches!(&tablet.image, CursorImage::Surface(current) if current == surface)
+                .then_some((tablet.tool.get(), tablet.location))
+        })
+    }
+
     pub(in crate::protocol) fn pointer_uses_surface(&self, surface: &WlSurface) -> bool {
         matches!(&self.image, CursorImage::Surface(current) if current == surface)
     }

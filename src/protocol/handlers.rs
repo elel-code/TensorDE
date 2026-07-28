@@ -158,8 +158,10 @@ impl RuntimeState {
         }
         #[cfg(feature = "tty")]
         if cursor_commit {
+            self.queue_cursor_surface_memberships(surface);
             self.refresh_cursor_surface_outputs();
-            self.request_redraw_all();
+            self.queue_cursor_surface_memberships(surface);
+            self.flush_queued_redraws();
         }
         #[cfg(feature = "tty")]
         if dnd_icon_commit {
@@ -187,11 +189,22 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         let previous_input_popup_root = self.input_method_popup_root();
         #[cfg(feature = "tty")]
+        let cursor_source = self
+            .cursor
+            .source_position_for_surface(surface, self.input_seat.pointer_location());
+        #[cfg(feature = "tty")]
+        if cursor_source.is_some() {
+            self.queue_cursor_surface_memberships(surface);
+        }
+        #[cfg(feature = "tty")]
         if self.cursor.surface_destroyed(surface) {
             for output in self.space.outputs() {
                 output.forget_surface(surface);
             }
-            self.request_redraw_all();
+            if let Some((source, location)) = cursor_source {
+                self.queue_cursor_redraw_between(source, location, location);
+            }
+            self.flush_queued_redraws();
         }
         self.input_seat.surface_destroyed(surface);
         #[cfg(feature = "xwayland")]

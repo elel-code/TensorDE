@@ -110,6 +110,28 @@ impl RuntimeState {
         self.flush_queued_redraws();
     }
 
+    pub(crate) fn queue_cursor_surface_memberships(
+        &mut self,
+        surface: &wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        let space = &self.space;
+        let redraw_states = &mut self.redraw_states;
+        crate::protocol::globals::compositor::with_states(surface, |states| {
+            let Some(storage) = states
+                .data_map
+                .get::<std::sync::Mutex<crate::protocol::globals::seat::CursorSurfaceState>>()
+            else {
+                return;
+            };
+            let cursor = storage.lock().unwrap();
+            for output in space.outputs() {
+                if cursor.outputs.contains(&output.instance_id()) {
+                    queue_output(redraw_states, output.id());
+                }
+            }
+        });
+    }
+
     pub(crate) fn refresh_cursor_surface_outputs(&mut self) {
         let space = &self.space;
         self.cursor.drain_retired_surfaces(|surface| {
