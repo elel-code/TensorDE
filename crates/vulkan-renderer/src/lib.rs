@@ -49,8 +49,8 @@ pub use command::{
 pub use descriptor_heap::{
     DescriptorAllocation, DescriptorHeap, DescriptorHeapAllocator, DescriptorHeapDescriptor,
     DescriptorHeapError, DescriptorHeapKind, HeapDescriptorType, SampledTextureBinding,
-    SampledTextureShaderBindings, SamplerAddressMode, SamplerBorderColor, SamplerCompareFunction,
-    SamplerDescriptor, SamplerFilterMode,
+    SampledTextureHeapOffsets, SampledTextureShaderBindings, SamplerAddressMode,
+    SamplerBorderColor, SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
 };
 pub use dynamic_buffer::{DynamicBuffer, DynamicBufferDescriptor, DynamicBufferUpload};
 pub use error::{Error, Result};
@@ -69,10 +69,10 @@ pub use memory::{
 pub use pipeline::{
     BlendComponent, BlendState, ColorTargetState, ComputePipeline, ComputePipelineDescriptor,
     ConstantOffsetMapping, DepthBiasState, DepthState, DepthStencilState, FragmentState,
-    GraphicsPipeline, GraphicsPipelineDescriptor, MultisampleState, PipelineCache,
-    PipelineCacheDescriptor, PrimitiveState, ProgrammableStage, ShaderBindingMap,
-    ShaderBindingMapError, ShaderBindingMapping, StencilState, VertexAttribute, VertexBufferLayout,
-    VertexState, VertexStepMode,
+    GraphicsPipeline, GraphicsPipelineDescriptor, IndirectIndexMapping, MultisampleState,
+    PipelineCache, PipelineCacheDescriptor, PrimitiveState, ProgrammableStage, PushIndexMapping,
+    ShaderBindingMap, ShaderBindingMapError, ShaderBindingMapping, ShaderBindingSource,
+    StencilState, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
 };
 pub use present::{
     AcquiredSurfaceTexture, PresentMode, PresentStatus, Surface, SurfaceCapabilities,

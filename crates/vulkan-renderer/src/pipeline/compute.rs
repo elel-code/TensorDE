@@ -69,6 +69,16 @@ impl Backend {
         &self,
         descriptor: &ComputePipelineDescriptor<'_>,
     ) -> Result<ComputePipeline> {
+        if !self.features().contains(crate::Features::DESCRIPTOR_HEAP) {
+            return Err(Error::Validation(
+                "compute pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
+            ));
+        }
+        descriptor
+            .stage
+            .bindings
+            .validate_for_device(self.device_info().limits.descriptor_heap)
+            .map_err(|error| Error::Validation(format!("compute shader binding map: {error}")))?;
         let owner = self.shared_owner();
         if !descriptor.stage.module.belongs_to(&owner) {
             return Err(Error::Validation(

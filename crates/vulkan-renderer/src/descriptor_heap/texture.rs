@@ -15,8 +15,8 @@ use super::{
     HeapDescriptorType,
 };
 use crate::{
-    ConstantOffsetMapping, Error, FrameToken, ImageView, Result, ShaderBindingMap,
-    ShaderBindingMapping,
+    ConstantOffsetMapping, Error, FrameToken, ImageView, PushIndexMapping, Result,
+    ShaderBindingMap, ShaderBindingMapping, ShaderBindingSource,
 };
 
 /// Filtering mode for a descriptor-heap sampler.
@@ -230,6 +230,57 @@ impl SampledTextureShaderBindings {
         }
         Ok(())
     }
+
+    /// Creates one pipeline-stable push-index mapping for the separate image
+    /// and sampler bindings.
+    ///
+    /// Each pushed `u32` is the descriptor's byte offset in its selected heap;
+    /// `heap_index_stride` is therefore one. Replacing an atlas allocation
+    /// changes only push data, not pipeline creation state.
+    pub fn push_index_shader_binding_map(
+        self,
+        image_push_offset: u32,
+        sampler_push_offset: u32,
+    ) -> Result<ShaderBindingMap> {
+        self.validate()?;
+        ShaderBindingMap::new(vec![
+            ShaderBindingMapping {
+                descriptor_set: self.descriptor_set,
+                first_binding: self.image_binding,
+                binding_count: 1,
+                resource_mask: vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
+                source: ShaderBindingSource::PushIndex(PushIndexMapping {
+                    heap_offset: 0,
+                    push_offset: image_push_offset,
+                    heap_index_stride: 1,
+                    heap_array_stride: 0,
+                }),
+            },
+            ShaderBindingMapping {
+                descriptor_set: self.descriptor_set,
+                first_binding: self.sampler_binding,
+                binding_count: 1,
+                resource_mask: vk::SpirvResourceTypeFlagsEXT::SAMPLER,
+                source: ShaderBindingSource::PushIndex(PushIndexMapping {
+                    heap_offset: 0,
+                    push_offset: sampler_push_offset,
+                    heap_index_stride: 1,
+                    heap_array_stride: 0,
+                }),
+            },
+        ])
+        .map_err(|error| {
+            Error::Validation(format!("build sampled-texture push-index mapping: {error}"))
+        })
+    }
+}
+
+/// Descriptor byte offsets written to the push-data locations declared by
+/// [`SampledTextureShaderBindings::push_index_shader_binding_map`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SampledTextureHeapOffsets {
+    pub image: u32,
+    pub sampler: u32,
 }
 
 /// A pair of descriptor-heap allocations for one sampled image and sampler.
@@ -329,6 +380,19 @@ impl SampledTextureBinding {
         self.sampler.offset()
     }
 
+    /// Returns exact descriptor byte offsets suitable as push-index values.
+    /// Vulkan's mapping representation is 32-bit, so oversized heaps fail
+    /// explicitly instead of truncating.
+    pub fn push_index_heap_offsets(&self) -> Result<SampledTextureHeapOffsets> {
+        Ok(SampledTextureHeapOffsets {
+            image: u32::try_from(self.image.offset()).map_err(|_| {
+                Error::Validation("sampled-image descriptor offset exceeds u32".into())
+            })?,
+            sampler: u32::try_from(self.sampler.offset())
+                .map_err(|_| Error::Validation("sampler descriptor offset exceeds u32".into()))?,
+        })
+    }
+
     /// Produces the descriptor-heap SPIR-V mapping for this binding.
     ///
     /// The resulting map uses one `SAMPLED_IMAGE` and one `SAMPLER` mapping,
@@ -339,34 +403,34 @@ impl SampledTextureBinding {
         bindings: SampledTextureShaderBindings,
     ) -> Result<ShaderBindingMap> {
         bindings.validate()?;
-        let image_offset = u32::try_from(self.image.offset())
-            .map_err(|_| Error::Validation("sampled-image descriptor offset exceeds u32".into()))?;
-        let sampler_offset = u32::try_from(self.sampler.offset())
-            .map_err(|_| Error::Validation("sampler descriptor offset exceeds u32".into()))?;
+        let offsets = self.push_index_heap_offsets()?;
         ShaderBindingMap::new(vec![
             ShaderBindingMapping {
                 descriptor_set: bindings.descriptor_set,
                 first_binding: bindings.image_binding,
                 binding_count: 1,
                 resource_mask: vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
-                constant_offset: ConstantOffsetMapping {
-                    resource_heap_offset: image_offset,
-                    resource_array_stride: 0,
+                source: ShaderBindingSource::ConstantOffset(ConstantOffsetMapping {
+                    heap_offset: offsets.image,
+                    heap_array_stride: 0,
                     sampler_heap_offset: 0,
-                    sampler_array_stride: 0,
-                },
+                    sampler_heap_array_stride: 0,
+                }),
             },
             ShaderBindingMapping {
                 descriptor_set: bindings.descriptor_set,
                 first_binding: bindings.sampler_binding,
                 binding_count: 1,
                 resource_mask: vk::SpirvResourceTypeFlagsEXT::SAMPLER,
-                constant_offset: ConstantOffsetMapping {
-                    resource_heap_offset: 0,
-                    resource_array_stride: 0,
-                    sampler_heap_offset: sampler_offset,
-                    sampler_array_stride: 0,
-                },
+                source: ShaderBindingSource::ConstantOffset(ConstantOffsetMapping {
+                    // A separate OpTypeSampler uses heapOffset; Vulkan's
+                    // samplerHeapOffset is only the sampler half of an
+                    // OpTypeSampledImage.
+                    heap_offset: offsets.sampler,
+                    heap_array_stride: 0,
+                    sampler_heap_offset: 0,
+                    sampler_heap_array_stride: 0,
+                }),
             },
         ])
         .map_err(|error| {
@@ -483,13 +547,29 @@ mod tests {
             map.mappings()[0].resource_mask,
             vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE
         );
-        assert_eq!(map.mappings()[0].constant_offset.resource_heap_offset, 256);
+        assert_eq!(
+            map.mappings()[0].source,
+            ShaderBindingSource::ConstantOffset(ConstantOffsetMapping {
+                heap_offset: 256,
+                heap_array_stride: 0,
+                sampler_heap_offset: 0,
+                sampler_heap_array_stride: 0,
+            })
+        );
         assert_eq!(map.mappings()[1].first_binding, 7);
         assert_eq!(
             map.mappings()[1].resource_mask,
             vk::SpirvResourceTypeFlagsEXT::SAMPLER
         );
-        assert_eq!(map.mappings()[1].constant_offset.sampler_heap_offset, 64);
+        assert_eq!(
+            map.mappings()[1].source,
+            ShaderBindingSource::ConstantOffset(ConstantOffsetMapping {
+                heap_offset: 64,
+                heap_array_stride: 0,
+                sampler_heap_offset: 0,
+                sampler_heap_array_stride: 0,
+            })
+        );
     }
 
     #[test]
@@ -504,6 +584,38 @@ mod tests {
             binding(u64::from(u32::MAX) + 1, 16)
                 .shader_binding_map(SampledTextureShaderBindings::new(0, 0, 1))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn sampled_texture_push_index_map_keeps_pipeline_independent_of_heap_slot() {
+        let map = SampledTextureShaderBindings::new(2, 3, 7)
+            .push_index_shader_binding_map(0, 4)
+            .unwrap();
+        assert_eq!(
+            map.mappings()[0].source,
+            ShaderBindingSource::PushIndex(PushIndexMapping {
+                heap_offset: 0,
+                push_offset: 0,
+                heap_index_stride: 1,
+                heap_array_stride: 0,
+            })
+        );
+        assert_eq!(
+            map.mappings()[1].source,
+            ShaderBindingSource::PushIndex(PushIndexMapping {
+                heap_offset: 0,
+                push_offset: 4,
+                heap_index_stride: 1,
+                heap_array_stride: 0,
+            })
+        );
+        assert_eq!(
+            binding(256, 64).push_index_heap_offsets().unwrap(),
+            SampledTextureHeapOffsets {
+                image: 256,
+                sampler: 64,
+            }
         );
     }
 

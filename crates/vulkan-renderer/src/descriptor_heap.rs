@@ -15,8 +15,9 @@ mod texture;
 mod write;
 
 pub use texture::{
-    SampledTextureBinding, SampledTextureShaderBindings, SamplerAddressMode, SamplerBorderColor,
-    SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
+    SampledTextureBinding, SampledTextureHeapOffsets, SampledTextureShaderBindings,
+    SamplerAddressMode, SamplerBorderColor, SamplerCompareFunction, SamplerDescriptor,
+    SamplerFilterMode,
 };
 
 /// Byte range inside a descriptor heap buffer.

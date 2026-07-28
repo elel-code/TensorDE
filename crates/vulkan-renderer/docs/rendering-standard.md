@@ -146,6 +146,22 @@ while submitted bindings retire only after their final timeline token. It does
 not hide image layout transitions, descriptor heap binding, or image-view
 submission retention.
 
+Pipelines that select atlas/material slots per draw use
+`ShaderBindingSource::PushIndex`; GPU-driven tables use
+`ShaderBindingSource::IndirectIndex`. The heap base and descriptor stride stay
+pipeline-stable while push data or immutable indirect index memory selects the
+current slot, so replacing an atlas descriptor does not require pipeline
+recreation. The mapping contract validates Vulkan's offset alignment,
+device-specific descriptor alignment, and `maxPushDataSize`; indirect index
+memory still requires an explicit uniform-read dependency and timeline-safe
+lifetime.
+
+For separately sampled textures,
+`SampledTextureShaderBindings::push_index_shader_binding_map` reserves one
+`u32` push-data location for the image and one for the sampler. The active
+`SampledTextureBinding::push_index_heap_offsets` values are the only state that
+changes when either descriptor allocation moves.
+
 ## Memory classes
 
 Buffer, linear-image, and optimal-image suballocations are distinct classes.

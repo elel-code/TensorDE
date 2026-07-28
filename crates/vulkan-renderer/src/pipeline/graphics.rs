@@ -270,6 +270,19 @@ impl Backend {
                 "graphics pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
             ));
         }
+        let heap_limits = self.device_info().limits.descriptor_heap;
+        descriptor
+            .vertex
+            .stage
+            .bindings
+            .validate_for_device(heap_limits)
+            .map_err(|error| Error::Validation(format!("vertex shader binding map: {error}")))?;
+        descriptor
+            .fragment
+            .stage
+            .bindings
+            .validate_for_device(heap_limits)
+            .map_err(|error| Error::Validation(format!("fragment shader binding map: {error}")))?;
         validate_descriptor(descriptor, &self.shared_owner())?;
         create_graphics_pipeline(self.shared_owner(), descriptor)
     }

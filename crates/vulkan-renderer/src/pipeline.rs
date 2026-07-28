@@ -20,7 +20,8 @@ pub use graphics::{
 };
 pub(crate) use graphics::{format_has_depth, format_has_stencil};
 pub use mapping::{
-    ConstantOffsetMapping, ShaderBindingMap, ShaderBindingMapError, ShaderBindingMapping,
+    ConstantOffsetMapping, IndirectIndexMapping, PushIndexMapping, ShaderBindingMap,
+    ShaderBindingMapError, ShaderBindingMapping, ShaderBindingSource,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

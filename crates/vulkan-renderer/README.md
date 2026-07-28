@@ -82,14 +82,23 @@ sampler heap descriptors for an `ImageView`, produces a checked
 `release` (never submitted) and `retire` (timeline-safe reuse) transitions.
 The image view implements `SubmissionResource`, so command recording can retain
 it without an application-owned per-frame lifetime list.
+`SampledTextureShaderBindings::push_index_shader_binding_map` instead keeps the
+pipeline independent of concrete heap slots; `SampledTextureBinding` supplies
+the checked image/sampler byte offsets to write into push data after an atlas
+replacement.
 
 Shader modules accept owned, structurally validated SPIR-V 1.0–1.6 words.
 `ShaderBindingMap` canonicalizes set/binding ranges and rejects empty,
 overflowing, or overlapping mappings before it constructs the borrowed
-`VkShaderDescriptorSetAndBindingMappingInfoEXT` chain. Graphics pipeline
-creation always sets `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT`, always
-uses a null pipeline layout, and always uses dynamic rendering. Pipeline caches
-are host-synchronized and checked against the creating device.
+`VkShaderDescriptorSetAndBindingMappingInfoEXT` chain. Its tagged
+`ShaderBindingSource` exposes constant-offset, push-index, and indirect-index
+heap addressing without exposing Vulkan's untagged union. Dynamic sources
+enforce their 4/8-byte offset rules immediately; pipeline creation additionally
+checks `maxPushDataSize` and descriptor-class alignment against the selected
+adapter. Graphics pipeline creation always sets
+`VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT`, always uses a null pipeline
+layout, and always uses dynamic rendering. Pipeline caches are host-synchronized
+and checked against the creating device.
 
 `CommandEncoder::begin_rendering` creates a borrowed rendering scope whose drop
 records `vkCmdEndRendering`. Attachment ownership, layouts, resolve contracts,

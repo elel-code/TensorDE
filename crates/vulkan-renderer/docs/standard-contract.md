@@ -101,7 +101,9 @@ from a sampler heap owned by the same logical device as its `ImageView`.
 1. `SampledTextureShaderBindings` MUST use distinct bindings for image and
    sampler. The generated `ShaderBindingMap` MUST retain exact heap offsets,
    reject offsets that do not fit Vulkan's `u32` mapping fields, and use zero
-   array stride for its one-element mappings.
+   array stride for its one-element mappings. A separate `OpTypeSampler` MUST
+   use `VkDescriptorMappingSourceConstantOffsetEXT.heapOffset`;
+   `samplerHeapOffset` is only the sampler half of an `OpTypeSampledImage`.
 2. The caller MUST retain the `ImageView` through every command submission
    that samples it. `ImageView` implements `SubmissionResource` for this
    purpose; descriptor heaps themselves remain explicit application-owned
@@ -112,6 +114,31 @@ from a sampler heap owned by the same logical device as its `ImageView`.
 4. The declared descriptor image layout MUST match the render graph's sampled
    image state. The helper does not insert an implicit layout transition or
    create a descriptor-set compatibility path.
+5. A push-index sampled-texture map MUST interpret each pushed `u32` as an
+   exact descriptor byte offset (`heapIndexStride = 1`). The value MUST come
+   from `SampledTextureBinding::push_index_heap_offsets` so an offset beyond
+   the mapping's 32-bit representation fails instead of truncating.
+
+### Shader binding mapping
+
+1. `ShaderBindingSource` MUST be the sole safe representation of Vulkan's
+   `source`/`sourceData` tagged union. The source tag and union member MUST be
+   generated from the same enum variant.
+2. `PushIndexMapping.push_offset` MUST be 4-byte aligned and address a complete
+   `u32` inside `maxPushDataSize`. `IndirectIndexMapping.push_offset` MUST be
+   8-byte aligned and address a complete `VkDeviceAddress`; its
+   `address_offset` MUST be 4-byte aligned.
+3. Heap offsets and array strides MUST satisfy every image, buffer, or sampler
+   descriptor alignment selected by the mapping's resource mask. Pipeline
+   creation MUST validate these device-dependent rules before Vulkan sees the
+   mapping.
+4. Memory read by an indirect-index mapping MUST remain immutable while any
+   consuming shader invocation is in flight and MUST be synchronized for
+   `VK_ACCESS_2_UNIFORM_READ_BIT`.
+5. The standard path declares sampled images and samplers separately. A safe
+   dynamic mapping MUST reject `OpTypeSampledImage` until both its resource and
+   sampler calculations are represented explicitly; it MUST NOT manufacture
+   a zeroed sampler mapping.
 
 ## FIFO latest-ready
 
