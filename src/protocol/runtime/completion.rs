@@ -15,7 +15,7 @@ use crate::protocol::state::RuntimeState;
 #[cfg(feature = "tty")]
 const MAX_DRM_COMPLETION_SOURCES: usize = 16;
 #[cfg(feature = "tty")]
-const MAIN_COMPLETION_CAPACITY: usize = 3 + MAX_DRM_COMPLETION_SOURCES;
+const MAIN_COMPLETION_CAPACITY: usize = 4 + MAX_DRM_COMPLETION_SOURCES;
 #[cfg(not(feature = "tty"))]
 const MAIN_COMPLETION_CAPACITY: usize = 3;
 
@@ -29,6 +29,8 @@ enum MainCompletion {
     CommitTimer(io::Result<()>),
     IdleTimer(io::Result<()>),
     #[cfg(feature = "tty")]
+    CursorTimer(io::Result<()>),
+    #[cfg(feature = "tty")]
     Drm {
         device_id: u64,
         result: io::Result<()>,
@@ -39,6 +41,8 @@ struct TurnCompletions {
     worker: Option<io::Result<u64>>,
     commit_timer: Option<io::Result<()>>,
     idle_timer: Option<io::Result<()>>,
+    #[cfg(feature = "tty")]
+    cursor_timer: Option<io::Result<()>>,
     #[cfg(feature = "tty")]
     drm: [Option<DrmCompletion>; MAX_DRM_COMPLETION_SOURCES],
     #[cfg(feature = "tty")]
@@ -58,6 +62,8 @@ impl TurnCompletions {
             commit_timer: None,
             idle_timer: None,
             #[cfg(feature = "tty")]
+            cursor_timer: None,
+            #[cfg(feature = "tty")]
             drm: std::array::from_fn(|_| None),
             #[cfg(feature = "tty")]
             drm_len: 0,
@@ -69,6 +75,8 @@ impl TurnCompletions {
             MainCompletion::Worker(result) => self.worker.replace(result).is_some(),
             MainCompletion::CommitTimer(result) => self.commit_timer.replace(result).is_some(),
             MainCompletion::IdleTimer(result) => self.idle_timer.replace(result).is_some(),
+            #[cfg(feature = "tty")]
+            MainCompletion::CursorTimer(result) => self.cursor_timer.replace(result).is_some(),
             #[cfg(feature = "tty")]
             MainCompletion::Drm { device_id, result } => {
                 if self.drm[..self.drm_len]
@@ -123,6 +131,11 @@ impl WaylandRuntime {
             .state
             .duplicate_idle_timer_fd()
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
+        #[cfg(feature = "tty")]
+        let cursor_timer_fd = self
+            .state
+            .duplicate_cursor_animation_timer_fd()
+            .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         runtime.block_on(async {
@@ -153,6 +166,17 @@ impl WaylandRuntime {
                         completions.clone(),
                         MainCompletion::IdleTimer,
                         "idle-notify",
+                    )
+                })
+                .transpose()?;
+            #[cfg(feature = "tty")]
+            let cursor_timer_source = cursor_timer_fd
+                .map(|fd| {
+                    TimerCompletionSource::new(
+                        fd,
+                        completions.clone(),
+                        MainCompletion::CursorTimer,
+                        "cursor-animation",
                     )
                 })
                 .transpose()?;
@@ -248,6 +272,22 @@ impl WaylandRuntime {
                     }
                 }
                 #[cfg(feature = "tty")]
+                if let Some(result) = turn.cursor_timer {
+                    let rearm = match result {
+                        Ok(()) => self.state.complete_cursor_animation_timer(),
+                        Err(error) => {
+                            self.state.cursor_animation_timer_failed(&error);
+                            false
+                        }
+                    };
+                    if rearm
+                        && !stop.is_stopped()
+                        && let Some(source) = &cursor_timer_source
+                    {
+                        source.rearm()?;
+                    }
+                }
+                #[cfg(feature = "tty")]
                 self.state.finish_completion_turn();
                 self.state.on_loop_idle();
             }
@@ -257,6 +297,10 @@ impl WaylandRuntime {
                 source.shutdown().await;
             }
             if let Some(source) = idle_timer_source {
+                source.shutdown().await;
+            }
+            #[cfg(feature = "tty")]
+            if let Some(source) = cursor_timer_source {
                 source.shutdown().await;
             }
             #[cfg(feature = "tty")]
@@ -566,6 +610,19 @@ mod tests {
                 _ => panic!("expected an idle-timer completion"),
             },
             "idle-notify",
+        );
+    }
+
+    #[cfg(feature = "tty")]
+    #[test]
+    fn cursor_timer_completion_is_one_shot_until_explicit_rearm() {
+        assert_timer_completion_is_one_shot(
+            MainCompletion::CursorTimer,
+            |completion| match completion {
+                MainCompletion::CursorTimer(result) => result,
+                _ => panic!("expected a cursor-timer completion"),
+            },
+            "cursor-animation",
         );
     }
 

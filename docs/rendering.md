@@ -188,7 +188,9 @@ loaded lazily from the configured XCursor theme at the output's fractional scale
 their viewport/buffer transform. Both paths enter the same deduplicated descriptor heap as scene
 images and draw after all client content. Pixel data is copied only once into the persistent Vulkan
 staging allocation when an image version is imported; normal cursor frames carry only stable buffer
-IDs and transforms. The small descriptor-free vector arrow remains only for a missing theme image
+IDs and transforms. Animated XCursor frames of the selected nominal size are all uploaded during
+that cold load, then a dedicated one-shot timerfd advances their IDs through Compio io_uring
+completions; there is no readiness loop or periodic polling. The small descriptor-free vector arrow remains only for a missing theme image
 or a client surface without committed image content. Hotspots include committed `wl_surface.offset`
 deltas, cursor image or geometry changes damage the old and new physical bounds, and successfully
 submitted cursor surfaces receive frame callbacks so client-driven animation can advance.
