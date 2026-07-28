@@ -1,0 +1,16 @@
+[package]
+name = "tensor-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Compio-backed runtime bridges for Tensor compositor workers"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+compio = { version = "0.19", default-features = false, features = ["runtime", "io", "async-fd", "io-uring"] }
+# Compio is a completion runtime. Linux requires its io_uring driver; runtime
+# construction fails instead of falling back to a readiness driver.
+futures-util = "0.3"
+rustix = { version = "1", features = ["event", "fs"] }
+tensor-event = { path = "../tensor-event" }
+thiserror = "2"

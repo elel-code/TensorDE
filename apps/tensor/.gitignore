@@ -1,0 +1,6 @@
+/target
+/.cache
+*.log
+
+# Reference worktrees are intentionally local-only; SOURCES.md is tracked.
+/references/*/

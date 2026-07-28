@@ -1,0 +1,11 @@
+[package]
+name = "tensor-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Tensor host contracts for display and presentation values"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tensor-event = { path = "../tensor-event" }
+thiserror = "2"
