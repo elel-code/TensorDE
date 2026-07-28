@@ -1,5 +1,6 @@
 //! Resource ownership and child-object lifecycle for input-method-v2.
 
+use tracing::info;
 use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ZwpTextInputV3;
 use wayland_protocols_misc::zwp_input_method_v2::server::{
     zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
@@ -127,6 +128,7 @@ impl InputMethodProtocol {
     pub(super) fn register_input_method(&mut self, resource: &ZwpInputMethodV2) {
         self.cleanup_input_method();
         if self.input_method.is_some() {
+            info!("input-method client rejected because the seat already has an owner");
             resource.unavailable();
             self.unavailable_input_methods.insert(resource.id());
             return;
@@ -136,6 +138,10 @@ impl InputMethodProtocol {
             serial: 0,
             pending: PendingInputMethodState::default(),
         });
+        info!(
+            active_text_input = self.active_text_input.is_some(),
+            "input-method client registered"
+        );
         if self.active_text_input.is_some() {
             self.activate_input_method();
         }
@@ -151,6 +157,7 @@ impl InputMethodProtocol {
         {
             self.input_method = None;
             self.remove_owner_state(&id);
+            info!("input-method client disconnected");
             true
         } else {
             false
@@ -248,6 +255,7 @@ impl InputMethodProtocol {
             owner: owner.id(),
         });
         self.active_keyboard_grab = Some(grab.downgrade());
+        info!("input-method keyboard grab registered");
         true
     }
 

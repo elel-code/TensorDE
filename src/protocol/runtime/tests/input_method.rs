@@ -35,6 +35,7 @@ mod lifecycle_tests;
 enum ResultEvent {
     AppReady,
     InputMethodIdleReady,
+    InputMethodIdleHotkeyRouted,
     InputMethodActive {
         serial: u32,
         rectangle: (i32, i32, i32, i32),
@@ -165,7 +166,14 @@ struct InputMethodClient {
     keymap: bool,
     repeat: Option<(i32, i32)>,
     modifiers: bool,
+    keyboard_events: Vec<KeyboardGrabEvent>,
     keys: Vec<(u32, u32, wayland_client::WEnum<wl_keyboard::KeyState>)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KeyboardGrabEvent {
+    Modifiers { depressed: u32 },
+    Key { key: u32, pressed: bool },
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for InputMethodClient {
@@ -266,9 +274,19 @@ impl Dispatch<zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2, (
                 key,
                 state: key_state,
                 ..
-            } => state.keys.push((time, key, key_state)),
-            zwp_input_method_keyboard_grab_v2::Event::Modifiers { .. } => {
+            } => {
+                state.keyboard_events.push(KeyboardGrabEvent::Key {
+                    key,
+                    pressed: key_state
+                        == wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
+                });
+                state.keys.push((time, key, key_state));
+            }
+            zwp_input_method_keyboard_grab_v2::Event::Modifiers { mods_depressed, .. } => {
                 state.modifiers = true;
+                state.keyboard_events.push(KeyboardGrabEvent::Modifiers {
+                    depressed: mods_depressed,
+                });
             }
             zwp_input_method_keyboard_grab_v2::Event::RepeatInfo { rate, delay } => {
                 state.repeat = Some((rate, delay));
@@ -311,6 +329,29 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
         dispatch_until_result(&mut runtime, &result_rx),
         ResultEvent::InputMethodIdleReady
     );
+    for (key, pressed, time_ns) in [
+        // Ctrl+Space is the default fcitx activation chord.  The input method
+        // must receive it before any text-input client has enabled itself.
+        (29, true, 10_000_000),
+        (57, true, 11_000_000),
+        (57, false, 12_000_000),
+        (29, false, 13_000_000),
+    ] {
+        runtime
+            .state
+            .process_input_event(crate::backend::LibinputEvent::Input(
+                tensor_event::BackendInputEvent::Keyboard(tensor_event::KeyboardEvent {
+                    key,
+                    pressed,
+                    time_ns,
+                }),
+            ));
+    }
+    runtime.state.display_handle.flush_clients().unwrap();
+    assert_eq!(
+        dispatch_until_result(&mut runtime, &result_rx),
+        ResultEvent::InputMethodIdleHotkeyRouted
+    );
     app_command_tx.send(AppCommand::Enable).unwrap();
 
     assert_eq!(
@@ -337,7 +378,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
             tensor_event::BackendInputEvent::Keyboard(tensor_event::KeyboardEvent {
                 key: 30,
                 pressed: true,
-                time_ns: 10_000_000,
+                time_ns: 20_000_000,
             }),
         ));
     runtime
@@ -346,7 +387,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
             tensor_event::BackendInputEvent::Keyboard(tensor_event::KeyboardEvent {
                 key: 30,
                 pressed: false,
-                time_ns: 11_000_000,
+                time_ns: 21_000_000,
             }),
         ));
     runtime.state.display_handle.flush_clients().unwrap();
@@ -360,7 +401,7 @@ fn text_input_and_input_method_drive_a_scaled_scene_popup() {
                 press_time,
                 release_time,
             } => {
-                assert_eq!((key, press_time, release_time), (30, 10, 11));
+                assert_eq!((key, press_time, release_time), (30, 20, 21));
                 keyboard_routed = true;
             }
             ResultEvent::AppRejectedStaleEdit {
@@ -536,7 +577,57 @@ fn spawn_input_method(
         input_method.set_preedit_string("inactive".to_owned(), 0, 8);
         input_method.delete_surrounding_text(99, 98);
         queue.roundtrip(&mut state).unwrap();
+        let idle_keyboard_event_start = state.keyboard_events.len();
         results.send(ResultEvent::InputMethodIdleReady).unwrap();
+
+        while state.keys.len() < 4 {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        let idle_events = &state.keyboard_events[idle_keyboard_event_start..];
+        let [
+            KeyboardGrabEvent::Modifiers {
+                depressed: pressed_modifiers,
+            },
+            KeyboardGrabEvent::Key {
+                key: 29,
+                pressed: true,
+            },
+            KeyboardGrabEvent::Key {
+                key: 57,
+                pressed: true,
+            },
+            KeyboardGrabEvent::Key {
+                key: 57,
+                pressed: false,
+            },
+            KeyboardGrabEvent::Modifiers {
+                depressed: released_modifiers,
+            },
+            KeyboardGrabEvent::Key {
+                key: 29,
+                pressed: false,
+            },
+        ] = idle_events
+        else {
+            panic!(
+                "input method did not receive an ordered idle Ctrl+Space chord: {idle_events:?}"
+            );
+        };
+        assert_ne!(*pressed_modifiers, 0);
+        assert_eq!(*released_modifiers, 0);
+        let idle_keys = &state.keys[..4];
+        for (expected_key, expected_state, received) in [
+            (29, wl_keyboard::KeyState::Pressed, &idle_keys[0]),
+            (57, wl_keyboard::KeyState::Pressed, &idle_keys[1]),
+            (57, wl_keyboard::KeyState::Released, &idle_keys[2]),
+            (29, wl_keyboard::KeyState::Released, &idle_keys[3]),
+        ] {
+            assert_eq!(received.1, expected_key);
+            assert_eq!(received.2, wayland_client::WEnum::Value(expected_state),);
+        }
+        results
+            .send(ResultEvent::InputMethodIdleHotkeyRouted)
+            .unwrap();
 
         while !(state.active
             && state.done_count == 1
@@ -564,11 +655,11 @@ fn spawn_input_method(
         input_method.commit(0);
         connection.flush().unwrap();
 
-        while state.keys.len() < 2 {
+        while state.keys.len() < 6 {
             queue.blocking_dispatch(&mut state).unwrap();
         }
-        let pressed = &state.keys[0];
-        let released = &state.keys[1];
+        let pressed = &state.keys[4];
+        let released = &state.keys[5];
         assert_eq!(
             pressed.2,
             wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)

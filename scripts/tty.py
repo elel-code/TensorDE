@@ -24,6 +24,8 @@ DEFAULT_SMOKE_DURATION_SECONDS = 20.0
 SHUTDOWN_GRACE_SECONDS = 5.0
 KILL_GRACE_SECONDS = 2.0
 EVENT_LOOP_READY_MARKER = b"entering compositor event loop"
+INPUT_METHOD_REGISTERED_MARKER = b"input-method client registered"
+INPUT_METHOD_KEYBOARD_GRAB_MARKER = b"input-method keyboard grab registered"
 
 
 def parse_args() -> argparse.Namespace:
@@ -354,11 +356,12 @@ def launch(
         ghostty_failed = False
         tensor_log_tail = b""
         event_loop_ready = False
+        input_method_registered = False
+        input_method_keyboard_grab = False
 
         def observe_tensor_log() -> None:
-            nonlocal event_loop_ready, tensor_log_offset, tensor_log_tail
-            if event_loop_ready:
-                return
+            nonlocal event_loop_ready, input_method_registered, input_method_keyboard_grab
+            nonlocal tensor_log_offset, tensor_log_tail
             try:
                 with tensor_log_path.open("rb") as tensor_log:
                     tensor_log.seek(0, os.SEEK_END)
@@ -372,17 +375,29 @@ def launch(
             if not chunk:
                 return
             combined = tensor_log_tail + chunk
-            if EVENT_LOOP_READY_MARKER in combined:
+            if not event_loop_ready and EVENT_LOOP_READY_MARKER in combined:
                 event_loop_ready = True
                 note(
                     log,
                     output_lock,
                     "Tensor entered its compositor event loop; client launch gate opened",
                 )
-                return
+            if INPUT_METHOD_REGISTERED_MARKER in combined:
+                input_method_registered = True
+            if INPUT_METHOD_KEYBOARD_GRAB_MARKER in combined:
+                input_method_keyboard_grab = True
             # A direct file append can split a tracing line between polls.
-            # Preserve only the suffix that could still become the marker.
-            keep = max(0, len(EVENT_LOOP_READY_MARKER) - 1)
+            # Preserve only the suffix that could still become one of the
+            # launch or input-method markers.
+            keep = max(
+                0,
+                max(
+                    len(EVENT_LOOP_READY_MARKER),
+                    len(INPUT_METHOD_REGISTERED_MARKER),
+                    len(INPUT_METHOD_KEYBOARD_GRAB_MARKER),
+                )
+                - 1,
+            )
             tensor_log_tail = combined[-keep:] if keep else b""
 
         def start_smoke_client() -> None:
@@ -591,6 +606,20 @@ def launch(
                     log,
                     output_lock,
                     "Tensor exited before opening the Ghostty launch gate",
+                )
+            if ghostty and not input_method_registered:
+                note(
+                    log,
+                    output_lock,
+                    "no Wayland input-method client registered; an IM started by another "
+                    "compositor session cannot bind Tensor's socket",
+                )
+            elif ghostty and not input_method_keyboard_grab:
+                note(
+                    log,
+                    output_lock,
+                    "a Wayland input-method client registered but did not request its "
+                    "keyboard grab",
                 )
             compositor_status = process.poll()
             if compositor_status is None:

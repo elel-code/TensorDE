@@ -91,6 +91,16 @@ normal backend selection`. The terminal must appear and accept input before
 the bounded launch restores the previous session. Ghostty's stdout and stderr
 are retained in the launcher log for diagnosis.
 
+This smoke does not itself start an input method. A pre-existing fcitx process
+that was started by another compositor is attached to that compositor's
+Wayland socket; it cannot service Tensor merely because Tensor creates an
+XWayland server. A complete Tensor session must start or restart its input
+method after Tensor publishes `WAYLAND_DISPLAY`. On a native client focus,
+the Tensor log records either `input-method client registered` followed by
+`input-method keyboard grab registered`, or `text input activated without a
+registered input method`; those records distinguish a missing Wayland input
+method client from compositor keyboard-routing failures.
+
 The compositor-owned arrow must be visible as soon as libinput publishes a
 pointer capability, including when that device appears after the first output
 frame. Moving it must erase the previous arrow location as well as draw the new

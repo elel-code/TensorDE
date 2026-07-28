@@ -11,6 +11,7 @@ mod wire;
 use std::collections::{HashMap, HashSet};
 
 use tensor_util::LogicalRect;
+use tracing::info;
 use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
     ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
 };
@@ -279,7 +280,13 @@ impl InputMethodProtocol {
             Some(true) => {
                 instance.current = pending.state;
                 self.active_text_input = Some(id);
+                let input_method_registered = self.input_method_resource().is_some();
                 self.activate_input_method();
+                if input_method_registered {
+                    info!("text input activated for the registered input method");
+                } else {
+                    info!("text input activated without a registered input method");
+                }
                 TextCommitDisposition::Activated
             }
             Some(false) => {
