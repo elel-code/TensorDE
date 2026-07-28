@@ -169,16 +169,14 @@ impl SeatProtocol {
         &self,
         serial: Serial,
         object: &ObjectId,
-        grab_surface: Option<&ObjectId>,
+        current_surface: bool,
     ) -> bool {
-        if grab_surface.is_some_and(|surface| object.same_client_as(surface)) {
-            return true;
-        }
         self.pointer_enter_serial == Some(serial)
-            && self
-                .pointer_focus_surface
-                .as_ref()
-                .is_some_and(|surface| surface.same_client_as(object))
+            && (current_surface
+                || self
+                    .pointer_focus_surface
+                    .as_ref()
+                    .is_some_and(|surface| surface.same_client_as(object)))
     }
 }
 

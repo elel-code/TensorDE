@@ -186,7 +186,9 @@ they become a value-only, output-local physical `CursorOverlay`. Named `wp_curso
 loaded lazily from the configured XCursor theme at the output's fractional scale. Client
 `wl_pointer.set_cursor` and tablet cursor surfaces reuse the normal SHM image cache and preserve
 their viewport/buffer transform. Both paths enter the same deduplicated descriptor heap as scene
-images and draw after all client content. Pixel data is copied only once into the persistent Vulkan
+images and draw after all client content. Core and cursor-shape requests require the latest
+pointer-enter or tablet-proximity serial even when updating the current cursor surface. Pixel data
+is copied only once into the persistent Vulkan
 staging allocation when an image version is imported; normal cursor frames carry only stable buffer
 IDs and transforms. Animated XCursor frames of the selected nominal size are all uploaded during
 that cold load, then a dedicated one-shot timerfd advances their IDs through Compio io_uring

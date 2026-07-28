@@ -176,15 +176,10 @@ fn set_named_tablet_cursor(
 }
 
 fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, device: &ObjectId) -> bool {
-    let grab_surface = state
-        .input_seat
-        .pointer_grab_start()
-        .and_then(|data| data.focus.as_ref())
-        .map(Resource::id);
     state
         .protocol_globals
         .seat
-        .pointer_may_set_cursor(serial, device, grab_surface.as_ref())
+        .pointer_may_set_cursor(serial, device, false)
 }
 
 fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {

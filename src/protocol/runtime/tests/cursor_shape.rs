@@ -41,7 +41,7 @@ enum CursorStep {
     SurfaceRestored,
     StraddledOutputs,
     CrossedOutput,
-    CurrentSurfaceUpdated,
+    InvalidCurrentSurfaceUpdateSent,
     SurfaceBufferDetached,
     SurfaceDestroyed,
     Destroyed,
@@ -366,9 +366,9 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
 
     assert_eq!(
         dispatch_until_cursor_step(&mut runtime, &step_rx),
-        CursorStep::CurrentSurfaceUpdated
+        CursorStep::InvalidCurrentSurfaceUpdateSent
     );
-    assert_eq!(cursor_hotspot(&runtime), tensor_util::Point::new(9, 11));
+    assert_eq!(cursor_hotspot(&runtime), tensor_util::Point::new(3, 4));
     advance_tx.send(()).unwrap();
 
     assert_eq!(
@@ -539,7 +539,9 @@ fn spawn_cursor_client(
 
         pointer.set_cursor(serial.wrapping_add(17), Some(&cursor_surface), 9, 11);
         queue.roundtrip(&mut state).unwrap();
-        steps.send(CursorStep::CurrentSurfaceUpdated).unwrap();
+        steps
+            .send(CursorStep::InvalidCurrentSurfaceUpdateSent)
+            .unwrap();
         advances.recv().unwrap();
 
         cursor_surface.attach(None, 0, 0);

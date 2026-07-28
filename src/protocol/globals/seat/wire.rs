@@ -138,18 +138,11 @@ impl DispatchDelegate<WlPointer, RuntimeState> for PointerData {
                     .is_some_and(|surface| state.cursor.pointer_uses_surface(surface));
                 #[cfg(not(feature = "tty"))]
                 let current_surface = false;
-                let grab_surface = state
-                    .input_seat
-                    .pointer_grab_start()
-                    .and_then(|data| data.focus.as_ref())
-                    .map(Resource::id);
-                if !current_surface
-                    && !state.protocol_globals.seat.pointer_may_set_cursor(
-                        serial.into(),
-                        &pointer.id(),
-                        grab_surface.as_ref(),
-                    )
-                {
+                if !state.protocol_globals.seat.pointer_may_set_cursor(
+                    serial.into(),
+                    &pointer.id(),
+                    current_surface,
+                ) {
                     return;
                 }
                 #[cfg(feature = "tty")]
