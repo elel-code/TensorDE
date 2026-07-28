@@ -266,7 +266,7 @@ fn text_metrics_for_label_height(
     let font_size = (max_font_size * line_height / max_line_height.max(1.0)).clamp(8.0, 64.0);
     Metrics::new(font_size, line_height)
 }
-fn dolphin_text_midline_shift_for_font(
+fn file_manager_text_midline_shift_for_font(
     font_system: &mut FontSystem,
     font_size: f32,
     line_height: f32,
@@ -284,7 +284,7 @@ fn dolphin_text_midline_shift_for_font(
         return 0.0;
     };
     let metrics = font.metrics();
-    dolphin_text_midline_shift_from_metrics(
+    file_manager_text_midline_shift_from_metrics(
         line_height,
         font_size,
         metrics.units_per_em,
@@ -292,7 +292,7 @@ fn dolphin_text_midline_shift_for_font(
         metrics.cap_height,
     )
 }
-fn dolphin_text_midline_shift_from_metrics(
+fn file_manager_text_midline_shift_from_metrics(
     line_height: f32,
     font_size: f32,
     units_per_em: u16,

@@ -5,7 +5,7 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use crate::event::Event;
 use crate::native::shell::NativeShellEvent;
 
-use super::{gestures, input, surface, system, transfer, NativeEventMapState, SurfaceIdMap};
+use super::{NativeEventMapState, SurfaceIdMap, gestures, input, surface, system, transfer};
 
 fn category(event: &NativeShellEvent) -> &'static str {
     use NativeShellEvent::*;
@@ -80,10 +80,7 @@ fn category(event: &NativeShellEvent) -> &'static str {
 }
 
 /// Convert one native shell event into a public crate event when possible.
-pub fn map_native_event(
-    event: NativeShellEvent,
-    surfaces: &mut SurfaceIdMap,
-) -> Option<Event> {
+pub fn map_native_event(event: NativeShellEvent, surfaces: &mut SurfaceIdMap) -> Option<Event> {
     map_native_event_full(event, surfaces, None, &mut NativeEventMapState::default())
 }
 

@@ -1,5 +1,9 @@
 impl IconRenderer {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fika-wgpu-icon-bind-group-layout"),
             entries: &[
@@ -33,7 +37,7 @@ impl IconRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fika-wgpu-icon-shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(TEXTURE_SHADER)),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(ICON_TEXTURE_SHADER)),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fika-wgpu-icon-pipeline-layout"),
@@ -47,7 +51,7 @@ impl IconRenderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(TextVertex::layout())],
+                buffers: &[Some(IconVertex::layout())],
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -67,7 +71,7 @@ impl IconRenderer {
         });
 
         let vertex_capacity = 6;
-        let vertex_buffer = create_text_vertex_buffer(device, vertex_capacity);
+        let vertex_buffer = create_icon_vertex_buffer(device, vertex_capacity);
         Self {
             pipeline,
             bind_group_layout,
@@ -87,12 +91,11 @@ impl IconRenderer {
             dmabuf_plan: None,
             dmabuf_import_supported: false,
             dmabuf_imports: 0,
-            cpu_uploads: 0,
+            // Create SVG/composite pipelines lazily only when an encoded source
+            // first needs a GPU draw. Dmabuf/resident-only frames avoid them.
+            gpu_source_renderer: None,
             resolver: FileIconResolver::new(),
-            thumbnails: ThumbnailRasterResolver::new(),
-            icon_rasters: IconRasterResolver::new(),
-            raster_cache: IconRasterCache::new(ICON_CACHE_MAX_BYTES),
-            role_raster_cache: IconRoleRasterCache::new(ICON_ROLE_RASTER_CACHE_MAX_BYTES),
+            thumbnails: ThumbnailSourceResolver::new(),
         }
     }
 
@@ -106,118 +109,10 @@ impl IconRenderer {
         self.dmabuf_plan = plan;
     }
 
-    /// Lifetime counters for scheme-C GPU uploads (diagnostics / tests).
+    /// Lifetime count of zero-copy dmabuf imports (diagnostics / tests).
     #[cfg_attr(not(test), allow(dead_code))]
-    fn icon_upload_source_stats(&self) -> (u64, u64) {
-        (self.dmabuf_imports, self.cpu_uploads)
-    }
-
-    fn prewarm_common_file_icon_rasters(&mut self, icon_size: f32) -> usize {
-        let size_px = icon_cache_size(icon_size);
-        let roles = [
-            FileIconRoleCacheKey {
-                kind: FileIconKind::Directory,
-            },
-            FileIconRoleCacheKey {
-                kind: FileIconKind::File { extension: None },
-            },
-        ];
-        let mut rasterized = 0usize;
-        for role in roles {
-            let path_key = FileIconPathCacheKey {
-                role: role.clone(),
-                size_px,
-            };
-            let snapshot = self.resolver.resolve_path_cache_key_fast(path_key);
-            let Some(path) = snapshot.path else {
-                continue;
-            };
-            let key = IconRasterCacheKey::file_icon(path, size_px, &role.kind);
-            if let Some(raster) = self.raster_cache.get(&key) {
-                self.role_raster_cache.insert(role, raster);
-                continue;
-            }
-            let Some(raster) = rasterize_icon_for_cache_key(&key) else {
-                continue;
-            };
-            let raster = self.raster_cache.insert(key, raster);
-            self.role_raster_cache.insert(role, raster);
-            rasterized += 1;
-        }
-        rasterized
-    }
-
-    fn prewarm_small_directory_file_icon_rasters(
-        &mut self,
-        projections: &[ShellPaneProjection<'_>],
-    ) -> IconRasterPrewarmStats {
-        self.icon_rasters.drain_results(&mut self.raster_cache);
-        let deadline = Instant::now() + DOLPHIN_MAX_BLOCK_TIMEOUT;
-        let mut stats = IconRasterPrewarmStats::default();
-        let mut seen = HashSet::new();
-        for projection in projections {
-            if projection.view.filtered_entry_count() > DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT {
-                continue;
-            }
-            let Some(icon_size) = projection.visible_items.first().map(|item| {
-                item.layout
-                    .icon_rect
-                    .width
-                    .max(item.layout.icon_rect.height)
-                    .clamp(16.0, 256.0)
-            }) else {
-                continue;
-            };
-            let size_px = icon_cache_size(icon_size);
-            for entry_index in projection.view.filtered_indexes.iter().copied() {
-                if Instant::now() >= deadline {
-                    stats.over_budget = true;
-                    return stats;
-                }
-                let Some(entry) = projection.view.entries.get(entry_index) else {
-                    continue;
-                };
-                let path = projection.view.path.join(entry.name.as_ref());
-                let path_key = file_icon_path_cache_key_with_stamp(
-                    &path,
-                    entry.is_dir,
-                    entry.mime_type.clone(),
-                    entry.mime_magic_checked,
-                    entry.modified_secs,
-                    icon_size,
-                );
-                let role_key = path_key.role.clone();
-                let Some(snapshot) = self.resolver.resolve_path_cache_key(path_key) else {
-                    continue;
-                };
-                let Some(icon_path) = snapshot.path else {
-                    stats.failed += 1;
-                    continue;
-                };
-                let raster_key =
-                    IconRasterCacheKey::file_icon(icon_path, size_px, &role_key.kind);
-                if !seen.insert(raster_key.clone()) {
-                    continue;
-                }
-                stats.entries += 1;
-                if let Some(raster) = self.raster_cache.get(&raster_key) {
-                    stats.cache_hits += 1;
-                    self.role_raster_cache.insert(role_key, raster);
-                    continue;
-                }
-                stats.cache_misses += 1;
-                let raster_start = Instant::now();
-                let Some(raster) = rasterize_icon_for_cache_key(&raster_key) else {
-                    stats.raster_us += raster_start.elapsed().as_micros();
-                    stats.failed += 1;
-                    continue;
-                };
-                stats.raster_us += raster_start.elapsed().as_micros();
-                let raster = self.raster_cache.insert(raster_key, raster);
-                self.role_raster_cache.insert(role_key, raster);
-            }
-        }
-        stats
+    fn icon_dmabuf_import_count(&self) -> u64 {
+        self.dmabuf_imports
     }
 
     fn upload(
@@ -250,15 +145,16 @@ impl IconRenderer {
                     slot.height = entry.height;
                     slot.content_width = entry.content_width;
                     slot.content_height = entry.content_height;
+                    slot.rounding = entry.rounding;
                 }
-                slot.upload = None;
+                slot.source = None;
                 let _ = slot.dmabuf.take();
                 upload_skips += 1;
                 continue;
             }
 
             // Need pixels (or dmabuf) to fill / rewrite the resident texture.
-            if slot.upload.is_none() && slot.dmabuf.is_none() {
+            if slot.source.is_none() && slot.dmabuf.is_none() {
                 // Sample-only draw for an already-resident identity that was
                 // not rewritten this frame — still mark used.
                 if let Some(entry) = self.gpu_textures.get_mut(&key) {
@@ -268,22 +164,23 @@ impl IconRenderer {
                     slot.content_width = entry.content_width;
                     slot.content_height = entry.content_height;
                     slot.content_hash = entry.content_hash;
+                    slot.rounding = entry.rounding;
                 }
                 upload_skips += 1;
                 continue;
             }
 
-            let (texture, source) = self.upload_slot_texture(device, queue, slot);
+            let Some((texture, source)) = self.upload_slot_texture(device, queue, slot) else {
+                // A failed GPU source stays non-resident and is retried from
+                // the encoded source on the next frame. Never substitute CPU
+                // rasterization here.
+                continue;
+            };
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group =
                 create_icon_bind_group(device, &self.bind_group_layout, &view, &self.sampler);
-            match source {
-                crate::shell::render::dmabuf::ExternalTextureSource::DmabufImport => {
-                    self.dmabuf_imports = self.dmabuf_imports.saturating_add(1);
-                }
-                crate::shell::render::dmabuf::ExternalTextureSource::CpuUpload => {
-                    self.cpu_uploads = self.cpu_uploads.saturating_add(1);
-                }
+            if source == crate::shell::render::dmabuf::ExternalTextureSource::DmabufImport {
+                self.dmabuf_imports = self.dmabuf_imports.saturating_add(1);
             }
             let texture_bytes = icon_texture_bytes(slot.width, slot.height);
             let replaced = self.gpu_textures.insert(
@@ -296,6 +193,7 @@ impl IconRenderer {
                     content_width: slot.content_width,
                     content_height: slot.content_height,
                     content_hash: slot.content_hash,
+                    rounding: slot.rounding,
                     last_used_frame: self.gpu_frame,
                     source,
                 },
@@ -307,7 +205,6 @@ impl IconRenderer {
                     .saturating_sub(icon_texture_bytes(replaced.width, replaced.height));
             }
             // Steady state is GPU-only: drop one-shot CPU payload after upload.
-            slot.upload = None;
             uploads += 1;
         }
         // Free stamped CPU thumbnail staging that is no larger than the
@@ -323,7 +220,7 @@ impl IconRenderer {
                         .content_width
                         .max(slot.content_height)
                         .min(u32::from(u16::MAX)) as u16;
-                    Some(IconRasterCacheKey::thumbnail(
+                    Some(ThumbnailSourceKey::thumbnail(
                         path.clone(),
                         size_px,
                         *stamp,
@@ -333,8 +230,6 @@ impl IconRenderer {
             })
             .collect::<Vec<_>>();
         if !content_resident.is_empty() {
-            self.raster_cache
-                .release_gpu_resident_content_upto(&content_resident);
             self.thumbnails
                 .release_gpu_resident_content_upto(&content_resident);
         }
@@ -349,7 +244,7 @@ impl IconRenderer {
             frame.content_vertices.len() + frame.overlay_vertices.len();
         if total_vertices > self.vertex_capacity {
             self.vertex_capacity = total_vertices.next_power_of_two().max(6);
-            self.vertex_buffer = create_text_vertex_buffer(device, self.vertex_capacity);
+            self.vertex_buffer = create_icon_vertex_buffer(device, self.vertex_capacity);
             self.last_vertices_hash = None;
         }
         self.content_vertex_count = frame.content_vertices.len();
@@ -378,19 +273,16 @@ impl IconRenderer {
         }
     }
 
-    /// Fill a resident GPU texture: optional dmabuf import, else `write_texture`.
-    ///
-    /// This is the only place CPU pixels touch the GPU for icons. Subsequent
-    /// frames sample the resident texture with no CPU involvement.
+    /// Fill a resident GPU texture from a GPU command or dmabuf import.
     fn upload_slot_texture(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         slot: &mut IconGpuSlot,
-    ) -> (
+    ) -> Option<(
         wgpu::Texture,
         crate::shell::render::dmabuf::ExternalTextureSource,
-    ) {
+    )> {
         use crate::shell::render::dmabuf::{ExternalTextureSource, acquire_external_texture};
 
         let w = slot.width.max(1);
@@ -401,57 +293,35 @@ impl IconRenderer {
         } else {
             None
         };
-        let pixels = slot.upload.as_ref().map(|r| r.pixels.as_ref());
+        if let Some(source) = slot.source.take() {
+            let texture = create_icon_texture(device, w, h);
+            if self.gpu_source_renderer.is_none() {
+                self.gpu_source_renderer = GpuIconSourceRenderer::new(device, queue);
+            }
+            let renderer = self.gpu_source_renderer.as_mut()?;
+            return renderer.render(device, queue, &texture, &source).then_some((
+                texture,
+                ExternalTextureSource::GpuRender,
+            ));
+        }
 
         // Optional zero-copy when a producer attached a plane (not required).
         if plane.is_some() && plan.is_some() {
             match acquire_external_texture(
                 device,
-                queue,
                 plan,
                 w,
                 h,
                 plane,
-                pixels,
                 Some("fika-icon-dmabuf"),
             ) {
-                Ok(ext) => return (ext.texture, ext.source),
-                Err(_) => {
-                    // Fall through to write_texture.
-                }
+                Ok(ext) => return Some((ext.texture, ext.source)),
+                Err(_) => return None,
             }
         } else {
             drop(plane);
         }
-
-        let pixels = slot
-            .upload
-            .as_ref()
-            .map(|r| r.pixels.as_ref())
-            .unwrap_or(&[]);
-        let texture = create_icon_texture(device, w, h);
-        if !pixels.is_empty() {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(w * 4),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        (texture, ExternalTextureSource::CpuUpload)
+        None
     }
 
     fn evict_gpu_textures_if_needed(&mut self) {
@@ -501,8 +371,6 @@ impl IconRenderer {
 
     /// Trim async failure caches and optional path-scoped thumbnail ready data.
     fn release_directory_caches(&mut self, left_path: Option<&Path>) {
-        self.icon_rasters.clear_failed();
-        self.icon_rasters.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
         if let Some(path) = left_path {
             self.thumbnails.clear_path_prefix(path);
             // Drop content GPU textures under the left directory (MIME roles stay).
@@ -526,6 +394,7 @@ impl IconRenderer {
                     content_width: tex.content_width,
                     content_height: tex.content_height,
                     content_hash: tex.content_hash,
+                    rounding: tex.rounding,
                 },
             );
         }
@@ -580,6 +449,15 @@ impl IconRenderer {
     fn batch_count(&self) -> usize {
         self.content_batches.len() + self.overlay_batches.len()
     }
+}
+
+fn create_icon_vertex_buffer(device: &wgpu::Device, vertex_capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fika-wgpu-icon-vertices"),
+        size: (vertex_capacity.max(1) * std::mem::size_of::<IconVertex>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 fn icon_texture_bytes(width: u32, height: u32) -> usize {

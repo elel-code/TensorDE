@@ -1,7 +1,7 @@
 use super::{
     entries::ItemId,
     pane::{Generation, PaneId},
-    pe_icon::windows_executable_icon_png,
+    pe_icon::windows_executable_icon_ico,
     uri::file_uri_from_path,
 };
 use std::collections::{HashMap, VecDeque};
@@ -36,7 +36,7 @@ const PNG_CHUNK_CRC_LEN: usize = 4;
 
 const FAILURE_THUMBNAIL_IDAT: &[u8] = &[0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01];
 
-/// Freedesktop freestanding thumbnail sizes (shared with Dolphin / GNOME).
+/// Freedesktop freestanding thumbnail sizes (shared with FileManager / GNOME).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ThumbnailSize {
     /// 128px — `~/.cache/thumbnails/normal`
@@ -87,13 +87,13 @@ impl ThumbnailSize {
         }
     }
 
-    /// Pick the smallest freestanding bucket that can supply a prepared raster.
+    /// Pick the smallest freestanding bucket that can supply an encoded source.
     ///
     /// Unlike [`Self::for_display_px`], this must not apply the sharpness bias a
     /// second time. The render request may already have been raised from 48px
     /// to 256px; mapping that 256px again would unnecessarily generate a 1024px
     /// `xx-large` thumbnail only to immediately downscale it on the CPU.
-    pub fn for_raster_px(size_px: u16) -> Self {
+    pub fn for_source_px(size_px: u16) -> Self {
         match size_px {
             0..=128 => Self::Normal,
             129..=256 => Self::Large,
@@ -737,14 +737,25 @@ pub fn generate_thumbnail_with_external_thumbnailer_registry_size(
     let mut attempted = false;
     if thumbnail_request_is_windows_executable(request) {
         attempted = true;
-        let _ = fs::remove_file(&temp_path);
-        if let Some(png) = windows_executable_icon_png(request.path(), size.max_dimension())? {
-            fs::write(&temp_path, png)?;
-            if write_thumbnail_metadata(&temp_path, request.uri(), request.modified_secs()).is_ok()
-                && fs::rename(&temp_path, &output_path).is_ok()
-                && let Some(hit) = cached_thumbnail_for_request_size(root, request, size)
-            {
-                return Ok(Some(hit));
+        let encoded_path = windows_executable_icon_cache_path(root, request, size);
+        if encoded_path.is_file() {
+            return Ok(Some(ThumbnailCacheHit {
+                size,
+                path: encoded_path,
+            }));
+        }
+        if let Some(ico) = windows_executable_icon_ico(request.path(), size.max_dimension())? {
+            if let Some(parent) = encoded_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let encoded_temp = temporary_thumbnail_path(&encoded_path);
+            let _ = fs::remove_file(&encoded_temp);
+            fs::write(&encoded_temp, ico)?;
+            if fs::rename(&encoded_temp, &encoded_path).is_ok() {
+                return Ok(Some(ThumbnailCacheHit {
+                    size,
+                    path: encoded_path,
+                }));
             }
         }
     }
@@ -777,6 +788,20 @@ pub fn generate_thumbnail_with_external_thumbnailer_registry_size(
         record_thumbnail_failure(root, request.uri(), request.modified_secs())?;
     }
     Ok(None)
+}
+
+fn windows_executable_icon_cache_path(
+    root: &Path,
+    request: &ThumbnailRequest,
+    size: ThumbnailSize,
+) -> PathBuf {
+    root.join("fika-pe-icons")
+        .join(size.cache_dir())
+        .join(format!(
+            "{}-{}.ico",
+            thumbnail_cache_key(request.uri()),
+            request.modified_secs()
+        ))
 }
 
 fn run_external_thumbnailer_command(

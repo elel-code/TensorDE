@@ -6,7 +6,7 @@ use crate::native::connection::NativeError;
 use crate::runtime_common::RuntimeError;
 use crate::surface::SurfaceId;
 
-use super::runtime_facade::{map_native_error, NativeRuntime};
+use super::runtime_facade::{NativeRuntime, map_native_error};
 
 impl NativeRuntime {
     pub fn store_selection(&mut self, content: TransferContent) -> Result<(), RuntimeError> {
@@ -153,9 +153,7 @@ impl NativeRuntime {
         }
         let mime = mime.into();
         // Non-blocking setup; Fika reads the pipe on a worker thread.
-        self.shell
-            .receive_dnd_pipe(&mime)
-            .map_err(map_native_error)
+        self.shell.receive_dnd_pipe(&mime).map_err(map_native_error)
     }
 
     pub fn finish_dnd_offer(&mut self, offer: DndOfferId) -> Result<(), RuntimeError> {

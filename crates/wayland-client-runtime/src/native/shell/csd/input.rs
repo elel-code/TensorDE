@@ -89,7 +89,10 @@ pub enum FrameAction {
     UnMaximize,
     Minimize,
     /// Show compositor window menu at surface-local position (content coords).
-    ShowMenu { x: i32, y: i32 },
+    ShowMenu {
+        x: i32,
+        y: i32,
+    },
 }
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -128,12 +131,7 @@ impl MouseState {
         can_maximize: bool,
     ) -> Option<FrameAction> {
         if button == BTN_RIGHT {
-            if pressed
-                && matches!(
-                    self.location,
-                    HitLocation::Head | HitLocation::Button(_)
-                )
-            {
+            if pressed && matches!(self.location, HitLocation::Head | HitLocation::Button(_)) {
                 return Some(FrameAction::ShowMenu {
                     x: self.position.0 as i32,
                     y: self.position.1 as i32 - HEADER_SIZE as i32,
@@ -146,9 +144,7 @@ impl MouseState {
         }
 
         match self.location {
-            HitLocation::Top if resizable && pressed => {
-                Some(FrameAction::Resize(ResizeEdge::Top))
-            }
+            HitLocation::Top if resizable && pressed => Some(FrameAction::Resize(ResizeEdge::Top)),
             HitLocation::Bottom if resizable && pressed => {
                 Some(FrameAction::Resize(ResizeEdge::Bottom))
             }
@@ -183,14 +179,15 @@ impl MouseState {
                 if can_maximize {
                     let now = Instant::now();
                     if let Some(last) = self.last_title_click.replace(now)
-                        && now.duration_since(last) < DOUBLE_CLICK {
-                            self.last_title_click = None;
-                            return Some(if maximized {
-                                FrameAction::UnMaximize
-                            } else {
-                                FrameAction::Maximize
-                            });
-                        }
+                        && now.duration_since(last) < DOUBLE_CLICK
+                    {
+                        self.last_title_click = None;
+                        return Some(if maximized {
+                            FrameAction::UnMaximize
+                        } else {
+                            FrameAction::Maximize
+                        });
+                    }
                 }
                 Some(FrameAction::Move)
             }

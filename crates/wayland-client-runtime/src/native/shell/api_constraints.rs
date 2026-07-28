@@ -1,15 +1,13 @@
 //! Pointer constraints (lock / confine) for [`NativeShell`].
 
-use wayland_client::protocol::wl_compositor;
 use wayland_client::Proxy;
+use wayland_client::protocol::wl_compositor;
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::Lifetime;
 
 use super::api::NativeShell;
 use super::types::{NativeShellState, NativeSurfaceId};
 use crate::native::connection::NativeError;
-use crate::pointer_constraints::{
-    PointerCaptureState, PointerConstraint, PointerConstraintRegion,
-};
+use crate::pointer_constraints::{PointerCaptureState, PointerConstraint, PointerConstraintRegion};
 
 impl NativeShell {
     /// Retain desired pointer capture for a surface and apply if focused.
@@ -18,8 +16,7 @@ impl NativeShell {
         id: NativeSurfaceId,
         state: PointerCaptureState,
     ) -> Result<(), NativeError> {
-        if state.constraint != PointerConstraint::None && self.state.pointer_constraints.is_none()
-        {
+        if state.constraint != PointerConstraint::None && self.state.pointer_constraints.is_none() {
             return Err(NativeError::Protocol(
                 "zwp_pointer_constraints_v1 missing".into(),
             ));
@@ -39,15 +36,15 @@ impl NativeShell {
         }
         record.pointer_capture = state.clone();
 
-        let want_relative =
-            state.relative_motion || state.constraint == PointerConstraint::Locked;
+        let want_relative = state.relative_motion || state.constraint == PointerConstraint::Locked;
         if want_relative {
             self.state.relative_pointer_wanted = true;
             let _ = self.ensure_all_seat_relative_pointers();
         }
 
         if self.state.pointer_focus == Some(id) {
-            self.state.apply_pointer_constraint(id, &self.queue.handle())?;
+            self.state
+                .apply_pointer_constraint(id, &self.queue.handle())?;
         } else {
             self.state.clear_live_constraints_for(id);
         }
@@ -212,16 +209,18 @@ impl NativeShellState {
             .locked_pointer
             .as_ref()
             .is_some_and(|(sid, _)| *sid == id)
-            && let Some((_, proxy)) = self.locked_pointer.take() {
-                proxy.destroy();
-            }
+            && let Some((_, proxy)) = self.locked_pointer.take()
+        {
+            proxy.destroy();
+        }
         if self
             .confined_pointer
             .as_ref()
             .is_some_and(|(sid, _)| *sid == id)
-            && let Some((_, proxy)) = self.confined_pointer.take() {
-                proxy.destroy();
-            }
+            && let Some((_, proxy)) = self.confined_pointer.take()
+        {
+            proxy.destroy();
+        }
     }
 
     /// Apply retained capture for `id` when it holds pointer focus.
@@ -295,9 +294,10 @@ impl NativeShellState {
         qh: &wayland_client::QueueHandle<Self>,
     ) {
         if let Some(old) = self.pointer_focus
-            && new_focus != Some(old) {
-                self.clear_live_constraints_for(old);
-            }
+            && new_focus != Some(old)
+        {
+            self.clear_live_constraints_for(old);
+        }
         self.pointer_focus = new_focus;
         if let Some(id) = new_focus {
             let _ = self.apply_pointer_constraint(id, qh);

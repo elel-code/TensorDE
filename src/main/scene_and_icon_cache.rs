@@ -253,7 +253,6 @@ struct IconFrameStats {
     atlas_bytes: usize,
     cache_hits: usize,
     cache_misses: usize,
-    raster_deferred: usize,
     cache_entries: usize,
     cache_bytes: usize,
     content_hash: u64,
@@ -261,26 +260,19 @@ struct IconFrameStats {
     vertex_hash: u64,
     slot_hash: u64,
     resolve_us: u128,
-    raster_us: u128,
 }
-/// One frame of icon geometry for scheme-C per-icon GPU textures.
-///
-/// Slots are keyed by **logical** [`IconRasterCacheKey`] (path / size bucket /
-/// mtime / style), not by CPU pixel hash. The hot path samples resident
-/// `wgpu::Texture`s; CPU pixels exist only as a one-shot upload payload when a
-/// slot is cold or its content generation changes. Dmabuf remains an optional
-/// producer path — not required for the full-GPU sample pipeline.
+/// One frame of icon geometry for per-icon GPU textures.
 struct IconFrame {
-    /// Unique logical icons for this frame (optional CPU payload for upload).
+    /// Unique logical icons for this frame.
     slots: Vec<IconGpuSlot>,
     /// Content-layer draws grouped by slot (each batch = one bind + draw).
     content_batches: Vec<IconSlotBatch>,
     /// Overlay-layer draws grouped by slot.
     overlay_batches: Vec<IconSlotBatch>,
     /// Packed vertex data for all content batches (ranges in batches).
-    content_vertices: Vec<TextVertex>,
+    content_vertices: Vec<IconVertex>,
     /// Packed vertex data for all overlay batches.
-    overlay_vertices: Vec<TextVertex>,
+    overlay_vertices: Vec<IconVertex>,
     stats: IconFrameStats,
 }
 /// Optional single-plane dmabuf for zero-copy GPU upload (scheme C + dmabuf).
@@ -290,12 +282,67 @@ struct IconDmabufSource {
     plane: crate::shell::render::dmabuf::DmabufImportPlane,
 }
 
+/// Encoded icon input consumed by the shared wgpu renderer.
+///
+/// The path stays encoded until its GPU slot is needed. SVG XML/path parsing and
+/// bitmap format decoding only prepare source data; scaling, vector rasterization,
+/// placement and compositing target resident GPU textures without readback.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum IconGpuSource {
+    File {
+        path: PathBuf,
+        size_px: u16,
+    },
+    FolderPreview {
+        children: Arc<[PathBuf]>,
+        size_px: u16,
+        seed: u64,
+    },
+}
+
+impl IconGpuSource {
+    fn file(path: PathBuf, size_px: u16) -> Self {
+        Self::File { path, size_px }
+    }
+
+    fn size_px(&self) -> u16 {
+        match self {
+            Self::File { size_px, .. } | Self::FolderPreview { size_px, .. } => *size_px,
+        }
+    }
+
+    #[cfg(test)]
+    fn file_path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            Self::FolderPreview { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn folder_preview_children(&self) -> Option<&[PathBuf]> {
+        match self {
+            Self::FolderPreview { children, .. } => Some(children),
+            Self::File { .. } => None,
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        match self {
+            Self::File { path, .. } => path.as_os_str().len(),
+            Self::FolderPreview { children, .. } => children
+                .iter()
+                .map(|path| path.as_os_str().len())
+                .sum(),
+        }
+        .saturating_add(std::mem::size_of::<Self>())
+    }
+}
+
 /// One logical icon that maps to a resident GPU texture.
 ///
-/// `upload` is `Some` only when this frame must (re)write GPU memory. After a
-/// successful upload the CPU payload is dropped so the steady state is
-/// GPU-only sampling. Zoom changes screen size only — identity has **no**
-/// size bucket, so the same texture is re-sampled.
+/// A cold slot is filled only by a GPU render command or an imported dmabuf.
+/// Zoom changes screen size only, so the same texture is re-sampled.
 struct IconGpuSlot {
     identity: IconGpuUploadKey,
     /// Texture size used for UV generation (may match a larger resident GPU
@@ -305,10 +352,11 @@ struct IconGpuSlot {
     /// Logical content size (kept separate for resident upgrade decisions).
     content_width: u32,
     content_height: u32,
-    /// Content generation of `upload` (or last known GPU contents).
+    /// Content generation of the encoded GPU source or resident texture.
     content_hash: u64,
-    /// One-shot CPU pixels for `write_texture` / dmabuf fallback.
-    upload: Option<IconRaster>,
+    rounding: Option<IconRounding>,
+    /// GPU render command for encoded SVG/bitmap input.
+    source: Option<IconGpuSource>,
     dmabuf: Option<IconDmabufSource>,
 }
 
@@ -319,7 +367,7 @@ impl std::fmt::Debug for IconGpuSlot {
             .field("w", &self.width)
             .field("h", &self.height)
             .field("content_hash", &self.content_hash)
-            .field("needs_upload", &self.upload.is_some())
+            .field("has_gpu_source", &self.source.is_some())
             .field("has_dmabuf", &self.dmabuf.is_some())
             .finish()
     }
@@ -384,75 +432,53 @@ struct IconDraw {
     source: ViewRect,
     alpha: f32,
 }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct IconVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    rounding_bounds: [f32; 4],
+    radius_alpha: [f32; 2],
+}
+impl IconVertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32x2,
+        2 => Float32x4,
+        3 => Float32x2
+    ];
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IconDrawLayer {
     Content,
     Overlay,
 }
-#[derive(Clone, Debug)]
-struct IconRaster {
-    pixels: Arc<[u8]>,
-    width: u32,
-    height: u32,
-}
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum IconRasterStyle {
-    Original,
-    RoundedFile,
-    RoundedFolder,
-}
-impl IconRasterStyle {
-    fn for_file_icon_kind(kind: &FileIconKind) -> Self {
-        match kind {
-            FileIconKind::Directory => Self::RoundedFolder,
-            FileIconKind::Mime { .. }
-            | FileIconKind::PreliminaryFile { .. }
-            | FileIconKind::File { .. } => Self::RoundedFile,
-            FileIconKind::Named { .. } => Self::Original,
-        }
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IconRounding {
+    /// Alpha content bounds in normalized texture coordinates.
+    bounds: [f32; 4],
+    radius_ratio: f32,
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct IconRasterCacheKey {
+struct ThumbnailSourceKey {
     path: PathBuf,
     size_px: u16,
     stamp: Option<u64>,
-    style: IconRasterStyle,
 }
-impl IconRasterCacheKey {
-    fn icon(path: PathBuf, size_px: u16) -> Self {
-        Self {
-            path,
-            size_px,
-            stamp: None,
-            style: IconRasterStyle::Original,
-        }
-    }
-
-    fn file_icon(path: PathBuf, size_px: u16, kind: &FileIconKind) -> Self {
-        Self {
-            path,
-            size_px,
-            stamp: None,
-            style: IconRasterStyle::for_file_icon_kind(kind),
-        }
-    }
-
+impl ThumbnailSourceKey {
     fn thumbnail(path: PathBuf, size_px: u16, modified_secs: u64) -> Self {
         Self {
             path,
             size_px,
             stamp: Some(modified_secs),
-            style: IconRasterStyle::Original,
-        }
-    }
-
-    fn folder_preview(path: PathBuf, size_px: u16, stamp: u64) -> Self {
-        Self {
-            path,
-            size_px,
-            stamp: Some(stamp),
-            style: IconRasterStyle::Original,
         }
     }
 }
@@ -469,20 +495,7 @@ impl ThumbnailProbeCacheKey {
         }
     }
 
-    fn from_raster_key(key: &IconRasterCacheKey) -> Option<Self> {
+    fn from_source_key(key: &ThumbnailSourceKey) -> Option<Self> {
         Some(Self::new(key.path.clone(), key.stamp?))
     }
-}
-#[derive(Clone, Debug)]
-struct CachedIconRaster {
-    raster: IconRaster,
-    bytes: usize,
-    last_used_frame: u64,
-}
-#[derive(Debug)]
-struct IconRasterCache {
-    entries: HashMap<IconRasterCacheKey, CachedIconRaster>,
-    frame: u64,
-    bytes: usize,
-    max_bytes: usize,
 }

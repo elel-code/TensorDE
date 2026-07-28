@@ -2,9 +2,10 @@ use std::env;
 use std::time::Duration;
 
 use crate::shell::metrics::{
-    DOLPHIN_MAX_BLOCK_TIMEOUT, ICON_RASTER_VISIBLE_SYNC_BUDGET, ICON_ROLE_READ_AHEAD_LIMIT,
-    ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME, TEXT_RASTER_MISS_BUDGET_PER_FRAME,
-    VISIBLE_ICON_ROLE_PREWARM_BUDGET, VISIBLE_TEXT_LABEL_PREWARM_BUDGET,
+    FILE_MANAGER_MAX_BLOCK_TIMEOUT, ICON_ROLE_READ_AHEAD_LIMIT,
+    ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME, ICON_VISIBLE_SYNC_RESOLVE_BUDGET,
+    TEXT_RASTER_MISS_BUDGET_PER_FRAME, VISIBLE_ICON_ROLE_PREWARM_BUDGET,
+    VISIBLE_TEXT_LABEL_PREWARM_BUDGET,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,16 +23,6 @@ pub(crate) struct IconRolePrewarmStats {
 }
 
 #[derive(Default)]
-pub(crate) struct IconRasterPrewarmStats {
-    pub(crate) entries: usize,
-    pub(crate) cache_hits: usize,
-    pub(crate) cache_misses: usize,
-    pub(crate) failed: usize,
-    pub(crate) raster_us: u128,
-    pub(crate) over_budget: bool,
-}
-
-#[derive(Default)]
 pub(crate) struct TextLabelPrewarmStats {
     pub(crate) entries: usize,
     pub(crate) read_ahead: usize,
@@ -42,11 +33,13 @@ pub(crate) struct TextLabelPrewarmStats {
     pub(crate) over_budget: bool,
 }
 
-pub(crate) fn icon_raster_miss_budget_for_frame(reason: &str) -> usize {
-    if let Some(budget) = env_usize("FIKA_WGPU_ICON_RASTER_MISS_BUDGET") {
+pub(crate) fn icon_sync_resolve_budget_for_frame(reason: &str) -> usize {
+    if let Some(budget) = env_usize("FIKA_WGPU_ICON_SYNC_RESOLVE_BUDGET")
+        .or_else(|| env_usize("FIKA_WGPU_ICON_RASTER_MISS_BUDGET"))
+    {
         return budget;
     }
-    // Dolphin pauses role updates while scrolling / zooming (ShortInterval /
+    // FileManager pauses role updates while scrolling / zooming (ShortInterval /
     // LongInterval timers) so disk-backed icon loads never hitch the fling.
     if matches!(
         reason,
@@ -54,7 +47,7 @@ pub(crate) fn icon_raster_miss_budget_for_frame(reason: &str) -> usize {
     ) {
         0
     } else if visible_exact_icon_roles_enabled_for_frame(reason) {
-        ICON_RASTER_VISIBLE_SYNC_BUDGET
+        ICON_VISIBLE_SYNC_RESOLVE_BUDGET
     } else {
         0
     }
@@ -66,7 +59,7 @@ pub(crate) fn icon_work_reason_for_frame(reason: &str, frame_count: u64) -> &str
 
 pub(crate) fn icon_role_prewarm_budget_for_frame(reason: &str) -> Duration {
     if visible_exact_icon_roles_enabled_for_frame(reason) {
-        DOLPHIN_MAX_BLOCK_TIMEOUT
+        FILE_MANAGER_MAX_BLOCK_TIMEOUT
     } else {
         VISIBLE_ICON_ROLE_PREWARM_BUDGET
     }
@@ -113,7 +106,7 @@ pub(crate) fn text_label_prewarm_mode_for_scene_prewarm(_reason: &str) -> TextLa
 }
 
 pub(crate) fn text_label_prewarm_mode_for_frame(_reason: &str) -> TextLabelPrewarmMode {
-    // Dolphin caches text on visible/recycled item widgets, not as invisible read-ahead rasters.
+    // FileManager caches text on visible/recycled item widgets, not as invisible read-ahead rasters.
     TextLabelPrewarmMode::VisibleOnly
 }
 
@@ -170,8 +163,8 @@ mod tests {
             "wheel-scroll"
         );
         assert_eq!(
-            icon_raster_miss_budget_for_frame(icon_work_reason_for_frame("redraw", 0)),
-            ICON_RASTER_VISIBLE_SYNC_BUDGET
+            icon_sync_resolve_budget_for_frame(icon_work_reason_for_frame("redraw", 0)),
+            ICON_VISIBLE_SYNC_RESOLVE_BUDGET
         );
     }
 }

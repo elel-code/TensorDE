@@ -79,6 +79,41 @@
         std::env::temp_dir().join(format!("fika-wgpu-{name}-{unique}"))
     }
 
+    fn wait_for_thumbnail_state(
+        resolver: &mut ThumbnailSourceResolver,
+        path: &Path,
+        modified_secs: u64,
+        mime_type: Option<&str>,
+        size_px: u16,
+    ) -> ThumbnailResolveState {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let state =
+                resolver.resolve(path, modified_secs, mime_type.map(str::to_string), size_px);
+            if !matches!(state, ThumbnailResolveState::Pending) || Instant::now() >= deadline {
+                return state;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn write_test_thumbnail_png(path: &Path, uri: &str, modified_secs: u64) {
+        write_test_thumbnail_png_with_color(path, uri, modified_secs, [32, 96, 192, 255]);
+    }
+
+    fn write_test_thumbnail_png_with_color(
+        path: &Path,
+        uri: &str,
+        modified_secs: u64,
+        color: [u8; 4],
+    ) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba(color))
+            .save(path)
+            .unwrap();
+        fika_core::write_thumbnail_metadata(path, uri, modified_secs).unwrap();
+    }
+
     #[test]
     fn view_mode_setting_round_trips_and_startup_uses_storage() {
         let root = test_dir("view-mode-settings");
@@ -399,11 +434,6 @@
             self
         }
 
-        fn with_places(mut self, places: Vec<ShellPlace>) -> Self {
-            self.places = Some(places);
-            self
-        }
-
         fn with_trash_has_items(mut self, trash_has_items: bool) -> Self {
             self.trash_has_items = trash_has_items;
             self
@@ -471,18 +501,6 @@
     /// In-memory scene fixture with deterministic places (no disk listing).
     fn test_scene(entries: Vec<Entry>, view_mode: ShellViewMode) -> ShellScene {
         TestShellSceneBuilder::new()
-            .with_entries(entries)
-            .with_view_mode(view_mode)
-            .build()
-    }
-
-    fn test_scene_at(
-        path: PathBuf,
-        entries: Vec<Entry>,
-        view_mode: ShellViewMode,
-    ) -> ShellScene {
-        TestShellSceneBuilder::new()
-            .with_path(path)
             .with_entries(entries)
             .with_view_mode(view_mode)
             .build()

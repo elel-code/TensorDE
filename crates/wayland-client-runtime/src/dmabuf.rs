@@ -301,8 +301,8 @@ mod tests {
     #[test]
     fn params_builder_accumulates_planes() {
         // Empty OwnedFd is hard without a real fd; just exercise the builder fields.
-        let params = DmabufBufferParams::new(64, 64, 0x34325241)
-            .with_flags(DmabufBufferFlags::Y_INVERT);
+        let params =
+            DmabufBufferParams::new(64, 64, 0x34325241).with_flags(DmabufBufferFlags::Y_INVERT);
         assert_eq!(params.width, 64);
         assert_eq!(params.height, 64);
         assert!(params.flags.contains(DmabufBufferFlags::Y_INVERT));

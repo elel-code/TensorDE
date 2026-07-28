@@ -4,9 +4,9 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 
-use rustix::fs::{fcntl_add_seals, memfd_create, MemfdFlags, SealFlags};
-use wayland_client::protocol::{wl_buffer, wl_shm, wl_shm_pool};
+use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
 use wayland_client::QueueHandle;
+use wayland_client::protocol::{wl_buffer, wl_shm, wl_shm_pool};
 
 /// Create a sealed memfd-backed file of at least `size` bytes.
 pub fn create_memfd(size: usize) -> io::Result<File> {

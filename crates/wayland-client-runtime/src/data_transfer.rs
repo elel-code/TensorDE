@@ -184,13 +184,14 @@ impl Read for TransferReadPipe {
 /// Write offer payload to a compositor-supplied fd without blocking the
 /// Wayland dispatch thread (pipe buffer back-pressure / peer readiness).
 pub(crate) fn spawn_write_fd(name: &str, fd: std::os::fd::OwnedFd, bytes: Arc<[u8]>) {
-    let _ = thread::Builder::new().name(name.to_string()).spawn(move || {
-        let mut file = std::fs::File::from(fd);
-        let _ = file.write_all(&bytes);
-        let _ = file.flush();
-    });
+    let _ = thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            let mut file = std::fs::File::from(fd);
+            let _ = file.write_all(&bytes);
+            let _ = file.flush();
+        });
 }
-
 
 #[cfg(test)]
 mod tests {

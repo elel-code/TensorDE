@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use rustix::event::{poll, PollFd, PollFlags, Timespec};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client_runtime::{NativeShell, NativeShellEvent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,4 +1,4 @@
-//! text-input-v3 public state types. 
+//! text-input-v3 public state types.
 
 use std::ops::Range;
 
@@ -206,7 +206,6 @@ pub enum TextInputEvent {
     Done(TextInputDone),
 }
 
-
 fn validate_cursor_rectangle(rectangle: LogicalRect) -> Result<(), TextInputError> {
     if rectangle.is_empty() {
         return Err(TextInputError::EmptyCursorRectangle);
@@ -216,4 +215,3 @@ fn validate_cursor_rectangle(rectangle: LogicalRect) -> Result<(), TextInputErro
     }
     Ok(())
 }
-

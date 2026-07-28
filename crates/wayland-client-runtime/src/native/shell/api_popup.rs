@@ -324,4 +324,3 @@ fn map_constraints(value: ConstraintAdjustments) -> xdg_positioner::ConstraintAd
     }
     result
 }
-

@@ -62,11 +62,7 @@ pub fn content_insets(hide_titlebar: bool, hide_borders: bool) -> DecorationInse
         left: if hide_borders { 0 } else { BORDER_SIZE },
         right: if hide_borders { 0 } else { BORDER_SIZE },
         top: if hide_titlebar {
-            if hide_borders {
-                0
-            } else {
-                BORDER_SIZE
-            }
+            if hide_borders { 0 } else { BORDER_SIZE }
         } else {
             HEADER_SIZE + if hide_borders { 0 } else { BORDER_SIZE }
         },

@@ -4,7 +4,7 @@
 //! (pending offer → selection attach, resist faulty compositors). Source was
 //! not copied; only the protocol state machine is mirrored.
 
-use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
     zwp_primary_selection_offer_v1, zwp_primary_selection_source_v1,
@@ -27,7 +27,9 @@ impl Dispatch<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDevice
     }
 }
 
-impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> for NativeShellState {
+impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()>
+    for NativeShellState
+{
     // Opcode 0 = data_offer creates a new primary selection offer child.
     event_created_child!(NativeShellState, zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, [
         0 => (zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ())
@@ -125,7 +127,9 @@ impl Dispatch<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ()> fo
     }
 }
 
-impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> for NativeShellState {
+impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()>
+    for NativeShellState
+{
     fn event(
         state: &mut Self,
         source: &zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
@@ -144,20 +148,20 @@ impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> 
                         .primary_content
                         .as_ref()
                         .and_then(|c| c.bytes_for_mime(&mime_type))
-                    {
-                        spawn_write_fd("fika-wl-primary-send", fd, bytes);
-                    }
+                {
+                    spawn_write_fd("fika-wl-primary-send", fd, bytes);
+                }
             }
             zwp_primary_selection_source_v1::Event::Cancelled
                 if state
                     .primary_source
                     .as_ref()
-                    .is_some_and(|s| s.id() == source.id())
-                => {
-                    state.primary_source = None;
-                    state.primary_content = None;
-                    state.push(NativeShellEvent::PrimarySelectionCancelled);
-                }
+                    .is_some_and(|s| s.id() == source.id()) =>
+            {
+                state.primary_source = None;
+                state.primary_content = None;
+                state.push(NativeShellEvent::PrimarySelectionCancelled);
+            }
             _ => {}
         }
     }

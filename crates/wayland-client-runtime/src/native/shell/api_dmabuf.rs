@@ -161,7 +161,7 @@ impl NativeShell {
     ) -> Result<
         wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
         NativeError,
-    > {
+    >{
         use std::os::fd::AsFd;
 
         let dmabuf = self
@@ -209,11 +209,10 @@ impl NativeShell {
             .wl_surface(id)
             .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?
             .clone();
-        let record = self
-            .state
-            .dmabuf_buffers
-            .get(&buffer.0)
-            .ok_or_else(|| NativeError::Protocol(format!("unknown dmabuf buffer {buffer:?}")))?;
+        let record =
+            self.state.dmabuf_buffers.get(&buffer.0).ok_or_else(|| {
+                NativeError::Protocol(format!("unknown dmabuf buffer {buffer:?}"))
+            })?;
         wl.attach(Some(&record.buffer), x, y);
         Ok(())
     }

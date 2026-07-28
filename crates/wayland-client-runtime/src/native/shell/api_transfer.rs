@@ -11,10 +11,7 @@ impl NativeShell {
     ///
     /// When primary selection is available, the same content is dual-written so
     /// middle-click paste sees the latest copy (common desktop expectation).
-    pub fn set_selection_content(
-        &mut self,
-        content: TransferContent,
-    ) -> Result<(), NativeError> {
+    pub fn set_selection_content(&mut self, content: TransferContent) -> Result<(), NativeError> {
         self.set_selection_content_on_seat(content, None)
     }
 
@@ -76,9 +73,9 @@ impl NativeShell {
         seat: Option<crate::SeatId>,
         op: &str,
     ) -> Result<(u32, wayland_client::protocol::wl_data_device::WlDataDevice), NativeError> {
-        let serial = self.transfer_serial(seat).ok_or_else(|| {
-            NativeError::Protocol(format!("no input serial for {op}"))
-        })?;
+        let serial = self
+            .transfer_serial(seat)
+            .ok_or_else(|| NativeError::Protocol(format!("no input serial for {op}")))?;
         let device = self
             .transfer_data_device(seat)
             .ok_or_else(|| NativeError::Protocol("wl_data_device missing".into()))?;
@@ -141,7 +138,7 @@ impl NativeShell {
         seat: Option<crate::SeatId>,
     ) -> Option<
         wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
-    > {
+    >{
         if let Some(global) = self.transfer_seat_global(seat)
             && let Some(dev) = self
                 .state
@@ -211,7 +208,9 @@ impl NativeShell {
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(
+            mime, reader,
+        ))
     }
 
     /// Open a pipe for the first preferred mime from primary selection.
@@ -243,8 +242,8 @@ impl NativeShell {
                     .map_err(|e| NativeError::Protocol(e.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let content = TransferContent::new(payloads)
-            .map_err(|e| NativeError::Protocol(e.to_string()))?;
+        let content =
+            TransferContent::new(payloads).map_err(|e| NativeError::Protocol(e.to_string()))?;
         self.set_selection_content(content)
     }
 
@@ -279,7 +278,9 @@ impl NativeShell {
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(
+            mime, reader,
+        ))
     }
 
     /// Receive the current selection as bytes for `mime` (blocks on the pipe).
@@ -293,7 +294,6 @@ impl NativeShell {
     }
 }
 
-
 impl NativeShell {
     /// Open a pipe for the first preferred mime from the current selection.
     pub fn receive_selection_preferred_pipe(
@@ -302,7 +302,12 @@ impl NativeShell {
     ) -> Result<crate::data_transfer::TransferReadPipe, NativeError> {
         let mime = preferred_mimes
             .iter()
-            .find(|m| self.state.incoming_mimes.iter().any(|offered| offered == *m))
+            .find(|m| {
+                self.state
+                    .incoming_mimes
+                    .iter()
+                    .any(|offered| offered == *m)
+            })
             .ok_or_else(|| NativeError::Protocol("selection mime not found".into()))?;
         self.receive_selection_pipe(mime)
     }
@@ -321,4 +326,3 @@ impl NativeShell {
         Ok((mime, bytes))
     }
 }
-

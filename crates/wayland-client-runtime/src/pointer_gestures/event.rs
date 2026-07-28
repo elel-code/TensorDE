@@ -80,9 +80,7 @@ impl PointerSwipeEvent {
 
     pub fn seat(&self) -> Option<SeatId> {
         match self {
-            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => {
-                *seat
-            }
+            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => *seat,
         }
     }
 }
@@ -136,9 +134,7 @@ impl PointerPinchEvent {
 
     pub fn seat(&self) -> Option<SeatId> {
         match self {
-            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => {
-                *seat
-            }
+            Self::Begin { seat, .. } | Self::Update { seat, .. } | Self::End { seat, .. } => *seat,
         }
     }
 }

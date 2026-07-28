@@ -126,7 +126,7 @@ mod font5x7 {
         let mut t = [[0u8; 7]; 95];
         // Space
         t[0] = [0, 0, 0, 0, 0, 0, 0];
-        // ! 
+        // !
         t[1] = [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04];
         // digits 0-9 at '0' = 0x30 → index 16
         t[16] = [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e]; // 0
@@ -205,14 +205,7 @@ mod font5x7 {
 }
 
 /// Draw `text` centered in `[x0, x1)` at vertical center of the pixmap.
-pub fn draw_title(
-    pixmap: &mut Pixmap,
-    text: &str,
-    x0: f32,
-    x1: f32,
-    scale: f32,
-    color: Argb,
-) {
+pub fn draw_title(pixmap: &mut Pixmap, text: &str, x0: f32, x1: f32, scale: f32, color: Argb) {
     if text.is_empty() || x1 <= x0 {
         return;
     }
@@ -310,7 +303,14 @@ pub fn paint_header(
     buttons.draw(&mut pm, scale, colors, hover, maximized);
 
     let (tx0, tx1) = buttons.title_range(width);
-    draw_title(&mut pm, title, tx0 * scale, tx1 * scale, scale, colors.title);
+    draw_title(
+        &mut pm,
+        title,
+        tx0 * scale,
+        tx1 * scale,
+        scale,
+        colors.title,
+    );
     pm
 }
 
@@ -329,10 +329,19 @@ mod tests {
     fn title_draws_without_panic() {
         let mut pm = Pixmap::new(200, 36);
         pm.clear([0xff, 0x20, 0x20, 0x20]);
-        draw_title(&mut pm, "Hello Fika", 10.0, 190.0, 1.0, [0xff, 0xff, 0xff, 0xff]);
+        draw_title(
+            &mut pm,
+            "Hello Fika",
+            10.0,
+            190.0,
+            1.0,
+            [0xff, 0xff, 0xff, 0xff],
+        );
         // White title glyphs set B/G/R to 0xff; background keeps 0x20.
         assert!(
-            pm.pixels.chunks_exact(4).any(|px| px[0] == 0xff && px[1] == 0xff && px[2] == 0xff),
+            pm.pixels
+                .chunks_exact(4)
+                .any(|px| px[0] == 0xff && px[1] == 0xff && px[2] == 0xff),
             "expected at least one white title pixel"
         );
     }

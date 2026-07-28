@@ -5,7 +5,7 @@ use crate::native::connection::NativeError;
 use crate::runtime_common::RuntimeError;
 use crate::surface::SurfaceId;
 
-use super::runtime_facade::{map_native_error, NativeRuntime};
+use super::runtime_facade::{NativeRuntime, map_native_error};
 
 impl NativeRuntime {
     pub fn begin_interactive_move(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
@@ -85,7 +85,11 @@ impl NativeRuntime {
         self.shell.preferred_icon_sizes().to_vec()
     }
 
-    pub fn set_maximized(&mut self, surface: SurfaceId, maximized: bool) -> Result<(), RuntimeError> {
+    pub fn set_maximized(
+        &mut self,
+        surface: SurfaceId,
+        maximized: bool,
+    ) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
             .set_maximized(native, maximized)
@@ -120,8 +124,6 @@ impl NativeRuntime {
 
     pub fn set_minimized(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
-        self.shell
-            .set_minimized(native)
-            .map_err(map_native_error)
+        self.shell.set_minimized(native).map_err(map_native_error)
     }
 }

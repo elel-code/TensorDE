@@ -2,7 +2,9 @@ impl WgpuState {
     fn new(window: Arc<WaylandWindow>) -> Result<Self, String> {
         let size = nonzero_size(window.surface_size());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            // The icon and dmabuf pipelines require the native Vulkan backend.
+            // Do not silently select GL and lose the zero-copy import path.
+            backends: wgpu::Backends::VULKAN,
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -128,7 +130,7 @@ impl WgpuState {
             QuadRenderer::new_transparent_clear(&device, &queue, config.format);
         let quad_renderer = QuadRenderer::new(&device, config.format);
         let overlay_quad_renderer = QuadRenderer::new(&device, config.format);
-        let icon_renderer = IconRenderer::new(&device, config.format);
+        let icon_renderer = IconRenderer::new(&device, &queue, config.format);
         let text_renderer = TextRenderer::new(&device, config.format);
         let retained_scene = RetainedSceneRenderer::new(
             &device,
@@ -254,10 +256,7 @@ impl WgpuState {
         self.import_dmabuf_texture(desc)
     }
 
-    /// Acquire external content: dmabuf import when possible, else CPU upload.
-    ///
-    /// Icon/text atlases still use their own `write_texture` paths. Use this for
-    /// whole-texture external content (video frames, future GPU producers).
+    /// Acquire whole-texture external content through dmabuf import only.
     #[allow(dead_code)]
     pub(crate) fn acquire_external_texture(
         &self,
@@ -266,7 +265,6 @@ impl WgpuState {
         width: u32,
         height: u32,
         plane: Option<crate::shell::render::dmabuf::DmabufImportPlane>,
-        pixels: Option<&[u8]>,
         label: Option<&'static str>,
     ) -> Result<
         crate::shell::render::dmabuf::ExternalTexture,
@@ -275,12 +273,10 @@ impl WgpuState {
         let plan = self.dmabuf_import_plan(event_loop, surface);
         crate::shell::render::dmabuf::acquire_external_texture(
             &self.device,
-            &self.queue,
             plan,
             width,
             height,
             plane,
-            pixels,
             label,
         )
     }
@@ -554,30 +550,11 @@ impl WgpuState {
         let folder_preview_results = scene.drain_folder_preview_role_results();
         let metadata_role_stats =
             scene.prewarm_file_metadata_roles(frame_projections.projections());
-        for projection in frame_projections.projections() {
-            if let Some(item) = projection.visible_items.first() {
-                let icon_size = item
-                    .layout
-                    .icon_rect
-                    .width
-                    .max(item.layout.icon_rect.height)
-                    .clamp(16.0, 256.0);
-                self.icon_renderer
-                    .prewarm_common_file_icon_rasters(icon_size);
-            }
-        }
         let role_stats = scene.prewarm_visible_file_icon_roles(
             frame_projections.projections(),
             &mut self.icon_renderer.resolver,
             reason,
         );
-        let scene_icon_raster_prewarm_stats = if visible_exact_icon_roles_enabled_for_frame(reason)
-        {
-            self.icon_renderer
-                .prewarm_small_directory_file_icon_rasters(frame_projections.projections())
-        } else {
-            IconRasterPrewarmStats::default()
-        };
         let scene_text_prewarm_stats = self.prewarm_text_labels(
             scene,
             frame_projections.projections(),
@@ -592,23 +569,6 @@ impl WgpuState {
             self.frame_count,
         );
         let role_prewarm_us = role_start.elapsed().as_micros();
-        if scene_icon_raster_prewarm_stats.entries > 0
-            && (scene_icon_raster_prewarm_stats.raster_us >= 1000
-                || scene_icon_raster_prewarm_stats.over_budget
-                || fika_frame_log_all_enabled())
-        {
-            fika_log!(
-                "[fika-wgpu] prewarm-icon-rasters-scene reason={} view={} entries={} hits={} misses={} failed={} raster={}us over_budget={}",
-                reason,
-                scene.panes[ShellPaneId::SLOT_0].view_mode.as_str(),
-                scene_icon_raster_prewarm_stats.entries,
-                scene_icon_raster_prewarm_stats.cache_hits,
-                scene_icon_raster_prewarm_stats.cache_misses,
-                scene_icon_raster_prewarm_stats.failed,
-                scene_icon_raster_prewarm_stats.raster_us,
-                scene_icon_raster_prewarm_stats.over_budget as u8
-            );
-        }
         if scene_text_prewarm_stats.entries + scene_text_prewarm_stats.read_ahead > 0
             && (scene_text_prewarm_stats.raster_us >= 1000
                 || scene_text_prewarm_stats.over_budget
@@ -656,7 +616,7 @@ impl WgpuState {
         );
         let prepare_us = prepare_start.elapsed().as_micros();
         fika_log!(
-            "[fika-wgpu] prewarm-scene reason={} view={} visible={} metadata_visible={} metadata_deferred={} metadata_batches={} metadata_results={} metadata_applied={} role_entries={} role_deferred={} role_read_ahead={} role_resolve={}us role_total={}us text_labels={} text_cache={}/{} text_deferred={} text_raster={}us icon_resolve={}us icon_raster={}us icon_deferred={} icon_raster_deferred={} prepare={}us total={}us",
+            "[fika-wgpu] prewarm-scene reason={} view={} visible={} metadata_visible={} metadata_deferred={} metadata_batches={} metadata_results={} metadata_applied={} role_entries={} role_deferred={} role_read_ahead={} role_resolve={}us role_total={}us text_labels={} text_cache={}/{} text_deferred={} text_raster={}us icon_resolve={}us icon_deferred={} prepare={}us total={}us",
             reason,
             scene.panes[ShellPaneId::SLOT_0].view_mode.as_str(),
             scene_frame.visible_items,
@@ -676,9 +636,7 @@ impl WgpuState {
             scene_frame.text_stats.deferred,
             scene_frame.text_stats.raster_us,
             scene_frame.icon_stats.resolve_us,
-            scene_frame.icon_stats.raster_us,
             scene_frame.icon_stats.deferred,
-            scene_frame.icon_stats.raster_deferred,
             prepare_us,
             total_start.elapsed().as_micros()
         );

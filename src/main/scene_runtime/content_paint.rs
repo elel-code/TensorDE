@@ -419,25 +419,6 @@ impl ShellScene {
         scrolled || hover_changed
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn max_scroll_x(&self, size: PhysicalSize<u32>) -> f32 {
-        self.pane_scroll_metrics(ShellPaneId::SLOT_0, size)
-            .map(|metrics| metrics.max_scroll_x)
-            .unwrap_or(0.0)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn max_scroll_y(&self, size: PhysicalSize<u32>) -> f32 {
-        self.pane_scroll_metrics(ShellPaneId::SLOT_0, size)
-            .map(|metrics| metrics.max_scroll_y)
-            .unwrap_or(0.0)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn content_scrollbar_rects(&self, size: PhysicalSize<u32>) -> Option<(ViewRect, ViewRect)> {
-        self.pane_content_scrollbar_rects(ShellPaneId::SLOT_0, size)
-    }
-
     fn pane_content_scrollbar_rects(
         &self,
         kind: ShellPaneId,

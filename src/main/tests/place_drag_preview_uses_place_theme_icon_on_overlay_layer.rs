@@ -3,7 +3,7 @@
     fn place_drag_preview_source_exposes_place_theme_icon_for_wayland_dnd() {
         // Drag preview is a compositor DnD icon, not an in-window overlay.
         // Verify the preview source still carries the place theme icon name
-        // so `start_outgoing_drag` can rasterize the same icon into a DragIcon.
+        // so `start_outgoing_drag` can render the same icon into a DragIcon.
         let mut scene = test_scene(Vec::new(), ShellViewMode::Icons);
         scene.places = vec![ShellPlace::new(
             "",

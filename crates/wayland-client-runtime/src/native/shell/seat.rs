@@ -2,8 +2,8 @@
 //!
 //! Kept out of `types` / `api` so multi-seat state machines stay in one place.
 
-use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_touch};
 use wayland_client::Proxy;
+use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_touch};
 
 use super::api::NativeShell;
 use super::types::{NativeShellEvent, NativeShellState, NativeSurfaceId, SeatRecord};
@@ -24,9 +24,7 @@ impl NativeShellState {
     }
 
     pub(crate) fn seat_for_touch(&self, touch: &wl_touch::WlTouch) -> Option<u32> {
-        self.touch_objects
-            .get(&touch.id().protocol_id())
-            .copied()
+        self.touch_objects.get(&touch.id().protocol_id()).copied()
     }
 
     pub(crate) fn note_seat_serial(&mut self, seat_global: Option<u32>, serial: u32) {
@@ -122,10 +120,7 @@ impl NativeShellState {
         self.relative_pointer_objects
             .retain(|_, name| *name != global_name);
 
-        let was_primary = self
-            .seat
-            .as_ref()
-            .is_some_and(|s| s.id() == rec.seat.id());
+        let was_primary = self.seat.as_ref().is_some_and(|s| s.id() == rec.seat.id());
 
         // Drop capability devices; proxies are destroyed when `rec` drops.
         drop(rec.keyboard);
@@ -220,8 +215,7 @@ impl NativeShellState {
                 .get_mut(&global)
                 .and_then(|rec| rec.keyboard.take());
             if let Some(kb) = keyboard {
-                self.keyboard_objects
-                    .remove(&kb.id().protocol_id());
+                self.keyboard_objects.remove(&kb.id().protocol_id());
                 if is_primary && self.keyboard.as_ref().is_some_and(|k| k.id() == kb.id()) {
                     self.keyboard = None;
                 }
@@ -239,8 +233,7 @@ impl NativeShellState {
                 .get_mut(&global)
                 .and_then(|rec| rec.pointer.take());
             if let Some(ptr) = pointer {
-                self.pointer_objects
-                    .remove(&ptr.id().protocol_id());
+                self.pointer_objects.remove(&ptr.id().protocol_id());
                 // Drop gesture objects bound to this seat's pointer.
                 let swipe = self
                     .seats
@@ -256,14 +249,24 @@ impl NativeShellState {
                     .and_then(|rec| rec.hold_gesture.take());
                 if let Some(g) = swipe {
                     self.swipe_objects.remove(&g.id().protocol_id());
-                    if is_primary && self.swipe_gesture.as_ref().is_some_and(|s| s.id() == g.id()) {
+                    if is_primary
+                        && self
+                            .swipe_gesture
+                            .as_ref()
+                            .is_some_and(|s| s.id() == g.id())
+                    {
                         self.swipe_gesture = None;
                     }
                     g.destroy();
                 }
                 if let Some(g) = pinch {
                     self.pinch_objects.remove(&g.id().protocol_id());
-                    if is_primary && self.pinch_gesture.as_ref().is_some_and(|s| s.id() == g.id()) {
+                    if is_primary
+                        && self
+                            .pinch_gesture
+                            .as_ref()
+                            .is_some_and(|s| s.id() == g.id())
+                    {
                         self.pinch_gesture = None;
                     }
                     g.destroy();
@@ -309,10 +312,7 @@ impl NativeShellState {
         }
 
         if !capabilities.contains(wl_seat::Capability::Touch) {
-            let touch = self
-                .seats
-                .get_mut(&global)
-                .and_then(|rec| rec.touch.take());
+            let touch = self.seats.get_mut(&global).and_then(|rec| rec.touch.take());
             if let Some(t) = touch {
                 self.touch_objects.remove(&t.id().protocol_id());
                 if is_primary && self.touch.as_ref().is_some_and(|x| x.id() == t.id()) {
@@ -321,9 +321,7 @@ impl NativeShellState {
                         self.touch_pending.clear();
                         self.touch_active.clear();
                         self.touch_points.clear();
-                        self.push(NativeShellEvent::TouchCancel {
-                            seat: Some(global),
-                        });
+                        self.push(NativeShellEvent::TouchCancel { seat: Some(global) });
                     }
                 }
                 t.release();
@@ -345,10 +343,7 @@ impl NativeShellState {
     /// Fill empty shell-wide keyboard/pointer/touch from any seat that still has them.
     pub(crate) fn promote_primary_device_mirrors(&mut self) {
         if self.keyboard.is_none() {
-            self.keyboard = self
-                .seats
-                .values()
-                .find_map(|rec| rec.keyboard.clone());
+            self.keyboard = self.seats.values().find_map(|rec| rec.keyboard.clone());
         }
         if self.pointer.is_none()
             && let Some(rec) = self.seats.values().find(|rec| rec.pointer.is_some())
@@ -382,9 +377,10 @@ impl NativeShellState {
         seat: Option<crate::SeatId>,
     ) -> Result<(wl_seat::WlSeat, u32), NativeError> {
         if let Some(id) = seat {
-            let rec = self.seats.get(&id.get()).ok_or_else(|| {
-                NativeError::Protocol(format!("unknown seat {}", id.get()))
-            })?;
+            let rec = self
+                .seats
+                .get(&id.get())
+                .ok_or_else(|| NativeError::Protocol(format!("unknown seat {}", id.get())))?;
             let serial = rec.last_input_serial.ok_or_else(|| {
                 NativeError::Protocol("no input serial for toplevel interaction".into())
             })?;
@@ -412,15 +408,17 @@ impl NativeShellState {
         seat: Option<crate::SeatId>,
     ) -> Result<(wl_pointer::WlPointer, u32), NativeError> {
         if let Some(id) = seat {
-            let rec = self.seats.get(&id.get()).ok_or_else(|| {
-                NativeError::Protocol(format!("unknown seat {}", id.get()))
-            })?;
-            let pointer = rec.pointer.clone().ok_or_else(|| {
-                NativeError::Protocol("seat has no pointer".into())
-            })?;
-            let serial = rec.pointer_enter_serial.ok_or_else(|| {
-                NativeError::Protocol("no pointer enter serial".into())
-            })?;
+            let rec = self
+                .seats
+                .get(&id.get())
+                .ok_or_else(|| NativeError::Protocol(format!("unknown seat {}", id.get())))?;
+            let pointer = rec
+                .pointer
+                .clone()
+                .ok_or_else(|| NativeError::Protocol("seat has no pointer".into()))?;
+            let serial = rec
+                .pointer_enter_serial
+                .ok_or_else(|| NativeError::Protocol("no pointer enter serial".into()))?;
             return Ok((pointer, serial));
         }
         // Prefer the seat that owns the shell-wide enter serial.
@@ -611,9 +609,10 @@ impl NativeShell {
         seat: Option<crate::SeatId>,
     ) -> Result<(), NativeError> {
         let (pointer, serial) = self.state.resolve_cursor_pointer_serial(seat)?;
-        let manager = self.state.cursor_shape_manager.as_ref().ok_or_else(|| {
-            NativeError::Protocol("wp_cursor_shape_manager_v1 missing".into())
-        })?;
+        let manager =
+            self.state.cursor_shape_manager.as_ref().ok_or_else(|| {
+                NativeError::Protocol("wp_cursor_shape_manager_v1 missing".into())
+            })?;
         let qh = self.queue.handle();
         let device = manager.get_pointer(&pointer, &qh, ());
         device.set_shape(serial, shape);
@@ -701,11 +700,7 @@ impl NativeShell {
             .state
             .seats
             .iter()
-            .filter_map(|(global, rec)| {
-                rec.pointer
-                    .as_ref()
-                    .map(|p| (*global, p.clone()))
-            })
+            .filter_map(|(global, rec)| rec.pointer.as_ref().map(|p| (*global, p.clone())))
             .collect();
         for (global, pointer) in seat_globals {
             let is_primary = primary == Some(global);

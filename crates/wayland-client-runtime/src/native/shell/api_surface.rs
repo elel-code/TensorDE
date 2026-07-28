@@ -37,7 +37,15 @@ impl NativeShell {
         width: u32,
         height: u32,
     ) -> Result<NativeSurfaceId, NativeError> {
-        self.create_toplevel_inner(title, app_id, width.max(1), height.max(1), None, None, false)
+        self.create_toplevel_inner(
+            title,
+            app_id,
+            width.max(1),
+            height.max(1),
+            None,
+            None,
+            false,
+        )
     }
 
     /// Create a parented dialog toplevel (xdg_toplevel.set_parent + optional xdg_dialog modal).
@@ -129,9 +137,10 @@ impl NativeShell {
         toplevel.set_app_id(app_id_str);
 
         if let Some(parent_id) = parent
-            && let Some(parent_rec) = self.state.toplevels.get(&parent_id) {
-                toplevel.set_parent(Some(&parent_rec.toplevel));
-            }
+            && let Some(parent_rec) = self.state.toplevels.get(&parent_id)
+        {
+            toplevel.set_parent(Some(&parent_rec.toplevel));
+        }
 
         let dialog = if modal {
             if let Some(wm_dialog) = self.state.xdg_wm_dialog.as_ref() {
@@ -143,9 +152,10 @@ impl NativeShell {
             }
         } else if parent.is_some() {
             // Non-modal dialog still benefits from xdg_dialog when available.
-            self.state.xdg_wm_dialog.as_ref().map(|wm_dialog| {
-                wm_dialog.get_xdg_dialog(&toplevel, &qh, ())
-            })
+            self.state
+                .xdg_wm_dialog
+                .as_ref()
+                .map(|wm_dialog| wm_dialog.get_xdg_dialog(&toplevel, &qh, ()))
         } else {
             None
         };

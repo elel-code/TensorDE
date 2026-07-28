@@ -23,9 +23,7 @@ use crate::surface::{
     PopupAttributes, PopupPositioner, SurfaceHandle, SurfaceId, ToplevelAttributes,
 };
 use crate::wake_fd::EventFdWake;
-use crate::{
-    ActivationRequestId, ActivationToken, ActivationTokenAttributes, NativeError,
-};
+use crate::{ActivationRequestId, ActivationToken, ActivationTokenAttributes, NativeError};
 
 /// Which readiness source completed a Compio wait.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,8 +69,8 @@ impl NativeRuntime {
         let wake_ready = CompioFdReady::watch(wake.as_ref())
             .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         let wake_handle = WakeHandle::from_event_fd(wake.clone());
-        let compio = compio::runtime::Runtime::new()
-            .map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
+        let compio =
+            compio::runtime::Runtime::new().map_err(|e| RuntimeError::EventLoop(e.to_string()))?;
         Ok(Self {
             shell,
             surfaces: SurfaceIdMap::new(),
@@ -275,9 +273,7 @@ impl NativeRuntime {
         if let Some(max) = attributes.max_size {
             let _ = self.shell.set_max_size(native, Some(max));
         }
-        let _ = self
-            .shell
-            .set_decorations(native, attributes.decorations);
+        let _ = self.shell.set_decorations(native, attributes.decorations);
         let public = self.surfaces.intern(native);
         self.native_ids.insert(public, native);
         Ok(public)
@@ -357,7 +353,6 @@ impl NativeRuntime {
         self.shell.outputs_into(out)
     }
 
-
     pub fn create_popup(
         &mut self,
         parent: SurfaceId,
@@ -390,7 +385,6 @@ impl NativeRuntime {
             .reposition_popup(native, &pos, token)
             .map_err(map_native_error)
     }
-
 
     pub fn set_title(&mut self, surface: SurfaceId, title: String) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
@@ -442,7 +436,6 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-
     pub fn set_min_size(
         &mut self,
         surface: SurfaceId,
@@ -465,12 +458,9 @@ impl NativeRuntime {
             .map_err(map_native_error)
     }
 
-
     pub fn request_frame(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
-        self.shell
-            .request_frame(native)
-            .map_err(map_native_error)
+        self.shell.request_frame(native).map_err(map_native_error)
     }
 
     /// Whether a `wl_surface.frame` callback is still outstanding.
@@ -560,9 +550,7 @@ impl NativeRuntime {
 
     pub fn commit(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
-        self.shell
-            .commit_surface(native)
-            .map_err(map_native_error)
+        self.shell.commit_surface(native).map_err(map_native_error)
     }
 
     /// Flush pending protocol requests to the display socket.
@@ -601,7 +589,11 @@ impl NativeRuntime {
         }
     }
 
-    pub fn set_buffer_scale(&mut self, surface: SurfaceId, factor: i32) -> Result<(), RuntimeError> {
+    pub fn set_buffer_scale(
+        &mut self,
+        surface: SurfaceId,
+        factor: i32,
+    ) -> Result<(), RuntimeError> {
         let native = self.native(surface)?;
         self.shell
             .set_buffer_scale(native, factor)
@@ -654,9 +646,6 @@ impl NativeRuntime {
             .map_err(map_native_error)?;
         Ok(vec![surface])
     }
-
-
-
 
     pub(crate) fn native(&self, surface: SurfaceId) -> Result<NativeSurfaceId, RuntimeError> {
         self.native_ids
@@ -760,7 +749,9 @@ mod tests {
         // Coalesce while pending.
         runtime.request_frame(surface).expect("frame again");
         assert!(runtime.is_frame_pending(surface));
-        runtime.arm_present_notify(surface).expect("arm present again");
+        runtime
+            .arm_present_notify(surface)
+            .expect("arm present again");
         assert!(runtime.is_present_pending(surface));
         assert_eq!(
             runtime.logical_size(surface),
@@ -794,9 +785,11 @@ mod tests {
             })
             .expect("toplevel");
         assert!(runtime.begin_interactive_move(surface).is_err());
-        assert!(runtime
-            .begin_interactive_resize(surface, crate::ResizeEdge::Bottom)
-            .is_err());
+        assert!(
+            runtime
+                .begin_interactive_resize(surface, crate::ResizeEdge::Bottom)
+                .is_err()
+        );
         let _ = runtime.destroy_surface(surface);
     }
 
@@ -823,8 +816,7 @@ mod tests {
 
         let mut positioner = PopupPositioner::default();
         positioner.size = LogicalSize::new(120, 80);
-        positioner.anchor_rect =
-            crate::geometry::LogicalRect::new(0, 0, 40, 20);
+        positioner.anchor_rect = crate::geometry::LogicalRect::new(0, 0, 40, 20);
         let popup = runtime
             .create_popup(
                 parent,
@@ -856,10 +848,8 @@ mod tests {
         }
 
         if runtime.capabilities().xdg_activation_v1 {
-            let _ = runtime.request_activation_token(
-                parent,
-                crate::ActivationTokenAttributes::default(),
-            );
+            let _ = runtime
+                .request_activation_token(parent, crate::ActivationTokenAttributes::default());
         }
 
         runtime.destroy_surface(parent).expect("destroy parent");
@@ -908,5 +898,4 @@ mod tests {
         );
         let _ = runtime.destroy_surface(surface);
     }
-
 }

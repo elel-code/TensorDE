@@ -135,7 +135,7 @@ pub(crate) fn zoom_action_for_scroll_delta(delta_y: f32) -> Option<ZoomAction> {
 /// Multiplicative finger-spacing change required for one icon zoom step.
 ///
 /// Absolute pinch `scale` is relative to spacing at gesture begin (~1.0). About
-/// 12% spacing change maps to one Dolphin-style zoom step so continuous pinch
+/// 12% spacing change maps to one FileManager-style zoom step so continuous pinch
 /// does not jump multiple levels on tiny motion.
 pub(crate) const PINCH_ZOOM_STEP_RATIO: f64 = 1.12;
 
@@ -243,10 +243,7 @@ mod pinch_zoom_tests {
     fn pinch_close_emits_zoom_out_steps() {
         let mut tracker = PinchZoomTracker::begin();
         assert_eq!(tracker.update(1.0 / 1.12), vec![ZoomAction::Out]);
-        assert_eq!(
-            tracker.update(1.0 / (1.12 * 1.12)),
-            vec![ZoomAction::Out]
-        );
+        assert_eq!(tracker.update(1.0 / (1.12 * 1.12)), vec![ZoomAction::Out]);
     }
 
     #[test]
@@ -277,20 +274,14 @@ mod swipe_nav_tests {
         let mut tracker = SwipeNavigationTracker::begin(3);
         tracker.update(50.0, 5.0);
         tracker.update(60.0, -2.0);
-        assert_eq!(
-            tracker.finish(false),
-            Some(PathNavigationAction::Back)
-        );
+        assert_eq!(tracker.finish(false), Some(PathNavigationAction::Back));
     }
 
     #[test]
     fn three_finger_swipe_left_goes_forward() {
         let mut tracker = SwipeNavigationTracker::begin(3);
         tracker.update(-120.0, 10.0);
-        assert_eq!(
-            tracker.finish(false),
-            Some(PathNavigationAction::Forward)
-        );
+        assert_eq!(tracker.finish(false), Some(PathNavigationAction::Forward));
     }
 
     #[test]

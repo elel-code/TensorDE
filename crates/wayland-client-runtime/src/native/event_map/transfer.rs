@@ -38,15 +38,14 @@ pub(crate) fn map(
             delete_after,
         } => {
             let surface = surfaces.intern(surface);
-            let delete_surrounding =
-                if delete_before > 0 || delete_after > 0 {
-                    Some(crate::TextInputDeleteSurrounding {
-                        before_bytes: delete_before as usize,
-                        after_bytes: delete_after as usize,
-                    })
-                } else {
-                    None
-                };
+            let delete_surrounding = if delete_before > 0 || delete_after > 0 {
+                Some(crate::TextInputDeleteSurrounding {
+                    before_bytes: delete_before as usize,
+                    after_bytes: delete_after as usize,
+                })
+            } else {
+                None
+            };
             let preedit = preedit.map(|text| crate::TextInputPreedit {
                 text,
                 cursor_range: None,

@@ -45,8 +45,6 @@ mod seat;
 mod types;
 
 pub use api::NativeShell;
-pub use handle::NativeSurfaceHandle;
 pub use api_idle_notify::IdleNotifyKind;
-pub use types::{
-    NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeSurfaceId,
-};
+pub use handle::NativeSurfaceHandle;
+pub use types::{NativeCapabilities, NativePopupPositioner, NativeShellEvent, NativeSurfaceId};

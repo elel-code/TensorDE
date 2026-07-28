@@ -2,6 +2,8 @@ use crate::platform::PhysicalSize;
 use crate::platform::{ActiveEventLoop, ElementState, KeyEvent};
 
 use super::outcome::{ShellActionEffect, ShellActionOutcome};
+use crate::FikaWgpuApp;
+use crate::shell::animation::ShellAnimationKind;
 use crate::shell::shortcuts::{
     LocationCommand, dark_mode_toggle_requested_for_key_event, escape_requested_for_key_event,
     file_keyboard_command_for_key_event, filter_command_for_key_event,
@@ -9,8 +11,6 @@ use crate::shell::shortcuts::{
     navigation_action_for_key, path_navigation_action_for_key, reload_requested_for_key_event,
     selection_command_for_key_event, view_mode_for_key_event, zoom_action_for_key_event,
 };
-use crate::shell::animation::ShellAnimationKind;
-use crate::FikaWgpuApp;
 
 impl FikaWgpuApp {
     pub(crate) fn handle_main_keyboard_input(

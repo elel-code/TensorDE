@@ -39,13 +39,7 @@ impl NativeXkb {
         Some(Self { state })
     }
 
-    pub fn update_mask(
-        &mut self,
-        depressed: u32,
-        latched: u32,
-        locked: u32,
-        group: u32,
-    ) {
+    pub fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
         self.state
             .update_mask(depressed, latched, locked, 0, 0, group);
     }

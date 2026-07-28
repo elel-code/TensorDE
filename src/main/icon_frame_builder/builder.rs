@@ -1,9 +1,6 @@
 struct IconFrameResources<'a> {
     resolver: &'a mut FileIconResolver,
-    thumbnails: &'a mut ThumbnailRasterResolver,
-    icon_rasters: &'a mut IconRasterResolver,
-    raster_cache: &'a mut IconRasterCache,
-    role_raster_cache: &'a mut IconRoleRasterCache,
+    thumbnails: &'a mut ThumbnailSourceResolver,
     /// Resident GPU icon sizes at frame start (size-free identity → sample).
     gpu_resident: IconGpuResidentIndex,
 }
@@ -11,18 +8,12 @@ struct IconFrameResources<'a> {
 impl<'a> IconFrameResources<'a> {
     fn new(
         resolver: &'a mut FileIconResolver,
-        thumbnails: &'a mut ThumbnailRasterResolver,
-        icon_rasters: &'a mut IconRasterResolver,
-        raster_cache: &'a mut IconRasterCache,
-        role_raster_cache: &'a mut IconRoleRasterCache,
+        thumbnails: &'a mut ThumbnailSourceResolver,
         gpu_resident: IconGpuResidentIndex,
     ) -> Self {
         Self {
             resolver,
             thumbnails,
-            icon_rasters,
-            raster_cache,
-            role_raster_cache,
             gpu_resident,
         }
     }
@@ -32,9 +23,6 @@ impl<'a> IconFrameResources<'a> {
         Self::new(
             &mut renderer.resolver,
             &mut renderer.thumbnails,
-            &mut renderer.icon_rasters,
-            &mut renderer.raster_cache,
-            &mut renderer.role_raster_cache,
             gpu_resident,
         )
     }
@@ -50,17 +38,17 @@ struct FolderPreviewCacheStats {
 struct IconFrameConfig {
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
-    raster_miss_budget: usize,
+    sync_resolve_budget: usize,
     folder_preview_cache: FolderPreviewCacheStats,
 }
 
 impl IconFrameConfig {
     #[cfg(test)]
-    fn new(surface_size: PhysicalSize<u32>, ui_scale: f32, raster_miss_budget: usize) -> Self {
+    fn new(surface_size: PhysicalSize<u32>, ui_scale: f32, sync_resolve_budget: usize) -> Self {
         Self {
             surface_size,
             ui_scale,
-            raster_miss_budget,
+            sync_resolve_budget,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         }
     }
@@ -70,19 +58,13 @@ impl<'a> IconFrameBuilder<'a> {
     #[cfg(test)]
     fn new_for_test(
         resolver: &'a mut FileIconResolver,
-        thumbnails: &'a mut ThumbnailRasterResolver,
-        icon_rasters: &'a mut IconRasterResolver,
-        raster_cache: &'a mut IconRasterCache,
-        role_raster_cache: &'a mut IconRoleRasterCache,
+        thumbnails: &'a mut ThumbnailSourceResolver,
         surface_size: PhysicalSize<u32>,
     ) -> Self {
         Self::new(
             IconFrameResources::new(
                 resolver,
                 thumbnails,
-                icon_rasters,
-                raster_cache,
-                role_raster_cache,
                 IconGpuResidentIndex::default(),
             ),
             IconFrameConfig::new(surface_size, 1.0, 0),
@@ -93,24 +75,17 @@ impl<'a> IconFrameBuilder<'a> {
         let IconFrameResources {
             resolver,
             thumbnails,
-            icon_rasters,
-            raster_cache,
-            role_raster_cache,
             gpu_resident,
         } = resources;
         let IconFrameConfig {
             surface_size,
             ui_scale,
-            raster_miss_budget,
+            sync_resolve_budget,
             folder_preview_cache,
         } = config;
-        icon_rasters.drain_results(raster_cache);
         Self {
             resolver,
             thumbnails,
-            icon_rasters,
-            raster_cache,
-            role_raster_cache,
             gpu_resident,
             surface_size,
             ui_scale: ui_scale.clamp(1.0, 2.0),
@@ -133,10 +108,8 @@ impl<'a> IconFrameBuilder<'a> {
             cache_hits: 0,
             cache_misses: 0,
             deferred: 0,
-            raster_deferred: 0,
-            raster_miss_budget,
+            sync_resolve_budget,
             resolve_us: 0,
-            raster_us: 0,
         }
     }
 
@@ -181,116 +154,17 @@ impl<'a> IconFrameBuilder<'a> {
         // MIME / directory / generic icons share one GPU slot per *role*, not
         // per filesystem path — thousands of /bin entries must not thrash VRAM.
         let gpu_key = IconGpuUploadKey::role(role_key.kind.clone());
-        // Once the role texture is resident, sample it and only inspect CPU
-        // staging when a larger raster can upgrade it. Generic placeholders
-        // use their own role key below, so a same-size hash scan is unnecessary.
-        if let Some(resident) = self.gpu_resident.get(&gpu_key) {
-            self.cache_hits += 1;
-            let resident_px = resident.content_width.max(resident.content_height) as u16;
-            let upgrade = snapshot.path.as_ref().and_then(|theme_path| {
-                let key =
-                    IconRasterCacheKey::file_icon(theme_path.clone(), size_px, &role_key.kind);
-                let raster = self
-                    .raster_cache
-                    .get(&key)
-                    .or_else(|| self.raster_cache.get_closest_icon_variant(&key));
-                match raster {
-                    Some(raster) => {
-                        let area = raster.width.saturating_mul(raster.height);
-                        let old = resident
-                            .content_width
-                            .saturating_mul(resident.content_height);
-                        (area > old).then_some(raster)
-                    }
-                    None => {
-                        if size_px > resident_px {
-                            self.icon_rasters.queue_visible(key);
-                        }
-                        None
-                    }
-                }
-            });
-            self.push_raster_draw(gpu_key, upgrade, rect, screen, layer, None);
-            return true;
-        }
         let Some(theme_path) = snapshot.path else {
-            // No theme path yet: paint generic under the *generic* role key so
-            // we never poison Mime{…} GPU slots with a shared placeholder.
-            if self.raster_miss_budget == 0 {
-                let fallback = visible_icon_fallback_key(&FileIconPathCacheKey {
-                    role: role_key.clone(),
-                    size_px,
-                });
-                if let Some(raster) = self
-                    .role_raster_cache
-                    .get(&fallback.role)
-                    .or_else(|| self.role_raster_cache.get(&role_key))
-                {
-                    self.cache_hits += 1;
-                    let generic_key = IconGpuUploadKey::role(fallback.role.kind.clone());
-                    self.copy_raster_to_atlas(generic_key, raster, rect, screen, layer);
-                    return true;
-                }
-            }
             self.fallbacks += 1;
             return false;
         };
-        let key = IconRasterCacheKey::file_icon(theme_path, size_px, &role_key.kind);
-        let raster = if let Some(raster) = self.raster_cache.get(&key) {
-            self.cache_hits += 1;
-            raster
-        } else if let Some(raster) = self.raster_cache.get_closest_icon_variant(&key) {
-            self.cache_hits += 1;
-            self.icon_rasters.queue_visible(key.clone());
-            raster
-        } else if self.raster_miss_budget == 0 {
-            // Budget exhausted: queue exact work. Prefer a prior exact-role
-            // raster under this role's GPU key; otherwise paint a *generic*
-            // placeholder under the generic GPU key only — never poison
-            // Mime{…} slots with shared generic pixels (stuck wrong /bin icons).
-            self.icon_rasters.queue_visible(key.clone());
-            self.raster_deferred += 1;
-            if let Some(raster) = self.role_raster_cache.get(&role_key) {
-                self.cache_hits += 1;
-                self.copy_raster_to_atlas(gpu_key, raster, rect, screen, layer);
-                return true;
-            }
-            let fallback = visible_icon_fallback_key(&FileIconPathCacheKey {
-                role: role_key.clone(),
-                size_px,
-            });
-            if let Some(raster) = self.role_raster_cache.get(&fallback.role) {
-                self.cache_hits += 1;
-                let generic_key = IconGpuUploadKey::role(fallback.role.kind.clone());
-                self.copy_raster_to_atlas(generic_key, raster, rect, screen, layer);
-                return true;
-            }
-            self.fallbacks += 1;
-            return false;
-        } else {
-            self.cache_misses += 1;
-            self.raster_miss_budget -= 1;
-            let raster_start = Instant::now();
-            let Some(raster) = rasterize_icon_for_cache_key(&key) else {
-                self.raster_us += raster_start.elapsed().as_micros();
-                self.fallbacks += 1;
-                return false;
-            };
-            let raster_us = raster_start.elapsed().as_micros();
-            if raster_us >= 2_000 {
-                fika_log!(
-                    "[fika-wgpu] icon-raster-slow path={} size={} elapsed={}us",
-                    key.path.display(),
-                    size_px,
-                    raster_us
-                );
-            }
-            self.raster_us += raster_us;
-            self.raster_cache.insert(key, raster)
-        };
-
-        self.role_raster_cache.insert(role_key, raster.clone());
-        self.copy_raster_to_atlas(gpu_key, raster, rect, screen, layer);
+        self.push_gpu_source_draw(
+            gpu_key,
+            IconGpuSource::file(theme_path, size_px),
+            rect,
+            screen,
+            layer,
+        );
         true
     }
 
@@ -363,48 +237,29 @@ impl<'a> IconFrameBuilder<'a> {
             self.folder_preview_deferred += 1;
             return drew_folder_shell;
         };
-        let preview_rect = folder_preview_role_draw_rect(pixmap_layout, &preview.raster);
+        let preview_rect = folder_preview_gpu_draw_rect(pixmap_layout, preview.size_px);
         let Some(screen) = intersect_rect(preview_rect, clip) else {
             return drew_folder_shell;
         };
         let size_px = preview.size_px;
-        let key = IconRasterCacheKey::folder_preview(path.clone(), size_px, preview.stamp);
         let gpu_key = IconGpuUploadKey::content(path, preview.stamp);
         if let Some(resident) = self.gpu_resident.get(&gpu_key) {
-            self.cache_hits += 1;
-            let resident_area = resident
-                .content_width
-                .saturating_mul(resident.content_height);
-            let upgrade = if preview
-                .raster
-                .width
-                .saturating_mul(preview.raster.height)
-                > resident_area
-            {
-                Some(
-                    self.raster_cache
-                        .get(&key)
-                        .unwrap_or_else(|| self.raster_cache.insert(key, preview.raster.clone())),
-                )
-            } else {
-                None
-            };
-            self.push_raster_draw(gpu_key, upgrade, preview_rect, screen, layer, None);
-            self.folder_preview_quads += 1;
-            return drew_folder_shell;
+            let resident_px = resident.content_width.max(resident.content_height) as u16;
+            if resident_px >= size_px {
+                self.cache_hits += 1;
+                self.push_resident_draw(gpu_key, preview_rect, screen, layer);
+                self.folder_preview_quads += 1;
+                return drew_folder_shell;
+            }
         }
-        let raster = if let Some(raster) = self.raster_cache.get(&key) {
-            self.cache_hits += 1;
-            raster
-        } else if let Some(raster) = self.raster_cache.get_closest_stamped_variant(&key) {
-            self.cache_hits += 1;
-            raster
-        } else {
-            self.cache_misses += 1;
-            self.folder_previews_loaded += 1;
-            self.raster_cache.insert(key, preview.raster.clone())
-        };
-        self.copy_raster_to_atlas(gpu_key, raster, preview_rect, screen, layer);
+        self.folder_previews_loaded += 1;
+        self.push_gpu_source_draw(
+            gpu_key,
+            preview.source.clone(),
+            preview_rect,
+            screen,
+            layer,
+        );
         self.folder_preview_quads += 1;
         drew_folder_shell
     }
@@ -417,7 +272,7 @@ impl<'a> IconFrameBuilder<'a> {
         clip: ViewRect,
         layer: IconDrawLayer,
     ) -> bool {
-        // Dolphin still shows previews in Details / Compact at SizeSmall (16px).
+        // FileManager still shows previews in Details / Compact at SizeSmall (16px).
         // Only skip below the smallest icon-cache bucket so list mode does not
         // fall back to MIME icons while read-ahead already has a thumbnail.
         if rect.width.max(rect.height) < 16.0 {
@@ -442,111 +297,56 @@ impl<'a> IconFrameBuilder<'a> {
         let Some(screen) = intersect_rect(rect, clip) else {
             return true;
         };
-        // Rasterize from freestanding Large/XLarge sources at least as large as
-        // the on-screen icon (and typically 2× via ThumbnailSize::for_display_px).
+        // Generate a freestanding encoded thumbnail at least as large as the
+        // on-screen icon. Scaling and placement happen in the GPU target.
         let display_px = rect.width.max(rect.height).clamp(16.0, 256.0);
         let size_px = thumbnail_display_cache_size(display_px);
-        let key = IconRasterCacheKey::thumbnail(path.clone(), size_px, modified_secs);
         // Content previews are path+mtime only — zoom reuses the same GPU texture.
         let gpu_key = IconGpuUploadKey::content(path.clone(), modified_secs);
-        // GPU is source of truth once uploaded. Never fall back to MIME just
-        // because CPU/ready staging was released (that caused compact-mode
-        // thumbnail flicker: MIME ↔ preview every frame).
         if let Some(resident) = self.gpu_resident.get(&gpu_key) {
-            self.cache_hits += 1;
-            // Prefer a sharper CPU/ready raster; path+mtime is the content
-            // generation, so same-size pixels do not need hashing every frame.
-            let upgrade = self
-                .raster_cache
-                .get(&key)
-                .or_else(|| self.raster_cache.get_closest_stamped_variant(&key))
-                .and_then(|raster| {
-                    let area = raster.width.saturating_mul(raster.height);
-                    let old = resident
-                        .content_width
-                        .saturating_mul(resident.content_height);
-                    (area > old).then_some(raster)
-                });
             let resident_px = resident.content_width.max(resident.content_height) as u16;
-            // Zoom / larger view: exact freestanding size must load as visible
-            // work. Deferred-only queue left the size-free GPU slot stuck at
-            // the first-open resolution until re-enter.
-            if upgrade.is_none() && size_px > resident_px {
-                match self.thumbnails.resolve(
-                    &path,
-                    modified_secs,
-                    entry
-                        .mime_type
-                        .as_deref()
-                        .map(std::borrow::ToOwned::to_owned),
-                    size_px,
-                ) {
-                    ThumbnailResolveState::Ready(raster) => {
-                        let area = raster.width.saturating_mul(raster.height);
-                        let old = resident
-                            .content_width
-                            .saturating_mul(resident.content_height);
-                        if area > old {
-                            self.raster_cache.insert(key.clone(), raster.clone());
-                            self.push_raster_draw(
-                                gpu_key,
-                                Some(raster),
-                                rect,
-                                screen,
-                                layer,
-                                None,
-                            );
-                            self.thumbnail_quads += 1;
-                            return true;
-                        }
-                    }
-                    ThumbnailResolveState::Pending | ThumbnailResolveState::Failed => {}
-                }
+            if resident_px >= size_px {
+                self.cache_hits += 1;
+                self.push_resident_draw(gpu_key, rect, screen, layer);
+                self.thumbnail_quads += 1;
+                return true;
             }
-            self.push_raster_draw(gpu_key, upgrade, rect, screen, layer, None);
-            self.thumbnail_quads += 1;
-            return true;
         }
-        let raster = if let Some(raster) = self.raster_cache.get(&key) {
-            self.cache_hits += 1;
-            raster
-        } else if let Some(raster) = self.raster_cache.get_closest_stamped_variant(&key) {
-            self.cache_hits += 1;
-            let _ = self.thumbnails.resolve(
-                &path,
-                modified_secs,
-                entry
-                    .mime_type
-                    .as_deref()
-                    .map(std::borrow::ToOwned::to_owned),
-                size_px,
-            );
-            raster
-        } else {
-            match self.thumbnails.resolve(
-                &path,
-                modified_secs,
-                entry
-                    .mime_type
-                    .as_deref()
-                    .map(std::borrow::ToOwned::to_owned),
-                size_px,
-            ) {
-                ThumbnailResolveState::Ready(raster) => {
-                    self.cache_misses += 1;
-                    self.thumbnails_loaded += 1;
-                    self.raster_cache.insert(key, raster)
-                }
-                ThumbnailResolveState::Pending => {
-                    self.thumbnail_deferred += 1;
-                    return false;
-                }
-                ThumbnailResolveState::Failed => return false,
+        match self.thumbnails.resolve(
+            &path,
+            modified_secs,
+            entry
+                .mime_type
+                .as_deref()
+                .map(std::borrow::ToOwned::to_owned),
+            size_px,
+        ) {
+            ThumbnailResolveState::Ready(source) => {
+                self.thumbnails_loaded += 1;
+                self.push_gpu_source_draw(gpu_key, source, rect, screen, layer);
+                self.thumbnail_quads += 1;
+                true
             }
-        };
-        self.copy_raster_to_atlas(gpu_key, raster, rect, screen, layer);
-        self.thumbnail_quads += 1;
-        true
+            ThumbnailResolveState::Pending => {
+                self.thumbnail_deferred += 1;
+                if self.gpu_resident.get(&gpu_key).is_some() {
+                    self.push_resident_draw(gpu_key, rect, screen, layer);
+                    self.thumbnail_quads += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            ThumbnailResolveState::Failed => {
+                if self.gpu_resident.get(&gpu_key).is_some() {
+                    self.push_resident_draw(gpu_key, rect, screen, layer);
+                    self.thumbnail_quads += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
 
     fn push_named_theme_icon(
@@ -567,7 +367,7 @@ impl<'a> IconFrameBuilder<'a> {
         self.icons += 1;
         let resolve_start = Instant::now();
         let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0);
-        let snapshot = if self.raster_miss_budget > 0 {
+        let snapshot = if self.sync_resolve_budget > 0 {
             self.resolver
                 .resolve_named_fast(icon_name, fallback, icon_size)
         } else {
@@ -587,65 +387,13 @@ impl<'a> IconFrameBuilder<'a> {
         };
         let size_px = icon_cache_size(icon_size);
         let gpu_key = IconGpuUploadKey::theme_asset(path.clone());
-        let key = IconRasterCacheKey::icon(path, size_px);
-        if let Some(resident) = self.gpu_resident.get(&gpu_key) {
-            self.cache_hits += 1;
-            let upgrade = self
-                .raster_cache
-                .get(&key)
-                .or_else(|| self.raster_cache.get_closest_icon_variant(&key))
-                .and_then(|raster| {
-                    let area = raster.width.saturating_mul(raster.height);
-                    let old = resident
-                        .content_width
-                        .saturating_mul(resident.content_height);
-                    (area > old).then_some(raster)
-                });
-            let resident_px = resident.content_width.max(resident.content_height) as u16;
-            if upgrade.is_none()
-                && size_px > resident_px
-                && !self.raster_cache.contains(&key)
-            {
-                self.icon_rasters.queue_visible(key.clone());
-            }
-            self.push_raster_draw(gpu_key, upgrade, rect, screen, layer, None);
-            return true;
-        }
-        let raster = if let Some(raster) = self.raster_cache.get(&key) {
-            self.cache_hits += 1;
-            raster
-        } else if let Some(raster) = self.raster_cache.get_closest_icon_variant(&key) {
-            self.cache_hits += 1;
-            raster
-        } else {
-            self.cache_misses += 1;
-            if self.raster_miss_budget == 0 {
-                self.icon_rasters.queue_visible(key.clone());
-                self.raster_deferred += 1;
-                self.fallbacks += 1;
-                return false;
-            }
-            self.raster_miss_budget -= 1;
-            let raster_start = Instant::now();
-            let Some(raster) = rasterize_icon_for_cache_key(&key) else {
-                self.raster_us += raster_start.elapsed().as_micros();
-                self.fallbacks += 1;
-                return false;
-            };
-            let raster_us = raster_start.elapsed().as_micros();
-            if raster_us >= 2_000 {
-                fika_log!(
-                    "[fika-wgpu] icon-raster-slow path={} size={} elapsed={}us",
-                    key.path.display(),
-                    size_px,
-                    raster_us
-                );
-            }
-            self.raster_us += raster_us;
-            self.raster_cache.insert(key, raster)
-        };
-
-        self.copy_raster_to_atlas(gpu_key, raster, rect, screen, layer);
+        self.push_gpu_source_draw(
+            gpu_key,
+            IconGpuSource::file(path, size_px),
+            rect,
+            screen,
+            layer,
+        );
         true
     }
 
@@ -672,18 +420,13 @@ impl<'a> IconFrameBuilder<'a> {
             return false;
         };
         let gpu_key = IconGpuUploadKey::theme_asset(path.clone());
-        let key = IconRasterCacheKey::icon(path, size_px);
-        let raster = if let Some(raster) = self.raster_cache.get(&key) {
-            self.cache_hits += 1;
-            raster
-        } else {
-            self.cache_misses += 1;
-            let Some(raster) = rasterize_icon_for_cache_key(&key) else {
-                return false;
-            };
-            self.raster_cache.insert(key, raster)
-        };
-        self.copy_raster_to_atlas(gpu_key, raster, rect, screen, layer);
+        self.push_gpu_source_draw(
+            gpu_key,
+            IconGpuSource::file(path, size_px),
+            rect,
+            screen,
+            layer,
+        );
         true
     }
 
@@ -711,11 +454,6 @@ impl<'a> IconFrameBuilder<'a> {
     }
 
     fn queue_thumbnail_read_ahead(&mut self, candidate: ShellThumbnailCandidate, size_px: u16) {
-        let key =
-            IconRasterCacheKey::thumbnail(candidate.path.clone(), size_px, candidate.modified_secs);
-        if self.raster_cache.contains(&key) {
-            return;
-        }
         if self.thumbnails.queue_deferred(
             &candidate.path,
             candidate.modified_secs,
@@ -726,159 +464,156 @@ impl<'a> IconFrameBuilder<'a> {
         }
     }
 
-    fn copy_raster_to_atlas(
+    fn push_resident_draw(
         &mut self,
         identity: IconGpuUploadKey,
-        raster: IconRaster,
         rect: ViewRect,
         screen: ViewRect,
         layer: IconDrawLayer,
     ) {
-        self.push_raster_draw(identity, Some(raster), rect, screen, layer, None);
+        let slot = if let Some(&slot) = self.slot_by_identity.get(&identity) {
+            slot
+        } else {
+            let Some(resident) = self.gpu_resident.get(&identity) else {
+                return;
+            };
+            let slot = self.slots.len() as u32;
+            self.slots.push(IconGpuSlot {
+                identity: identity.clone(),
+                width: resident.width,
+                height: resident.height,
+                content_width: resident.content_width,
+                content_height: resident.content_height,
+                content_hash: resident.content_hash,
+                rounding: resident.rounding,
+                source: None,
+                dmabuf: None,
+            });
+            self.slot_by_identity.insert(identity, slot);
+            slot
+        };
+        self.push_slot_draw(slot, rect, screen, layer);
     }
 
-    /// Attach a dmabuf plane to a logical GPU slot (optional zero-copy producer).
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn push_raster_with_dmabuf(
+    fn push_gpu_source_draw(
         &mut self,
         identity: IconGpuUploadKey,
-        raster: IconRaster,
+        source: IconGpuSource,
+        rect: ViewRect,
+        screen: ViewRect,
+        layer: IconDrawLayer,
+    ) {
+        let side = u32::from(source.size_px().max(1));
+        let content_hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            source.hash(&mut hasher);
+            hasher.finish()
+        };
+        let slot = if let Some(&slot) = self.slot_by_identity.get(&identity) {
+            let existing = &mut self.slots[slot as usize];
+            let old_area = existing.content_width.saturating_mul(existing.content_height);
+            let new_area = side.saturating_mul(side);
+            if new_area > old_area || existing.content_hash != content_hash {
+                existing.width = side;
+                existing.height = side;
+                existing.content_width = side;
+                existing.content_height = side;
+                existing.content_hash = content_hash;
+                existing.rounding = None;
+                existing.source = Some(source);
+                existing.dmabuf = None;
+                self.cache_misses += 1;
+            } else {
+                self.cache_hits += 1;
+            }
+            slot
+        } else if let Some(resident) = self.gpu_resident.get(&identity) {
+            let old_area = resident
+                .content_width
+                .saturating_mul(resident.content_height);
+            let new_area = side.saturating_mul(side);
+            let rerender = new_area > old_area || resident.content_hash != content_hash;
+            let slot = self.slots.len() as u32;
+            self.slots.push(IconGpuSlot {
+                identity: identity.clone(),
+                width: if rerender { side } else { resident.width },
+                height: if rerender { side } else { resident.height },
+                content_width: if rerender { side } else { resident.content_width },
+                content_height: if rerender { side } else { resident.content_height },
+                content_hash: if rerender {
+                    content_hash
+                } else {
+                    resident.content_hash
+                },
+                rounding: None,
+                source: rerender.then_some(source),
+                dmabuf: None,
+            });
+            if rerender {
+                self.cache_misses += 1;
+            } else {
+                self.cache_hits += 1;
+            }
+            self.slot_by_identity.insert(identity, slot);
+            slot
+        } else {
+            let slot = self.slots.len() as u32;
+            self.slots.push(IconGpuSlot {
+                identity: identity.clone(),
+                width: side,
+                height: side,
+                content_width: side,
+                content_height: side,
+                content_hash,
+                rounding: None,
+                source: Some(source),
+                dmabuf: None,
+            });
+            self.cache_misses += 1;
+            self.slot_by_identity.insert(identity, slot);
+            slot
+        };
+        self.push_slot_draw(slot, rect, screen, layer);
+    }
+
+    /// Attach a dmabuf plane to a logical GPU slot (zero-copy producer).
+    #[cfg(test)]
+    fn push_dmabuf_draw(
+        &mut self,
+        identity: IconGpuUploadKey,
+        width: u32,
+        height: u32,
+        content_hash: u64,
         rect: ViewRect,
         screen: ViewRect,
         layer: IconDrawLayer,
         plane: crate::shell::render::dmabuf::DmabufImportPlane,
     ) {
-        self.push_raster_draw(
-            identity,
-            Some(raster),
-            rect,
-            screen,
-            layer,
-            Some(IconDmabufSource { plane }),
-        );
+        let width = width.max(1);
+        let height = height.max(1);
+        let slot = self.slots.len() as u32;
+        self.slots.push(IconGpuSlot {
+            identity: identity.clone(),
+            width,
+            height,
+            content_width: width,
+            content_height: height,
+            content_hash,
+            rounding: None,
+            source: None,
+            dmabuf: Some(IconDmabufSource { plane }),
+        });
+        self.slot_by_identity.insert(identity, slot);
+        self.push_slot_draw(slot, rect, screen, layer);
     }
 
-    fn push_raster_draw(
+    fn push_slot_draw(
         &mut self,
-        identity: IconGpuUploadKey,
-        raster: Option<IconRaster>,
+        slot: u32,
         rect: ViewRect,
         screen: ViewRect,
         layer: IconDrawLayer,
-        dmabuf: Option<IconDmabufSource>,
     ) {
-        // Size-free GPU identity: MIME roles and theme assets share one texture
-        // across all zoom levels; only content previews are path-bound.
-        let resident = self.gpu_resident.get(&identity);
-        let slot = if let Some(&slot) = self.slot_by_identity.get(&identity) {
-            // Prefer a larger upload if this draw has a higher-res raster.
-            if let Some(raster) = raster {
-                let content_w = raster.width.max(1);
-                let content_h = raster.height.max(1);
-                let existing = &mut self.slots[slot as usize];
-                let existing_area = existing.content_width.saturating_mul(existing.content_height);
-                let new_area = content_w.saturating_mul(content_h);
-                let same_pixels = existing
-                    .upload
-                    .as_ref()
-                    .is_some_and(|old| Arc::ptr_eq(&old.pixels, &raster.pixels));
-                let content_hash = (!same_pixels && new_area == existing_area)
-                    .then(|| hash_bytes_with_len(raster.pixels.as_ref()));
-                if new_area > existing_area
-                    || content_hash.is_some_and(|hash| hash != existing.content_hash)
-                {
-                    existing.width = content_w;
-                    existing.height = content_h;
-                    existing.content_width = content_w;
-                    existing.content_height = content_h;
-                    existing.content_hash = content_hash
-                        .unwrap_or_else(|| hash_bytes_with_len(raster.pixels.as_ref()));
-                    existing.upload = Some(raster);
-                    if dmabuf.is_some() {
-                        existing.dmabuf = dmabuf;
-                    }
-                } else {
-                    drop(dmabuf);
-                }
-            } else {
-                drop(dmabuf);
-            }
-            slot
-        } else if let Some(entry) = resident {
-            // Already on GPU — sample only (no CPU path this frame) unless we
-            // have a strictly larger raster to upgrade the resident texture.
-            let slot = self.slots.len() as u32;
-            let (width, height, content_width, content_height, content_hash, upload) =
-                if let Some(raster) = raster {
-                    let content_w = raster.width.max(1);
-                    let content_h = raster.height.max(1);
-                    let new_area = content_w.saturating_mul(content_h);
-                    let old_area = entry.content_width.saturating_mul(entry.content_height);
-                    if new_area > old_area {
-                        let content_hash = hash_bytes_with_len(raster.pixels.as_ref());
-                        (
-                            content_w,
-                            content_h,
-                            content_w,
-                            content_h,
-                            content_hash,
-                            Some(raster),
-                        )
-                    } else {
-                        (
-                            entry.width,
-                            entry.height,
-                            entry.content_width,
-                            entry.content_height,
-                            entry.content_hash,
-                            None,
-                        )
-                    }
-                } else {
-                    (
-                        entry.width,
-                        entry.height,
-                        entry.content_width,
-                        entry.content_height,
-                        entry.content_hash,
-                        None,
-                    )
-                };
-            self.slots.push(IconGpuSlot {
-                identity: identity.clone(),
-                width,
-                height,
-                content_width,
-                content_height,
-                content_hash,
-                upload,
-                dmabuf,
-            });
-            self.slot_by_identity.insert(identity, slot);
-            slot
-        } else {
-            let Some(raster) = raster else {
-                drop(dmabuf);
-                return;
-            };
-            let content_w = raster.width.max(1);
-            let content_h = raster.height.max(1);
-            let content_hash = hash_bytes_with_len(raster.pixels.as_ref());
-            let slot = self.slots.len() as u32;
-            self.slots.push(IconGpuSlot {
-                identity: identity.clone(),
-                width: content_w,
-                height: content_h,
-                content_width: content_w,
-                content_height: content_h,
-                content_hash,
-                upload: Some(raster),
-                dmabuf,
-            });
-            self.slot_by_identity.insert(identity, slot);
-            slot
-        };
-
         let gpu_slot = &self.slots[slot as usize];
         let content_w = gpu_slot.content_width.max(1) as f32;
         let content_h = gpu_slot.content_height.max(1) as f32;
@@ -919,21 +654,21 @@ impl<'a> IconFrameBuilder<'a> {
         } else {
             (0, 0, 0, 0)
         };
-        let cache_entries = self.raster_cache.len();
-        let cache_bytes = self.raster_cache.bytes();
+        let cache_entries = 0;
+        let cache_bytes = 0;
         let thumbnail_ready_entries = self.thumbnails.ready_len();
         let thumbnail_ready_bytes = self.thumbnails.ready_bytes();
         let folder_preview_ready_entries = self.folder_preview_ready_entries;
         let folder_preview_ready_bytes = self.folder_preview_ready_bytes;
         // Stats: "atlas_*" fields mean unique logical GPU icon slots this frame.
-        let slot_bytes: usize = self
-            .slots
-            .iter()
-            .map(|s| s.upload.as_ref().map(|r| r.pixels.len()).unwrap_or(0))
-            .sum();
+        let slot_bytes = 0;
         let max_w = self.slots.iter().map(|s| s.width).max().unwrap_or(0);
         let max_h = self.slots.iter().map(|s| s.height).max().unwrap_or(0);
-        let atlas_uploads = self.slots.iter().filter(|s| s.upload.is_some()).count();
+        let atlas_uploads = self
+            .slots
+            .iter()
+            .filter(|slot| slot.source.is_some() || slot.dmabuf.is_some())
+            .count();
         IconFrame {
             slots: self.slots,
             content_batches,
@@ -964,7 +699,6 @@ impl<'a> IconFrameBuilder<'a> {
                 atlas_bytes: slot_bytes,
                 cache_hits: self.cache_hits,
                 cache_misses: self.cache_misses,
-                raster_deferred: self.raster_deferred,
                 cache_entries,
                 cache_bytes,
                 content_hash,
@@ -972,7 +706,6 @@ impl<'a> IconFrameBuilder<'a> {
                 vertex_hash,
                 slot_hash,
                 resolve_us: self.resolve_us,
-                raster_us: self.raster_us,
             },
         }
     }

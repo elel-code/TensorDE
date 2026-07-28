@@ -358,30 +358,30 @@
     }
 
     #[test]
-    fn icons_item_width_matches_dolphin_update_grid_size_formula() {
+    fn icons_item_width_matches_file_manager_update_grid_size_formula() {
         let mut scene = test_scene(vec![test_entry("alpha.txt", false)], ShellViewMode::Icons);
         let size = PhysicalSize::new(420, 260);
         let options = scene.icons_options(size);
-        let zoom_level = scene.dolphin_zoom_level_for_step(0);
-        let expected = dolphin_icons_item_width(
+        let zoom_level = scene.file_manager_zoom_level_for_step(0);
+        let expected = file_manager_icons_item_width(
             48.0,
             2.0,
-            DOLPHIN_ICONS_TEXT_WIDTH_INDEX,
+            FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             9.0,
             1.0,
             zoom_level,
         );
 
-        assert_eq!(DOLPHIN_ICONS_TEXT_WIDTH_INDEX, 1.0);
+        assert_eq!(FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX, 1.0);
         assert_eq!(options.item_width, expected);
         assert_eq!(options.item_width, 96.0);
 
         assert!(scene.set_scale_factor(1.5, size));
         let scaled_options = scene.icons_options(size);
-        let scaled_expected = dolphin_icons_item_width(
+        let scaled_expected = file_manager_icons_item_width(
             72.0,
             3.0,
-            DOLPHIN_ICONS_TEXT_WIDTH_INDEX,
+            FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             13.5,
             1.5,
             zoom_level,

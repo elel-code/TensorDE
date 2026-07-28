@@ -71,7 +71,7 @@ impl<'a> TextFrameBuilder<'a> {
         let max_line_height = (TEXT_LINE_HEIGHT * text_scale_factor).round().max(1.0);
         let max_font_size = (TEXT_FONT_SIZE * max_line_height / TEXT_LINE_HEIGHT).max(1.0);
         let text_midline_shift =
-            dolphin_text_midline_shift_for_font(font_system, max_font_size, max_line_height);
+            file_manager_text_midline_shift_for_font(font_system, max_font_size, max_line_height);
         text_buffer.set_metrics(Metrics::new(max_font_size, max_line_height));
         text_buffer.set_wrap(Wrap::WordOrGlyph);
         Self {
@@ -97,7 +97,7 @@ impl<'a> TextFrameBuilder<'a> {
         }
     }
 
-    fn dolphin_midline_shift(&self) -> f32 {
+    fn file_manager_midline_shift(&self) -> f32 {
         self.text_midline_shift
     }
 
@@ -143,7 +143,7 @@ impl<'a> TextFrameBuilder<'a> {
         color: TextColor,
         alignment: LabelAlignment,
     ) {
-        let display = dolphin_elide_filename_to_width_shaped(
+        let display = file_manager_elide_filename_to_width_shaped(
             self.font_system,
             self.text_buffer,
             label,
@@ -174,12 +174,12 @@ impl<'a> TextFrameBuilder<'a> {
         clip: ViewRect,
         color: TextColor,
     ) {
-        let display = dolphin_layout_icons_filename(
+        let display = file_manager_layout_icons_filename(
             self.font_system,
             self.text_buffer,
             label,
             layout_rect.width,
-            DOLPHIN_ICONS_MAX_TEXT_LINES,
+            FILE_MANAGER_ICONS_MAX_TEXT_LINES,
             self.max_font_size,
             self.max_line_height,
         )
@@ -279,7 +279,7 @@ impl<'a> TextFrameBuilder<'a> {
         color: TextColor,
         alignment: LabelAlignment,
     ) -> LabelCacheOutcome {
-        let display = dolphin_elide_filename_to_width_shaped(
+        let display = file_manager_elide_filename_to_width_shaped(
             self.font_system,
             self.text_buffer,
             label,
@@ -296,12 +296,12 @@ impl<'a> TextFrameBuilder<'a> {
         rect: ViewRect,
         color: TextColor,
     ) -> LabelCacheOutcome {
-        let display = dolphin_layout_icons_filename(
+        let display = file_manager_layout_icons_filename(
             self.font_system,
             self.text_buffer,
             label,
             rect.width,
-            DOLPHIN_ICONS_MAX_TEXT_LINES,
+            FILE_MANAGER_ICONS_MAX_TEXT_LINES,
             self.max_font_size,
             self.max_line_height,
         )
@@ -385,7 +385,7 @@ impl<'a> TextFrameBuilder<'a> {
             return width.min(max_label_width).max(1);
         }
 
-        let shaped_width = dolphin_text_width_no_wrap(
+        let shaped_width = file_manager_text_width_no_wrap(
             self.font_system,
             self.text_buffer,
             label,

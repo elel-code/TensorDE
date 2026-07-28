@@ -201,7 +201,7 @@ impl ShellFolderPreviewRoleRuntime {
         key: FolderPreviewRoleKey,
         preview: FolderPreviewReady,
     ) -> Option<FolderPreviewReady> {
-        let bytes = preview.raster.pixels.len();
+        let bytes = preview.source.memory_bytes();
         self.frame = self.frame.wrapping_add(1);
         let previous = self.ready.insert(
             key.clone(),
@@ -355,7 +355,7 @@ fn folder_preview_for_request(
         &request.key.path,
         request.key.directory_modified_secs,
     )?;
-    let raster = folder_preview_raster_for_sources(
+    let source = folder_preview_gpu_source_for_sources(
         cache_root,
         thumbnailers,
         &request.key.path,
@@ -366,7 +366,7 @@ fn folder_preview_for_request(
     Some(FolderPreviewReady {
         stamp: metadata.stamp,
         size_px: request.key.size_px,
-        raster,
+        source,
     })
 }
 fn folder_preview_role_metadata_for_path(
@@ -382,39 +382,39 @@ fn folder_preview_role_metadata_for_path(
         sources,
     })
 }
-fn folder_preview_raster_for_sources(
+fn folder_preview_gpu_source_for_sources(
     cache_root: &Path,
     thumbnailers: &ThumbnailerRegistry,
     directory: &Path,
     sources: &[FolderPreviewThumbnailSource],
     priority: ThumbnailRequestPriority,
     size_px: u16,
-) -> Option<IconRaster> {
+) -> Option<IconGpuSource> {
     if sources.is_empty() {
         return None;
     }
-    let mut rasters = Vec::with_capacity(sources.len());
+    let mut children = Vec::with_capacity(sources.len());
     for source in sources {
-        if let Some(raster) =
-            folder_preview_child_raster(cache_root, thumbnailers, source, priority, size_px)
+        if let Some(path) =
+            folder_preview_child_gpu_source(cache_root, thumbnailers, source, priority, size_px)
         {
-            rasters.push(raster);
+            children.push(path);
         }
     }
-    folder_preview_thumbnail_raster_from_children(
-        &rasters,
-        size_px as u32,
-        folder_preview_directory_seed(directory),
-    )
+    (!children.is_empty()).then(|| IconGpuSource::FolderPreview {
+        children: children.into(),
+        size_px,
+        seed: folder_preview_directory_seed(directory),
+    })
 }
-fn folder_preview_child_raster(
+fn folder_preview_child_gpu_source(
     cache_root: &Path,
     thumbnailers: &ThumbnailerRegistry,
     source: &FolderPreviewThumbnailSource,
     priority: ThumbnailRequestPriority,
     size_px: u16,
-) -> Option<IconRaster> {
-    let thumbnail_raster = ThumbnailRequest::from_entry_metadata_with_mime(
+) -> Option<PathBuf> {
+    let thumbnail_source = ThumbnailRequest::from_entry_metadata_with_mime(
         WGPU_SHELL_PANE_ID,
         Generation(0),
         ItemId(0),
@@ -430,23 +430,20 @@ fn folder_preview_child_raster(
             thumbnailers,
             // Each child occupies only a fraction of the composed folder icon;
             // use the nearest source bucket without applying display bias again.
-            ThumbnailSize::for_raster_px(size_px),
+            ThumbnailSize::for_source_px(size_px),
         )
         .ok()
         .flatten()
     })
-    .and_then(|thumbnail| rasterize_icon(thumbnail.path(), size_px as u32));
-    thumbnail_raster.or_else(|| folder_preview_direct_image_raster(source, size_px))
+    .map(|thumbnail| thumbnail.path().to_path_buf());
+    thumbnail_source.or_else(|| folder_preview_direct_image_source(source))
 }
-fn folder_preview_direct_image_raster(
-    source: &FolderPreviewThumbnailSource,
-    size_px: u16,
-) -> Option<IconRaster> {
+fn folder_preview_direct_image_source(source: &FolderPreviewThumbnailSource) -> Option<PathBuf> {
     let mime_type = source.mime_type.as_deref().unwrap_or_default();
     if !mime_type.starts_with("image/") && !thumbnail_extension_may_be_direct_image(&source.path) {
         return None;
     }
-    rasterize_icon(&source.path, size_px as u32)
+    Some(source.path.clone())
 }
 fn thumbnail_extension_may_be_direct_image(path: &Path) -> bool {
     matches!(

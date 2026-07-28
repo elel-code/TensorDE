@@ -377,29 +377,9 @@ impl<T> DataTransferSendBuilder<T> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct RgbaIcon {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl RgbaIcon {
-    pub fn new(rgba: Vec<u8>, width: u32, height: u32) -> Result<Self, String> {
-        if rgba.len() != width as usize * height as usize * 4 {
-            return Err("RGBA icon byte length does not match its dimensions".to_string());
-        }
-        Ok(Self {
-            rgba,
-            width,
-            height,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DragIcon {
-    pub icon: RgbaIcon,
+    pub buffer: wayland_client_runtime::DmabufBufferParams,
     pub buffer_scale: i32,
     pub offset_x: i32,
     pub offset_y: i32,

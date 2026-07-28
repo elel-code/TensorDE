@@ -108,7 +108,11 @@ impl NativeShell {
         Ok(())
     }
 
-    pub fn set_maximized(&mut self, id: NativeSurfaceId, maximized: bool) -> Result<(), NativeError> {
+    pub fn set_maximized(
+        &mut self,
+        id: NativeSurfaceId,
+        maximized: bool,
+    ) -> Result<(), NativeError> {
         let record = self
             .state
             .toplevels

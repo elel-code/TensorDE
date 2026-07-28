@@ -5,7 +5,9 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use crate::event::Event;
 use crate::native::shell::NativeShellEvent;
 
-use crate::event::{KeyState, KeyboardEvent, PointerEvent, PointerEventKind, TouchEvent, TouchEventKind};
+use crate::event::{
+    KeyState, KeyboardEvent, PointerEvent, PointerEventKind, TouchEvent, TouchEventKind,
+};
 use crate::input::{InputSerial, InputSerialSource, SeatId};
 use crate::surface::SurfaceId;
 
@@ -223,11 +225,7 @@ pub(crate) fn map(
                     time,
                     id,
                     position: (x, y),
-                    serial: InputSerial::new(
-                        seat.clone(),
-                        serial,
-                        InputSerialSource::TouchDown,
-                    ),
+                    serial: InputSerial::new(seat.clone(), serial, InputSerialSource::TouchDown),
                 },
                 seat: event_seat.map(SeatId::from_raw),
             }))
@@ -245,11 +243,7 @@ pub(crate) fn map(
                 kind: TouchEventKind::Up {
                     time,
                     id,
-                    serial: InputSerial::new(
-                        seat.clone(),
-                        serial,
-                        InputSerialSource::TouchUp,
-                    ),
+                    serial: InputSerial::new(seat.clone(), serial, InputSerialSource::TouchUp),
                 },
                 seat: event_seat.map(SeatId::from_raw),
             }))

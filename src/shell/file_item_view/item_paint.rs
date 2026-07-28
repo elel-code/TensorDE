@@ -3,20 +3,20 @@ use fika_core::ViewRect;
 use crate::shell::options::ShellViewMode;
 
 use super::style::{
-    BREEZE_FOCUS_PEN_WIDTH, BREEZE_ITEM_ROUNDNESS, DolphinItemPalette, UiColor,
+    BREEZE_FOCUS_PEN_WIDTH, BREEZE_ITEM_ROUNDNESS, FileManagerItemPalette, UiColor,
     details_row_background_color_for_palette,
     item_background_color_for_palette_with_hover_progress, item_focus_color_for_palette,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DolphinItemFill {
+pub(crate) struct FileManagerItemFill {
     pub(crate) rect: ViewRect,
     pub(crate) radius: f32,
     pub(crate) color: UiColor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DolphinItemFocus {
+pub(crate) struct FileManagerItemFocus {
     pub(crate) rect: ViewRect,
     pub(crate) radius: f32,
     pub(crate) color: UiColor,
@@ -24,21 +24,21 @@ pub(crate) struct DolphinItemFocus {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct DolphinItemPaint {
-    pub(crate) alternate_background: Option<DolphinItemFill>,
-    pub(crate) background: Option<DolphinItemFill>,
-    pub(crate) focus: Option<DolphinItemFocus>,
+pub(crate) struct FileManagerItemPaint {
+    pub(crate) alternate_background: Option<FileManagerItemFill>,
+    pub(crate) background: Option<FileManagerItemFill>,
+    pub(crate) focus: Option<FileManagerItemFocus>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DolphinItemGeometry {
+pub(crate) struct FileManagerItemGeometry {
     pub(crate) item: ViewRect,
     pub(crate) visual: ViewRect,
     pub(crate) content: ViewRect,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct DolphinItemInteraction {
+pub(crate) struct FileManagerItemInteraction {
     pub(crate) selected: bool,
     pub(crate) hovered: bool,
     pub(crate) current: bool,
@@ -46,29 +46,29 @@ pub(crate) struct DolphinItemInteraction {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn dolphin_item_paint(
+pub(crate) fn file_manager_item_paint(
     view_mode: ShellViewMode,
-    geometry: DolphinItemGeometry,
-    interaction: DolphinItemInteraction,
+    geometry: FileManagerItemGeometry,
+    interaction: FileManagerItemInteraction,
     scale: f32,
-) -> DolphinItemPaint {
-    dolphin_item_paint_with_palette(
+) -> FileManagerItemPaint {
+    file_manager_item_paint_with_palette(
         view_mode,
         geometry,
         interaction,
         scale,
-        DolphinItemPalette::light(),
+        FileManagerItemPalette::light(),
     )
 }
 
-pub(crate) fn dolphin_item_paint_with_palette(
+pub(crate) fn file_manager_item_paint_with_palette(
     view_mode: ShellViewMode,
-    geometry: DolphinItemGeometry,
-    interaction: DolphinItemInteraction,
+    geometry: FileManagerItemGeometry,
+    interaction: FileManagerItemInteraction,
     scale: f32,
-    palette: DolphinItemPalette,
-) -> DolphinItemPaint {
-    dolphin_item_paint_with_palette_and_hover_progress(
+    palette: FileManagerItemPalette,
+) -> FileManagerItemPaint {
+    file_manager_item_paint_with_palette_and_hover_progress(
         view_mode,
         geometry,
         interaction,
@@ -78,20 +78,20 @@ pub(crate) fn dolphin_item_paint_with_palette(
     )
 }
 
-pub(crate) fn dolphin_item_paint_with_palette_and_hover_progress(
+pub(crate) fn file_manager_item_paint_with_palette_and_hover_progress(
     view_mode: ShellViewMode,
-    geometry: DolphinItemGeometry,
-    interaction: DolphinItemInteraction,
+    geometry: FileManagerItemGeometry,
+    interaction: FileManagerItemInteraction,
     scale: f32,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
     hover_progress: f32,
-) -> DolphinItemPaint {
-    let DolphinItemGeometry {
+) -> FileManagerItemPaint {
+    let FileManagerItemGeometry {
         item: item_rect,
         visual: visual_rect,
         content: content_rect,
     } = geometry;
-    let DolphinItemInteraction {
+    let FileManagerItemInteraction {
         selected,
         hovered,
         current,
@@ -102,17 +102,17 @@ pub(crate) fn dolphin_item_paint_with_palette_and_hover_progress(
         ShellViewMode::Details => item_rect,
         ShellViewMode::Compact => content_rect,
         ShellViewMode::Icons => {
-            dolphin_selection_full_rect(view_mode, item_rect, visual_rect, scale)
+            file_manager_selection_full_rect(view_mode, item_rect, visual_rect, scale)
         }
     };
     let alternate_background =
-        (view_mode == ShellViewMode::Details && alternate).then(|| DolphinItemFill {
+        (view_mode == ShellViewMode::Details && alternate).then(|| FileManagerItemFill {
             rect: item_rect,
             radius: 0.0,
             color: details_row_background_color_for_palette(false, false, true, palette),
         });
     let background = match view_mode {
-        ShellViewMode::Details => (selected || hovered).then(|| DolphinItemFill {
+        ShellViewMode::Details => (selected || hovered).then(|| FileManagerItemFill {
             rect: highlight_rect,
             radius: 0.0,
             color: item_background_color_for_palette_with_hover_progress(
@@ -123,7 +123,7 @@ pub(crate) fn dolphin_item_paint_with_palette_and_hover_progress(
             ),
         }),
         ShellViewMode::Compact | ShellViewMode::Icons => {
-            (selected || hovered).then(|| DolphinItemFill {
+            (selected || hovered).then(|| FileManagerItemFill {
                 rect: highlight_rect,
                 radius,
                 color: item_background_color_for_palette_with_hover_progress(
@@ -138,7 +138,7 @@ pub(crate) fn dolphin_item_paint_with_palette_and_hover_progress(
 
     let focus = current.then(|| {
         let stroke_width = BREEZE_FOCUS_PEN_WIDTH * scale.max(1.0);
-        DolphinItemFocus {
+        FileManagerItemFocus {
             rect: inset_rect(highlight_rect, stroke_width * 0.5).unwrap_or(highlight_rect),
             radius: (radius - stroke_width * 0.5).max(1.0),
             color: item_focus_color_for_palette(selected, hovered, palette),
@@ -146,14 +146,14 @@ pub(crate) fn dolphin_item_paint_with_palette_and_hover_progress(
         }
     });
 
-    DolphinItemPaint {
+    FileManagerItemPaint {
         alternate_background,
         background,
         focus,
     }
 }
 
-pub(crate) fn dolphin_selection_full_rect(
+pub(crate) fn file_manager_selection_full_rect(
     view_mode: ShellViewMode,
     item_rect: ViewRect,
     _visual_rect: ViewRect,
@@ -174,7 +174,7 @@ pub(crate) fn dolphin_selection_full_rect(
     }
 }
 
-pub(crate) fn dolphin_selection_core_rect(
+pub(crate) fn file_manager_selection_core_rect(
     view_mode: ShellViewMode,
     item_rect: ViewRect,
     visual_rect: ViewRect,
@@ -227,8 +227,8 @@ mod tests {
         }
     }
 
-    fn geometry(item: ViewRect, visual: ViewRect, content: ViewRect) -> DolphinItemGeometry {
-        DolphinItemGeometry {
+    fn geometry(item: ViewRect, visual: ViewRect, content: ViewRect) -> FileManagerItemGeometry {
+        FileManagerItemGeometry {
             item,
             visual,
             content,
@@ -240,8 +240,8 @@ mod tests {
         hovered: bool,
         current: bool,
         alternate: bool,
-    ) -> DolphinItemInteraction {
-        DolphinItemInteraction {
+    ) -> FileManagerItemInteraction {
+        FileManagerItemInteraction {
             selected,
             hovered,
             current,
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn details_item_paint_uses_alternate_row_base_without_idle_highlight() {
-        let paint = dolphin_item_paint(
+        let paint = file_manager_item_paint(
             ShellViewMode::Details,
             geometry(
                 rect(0.0, 0.0, 320.0, 28.0),
@@ -264,7 +264,7 @@ mod tests {
 
         assert_eq!(
             paint.alternate_background,
-            Some(DolphinItemFill {
+            Some(FileManagerItemFill {
                 rect: rect(0.0, 0.0, 320.0, 28.0),
                 radius: 0.0,
                 color: [0.949, 0.957, 0.969, 1.0],
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn details_item_paint_layers_selection_highlight_over_alternate_row() {
-        let paint = dolphin_item_paint(
+        let paint = file_manager_item_paint(
             ShellViewMode::Details,
             geometry(
                 rect(0.0, 0.0, 320.0, 28.0),
@@ -289,7 +289,7 @@ mod tests {
 
         assert_eq!(
             paint.alternate_background,
-            Some(DolphinItemFill {
+            Some(FileManagerItemFill {
                 rect: rect(0.0, 0.0, 320.0, 28.0),
                 radius: 0.0,
                 color: [0.949, 0.957, 0.969, 1.0],
@@ -297,7 +297,7 @@ mod tests {
         );
         assert_eq!(
             paint.background,
-            Some(DolphinItemFill {
+            Some(FileManagerItemFill {
                 rect: rect(0.0, 0.0, 320.0, 28.0),
                 radius: 0.0,
                 color: [0.239, 0.502, 0.710, 0.32],
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn icons_item_paint_only_fills_interactive_items() {
-        let idle = dolphin_item_paint(
+        let idle = file_manager_item_paint(
             ShellViewMode::Icons,
             geometry(
                 rect(0.0, 0.0, 120.0, 120.0),
@@ -319,7 +319,7 @@ mod tests {
         );
         assert_eq!(idle.background, None);
 
-        let selected = dolphin_item_paint(
+        let selected = file_manager_item_paint(
             ShellViewMode::Icons,
             geometry(
                 rect(0.0, 0.0, 120.0, 120.0),
@@ -331,7 +331,7 @@ mod tests {
         );
         assert_eq!(
             selected.background,
-            Some(DolphinItemFill {
+            Some(FileManagerItemFill {
                 rect: rect(0.0, 0.0, 120.0, 120.0),
                 radius: BREEZE_ITEM_ROUNDNESS,
                 color: [0.239, 0.502, 0.710, 0.32],
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn compact_item_paint_uses_item_content_rect() {
-        let paint = dolphin_item_paint(
+        let paint = file_manager_item_paint(
             ShellViewMode::Compact,
             geometry(
                 rect(10.0, 0.0, 180.0, 32.0),
@@ -354,7 +354,7 @@ mod tests {
 
         assert_eq!(
             paint.background,
-            Some(DolphinItemFill {
+            Some(FileManagerItemFill {
                 rect: rect(12.0, 2.0, 176.0, 28.0),
                 radius: BREEZE_ITEM_ROUNDNESS,
                 color: [0.239, 0.502, 0.710, 0.32],
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn current_compact_item_paint_uses_inset_breeze_focus_stroke_on_content_rect() {
-        let paint = dolphin_item_paint(
+        let paint = file_manager_item_paint(
             ShellViewMode::Compact,
             geometry(
                 rect(10.0, 0.0, 180.0, 32.0),
@@ -377,7 +377,7 @@ mod tests {
 
         assert_eq!(
             paint.focus,
-            Some(DolphinItemFocus {
+            Some(FileManagerItemFocus {
                 rect: rect(2.625, 2.625, 174.75, 26.75),
                 radius: 4.375,
                 color: [0.217, 0.456, 0.645, 0.8],
@@ -394,11 +394,25 @@ mod tests {
         let text = rect(40.0, 24.0, 160.0, 18.0);
 
         assert_eq!(
-            dolphin_selection_core_rect(ShellViewMode::Details, item, visual, icon, text, false),
+            file_manager_selection_core_rect(
+                ShellViewMode::Details,
+                item,
+                visual,
+                icon,
+                text,
+                false
+            ),
             rect(8.0, 22.0, 192.0, 24.0)
         );
         assert_eq!(
-            dolphin_selection_core_rect(ShellViewMode::Details, item, visual, icon, text, true),
+            file_manager_selection_core_rect(
+                ShellViewMode::Details,
+                item,
+                visual,
+                icon,
+                text,
+                true
+            ),
             item
         );
     }
@@ -411,7 +425,7 @@ mod tests {
         let text = rect(8.0, 64.0, 104.0, 36.0);
 
         assert_eq!(
-            dolphin_selection_core_rect(ShellViewMode::Icons, item, visual, icon, text, false),
+            file_manager_selection_core_rect(ShellViewMode::Icons, item, visual, icon, text, false),
             visual
         );
     }

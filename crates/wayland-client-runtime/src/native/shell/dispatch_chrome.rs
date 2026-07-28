@@ -58,8 +58,7 @@ impl Dispatch<ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, ()
             flags: WEnum::Value(caps),
         } = event
         {
-            let capable =
-                caps.contains(ext_background_effect_manager_v1::Capability::Blur);
+            let capable = caps.contains(ext_background_effect_manager_v1::Capability::Blur);
             let became_capable = capable && !state.background_blur_capable;
             state.background_blur_capable = capable;
             if became_capable {

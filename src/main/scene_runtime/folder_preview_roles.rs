@@ -59,7 +59,7 @@ impl ShellScene {
             return;
         }
         let item_count = projection.view.filtered_entry_count();
-        for layout_index in shell_dolphin_read_ahead_indexes(
+        for layout_index in shell_file_manager_read_ahead_indexes(
             visible_range,
             item_count,
             projection.visible_items.len(),
@@ -90,7 +90,7 @@ impl ShellScene {
             ShellViewMode::Details => self.details_icon_size_for_step(zoom_step),
         };
         // Folder previews are already a composed icon-sized raster. Keeping
-        // their ready/GPU size at the actual Dolphin zoom bucket avoids doing
+        // their ready/GPU size at the actual FileManager zoom bucket avoids doing
         // four 256px child compositions for a 48px folder icon.
         icon_cache_size(icon_size)
     }
@@ -307,7 +307,7 @@ impl ShellScene {
         let icon_size = self.scale_metric(PLACES_ICON_SIZE);
         let text_height = self.text_line_height();
         let small_text_height = self.small_text_line_height();
-        let item_palette = paint.dolphin_item;
+        let item_palette = paint.file_manager_item;
         let mut y = panel.y + top_padding + title_height - self.places_scroll_y;
         let mut previous_group = None;
         for (index, place) in self.places.iter().enumerate() {
@@ -429,7 +429,7 @@ impl ShellScene {
                     width: icon_size,
                     height: icon_size,
                 };
-                // Hover uses the row background only (Breeze / Dolphin places).
+                // Hover uses the row background only (Breeze / FileManager places).
                 // Do not draw a separate icon-slot chip; it reads as a white tile
                 // under theme icons and the geometric fallback glyphs.
                 let trash_has_items = self.trash_place_has_items(place);

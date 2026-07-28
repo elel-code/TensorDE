@@ -1,30 +1,28 @@
 //! NativeShell public methods.
 
+use wayland_client::Proxy;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
     wl_compositor, wl_data_device_manager, wl_output, wl_seat, wl_shm, wl_subcompositor,
 };
-use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1;
-use wayland_protocols::wp::presentation_time::client::wp_presentation;
 use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1;
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1;
+use wayland_protocols::wp::presentation_time::client::wp_presentation;
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_manager_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 use super::handle::NativeSurfaceHandle;
-use super::types::{
-    NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId,
-};
+use super::types::{NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId};
+use crate::native::connection::{NativeConnection, NativeError};
+use wayland_client::EventQueue;
+use wayland_client::globals::GlobalList;
 use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gestures_v1;
 use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1;
 use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1;
-use crate::native::connection::{NativeConnection, NativeError};
-use wayland_client::globals::GlobalList;
-use wayland_client::EventQueue;
 
 /// Protocol-only native shell (no event-loop executor).
 ///
@@ -69,9 +67,7 @@ impl NativeShell {
         if let Ok(compositor) = globals.bind::<wl_compositor::WlCompositor, _, _>(&qh, 1..=6, ()) {
             state.compositor = Some(compositor);
         }
-        if let Ok(sub) =
-            globals.bind::<wl_subcompositor::WlSubcompositor, _, _>(&qh, 1..=1, ())
-        {
+        if let Ok(sub) = globals.bind::<wl_subcompositor::WlSubcompositor, _, _>(&qh, 1..=1, ()) {
             state.subcompositor = Some(sub);
         }
         if let Ok(shm) = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ()) {
@@ -85,9 +81,10 @@ impl NativeShell {
         for global in globals.contents().clone_list() {
             if global.interface == "wl_seat" {
                 let version = global.version.clamp(1, 9);
-                let seat = globals
-                    .registry()
-                    .bind::<wl_seat::WlSeat, _, _>(global.name, version, &qh, ());
+                let seat =
+                    globals
+                        .registry()
+                        .bind::<wl_seat::WlSeat, _, _>(global.name, version, &qh, ());
                 state.register_seat(global.name, seat);
             }
         }
@@ -100,9 +97,12 @@ impl NativeShell {
         for global in globals.contents().clone_list() {
             if global.interface == "wl_output" {
                 let version = global.version.clamp(1, 4);
-                let output = globals
-                    .registry()
-                    .bind::<wl_output::WlOutput, _, _>(global.name, version, &qh, ());
+                let output = globals.registry().bind::<wl_output::WlOutput, _, _>(
+                    global.name,
+                    version,
+                    &qh,
+                    (),
+                );
                 state
                     .output_objects
                     .insert(output.id().protocol_id(), global.name);
@@ -143,11 +143,8 @@ impl NativeShell {
         {
             state.primary_selection_manager = Some(psm);
         }
-        if let Ok(idle) = globals.bind::<
-            zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
-            _,
-            _,
-        >(&qh, 1..=1, ())
+        if let Ok(idle) = globals
+            .bind::<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, _, _>(&qh, 1..=1, ())
         {
             state.idle_inhibit_manager = Some(idle);
         }
@@ -176,11 +173,9 @@ impl NativeShell {
             state.xdg_importer = Some(importer);
         }
         // Mesa requires version ≥3; feedback needs ≥4. Prefer highest available.
-        if let Ok(dmabuf) = globals.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(
-            &qh,
-            3..=5,
-            (),
-        ) {
+        if let Ok(dmabuf) =
+            globals.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(&qh, 3..=5, ())
+        {
             state.linux_dmabuf_version = dmabuf.version();
             state.linux_dmabuf = Some(dmabuf);
         }
@@ -193,11 +188,9 @@ impl NativeShell {
         {
             state.fractional_manager = Some(frac);
         }
-        if let Ok(cursor) = globals.bind::<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, _, _>(
-            &qh,
-            1..=1,
-            (),
-        ) {
+        if let Ok(cursor) =
+            globals.bind::<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1, _, _>(&qh, 1..=1, ())
+        {
             state.cursor_shape_manager = Some(cursor);
         }
         if let Ok(tim) = globals.bind::<
@@ -208,11 +201,9 @@ impl NativeShell {
         {
             state.text_input_manager = Some(tim);
         }
-        if let Ok(layer) = globals.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
-            &qh,
-            1..=5,
-            (),
-        ) {
+        if let Ok(layer) =
+            globals.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(&qh, 1..=5, ())
+        {
             state.layer_shell_version = layer.version();
             state.layer_shell = Some(layer);
         }
@@ -248,9 +239,7 @@ impl NativeShell {
         {
             state.decoration_manager = Some(deco);
         }
-        if let Ok(act) =
-            globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ())
-        {
+        if let Ok(act) = globals.bind::<xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ()) {
             state.activation = Some(act);
         }
         if let Ok(gestures) =
@@ -439,11 +428,10 @@ impl NativeShell {
         if self.state.idle_inhibitors.contains_key(&id) {
             return Ok(());
         }
-        let manager = self
-            .state
-            .idle_inhibit_manager
-            .as_ref()
-            .ok_or_else(|| NativeError::Protocol("zwp_idle_inhibit_manager_v1 missing".into()))?;
+        let manager =
+            self.state.idle_inhibit_manager.as_ref().ok_or_else(|| {
+                NativeError::Protocol("zwp_idle_inhibit_manager_v1 missing".into())
+            })?;
         let wl = self
             .state
             .wl_surface(id)
@@ -710,10 +698,7 @@ impl NativeShell {
     /// Works for toplevels (including dialogs), popups, and layer surfaces.
     /// The returned handle keeps `Connection` + `wl_surface` alive; keep it
     /// for the lifetime of the GPU surface.
-    pub fn surface_handle(
-        &self,
-        id: NativeSurfaceId,
-    ) -> Result<NativeSurfaceHandle, NativeError> {
+    pub fn surface_handle(&self, id: NativeSurfaceId) -> Result<NativeSurfaceHandle, NativeError> {
         use crate::surface::SurfaceKind;
         let conn = self.connection.connection().clone();
         if let Some(record) = self.state.toplevels.get(&id) {
@@ -869,6 +854,4 @@ impl NativeShell {
         self.connection.mark_dirty();
         Ok(())
     }
-
 }
-

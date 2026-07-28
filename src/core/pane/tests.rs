@@ -667,7 +667,7 @@ fn navigation_resets_scroll_but_reload_preserves_it() {
 }
 
 #[test]
-fn sort_role_uses_dolphin_default_order_and_remembers_per_role_order() {
+fn sort_role_uses_file_manager_default_order_and_remembers_per_role_order() {
     let mut controller = PaneController::new(PathBuf::from("/tmp/a"));
     let pane_id = controller.focused().unwrap();
 

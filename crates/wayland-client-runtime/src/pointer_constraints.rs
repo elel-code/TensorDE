@@ -1,7 +1,7 @@
-//! Pointer constraint public types. 
+//! Pointer constraint public types.
 
-use crate::geometry::LogicalRect;
 use crate::SurfaceId;
+use crate::geometry::LogicalRect;
 
 /// Desired constraint for a pointer focused on a surface.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -86,5 +86,3 @@ pub(crate) fn validate_pointer_capture_state(
     }
     Ok(())
 }
-
-

@@ -5,9 +5,7 @@ use crate::native::shell::NativeShellEvent;
 
 /// Extract UTF-8 / keysym from a native key event without building a full
 /// [`crate::KeyboardEvent`].
-pub fn map_native_key_text(
-    event: &NativeShellEvent,
-) -> Option<(u32, u32, bool, Option<&str>)> {
+pub fn map_native_key_text(event: &NativeShellEvent) -> Option<(u32, u32, bool, Option<&str>)> {
     match event {
         NativeShellEvent::SeatKeyboardKey {
             key,

@@ -91,9 +91,9 @@ mod activation {
 mod blur;
 pub mod clipboard;
 pub mod data_transfer;
-pub mod dmabuf;
 #[cfg(feature = "compio")]
 mod display_io;
+pub mod dmabuf;
 mod dnd;
 mod event;
 mod geometry;
@@ -118,22 +118,12 @@ pub use activation::{
 };
 pub use blur::{BlurRegion, BlurState};
 pub use data_transfer::{MimePayload, TransferContent, TransferError, TransferReadPipe};
-pub use dmabuf::{
-    fourcc, DmabufBufferFlags, DmabufBufferId, DmabufBufferParams, DmabufEvent, DmabufFeedback,
-    DmabufFeedbackTranche, DmabufFormat, DmabufPlane, DmabufTrancheFlags,
-};
 #[cfg(feature = "compio")]
 pub use display_io::{CompioFdReady, DisplayReadiness};
-pub use native::{
-    list_env_globals, map_native_event, map_native_event_full, map_native_key_text,
-    native_key_text_pressed, GlobalAdvertisement, IdleNotifyKind, NativeCapabilities,
-    NativeConnection, NativeError, NativeEventMapState, NativePopupPositioner, NativePump,
-    NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
-    ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX,
-    specs_in_class,
+pub use dmabuf::{
+    DmabufBufferFlags, DmabufBufferId, DmabufBufferParams, DmabufEvent, DmabufFeedback,
+    DmabufFeedbackTranche, DmabufFormat, DmabufPlane, DmabufTrancheFlags, fourcc,
 };
-#[cfg(feature = "compio")]
-pub use native::NativeRuntime;
 pub use dnd::{
     DndAction, DndActions, DndEvent, DndIcon, DndMimePayload, DndOfferId, DndReadPipe, DndSourceId,
 };
@@ -147,6 +137,16 @@ pub use layer_shell::{
     LayerAnchor, LayerEdge, LayerKeyboardInteractivity, LayerMargins, LayerSurfaceAttributes,
     LayerSurfaceError, LayerSurfaceEvent, LayerSurfaceLayer, LayerSurfaceState,
 };
+#[cfg(feature = "compio")]
+pub use native::NativeRuntime;
+pub use native::{
+    FIKA_PROTOCOL_MATRIX, GlobalAdvertisement, IdleNotifyKind, NativeCapabilities,
+    NativeConnection, NativeError, NativeEventMapState, NativePopupPositioner, NativePump,
+    NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
+    PROTOCOL_MATRIX, ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, list_env_globals,
+    map_native_event, map_native_event_full, map_native_key_text, native_key_text_pressed,
+    specs_in_class,
+};
 pub use output::{OutputEvent, OutputId, OutputInfo};
 pub use pointer_axis::{PointerAxisDirection, PointerAxisSource, PointerAxisValue};
 pub use pointer_constraints::{
@@ -156,9 +156,9 @@ pub use pointer_constraints::{
 pub use pointer_gestures::{
     PointerGestureEvent, PointerHoldEvent, PointerPinchEvent, PointerSwipeEvent,
 };
-pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions};
 #[cfg(feature = "compio")]
 pub use runtime_common::WakeHandle;
+pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions};
 /// Production runtime (Compio + native shell). Available with `feature = "compio"`.
 #[cfg(feature = "compio")]
 pub type Runtime = NativeRuntime;

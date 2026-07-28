@@ -103,7 +103,7 @@ fn file_icon_kind_with_stamp(
     if is_dir {
         return FileIconKind::Directory;
     }
-    // Dolphin/KIO: `.desktop` launchers use the Desktop Entry `Icon=` field, not
+    // FileManager/KIO: `.desktop` launchers use the Desktop Entry `Icon=` field, not
     // a shared text/mime icon. Wine/OCS shortcuts land here too.
     if is_desktop_entry_file(path, mime_type.as_deref())
         && let Some(icon_name) = desktop_entry_icon_name_cached(path, modified_secs)
@@ -148,13 +148,18 @@ fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Op
         if cache.len() >= MAX_ENTRIES {
             cache.clear();
         }
-        cache.insert(key, icon.clone());
+        // Do not make a transient short read permanent. Desktop launchers are
+        // often copied into place while directory metadata is already visible.
+        if icon.is_some() {
+            cache.insert(key, icon.clone());
+        }
     }
     icon
 }
 
 fn is_desktop_entry_file(path: &Path, mime_type: Option<&str>) -> bool {
-    file_extension(path).as_deref() == Some("desktop")
+    path.file_name().is_some_and(|name| name == ".directory")
+        || file_extension(path).as_deref() == Some("desktop")
         || mime_type.is_some_and(|mime| {
             matches!(
                 mime,
@@ -196,7 +201,7 @@ pub(crate) fn desktop_entry_icon_name(path: &Path) -> Option<String> {
 
 pub(crate) fn icon_cache_size(icon_size: f32) -> u16 {
     let requested = icon_size.round().clamp(16.0, 256.0) as u16;
-    dolphin_icon_cache_sizes()
+    file_manager_icon_cache_sizes()
         .iter()
         .copied()
         .min_by_key(|size| size.abs_diff(requested))
@@ -215,7 +220,7 @@ pub(crate) fn thumbnail_display_cache_size(display_px: f32) -> u16 {
     display.max(freestanding)
 }
 
-fn dolphin_icon_cache_sizes() -> [u16; 17] {
+fn file_manager_icon_cache_sizes() -> [u16; 17] {
     [
         16, 22, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256,
     ]
@@ -468,6 +473,34 @@ mod tests {
     }
 
     #[test]
+    fn kde_directory_metadata_uses_desktop_entry_icon_before_mime_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "fika-directory-entry-icon-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(".directory");
+        fs::write(
+            &path,
+            "[Desktop Entry]\nIcon=user-desktop\nType=Directory\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            file_icon_kind(&path, false, None, false),
+            FileIconKind::Named {
+                icon_name: "user-desktop".to_string(),
+                fallback: NamedIconFallback::Application,
+            }
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn desktop_entry_role_cache_reuses_stamp_and_refreshes_changed_stamp() {
         let root = std::env::temp_dir().join(format!(
             "fika-desktop-role-cache-{}-{}",
@@ -558,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_shortcut_mime_prefers_exact_dolphin_icon_before_generic_fallback() {
+    fn windows_shortcut_mime_prefers_exact_file_manager_icon_before_generic_fallback() {
         let mime = fika_core::MimeDatabase::shared();
         let profile = file_icon_profile(
             &FileIconKind::Mime {

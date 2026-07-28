@@ -1,9 +1,7 @@
 //! `wp_presentation` / `wp_presentation_feedback` dispatch.
 
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
-use wayland_protocols::wp::presentation_time::client::{
-    wp_presentation, wp_presentation_feedback,
-};
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 use super::types::{NativeShellEvent, NativeShellState};
 
@@ -56,9 +54,7 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for NativeSh
                 let seq = (u64::from(seq_hi) << 32) | u64::from(seq_lo);
                 let flags = match flags {
                     WEnum::Value(f) => f,
-                    WEnum::Unknown(raw) => {
-                        wp_presentation_feedback::Kind::from_bits_truncate(raw)
-                    }
+                    WEnum::Unknown(raw) => wp_presentation_feedback::Kind::from_bits_truncate(raw),
                 };
                 state.push(NativeShellEvent::Presented {
                     surface: entry.surface,

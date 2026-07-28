@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use rustix::event::{poll, PollFd, PollFlags, Timespec};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client_runtime::{
     LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer, LayerSurfaceState, LogicalSize,
     NativeShell, NativeShellEvent, SurfaceRegion,

@@ -4,16 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
-    wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
+    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
+    wl_data_source, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
-use wayland_protocols::xdg::shell::client::{
-    xdg_popup, xdg_surface, xdg_toplevel, xdg_wm_base,
-};
+use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
@@ -289,7 +287,8 @@ pub(crate) struct PopupRecord {
 
 pub(crate) struct LayerRecord {
     pub(crate) wl: wl_surface::WlSurface,
-    pub(crate) layer: wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    pub(crate) layer:
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub(crate) buffer: Option<wl_buffer::WlBuffer>,
     pub(crate) _pool: Option<wl_shm_pool::WlShmPool>,
     pub(crate) _file: Option<File>,
@@ -304,18 +303,15 @@ pub(crate) struct LayerRecord {
     pub(crate) state: crate::layer_shell::LayerSurfaceState,
 }
 
-/// Temporary role-less SHM surface used as a drag icon.
+/// Temporary role-less surface used as a drag icon.
 pub(crate) struct NativeDndIconSurface {
     pub(crate) wl: wl_surface::WlSurface,
     pub(crate) buffer: wl_buffer::WlBuffer,
-    pub(crate) pool: wl_shm_pool::WlShmPool,
-    pub(crate) _file: File,
 }
 
 impl Drop for NativeDndIconSurface {
     fn drop(&mut self) {
         self.buffer.destroy();
-        self.pool.destroy();
         self.wl.destroy();
     }
 }

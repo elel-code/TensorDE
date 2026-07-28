@@ -4,7 +4,7 @@ use crate::native::shell::IdleNotifyKind;
 use crate::runtime_common::RuntimeError;
 use crate::surface::SurfaceId;
 
-use super::runtime_facade::{map_native_error, NativeRuntime};
+use super::runtime_facade::{NativeRuntime, map_native_error};
 
 impl NativeRuntime {
     pub fn has_idle_notify(&self) -> bool {
@@ -46,9 +46,7 @@ impl NativeRuntime {
             return Err(RuntimeError::Unsupported("zxdg_exporter_v2"));
         }
         let native = self.native(surface)?;
-        self.shell
-            .export_toplevel(native)
-            .map_err(map_native_error)
+        self.shell.export_toplevel(native).map_err(map_native_error)
     }
 
     pub fn unexport_toplevel(&mut self, surface: SurfaceId) -> Result<(), RuntimeError> {
@@ -62,9 +60,7 @@ impl NativeRuntime {
         if !self.shell.has_xdg_foreign() {
             return Err(RuntimeError::Unsupported("zxdg_importer_v2"));
         }
-        self.shell
-            .import_toplevel(handle)
-            .map_err(map_native_error)
+        self.shell.import_toplevel(handle).map_err(map_native_error)
     }
 
     pub fn set_foreign_parent_of(

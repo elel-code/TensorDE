@@ -1,17 +1,17 @@
-use crate::shell::file_item_view::style::DolphinItemPalette;
+use crate::shell::file_item_view::style::FileManagerItemPalette;
 use crate::shell::theme::ShellTheme;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShellPaintPalettes {
     pub(crate) shell: ShellTheme,
-    pub(crate) dolphin_item: DolphinItemPalette,
+    pub(crate) file_manager_item: FileManagerItemPalette,
 }
 
 impl ShellPaintPalettes {
     pub(crate) fn from_shell_theme(shell: ShellTheme) -> Self {
         Self {
             shell,
-            dolphin_item: DolphinItemPalette::from_shell_theme(shell),
+            file_manager_item: FileManagerItemPalette::from_shell_theme(shell),
         }
     }
 }
@@ -27,8 +27,8 @@ mod tests {
 
         assert!(palettes.shell.is_dark());
         assert_eq!(
-            palettes.dolphin_item,
-            DolphinItemPalette::from_shell_theme(shell)
+            palettes.file_manager_item,
+            FileManagerItemPalette::from_shell_theme(shell)
         );
     }
 }

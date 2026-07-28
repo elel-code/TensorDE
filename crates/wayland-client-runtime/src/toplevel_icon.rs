@@ -149,4 +149,3 @@ pub enum ToplevelIconError {
     #[error("toplevel icon RGBA byte length does not match its dimensions")]
     ByteLengthMismatch,
 }
-

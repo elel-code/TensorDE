@@ -5,10 +5,10 @@ use wayland_client::protocol::wl_seat::WlSeat;
 use crate::event::Event;
 use crate::native::shell::NativeShellEvent;
 
+use crate::LayerSurfaceEvent;
 use crate::event::SurfaceEvent;
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::output::OutputId;
-use crate::LayerSurfaceEvent;
 
 use super::{NativeEventMapState, SurfaceIdMap};
 

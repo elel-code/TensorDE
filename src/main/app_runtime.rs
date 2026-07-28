@@ -71,11 +71,13 @@ impl IncomingDndTransfer {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OutgoingDndTransfer {
     id: DataTransferId,
     paths: Vec<PathBuf>,
     source: ShellInternalDragSource,
+    /// Keeps exported Vulkan memory alive until Wayland finishes the drag.
+    _icon_texture: Option<wgpu::Texture>,
 }
 include!("app_controller/window_lifecycle.rs");
 include!("app_controller/dialog_windows.rs");

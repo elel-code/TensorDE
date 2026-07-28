@@ -1,6 +1,6 @@
 
     #[test]
-    fn folder_preview_role_draw_rect_keeps_aspect_inside_folder_shell_slot() {
+    fn folder_preview_gpu_draw_rect_stays_inside_folder_shell_slot() {
         let layout = ItemPixmapLayout {
             view_mode: ShellViewMode::Icons,
             icon_rect: ViewRect {
@@ -17,14 +17,9 @@
             },
             text_midline_shift: 0.0,
         };
-        let raster = IconRaster {
-            pixels: vec![40; 80 * 40 * 4].into(),
-            width: 80,
-            height: 40,
-        };
         let shell = folder_preview_role_shell_rect(layout);
         let slot = folder_preview_role_slot(layout);
-        let draw = folder_preview_role_draw_rect(layout, &raster);
+        let draw = folder_preview_gpu_draw_rect(layout, 80);
 
         assert!(slot.x >= shell.x);
         assert!(slot.y >= shell.y);
@@ -32,13 +27,13 @@
         assert!(slot.bottom() <= shell.bottom() + f32::EPSILON);
         assert!(draw.width <= slot.width + f32::EPSILON);
         assert!(draw.height <= slot.height + f32::EPSILON);
-        assert!((draw.width / draw.height - 2.0).abs() < 0.05);
+        assert!((draw.width - draw.height).abs() < 0.05);
         assert!((draw.x + draw.width / 2.0 - (slot.x + slot.width / 2.0)).abs() < f32::EPSILON);
         assert!((draw.y + draw.height / 2.0 - (slot.y + slot.height / 2.0)).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn folder_preview_role_draw_rect_uses_dolphin_text_midline_shift_in_compact_area() {
+    fn folder_preview_gpu_draw_rect_uses_file_manager_text_midline_shift_in_compact_area() {
         let layout = ItemPixmapLayout {
             view_mode: ShellViewMode::Compact,
             icon_rect: ViewRect {
@@ -55,13 +50,8 @@
             },
             text_midline_shift: 3.0,
         };
-        let raster = IconRaster {
-            pixels: vec![40; 48 * 24 * 4].into(),
-            width: 48,
-            height: 24,
-        };
         let area = folder_preview_role_shell_rect(layout);
-        let draw = folder_preview_role_draw_rect(layout, &raster);
+        let draw = folder_preview_gpu_draw_rect(layout, 48);
         let expected_center_y = layout.text_rect.y + layout.text_rect.height / 2.0 + 3.0;
 
         assert!((area.y + area.height / 2.0 - expected_center_y).abs() < f32::EPSILON);
@@ -71,8 +61,8 @@
     }
 
     #[test]
-    fn dolphin_text_midline_shift_matches_font_metrics_formula() {
-        let shift = dolphin_text_midline_shift_from_metrics(18.0, 14.0, 1000, -200.0, Some(700.0));
+    fn file_manager_text_midline_shift_matches_font_metrics_formula() {
+        let shift = file_manager_text_midline_shift_from_metrics(18.0, 14.0, 1000, -200.0, Some(700.0));
 
         assert!((shift - 1.3).abs() < 0.01);
     }
@@ -99,7 +89,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         let after = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -142,7 +132,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         let offscreen_after = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -153,7 +143,7 @@
             FolderPreviewReady {
                 stamp: 12,
                 size_px: 48,
-                raster: test_icon_raster(2, 4),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 4)),
             },
         );
         let visible_after = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -183,7 +173,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 128,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         let exact_before = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -193,7 +183,7 @@
             FolderPreviewReady {
                 stamp: 12,
                 size_px: 256,
-                raster: test_icon_raster(2, 4),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 4)),
             },
         );
         let exact_after = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -236,7 +226,7 @@
             FolderPreviewReady {
                 stamp: 12,
                 size_px: 256,
-                raster: test_icon_raster(2, 4),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 4)),
             },
         );
         let after = ShellRenderDirtyKey::from_scene(&scene, size);
@@ -276,12 +266,12 @@
         let previous = FolderPreviewReady {
             stamp: 11,
             size_px: 128,
-            raster: solid_icon_raster(96, 24, [220, 40, 80, 255]),
+            source: test_folder_preview_source(solid_gpu_icon_spec(96, 24, [220, 40, 80, 255])),
         };
         let current = FolderPreviewReady {
             stamp: 12,
             size_px: 128,
-            raster: solid_icon_raster(24, 96, [40, 120, 220, 255]),
+            source: test_folder_preview_source(solid_gpu_icon_spec(24, 96, [40, 120, 220, 255])),
         };
         scene
             .folder_preview_roles
@@ -307,11 +297,11 @@
 
         assert_eq!(rects, vec![expected]);
         let previous_draw = pane_content_rect_to_screen(
-            folder_preview_role_draw_rect(layout, &previous.raster),
+            folder_preview_gpu_draw_rect(layout, previous.size_px),
             &projections[0],
         );
         let current_draw = pane_content_rect_to_screen(
-            folder_preview_role_draw_rect(layout, &current.raster),
+            folder_preview_gpu_draw_rect(layout, current.size_px),
             &projections[0],
         );
         assert!(expected.x <= previous_draw.x);
@@ -356,7 +346,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 128,
-                raster: solid_icon_raster(48, 48, [40, 120, 220, 255]),
+                source: test_folder_preview_source(solid_gpu_icon_spec(48, 48, [40, 120, 220, 255])),
             },
         );
         scene.folder_preview_roles.borrow_mut().insert_ready(
@@ -364,7 +354,7 @@
             FolderPreviewReady {
                 stamp: 12,
                 size_px: 256,
-                raster: solid_icon_raster(96, 24, [220, 40, 80, 255]),
+                source: test_folder_preview_source(solid_gpu_icon_spec(96, 24, [220, 40, 80, 255])),
             },
         );
         let projections = ShellPaneId::ALL
@@ -380,7 +370,7 @@
                 previous: Some(FolderPreviewReady {
                     stamp: 10,
                     size_px: 256,
-                    raster: solid_icon_raster(24, 96, [80, 220, 40, 255]),
+                    source: test_folder_preview_source(solid_gpu_icon_spec(24, 96, [80, 220, 40, 255])),
                 }),
             }],
         );
@@ -410,7 +400,7 @@
         let previous = FolderPreviewReady {
             stamp: 11,
             size_px: 128,
-            raster: solid_icon_raster(96, 24, [220, 40, 80, 255]),
+            source: test_folder_preview_source(solid_gpu_icon_spec(96, 24, [220, 40, 80, 255])),
         };
         {
             let mut roles = scene.folder_preview_roles.borrow_mut();
@@ -437,7 +427,7 @@
 
         assert_eq!(rects, vec![expected]);
         let previous_draw = pane_content_rect_to_screen(
-            folder_preview_role_draw_rect(layout, &previous.raster),
+            folder_preview_gpu_draw_rect(layout, previous.size_px),
             &projections[0],
         );
         assert!(expected.x <= previous_draw.x);

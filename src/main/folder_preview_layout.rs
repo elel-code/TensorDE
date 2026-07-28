@@ -7,7 +7,7 @@ fn folder_preview_thumbnail_sources(directory: &Path) -> Vec<FolderPreviewThumbn
     };
     let mime_database = MimeDatabase::shared();
     let mut candidates = Vec::new();
-    for entry in entries.flatten().take(DOLPHIN_FOLDER_PREVIEW_SCAN_LIMIT) {
+    for entry in entries.flatten().take(FILE_MANAGER_FOLDER_PREVIEW_SCAN_LIMIT) {
         let path = entry.path();
         let name = entry.file_name();
         if entry
@@ -57,7 +57,7 @@ fn folder_preview_thumbnail_sources(directory: &Path) -> Vec<FolderPreviewThumbn
     });
     candidates
         .into_iter()
-        .take(DOLPHIN_FOLDER_PREVIEW_MAX_IMAGES)
+        .take(FILE_MANAGER_FOLDER_PREVIEW_MAX_IMAGES)
         .map(|(_, source)| source)
         .collect()
 }
@@ -115,8 +115,8 @@ fn fit_size_to_rect(
     let height = ((source_height as f32 * scale).round() as u32).clamp(1, max_height);
     (width, height)
 }
-fn thumbnail_request_from_raster_request(
-    request: &ThumbnailRasterRequest,
+fn thumbnail_request_from_source_request(
+    request: &ThumbnailSourceRequest,
 ) -> Option<ThumbnailRequest> {
     ThumbnailRequest::from_entry_metadata_with_mime(
         WGPU_SHELL_PANE_ID,
@@ -255,21 +255,19 @@ fn icon_emblem_rects(paint_area: ViewRect, scale: f32) -> [ViewRect; 4] {
     ]
 }
 
-fn folder_preview_role_draw_rect(layout: ItemPixmapLayout, raster: &IconRaster) -> ViewRect {
+fn folder_preview_gpu_draw_rect(layout: ItemPixmapLayout, size_px: u16) -> ViewRect {
     let area = folder_preview_role_slot(layout);
     let (width, height) = fit_size_to_rect(
-        raster.width,
-        raster.height,
+        u32::from(size_px),
+        u32::from(size_px),
         area.width.ceil().max(1.0) as u32,
         area.height.ceil().max(1.0) as u32,
     );
-    let width = width as f32;
-    let height = height as f32;
     ViewRect {
-        x: area.x + (area.width - width) / 2.0,
-        y: area.y + (area.height - height) / 2.0,
-        width,
-        height,
+        x: area.x + (area.width - width as f32) / 2.0,
+        y: area.y + (area.height - height as f32) / 2.0,
+        width: width as f32,
+        height: height as f32,
     }
 }
 fn folder_preview_role_shell_rect(layout: ItemPixmapLayout) -> ViewRect {
@@ -298,10 +296,7 @@ struct ShellThumbnailCandidate {
 }
 struct IconFrameBuilder<'a> {
     resolver: &'a mut FileIconResolver,
-    thumbnails: &'a mut ThumbnailRasterResolver,
-    icon_rasters: &'a mut IconRasterResolver,
-    raster_cache: &'a mut IconRasterCache,
-    role_raster_cache: &'a mut IconRoleRasterCache,
+    thumbnails: &'a mut ThumbnailSourceResolver,
     /// Snapshot of GPU-resident icons at frame start (size-free sample path).
     gpu_resident: IconGpuResidentIndex,
     surface_size: PhysicalSize<u32>,
@@ -326,42 +321,55 @@ struct IconFrameBuilder<'a> {
     cache_hits: usize,
     cache_misses: usize,
     deferred: usize,
-    raster_deferred: usize,
-    raster_miss_budget: usize,
+    sync_resolve_budget: usize,
     resolve_us: u128,
-    raster_us: u128,
 }
 include!("icon_frame_builder/builder.rs");
 // Atlas packing removed (scheme C: per-icon GPU textures).
 /// Append NDC vertices for a draw that samples a per-icon texture.
 fn push_icon_draw_vertices(
-    out: &mut Vec<TextVertex>,
+    out: &mut Vec<IconVertex>,
     draw: &IconDraw,
-    tex_width: u32,
-    tex_height: u32,
+    slot: &IconGpuSlot,
     surface_size: PhysicalSize<u32>,
 ) {
-    push_textured_rect(
-        out,
-        draw.screen,
-        AtlasRect {
-            x: draw.source.x,
-            y: draw.source.y,
-            width: draw.source.width,
-            height: draw.source.height,
-        },
-        tex_width,
-        tex_height,
-        surface_size,
-        [1.0, 1.0, 1.0, draw.alpha],
-    );
+    let surface_width = surface_size.width.max(1) as f32;
+    let surface_height = surface_size.height.max(1) as f32;
+    let left = draw.screen.x / surface_width * 2.0 - 1.0;
+    let right = draw.screen.right() / surface_width * 2.0 - 1.0;
+    let top = 1.0 - draw.screen.y / surface_height * 2.0;
+    let bottom = 1.0 - draw.screen.bottom() / surface_height * 2.0;
+    let texture_width = slot.width.max(1) as f32;
+    let texture_height = slot.height.max(1) as f32;
+    let u0 = draw.source.x / texture_width;
+    let v0 = draw.source.y / texture_height;
+    let u1 = (draw.source.x + draw.source.width) / texture_width;
+    let v1 = (draw.source.y + draw.source.height) / texture_height;
+    let (rounding_bounds, radius_ratio) = slot
+        .rounding
+        .map(|rounding| (rounding.bounds, rounding.radius_ratio))
+        .unwrap_or(([0.0; 4], 0.0));
+    let vertex = |position, uv| IconVertex {
+        position,
+        uv,
+        rounding_bounds,
+        radius_alpha: [radius_ratio, draw.alpha],
+    };
+    out.extend_from_slice(&[
+        vertex([left, top], [u0, v0]),
+        vertex([left, bottom], [u0, v1]),
+        vertex([right, bottom], [u1, v1]),
+        vertex([left, top], [u0, v0]),
+        vertex([right, bottom], [u1, v1]),
+        vertex([right, top], [u1, v0]),
+    ]);
 }
 /// Pack draws into per-slot batches and a single vertex buffer range list.
 fn pack_icon_batches(
     draws: &[IconDraw],
     slots: &[IconGpuSlot],
     surface_size: PhysicalSize<u32>,
-) -> (Vec<TextVertex>, Vec<IconSlotBatch>) {
+) -> (Vec<IconVertex>, Vec<IconSlotBatch>) {
     if draws.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -388,8 +396,7 @@ fn pack_icon_batches(
             push_icon_draw_vertices(
                 &mut vertices,
                 &draws[i],
-                gpu_slot.width,
-                gpu_slot.height,
+                gpu_slot,
                 surface_size,
             );
         }
@@ -473,6 +480,7 @@ struct IconGpuTexture {
     content_height: u32,
     /// Matches last uploaded CPU content generation.
     content_hash: u64,
+    rounding: Option<IconRounding>,
     last_used_frame: u64,
     /// How this texture was last filled (dmabuf import vs CPU upload).
     #[allow(dead_code)]
@@ -492,6 +500,7 @@ struct IconGpuResidentEntry {
     content_width: u32,
     content_height: u32,
     content_hash: u64,
+    rounding: Option<IconRounding>,
 }
 
 impl IconGpuResidentIndex {
@@ -524,10 +533,7 @@ struct IconRenderer {
     dmabuf_import_supported: bool,
     /// Lifetime stats (reset never; useful for logs).
     dmabuf_imports: u64,
-    cpu_uploads: u64,
+    gpu_source_renderer: Option<GpuIconSourceRenderer>,
     resolver: FileIconResolver,
-    thumbnails: ThumbnailRasterResolver,
-    icon_rasters: IconRasterResolver,
-    raster_cache: IconRasterCache,
-    role_raster_cache: IconRoleRasterCache,
+    thumbnails: ThumbnailSourceResolver,
 }

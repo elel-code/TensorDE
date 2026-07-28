@@ -91,11 +91,10 @@ impl NativeShell {
         import_id: u64,
         child: NativeSurfaceId,
     ) -> Result<(), NativeError> {
-        let imported = self
-            .state
-            .foreign_imports
-            .get(&import_id)
-            .ok_or_else(|| NativeError::Protocol(format!("unknown foreign import {import_id}")))?;
+        let imported =
+            self.state.foreign_imports.get(&import_id).ok_or_else(|| {
+                NativeError::Protocol(format!("unknown foreign import {import_id}"))
+            })?;
         let wl = self
             .state
             .wl_surface(child)

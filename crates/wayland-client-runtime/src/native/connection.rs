@@ -6,9 +6,9 @@ use std::cell::Cell;
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd};
 
-use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
-use wayland_client::backend::WaylandError;
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use wayland_client::Connection;
+use wayland_client::backend::WaylandError;
 
 /// Errors from the native Wayland connection / protocol path.
 #[derive(Debug)]

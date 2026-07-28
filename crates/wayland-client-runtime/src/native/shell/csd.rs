@@ -14,9 +14,9 @@ mod theme;
 
 pub use frame::ClientSideFrame;
 #[allow(unused_imports)] // public CSD geometry surface for callers / tests
-pub use geometry::{content_insets, DecorationInsets, HEADER_SIZE, RESIZE_BORDER};
-pub use input::{FrameAction, FrameCursor, FramePartKind};
+pub use geometry::{DecorationInsets, HEADER_SIZE, RESIZE_BORDER, content_insets};
 #[allow(unused_imports)]
 pub use input::HitLocation;
+pub use input::{FrameAction, FrameCursor, FramePartKind};
 #[allow(unused_imports)]
 pub use theme::ColorTheme;

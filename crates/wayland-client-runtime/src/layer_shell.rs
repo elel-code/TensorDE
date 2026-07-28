@@ -1,4 +1,4 @@
-//! wlr-layer-shell public types. 
+//! wlr-layer-shell public types.
 
 use bitflags::bitflags;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -264,5 +264,3 @@ mod tests {
         assert!(validate_layer_state(&ok, None, 5).is_ok());
     }
 }
-
-

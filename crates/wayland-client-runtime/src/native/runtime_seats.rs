@@ -6,7 +6,7 @@ use crate::input::CursorIcon;
 use crate::runtime_common::RuntimeError;
 use crate::surface::SurfaceId;
 
-use super::runtime_facade::{map_native_error, NativeRuntime};
+use super::runtime_facade::{NativeRuntime, map_native_error};
 
 impl NativeRuntime {
     /// Bound seats (multi-seat compositors may advertise more than one).

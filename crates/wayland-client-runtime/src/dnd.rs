@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bitflags::bitflags;
 
 use crate::{LogicalPosition, SurfaceId};
@@ -40,13 +38,13 @@ pub enum DndAction {
     Ask,
 }
 
-/// An RGBA drag icon backed by a temporary Wayland SHM surface.
+/// A drag icon backed by a Linux dmabuf.
 ///
 /// Pixel dimensions are buffer coordinates. `offset` is expressed in logical
 /// surface coordinates relative to the drag hotspot.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct DndIcon {
-    rgba: Arc<[u8]>,
+    buffer: crate::dmabuf::DmabufBufferParams,
     width: u32,
     height: u32,
     buffer_scale: i32,
@@ -54,45 +52,33 @@ pub struct DndIcon {
 }
 
 impl DndIcon {
-    pub fn new(
-        rgba: impl Into<Arc<[u8]>>,
-        width: u32,
-        height: u32,
+    pub fn from_dmabuf(
+        params: crate::dmabuf::DmabufBufferParams,
         buffer_scale: i32,
         offset: LogicalPosition,
     ) -> Result<Self, &'static str> {
-        if width == 0 || height == 0 {
+        if params.width <= 0 || params.height <= 0 {
             return Err("DnD icon dimensions must be non-zero");
         }
-        if width > i32::MAX as u32 || height > i32::MAX as u32 {
-            return Err("DnD icon dimensions exceed Wayland SHM limits");
+        if params.planes.is_empty() {
+            return Err("DnD icon dmabuf requires at least one plane");
         }
         if buffer_scale < 1 {
             return Err("DnD icon buffer scale must be at least one");
         }
+        let width = params.width as u32;
+        let height = params.height as u32;
         if !width.is_multiple_of(buffer_scale as u32) || !height.is_multiple_of(buffer_scale as u32)
         {
             return Err("DnD icon dimensions must be divisible by its buffer scale");
         }
-        let rgba = rgba.into();
-        let expected = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or("DnD icon byte length overflow")?;
-        if rgba.len() != expected {
-            return Err("DnD icon RGBA byte length does not match its dimensions");
-        }
         Ok(Self {
-            rgba,
+            buffer: params,
             width,
             height,
             buffer_scale,
             offset,
         })
-    }
-
-    pub fn rgba(&self) -> &Arc<[u8]> {
-        &self.rgba
     }
 
     pub const fn width(&self) -> u32 {
@@ -111,9 +97,17 @@ impl DndIcon {
         self.offset
     }
 
-    pub(crate) fn into_parts(self) -> (Arc<[u8]>, u32, u32, i32, LogicalPosition) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        crate::dmabuf::DmabufBufferParams,
+        u32,
+        u32,
+        i32,
+        LogicalPosition,
+    ) {
         (
-            self.rgba,
+            self.buffer,
             self.width,
             self.height,
             self.buffer_scale,
@@ -175,24 +169,15 @@ mod tests {
     }
 
     #[test]
-    fn drag_icon_validates_dimensions_scale_and_rgba_length() {
+    fn drag_icon_requires_valid_dmabuf_dimensions_planes_and_scale() {
         let offset = LogicalPosition::new(-8, -4);
-        assert!(DndIcon::new(vec![0; 16], 2, 2, 2, offset).is_ok());
-        assert_eq!(
-            DndIcon::new(vec![], 0, 2, 1, offset),
+        assert!(matches!(
+            DndIcon::from_dmabuf(crate::DmabufBufferParams::new(0, 2, 0), 1, offset),
             Err("DnD icon dimensions must be non-zero")
-        );
-        assert_eq!(
-            DndIcon::new(vec![0; 16], 2, 2, 0, offset),
-            Err("DnD icon buffer scale must be at least one")
-        );
-        assert_eq!(
-            DndIcon::new(vec![0; 24], 3, 2, 2, offset),
-            Err("DnD icon dimensions must be divisible by its buffer scale")
-        );
-        assert_eq!(
-            DndIcon::new(vec![0; 15], 2, 2, 1, offset),
-            Err("DnD icon RGBA byte length does not match its dimensions")
-        );
+        ));
+        assert!(matches!(
+            DndIcon::from_dmabuf(crate::DmabufBufferParams::new(2, 2, 0), 1, offset),
+            Err("DnD icon dmabuf requires at least one plane")
+        ));
     }
 }

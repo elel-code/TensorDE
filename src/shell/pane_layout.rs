@@ -365,13 +365,6 @@ impl ShellCompactLayout {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn visible_items(&self) -> Vec<ItemLayout> {
-        let mut items = Vec::with_capacity(self.visible_item_count());
-        self.for_each_visible_item(|item| items.push(item));
-        items
-    }
-
     fn hit_test_content_point(&self, point: ViewPoint) -> Option<usize> {
         self.layout.hit_test_content_point(point)
     }

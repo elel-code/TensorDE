@@ -127,31 +127,37 @@
     }
 
     #[test]
-    fn icon_gpu_slot_content_hash_changes_when_pixels_change() {
+    fn icon_gpu_slot_content_hash_changes_when_encoded_source_changes() {
         let identity = IconGpuUploadKey::role(FileIconKind::Directory);
-        let a = test_icon_raster(16, 7);
-        let b = test_icon_raster(16, 9);
-        let hash_a = hash_bytes_with_len(a.pixels.as_ref());
-        let hash_b = hash_bytes_with_len(b.pixels.as_ref());
+        let a = IconGpuSource::file(PathBuf::from("/icons/folder-a.svg"), 16);
+        let b = IconGpuSource::file(PathBuf::from("/icons/folder-b.svg"), 16);
+        let mut hasher_a = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&a, &mut hasher_a);
+        let hash_a = std::hash::Hasher::finish(&hasher_a);
+        let mut hasher_b = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&b, &mut hasher_b);
+        let hash_b = std::hash::Hasher::finish(&hasher_b);
         assert_ne!(hash_a, hash_b);
         let slot_a = IconGpuSlot {
             identity: identity.clone(),
-            width: a.width,
-            height: a.height,
+            width: 16,
+            height: 16,
             content_width: 16,
             content_height: 16,
             content_hash: hash_a,
-            upload: Some(a),
+            rounding: None,
+            source: Some(a),
             dmabuf: None,
         };
         let slot_b = IconGpuSlot {
             identity,
-            width: b.width,
-            height: b.height,
+            width: 16,
+            height: 16,
             content_width: 16,
             content_height: 16,
             content_hash: hash_b,
-            upload: Some(b),
+            rounding: None,
+            source: Some(b),
             dmabuf: None,
         };
         // Same GPU identity, different generation → in-place rewrite, not new key.
@@ -277,7 +283,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: expected_size,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         assert!(
@@ -290,7 +296,7 @@
     }
 
     #[test]
-    fn folder_preview_role_runs_in_compact_below_32px_icon_size_like_dolphin() {
+    fn folder_preview_role_runs_in_compact_below_32px_icon_size_like_file_manager() {
         let root = test_dir("directory-preview-compact-small-icon");
         let album = root.join("album");
         fs::create_dir_all(&album).unwrap();
@@ -333,7 +339,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: expected_size,
-                raster: test_icon_raster(28, 20),
+                source: test_folder_preview_source(test_gpu_icon_spec(28, 20)),
             },
         );
 
@@ -347,7 +353,7 @@
     }
 
     #[test]
-    fn folder_preview_role_cache_size_matches_dolphin_preview_job_cache_size() {
+    fn folder_preview_role_cache_size_matches_file_manager_preview_job_cache_size() {
         assert_eq!(folder_preview_role_cache_size(16.0), 128);
         assert_eq!(folder_preview_role_cache_size(128.0), 128);
         assert_eq!(folder_preview_role_cache_size(128.1), 256);
@@ -375,7 +381,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(32, 24),
+                source: test_folder_preview_source(test_gpu_icon_spec(32, 24)),
             },
         );
         let projection = scene
@@ -431,7 +437,7 @@
                 FolderPreviewReady {
                     stamp: 11,
                     size_px: 48,
-                    raster: test_icon_raster(2, 3),
+                    source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
                 },
             );
             roles.failed.insert(new_key.clone());
@@ -480,7 +486,7 @@
                 preview: Some(FolderPreviewReady {
                     stamp: 11,
                     size_px: 48,
-                    raster: test_icon_raster(2, 3),
+                    source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
                 }),
             })
             .unwrap();

@@ -18,18 +18,18 @@ impl ShellScene {
         self.pane_zoom_step(self.active_pane()).unwrap_or(0)
     }
 
-    fn dolphin_zoom_level_for_step(&self, zoom_step: i32) -> i32 {
-        (zoom_step + DOLPHIN_ZOOM_LEVEL_DEFAULT)
-            .clamp(DOLPHIN_ZOOM_LEVEL_MIN, DOLPHIN_ZOOM_LEVEL_MAX)
+    fn file_manager_zoom_level_for_step(&self, zoom_step: i32) -> i32 {
+        (zoom_step + FILE_MANAGER_ZOOM_LEVEL_DEFAULT)
+            .clamp(FILE_MANAGER_ZOOM_LEVEL_MIN, FILE_MANAGER_ZOOM_LEVEL_MAX)
     }
 
-    fn dolphin_zoom_icon_size_for_step(&self, zoom_step: i32) -> f32 {
-        dolphin_icon_size_for_zoom_level(self.dolphin_zoom_level_for_step(zoom_step))
+    fn file_manager_zoom_icon_size_for_step(&self, zoom_step: i32) -> f32 {
+        file_manager_icon_size_for_zoom_level(self.file_manager_zoom_level_for_step(zoom_step))
     }
 
     fn zoom_icon_factor_for_step(&self, zoom_step: i32) -> f32 {
-        self.dolphin_zoom_icon_size_for_step(zoom_step)
-            / dolphin_icon_size_for_zoom_level(DOLPHIN_ZOOM_LEVEL_DEFAULT)
+        self.file_manager_zoom_icon_size_for_step(zoom_step)
+            / file_manager_icon_size_for_zoom_level(FILE_MANAGER_ZOOM_LEVEL_DEFAULT)
     }
 
     fn zoom_icon_metric_for_step(&self, zoom_step: i32, value: f32, min: f32, max: f32) -> f32 {

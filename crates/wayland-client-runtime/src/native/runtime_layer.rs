@@ -5,7 +5,7 @@ use crate::native::connection::NativeError;
 use crate::runtime_common::RuntimeError;
 use crate::surface::SurfaceId;
 
-use super::runtime_facade::{map_native_error, NativeRuntime};
+use super::runtime_facade::{NativeRuntime, map_native_error};
 
 impl NativeRuntime {
     pub fn create_layer_surface(

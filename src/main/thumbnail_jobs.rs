@@ -1,14 +1,14 @@
-impl ThumbnailRasterResolver {
+impl ThumbnailSourceResolver {
     fn new() -> Self {
         Self::with_cache_root(default_thumbnail_cache_root())
     }
 
     fn with_cache_root(cache_root: PathBuf) -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<ThumbnailRasterRequest>();
-        let (result_tx, result_rx) = mpsc::channel::<ThumbnailRasterResult>();
+        let (request_tx, request_rx) = mpsc::channel::<ThumbnailSourceRequest>();
+        let (result_tx, result_rx) = mpsc::channel::<ThumbnailSourceResult>();
         let request_tx = thread::Builder::new()
-            .name("fika-wgpu-thumbnail-raster".to_string())
-            .spawn(move || thumbnail_raster_worker(cache_root, request_rx, result_tx))
+            .name("fika-wgpu-thumbnail-source".to_string())
+            .spawn(move || thumbnail_source_worker(cache_root, request_rx, result_tx))
             .ok()
             .map(|_| request_tx);
         Self {
@@ -31,17 +31,17 @@ impl ThumbnailRasterResolver {
         size_px: u16,
     ) -> ThumbnailResolveState {
         self.drain_results();
-        let key = IconRasterCacheKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
+        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
         let failure_key = ThumbnailProbeCacheKey::new(path.to_path_buf(), modified_secs);
-        // Keep the ready entry (Dolphin-style cache hit). Removing here forced a
+        // Keep the ready entry (FileManager-style cache hit). Removing here forced a
         // re-queue every frame and thrashed GPU uploads / flash of MIME icons.
         if let Some(entry) = self.ready.get_mut(&key) {
             self.ready_frame = self.ready_frame.wrapping_add(1);
             entry.last_used_frame = self.ready_frame;
-            return ThumbnailResolveState::Ready(entry.raster.clone());
+            return ThumbnailResolveState::Ready(entry.source.clone());
         }
         // Zoom / first-frame: paint a nearby size while the exact bucket loads.
-        if let Some(raster) = self.take_closest_ready(path, modified_secs, size_px) {
+        if let Some(source) = self.take_closest_ready(path, modified_secs, size_px) {
             // Still ensure the exact size is queued as visible work.
             if !self.pending.contains_key(&key) && !self.failed.contains(&failure_key) {
                 let _ = self.send_request(
@@ -51,7 +51,7 @@ impl ThumbnailRasterResolver {
                     failure_key,
                 );
             }
-            return ThumbnailResolveState::Ready(raster);
+            return ThumbnailResolveState::Ready(source);
         }
         if self.failed.contains(&failure_key) {
             return ThumbnailResolveState::Failed;
@@ -77,21 +77,20 @@ impl ThumbnailRasterResolver {
         path: &Path,
         modified_secs: u64,
         size_px: u16,
-    ) -> Option<IconRaster> {
+    ) -> Option<IconGpuSource> {
         let key = self
             .ready
             .keys()
             .filter(|key| {
                 key.path.as_path() == path
                     && key.stamp == Some(modified_secs)
-                    && key.style == IconRasterStyle::Original
             })
             .min_by_key(|key| key.size_px.abs_diff(size_px))
             .cloned()?;
         let entry = self.ready.get_mut(&key)?;
         self.ready_frame = self.ready_frame.wrapping_add(1);
         entry.last_used_frame = self.ready_frame;
-        Some(entry.raster.clone())
+        Some(entry.source.clone())
     }
 
     fn queue_deferred(
@@ -102,7 +101,7 @@ impl ThumbnailRasterResolver {
         size_px: u16,
     ) -> bool {
         self.drain_results();
-        let key = IconRasterCacheKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
+        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
         let failure_key = ThumbnailProbeCacheKey::new(path.to_path_buf(), modified_secs);
         if self.ready.contains_key(&key)
             || self.failed.contains(&failure_key)
@@ -120,7 +119,7 @@ impl ThumbnailRasterResolver {
 
     fn send_request(
         &mut self,
-        key: IconRasterCacheKey,
+        key: ThumbnailSourceKey,
         mime_type: Option<String>,
         priority: ThumbnailRequestPriority,
         failure_key: ThumbnailProbeCacheKey,
@@ -130,7 +129,7 @@ impl ThumbnailRasterResolver {
             return false;
         };
         if tx
-            .send(ThumbnailRasterRequest {
+            .send(ThumbnailSourceRequest {
                 key: key.clone(),
                 mime_type,
                 priority,
@@ -161,22 +160,22 @@ impl ThumbnailRasterResolver {
                 ThumbnailRequestPriority::Visible => visible += 1,
                 ThumbnailRequestPriority::Deferred => deferred += 1,
             }
-            if let Some(raster) = result.raster {
-                self.insert_ready(result.key, raster);
-            } else if let Some(key) = ThumbnailProbeCacheKey::from_raster_key(&result.key) {
+            if let Some(source) = result.source {
+                self.insert_ready(result.key, source);
+            } else if let Some(key) = ThumbnailProbeCacheKey::from_source_key(&result.key) {
                 self.failed.insert(key);
             }
         }
         (visible, deferred)
     }
 
-    fn insert_ready(&mut self, key: IconRasterCacheKey, raster: IconRaster) {
-        let bytes = raster.pixels.len();
+    fn insert_ready(&mut self, key: ThumbnailSourceKey, source: IconGpuSource) {
+        let bytes = source.memory_bytes();
         self.ready_frame = self.ready_frame.wrapping_add(1);
         if let Some(old) = self.ready.insert(
             key.clone(),
             ThumbnailReadyEntry {
-                raster,
+                source,
                 bytes,
                 last_used_frame: self.ready_frame,
             },
@@ -188,7 +187,7 @@ impl ThumbnailRasterResolver {
         self.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
     }
 
-    fn evict_ready_if_needed(&mut self, protected: &IconRasterCacheKey) {
+    fn evict_ready_if_needed(&mut self, protected: &ThumbnailSourceKey) {
         while self.ready_bytes > self.ready_max_bytes && self.ready.len() > 1 {
             let Some(victim) = self
                 .ready
@@ -217,7 +216,7 @@ impl ThumbnailRasterResolver {
     ///
     /// Larger ready buckets are kept so zoom-in can upgrade the size-free
     /// content GPU slot instead of replaying the first-open resolution.
-    fn release_gpu_resident_content_upto(&mut self, keys: &[IconRasterCacheKey]) {
+    fn release_gpu_resident_content_upto(&mut self, keys: &[ThumbnailSourceKey]) {
         let targets = keys
             .iter()
             .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp, k.size_px)))
@@ -247,7 +246,7 @@ impl ThumbnailRasterResolver {
 
     /// Drop ready/failed/pending entries under `path` (directory navigate away).
     ///
-    /// Mirrors Dolphin killing preview jobs and clearing finished items when the
+    /// Mirrors FileManager killing preview jobs and clearing finished items when the
     /// model is emptied / items leave the view, so memory and stale failure
     /// markers do not accumulate across folders.
     fn clear_path_prefix(&mut self, path: &Path) {
@@ -296,19 +295,19 @@ impl ThumbnailRasterResolver {
             .any(|priority| *priority == ThumbnailRequestPriority::Visible)
     }
 }
-fn thumbnail_raster_worker(
+fn thumbnail_source_worker(
     cache_root: PathBuf,
-    request_rx: Receiver<ThumbnailRasterRequest>,
-    result_tx: Sender<ThumbnailRasterResult>,
+    request_rx: Receiver<ThumbnailSourceRequest>,
+    result_tx: Sender<ThumbnailSourceResult>,
 ) {
     let thumbnailers = ThumbnailerRegistry::shared_system();
     let mut queue = PriorityWorkerQueue::default();
     while let Some(request) = queue.next_request(&request_rx) {
-        let raster = thumbnail_raster_for_request(&cache_root, thumbnailers, &request);
+        let source = thumbnail_source_for_request(&cache_root, thumbnailers, &request);
         if result_tx
-            .send(ThumbnailRasterResult {
+            .send(ThumbnailSourceResult {
                 key: request.key,
-                raster,
+                source,
             })
             .is_err()
         {
@@ -316,13 +315,13 @@ fn thumbnail_raster_worker(
         }
     }
 }
-fn thumbnail_raster_for_request(
+fn thumbnail_source_for_request(
     cache_root: &Path,
     thumbnailers: &ThumbnailerRegistry,
-    request: &ThumbnailRasterRequest,
-) -> Option<IconRaster> {
-    let freestanding = ThumbnailSize::for_raster_px(request.key.size_px);
-    thumbnail_request_from_raster_request(request)
+    request: &ThumbnailSourceRequest,
+) -> Option<IconGpuSource> {
+    let freestanding = ThumbnailSize::for_source_px(request.key.size_px);
+    thumbnail_request_from_source_request(request)
         .and_then(|thumbnail_request| {
             generate_thumbnail_with_external_thumbnailer_registry_size(
                 cache_root,
@@ -333,7 +332,7 @@ fn thumbnail_raster_for_request(
             .ok()
             .flatten()
         })
-        .and_then(|thumbnail| rasterize_icon(thumbnail.path(), request.key.size_px as u32))
+        .map(|thumbnail| IconGpuSource::file(thumbnail.path().to_path_buf(), request.key.size_px))
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderPreviewThumbnailSource {
@@ -345,7 +344,7 @@ struct FolderPreviewThumbnailSource {
 struct FolderPreviewReady {
     stamp: u64,
     size_px: u16,
-    raster: IconRaster,
+    source: IconGpuSource,
 }
 #[derive(Clone, Debug)]
 struct FolderPreviewReadyEntry {

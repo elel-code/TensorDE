@@ -10,10 +10,7 @@ use crate::surface::DecorationPreference;
 
 impl NativeShell {
     /// Create or refresh the CSD frame for a toplevel after preference / mode change.
-    pub(crate) fn sync_csd_for(
-        &mut self,
-        id: NativeSurfaceId,
-    ) -> Result<(), NativeError> {
+    pub(crate) fn sync_csd_for(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         let (pref, mode, title, w, h, states, scale, parent_wl) = {
             let Some(record) = self.state.toplevels.get(&id) else {
                 return Ok(());
@@ -64,7 +61,10 @@ impl NativeShell {
             return Ok(());
         }
 
-        self.state.csd_frames.entry(id).or_insert_with(|| ClientSideFrame::new(id, w, h, title.clone()));
+        self.state
+            .csd_frames
+            .entry(id)
+            .or_insert_with(|| ClientSideFrame::new(id, w, h, title.clone()));
 
         {
             let frame = self
@@ -161,10 +161,9 @@ impl NativeShell {
             FrameAction::Maximize => self.set_maximized(id, true),
             FrameAction::UnMaximize => self.set_maximized(id, false),
             FrameAction::Minimize => self.set_minimized(id),
-            FrameAction::ShowMenu { x, y } => self.show_window_menu(
-                id,
-                crate::geometry::LogicalPosition::new(x, y),
-            ),
+            FrameAction::ShowMenu { x, y } => {
+                self.show_window_menu(id, crate::geometry::LogicalPosition::new(x, y))
+            }
         }
     }
 

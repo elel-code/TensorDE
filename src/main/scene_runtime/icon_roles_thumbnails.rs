@@ -1,19 +1,19 @@
 #[derive(Clone, Copy)]
 struct PaneItemPaintContext {
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
     size: PhysicalSize<u32>,
     theme: ShellTheme,
 }
 
 impl ShellScene {
 
-    fn enqueue_dolphin_small_directory_icon_roles(
+    fn enqueue_file_manager_small_directory_icon_roles(
         &self,
         projections: &[ShellPaneProjection<'_>],
     ) -> bool {
         let mut queued = false;
         for projection in projections {
-            if projection.view.filtered_entry_count() > DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT {
+            if projection.view.filtered_entry_count() > FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT {
                 continue;
             }
             let Some(icon_size) = projection.visible_items.first().map(|item| {
@@ -197,7 +197,7 @@ impl ShellScene {
             self.push_details_header_for_projection(vertices, text, projection, size, theme);
         }
 
-        let item_palette = paint.dolphin_item;
+        let item_palette = paint.file_manager_item;
         for item in projection.visible_items.iter().copied() {
             self.push_pane_item(
                 vertices,
@@ -289,7 +289,7 @@ impl ShellScene {
             view_mode: projection.view.view_mode,
             icon_rect,
             text_rect,
-            text_midline_shift: text.dolphin_midline_shift(),
+            text_midline_shift: text.file_manager_midline_shift(),
         };
         let selected = projection.view.selection.contains(entry_index);
         let hovered = self.hovered_item
@@ -313,14 +313,14 @@ impl ShellScene {
         } else {
             1.0
         };
-        let paint = dolphin_item_paint_with_palette_and_hover_progress(
+        let paint = file_manager_item_paint_with_palette_and_hover_progress(
             projection.view.view_mode,
-            DolphinItemGeometry {
+            FileManagerItemGeometry {
                 item: item_rect,
                 visual: visual_rect,
                 content: content_rect,
             },
-            DolphinItemInteraction {
+            FileManagerItemInteraction {
                 selected,
                 hovered,
                 current,

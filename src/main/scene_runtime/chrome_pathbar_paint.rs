@@ -207,7 +207,7 @@ impl ShellScene {
         self.metadata_roles.resolve_visible_synchronously(
             projections,
             Generation(self.path_changes),
-            DOLPHIN_MAX_BLOCK_TIMEOUT,
+            FILE_MANAGER_MAX_BLOCK_TIMEOUT,
         )
     }
 
@@ -261,7 +261,7 @@ impl ShellScene {
                 continue;
             };
             let item_count = projection.view.filtered_entry_count();
-            for layout_index in shell_dolphin_read_ahead_indexes(
+            for layout_index in shell_file_manager_read_ahead_indexes(
                 visible_range,
                 item_count,
                 projection.visible_items.len(),
@@ -530,7 +530,7 @@ impl ShellScene {
             }
         }
         let small_directory_read_ahead =
-            self.enqueue_dolphin_small_directory_icon_roles(projections);
+            self.enqueue_file_manager_small_directory_icon_roles(projections);
         for projection in projections {
             let Some(visible_range) = visible_layout_range_for_projection(projection) else {
                 continue;
@@ -545,7 +545,7 @@ impl ShellScene {
                 continue;
             };
             let item_count = projection.view.filtered_entry_count();
-            for layout_index in shell_dolphin_read_ahead_indexes(
+            for layout_index in shell_file_manager_read_ahead_indexes(
                 visible_range,
                 item_count,
                 projection.visible_items.len(),

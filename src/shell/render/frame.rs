@@ -4,7 +4,7 @@ use crate::platform::PhysicalSize;
 use fika_core::{ViewRect, ViewSize};
 
 use crate::shell::pane::ShellPaneProjection;
-use crate::shell::prewarm::icon_raster_miss_budget_for_frame;
+use crate::shell::prewarm::icon_sync_resolve_budget_for_frame;
 use crate::shell::render::gpu::VertexBufferUploadStats;
 use crate::shell::render::quad::{QuadRenderer, QuadVertex};
 use crate::{
@@ -90,12 +90,8 @@ impl SceneFrame {
     ) -> SceneFrameWorkPending {
         let metadata = scene.metadata_role_visible_work_pending();
         let icon = self.icon_stats.deferred > 0
-            || self.icon_stats.raster_deferred > 0
             || self.icon_stats.thumbnail_deferred > 0
             || icon_renderer.resolver.has_visible_pending()
-            || icon_renderer
-                .icon_rasters
-                .has_visible_pending(&mut icon_renderer.raster_cache)
             || icon_renderer.thumbnails.has_visible_pending()
             || scene.folder_preview_roles.borrow().has_visible_pending();
         let text = self.text_stats.deferred > 0;
@@ -174,8 +170,6 @@ pub(crate) fn prepare_scene_frame(
     } = request;
     text_renderer.label_cache.begin_frame();
     text_renderer.metrics_cache.begin_frame();
-    icon_renderer.raster_cache.begin_frame();
-    icon_renderer.role_raster_cache.begin_frame();
 
     if let Some(overlay_text_renderer) = overlay_text_renderer {
         overlay_text_renderer.label_cache.begin_frame();
@@ -200,7 +194,7 @@ pub(crate) fn prepare_scene_frame(
                 IconFrameConfig {
                     surface_size: size,
                     ui_scale: scene.ui_scale(),
-                    raster_miss_budget: icon_raster_miss_budget_for_frame(reason),
+                    sync_resolve_budget: icon_sync_resolve_budget_for_frame(reason),
                     folder_preview_cache: FolderPreviewCacheStats {
                         ready_entries: scene.folder_preview_roles.borrow().ready_len(),
                         ready_bytes: scene.folder_preview_roles.borrow().ready_bytes(),
@@ -256,7 +250,7 @@ pub(crate) fn prepare_scene_frame(
                 IconFrameConfig {
                     surface_size: size,
                     ui_scale: scene.ui_scale(),
-                    raster_miss_budget: icon_raster_miss_budget_for_frame(reason),
+                    sync_resolve_budget: icon_sync_resolve_budget_for_frame(reason),
                     folder_preview_cache: FolderPreviewCacheStats {
                         ready_entries: scene.folder_preview_roles.borrow().ready_len(),
                         ready_bytes: scene.folder_preview_roles.borrow().ready_bytes(),
@@ -315,12 +309,7 @@ pub(crate) fn prepare_dialog_frame(
     } = request;
     text_renderer.label_cache.begin_frame();
     text_renderer.metrics_cache.begin_frame();
-    icon_renderer.raster_cache.begin_frame();
-    icon_renderer.role_raster_cache.begin_frame();
     let icon_resolve_results = icon_renderer.resolver.drain_results();
-    let icon_raster_results = icon_renderer
-        .icon_rasters
-        .drain_results(&mut icon_renderer.raster_cache);
     let thumbnail_results = icon_renderer.thumbnails.drain_results();
 
     let (vertices, mut text_frame, mut icon_frame) = {
@@ -336,7 +325,7 @@ pub(crate) fn prepare_dialog_frame(
             IconFrameConfig {
                 surface_size: layout_size,
                 ui_scale: scale,
-                raster_miss_budget: icon_raster_miss_budget_for_frame(reason),
+                sync_resolve_budget: icon_sync_resolve_budget_for_frame(reason),
                 folder_preview_cache: FolderPreviewCacheStats::default(),
             },
         );
@@ -354,17 +343,12 @@ pub(crate) fn prepare_dialog_frame(
     let icon_stats = icon_frame.stats;
     let text_work_pending = text_stats.deferred > 0;
     // Only visible-priority work keeps the dialog frame dirty. Deferred
-    // read-ahead (Dolphin-style off-viewport resolve) must not block clean skips.
+    // read-ahead (FileManager-style off-viewport resolve) must not block clean skips.
     let icon_work_pending = icon_stats.deferred > 0
-        || icon_stats.raster_deferred > 0
         || icon_stats.thumbnail_deferred > 0
         || icon_resolve_results > 0
-        || icon_raster_results > 0
         || thumbnail_results > 0
         || icon_renderer.resolver.has_visible_pending()
-        || icon_renderer
-            .icon_rasters
-            .has_visible_pending(&mut icon_renderer.raster_cache)
         || icon_renderer.thumbnails.has_visible_pending();
 
     let mut vertex_upload_stats = quad_renderer.upload(device, queue, &vertices);

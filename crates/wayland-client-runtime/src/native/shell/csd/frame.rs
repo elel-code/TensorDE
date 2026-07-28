@@ -13,12 +13,12 @@ use crate::native::protocols::core::shm;
 use crate::native::shell::types::{NativeShellState, NativeSurfaceId};
 
 use super::buttons::Buttons;
-use super::geometry::{content_insets, PartLayout, BORDER_SIZE, HEADER_SIZE};
+use super::geometry::{BORDER_SIZE, HEADER_SIZE, PartLayout, content_insets};
 use super::input::{
-    coarse_for_part, header_hit, refine_edge, FrameAction, FrameCursor, FramePartKind, HitLocation,
-    MouseState,
+    FrameAction, FrameCursor, FramePartKind, HitLocation, MouseState, coarse_for_part, header_hit,
+    refine_edge,
 };
-use super::paint::{paint_border_strip, paint_header, EdgeSide, Pixmap};
+use super::paint::{EdgeSide, Pixmap, paint_border_strip, paint_header};
 use super::theme::ColorTheme;
 
 struct PartSurface {
@@ -73,12 +73,7 @@ pub struct ClientSideFrame {
 }
 
 impl ClientSideFrame {
-    pub fn new(
-        parent: NativeSurfaceId,
-        content_w: u32,
-        content_h: u32,
-        title: String,
-    ) -> Self {
+    pub fn new(parent: NativeSurfaceId, content_w: u32, content_h: u32, title: String) -> Self {
         Self {
             parent,
             parts: Vec::new(),
@@ -364,24 +359,14 @@ impl ClientSideFrame {
     }
 
     /// Pointer entered a decoration part (surface-local coords).
-    pub fn on_pointer_enter(
-        &mut self,
-        kind: FramePartKind,
-        x: f64,
-        y: f64,
-    ) -> FrameCursor {
+    pub fn on_pointer_enter(&mut self, kind: FramePartKind, x: f64, y: f64) -> FrameCursor {
         let loc = self.hit(kind, x, y);
         self.mouse.moved(loc, x, y);
         self.dirty = true; // hover chrome
         loc.cursor(self.resizable && !self.maximized)
     }
 
-    pub fn on_pointer_motion(
-        &mut self,
-        kind: FramePartKind,
-        x: f64,
-        y: f64,
-    ) -> FrameCursor {
+    pub fn on_pointer_motion(&mut self, kind: FramePartKind, x: f64, y: f64) -> FrameCursor {
         let loc = self.hit(kind, x, y);
         let changed = loc != self.mouse.location;
         self.mouse.moved(loc, x, y);
@@ -444,14 +429,9 @@ fn attach_pixmap(
 
     // Convert BGRA pixmap bytes to a proper SHM buffer. Our Pixmap already
     // stores LE ARGB8888 (B,G,R,A) which matches wl_shm Argb8888.
-    let (file, pool, buffer) = create_argb_buffer_from_bytes(
-        shm_global,
-        qh,
-        pixmap.width,
-        pixmap.height,
-        &pixmap.pixels,
-    )
-    .map_err(|e| NativeError::Io(e.to_string()))?;
+    let (file, pool, buffer) =
+        create_argb_buffer_from_bytes(shm_global, qh, pixmap.width, pixmap.height, &pixmap.pixels)
+            .map_err(|e| NativeError::Io(e.to_string()))?;
     part.wl.attach(Some(&buffer), 0, 0);
     part.buffer = Some(buffer);
     part.pool = Some(pool);

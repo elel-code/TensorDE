@@ -419,7 +419,7 @@
     }
 
     #[test]
-    fn double_click_file_activation_uses_default_app_like_dolphin() {
+    fn double_click_file_activation_uses_default_app_like_file_manager() {
         let mut scene = test_scene(vec![test_entry("plain.txt", false)], ShellViewMode::Icons);
         let size = PhysicalSize::new(360, 240);
         let item = scene.layout(size).item(0).expect("test item should layout");

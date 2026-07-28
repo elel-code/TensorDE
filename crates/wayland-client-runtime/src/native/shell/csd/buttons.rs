@@ -2,7 +2,7 @@
 
 use super::geometry::HEADER_SIZE;
 use super::input::HitLocation;
-use super::paint::{fill_rect, stroke_line, Pixmap};
+use super::paint::{Pixmap, fill_rect, stroke_line};
 use super::theme::ColorMap;
 
 const BUTTON_SIZE: f32 = 24.0;
@@ -214,7 +214,10 @@ mod tests {
         // Close is rightmost.
         let close_x = buttons.right.last().unwrap().x as f64 + 4.0;
         let y = HEADER_SIZE as f64 / 2.0;
-        assert_eq!(buttons.find(close_x, y), HitLocation::Button(ButtonKind::Close));
+        assert_eq!(
+            buttons.find(close_x, y),
+            HitLocation::Button(ButtonKind::Close)
+        );
         assert_eq!(buttons.find(200.0, y), HitLocation::Head);
     }
 }

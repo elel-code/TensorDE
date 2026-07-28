@@ -25,11 +25,13 @@ mod registry;
 mod shell;
 
 #[cfg(feature = "compio")]
-mod runtime_facade;
+mod runtime_chrome;
 #[cfg(feature = "compio")]
 mod runtime_constraints;
 #[cfg(feature = "compio")]
 mod runtime_dmabuf;
+#[cfg(feature = "compio")]
+mod runtime_facade;
 #[cfg(feature = "compio")]
 mod runtime_idle_foreign;
 #[cfg(feature = "compio")]
@@ -37,22 +39,20 @@ mod runtime_interaction;
 #[cfg(feature = "compio")]
 mod runtime_layer;
 #[cfg(feature = "compio")]
-mod runtime_chrome;
-#[cfg(feature = "compio")]
 mod runtime_seats;
 #[cfg(feature = "compio")]
 mod runtime_transfer;
 
 pub use connection::{NativeConnection, NativeError};
 pub use event_map::{
-    map_native_event, map_native_event_full, map_native_key_text, native_key_text_pressed,
-    NativeEventMapState, SurfaceIdMap,
+    NativeEventMapState, SurfaceIdMap, map_native_event, map_native_event_full,
+    map_native_key_text, native_key_text_pressed,
 };
 pub use protocols::{
-    ProtocolClass, ProtocolSpec, FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX, specs_in_class,
+    FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX, ProtocolClass, ProtocolSpec, specs_in_class,
 };
 pub use pump::{NativePump, PumpStep};
-pub use registry::{list_env_globals, GlobalAdvertisement, NativeRegistry};
+pub use registry::{GlobalAdvertisement, NativeRegistry, list_env_globals};
 pub use shell::{
     IdleNotifyKind, NativeCapabilities, NativePopupPositioner, NativeShell, NativeShellEvent,
     NativeSurfaceHandle, NativeSurfaceId,

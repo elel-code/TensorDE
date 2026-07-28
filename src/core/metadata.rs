@@ -308,10 +308,7 @@ impl MetadataRoleScheduler {
             .any(|priority| *priority == MetadataRolePriority::Visible)
     }
 
-    pub fn priority_for_result(
-        &self,
-        result: &MetadataRoleResult,
-    ) -> Option<MetadataRolePriority> {
+    pub fn priority_for_result(&self, result: &MetadataRoleResult) -> Option<MetadataRolePriority> {
         let path_hash = stable_hash(&result.path);
         self.active
             .iter()

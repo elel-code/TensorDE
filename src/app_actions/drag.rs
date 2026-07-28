@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::platform::{
     ActiveEventLoop, AsyncRequestSerial, DataTransferId, DataTransferSendBuilder, DndAction,
-    DragIcon, PhysicalPosition, RgbaIcon, SendData, TypeHint, TypedData,
+    DragIcon, PhysicalPosition, SendData, TypeHint, TypedData,
 };
 
 use super::outcome::ShellActionOutcome;
@@ -17,19 +17,17 @@ use crate::shell::drag_preview_layout::{
 };
 use crate::shell::drop_menu::ShellDropTarget;
 use crate::shell::file_item_view::style::{
-    DolphinItemPalette, item_background_color_for_palette, place_row_background_color_for_palette,
+    FileManagerItemPalette, item_background_color_for_palette,
+    place_row_background_color_for_palette,
 };
-use crate::shell::icon_roles::{
-    FileIconKind, FileIconPathCacheKey, FileIconRoleCacheKey, NamedIconFallback,
-    file_icon_path_cache_key, icon_cache_size,
-};
+use crate::shell::icon_roles::{file_icon_path_cache_key, icon_cache_size};
 use crate::shell::tasks::ShellTaskStatus;
 use crate::{
-    FikaWgpuApp, FolderPreviewReady, IconRaster, IconRasterCacheKey, IconRasterStyle,
-    IncomingDndTransfer, ItemPixmapLayout, OutgoingDndTransfer, ShellInternalDragPreviewSource,
-    ShellViewMode, ViewRect, decode_file_clipboard_text, entry_path_for_thumbnail,
-    folder_preview_role_draw_rect, icon_emblem_kinds_for_path, icon_emblem_rects,
-    normalized_scale_factor, path_uri_from_path, rasterize_icon,
+    FikaWgpuApp, GpuDragPreview, GpuDragPreviewDraw, IconGpuSource, IncomingDndTransfer,
+    ItemPixmapLayout, OutgoingDndTransfer, ShellInternalDragPreviewSource, ShellViewMode,
+    ThumbnailSourceKey, ViewRect, decode_file_clipboard_text, entry_path_for_thumbnail,
+    folder_preview_gpu_draw_rect, icon_emblem_kinds_for_path, icon_emblem_rects,
+    normalized_scale_factor, path_uri_from_path, rasterize_gpu_drag_preview_label,
     thumbnail_request_may_have_preview, view_point_from_physical_position,
 };
 
@@ -40,17 +38,6 @@ const DND_FALLBACK_ICON_SIZE: f32 = 128.0;
 struct OutgoingDndPayload {
     uris: Vec<String>,
     text: String,
-}
-
-#[derive(Clone, Debug)]
-struct OutgoingDndPreviewRasters {
-    icons: Vec<Option<IconRaster>>,
-}
-
-impl OutgoingDndPreviewRasters {
-    fn icon(&self, index: usize) -> Option<&IconRaster> {
-        self.icons.get(index).and_then(Option::as_ref)
-    }
 }
 
 impl FikaWgpuApp {
@@ -104,22 +91,27 @@ impl FikaWgpuApp {
             outgoing_dnd_preview_colors(preview_source.as_ref(), self.scene.theme());
         preview_metrics.background_color = background_color;
         preview_metrics.label_style = label_style.or(preview_metrics.label_style);
-        let preview_rasters = self.outgoing_dnd_preview_rasters(
-            preview_source.as_ref(),
-            &paths,
-            preview_metrics.cache_icon_size,
-            preview_metrics.buffer_scale as f32,
-            preview_metrics.visible_icon_count(),
-        );
-        let label_raster =
-            self.outgoing_dnd_preview_label_raster(&preview_label, preview_metrics, label_style);
-        let drag_icon = outgoing_dnd_drag_icon(
-            &paths,
-            preview_metrics,
-            Some(&preview_rasters),
-            label_raster.as_ref(),
-            label_color,
-        );
+        let (drag_icon, icon_texture) = self
+            .renderer
+            .as_mut()
+            .and_then(|renderer| {
+                let draws = outgoing_dnd_preview_gpu_draws(
+                    renderer,
+                    preview_source.as_ref(),
+                    &paths,
+                    preview_metrics,
+                    preview_metrics.buffer_scale as f32,
+                );
+                outgoing_dnd_gpu_drag_icon(
+                    renderer,
+                    preview_metrics,
+                    draws,
+                    &preview_label,
+                    label_color,
+                )
+            })
+            .map(|(icon, texture)| (Some(icon), Some(texture)))
+            .unwrap_or((None, None));
         let send_data = DataTransferSendBuilder::new(payload)
             .with_type(TypeHint::UriList, |payload, _| {
                 Some(SendData::Uris(payload.uris.clone()))
@@ -133,7 +125,12 @@ impl FikaWgpuApp {
                     id.into_raw(),
                     paths.len()
                 );
-                self.outgoing_dnd_transfer = Some(OutgoingDndTransfer { id, paths, source });
+                self.outgoing_dnd_transfer = Some(OutgoingDndTransfer {
+                    id,
+                    paths,
+                    source,
+                    _icon_texture: icon_texture,
+                });
             }
             Err(error) => {
                 self.outgoing_dnd_start_failed = true;
@@ -145,59 +142,6 @@ impl FikaWgpuApp {
                 }
             }
         }
-    }
-
-    fn outgoing_dnd_preview_rasters(
-        &mut self,
-        source: Option<&ShellInternalDragPreviewSource>,
-        paths: &[PathBuf],
-        cache_icon_size: f32,
-        scale: f32,
-        visible_count: usize,
-    ) -> OutgoingDndPreviewRasters {
-        let Some(renderer) = self.renderer.as_mut() else {
-            return OutgoingDndPreviewRasters { icons: Vec::new() };
-        };
-        // Use scene-space icon size so thumbnail cache keys match the live view.
-        let icon_size_px = icon_cache_size(cache_icon_size);
-        let icons = paths
-            .iter()
-            .take(visible_count)
-            .map(|path| {
-                outgoing_dnd_preview_raster_for_path(
-                    renderer,
-                    source,
-                    path,
-                    cache_icon_size,
-                    icon_size_px,
-                    scale,
-                )
-            })
-            .collect();
-        OutgoingDndPreviewRasters { icons }
-    }
-
-    fn outgoing_dnd_preview_label_raster(
-        &mut self,
-        label: &str,
-        metrics: OutgoingDndPreviewMetrics,
-        style: Option<DragPreviewLabelStyle>,
-    ) -> Option<OutgoingDndPreviewLabelRaster> {
-        let rect = metrics.label_rect?;
-        let style = style.or(metrics.label_style)?;
-        let renderer = self.renderer.as_mut()?;
-        let alpha = renderer.text_renderer.rasterize_drag_label(
-            label,
-            rect.width as u32,
-            rect.height as u32,
-            metrics.buffer_scale as f32,
-            style,
-        );
-        Some(OutgoingDndPreviewLabelRaster {
-            alpha: Arc::from(alpha),
-            width: rect.width as u32,
-            height: rect.height as u32,
-        })
     }
 
     pub(crate) fn external_drag_entered(
@@ -565,7 +509,7 @@ impl FikaWgpuApp {
 
 include!("drag/outgoing_preview.rs");
 
-include!("drag/preview_raster.rs");
+include!("drag/preview_geometry.rs");
 
 #[cfg(test)]
 #[path = "drag/tests.rs"]

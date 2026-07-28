@@ -90,12 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let c = shell.capabilities();
     println!(
         "protocol-only: seat={} seat_count={} outputs={} layer={} presentation={} dmabuf={}",
-        c.seat,
-        c.seat_count,
-        c.output_count,
-        c.layer_shell,
-        c.presentation,
-        c.linux_dmabuf
+        c.seat, c.seat_count, c.output_count, c.layer_shell, c.presentation, c.linux_dmabuf
     );
     println!("seats ({}): {:?}", shell.seat_count(), shell.seats());
     let mut outs = Vec::new();

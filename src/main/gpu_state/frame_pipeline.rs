@@ -98,7 +98,7 @@ impl WgpuState {
                 self.size.height,
                 scale,
                 dialog_frame.icon_stats.icons,
-                dialog_frame.icon_stats.deferred + dialog_frame.icon_stats.raster_deferred,
+                dialog_frame.icon_stats.deferred,
                 dialog_frame.text_stats.labels,
                 dialog_frame.text_stats.deferred,
                 dialog_frame.swash_image_entries,
@@ -397,7 +397,7 @@ impl WgpuState {
                 stats.deferred,
                 stats.applied,
                 stats.resolve_us,
-                DOLPHIN_MAX_BLOCK_TIMEOUT.as_micros(),
+                FILE_MANAGER_MAX_BLOCK_TIMEOUT.as_micros(),
                 stats.over_budget as u8,
             );
         }
@@ -408,10 +408,6 @@ impl WgpuState {
             .icon_renderer
             .resolver
             .drain_results_by_priority();
-        let (icon_raster_results, _icon_raster_deferred_results) = self
-            .icon_renderer
-            .icon_rasters
-            .drain_results_by_priority(&mut self.icon_renderer.raster_cache);
         let (thumbnail_results, _thumbnail_deferred_results) = self
             .icon_renderer
             .thumbnails
@@ -429,7 +425,6 @@ impl WgpuState {
             ShellRenderDirtyKey::from_scene_with_context(scene, self.size, &dirty_key_context);
         let non_folder_preview_async_results_changed = metadata_result_stats.visible_applied > 0
             || icon_resolve_results > 0
-            || icon_raster_results > 0
             || thumbnail_results > 0;
         let visible_folder_preview_async_results_changed =
             folder_preview_results.applied > 0 && !folder_preview_damage_rects.is_empty();
@@ -441,7 +436,6 @@ impl WgpuState {
             ShellFrameLatencyAsyncResults {
                 metadata_applied: metadata_result_stats.visible_applied as u64,
                 icon_resolve_results: icon_resolve_results as u64,
-                icon_raster_results: icon_raster_results as u64,
                 thumbnail_results: thumbnail_results as u64,
                 folder_preview_results: if visible_folder_preview_async_results_changed {
                     folder_preview_results.applied as u64
@@ -618,7 +612,7 @@ impl WgpuState {
         );
 
         // After a directory change, drop previous-folder GPU icon textures and
-        // path-scoped thumbnail / failure caches (Dolphin kills preview jobs and
+        // path-scoped thumbnail / failure caches (FileManager kills preview jobs and
         // clears finished items when the model is emptied). Done after upload so
         // the current frame's slots stay resident.
         let open_paths = ShellPaneId::ALL
@@ -690,7 +684,7 @@ impl WgpuState {
             || self.last_log.elapsed() >= Duration::from_secs(1)
         {
             fika_log!(
-                "[fika-wgpu] frame={} reason={} view={} scale={:.2} zoom={} zoom_changes={} path={} entries={} filtered={} show_hidden={} hidden_changes={} location_active={} location_changes={} filter_active={} filter_changes={} places={} places_visible={} places_width={:.1} place_hover={} places_changes={} places_resize_changes={} places_scroll_y={:.1} places_scroll_changes={} content_scroll_changes={} split_pane={} split_changes={} split_path={} content_scrollbar={} visible={} thumbnails={} folder_previews={} slots={}/{} slot_reused={} slot_recycled={} slot_allocated={} selected={} hover={} dnd_hover={} dnd_hover_changes={} dnd_drop_requests={} context={} context_menu={} context_changes={} context_actions={} properties={} properties_changes={} create_dialog={} create_changes={} rename_dialog={} rename_changes={} open_with={} open_with_changes={} open_changes={} copy_location_changes={} file_clipboard_changes={} paste_changes={} trash_changes={} rubber_band={} hit_tests={} selection_changes={} keyboard_nav={} rubber_band_updates={} view_switches={} path_changes={} reloads={} quads={} layout_content={:.1}x{:.1} first_item={:.1},{:.1},{:.1},{:.1} icons={} icon_quads={} icon_fallbacks={} icon_deferred={} icon_raster_deferred={} icon_content_hash={:016x} icon_geometry_hash={:016x} icon_vertex_hash={:016x} icon_slot_hash={:016x} thumb_loaded={} thumb_quads={} thumb_deferred={} thumb_read_ahead={} thumb_ready={}/{}b folder_preview_loaded={} folder_preview_quads={} folder_preview_deferred={} folder_preview_read_ahead={} folder_preview_ready={}/{}b icon_cache={}/{} entries={} bytes={} icon_atlas={}x{}:{}b icon_atlas_uploads={}/{} icon_resolve={}us icon_raster={}us text_labels={} text_quads={} text_deferred={} text_cache={}/{} entries={} bytes={} swash_cache={}/{} swash_reset={} text_atlas_reused={} text_atlas_uploads={}/{} batches={} vertex_uploads={}/{} damage={} damage_rects={} damage_area={:.0} damage_bounds={:.1},{:.1},{:.1},{:.1} scroll_x={:.1} scroll_y={:.1} prewarm={}us surface={}us prepare={}us quad_upload={}us encode_present={}us layout={}us text_raster={}us text_atlas={}x{}:{}b dirty_skips={} dirty_pending={} render={}us",
+                "[fika-wgpu] frame={} reason={} view={} scale={:.2} zoom={} zoom_changes={} path={} entries={} filtered={} show_hidden={} hidden_changes={} location_active={} location_changes={} filter_active={} filter_changes={} places={} places_visible={} places_width={:.1} place_hover={} places_changes={} places_resize_changes={} places_scroll_y={:.1} places_scroll_changes={} content_scroll_changes={} split_pane={} split_changes={} split_path={} content_scrollbar={} visible={} thumbnails={} folder_previews={} slots={}/{} slot_reused={} slot_recycled={} slot_allocated={} selected={} hover={} dnd_hover={} dnd_hover_changes={} dnd_drop_requests={} context={} context_menu={} context_changes={} context_actions={} properties={} properties_changes={} create_dialog={} create_changes={} rename_dialog={} rename_changes={} open_with={} open_with_changes={} open_changes={} copy_location_changes={} file_clipboard_changes={} paste_changes={} trash_changes={} rubber_band={} hit_tests={} selection_changes={} keyboard_nav={} rubber_band_updates={} view_switches={} path_changes={} reloads={} quads={} layout_content={:.1}x{:.1} first_item={:.1},{:.1},{:.1},{:.1} icons={} icon_quads={} icon_fallbacks={} icon_deferred={} icon_content_hash={:016x} icon_geometry_hash={:016x} icon_vertex_hash={:016x} icon_slot_hash={:016x} thumb_loaded={} thumb_quads={} thumb_deferred={} thumb_read_ahead={} thumb_ready={}/{}b folder_preview_loaded={} folder_preview_quads={} folder_preview_deferred={} folder_preview_read_ahead={} folder_preview_ready={}/{}b icon_cache={}/{} entries={} bytes={} icon_atlas={}x{}:{}b icon_atlas_uploads={}/{} icon_resolve={}us text_labels={} text_quads={} text_deferred={} text_cache={}/{} entries={} bytes={} swash_cache={}/{} swash_reset={} text_atlas_reused={} text_atlas_uploads={}/{} batches={} vertex_uploads={}/{} damage={} damage_rects={} damage_area={:.0} damage_bounds={:.1},{:.1},{:.1},{:.1} scroll_x={:.1} scroll_y={:.1} prewarm={}us surface={}us prepare={}us quad_upload={}us encode_present={}us layout={}us text_raster={}us text_atlas={}x{}:{}b dirty_skips={} dirty_pending={} render={}us",
                 self.frame_count,
                 reason,
                 scene.panes[ShellPaneId::SLOT_0].view_mode.as_str(),
@@ -795,7 +789,6 @@ impl WgpuState {
                 scene_frame.icon_stats.quads,
                 scene_frame.icon_stats.fallbacks,
                 scene_frame.icon_stats.deferred,
-                scene_frame.icon_stats.raster_deferred,
                 scene_frame.icon_stats.content_hash,
                 scene_frame.icon_stats.geometry_hash,
                 scene_frame.icon_stats.vertex_hash,
@@ -822,7 +815,6 @@ impl WgpuState {
                 scene_frame.icon_stats.atlas_uploads,
                 scene_frame.icon_stats.atlas_upload_skips,
                 scene_frame.icon_stats.resolve_us,
-                scene_frame.icon_stats.raster_us,
                 scene_frame.text_stats.labels,
                 scene_frame.text_stats.quads,
                 scene_frame.text_stats.deferred,

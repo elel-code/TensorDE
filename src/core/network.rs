@@ -13,7 +13,7 @@ use gio::prelude::*;
 use super::entries::{Entry, EntryData, name_width_units, sort_entries};
 
 pub const NETWORK_ROOT_URI: &str = "network:///";
-pub const DOLPHIN_REMOTE_ROOT_URI: &str = "remote:/";
+pub const LEGACY_REMOTE_ROOT_URI: &str = "remote:/";
 pub const NETWORK_ROOT_LABEL: &str = "Network";
 pub const NETWORK_ROOT_ICON: &str = "folder-remote";
 

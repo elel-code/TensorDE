@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::shell::metrics::{
-    DOLPHIN_ZOOM_LEVEL_MAX, DOLPHIN_ZOOM_LEVEL_MIN, THUMBNAIL_READ_AHEAD_PAGES,
+    FILE_MANAGER_ZOOM_LEVEL_MAX, FILE_MANAGER_ZOOM_LEVEL_MIN, THUMBNAIL_READ_AHEAD_PAGES,
     THUMBNAIL_READ_AHEAD_RESOLVE_LIMIT,
 };
 use crate::shell::pane::ShellPaneProjection;
@@ -11,8 +11,8 @@ pub(crate) mod style;
 pub(crate) mod text;
 pub(crate) mod text_layout;
 
-pub(crate) fn dolphin_icon_size_for_zoom_level(level: i32) -> f32 {
-    match level.clamp(DOLPHIN_ZOOM_LEVEL_MIN, DOLPHIN_ZOOM_LEVEL_MAX) {
+pub(crate) fn file_manager_icon_size_for_zoom_level(level: i32) -> f32 {
+    match level.clamp(FILE_MANAGER_ZOOM_LEVEL_MIN, FILE_MANAGER_ZOOM_LEVEL_MAX) {
         0 => 16.0,
         1 => 22.0,
         2 => 32.0,
@@ -22,11 +22,11 @@ pub(crate) fn dolphin_icon_size_for_zoom_level(level: i32) -> f32 {
     }
 }
 
-pub(crate) fn dolphin_icons_zoom_factor_for_level(level: i32) -> f32 {
-    (level.clamp(DOLPHIN_ZOOM_LEVEL_MIN, DOLPHIN_ZOOM_LEVEL_MAX) as f32 / 13.0).exp()
+pub(crate) fn file_manager_icons_zoom_factor_for_level(level: i32) -> f32 {
+    (level.clamp(FILE_MANAGER_ZOOM_LEVEL_MIN, FILE_MANAGER_ZOOM_LEVEL_MAX) as f32 / 13.0).exp()
 }
 
-pub(crate) fn dolphin_icons_item_width(
+pub(crate) fn file_manager_icons_item_width(
     icon_size: f32,
     padding: f32,
     text_width_index: f32,
@@ -34,7 +34,7 @@ pub(crate) fn dolphin_icons_item_width(
     ui_scale: f32,
     zoom_level: i32,
 ) -> f32 {
-    let zoom_factor = dolphin_icons_zoom_factor_for_level(zoom_level);
+    let zoom_factor = file_manager_icons_zoom_factor_for_level(zoom_level);
     let font_factor = average_char_width / 9.0;
     ((16.0 * ui_scale + text_width_index * 64.0 * font_factor * zoom_factor)
         .max(icon_size + padding * 2.0 * zoom_factor))
@@ -59,7 +59,7 @@ pub(crate) fn visible_layout_range_for_projection(
     (start < end).then_some(start..end)
 }
 
-pub(crate) fn shell_dolphin_deferred_all_indexes(
+pub(crate) fn shell_file_manager_deferred_all_indexes(
     visible_indexes: Option<Range<usize>>,
     item_count: usize,
 ) -> Vec<usize> {
@@ -76,7 +76,7 @@ pub(crate) fn shell_dolphin_deferred_all_indexes(
     result
 }
 
-pub(crate) fn shell_dolphin_read_ahead_indexes(
+pub(crate) fn shell_file_manager_read_ahead_indexes(
     visible_indexes: Range<usize>,
     item_count: usize,
     maximum_visible_items: usize,
@@ -124,21 +124,21 @@ mod tests {
 
     #[test]
     fn deferred_all_indexes_exclude_visible_range() {
-        let indexes = shell_dolphin_deferred_all_indexes(Some(4..7), 10);
+        let indexes = shell_file_manager_deferred_all_indexes(Some(4..7), 10);
 
         assert_eq!(indexes, vec![0, 1, 2, 3, 7, 8, 9]);
     }
 
     #[test]
     fn deferred_all_indexes_keep_all_items_without_visible_range() {
-        let indexes = shell_dolphin_deferred_all_indexes(None, 4);
+        let indexes = shell_file_manager_deferred_all_indexes(None, 4);
 
         assert_eq!(indexes, vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn deferred_all_indexes_clamp_visible_range_to_item_count() {
-        let indexes = shell_dolphin_deferred_all_indexes(Some(2..8), 5);
+        let indexes = shell_file_manager_deferred_all_indexes(Some(2..8), 5);
 
         assert_eq!(indexes, vec![0, 1]);
     }

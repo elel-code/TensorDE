@@ -30,7 +30,9 @@ pub(crate) fn map(
             }))
         }
         NativeShellEvent::ForeignImportedDestroyed { id } => {
-            Some(Event::Foreign(crate::ForeignEvent::ImportedDestroyed { id }))
+            Some(Event::Foreign(crate::ForeignEvent::ImportedDestroyed {
+                id,
+            }))
         }
         NativeShellEvent::PointerConstraint {
             surface,
@@ -62,9 +64,9 @@ pub(crate) fn map(
                 refresh_mhz: None,
             })))
         }
-        NativeShellEvent::OutputRemoved { output } => {
-            Some(Event::Output(OutputEvent::Removed(OutputId::from_raw(output))))
-        }
+        NativeShellEvent::OutputRemoved { output } => Some(Event::Output(OutputEvent::Removed(
+            OutputId::from_raw(output),
+        ))),
         NativeShellEvent::SeatAdded {
             seat,
             name,
@@ -109,9 +111,8 @@ pub(crate) fn map(
             make,
             model,
             logical_position: Some(LogicalPosition::new(x, y)),
-            logical_size: (physical_width > 0 && physical_height > 0).then(|| {
-                LogicalSize::new(physical_width as u32, physical_height as u32)
-            }),
+            logical_size: (physical_width > 0 && physical_height > 0)
+                .then(|| LogicalSize::new(physical_width as u32, physical_height as u32)),
             scale_factor: 1,
             refresh_mhz: None,
         }))),
@@ -135,13 +136,17 @@ pub(crate) fn map(
             }))
         }
         NativeShellEvent::DmabufBufferCreated { id } => {
-            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferCreated { id }))
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferCreated {
+                id,
+            }))
         }
         NativeShellEvent::DmabufBufferFailed => {
             Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferFailed))
         }
         NativeShellEvent::DmabufBufferReleased { id } => {
-            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferReleased { id }))
+            Some(Event::Dmabuf(crate::dmabuf::DmabufEvent::BufferReleased {
+                id,
+            }))
         }
 
         _ => unreachable!("event routed to wrong mapper"),

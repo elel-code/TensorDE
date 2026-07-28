@@ -52,7 +52,6 @@ fn decode_toplevel_states(states: &[u8]) -> ToplevelState {
     out
 }
 
-
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState {
     fn event(
         state: &mut Self,
@@ -77,9 +76,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
                 if interface == "wl_output" && !state.outputs.contains_key(&name) {
                     let v = version.clamp(1, 4);
                     let output = registry.bind::<wl_output::WlOutput, _, _>(name, v, qh, ());
-                    state
-                        .output_objects
-                        .insert(output.id().protocol_id(), name);
+                    state.output_objects.insert(output.id().protocol_id(), name);
                     state.output_proxies.insert(name, output);
                     state.outputs.insert(
                         name,
@@ -273,13 +270,15 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for NativeShellState {
                     record.configured = true;
                     record.last_configure_serial = serial;
                     if let Some((w, h)) = record.pending_size
-                        && w > 0 && h > 0 {
-                            record.logical_w = w as u32;
-                            record.logical_h = h as u32;
-                            if let Some(vp) = record.viewport.as_ref() {
-                                vp.set_destination(w, h);
-                            }
+                        && w > 0
+                        && h > 0
+                    {
+                        record.logical_w = w as u32;
+                        record.logical_h = h as u32;
+                        if let Some(vp) = record.viewport.as_ref() {
+                            vp.set_destination(w, h);
                         }
+                    }
                     let suggested = SuggestedSize::new(
                         Some(record.logical_w).filter(|&w| w > 0),
                         Some(record.logical_h).filter(|&h| h > 0),
@@ -348,10 +347,7 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let id = state
-            .popup_objects
-            .get(&popup.id().protocol_id())
-            .copied();
+        let id = state.popup_objects.get(&popup.id().protocol_id()).copied();
         match event {
             xdg_popup::Event::Configure {
                 x,
@@ -360,9 +356,10 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
                 height,
             } => {
                 if let Some(id) = id
-                    && let Some(record) = state.popups.get_mut(&id) {
-                        record.pending_geom = Some((x, y, width, height));
-                    }
+                    && let Some(record) = state.popups.get_mut(&id)
+                {
+                    record.pending_geom = Some((x, y, width, height));
+                }
             }
             xdg_popup::Event::PopupDone => {
                 if let Some(id) = id {
@@ -371,9 +368,10 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for NativeShellState {
             }
             xdg_popup::Event::Repositioned { token } => {
                 if let Some(id) = id
-                    && let Some(record) = state.popups.get_mut(&id) {
-                        record.pending_reposition_token = Some(token);
-                    }
+                    && let Some(record) = state.popups.get_mut(&id)
+                {
+                    record.pending_reposition_token = Some(token);
+                }
             }
             _ => {}
         }
@@ -412,12 +410,13 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for NativeShellState {
                 states,
             } => {
                 if let Some(id) = id
-                    && let Some(record) = state.toplevels.get_mut(&id) {
-                        if width > 0 && height > 0 {
-                            record.pending_size = Some((width, height));
-                        }
-                        record.pending_states = decode_toplevel_states(&states);
+                    && let Some(record) = state.toplevels.get_mut(&id)
+                {
+                    if width > 0 && height > 0 {
+                        record.pending_size = Some((width, height));
                     }
+                    record.pending_states = decode_toplevel_states(&states);
+                }
             }
             xdg_toplevel::Event::Close => {
                 if let Some(id) = id {
@@ -428,7 +427,6 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for NativeShellState {
         }
     }
 }
-
 
 impl Dispatch<wp_viewporter::WpViewporter, ()> for NativeShellState {
     fn event(
@@ -534,9 +532,7 @@ impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
         _: &QueueHandle<Self>,
     ) {
         if let wl_callback::Event::Done { callback_data } = event {
-            let id = state
-                .frame_callbacks
-                .remove(&callback.id().protocol_id());
+            let id = state.frame_callbacks.remove(&callback.id().protocol_id());
             if let Some(surface) = id {
                 state.frame_pending.remove(&surface);
                 state.push(NativeShellEvent::Frame {
@@ -547,4 +543,3 @@ impl Dispatch<wl_callback::WlCallback, ()> for NativeShellState {
         }
     }
 }
-

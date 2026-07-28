@@ -139,17 +139,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         surface: id,
                         fingers,
                         time,
+                        ..
                     } => println!("swipe begin {id:?} fingers={fingers} time={time}"),
-                    NativeShellEvent::GestureSwipeUpdate { dx, dy, time } => {
+                    NativeShellEvent::GestureSwipeUpdate { dx, dy, time, .. } => {
                         println!("swipe update dx={dx:.2} dy={dy:.2} time={time}");
                     }
-                    NativeShellEvent::GestureSwipeEnd { cancelled, time } => {
+                    NativeShellEvent::GestureSwipeEnd {
+                        cancelled, time, ..
+                    } => {
                         println!("swipe end cancelled={cancelled} time={time}");
                     }
                     NativeShellEvent::GesturePinchBegin {
                         surface: id,
                         fingers,
                         time,
+                        ..
                     } => println!("pinch begin {id:?} fingers={fingers} time={time}"),
                     NativeShellEvent::GesturePinchUpdate {
                         dx,
@@ -157,18 +161,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         scale,
                         rotation,
                         time,
+                        ..
                     } => println!(
                         "pinch update dx={dx:.2} dy={dy:.2} scale={scale:.3} rot={rotation:.1} time={time}"
                     ),
-                    NativeShellEvent::GesturePinchEnd { cancelled, time } => {
+                    NativeShellEvent::GesturePinchEnd {
+                        cancelled, time, ..
+                    } => {
                         println!("pinch end cancelled={cancelled} time={time}");
                     }
                     NativeShellEvent::GestureHoldBegin {
                         surface: id,
                         fingers,
                         time,
+                        ..
                     } => println!("hold begin {id:?} fingers={fingers} time={time}"),
-                    NativeShellEvent::GestureHoldEnd { cancelled, time } => {
+                    NativeShellEvent::GestureHoldEnd {
+                        cancelled, time, ..
+                    } => {
                         println!("hold end cancelled={cancelled} time={time}");
                     }
                     NativeShellEvent::RelativePointer {
@@ -177,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         dy,
                         dx_unaccel,
                         dy_unaccel,
+                        ..
                     } => {
                         println!(
                             "relative motion utime={utime} dx={dx:.3} dy={dy:.3} unaccel=({dx_unaccel:.3},{dy_unaccel:.3})"
@@ -194,19 +205,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::ScaleFactorChanged { surface: id, factor } => {
                         println!("scale {id:?} factor={factor:.3}");
                     }
-                    NativeShellEvent::PointerEnter { surface: id, x, y } => {
+                    NativeShellEvent::PointerEnter {
+                        surface: id, x, y, ..
+                    } => {
                         println!("pointer enter {id:?} @ ({x:.1},{y:.1})");
                         if shell.has_cursor_shape() {
                             let _ = shell.set_cursor_shape(Shape::Default);
                         }
                     }
-                    NativeShellEvent::PointerMotion { surface: id, x, y } => {
+                    NativeShellEvent::PointerMotion {
+                        surface: id, x, y, ..
+                    } => {
                         println!("pointer motion {id:?} @ ({x:.1},{y:.1})");
                     }
-                    NativeShellEvent::SeatKeyboardEnter { surface: id } => {
+                    NativeShellEvent::SeatKeyboardEnter { surface: id, .. } => {
                         println!("keyboard enter {id:?}");
                     }
-                    NativeShellEvent::SeatKeyboardLeave { surface: id } => {
+                    NativeShellEvent::SeatKeyboardLeave { surface: id, .. } => {
                         println!("keyboard leave {id:?}");
                     }
                     NativeShellEvent::SeatModifiers {
@@ -214,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         println!("modifiers depressed={mods_depressed:#x}");
                     }
-                    NativeShellEvent::PointerLeave { surface: id } => {
+                    NativeShellEvent::PointerLeave { surface: id, .. } => {
                         println!("pointer leave {id:?}");
                     }
                     NativeShellEvent::PointerButton {
@@ -227,12 +242,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::PointerAxis {
                         horizontal,
                         vertical,
-                        horizontal_value120,
-                        vertical_value120,
                         ..
                     } => {
                         println!(
-                            "pointer axis h={horizontal:.2} v={vertical:.2} v120=({horizontal_value120},{vertical_value120})"
+                            "pointer axis h={:.2} v={:.2} v120=({},{})",
+                            horizontal.continuous,
+                            vertical.continuous,
+                            horizontal.value120,
+                            vertical.value120,
                         );
                     }
                     NativeShellEvent::Frame { surface: id, time } => {
@@ -246,6 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         y,
                         serial,
                         time,
+                        ..
                     } => {
                         println!(
                             "touch down {id:?} finger={finger} @ ({x:.1},{y:.1}) serial={serial} time={time}"
@@ -255,6 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         id: finger,
                         serial,
                         time,
+                        ..
                     } => {
                         println!("touch up finger={finger} serial={serial} time={time}");
                     }
@@ -263,6 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         x,
                         y,
                         time,
+                        ..
                     } => {
                         println!("touch motion finger={finger} @ ({x:.1},{y:.1}) time={time}");
                     }
@@ -270,19 +290,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         id: finger,
                         major,
                         minor,
+                        ..
                     } => {
                         println!("touch shape finger={finger} major={major:.2} minor={minor:.2}");
                     }
                     NativeShellEvent::TouchOrientation {
                         id: finger,
                         degrees,
+                        ..
                     } => {
                         println!("touch orientation finger={finger} deg={degrees:.1}");
                     }
-                    NativeShellEvent::TouchFrame => {
+                    NativeShellEvent::TouchFrame { .. } => {
                         println!("touch frame");
                     }
-                    NativeShellEvent::TouchCancel => {
+                    NativeShellEvent::TouchCancel { .. } => {
                         println!("touch cancel");
                     }
                     NativeShellEvent::OutputGeometry {
@@ -316,6 +338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     NativeShellEvent::SurfaceOutputLeave { surface: id, output } => {
                         println!("surface {id:?} leave output {output}");
                     }
+                    _ => {}
                 }
             }
             if configured {

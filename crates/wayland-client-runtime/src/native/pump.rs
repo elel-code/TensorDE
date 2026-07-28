@@ -33,8 +33,8 @@ impl NativePump {
         let connection = NativeConnection::connect_to_env()?;
         let registry = NativeRegistry::bootstrap(&connection)?;
         #[cfg(feature = "compio")]
-        let display_ready =
-            crate::display_io::CompioFdReady::watch(connection.as_fd()).map_err(NativeError::from)?;
+        let display_ready = crate::display_io::CompioFdReady::watch(connection.as_fd())
+            .map_err(NativeError::from)?;
         Ok(Self {
             connection,
             registry,
@@ -103,8 +103,7 @@ impl NativePump {
                     Ok(_) => {
                         did_read = true;
                     }
-                    Err(WaylandError::Io(err))
-                        if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(error) => return Err(error.into()),
                 }
                 dispatched += self.registry.dispatch_pending()?;

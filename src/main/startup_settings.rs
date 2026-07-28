@@ -46,48 +46,43 @@ use shell::dialog_window::{
 };
 use shell::directory_watch::ShellDirectoryWatcherRuntime;
 use shell::file_item_view::item_paint::{
-    DolphinItemGeometry, DolphinItemInteraction,
-    dolphin_item_paint_with_palette_and_hover_progress, dolphin_selection_core_rect,
+    FileManagerItemGeometry, FileManagerItemInteraction,
+    file_manager_item_paint_with_palette_and_hover_progress, file_manager_selection_core_rect,
 };
 use shell::file_item_view::style::{
-    BREEZE_ITEM_ROUNDNESS, DolphinItemPalette,
+    BREEZE_ITEM_ROUNDNESS, FileManagerItemPalette,
     place_row_background_color_for_palette_with_hover_progress,
 };
 #[cfg(test)]
 use shell::file_item_view::text::{compact_entry_text_width, estimated_text_cursor_x};
 use shell::file_item_view::text::required_compact_item_width;
 use shell::file_item_view::text_layout::{
-    dolphin_elide_filename_to_width_shaped, dolphin_elide_text_to_width_shaped,
-    dolphin_icons_filename_line_count,
-    dolphin_layout_icons_filename, dolphin_text_width_no_wrap,
+    file_manager_elide_filename_to_width_shaped, file_manager_icons_filename_line_count,
+    file_manager_layout_icons_filename, file_manager_text_width_no_wrap,
 };
 use shell::file_item_view::{
-    dolphin_icon_size_for_zoom_level, dolphin_icons_item_width, shell_dolphin_read_ahead_indexes,
+    file_manager_icon_size_for_zoom_level, file_manager_icons_item_width, shell_file_manager_read_ahead_indexes,
     visible_layout_range_for_projection,
 };
 use shell::drop_menu::{
     ShellDropMenu, ShellDropMenuCommand, ShellDropOperationRequest, ShellDropTarget,
     drop_menu_items,
 };
-#[cfg(test)]
 use shell::folder_preview::{
-    DolphinDirectoryPreviewLayout, FolderPreviewThumbnailSlot, folder_preview_thumbnail_angle,
-    folder_preview_thumbnail_slots,
+    FileManagerDirectoryPreviewLayout, folder_preview_thumbnail_angle, folder_preview_thumbnail_slots,
 };
 use shell::folder_preview::{
     FOLDER_PREVIEW_LAYOUT_VERSION, folder_preview_directory_seed,
-    folder_preview_thumbnail_raster_from_children,
 };
 #[cfg(test)]
 use shell::icon_resolver::FileIconResolverTestHarness;
-use shell::icon_resolver::{FileIconResolver, ResolvedFileIcon, visible_icon_fallback_key};
+use shell::icon_resolver::{FileIconResolver, ResolvedFileIcon};
 use shell::icon_role_read_ahead::ShellIconRoleReadAheadQueue;
 #[cfg(test)]
-use shell::icon_roles::{file_icon_path_cache_key, file_icon_profile};
+use shell::icon_roles::file_icon_profile;
 use shell::icon_roles::{
-    FILE_ICON_CORNER_RADIUS_RATIO, FOLDER_ICON_CORNER_RADIUS_RATIO, FileIconKind,
-    FileIconPathCacheKey, FileIconProfile, FileIconRoleCacheKey, NamedIconFallback,
-    file_icon_path_cache_key_with_stamp, icon_cache_size, thumbnail_display_cache_size,
+    FileIconKind, FileIconProfile, NamedIconFallback, file_icon_path_cache_key_with_stamp,
+    icon_cache_size, thumbnail_display_cache_size,
 };
 use shell::location::{
     LocationDraftPurpose, PathHistory, ShellLocationDraft, ShellPaneHistories,
@@ -153,7 +148,7 @@ use shell::perf::{
 };
 use shell::popup::style::PopupTheme;
 use shell::prewarm::{
-    IconRasterPrewarmStats, IconRolePrewarmStats, TextLabelPrewarmMode, TextLabelPrewarmStats,
+    IconRolePrewarmStats, TextLabelPrewarmMode, TextLabelPrewarmStats,
     default_text_raster_miss_budget, icon_role_prewarm_budget_for_frame,
     icon_role_read_ahead_queue_budget_for_frame, text_label_prewarm_budget_for_mode,
     text_label_prewarm_mode_for_frame, text_label_prewarm_mode_for_scene_prewarm,
@@ -195,7 +190,7 @@ use shell::render::quad::{
 use shell::render::retained::RetainedSceneRenderer;
 #[cfg(test)]
 use shell::render::retained::retained_scene_vertices;
-use shell::render::shaders::{TEXT_SHADER, TEXTURE_SHADER};
+use shell::render::shaders::{ICON_TEXTURE_SHADER, TEXT_SHADER};
 use shell::render::texture::{AtlasRect, TextVertex, push_textured_rect};
 use shell::role_worker_queue::{PriorityWorkerQueue, PriorityWorkerRequest, WorkerRequestPriority};
 use shell::selection::{

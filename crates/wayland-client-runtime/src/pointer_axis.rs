@@ -50,7 +50,6 @@ impl PointerAxisValue {
     }
 }
 
-
 pub(crate) fn map_axis_source(source: wl_pointer::AxisSource) -> Option<PointerAxisSource> {
     match source {
         wl_pointer::AxisSource::Wheel => Some(PointerAxisSource::Wheel),
@@ -177,7 +176,10 @@ mod tests {
             stopped: false,
         };
         assert_eq!(value.logical_steps(), Some(1.0));
-        assert_eq!(value.relative_direction, Some(PointerAxisDirection::Inverted));
+        assert_eq!(
+            value.relative_direction,
+            Some(PointerAxisDirection::Inverted)
+        );
     }
 
     #[test]

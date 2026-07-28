@@ -290,7 +290,7 @@ impl ShellScene {
         let item = layout.item(layout_index)?;
         let entry_index = pane.filtered_indexes.get(layout_index).copied()?;
         let selected = pane.selection.contains(entry_index);
-        dolphin_selection_core_rect(
+        file_manager_selection_core_rect(
             pane.view_mode,
             item.item_rect,
             item.visual_rect,

@@ -69,11 +69,7 @@ impl ColorTheme {
     }
 
     pub fn for_state(&self, active: bool) -> &ColorMap {
-        if active {
-            &self.active
-        } else {
-            &self.inactive
-        }
+        if active { &self.active } else { &self.inactive }
     }
 }
 

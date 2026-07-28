@@ -7,7 +7,7 @@ publish = false
 default-run = "fika"
 
 [workspace]
-members = [".", "crates/wayland-client-runtime"]
+members = [".", "crates/vulkan-renderer", "crates/wayland-client-runtime"]
 resolver = "3"
 
 [lib]
@@ -24,15 +24,16 @@ cosmic-text = "0.19"
 futures-channel = "0.3"
 futures-lite = "2"
 gio = "0.22"
+gbm = { version = "0.18", default-features = false }
 image = "0.25"
+lyon = "1"
 notify = "8"
+roxmltree = "0.21"
 # Safe syscall wrappers (access). Already in the graph via async-io / wayland.
 # `fs` covers memfd/seals used by dmabuf import smoke tests.
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+svgtypes = "0.16"
 pollster = "1"
-resvg = "0.47"
-tiny-skia = "0.12"
-usvg = "0.47"
 # Default features include Compio event-loop integration.
 wayland-client-runtime = { path = "crates/wayland-client-runtime", features = ["compio"] }
 wgpu = "30"

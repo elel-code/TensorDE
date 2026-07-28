@@ -47,7 +47,10 @@ impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for NativeShell
                     .as_ref()
                     .filter(|r| r.id() == rel.id())
                     .and_then(|_| {
-                        state.pointer.as_ref().and_then(|p| state.seat_for_pointer(p))
+                        state
+                            .pointer
+                            .as_ref()
+                            .and_then(|p| state.seat_for_pointer(p))
                     })
             });
             state.push(NativeShellEvent::RelativePointer {

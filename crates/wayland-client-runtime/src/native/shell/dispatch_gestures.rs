@@ -32,10 +32,7 @@ fn seat_for_hold(
     state: &NativeShellState,
     gesture: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
 ) -> Option<u32> {
-    state
-        .hold_objects
-        .get(&gesture.id().protocol_id())
-        .copied()
+    state.hold_objects.get(&gesture.id().protocol_id()).copied()
 }
 
 impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for NativeShellState {

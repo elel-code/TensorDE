@@ -112,11 +112,6 @@ impl ShellPaneState {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn filtered_entry_count(&self) -> usize {
-        self.filtered_indexes.len()
-    }
-
     pub(crate) fn rebuild_filtered_indexes_with_pattern(
         &mut self,
         show_hidden: bool,

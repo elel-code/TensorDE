@@ -233,7 +233,7 @@ impl ShellScene {
                         let lines = text_runtime.icons_filename_line_count(
                             entry.name.as_ref(),
                             available_text_width,
-                            DOLPHIN_ICONS_MAX_TEXT_LINES,
+                            FILE_MANAGER_ICONS_MAX_TEXT_LINES,
                             font_size,
                             line_height,
                         );
@@ -278,13 +278,13 @@ impl ShellScene {
         let gap = self.scale_metric(12.0);
         let icon_size = self.zoom_icon_metric_for_step(zoom_step, ICONS_ICON_SIZE, 16.0, 256.0);
         let average_char_width = 9.0 * scale;
-        let item_width = dolphin_icons_item_width(
+        let item_width = file_manager_icons_item_width(
             icon_size,
             padding,
-            DOLPHIN_ICONS_TEXT_WIDTH_INDEX,
+            FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             average_char_width,
             scale,
-            self.dolphin_zoom_level_for_step(zoom_step),
+            self.file_manager_zoom_level_for_step(zoom_step),
         );
         let item_height = (padding * 3.0 + icon_size + self.text_line_height()).round();
         IconsLayoutOptions {
@@ -365,9 +365,9 @@ impl ShellScene {
     }
 
     fn zoom_fraction_for_step(&self, zoom_step: i32) -> f32 {
-        let level = self.dolphin_zoom_level_for_step(zoom_step);
-        let span = (DOLPHIN_ZOOM_LEVEL_MAX - DOLPHIN_ZOOM_LEVEL_MIN).max(1) as f32;
-        ((level - DOLPHIN_ZOOM_LEVEL_MIN) as f32 / span).clamp(0.0, 1.0)
+        let level = self.file_manager_zoom_level_for_step(zoom_step);
+        let span = (FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER_ZOOM_LEVEL_MIN).max(1) as f32;
+        ((level - FILE_MANAGER_ZOOM_LEVEL_MIN) as f32 / span).clamp(0.0, 1.0)
     }
 
     fn details_row_height_for_step(&self, zoom_step: i32) -> f32 {

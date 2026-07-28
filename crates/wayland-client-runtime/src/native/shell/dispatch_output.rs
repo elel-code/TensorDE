@@ -55,12 +55,11 @@ impl Dispatch<wl_output::WlOutput, ()> for NativeShellState {
                     WEnum::Value(f) => f.contains(wl_output::Mode::Current),
                     _ => false,
                 };
-                if current
-                    && let Some(record) = state.outputs.get_mut(&name) {
-                        record.mode_width = width;
-                        record.mode_height = height;
-                        record.mode_refresh_mhz = refresh;
-                    }
+                if current && let Some(record) = state.outputs.get_mut(&name) {
+                    record.mode_width = width;
+                    record.mode_height = height;
+                    record.mode_refresh_mhz = refresh;
+                }
                 state.push(NativeShellEvent::OutputMode {
                     output: name,
                     width,

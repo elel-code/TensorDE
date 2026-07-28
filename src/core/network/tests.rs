@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn network_root_normalizes_dolphin_and_cosmic_roots() {
+fn network_root_normalizes_file_manager_and_cosmic_roots() {
     assert_eq!(
         normalize_network_uri("remote:/"),
         Ok(NETWORK_ROOT_URI.to_string())
@@ -14,9 +14,7 @@ fn network_root_normalizes_dolphin_and_cosmic_roots() {
         normalize_network_uri("NETWORK:/"),
         Ok(NETWORK_ROOT_URI.to_string())
     );
-    assert!(is_network_root_path(&PathBuf::from(
-        DOLPHIN_REMOTE_ROOT_URI
-    )));
+    assert!(is_network_root_path(&PathBuf::from(LEGACY_REMOTE_ROOT_URI)));
     assert_eq!(network_root_path(), PathBuf::from(NETWORK_ROOT_URI));
 }
 

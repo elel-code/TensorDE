@@ -112,7 +112,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         let projections = ShellPaneId::ALL
@@ -185,7 +185,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         assert!(scene.set_hovered_item(Some(ShellPaneItemTarget {
@@ -246,7 +246,7 @@
             FolderPreviewReady {
                 stamp: 11,
                 size_px: 48,
-                raster: test_icon_raster(2, 3),
+                source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
             },
         );
         let projections = ShellPaneId::ALL

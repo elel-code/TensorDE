@@ -43,7 +43,7 @@
 
         assert!(item.text_rect.height >= scene.text_line_height() * 2.0);
         assert!(
-            item.text_rect.height <= scene.text_line_height() * DOLPHIN_ICONS_MAX_TEXT_LINES as f32
+            item.text_rect.height <= scene.text_line_height() * FILE_MANAGER_ICONS_MAX_TEXT_LINES as f32
         );
         assert!(item.item_rect.height > options.item_height);
         assert!(item.text_rect.bottom() <= item.item_rect.bottom() + f32::EPSILON);
@@ -82,10 +82,10 @@
     }
 
     #[test]
-    fn dolphin_filename_elision_preserves_extension() {
+    fn file_manager_filename_elision_preserves_extension() {
         let mut font_system = FontSystem::new();
         let mut buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));
-        let display = dolphin_elide_filename_to_width_shaped(
+        let display = file_manager_elide_filename_to_width_shaped(
             &mut font_system,
             &mut buffer,
             "very-long-filename-that-does-not-fit-in-details-mode.tar.gz",
@@ -98,7 +98,7 @@
         assert!(!display.contains("..."));
         assert!(display.ends_with(".gz"));
         assert!(
-            dolphin_text_width_no_wrap(
+            file_manager_text_width_no_wrap(
                 &mut font_system,
                 &mut buffer,
                 &display,
@@ -109,29 +109,29 @@
     }
 
     #[test]
-    fn dolphin_wrapped_filename_elides_only_last_icons_line() {
+    fn file_manager_wrapped_filename_elides_only_last_icons_line() {
         let mut font_system = FontSystem::new();
         let mut buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));
-        let layout = dolphin_layout_icons_filename(
+        let layout = file_manager_layout_icons_filename(
             &mut font_system,
             &mut buffer,
             "very-long-folder-preview-name-that-needs-more-than-three-lines.png",
             (64.0 - TEXT_PADDING as f32 * 2.0).max(1.0),
-            DOLPHIN_ICONS_MAX_TEXT_LINES,
+            FILE_MANAGER_ICONS_MAX_TEXT_LINES,
             TEXT_FONT_SIZE,
             TEXT_LINE_HEIGHT,
         );
         let visible_display = layout.display.replace('\u{200B}', "");
 
         assert!(layout.elided);
-        assert_eq!(layout.line_count, DOLPHIN_ICONS_MAX_TEXT_LINES);
+        assert_eq!(layout.line_count, FILE_MANAGER_ICONS_MAX_TEXT_LINES);
         assert!(visible_display.contains('…'));
         assert!(!visible_display.contains("..."));
         assert!(visible_display.ends_with(".png"));
     }
 
     #[test]
-    fn transition_scaled_icons_text_reuses_unscaled_dolphin_layout_key() {
+    fn transition_scaled_icons_text_reuses_unscaled_file_manager_layout_key() {
         let mut font_system = FontSystem::new();
         let mut swash_cache = SwashCache::new();
         let mut text_buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));
@@ -156,7 +156,7 @@
             x: 20.0,
             y: 20.0,
             width: 92.0,
-            height: TEXT_LINE_HEIGHT * DOLPHIN_ICONS_MAX_TEXT_LINES as f32,
+            height: TEXT_LINE_HEIGHT * FILE_MANAGER_ICONS_MAX_TEXT_LINES as f32,
         };
         let scaled_rect = ViewRect {
             x: 43.0,
@@ -203,7 +203,7 @@
     #[test]
     fn compact_layout_and_prewarm_keep_full_item_name() {
         let long_name =
-            "very-long-compact-name-that-dolphin-keeps-unelided-by-expanding-the-column.tar.gz";
+            "very-long-compact-name-that-file_manager-keeps-unelided-by-expanding-the-column.tar.gz";
         let scene = test_scene(vec![test_entry(long_name, false)], ShellViewMode::Compact);
         let size = PhysicalSize::new(320, 180);
         let options = scene.compact_options(size);

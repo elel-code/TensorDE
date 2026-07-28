@@ -27,10 +27,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for NativeShellStat
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let id = state
-            .layer_objects
-            .get(&layer.id().protocol_id())
-            .copied();
+        let id = state.layer_objects.get(&layer.id().protocol_id()).copied();
         match event {
             zwlr_layer_surface_v1::Event::Configure {
                 serial,
@@ -57,13 +54,12 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for NativeShellStat
                         }
                         // Keep viewporter destination in sync with compositor size
                         // when both axes are known (fixed-size or configured fill).
-                        if record.logical_w > 0 && record.logical_h > 0
-                            && let Some(vp) = record.viewport.as_ref() {
-                                vp.set_destination(
-                                    record.logical_w as i32,
-                                    record.logical_h as i32,
-                                );
-                            }
+                        if record.logical_w > 0
+                            && record.logical_h > 0
+                            && let Some(vp) = record.viewport.as_ref()
+                        {
+                            vp.set_destination(record.logical_w as i32, record.logical_h as i32);
+                        }
                         // SHM-backed layers re-attach on configure; bufferless
                         // (GPU/swapchain) layers leave attach to the client.
                         if let Some(buffer) = record.buffer.as_ref() {

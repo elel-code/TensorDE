@@ -1,0 +1,11 @@
+[package]
+name = "vulkan-renderer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+description = "Reusable Vulkanalia-based Vulkan 1.4 rendering backend primitives"
+
+[dependencies]
+vulkanalia = { version = "0.35", features = ["libloading"] }

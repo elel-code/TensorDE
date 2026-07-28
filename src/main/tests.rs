@@ -9,9 +9,8 @@ mod tests {
     include!("tests/context_menu_blank_actions_can_hit_select_all_and_refresh.rs");
     include!("tests/dnd_hover_target_can_be_updated_and_cleared_from_retained_hit_testing.rs");
     include!("tests/folder_preview_role_draw_rect_keeps_aspect_inside_folder_shell_slot.rs");
-    include!("tests/folder_preview_role_rasterizes_chinese_named_jpeg_when_video_is_present.rs");
+    include!("tests/folder_preview_role_resolves_encoded_chinese_named_jpeg_when_video_is_present.rs");
     include!("tests/icon_dmabuf_slot_upload_smoke.rs");
-    include!("tests/icon_raster_cache_reuses_closest_size_for_zoom_transition.rs");
     include!("tests/location_draft_replaces_completes_and_cancels.rs");
     include!("tests/open_with_chooser_builds_launch_plan_for_selected_application.rs");
     include!("tests/pane_folder_drag_to_places_gap_adds_place_at_gap.rs");
@@ -21,7 +20,6 @@ mod tests {
     include!("tests/place_drag_preview_uses_place_theme_icon_on_overlay_layer.rs");
     include!("tests/places_chrome_starts_at_pane_origin_below_app_toolbar.rs");
     include!("tests/properties_overlay_builds_place_metadata_from_context_target.rs");
-    include!("tests/raster_pixel.rs");
     include!("tests/rename_dialog_key_input_captures_text_and_commit_controls.rs");
     include!("tests/render_damage_bounds_context_submenu_transition_with_shadow.rs");
     include!("tests/render_damage_bounds_location_draft_transition.rs");
@@ -30,7 +28,7 @@ mod tests {
     include!("tests/task_area_opens_detail_dialog_and_clear_keeps_running_tasks_visible.rs");
     include!("tests/text_atlas_upload_extends_edges_for_linear_sampling.rs");
     include!("tests/text_input_v3_updates_editors.rs");
-    include!("tests/thumbnail_read_ahead_indexes_follow_dolphin_order.rs");
+    include!("tests/thumbnail_read_ahead_indexes_follow_file_manager_order.rs");
     include!("tests/thumbnail_ready_cache_retains_hits_and_clears_left_paths.rs");
     include!("tests/toolbar_split_view_opens_single_selected_directory_with_active_view_mode.rs");
     include!("tests/trash_context_target_uses_multi_selection_and_rejects_remote_paths.rs");

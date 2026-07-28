@@ -67,7 +67,7 @@ pub use core::model::{
     SortOrder, SortRole,
 };
 pub use core::network::{
-    DOLPHIN_REMOTE_ROOT_URI, NETWORK_ROOT_ICON, NETWORK_ROOT_LABEL, NETWORK_ROOT_URI, NetworkAuth,
+    LEGACY_REMOTE_ROOT_URI, NETWORK_ROOT_ICON, NETWORK_ROOT_LABEL, NETWORK_ROOT_URI, NetworkAuth,
     NetworkFilesystemKind, NetworkLocation, NetworkScanError, NetworkUrlError,
     classify_network_filesystem, filesystem_type_is_remote, forget_network_auth, is_network_path,
     is_network_root_path, is_network_root_uri, is_supported_network_scheme, network_child_path,

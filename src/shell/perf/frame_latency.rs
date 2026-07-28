@@ -7,7 +7,6 @@ const EVENT_PATH_CHANGE: &str = "path-change";
 const EVENT_DIRECTORY_RELOAD: &str = "directory-reload";
 const EVENT_MIME_METADATA: &str = "mime-metadata";
 const EVENT_ICON_RESOLVE: &str = "icon-resolve";
-const EVENT_ICON_RASTER: &str = "icon-raster";
 const EVENT_THUMBNAIL: &str = "thumbnail";
 const EVENT_FOLDER_PREVIEW: &str = "folder-preview";
 
@@ -24,7 +23,6 @@ pub(crate) struct ShellFrameLatencyCounters {
 pub(crate) struct ShellFrameLatencyAsyncResults {
     pub(crate) metadata_applied: u64,
     pub(crate) icon_resolve_results: u64,
-    pub(crate) icon_raster_results: u64,
     pub(crate) thumbnail_results: u64,
     pub(crate) folder_preview_results: u64,
 }
@@ -104,7 +102,6 @@ impl ShellFrameLatencyTracker {
             results.icon_resolve_results,
             frame_count,
         );
-        self.record_count(EVENT_ICON_RASTER, results.icon_raster_results, frame_count);
         self.record_count(EVENT_THUMBNAIL, results.thumbnail_results, frame_count);
         self.record_count(
             EVENT_FOLDER_PREVIEW,
@@ -236,7 +233,6 @@ mod tests {
             ShellFrameLatencyAsyncResults {
                 metadata_applied: 1,
                 icon_resolve_results: 2,
-                icon_raster_results: 3,
                 thumbnail_results: 4,
                 folder_preview_results: 5,
             },
@@ -253,7 +249,6 @@ mod tests {
             vec![
                 (EVENT_MIME_METADATA, 1, 2),
                 (EVENT_ICON_RESOLVE, 2, 2),
-                (EVENT_ICON_RASTER, 3, 2),
                 (EVENT_THUMBNAIL, 4, 2),
                 (EVENT_FOLDER_PREVIEW, 5, 2),
             ]

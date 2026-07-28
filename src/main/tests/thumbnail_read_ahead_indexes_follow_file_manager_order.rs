@@ -1,6 +1,6 @@
     #[test]
-    fn thumbnail_read_ahead_indexes_follow_dolphin_order() {
-        let indexes = shell_dolphin_read_ahead_indexes(4..7, 16, 3);
+    fn thumbnail_read_ahead_indexes_follow_file_manager_order() {
+        let indexes = shell_file_manager_read_ahead_indexes(4..7, 16, 3);
 
         assert_eq!(&indexes[..6], &[7, 8, 9, 10, 11, 12]);
         assert!(!indexes.iter().any(|index| (4..7).contains(index)));
@@ -13,11 +13,11 @@
     #[test]
     fn priority_worker_queue_promotes_visible_request_over_deferred() {
         let mut queue = PriorityWorkerQueue::default();
-        let first = test_thumbnail_raster_request("first.png", ThumbnailRequestPriority::Deferred);
+        let first = test_thumbnail_source_request("first.png", ThumbnailRequestPriority::Deferred);
         let second =
-            test_thumbnail_raster_request("second.png", ThumbnailRequestPriority::Deferred);
+            test_thumbnail_source_request("second.png", ThumbnailRequestPriority::Deferred);
         let promoted =
-            test_thumbnail_raster_request("first.png", ThumbnailRequestPriority::Visible);
+            test_thumbnail_source_request("first.png", ThumbnailRequestPriority::Visible);
 
         queue.push(first);
         queue.push(second.clone());
@@ -345,7 +345,7 @@
                 preview: Some(FolderPreviewReady {
                     stamp: 11,
                     size_px: 48,
-                    raster: test_icon_raster(2, 3),
+                    source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
                 }),
             })
             .unwrap();
@@ -383,7 +383,7 @@
                 preview: Some(FolderPreviewReady {
                     stamp: 11,
                     size_px: 48,
-                    raster: test_icon_raster(2, 3),
+                    source: test_folder_preview_source(test_gpu_icon_spec(2, 3)),
                 }),
             })
             .unwrap();
@@ -399,7 +399,7 @@
     }
 
     #[test]
-    fn folder_preview_role_rasterizes_child_thumbnail_cache_hit() {
+    fn folder_preview_role_resolves_encoded_source_child_thumbnail_cache_hit() {
         let cache_root = test_dir("directory-preview-cache");
         let root = test_dir("directory-preview-worker");
         fs::create_dir_all(&root).unwrap();
@@ -437,15 +437,15 @@
             folder_preview_for_request(&cache_root, &ThumbnailerRegistry::default(), &request)
                 .unwrap();
 
-        assert_eq!(preview.raster.width, 48);
-        assert_eq!(preview.raster.height, 48);
+        assert_eq!(preview.source.size_px(), 48);
+        assert_eq!(preview.source.folder_preview_children(), Some([thumbnail].as_slice()));
 
         let _ = fs::remove_dir_all(cache_root);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn folder_preview_role_rasterizes_local_image_when_thumbnailer_has_no_result() {
+    fn folder_preview_role_resolves_encoded_source_local_image_when_thumbnailer_has_no_result() {
         let cache_root = test_dir("directory-preview-direct-image-cache");
         let root = test_dir("directory-preview-direct-image-worker");
         fs::create_dir_all(&root).unwrap();
@@ -470,9 +470,8 @@
             folder_preview_for_request(&cache_root, &ThumbnailerRegistry::default(), &request)
                 .unwrap();
 
-        assert_eq!(preview.raster.width, 48);
-        assert_eq!(preview.raster.height, 48);
-        assert!(raster_contains_rgb(&preview.raster, [210, 40, 80]));
+        assert_eq!(preview.source.size_px(), 48);
+        assert_eq!(preview.source.folder_preview_children(), Some([cover].as_slice()));
 
         let _ = fs::remove_dir_all(cache_root);
         let _ = fs::remove_dir_all(root);

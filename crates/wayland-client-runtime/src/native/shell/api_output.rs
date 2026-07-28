@@ -54,7 +54,6 @@ impl NativeShell {
         })
     }
 
-
     pub fn output_scale_factor(&self, output_name: u32) -> Option<i32> {
         self.state.outputs.get(&output_name).map(|o| o.scale)
     }

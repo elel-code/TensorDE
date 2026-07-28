@@ -239,24 +239,34 @@ mod tests {
 
     #[test]
     fn matrix_covers_core_and_xdg() {
-        assert!(PROTOCOL_MATRIX
-            .iter()
-            .any(|s| s.interface == "wl_compositor" && s.class == ProtocolClass::Core));
-        assert!(PROTOCOL_MATRIX
-            .iter()
-            .any(|s| s.interface == "xdg_wm_base" && s.class == ProtocolClass::Stable));
+        assert!(
+            PROTOCOL_MATRIX
+                .iter()
+                .any(|s| s.interface == "wl_compositor" && s.class == ProtocolClass::Core)
+        );
+        assert!(
+            PROTOCOL_MATRIX
+                .iter()
+                .any(|s| s.interface == "xdg_wm_base" && s.class == ProtocolClass::Stable)
+        );
         assert!(PROTOCOL_MATRIX.iter().any(|s| {
             s.interface == "wp_fractional_scale_manager_v1" && s.class == ProtocolClass::Staging
         }));
-        assert!(PROTOCOL_MATRIX
-            .iter()
-            .any(|s| s.interface == "zwlr_layer_shell_v1" && s.class == ProtocolClass::Community));
-        assert!(PROTOCOL_MATRIX
-            .iter()
-            .any(|s| s.interface == "ext_idle_notifier_v1" && s.class == ProtocolClass::Ext));
-        assert!(PROTOCOL_MATRIX
-            .iter()
-            .any(|s| s.interface == "zxdg_exporter_v2" && s.class == ProtocolClass::Unstable));
+        assert!(
+            PROTOCOL_MATRIX.iter().any(
+                |s| s.interface == "zwlr_layer_shell_v1" && s.class == ProtocolClass::Community
+            )
+        );
+        assert!(
+            PROTOCOL_MATRIX
+                .iter()
+                .any(|s| s.interface == "ext_idle_notifier_v1" && s.class == ProtocolClass::Ext)
+        );
+        assert!(
+            PROTOCOL_MATRIX
+                .iter()
+                .any(|s| s.interface == "zxdg_exporter_v2" && s.class == ProtocolClass::Unstable)
+        );
         // Alias stays in lockstep.
         assert_eq!(PROTOCOL_MATRIX.len(), FIKA_PROTOCOL_MATRIX.len());
     }

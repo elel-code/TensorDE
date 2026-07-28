@@ -57,11 +57,11 @@ fn thumbnail_size_for_display_px_prefers_sharper_buckets() {
 }
 
 #[test]
-fn thumbnail_size_for_prepared_raster_does_not_apply_display_bias_twice() {
-    assert_eq!(ThumbnailSize::for_raster_px(128), ThumbnailSize::Normal);
-    assert_eq!(ThumbnailSize::for_raster_px(256), ThumbnailSize::Large);
-    assert_eq!(ThumbnailSize::for_raster_px(512), ThumbnailSize::XLarge);
-    assert_eq!(ThumbnailSize::for_raster_px(1024), ThumbnailSize::XXLarge);
+fn thumbnail_size_for_encoded_source_does_not_apply_display_bias_twice() {
+    assert_eq!(ThumbnailSize::for_source_px(128), ThumbnailSize::Normal);
+    assert_eq!(ThumbnailSize::for_source_px(256), ThumbnailSize::Large);
+    assert_eq!(ThumbnailSize::for_source_px(512), ThumbnailSize::XLarge);
+    assert_eq!(ThumbnailSize::for_source_px(1024), ThumbnailSize::XXLarge);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn external_thumbnailer_commands_match_file_kind() {
 }
 
 #[test]
-fn thumbnail_preview_filter_matches_dolphin_preview_candidates() {
+fn thumbnail_preview_filter_matches_file_manager_preview_candidates() {
     assert!(!thumbnail_request_may_have_preview(
         Path::new("/tmp/notes.txt"),
         Some("text/plain")

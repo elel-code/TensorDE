@@ -3,7 +3,7 @@
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
 };
-use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
 
 use super::types::{NativeShellEvent, NativeShellState};
 use crate::data_transfer::spawn_write_fd;
@@ -182,8 +182,7 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for NativeShellState {
                 }
                 mimes.push(mime_type);
             }
-            wl_data_offer::Event::SourceActions { .. }
-            | wl_data_offer::Event::Action { .. } => {}
+            wl_data_offer::Event::SourceActions { .. } | wl_data_offer::Event::Action { .. } => {}
             _ => {}
         }
     }
@@ -257,18 +256,18 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for NativeShellState {
                 if state
                     .dnd_source
                     .as_ref()
-                    .is_some_and(|s| s.id() == source.id())
-                => {
-                    let source_id = state.dnd_source_id.unwrap_or(0);
-                    state.dnd_source = None;
-                    state.dnd_source_id = None;
-                    state.dnd_source_content = None;
-                    state.dnd_icon = None;
-                    state.push(NativeShellEvent::DndFinished {
-                        source: source_id,
-                        cancelled: false,
-                    });
-                }
+                    .is_some_and(|s| s.id() == source.id()) =>
+            {
+                let source_id = state.dnd_source_id.unwrap_or(0);
+                state.dnd_source = None;
+                state.dnd_source_id = None;
+                state.dnd_source_content = None;
+                state.dnd_icon = None;
+                state.push(NativeShellEvent::DndFinished {
+                    source: source_id,
+                    cancelled: false,
+                });
+            }
             _ => {}
         }
     }

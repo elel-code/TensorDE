@@ -20,8 +20,7 @@ use wayland_client_runtime::{
     DndIcon as RuntimeDndIcon, DndOfferId, DndSourceId, Event, KeyState, KeyboardEvent,
     LogicalPosition, LogicalSize, MimePayload, NativeRuntime, PointerAxisValue, PointerEventKind,
     PointerGestureEvent, PointerPinchEvent, PointerSwipeEvent, RuntimeError, SeatId, SurfaceEvent,
-    SurfaceHandle, SurfaceId,
-    TextInputChangeCause as RuntimeTextInputChangeCause,
+    SurfaceHandle, SurfaceId, TextInputChangeCause as RuntimeTextInputChangeCause,
     TextInputContentHint as RuntimeTextInputContentHint,
     TextInputContentPurpose as RuntimeTextInputContentPurpose,
     TextInputContentType as RuntimeTextInputContentType, TextInputEvent as RuntimeTextInputEvent,
@@ -346,8 +345,7 @@ pub struct ActiveEventLoop {
     /// Latest default `zwp_linux_dmabuf` feedback (format table + tranches).
     dmabuf_default_feedback: RefCell<Option<wayland_client_runtime::DmabufFeedback>>,
     /// Per-surface feedback snapshots.
-    dmabuf_surface_feedback:
-        RefCell<HashMap<SurfaceId, wayland_client_runtime::DmabufFeedback>>,
+    dmabuf_surface_feedback: RefCell<HashMap<SurfaceId, wayland_client_runtime::DmabufFeedback>>,
 }
 
 impl ActiveEventLoop {
@@ -580,14 +578,9 @@ impl ActiveEventLoop {
         .map_err(|error| error.to_string())?;
         let icon = icon
             .map(|icon| {
-                RuntimeDndIcon::new(
-                    icon.icon.rgba,
-                    icon.icon.width,
-                    icon.icon.height,
-                    icon.buffer_scale,
-                    LogicalPosition::new(icon.offset_x, icon.offset_y),
-                )
-                .map_err(str::to_string)
+                let offset = LogicalPosition::new(icon.offset_x, icon.offset_y);
+                RuntimeDndIcon::from_dmabuf(icon.buffer, icon.buffer_scale, offset)
+                    .map_err(str::to_string)
             })
             .transpose()?;
         let source = self
@@ -1027,10 +1020,7 @@ mod scaling_tests {
         };
         assert_eq!(
             map_pointer_axis_to_scroll_delta(horizontal, vertical, 1.25),
-            MouseScrollDelta::LineDelta {
-                x: 0.0,
-                y: -0.25,
-            }
+            MouseScrollDelta::LineDelta { x: 0.0, y: -0.25 }
         );
     }
 

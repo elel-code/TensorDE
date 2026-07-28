@@ -29,7 +29,8 @@ pub(crate) struct FileIconResolver {
     result_rx: Receiver<IconResolveResult>,
 }
 
-const DOLPHIN_VISIBLE_ICON_PREWARM_SIZES: &[u16] = &[16, 22, 32, 48, 64, 80, 96, 112, 128, 144];
+const FILE_MANAGER_VISIBLE_ICON_PREWARM_SIZES: &[u16] =
+    &[16, 22, 32, 48, 64, 80, 96, 112, 128, 144];
 
 #[derive(Clone, Debug)]
 struct IconResolveRequest {
@@ -98,7 +99,7 @@ impl FileIconResolver {
             },
         ];
 
-        for size_px in DOLPHIN_VISIBLE_ICON_PREWARM_SIZES {
+        for size_px in FILE_MANAGER_VISIBLE_ICON_PREWARM_SIZES {
             for kind in roles.iter().cloned() {
                 self.resolve_key_fast(FileIconPathCacheKey {
                     role: FileIconRoleCacheKey { kind },
@@ -106,46 +107,6 @@ impl FileIconResolver {
                 });
             }
         }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn resolve_entry(
-        &mut self,
-        directory: &Path,
-        entry: &Entry,
-        icon_size: f32,
-    ) -> Option<ResolvedFileIcon> {
-        self.drain_results();
-        let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key_with_stamp(
-            &path,
-            entry.is_dir,
-            entry.mime_type.clone(),
-            entry.mime_magic_checked,
-            entry.modified_secs,
-            icon_size,
-        );
-        self.resolve_key(key, IconResolvePriority::Deferred)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn resolve_entry_fast(
-        &mut self,
-        directory: &Path,
-        entry: &Entry,
-        icon_size: f32,
-    ) -> ResolvedFileIcon {
-        self.drain_results();
-        let path = directory.join(entry.name.as_ref());
-        let key = file_icon_path_cache_key_with_stamp(
-            &path,
-            entry.is_dir,
-            entry.mime_type.clone(),
-            entry.mime_magic_checked,
-            entry.modified_secs,
-            icon_size,
-        );
-        self.resolve_key_fast(key)
     }
 
     pub(crate) fn resolve_entry_visible(
@@ -166,7 +127,7 @@ impl FileIconResolver {
         self.resolve_path_cache_key_visible(key)
     }
 
-    /// Resolve a precomputed visible key synchronously, matching Dolphin's
+    /// Resolve a precomputed visible key synchronously, matching FileManager's
     /// `updateVisibleIcons()` pass. Deferred resolution is reserved for
     /// off-screen/read-ahead roles; painting a generic fallback here can leave
     /// a size-free GPU role showing the wrong icon until the directory is
@@ -344,29 +305,6 @@ impl FileIconResolver {
         self.pending
             .values()
             .any(|priority| *priority == IconResolvePriority::Visible)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_len_for_test(&mut self) -> usize {
-        self.drain_results();
-        self.pending.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cached_len_for_test(&mut self) -> usize {
-        self.drain_results();
-        self.cached.len()
-    }
-}
-
-pub(crate) fn visible_icon_fallback_key(key: &FileIconPathCacheKey) -> FileIconPathCacheKey {
-    let kind = match &key.role.kind {
-        FileIconKind::Directory => FileIconKind::Directory,
-        _ => FileIconKind::File { extension: None },
-    };
-    FileIconPathCacheKey {
-        role: FileIconRoleCacheKey { kind },
-        size_px: key.size_px,
     }
 }
 

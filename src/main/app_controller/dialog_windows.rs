@@ -383,9 +383,9 @@ impl FikaWgpuApp {
             return;
         }
         fika_log!(
-            "[fika-wgpu] autosmoke-exit frames={} icon_cache_bytes={} thumb_ready_bytes={}",
+            "[fika-wgpu] autosmoke-exit frames={} icon_gpu_bytes={} thumb_ready_bytes={}",
             renderer.frame_count,
-            renderer.icon_renderer.raster_cache.bytes(),
+            renderer.icon_renderer.gpu_texture_bytes,
             renderer.icon_renderer.thumbnails.ready_bytes(),
         );
         self.exit_event_loop(event_loop, "autosmoke-complete");

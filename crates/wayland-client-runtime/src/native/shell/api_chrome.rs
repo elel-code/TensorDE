@@ -59,14 +59,9 @@ impl NativeShell {
             protocol_icon.set_name(name.to_string());
         }
         for source in icon.buffers() {
-            let (file, pool, buffer) = shm::create_rgba_buffer(
-                &shm,
-                &qh,
-                source.width(),
-                source.height(),
-                source.rgba(),
-            )
-            .map_err(|e| NativeError::Io(e.to_string()))?;
+            let (file, pool, buffer) =
+                shm::create_rgba_buffer(&shm, &qh, source.width(), source.height(), source.rgba())
+                    .map_err(|e| NativeError::Io(e.to_string()))?;
             protocol_icon.add_buffer(&buffer, source.scale());
             kept.push((file, pool, buffer));
         }
@@ -86,11 +81,7 @@ impl NativeShell {
     /// If the compositor has not yet advertised the blur capability (common
     /// right after bind), the request is remembered on the surface and applied
     /// when [`NativeShellState::background_blur_capable`] becomes true.
-    pub fn set_blur(
-        &mut self,
-        id: NativeSurfaceId,
-        state: BlurState,
-    ) -> Result<(), NativeError> {
+    pub fn set_blur(&mut self, id: NativeSurfaceId, state: BlurState) -> Result<(), NativeError> {
         // Pick up a late capabilities event before deciding unsupported.
         let _ = self.dispatch_pending();
         match state {
@@ -112,20 +103,18 @@ impl NativeShell {
             BlurState::Enabled(region) => {
                 if !self.state.background_blur_capable {
                     // Remember without applying; capability handler will take it.
-                    let record = self
-                        .state
-                        .toplevels
-                        .get_mut(&id)
-                        .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+                    let record =
+                        self.state.toplevels.get_mut(&id).ok_or_else(|| {
+                            NativeError::Protocol(format!("unknown surface {id:?}"))
+                        })?;
                     record.pending_blur = Some(BlurState::Enabled(region));
                     return Ok(());
                 }
                 {
-                    let record = self
-                        .state
-                        .toplevels
-                        .get_mut(&id)
-                        .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+                    let record =
+                        self.state.toplevels.get_mut(&id).ok_or_else(|| {
+                            NativeError::Protocol(format!("unknown surface {id:?}"))
+                        })?;
                     // Keep a copy for capability re-advertise; apply by move.
                     record.pending_blur = Some(BlurState::Enabled(region.clone()));
                 }
@@ -195,10 +184,7 @@ impl NativeShell {
             let effect = manager.get_background_effect(&record.wl, &qh, ());
             record.blur_effect = Some(effect);
         }
-        let effect = record
-            .blur_effect
-            .as_ref()
-            .expect("blur effect just set");
+        let effect = record.blur_effect.as_ref().expect("blur effect just set");
         let wl_region = compositor.create_region(&qh, ());
         match region {
             BlurRegion::EntireSurface => {
@@ -257,10 +243,7 @@ impl NativeShell {
                 let deco = manager.get_toplevel_decoration(&record.toplevel, &qh, ());
                 record.decoration = Some(deco);
             }
-            let deco = record
-                .decoration
-                .as_ref()
-                .expect("decoration just created");
+            let deco = record.decoration.as_ref().expect("decoration just created");
             match preference {
                 DecorationPreference::Server => {
                     deco.set_mode(DecorationMode::ServerSide);

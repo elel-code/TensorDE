@@ -344,11 +344,6 @@ impl ShellScene {
         (self.places_content_height() - panel.height).max(0.0)
     }
 
-    #[cfg(test)]
-    fn places_scrollbar_thumb_rect(&self, size: PhysicalSize<u32>) -> Option<ViewRect> {
-        self.places_scrollbar_rects(size).map(|(_, thumb)| thumb)
-    }
-
     fn places_scrollbar_rects(&self, size: PhysicalSize<u32>) -> Option<(ViewRect, ViewRect)> {
         let panel = self.places_panel_rect(size);
         let max_scroll = self.max_places_scroll_y(size);

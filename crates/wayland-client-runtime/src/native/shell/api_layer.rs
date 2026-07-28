@@ -111,10 +111,12 @@ impl NativeShell {
         let dest_w = state.size.width.max(1) as i32;
         let dest_h = state.size.height.max(1) as i32;
         // Zero size means compositor-chosen; only set destination when both axes are fixed.
-        if state.size.width > 0 && state.size.height > 0
-            && let Some(vp) = viewport.as_ref() {
-                vp.set_destination(dest_w, dest_h);
-            }
+        if state.size.width > 0
+            && state.size.height > 0
+            && let Some(vp) = viewport.as_ref()
+        {
+            vp.set_destination(dest_w, dest_h);
+        }
 
         let fractional = self
             .state
@@ -225,7 +227,6 @@ impl NativeShell {
             .map(|l| l.state)
             .ok_or_else(|| NativeError::Protocol(format!("unknown layer {id:?}")))
     }
-
 
     pub fn destroy_layer_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
         self.state.cancel_touch_for_surface(id);
@@ -360,9 +361,9 @@ fn apply_layer_state_to_role(
         role.set_layer(state.layer.into());
     }
     if version >= 5
-        && let Some(edge) = state.exclusive_edge {
-            role.set_exclusive_edge(edge.to_wire());
-        }
+        && let Some(edge) = state.exclusive_edge
+    {
+        role.set_exclusive_edge(edge.to_wire());
+    }
     Ok(())
 }
-

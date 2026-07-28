@@ -3,8 +3,7 @@ use bitflags::bitflags;
 use crate::{
     ActivationEvent, DndEvent, InputSerial, LayerSurfaceEvent, LogicalPosition, LogicalSize,
     OutputEvent, OutputId, PointerAxisSource, PointerAxisValue, PointerConstraintEvent,
-    PointerGestureEvent, RelativePointerEvent, SeatEvent, SuggestedSize, SurfaceId,
-    TextInputEvent,
+    PointerGestureEvent, RelativePointerEvent, SeatEvent, SuggestedSize, SurfaceId, TextInputEvent,
 };
 
 bitflags! {
@@ -228,14 +227,9 @@ pub struct IdleNotifyEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ForeignEvent {
     /// Local export completed; share `handle` out-of-band (D-Bus, …).
-    Exported {
-        surface: SurfaceId,
-        handle: String,
-    },
+    Exported { surface: SurfaceId, handle: String },
     /// A previously imported remote surface was destroyed / revoked.
-    ImportedDestroyed {
-        id: u64,
-    },
+    ImportedDestroyed { id: u64 },
 }
 
 #[derive(Clone, Debug)]

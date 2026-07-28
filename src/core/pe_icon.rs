@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const MAX_SECTIONS: u16 = 96;
@@ -17,11 +17,17 @@ const RESOURCE_OFFSET_MASK: u32 = 0x7fff_ffff;
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 
-pub fn windows_executable_icon_png(path: &Path, max_dimension: u16) -> io::Result<Option<Vec<u8>>> {
+pub fn windows_executable_icon_ico(
+    path: &Path,
+    preferred_dimension: u16,
+) -> io::Result<Option<Vec<u8>>> {
     let Some(section) = read_resource_section(path)? else {
         return Ok(None);
     };
-    Ok(icon_png_from_resource_section(&section, max_dimension))
+    Ok(icon_ico_from_resource_section(
+        &section,
+        preferred_dimension,
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -161,7 +167,7 @@ fn section_for_rva(sections: &[SectionHeader], rva: u32) -> Option<SectionHeader
     })
 }
 
-fn icon_png_from_resource_section(
+fn icon_ico_from_resource_section(
     section: &ResourceSection,
     max_dimension: u16,
 ) -> Option<Vec<u8>> {
@@ -179,10 +185,7 @@ fn icon_png_from_resource_section(
             if icon_data.len() != entry.bytes_in_resource as usize {
                 continue;
             }
-            let ico = single_image_ico(&entry, icon_data);
-            if let Some(png) = icon_image_png_from_ico(&ico, max_dimension) {
-                return Some(png);
-            }
+            return Some(single_image_ico(&entry, icon_data));
         }
     }
     None
@@ -346,24 +349,6 @@ fn single_image_ico(entry: &GroupIconEntry, icon_data: &[u8]) -> Vec<u8> {
     ico
 }
 
-fn icon_image_png_from_ico(ico: &[u8], max_dimension: u16) -> Option<Vec<u8>> {
-    let image = image::load_from_memory_with_format(ico, image::ImageFormat::Ico)
-        .ok()?
-        .into_rgba8();
-    let max_dimension = u32::from(max_dimension.clamp(16, 256));
-    let output = if image.width() > max_dimension || image.height() > max_dimension {
-        let (width, height) = fit_size(image.width(), image.height(), max_dimension);
-        image::imageops::resize(&image, width, height, image::imageops::FilterType::Lanczos3)
-    } else {
-        image
-    };
-    let mut png = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(output)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .ok()?;
-    Some(png.into_inner())
-}
-
 impl GroupIconEntry {
     fn display_width(&self) -> u32 {
         icon_entry_dimension(self.width)
@@ -376,14 +361,6 @@ impl GroupIconEntry {
 
 fn icon_entry_dimension(value: u8) -> u32 {
     if value == 0 { 256 } else { u32::from(value) }
-}
-
-fn fit_size(source_width: u32, source_height: u32, target_size: u32) -> (u32, u32) {
-    let scale =
-        (target_size as f32 / source_width as f32).min(target_size as f32 / source_height as f32);
-    let width = ((source_width as f32 * scale).round() as u32).clamp(1, target_size);
-    let height = ((source_height as f32 * scale).round() as u32).clamp(1, target_size);
-    (width, height)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -402,6 +379,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const RESOURCE_RVA: u32 = 0x1000;
@@ -414,8 +392,8 @@ mod tests {
         let exe = root.join("app.exe");
         fs::write(&exe, test_pe_with_png_icon([32, 96, 180, 255])).unwrap();
 
-        let png = windows_executable_icon_png(&exe, 64).unwrap().unwrap();
-        let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        let ico = windows_executable_icon_ico(&exe, 64).unwrap().unwrap();
+        let image = image::load_from_memory_with_format(&ico, image::ImageFormat::Ico)
             .unwrap()
             .into_rgba8();
 
@@ -433,7 +411,7 @@ mod tests {
         let exe = root.join("empty.exe");
         fs::write(&exe, test_pe_without_resources()).unwrap();
 
-        assert!(windows_executable_icon_png(&exe, 64).unwrap().is_none());
+        assert!(windows_executable_icon_ico(&exe, 64).unwrap().is_none());
 
         let _ = fs::remove_dir_all(root);
     }

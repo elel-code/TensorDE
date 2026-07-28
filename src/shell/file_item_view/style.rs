@@ -12,7 +12,7 @@ const VIEW_ALTERNATE_BASE: UiColor = [0.949, 0.957, 0.969, 1.0];
 const BREEZE_LIGHT_FOCUS: UiColor = [0.217, 0.456, 0.645, 1.0];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DolphinItemPalette {
+pub(crate) struct FileManagerItemPalette {
     view_base: UiColor,
     view_alternate_base: UiColor,
     highlight: UiColor,
@@ -20,7 +20,7 @@ pub(crate) struct DolphinItemPalette {
     focus: UiColor,
 }
 
-impl DolphinItemPalette {
+impl FileManagerItemPalette {
     pub(crate) fn from_shell_theme(theme: ShellTheme) -> Self {
         if theme.is_dark() {
             Self {
@@ -56,13 +56,13 @@ impl DolphinItemPalette {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn item_background_color(selected: bool, hovered: bool) -> UiColor {
-    item_background_color_for_palette(selected, hovered, DolphinItemPalette::light())
+    item_background_color_for_palette(selected, hovered, FileManagerItemPalette::light())
 }
 
 pub(crate) fn item_background_color_for_palette(
     selected: bool,
     hovered: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
 ) -> UiColor {
     match (selected, hovered) {
         (true, true) => with_alpha(palette.highlight, 0.40),
@@ -75,7 +75,7 @@ pub(crate) fn item_background_color_for_palette(
 pub(crate) fn item_background_color_for_palette_with_hover_progress(
     selected: bool,
     hovered: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
     hover_progress: f32,
 ) -> UiColor {
     if !hovered {
@@ -98,7 +98,7 @@ pub(crate) fn details_row_background_color(
         selected,
         hovered,
         alternate,
-        DolphinItemPalette::light(),
+        FileManagerItemPalette::light(),
     )
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn details_row_background_color_for_palette(
     selected: bool,
     hovered: bool,
     alternate: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
 ) -> UiColor {
     match (selected, hovered, alternate) {
         (true, _, _) | (false, true, _) => {
@@ -119,13 +119,13 @@ pub(crate) fn details_row_background_color_for_palette(
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn place_row_background_color(active: bool, hovered: bool) -> UiColor {
-    place_row_background_color_for_palette(active, hovered, DolphinItemPalette::light())
+    place_row_background_color_for_palette(active, hovered, FileManagerItemPalette::light())
 }
 
 pub(crate) fn place_row_background_color_for_palette(
     active: bool,
     hovered: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
 ) -> UiColor {
     item_background_color_for_palette(active, hovered, palette)
 }
@@ -133,7 +133,7 @@ pub(crate) fn place_row_background_color_for_palette(
 pub(crate) fn place_row_background_color_for_palette_with_hover_progress(
     active: bool,
     hovered: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
     hover_progress: f32,
 ) -> UiColor {
     item_background_color_for_palette_with_hover_progress(active, hovered, palette, hover_progress)
@@ -141,13 +141,13 @@ pub(crate) fn place_row_background_color_for_palette_with_hover_progress(
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn item_focus_color(selected: bool, hovered: bool) -> UiColor {
-    item_focus_color_for_palette(selected, hovered, DolphinItemPalette::light())
+    item_focus_color_for_palette(selected, hovered, FileManagerItemPalette::light())
 }
 
 pub(crate) fn item_focus_color_for_palette(
     selected: bool,
     hovered: bool,
-    palette: DolphinItemPalette,
+    palette: FileManagerItemPalette,
 ) -> UiColor {
     with_alpha(palette.focus, if selected || hovered { 1.0 } else { 0.8 })
 }
@@ -166,7 +166,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn breeze_item_background_uses_dolphin_alpha_levels() {
+    fn breeze_item_background_uses_file_manager_alpha_levels() {
         assert_eq!(
             item_background_color(true, false),
             [0.239, 0.502, 0.710, 0.32]
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn hover_progress_eases_background_alpha_without_affecting_selection_base() {
-        let palette = DolphinItemPalette::light();
+        let palette = FileManagerItemPalette::light();
         assert_eq!(
             item_background_color_for_palette_with_hover_progress(false, true, palette, 0.0),
             [0.188, 0.220, 0.259, 0.0]
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn breeze_focus_color_follows_dolphin_active_item_alpha() {
+    fn breeze_focus_color_follows_file_manager_active_item_alpha() {
         assert_eq!(item_focus_color(true, false), [0.217, 0.456, 0.645, 1.0]);
         assert_eq!(item_focus_color(false, true), [0.217, 0.456, 0.645, 1.0]);
         assert_eq!(item_focus_color(false, false), [0.217, 0.456, 0.645, 0.8]);
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn dark_item_palette_uses_shell_theme_tokens() {
         let theme = ShellTheme::for_dark_mode(true);
-        let palette = DolphinItemPalette::from_shell_theme(theme);
+        let palette = FileManagerItemPalette::from_shell_theme(theme);
 
         assert_eq!(
             details_row_background_color_for_palette(false, false, true, palette),
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn transparent_background_does_not_add_idle_details_row_materials() {
         let theme = ShellTheme::for_transparent_background(false, 0.65);
-        let palette = DolphinItemPalette::from_shell_theme(theme);
+        let palette = FileManagerItemPalette::from_shell_theme(theme);
 
         assert_eq!(
             details_row_background_color_for_palette(false, false, false, palette)[3],

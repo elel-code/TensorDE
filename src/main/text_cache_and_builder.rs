@@ -352,7 +352,7 @@ impl TextHitTestRuntime {
         font_size: f32,
         line_height: f32,
     ) -> usize {
-        dolphin_icons_filename_line_count(
+        file_manager_icons_filename_line_count(
             &mut self.font_system,
             &mut self.text_buffer,
             label,
@@ -364,7 +364,7 @@ impl TextHitTestRuntime {
     }
 
     fn no_wrap_width(&mut self, label: &str, font_size: f32, line_height: f32) -> f32 {
-        dolphin_text_width_no_wrap(
+        file_manager_text_width_no_wrap(
             &mut self.font_system,
             &mut self.text_buffer,
             label,

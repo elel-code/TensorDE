@@ -98,22 +98,15 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheTargetDevice { device } => {
                 let device = device_bytes_to_u64(&device);
-                state
-                    .dmabuf_tranche_pending
-                    .entry(pid)
-                    .or_default()
-                    .device = device;
+                state.dmabuf_tranche_pending.entry(pid).or_default().device = device;
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheFlags { flags } => {
                 let bits = match flags {
                     WEnum::Value(f) => f.bits(),
                     WEnum::Unknown(raw) => raw,
                 };
-                state
-                    .dmabuf_tranche_pending
-                    .entry(pid)
-                    .or_default()
-                    .flags = DmabufTrancheFlags::from_bits_truncate(bits);
+                state.dmabuf_tranche_pending.entry(pid).or_default().flags =
+                    DmabufTrancheFlags::from_bits_truncate(bits);
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheFormats { indices } => {
                 if !indices.len().is_multiple_of(2) {
@@ -123,11 +116,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                     .chunks_exact(2)
                     .map(|c| u16::from_ne_bytes([c[0], c[1]]))
                     .collect();
-                state
-                    .dmabuf_tranche_pending
-                    .entry(pid)
-                    .or_default()
-                    .formats = formats;
+                state.dmabuf_tranche_pending.entry(pid).or_default().formats = formats;
             }
             zwp_linux_dmabuf_feedback_v1::Event::TrancheDone => {
                 let tranche = state
@@ -161,10 +150,7 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Na
                 } else if let Some(sid) = surface {
                     state.dmabuf_surface_feedback.insert(sid, feedback.clone());
                 }
-                state.push(NativeShellEvent::DmabufFeedback {
-                    surface,
-                    feedback,
-                });
+                state.push(NativeShellEvent::DmabufFeedback { surface, feedback });
             }
             _ => {}
         }

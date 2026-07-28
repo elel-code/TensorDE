@@ -189,11 +189,11 @@ impl ShellScene {
         size: PhysicalSize<u32>,
         clear_scrollbar_drag: bool,
     ) -> bool {
-        let span = (DOLPHIN_ZOOM_LEVEL_MAX - DOLPHIN_ZOOM_LEVEL_MIN).max(1) as f32;
-        let level = DOLPHIN_ZOOM_LEVEL_MIN + (fraction.clamp(0.0, 1.0) * span).round() as i32;
+        let span = (FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER_ZOOM_LEVEL_MIN).max(1) as f32;
+        let level = FILE_MANAGER_ZOOM_LEVEL_MIN + (fraction.clamp(0.0, 1.0) * span).round() as i32;
         self.set_zoom_step(
             pane_id,
-            level - DOLPHIN_ZOOM_LEVEL_DEFAULT,
+            level - FILE_MANAGER_ZOOM_LEVEL_DEFAULT,
             size,
             clear_scrollbar_drag,
         )

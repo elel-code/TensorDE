@@ -3,7 +3,7 @@ use fika_core::{ItemLayout, ViewPoint, ViewRect};
 use crate::shell::metrics::{COMPACT_ICON_SIZE, COMPACT_MIN_TEXT_WIDTH, DETAILS_ICON_SIZE};
 use crate::shell::options::ShellViewMode;
 
-/// The text treatment used by the item delegates in Dolphin's drag pixmaps.
+/// The text treatment used by the item delegates in FileManager's drag pixmaps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DragPreviewLabelStyle {
     FilenameWrapped,
@@ -32,15 +32,15 @@ pub(crate) struct SingleDragPreviewLayout {
     pub(crate) background: ViewRect,
     pub(crate) background_style: DragPreviewBackgroundStyle,
     pub(crate) radius: f32,
-    /// Hotspot in local scene coordinates. Dolphin pane previews use the top
+    /// Hotspot in local scene coordinates. FileManager pane previews use the top
     /// centre, while Places retains the pointer's original row grab point.
     pub(crate) hotspot: ViewPoint,
     pub(crate) view_mode: Option<ShellViewMode>,
 }
 
-/// The fixed-size icon grid Dolphin uses for a multi-item drag.
+/// The fixed-size icon grid FileManager uses for a multi-item drag.
 ///
-/// Dolphin intentionally keeps this preview independent of the current item
+/// FileManager intentionally keeps this preview independent of the current item
 /// view mode.  The grid is capped at 5x5 and contains no filename or count
 /// label, so it remains useful when a selection contains unrelated names.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,7 +70,7 @@ impl MultiDragPreviewLayout {
     }
 }
 
-/// Build Dolphin's 3x3, 4x4, or 5x5 multi-item drag grid.
+/// Build FileManager's 3x3, 4x4, or 5x5 multi-item drag grid.
 pub(crate) fn multi_drag_preview_layout(count: usize, scale: f32) -> MultiDragPreviewLayout {
     let count = count.max(1);
     let (mut columns, logical_icon_size) = if count > 16 {
@@ -106,18 +106,18 @@ pub(crate) fn multi_drag_preview_layout(count: usize, scale: f32) -> MultiDragPr
     }
 }
 
-/// Build the single-item pixmap geometry used by Dolphin's item widgets.
+/// Build the single-item pixmap geometry used by FileManager's item widgets.
 ///
 /// `item_layout` is the layout already used by the live view. Keeping it as
 /// the input means a drag preview cannot silently drift from the item the user
 /// just dragged when zoom, view mode, or compact-column widths change.
 ///
-/// Pane drag hotspot matches Dolphin `KItemListController::startDragging`:
+/// Pane drag hotspot matches FileManager `KItemListController::startDragging`:
 /// `(pixmap.width / devicePixelRatio) / 2`, `0` — top centre of the pixmap.
 /// (Places uses press-relative hotspot via [`place_single_drag_preview_layout`].)
 ///
 /// `press_point` is accepted for API symmetry with the places path but is not
-/// used for pane items; Dolphin never anchors pane previews to the grab point.
+/// used for pane items; FileManager never anchors pane previews to the grab point.
 pub(crate) fn pane_single_drag_preview_layout(
     view_mode: ShellViewMode,
     item_layout: Option<ItemLayout>,
@@ -168,7 +168,7 @@ pub(crate) fn pane_single_drag_preview_layout(
         ShellViewMode::Icons | ShellViewMode::Details => item.item_rect,
         ShellViewMode::Compact => item.visual_rect,
     };
-    // Dolphin: setHotSpot(QPoint(pixmap.width()/dpr/2, 0))
+    // FileManager: setHotSpot(QPoint(pixmap.width()/dpr/2, 0))
     let hotspot = ViewPoint {
         x: bounds.width / 2.0,
         y: 0.0,
@@ -192,7 +192,7 @@ pub(crate) fn pane_single_drag_preview_layout(
 /// Build the horizontal row used by `KFilePlacesView`'s delegate.
 ///
 /// `hotspot` is the pointer press position relative to the source row, matching
-/// `QAbstractItemView::startDrag` rather than Dolphin's pane-specific top-centre
+/// `QAbstractItemView::startDrag` rather than FileManager's pane-specific top-centre
 /// hotspot.
 pub(crate) fn place_single_drag_preview_layout(
     row_width: f32,
@@ -461,12 +461,12 @@ mod tests {
         assert_eq!(layout.bounds, rect(0.0, 0.0, 176.0, 36.0));
         assert_eq!(layout.background, rect(0.0, 0.0, 176.0, 36.0));
         assert_eq!(layout.icon, rect(2.0, 4.0, 28.0, 28.0));
-        // Dolphin pane hotspot is top-centre of the pixmap (visual width / 2).
+        // FileManager pane hotspot is top-centre of the pixmap (visual width / 2).
         assert_eq!(layout.hotspot, ViewPoint { x: 88.0, y: 0.0 });
     }
 
     #[test]
-    fn compact_preview_hotspot_is_dolphin_top_centre_even_with_press() {
+    fn compact_preview_hotspot_is_file_manager_top_centre_even_with_press() {
         let compact_item = ItemLayout {
             model_index: 0,
             column: 0,
@@ -476,7 +476,7 @@ mod tests {
             icon_rect: rect(14.0, 26.0, 28.0, 28.0),
             text_rect: rect(50.0, 30.0, 128.0, 18.0),
         };
-        // Press point is ignored for pane items (Dolphin never uses it).
+        // Press point is ignored for pane items (FileManager never uses it).
         let layout = pane_single_drag_preview_layout(
             ShellViewMode::Compact,
             Some(compact_item),
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_preview_matches_dolphin_grid_thresholds() {
+    fn multi_preview_matches_file_manager_grid_thresholds() {
         let three = multi_drag_preview_layout(3, 1.0);
         assert_eq!((three.columns, three.rows), (3, 1));
         assert_eq!(three.icon_size, 32.0);

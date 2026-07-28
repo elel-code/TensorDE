@@ -215,9 +215,7 @@ pub(crate) fn map(
         } => {
             // Prefer the seat's pointer focus; fall back to last-wins map state.
             let focus = map_state.pointer_focus;
-            let surface = focus
-                .map(|s| surfaces.intern(s))
-                .unwrap_or(SurfaceId(0));
+            let surface = focus.map(|s| surfaces.intern(s)).unwrap_or(SurfaceId(0));
             Some(Event::RelativePointer(RelativePointerEvent {
                 surface,
                 time_micros: utime,

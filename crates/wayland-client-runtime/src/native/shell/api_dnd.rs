@@ -8,7 +8,6 @@ use super::api::NativeShell;
 use super::types::NativeSurfaceId;
 use crate::data_transfer::TransferContent;
 use crate::native::connection::NativeError;
-use crate::native::protocols::core::shm;
 
 impl NativeShell {
     /// MIME types on the current drag offer.
@@ -104,7 +103,9 @@ impl NativeShell {
         drop(writer);
         self.connection.flush()?;
         let _ = self.dispatch_pending();
-        Ok(crate::data_transfer::TransferReadPipe::from_stream(mime, reader))
+        Ok(crate::data_transfer::TransferReadPipe::from_stream(
+            mime, reader,
+        ))
     }
 
     /// Receive drag-offer bytes (blocks). Prefer [`Self::receive_dnd_pipe`] on
@@ -251,8 +252,8 @@ impl NativeShell {
                     .map_err(|e| NativeError::Protocol(e.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let content = TransferContent::new(payloads)
-            .map_err(|e| NativeError::Protocol(e.to_string()))?;
+        let content =
+            TransferContent::new(payloads).map_err(|e| NativeError::Protocol(e.to_string()))?;
         self.start_drag_content(origin, content)
     }
 }
@@ -264,21 +265,39 @@ fn prepare_native_dnd_icon(
 ) -> Result<super::types::NativeDndIconSurface, NativeError> {
     use wayland_client::Proxy;
 
-    let (rgba, width, height, buffer_scale, offset) = icon.into_parts();
+    let (params, _width, _height, buffer_scale, offset) = icon.into_parts();
     let compositor = shell
         .state
         .compositor
         .as_ref()
         .ok_or_else(|| NativeError::Registry("wl_compositor".into()))?;
-    let shm = shell
+    use std::os::fd::AsFd as _;
+    use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::Flags;
+    let dmabuf = shell
         .state
-        .shm
+        .linux_dmabuf
         .as_ref()
-        .ok_or_else(|| NativeError::Registry("wl_shm".into()))?;
-    let (file, pool, buffer) =
-        shm::create_rgba_buffer(shm, qh, width, height, &rgba).map_err(|e| {
-            NativeError::Io(e.to_string())
-        })?;
+        .ok_or_else(|| NativeError::Registry("zwp_linux_dmabuf_v1".into()))?;
+    let params_proxy = dmabuf.create_params(qh, ());
+    for plane in &params.planes {
+        params_proxy.add(
+            plane.fd.as_fd(),
+            plane.plane_idx,
+            plane.offset,
+            plane.stride,
+            (plane.modifier >> 32) as u32,
+            plane.modifier as u32,
+        );
+    }
+    let buffer = params_proxy.create_immed(
+        params.width,
+        params.height,
+        params.format,
+        Flags::from_bits_truncate(params.flags.bits()),
+        qh,
+        (),
+    );
+    params_proxy.destroy();
     let wl = compositor.create_surface(qh, ());
     wl.set_buffer_scale(buffer_scale.max(1));
     if offset != crate::geometry::LogicalPosition::ZERO {
@@ -292,10 +311,5 @@ fn prepare_native_dnd_icon(
         wl.attach(Some(&buffer), 0, 0);
     }
     wl.damage_buffer(0, 0, i32::MAX, i32::MAX);
-    Ok(super::types::NativeDndIconSurface {
-        wl,
-        buffer,
-        pool,
-        _file: file,
-    })
+    Ok(super::types::NativeDndIconSurface { wl, buffer })
 }

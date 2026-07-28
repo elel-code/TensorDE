@@ -13,11 +13,11 @@ use fika_core::{
 };
 
 use crate::shell::file_item_view::{
-    shell_dolphin_deferred_all_indexes, shell_dolphin_read_ahead_indexes,
+    shell_file_manager_deferred_all_indexes, shell_file_manager_read_ahead_indexes,
     visible_layout_range_for_projection,
 };
 use crate::shell::metrics::{
-    DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT, METADATA_ROLE_BATCH_SIZE,
+    FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT, METADATA_ROLE_BATCH_SIZE,
     METADATA_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME,
 };
 use crate::shell::pane::{ShellPaneId, ShellPaneProjection};
@@ -256,13 +256,13 @@ fn metadata_deferred_layout_indexes(
     item_count: usize,
     maximum_visible_items: usize,
 ) -> Vec<usize> {
-    if item_count <= DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT {
-        return shell_dolphin_deferred_all_indexes(visible_range, item_count);
+    if item_count <= FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT {
+        return shell_file_manager_deferred_all_indexes(visible_range, item_count);
     }
     let Some(visible_range) = visible_range else {
         return Vec::new();
     };
-    shell_dolphin_read_ahead_indexes(visible_range, item_count, maximum_visible_items)
+    shell_file_manager_read_ahead_indexes(visible_range, item_count, maximum_visible_items)
 }
 
 pub(crate) fn core_pane_id_for_shell_pane(pane: ShellPaneId) -> PaneId {
@@ -346,9 +346,12 @@ mod tests {
     }
 
     #[test]
-    fn metadata_deferred_indexes_for_large_directory_follow_dolphin_order() {
-        let indexes =
-            metadata_deferred_layout_indexes(Some(4..7), DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT + 1, 3);
+    fn metadata_deferred_indexes_for_large_directory_follow_file_manager_order() {
+        let indexes = metadata_deferred_layout_indexes(
+            Some(4..7),
+            FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT + 1,
+            3,
+        );
 
         assert_eq!(&indexes[..6], &[7, 8, 9, 10, 11, 12]);
         assert!(!indexes.iter().any(|index| (4..7).contains(index)));
@@ -357,7 +360,7 @@ mod tests {
     #[test]
     fn metadata_deferred_indexes_for_large_directory_require_visible_range() {
         let indexes =
-            metadata_deferred_layout_indexes(None, DOLPHIN_RESOLVE_ALL_ITEMS_LIMIT + 1, 3);
+            metadata_deferred_layout_indexes(None, FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT + 1, 3);
 
         assert!(indexes.is_empty());
     }
