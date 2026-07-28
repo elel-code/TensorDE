@@ -29,7 +29,7 @@ An eligible physical device must provide all of the following before ranking:
   `vkGetPhysicalDeviceExternalSemaphoreProperties`.
 
 Extension availability alone does not prove that a usable image exists. Output initialization must
-also intersect Vulkan's per-format external-image modifier properties with Smithay's DRM plane and
+also intersect Vulkan's per-format external-image modifier properties with Tensor's DRM plane and
 GBM scanout capabilities. Readiness requires at least one renderable, exportable, explicit-modifier
 format for every active output path.
 
@@ -42,7 +42,7 @@ color-attachment, and transfer usage. `VkExternalImageFormatProperties` records 
 export separately: client imports and compositor-owned output exports are different capability
 roles and are never inferred from each other.
 
-For each connector with a mode and mapped CRTC, the tty backend reads Smithay's primary-plane
+For each connector with a mode and mapped CRTC, the tty backend reads Tensor's primary-plane
 `FormatSet`, checks the matching GBM format/modifier plane topology and scanout/rendering usage, and
 passes only value data into the deterministic intersection. Vendor modifiers precede linear;
 implicit `DRM_FORMAT_MOD_INVALID` is rejected. XRGB8888 is the first format preference, followed by
@@ -59,7 +59,7 @@ in-flight timeline ownership until the old submission retires.
 Registration now allocates three native output slots per target. Each slot is a Vulkan 2D image
 created with `DRM_FORMAT_MODIFIER_EXT`, dedicated exportable dma-buf memory, and an image view. The
 created modifier is queried back and must equal the negotiated modifier; every reported memory
-plane is exported with its offset and row pitch as Tensor's Smithay-free `ExportedDmabuf` value.
+plane is exported with its offset and row pitch as Tensor's value-only `ExportedDmabuf`.
 The tty boundary imports that description directly through GBM and validates dimensions, fourcc,
 modifier, and plane count before retaining the GBM objects. Vulkan image resources replaced by a
 mode or format change remain in a retired queue until their last renderer timeline value completes.
@@ -83,8 +83,8 @@ This is mandatory for multi-plane and driver-compressed modifiers and is never r
 queue-idle compatibility path.
 
 Imported client dma-bufs and compositor-owned output images use separate lifetime caches. The
-protocol adapter borrows the Smithay object into Tensor's generic `Dmabuf` description before
-calling the renderer. A client cache entry is keyed by the compositor-assigned stable buffer
+protocol owner builds Tensor's generic `Dmabuf` description directly before calling the renderer.
+A client cache entry is keyed by the compositor-assigned stable buffer
 identity and retains the validated format, modifier, dimensions, plane offsets, and strides from
 that value description; an fd number is never an identity. Buffer reuse waits for the renderer
 timeline and Wayland release path before the Vulkan image is destroyed.
@@ -97,7 +97,7 @@ render-node identity; it is not copied from a KMS-only list. The initial import 
 deliberately narrow and honest: explicit-modifier, single-plane RGB buffers whose fd memory type
 is accepted by the selected Vulkan device.
 
-For each `params` request Smithay validates the protocol shape, then Vulkan creates an explicit
+For each `params` request Tensor validates the protocol shape, then Vulkan creates an explicit
 modifier image, intersects image and dma-buf fd memory-type masks, binds imported memory, and
 creates a view. Only a completed image/view import calls `ImportNotifier::successful`; malformed
 planes, implicit modifiers, unsupported formats, and Vulkan failures call `failed` instead. The
@@ -117,7 +117,7 @@ reservation-fence interop remains a separate gate.
 
 The protocol-to-scene handoff has an explicit value-only boundary. A
 compositor-assigned `SurfaceBufferId` is registered after a successful
-linux-dmabuf import. Smithay's toplevel, synchronized/asynchronous subsurface,
+linux-dmabuf import. Tensor's toplevel, synchronized/asynchronous subsurface,
 and popup trees are traversed in draw order; content revision, scale, transform,
 surface-local destination geometry, and `View`/`Popup` clip policy are copied
 into ECS as `ViewContent`. No `WlSurface`, popup handle, or renderer state enters
@@ -146,7 +146,7 @@ physical pixels in Vulkan push data. A 1920×1080 output at scale 1.25 therefore
 1536×864, still renders and scans out 1920×1080, and advertises preferred scale `150`.
 
 This also defines the scaling contract for rootless XWayland windows: they are surface content and
-use the same scene conversion. Legacy clients that only observe `wl_output.scale` receive Smithay's
+use the same scene conversion. Legacy clients that only observe `wl_output.scale` receive Tensor's
 rounded-up integer value, so a 1.25 output lets XWayland render a 2x client buffer before the
 compositor downsamples it to the fractional physical destination. The embedded surface sampler is
 linear for this final conversion; Tensor must not introduce a default nearest-neighbor XWayland
@@ -180,8 +180,8 @@ the configured usable budget at `maxResourceHeapSize`. The Vulkan heap uses the 
 offset contract, so allocator ranges are now copied into the real heap rather than remaining a
 simulation.
 
-Pointer visibility is a compositor overlay, not client-scene state. Smithay's
-`CursorImageStatus` and any client cursor surface stay in the protocol owner; at frame submission
+Pointer visibility is a compositor overlay, not client-scene state. Tensor cursor state and any
+client cursor surface stay in the protocol owner; at frame submission
 they become a value-only, output-local physical `CursorOverlay`. The current visible fallback is a
 small vector arrow, including for a named or client-provided cursor image until cursor-raster
 upload is added. It draws after all client content, is clipped to the native target, and damages
@@ -245,7 +245,7 @@ submitted sync-file wait triggers recovery only after the GPU fence signals. If 
 interruption leaves every slot uncertain, Tensor resets that DRM device instead of risking writes
 into a scanned-out dma-buf.
 
-Tensor implements the modern `wp_linux_drm_syncobj_v1` path supplied by Smithay master. The global
+Tensor directly implements the modern `wp_linux_drm_syncobj_v1` path. The global
 is created only when the Vulkan-selected primary DRM device supports `drmSyncobjEventfd`; hot-unplug
 or session pause closes the import device, and hotplug/session recovery updates the same protocol
 owner. Tensor does not publish the older `zwp_linux_explicit_synchronization_v1` as a parallel
@@ -254,16 +254,15 @@ Once a surface binds the syncobj add-on, every non-null buffer attach must provi
 missing, conflicting, or non-dma-buf commits are rejected and unmapped rather than sampled through
 an implicit fallback.
 
-On commit, the protocol owner removes the acquire/release points from Smithay's renderer cache
-before `on_commit_buffer_handler` can consume them. This is deliberate: Smithay objects remain in
-the protocol layer, and its default buffer-drop release must not signal a point while Vulkan still
-samples that dma-buf. The acquire point is exported to a sync file, imported into a temporary binary
+On commit, the protocol owner removes the acquire/release points from Tensor's cached surface state
+before applying the buffer attachment. This prevents buffer-drop release from signalling a point
+while Vulkan still samples that dma-buf. The acquire point is exported to a sync file, imported into a temporary binary
 Vulkan semaphore payload, and waited at the fragment-shader stage. A failed `queue_submit2` leaves
 that imported semaphore pending for retry and does not advance imported-image state or the client
 release point.
 
-Smithay applies synchronized subsurfaces before invoking their non-synchronized ancestor commit
-callback. Tensor records those child sync points without changing ECS or renderer attachment state;
+Tensor applies synchronized subsurfaces before invoking their non-synchronized ancestor commit
+path. It records those child sync points without changing ECS or renderer attachment state;
 the ancestor callback rebuilds the complete tree first and then reconciles every deferred point
 against the newly active `SurfaceBufferId`. This preserves transaction atomicity and prevents a
 release point from being associated with the child's previous buffer.

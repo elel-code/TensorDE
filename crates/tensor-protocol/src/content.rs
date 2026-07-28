@@ -34,6 +34,15 @@ pub enum SurfaceTransform {
     Flipped270,
 }
 
+impl SurfaceTransform {
+    pub const fn swaps_axes(self) -> bool {
+        matches!(
+            self,
+            Self::Rotate90 | Self::Rotate270 | Self::Flipped90 | Self::Flipped270
+        )
+    }
+}
+
 /// Placement policy for one surface inside a view scene.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SurfaceLayer {

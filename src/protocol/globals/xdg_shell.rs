@@ -1,7 +1,6 @@
 //! Tensor-owned stable xdg-shell wire and role state.
 //!
-//! Smithay is deliberately not an adapter for this protocol. Tensor owns the
-//! resource indices, role lifecycle, configure queues, popup topology, and
+//! Tensor owns the resource indices, role lifecycle, configure queues, popup topology, and
 //! client/server double-buffered state directly.
 
 mod lifecycle;

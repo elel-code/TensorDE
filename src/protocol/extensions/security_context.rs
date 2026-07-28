@@ -663,7 +663,6 @@ pub(crate) fn drain_security_context_events(
             SecurityContextEvent::Accepted { stream, context } => {
                 let client_data = crate::protocol::state::WaylandClientState {
                     security_context: Some(Arc::clone(&context)),
-                    ..Default::default()
                 };
                 if let Err(error) = state
                     .display_handle

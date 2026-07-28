@@ -290,7 +290,7 @@ impl CompositorWorld {
 
     pub fn focus_view(&mut self, view_id: ViewId) -> Result<(), ViewLifecycleError> {
         let entity = self.entity_for(view_id)?;
-        // A late input capability can need to restore only Smithay's seat
+        // A late input capability can need to restore only the protocol seat
         // focus for the view that ECS already selected. Re-selecting that
         // exact view must not perturb scene stacking or invalidate the
         // current layout snapshot: no compositor-visible scene state changed.

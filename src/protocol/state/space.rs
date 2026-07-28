@@ -1,57 +1,56 @@
 //! Tensor-owned window/output mapping and stacking.
 //!
-//! Smithay remains the protocol-object adapter, but compositor geometry and
-//! ordering live here. Refresh reuses per-window overlap storage and does not
-//! allocate or clone the mapped-output list on each pass.
+//! Refresh reuses per-window overlap storage and does not allocate or clone the
+//! mapped-output list on each pass.
 
-use super::{PopupManager, ProtocolWindow, smithay_transform, surfaces::surface_view};
+use super::{PopupManager, ProtocolWindow, surfaces::surface_view};
 use crate::protocol::globals::compositor::{TraversalAction, with_surface_tree_downward};
 use crate::protocol::globals::output::Output;
-use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Size};
+use tensor_util::{LogicalPoint, LogicalRect, LogicalSize, PhysicalSize};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[derive(Debug)]
 struct MappedOutput {
     output: Output,
-    location: Point<i32, Logical>,
-    geometry: Option<Rectangle<i32, Logical>>,
+    location: LogicalPoint<i32>,
+    geometry: Option<LogicalRect<i32>>,
 }
 
 #[derive(Debug)]
 struct OutputOverlap {
     output: Output,
-    region: Rectangle<i32, Logical>,
+    region: LogicalRect<i32>,
 }
 
 #[derive(Debug)]
 struct MappedWindow {
     window: ProtocolWindow,
-    location: Point<i32, Logical>,
+    location: LogicalPoint<i32>,
     outputs: Vec<OutputOverlap>,
 }
 
 pub(super) struct WindowHit<'a> {
     pub(super) window: &'a ProtocolWindow,
-    pub(super) window_location: Point<i32, Logical>,
+    pub(super) window_location: LogicalPoint<i32>,
     pub(super) surface: WlSurface,
-    pub(super) surface_location: Point<i32, Logical>,
+    pub(super) surface_location: LogicalPoint<i32>,
 }
 
 impl MappedWindow {
-    fn geometry(&self) -> Rectangle<i32, Logical> {
+    fn geometry(&self) -> LogicalRect<i32> {
         let mut geometry = self.window.geometry();
         geometry.loc = self.location;
         geometry
     }
 
-    fn bbox(&self, popups: &PopupManager) -> Rectangle<i32, Logical> {
+    fn bbox(&self, popups: &PopupManager) -> LogicalRect<i32> {
         let geometry = self.window.geometry();
         let mut bbox = self.window.bbox_with_popups(popups);
         bbox.loc += self.location - geometry.loc;
         bbox
     }
 
-    fn render_location(&self) -> Point<i32, Logical> {
+    fn render_location(&self) -> LogicalPoint<i32> {
         self.location - self.window.geometry().loc
     }
 }
@@ -66,7 +65,7 @@ pub(crate) struct WindowSpace {
 impl WindowSpace {
     pub(crate) fn map_element<P>(&mut self, window: ProtocolWindow, location: P, activate: bool)
     where
-        P: Into<Point<i32, Logical>>,
+        P: Into<LogicalPoint<i32>>,
     {
         let location = location.into();
         let mut mapped = self
@@ -137,7 +136,7 @@ impl WindowSpace {
 
     pub(crate) fn relocate_element<P>(&mut self, window: &ProtocolWindow, location: P)
     where
-        P: Into<Point<i32, Logical>>,
+        P: Into<LogicalPoint<i32>>,
     {
         if let Some(mapped) = self
             .elements
@@ -175,7 +174,7 @@ impl WindowSpace {
         mut xwayland_dnd_active: F,
     ) -> Option<WindowHit<'_>>
     where
-        P: Into<Point<f64, Logical>>,
+        P: Into<LogicalPoint<f64>>,
         F: FnMut() -> bool,
     {
         let point = point.into();
@@ -198,17 +197,14 @@ impl WindowSpace {
         })
     }
 
-    pub(crate) fn element_location(&self, window: &ProtocolWindow) -> Option<Point<i32, Logical>> {
+    pub(crate) fn element_location(&self, window: &ProtocolWindow) -> Option<LogicalPoint<i32>> {
         self.elements
             .iter()
             .find(|entry| &entry.window == window)
             .map(|entry| entry.location)
     }
 
-    pub(crate) fn element_geometry(
-        &self,
-        window: &ProtocolWindow,
-    ) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn element_geometry(&self, window: &ProtocolWindow) -> Option<LogicalRect<i32>> {
         self.elements
             .iter()
             .find(|entry| &entry.window == window)
@@ -217,7 +213,7 @@ impl WindowSpace {
 
     pub(crate) fn map_output<P>(&mut self, output: &Output, location: P)
     where
-        P: Into<Point<i32, Logical>>,
+        P: Into<LogicalPoint<i32>>,
     {
         let location = location.into();
         let geometry = mapped_output_geometry(output, location);
@@ -272,7 +268,7 @@ impl WindowSpace {
         }
     }
 
-    pub(crate) fn output_geometry(&self, output: &Output) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn output_geometry(&self, output: &Output) -> Option<LogicalRect<i32>> {
         self.outputs
             .iter()
             .find(|mapped| mapped.output == *output)
@@ -281,7 +277,7 @@ impl WindowSpace {
 
     pub(crate) fn output_under<P>(&self, point: P) -> impl Iterator<Item = &Output>
     where
-        P: Into<Point<f64, Logical>>,
+        P: Into<LogicalPoint<f64>>,
     {
         let point = point.into();
         self.outputs.iter().rev().filter_map(move |mapped| {
@@ -352,19 +348,21 @@ impl WindowSpace {
 
 fn mapped_output_geometry(
     output: &Output,
-    location: Point<i32, Logical>,
-) -> Option<Rectangle<i32, Logical>> {
+    location: LogicalPoint<i32>,
+) -> Option<LogicalRect<i32>> {
     let snapshot = output.snapshot();
-    let transform = smithay_transform(snapshot.transform);
     snapshot.mode.map(|mode| {
-        Rectangle::new(
-            location,
-            transform
-                .transform_size(Size::<i32, Physical>::from((mode.width, mode.height)))
-                .to_f64()
-                .to_logical(snapshot.scale.as_f64())
-                .to_i32_ceil(),
-        )
+        let physical = PhysicalSize::<i32>::from((mode.width, mode.height));
+        let physical = if snapshot.transform.swaps_axes() {
+            PhysicalSize::new(physical.h, physical.w)
+        } else {
+            physical
+        };
+        let logical = physical
+            .to_f64()
+            .to_logical(snapshot.scale.as_f64())
+            .ceil_i32();
+        LogicalRect::new(location, LogicalSize::new(logical.w, logical.h))
     })
 }
 
@@ -394,18 +392,18 @@ fn leave_window_output(window: &ProtocolWindow, output: &Output, popups: &PopupM
 
 fn update_surface_tree_output(
     output: &Output,
-    output_overlap: Option<Rectangle<i32, Logical>>,
+    output_overlap: Option<LogicalRect<i32>>,
     surface: &WlSurface,
 ) {
     with_surface_tree_downward(
         surface,
-        (Point::from((0, 0)), false),
+        (LogicalPoint::from((0, 0)), false),
         |_, states, (location, parent_unmapped)| {
             let mut location = *location;
             if *parent_unmapped {
                 TraversalAction::DoChildren((location, true))
             } else if let Some(surface_view) = surface_view(states) {
-                location += Point::from(surface_view.offset);
+                location += LogicalPoint::from(surface_view.offset);
                 TraversalAction::DoChildren((location, false))
             } else {
                 TraversalAction::DoChildren((location, true))
@@ -422,8 +420,8 @@ fn update_surface_tree_output(
                 return;
             };
             if let Some(surface_view) = surface_view(states) {
-                location += Point::from(surface_view.offset);
-                let surface_rectangle = Rectangle::new(location, surface_view.size.into());
+                location += LogicalPoint::from(surface_view.offset);
+                let surface_rectangle = LogicalRect::new(location, surface_view.size.into());
                 if output_overlap.overlaps(surface_rectangle) {
                     output.enter(surface);
                 } else {

@@ -1,4 +1,4 @@
-//! Tensor-owned surface render state at the transitional Smithay compositor edge.
+//! Tensor-owned surface render state at the direct Wayland compositor edge.
 
 use std::sync::Mutex;
 

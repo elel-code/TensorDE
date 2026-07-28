@@ -3,8 +3,8 @@
 ## ECS Boundary
 
 The ECS world owns compositor intent: view IDs, workspace membership, focus state, geometry, and
-render extraction data. Smithay surfaces, Wayland clients, file descriptors, and Vulkan handles
-remain in protocol/renderer owners. Systems translate external events into component changes and
+render extraction data. Wayland resources, clients, file descriptors, and Vulkan handles remain in
+protocol/renderer owners. Systems translate external events into component changes and
 extract a compact immutable scene for Vulkan submission.
 
 ## Capability Gates

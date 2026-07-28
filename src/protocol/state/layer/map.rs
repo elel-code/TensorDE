@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, num::Saturating};
 
-use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
+use tensor_util::{LogicalPoint, LogicalRect, LogicalSize, PhysicalSize};
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
 use crate::protocol::globals::{
@@ -19,20 +19,17 @@ use super::super::{
 use super::{Anchor, ExclusiveZone, LayerSurface, LayerSurfaceState, WlrLayer};
 
 impl LayerSurface {
-    pub(super) fn geometry(&self) -> Rectangle<i32, Logical> {
+    pub(super) fn geometry(&self) -> LogicalRect<i32> {
         with_states(self.wl_surface(), |states| {
-            surface_view(states).map(|view| Rectangle {
-                loc: view.offset.into(),
-                size: view.size.into(),
-            })
+            surface_view(states).map(|view| LogicalRect::new(view.offset.into(), view.size.into()))
         })
         .unwrap_or_default()
     }
 
-    fn bbox_with_popups(&self, popups: &PopupManager) -> Rectangle<i32, Logical> {
+    fn bbox_with_popups(&self, popups: &PopupManager) -> LogicalRect<i32> {
         let mut bbox = surface_tree_bbox(self.wl_surface(), (0, 0));
         for (popup, location) in popups.popups_for_surface(self.wl_surface()) {
-            bbox = bbox.merge(surface_tree_bbox(
+            bbox = bbox.union(surface_tree_bbox(
                 popup.wl_surface(),
                 location - popup.geometry().loc,
             ));
@@ -43,8 +40,8 @@ impl LayerSurface {
     pub(super) fn surface_under(
         &self,
         popups: &PopupManager,
-        point: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<i32, Logical>)> {
+        point: LogicalPoint<f64>,
+    ) -> Option<(WlSurface, LogicalPoint<i32>)> {
         for (popup, location) in popups.popups_for_surface(self.wl_surface()) {
             if let Some(hit) =
                 surface_tree_under(popup.wl_surface(), point, location - popup.geometry().loc)
@@ -59,14 +56,14 @@ impl LayerSurface {
 #[derive(Debug)]
 struct LayerEntry {
     surface: LayerSurface,
-    location: Point<i32, Logical>,
+    location: LogicalPoint<i32>,
 }
 
 #[derive(Debug)]
 pub(super) struct LayerMap {
     output: Output,
     layers: Vec<LayerEntry>,
-    zone: Rectangle<i32, Logical>,
+    zone: LogicalRect<i32>,
 }
 
 impl LayerMap {
@@ -103,11 +100,11 @@ impl LayerMap {
         true
     }
 
-    pub(super) fn non_exclusive_zone(&self) -> Rectangle<i32, Logical> {
+    pub(super) fn non_exclusive_zone(&self) -> LogicalRect<i32> {
         self.zone
     }
 
-    pub(super) fn layer_geometry(&self, layer: &LayerSurface) -> Option<Rectangle<i32, Logical>> {
+    pub(super) fn layer_geometry(&self, layer: &LayerSurface) -> Option<LogicalRect<i32>> {
         let entry = self.layers.iter().find(|entry| entry.surface == *layer)?;
         let mut geometry = layer.geometry();
         geometry.loc += entry.location;
@@ -118,7 +115,7 @@ impl LayerMap {
         &self,
         popups: &PopupManager,
         band: WlrLayer,
-        point: Point<f64, Logical>,
+        point: LogicalPoint<f64>,
     ) -> Option<&LayerSurface> {
         self.layers
             .iter()
@@ -148,9 +145,9 @@ impl LayerMap {
 
     pub(super) fn arrange(&mut self, popups: &PopupManager) -> bool {
         let output_rect = output_rectangle(&self.output);
-        let mut zone: Rectangle<Saturating<i32>, Logical> = Rectangle::new(
-            Point::new(Saturating(output_rect.loc.x), Saturating(output_rect.loc.y)),
-            Size::new(
+        let mut zone: LogicalRect<Saturating<i32>> = LogicalRect::new(
+            LogicalPoint::new(Saturating(output_rect.loc.x), Saturating(output_rect.loc.y)),
+            LogicalSize::new(
                 Saturating(output_rect.size.w),
                 Saturating(output_rect.size.h),
             ),
@@ -173,9 +170,12 @@ impl LayerMap {
 
                 let mut source = match data.exclusive_zone {
                     ExclusiveZone::Exclusive(_) | ExclusiveZone::Neutral => zone,
-                    ExclusiveZone::DontCare => Rectangle::new(
-                        Point::new(Saturating(output_rect.loc.x), Saturating(output_rect.loc.y)),
-                        Size::new(
+                    ExclusiveZone::DontCare => LogicalRect::new(
+                        LogicalPoint::new(
+                            Saturating(output_rect.loc.x),
+                            Saturating(output_rect.loc.y),
+                        ),
+                        LogicalSize::new(
                             Saturating(output_rect.size.w),
                             Saturating(output_rect.size.h),
                         ),
@@ -195,8 +195,8 @@ impl LayerMap {
                     source.size.h -= data.margin.bottom;
                 }
 
-                let mut size: Size<Saturating<i32>, Logical> =
-                    Size::new(Saturating(data.size.w), Saturating(data.size.h));
+                let mut size: LogicalSize<Saturating<i32>> =
+                    LogicalSize::new(Saturating(data.size.w), Saturating(data.size.h));
                 size.w = size.w.min(source.size.w);
                 size.h = size.h.min(source.size.h);
                 if size.w.0 == 0 {
@@ -226,7 +226,7 @@ impl LayerMap {
                 } else {
                     source.loc.y + Saturating((source.size.h.0 / 2) - (size.h.0 / 2))
                 };
-                let location = Point::from((x.0, y.0));
+                let location = LogicalPoint::from((x.0, y.0));
 
                 if let ExclusiveZone::Exclusive(amount) = data.exclusive_zone {
                     let amount = Saturating(amount as i32);
@@ -252,7 +252,7 @@ impl LayerMap {
                     }
                 }
 
-                let size = Size::new(size.w.0.max(0), size.h.0.max(0));
+                let size = LogicalSize::new(size.w.0.max(0), size.h.0.max(0));
                 let size_changed = entry.surface.set_pending_server_size(size);
                 let initial_configure_sent = entry.surface.initial_configure_sent();
                 if size_changed && initial_configure_sent {
@@ -263,9 +263,9 @@ impl LayerMap {
             }
         }
 
-        self.zone = Rectangle::new(
-            Point::new(zone.loc.x.0, zone.loc.y.0),
-            Size::new(zone.size.w.0.max(0), zone.size.h.0.max(0)),
+        self.zone = LogicalRect::new(
+            LogicalPoint::new(zone.loc.x.0, zone.loc.y.0),
+            LogicalSize::new(zone.size.w.0.max(0), zone.size.h.0.max(0)),
         );
         changed
     }
@@ -378,17 +378,21 @@ impl LayerMaps {
     }
 }
 
-fn output_rectangle(output: &Output) -> Rectangle<i32, Logical> {
+fn output_rectangle(output: &Output) -> LogicalRect<i32> {
     let snapshot = output.snapshot();
-    Rectangle::from_size(
+    LogicalRect::from_size(
         snapshot
             .mode
             .map(|mode| {
-                let logical = Size::<i32, Physical>::from(mode.size())
+                let logical = PhysicalSize::<i32>::from(mode.size())
                     .to_f64()
                     .to_logical(snapshot.scale.as_f64())
-                    .to_i32_round();
-                super::super::smithay_transform(snapshot.transform).transform_size(logical)
+                    .round_i32();
+                if snapshot.transform.swaps_axes() {
+                    LogicalSize::new(logical.h, logical.w)
+                } else {
+                    logical
+                }
             })
             .unwrap_or_default(),
     )

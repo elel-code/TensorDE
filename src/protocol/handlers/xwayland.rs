@@ -51,6 +51,7 @@ impl RuntimeState {
                     return;
                 }
                 if let Err(error) = window.set_mapped(true) {
+                    window.cancel_map_request();
                     warn!(%error, window = window.window_id(), "failed to map rootless X11 window");
                     return;
                 }

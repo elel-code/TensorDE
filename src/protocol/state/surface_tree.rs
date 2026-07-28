@@ -6,10 +6,10 @@
 
 use std::time::Duration;
 
-use smithay::utils::{NonNegativeClockSource, Time};
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
+use crate::protocol::clock::MONOTONIC_CLOCK_ID;
 use crate::protocol::globals::{
     compositor::{SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward},
     output::{Output, WeakOutput},
@@ -124,21 +124,16 @@ impl OutputPresentationFeedback {
         }
     }
 
-    pub(super) fn presented<T, Kind>(
+    pub(super) fn presented(
         &mut self,
-        time: T,
+        time: Duration,
         refresh: Refresh,
         sequence: u64,
         flags: wp_presentation_feedback::Kind,
-    ) where
-        T: Into<Time<Kind>>,
-        Kind: NonNegativeClockSource,
-    {
-        let time = Duration::from(time.into());
-        let clock_id = Kind::ID as u32;
+    ) {
         if let Some(output) = self.output.upgrade() {
             for feedback in &mut self.callbacks {
-                feedback.presented(&output, clock_id, time, refresh, sequence, flags);
+                feedback.presented(&output, MONOTONIC_CLOCK_ID, time, refresh, sequence, flags);
             }
             self.callbacks.clear();
         } else {

@@ -1,4 +1,4 @@
-use smithay::utils::{Logical, Point};
+use tensor_util::LogicalPoint;
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::{self, WpPointerWarpV1};
 use wayland_server::{Client, DataInit, DisplayHandle, New};
 
@@ -106,11 +106,11 @@ impl RuntimeState {
     }
 }
 
-fn logical_position(x: f64, y: f64, client_scale: f64) -> Option<Point<f64, Logical>> {
+fn logical_position(x: f64, y: f64, client_scale: f64) -> Option<LogicalPoint<f64>> {
     if !x.is_finite() || !y.is_finite() || !client_scale.is_finite() || client_scale <= 0.0 {
         return None;
     }
-    Some(Point::from((x / client_scale, y / client_scale)))
+    Some(LogicalPoint::from((x / client_scale, y / client_scale)))
 }
 
 delegate_global_dispatch!(RuntimeState, WpPointerWarpV1, PointerWarpGlobalData);
@@ -124,7 +124,7 @@ mod tests {
     fn client_coordinates_are_scaled_once_and_reject_non_finite_values() {
         assert_eq!(
             logical_position(30.0, 45.0, 1.5),
-            Some(Point::from((20.0, 30.0)))
+            Some(LogicalPoint::from((20.0, 30.0)))
         );
         assert!(logical_position(f64::NAN, 0.0, 1.0).is_none());
         assert!(logical_position(0.0, 0.0, 0.0).is_none());

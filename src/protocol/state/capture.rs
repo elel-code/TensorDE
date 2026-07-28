@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use smithay::utils::{Buffer as BufferCoords, Size};
+use tensor_util::BufferSize;
 use tracing::{debug, trace, warn};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
 
@@ -55,11 +55,11 @@ struct PendingCapture {
 enum CaptureKind {
     /// Full output; `origin` is the output's global logical top-left.
     Output {
-        size: Size<i32, BufferCoords>,
+        size: BufferSize<i32>,
         origin: (i32, i32),
     },
     Toplevel {
-        size: Size<i32, BufferCoords>,
+        size: BufferSize<i32>,
         geometry: Rect,
     },
 }
@@ -80,7 +80,7 @@ impl RuntimeState {
         None
     }
 
-    fn toplevel_capture_geometry(&self, key: ObjectKey) -> Option<(Size<i32, BufferCoords>, Rect)> {
+    fn toplevel_capture_geometry(&self, key: ObjectKey) -> Option<(BufferSize<i32>, Rect)> {
         for window in self.space.elements() {
             let Some(surface) = window.wl_surface() else {
                 continue;
@@ -89,7 +89,7 @@ impl RuntimeState {
                 continue;
             }
             let geo = self.space.element_geometry(window)?;
-            let size = Size::from((geo.size.w.max(1), geo.size.h.max(1)));
+            let size = BufferSize::from((geo.size.w.max(1), geo.size.h.max(1)));
             let rect = Rect::new(
                 geo.loc.x,
                 geo.loc.y,
@@ -181,7 +181,7 @@ fn capture_kind_for_session(state: &RuntimeState, session: &SessionRef) -> Optio
             .map(|geo| (geo.loc.x, geo.loc.y))
             .unwrap_or((0, 0));
         return Some(CaptureKind::Output {
-            size: Size::from((mode.width, mode.height)),
+            size: BufferSize::from((mode.width, mode.height)),
             origin,
         });
     }
@@ -420,7 +420,7 @@ fn view_color_from_geometry(geometry: Rect) -> u32 {
 
 fn write_capture_shm(
     buffer: &WlBuffer,
-    size: Size<i32, BufferCoords>,
+    size: BufferSize<i32>,
     rects: &[(Rect, u32)],
     blits: &[ShmBlit],
 ) -> Result<(), CaptureFailureReason> {
@@ -507,10 +507,10 @@ fn fill_rect(
 
 fn constraints_for_output(output: &Output) -> Option<BufferConstraints> {
     let mode = output.current_mode()?;
-    Some(shm_constraints(Size::from((mode.width, mode.height))))
+    Some(shm_constraints(BufferSize::from((mode.width, mode.height))))
 }
 
-fn shm_constraints(size: Size<i32, BufferCoords>) -> BufferConstraints {
+fn shm_constraints(size: BufferSize<i32>) -> BufferConstraints {
     BufferConstraints {
         size,
         shm: [wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888],
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn shm_constraints_advertise_standard_formats() {
-        let constraints = shm_constraints(Size::from((1920, 1080)));
+        let constraints = shm_constraints(BufferSize::from((1920, 1080)));
         assert_eq!(constraints.size.w, 1920);
         assert!(constraints.shm.contains(&wl_shm::Format::Xrgb8888));
     }
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn capture_pixel_budget_rejects_absurd_sizes() {
         let kind = CaptureKind::Output {
-            size: Size::from((16_000, 16_000)),
+            size: BufferSize::from((16_000, 16_000)),
             origin: (0, 0),
         };
         assert!(capture_pixel_count(kind) > MAX_CAPTURE_PIXELS);

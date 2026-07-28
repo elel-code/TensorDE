@@ -11,9 +11,8 @@
 //! submit ops (read / accept / timer / wake) → completions → inject → drain → idle
 //! ```
 //!
-//! Transitional calloop still uses readiness + callbacks for some Smithay-owned
-//! fds. That is migration debt. The target is: same work as Compio-submitted
-//! ops whose futures/CQEs complete on the compositor or worker thread.
+//! Every product fd wait is a Compio-submitted operation whose future/CQE
+//! completes on the compositor or worker thread, not a readiness registry.
 //!
 //! Compio's `polling` Cargo feature is disabled. Failure to create io_uring is
 //! a runtime initialization error, never a switch to a readiness driver.
@@ -82,7 +81,7 @@ impl CompletionDriver {
 
 /// Run inject + drain for one turn. Caller applies policy to each drained event.
 ///
-/// Runs **after** one or more I/O completions (or a transitional idle slot).
+/// Runs **after** one or more I/O completions.
 /// `on_event` returns whether to continue draining (`false` stops early).
 pub fn run_turn(
     worker_rx: &WorkerRx<Event>,
@@ -112,7 +111,7 @@ pub fn run_turn(
 ///
 /// Product shape: write an eventfd; a **submitted** Compio/io_uring read (or
 /// equivalent completion-bearing op) on that fd completes and schedules
-/// [`run_turn`]. calloop's channel ping is only transitional.
+/// [`run_turn`].
 pub trait WakeSink: Send + Sync {
     /// Non-blocking wake. May coalesce (eventfd counter is fine).
     fn wake(&self);
@@ -209,8 +208,7 @@ impl EventfdWake {
         })
     }
 
-    /// Drain the eventfd counter after a completed wake read (or after a
-    /// transitional readiness edge during migration).
+    /// Drain the eventfd counter after a completed wake read.
     ///
     /// Safe to call when the counter is zero (`WouldBlock` → `Ok(0)`).
     pub fn drain(&self) -> std::io::Result<u64> {

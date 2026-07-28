@@ -10,10 +10,7 @@ use std::{
     time::Duration,
 };
 
-use smithay::{
-    utils::{IsAlive, Logical, Point, Rectangle},
-    wayland::seat::WaylandFocus,
-};
+use tensor_util::{LogicalPoint, LogicalRect};
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
@@ -46,7 +43,7 @@ enum ProtocolWindowSurface {
 #[derive(Debug)]
 struct ProtocolWindowInner {
     surface: ProtocolWindowSurface,
-    bbox: Cell<Rectangle<i32, Logical>>,
+    bbox: Cell<LogicalRect<i32>>,
 }
 
 /// A compositor-thread window with stable identity and cached surface geometry.
@@ -69,21 +66,19 @@ impl Hash for ProtocolWindow {
     }
 }
 
-impl IsAlive for ProtocolWindow {
-    fn alive(&self) -> bool {
+impl ProtocolWindow {
+    pub(crate) fn alive(&self) -> bool {
         match &self.0.surface {
             ProtocolWindowSurface::Wayland(surface) => surface.alive(),
             #[cfg(feature = "xwayland")]
             ProtocolWindowSurface::X11(surface) => surface.alive(),
         }
     }
-}
 
-impl ProtocolWindow {
     pub(crate) fn new_wayland(toplevel: Toplevel) -> Self {
         Self(Rc::new(ProtocolWindowInner {
             surface: ProtocolWindowSurface::Wayland(toplevel),
-            bbox: Cell::new(Rectangle::zero()),
+            bbox: Cell::new(LogicalRect::zero()),
         }))
     }
 
@@ -91,18 +86,18 @@ impl ProtocolWindow {
     pub(crate) fn new_x11(surface: X11Surface) -> Self {
         Self(Rc::new(ProtocolWindowInner {
             surface: ProtocolWindowSurface::X11(surface),
-            bbox: Cell::new(Rectangle::zero()),
+            bbox: Cell::new(LogicalRect::zero()),
         }))
     }
 
-    pub(crate) fn geometry(&self) -> Rectangle<i32, Logical> {
+    pub(crate) fn geometry(&self) -> LogicalRect<i32> {
         match &self.0.surface {
             ProtocolWindowSurface::Wayland(surface) => {
                 let bbox = self.bbox();
                 surface
                     .geometry()
                     .map(|geometry| {
-                        Rectangle::new(
+                        LogicalRect::new(
                             (geometry.x, geometry.y).into(),
                             (
                                 i32::try_from(geometry.width).unwrap_or(i32::MAX),
@@ -119,7 +114,7 @@ impl ProtocolWindow {
         }
     }
 
-    fn bbox(&self) -> Rectangle<i32, Logical> {
+    fn bbox(&self) -> LogicalRect<i32> {
         match &self.0.surface {
             ProtocolWindowSurface::Wayland(_) => self.0.bbox.get(),
             #[cfg(feature = "xwayland")]
@@ -127,7 +122,7 @@ impl ProtocolWindow {
         }
     }
 
-    pub(crate) fn bbox_with_popups(&self, popups: &PopupManager) -> Rectangle<i32, Logical> {
+    pub(crate) fn bbox_with_popups(&self, popups: &PopupManager) -> LogicalRect<i32> {
         let mut bbox = self.bbox();
         let Some(root) = self.wl_surface() else {
             return bbox;
@@ -135,7 +130,7 @@ impl ProtocolWindow {
         let geometry_location = self.geometry().loc;
         for (popup, location) in popups.popups_for_surface(root.as_ref()) {
             let offset = geometry_location + location - popup.geometry().loc;
-            bbox = bbox.merge(surface_tree_bbox(popup.wl_surface(), offset));
+            bbox = bbox.union(surface_tree_bbox(popup.wl_surface(), offset));
         }
         bbox
     }
@@ -227,9 +222,9 @@ impl ProtocolWindow {
         popups: &PopupManager,
         point: P,
         _xwayland_dnd_active: &mut F,
-    ) -> Option<(WlSurface, Point<i32, Logical>)>
+    ) -> Option<(WlSurface, LogicalPoint<i32>)>
     where
-        P: Into<Point<f64, Logical>>,
+        P: Into<LogicalPoint<f64>>,
         F: FnMut() -> bool,
     {
         let point = point.into();
@@ -282,18 +277,12 @@ impl ProtocolWindow {
     }
 }
 
-impl WaylandFocus for ProtocolWindow {
-    fn wl_surface(&self) -> Option<Cow<'_, WlSurface>> {
-        ProtocolWindow::wl_surface(self)
-    }
-}
-
-pub(super) fn surface_tree_bbox<P>(surface: &WlSurface, location: P) -> Rectangle<i32, Logical>
+pub(super) fn surface_tree_bbox<P>(surface: &WlSurface, location: P) -> LogicalRect<i32>
 where
-    P: Into<Point<i32, Logical>>,
+    P: Into<LogicalPoint<i32>>,
 {
     let location = location.into();
-    let mut bbox = Rectangle::new(location, (0, 0).into());
+    let mut bbox = LogicalRect::new(location, (0, 0).into());
     with_surface_tree_downward(
         surface,
         location,
@@ -301,8 +290,8 @@ where
             let Some(view) = surface_view(states) else {
                 return TraversalAction::SkipChildren;
             };
-            let location = *location + Point::from(view.offset);
-            bbox = bbox.merge(Rectangle::new(location, view.size.into()));
+            let location = *location + LogicalPoint::from(view.offset);
+            bbox = bbox.union(LogicalRect::new(location, view.size.into()));
             TraversalAction::DoChildren(location)
         },
         |_, _, _| {},
@@ -313,11 +302,11 @@ where
 
 pub(in crate::protocol) fn surface_tree_under<P>(
     surface: &WlSurface,
-    point: Point<f64, Logical>,
+    point: LogicalPoint<f64>,
     location: P,
-) -> Option<(WlSurface, Point<i32, Logical>)>
+) -> Option<(WlSurface, LogicalPoint<i32>)>
 where
-    P: Into<Point<i32, Logical>>,
+    P: Into<LogicalPoint<i32>>,
 {
     let found = RefCell::new(None);
     with_surface_tree_downward(
@@ -327,25 +316,26 @@ where
             let Some(view) = surface_view(states) else {
                 return TraversalAction::SkipChildren;
             };
-            TraversalAction::DoChildren(*location + Point::from(view.offset))
+            TraversalAction::DoChildren(*location + LogicalPoint::from(view.offset))
         },
         |surface, states, location| {
             let Some(view) = surface_view(states) else {
                 return;
             };
-            let location = *location + Point::from(view.offset);
+            let location = *location + LogicalPoint::from(view.offset);
             let local = point - location.to_f64();
-            let bounds = Rectangle::from_size(view.size.into()).to_f64();
+            let bounds = LogicalRect::from_size(view.size.into()).to_f64();
             if !bounds.contains(local) {
                 return;
             }
+            let local = local.floor_i32();
             let accepts_input = states
                 .cached_state
                 .get::<SurfaceAttributes>()
                 .current()
                 .input_region
                 .as_ref()
-                .is_none_or(|region| region.contains(local.to_i32_floor().into()));
+                .is_none_or(|region| region.contains((local.x, local.y)));
             if accepts_input {
                 *found.borrow_mut() = Some((surface.clone(), location));
             }

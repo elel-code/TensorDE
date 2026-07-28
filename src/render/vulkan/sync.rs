@@ -12,7 +12,7 @@ use vulkanalia::{Device, vk};
 
 use crate::{ecs::SurfaceId, render::FrameSubmission};
 
-/// A completion fence which can be handed to Smithay's DRM-syncobj release
+/// A completion fence which can be handed to Tensor's DRM-syncobj release
 /// point.  Timeline values stay on the Vulkan side; they are only exposed as
 /// a recovery state when exporting a binary sync file failed.
 #[derive(Debug, Clone)]

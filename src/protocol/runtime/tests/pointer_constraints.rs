@@ -219,7 +219,7 @@ fn pointer_constraints_lock_confine_commit_and_release_without_motion_path_copie
         dispatch_until_constraint_step(&mut runtime, &step_rx),
         ConstraintStep::SurfaceReady
     );
-    let initial: smithay::utils::Point<f64, smithay::utils::Logical> = runtime
+    let initial: tensor_util::LogicalPoint<f64> = runtime
         .state
         .space
         .elements()

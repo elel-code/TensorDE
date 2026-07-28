@@ -9,7 +9,7 @@ or executes an upstream test fixture.
 ## Reference-to-Tensor test conversion
 
 The local checkouts are treated as behavioral references. Their tests are translated into Tensor
-contracts over stable IDs, ECS snapshots, TOML values, Vulkan capability records, and Smithay state;
+contracts over stable IDs, ECS snapshots, TOML values, Vulkan capability records, and Tensor protocol state;
 the reference projects are never linked into the build and their fixtures are not copied.
 
 | Reference behavior | Tensor contract | Current tests |
@@ -122,7 +122,7 @@ and rendering itself.
   the configure size, Tensor `WindowSpace` location, and retained ECS snapshot. Pure geometry never
   requires a compositor session. The same client lifecycle exercises Tensor `ProtocolWindow`
   commit-bbox caching, preferred output state traversal, frame callbacks, presentation feedback,
-  activation, and teardown without `smithay::desktop::Window`.
+  activation, and teardown through Tensor `ProtocolWindow` state.
 - Popup lifecycle coverage creates a real two-level XDG tree, establishes nested explicit grabs,
   verifies Tensor's child-first borrowed iteration order, and tears it down without frame staging.
   A second tree destroys its parent first and must receive `not_the_topmost_popup` while Tensor
@@ -151,18 +151,18 @@ and rendering itself.
   buffer scale, `N/120` output geometry, outward damage coverage, and linear final sampling are one
   contract. X11 provenance must not enable a nearest-neighbor default or a second coordinate model.
 - XWayland lifecycle tests cover the two-signal mapped-window association gate, logical configure
-  conversion, and teardown before Smithay removes the X11-to-Wayland association. Runtime wiring
+  conversion, and teardown before Tensor removes the X11-to-Wayland association. Runtime wiring
   creates the XWM after XWayland readiness; hardware execution remains a TTY smoke test.
   Override-redirect coverage additionally requires map and association state, a managed
   `WM_TRANSIENT_FOR` ancestor, relative logical offsets, and X11 stacking. It verifies that such
   windows add no ECS view or independent X11 coordinate path, and that owner or popup teardown
-  detaches their Smithay/input/render state safely.
+  detaches their protocol/input/render state safely.
 - Normal X11 `WM_TRANSIENT_FOR` dialog coverage verifies the separate attached-view model: dialogs
   do not consume tiled placements, retain independent scene/input/synchronization state, inherit
   focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
   cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
 - Input lifecycle coverage verifies that mapping selects an ECS root before an input device exists,
-  then a late keyboard capability restores the Smithay keyboard target only after the initial XDG
+  then a late keyboard capability restores the Tensor keyboard target only after the initial XDG
   configure. Focus transitions deactivate the old toplevel, activate and raise the new attachment
   family, and closing the active view restores a live successor without an empty-focus gap. A late
   pointer capability schedules its first software-cursor frame; its removal schedules an overlay-free
@@ -192,8 +192,8 @@ and rendering itself.
 - Startup-gate tests prove that runtime preparation, process-environment publication, active
   user-manager publication, and readiness cannot be skipped or reordered before session autostart.
   Check and non-session modes must never receive an autostart permit.
-- Output lifecycle tests drive synthetic connector events through Smithay `Output` objects and
-  Tensor `WindowSpace` state;
+- Output lifecycle tests drive synthetic connector events through Tensor output and `WindowSpace`
+  state;
   they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
 - Output policy tests retain incomplete connector snapshots while excluding them from scanout, and
   verify deterministic planning and disconnect-before-connect reconciliation across DRM devices.

@@ -2,8 +2,8 @@
 //!
 //! Policy that decides *which* connectors are active, at which mode/scale/
 //! position, lives here. Opening DRM nodes, atomic commits, and GBM stay in
-//! backend adapters (Smithay today, native later). This crate has **zero**
-//! dependency on Smithay, libdrm, or Wayland.
+//! Tensor's native backend adapter. This crate has **zero** dependency on
+//! libdrm or Wayland.
 
 mod plan;
 mod policy;

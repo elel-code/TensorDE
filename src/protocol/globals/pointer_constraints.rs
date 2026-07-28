@@ -5,7 +5,7 @@ mod region;
 use std::collections::HashMap;
 
 use super::compositor::{self, HookId, RectangleKind, get_region_attributes};
-use smithay::utils::{Logical, Point};
+use tensor_util::LogicalPoint;
 use wayland_protocols::wp::pointer_constraints::zv1::server::{
     zwp_confined_pointer_v1::{self, ZwpConfinedPointerV1},
     zwp_locked_pointer_v1::{self, ZwpLockedPointerV1},
@@ -60,14 +60,14 @@ enum ConstraintLifetime {
 
 struct ActiveConstraint {
     surface: ObjectId,
-    origin: Point<f64, Logical>,
+    origin: LogicalPoint<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::protocol) enum ConstraintMotion {
-    Free(Point<f64, Logical>),
-    Confined(Point<f64, Logical>),
-    Locked(Point<f64, Logical>),
+    Free(LogicalPoint<f64>),
+    Confined(LogicalPoint<f64>),
+    Locked(LogicalPoint<f64>),
 }
 
 enum AttachResult {
@@ -167,8 +167,8 @@ impl PointerConstraintsProtocol {
 
     pub(in crate::protocol) fn constrain_motion(
         &self,
-        current: Point<f64, Logical>,
-        proposed: Point<f64, Logical>,
+        current: LogicalPoint<f64>,
+        proposed: LogicalPoint<f64>,
     ) -> ConstraintMotion {
         let Some(active) = &self.active else {
             return ConstraintMotion::Free(proposed);
@@ -195,9 +195,9 @@ impl PointerConstraintsProtocol {
 
     pub(in crate::protocol) fn focus_changed(
         &mut self,
-        focus: Option<(&WlSurface, Point<f64, Logical>)>,
-        location: Point<f64, Logical>,
-    ) -> Option<Point<f64, Logical>> {
+        focus: Option<(&WlSurface, LogicalPoint<f64>)>,
+        location: LogicalPoint<f64>,
+    ) -> Option<LogicalPoint<f64>> {
         let active_valid = self.active.as_ref().is_some_and(|active| {
             let Some((surface, origin)) = focus else {
                 return false;
@@ -245,7 +245,7 @@ impl PointerConstraintsProtocol {
         &mut self,
         surface: &WlSurface,
         resource: &ObjectId,
-    ) -> Option<Point<f64, Logical>> {
+    ) -> Option<LogicalPoint<f64>> {
         let key = surface.id();
         if self
             .constraints
@@ -284,7 +284,7 @@ impl PointerConstraintsProtocol {
         self.remove_entry(surface, &key);
     }
 
-    fn deactivate_active(&mut self, send_event: bool) -> Option<Point<f64, Logical>> {
+    fn deactivate_active(&mut self, send_event: bool) -> Option<LogicalPoint<f64>> {
         let active = self.active.take()?;
         let constraint = self.constraints.get(&active.surface)?;
         if send_event {
@@ -313,7 +313,7 @@ impl PointerConstraintsProtocol {
 }
 
 impl Constraint {
-    fn global_hint(&self, origin: Point<f64, Logical>) -> Option<Point<f64, Logical>> {
+    fn global_hint(&self, origin: LogicalPoint<f64>) -> Option<LogicalPoint<f64>> {
         (self.handle.kind() == ConstraintKind::Locked)
             .then_some(self.cursor_hint)
             .flatten()
@@ -452,7 +452,7 @@ impl RuntimeState {
 
     pub(in crate::protocol) fn apply_pointer_constraint_hint(
         &mut self,
-        hint: Option<Point<f64, Logical>>,
+        hint: Option<LogicalPoint<f64>>,
     ) {
         let Some(mut location) = hint else {
             return;

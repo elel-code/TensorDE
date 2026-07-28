@@ -1,118 +1,81 @@
-# Event layer and runtime crates
+# Event layer and completion runtime
 
-Tensor owns compositor **event semantics**. Compio owns **async I/O as a completion
-model** (submit operation → completion), with **io_uring** as the Linux product
-driver. Smithay remains a mature **protocol / present adapter** until individual
-bindings are replaced.
+Tensor owns compositor **event semantics**. Compio owns asynchronous I/O as a **completion model**:
+submit an operation, consume its completion, then explicitly submit the next operation. Linux uses
+the io_uring driver and fails startup when it cannot be created. Compio defaults and the `polling`
+fallback are disabled.
 
-**I/O model:** Compio is **not** a readiness reactor. Do not design “register fd,
-poll until readable.” Design “submit the op (read/accept/timer/wake); when it
-**completes**, push a value event and run the semantic turn.” Compio's `polling`
-Cargo feature is disabled; failure to create io_uring fails runtime initialization.
+Do not design “register an fd and poll until readable.” Design “submit read/accept/write/wait; when
+its CQE arrives, publish a bounded value and run the semantic turn.” A type named `PollFd` still
+follows this rule: with the io_uring driver it submits one `IORING_OP_POLL_ADD`, resolves from its
+CQE, and is explicitly rearmed after owner-side consumption. It is not a readiness registry.
 
-## Performance design
+## Performance contract
 
-| Rule | Why |
-|------|-----|
-| Fixed-capacity phase rings | No allocation on the input/vblank path |
-| Coalesce pointer motion & per-output vblank | Device Hz must not become queue length |
-| Phase order without sorting | O(1) push/pop; present cannot starve behind IPC unfairly, control runs after interactive work |
-| Overflow is explicit counters | Never block libinput/DRM producers |
-| Workers never hold DRM/Wayland objects | Avoid cross-thread master/fd races |
-| Present & Vulkan record stay on the compositor thread | Predictable latency; Compio only posts completion-derived values |
-| Bounded bridges (`try_send`) | Same contract as calloop channels / logging drain |
-| **Completion** (io_uring driver), not readiness-as-architecture | Batch CQEs, lower syscall tax, one ring for files + wake + sockets |
-| Ring capacity follows each service's fixed operation budget | No 1024-entry default ring per worker and no hot-path growth |
-
-Borrowings from Smithay/calloop (shape only):
-
-- Source → callback → shared state (here: **completion** → **value event** → queue)
-- Idle / between-wait work becomes explicit **phases** after drain
-- Bounded cross-thread channels with drop-on-full, not unbounded queues
+| Rule | Reason |
+|------|--------|
+| Fixed-capacity phase rings | No allocation on input or vblank paths |
+| Coalesced pointer motion and per-output vblank | Device frequency cannot become queue length |
+| Fixed phase order without sorting | O(1) push/pop and deterministic policy |
+| Explicit overflow counters or hard capability failure | Producers never block the compositor |
+| Value-only worker bridges | Wayland, Vulkan, and DRM/KMS ownership stays thread-affine |
+| Present and Vulkan record on the compositor thread | Predictable latency and scanout ownership |
+| Ring capacity equals each service's operation budget | No 1024-entry default ring or hot growth |
+| Persistent staging stores and borrowed slices | Avoid per-turn vectors, clones, and copies |
 
 ## Crate map
 
 ```text
-tensor-event     pure value events, EventQueue, Phase, coalesce
-tensor-runtime   Compio completion workers + WorkerBridge + run_turn + EventfdWake
-tensor-host      mode / connector / format / present intent / raw input structs
-tensor-input     device capabilities + Sample → Event (no libinput)
-tensor-drm       topology plan + output rules (no libdrm)
-tensor-present   present slot readiness + intent queue (no KMS FDs)
-tensor-protocol  stable surface/buffer IDs + lifecycle + protocol tier policy
-tensor-util      geometry / scale (existing)
-tensor-compositor  policy, ECS, Smithay adapters, Vulkan
+tensor-event       value events, phases, fixed queues, coalescing
+tensor-runtime     io_uring runtime construction, completion helpers, bounded bridges
+tensor-host        mode, connector, format, present-intent, and raw-input values
+tensor-input       device capabilities and Sample -> Event normalization
+tensor-drm         topology plans and output rules
+tensor-present     present-slot readiness and intent queue
+tensor-protocol    stable protocol IDs, lifecycle, and tier catalog
+tensor-util        geometry and exact scale primitives
+tensor-compositor  direct Wayland/input/session/XWayland/DRM ownership, ECS, Vulkan
 ```
 
-Future: `tensor-session`; protocol wire dispatch remains in the compositor's
-temporary Smithay adapter while `tensor-protocol` owns value-only state. Each
-adapter only emits `tensor-event::Event` (or thinner value types). Exit plan:
-`docs/smithay-exit.md`.
-
-## Dispatch turn (target)
+## Dispatch turn
 
 ```text
-1. Completions: Compio/io_uring finishes submitted ops (I/O, wake read, timers)
-2. inject_events(worker bridges → EventQueue)   // coalesce here
-3. while let Some(ev) = queue.pop() {            // phase order
-       match ev.phase() { ... policy ... }
-   }
-4. Render / present only if Scene/Gpu/Present demanded it
+1. Submitted Compio/io_uring operations complete.
+2. Drain bounded completion bridges into Tensor values.
+3. inject_events(worker bridges -> EventQueue), coalescing on ingress.
+4. Pop EventQueue by fixed phase order and apply compositor policy.
+5. Record/render/present only when scene or output state demands it.
+6. Rearm one-shot fd operations after owner-side consumption.
 ```
 
-Step 1 is still calloop **readiness** for some Smithay-owned fds during
-migration. The **target** is the same work as Compio-submitted ops that
-**complete**. Steps 2–4 are Tensor-owned (`run_turn`). Worker→compositor wake:
-write `EventfdWake`; a **submitted** read completes — not “poll the eventfd.”
+The compositor thread owns one Compio runtime. Its base submitted-operation budget covers the
+worker eventfd read and the two optional timerfd waits; active DRM devices add one page-flip wait
+each. No empty calloop aggregate or relay operation consumes a slot. Workers signal `EventfdWake`;
+the compositor continues only after the submitted eight-byte read completes.
 
-## What not to put on the bus
+Wayland listener accepts and display dispatch, IPC reads/writes, signalfd, security-context sockets,
+GPU sync files, udev, libinput, libseat, timerfds, DRM page flips, XWayland displayfd, X11 socket
+notification, and X11 property reads are completion services. An owner drains a bounded amount of
+work after a CQE and rearms explicitly. Page flips, atomic KMS submits, Wayland dispatch, and X11
+policy remain on the compositor thread.
 
-- `WlSurface`, `DrmDevice`, `GbmDevice`, Vulkan handles
-- Large IPC payloads (use `IpcCommandId` + owner-side storage)
-- Unbounded `Vec` damage lists (use IDs + scene damage set)
+The rootless XWM uses two completion paths:
 
-## Migration stages
+- Its event fd has one submitted `PollFd` operation. After the CQE the compositor drains `x11rb`
+  events into a persistent `VecDeque`, flushes writes, and rearms.
+- A dedicated Compio Unix connection submits fixed `GetProperty` batches. It returns only
+  `X11PropertyResult` values through a 64-entry bridge. Runtime mapping never performs a blocking
+  property reply or a synchronous compatibility query.
 
-0. Crates land (`tensor-event`, `tensor-runtime`).
-1. **Done:** `RuntimeState` owns `EventLoopState`; calloop idle runs
-   `dispatch_event_turn` (inject → drain → coalesced redraw latch).
-2. **Done:** `tensor-host` / `tensor-drm` / `tensor-present`; output policy is
-   Smithay-free; present readiness table lives on the event loop.
-3. **Done:** adapters push value events (pointer motion/button/axis, keyboard
-   keycode, surface commit, vblank); seat/KMS side effects still run inline for
-   latency. `PresentIntent` gates KMS submit.
-4. **In progress:** more policy behind bus-only handling; reduce duplicate
-   immediate redraw.
-5. **In progress:** completion contracts (`run_turn`, `EventfdWake`,
-   `EventfdCompletion`, `CompletionDriver::IoUring`); submitted Compio reads
-   now complete worker eventfd wakes; IPC accept/read/write, Linux signalfd
-   reads, one-shot GPU sync-file waits, security-context accept/close, Wayland
-   listener accepts, aggregate-display dispatch waits, the XWayland displayfd
-   startup handshake, udev hotplug notifications, libinput fd waits, and
-   libseat session notifications are Compio completion services. Compio names
-   the wrapper `PollFd`, but each wait submits one
-   `PollOnce` operation (one `IORING_OP_POLL_ADD` on io_uring) and resolves from
-   its CQE. The owner drains a bounded amount of source work and rearms only
-   after compositor-thread consumption; Tensor does not create a second
-   readiness registry.
-   The compositor thread now receives worker eventfd completions directly from
-   its Compio runtime; the shared relay thread and calloop channel are gone.
-   DRM page flips now use one compositor-thread Compio operation per device;
-   each CQE is consumed as one fixed stack batch and explicitly rearmed.
-   Libseat, udev, and libinput completions are consumed incrementally: one
-   decoded event is applied before the source advances, with no per-completion
-   staging vector or udev path clone.
-   Session-resume repaint is an explicit completion-turn tail phase after DRM
-   CQEs, so the tty backend no longer owns a calloop handle or idle callback.
-   One submitted wait on calloop's aggregate fd remains temporarily for
-   Smithay's internal XWM X11-event channel and focus-release ping. Next:
-   expose those two operations through the XWM adapter and remove the aggregate.
-6. Replace Smithay backends with native input/DRM open path; delete Smithay
-   (see `docs/smithay-exit.md`).
+## What must not cross the bus
 
-## Protocol tiers (related)
+- `WlSurface`, Wayland resources, X11 connections, DRM/GBM devices, Vulkan handles
+- Large IPC payloads; use stable IDs plus owner-side storage
+- Unbounded damage or event vectors
+- Readiness registrations or callbacks whose arrival order defines policy
 
-Protocol **selection** is independent of the event reactor but uses the same “borrow Smithay
-maturity” idea: implement against wayland-protocols **tiers** (core / stable / staging-ext /
-community). See `docs/protocol-surface.md`. Staging and `ext-*` are first-class; community
-`zwlr_*` is a documented stopgap, not the default design target.
+## Protocol tiers
+
+Protocol selection is independent of the I/O runtime. Tensor follows wayland-protocols tiers:
+core, stable, staging/`ext`, unstable, community, then proprietary. A higher standard tier wins for
+the same capability. See `docs/protocol-surface.md`.

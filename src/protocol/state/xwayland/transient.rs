@@ -12,7 +12,7 @@ use super::{super::RuntimeState, XWaylandWindowLifecycle};
 /// Keeps normal X11 `WM_TRANSIENT_FOR` windows pending until their complete
 /// rootless lifecycle and an owning managed X11 view are both available.
 ///
-/// The registry intentionally does not own Smithay or renderer state. Its
+/// The registry intentionally does not own Wayland resources or renderer state. Its
 /// windows become ordinary attached ECS views only after reconciliation.
 #[derive(Debug, Default)]
 pub(crate) struct XWaylandTransientRegistry {

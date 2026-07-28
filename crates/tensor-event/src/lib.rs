@@ -1,7 +1,7 @@
 //! Tensor compositor event layer.
 //!
 //! This crate owns **what** happens and **in which order**, not how file
-//! descriptors. Sources (Smithay adapters, Compio completions, DRM
+//! descriptors. Sources (protocol dispatch, Compio completions, DRM
 //! vblank) push [`Event`] values into an [`EventQueue`]; the compositor drains
 //! by [`Phase`].
 //!
@@ -13,10 +13,8 @@
 //! - Overflow is explicit ([`PushResult`]) with counters; never blocks the producer.
 //! - Phase order is fixed and branch-light; dispatch does not sort the ring.
 //!
-//! Design borrows from Smithay/calloop (callback sources, idle between waits,
-//! bounded cross-thread channels) but keeps the **semantic** queue Tensor-owned
-//! so the reactor (calloop today, Compio later) can be swapped without rewriting
-//! policy.
+//! Bounded cross-thread channels feed a Tensor-owned **semantic** queue so
+//! completion arrival order cannot rewrite policy.
 
 mod coalesce;
 mod event;

@@ -227,7 +227,7 @@ fn scene_extraction_separates_stable_nodes_from_draw_order() {
 }
 
 #[test]
-fn scene_extraction_keeps_surface_content_out_of_smithay_and_entity_ids() {
+fn scene_extraction_keeps_surface_content_out_of_wayland_and_entity_ids() {
     use crate::scene::{ContentRevision, SurfaceContent, SurfaceLayer, SurfaceSampleTransform};
 
     let mut world = CompositorWorld::new();

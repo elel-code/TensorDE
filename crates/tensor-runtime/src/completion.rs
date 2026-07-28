@@ -1,8 +1,8 @@
-//! Completion-to-callback relay for transitional event-loop adapters.
+//! Completion-to-callback relay for tests and narrow adapters.
 //!
 //! Workers signal an eventfd after enqueueing value messages. A Compio runtime
 //! submits the corresponding read and invokes a small callback only when that
-//! operation completes. The callback may wake a transitional host loop, but it
+//! operation completes. The callback may wake a test harness, but it
 //! never receives or owns Wayland, input, Vulkan, or DRM objects.
 
 use std::{

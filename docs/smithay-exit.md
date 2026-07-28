@@ -1,266 +1,83 @@
-# Smithay exit plan
+# Smithay removal contract
 
-Tensor currently uses Smithay as a **mature adapter** for remaining Wayland
-protocol objects, XWayland, and a residual calloop aggregate. Tensor owns the
-DRM/KMS and GBM path. The product goal is to delete Smithay once Tensor-owned
-crates cover the same **semantic** surface with equal or better performance.
+Smithay was removed from Tensor's dependency graph on 2026-07-27. This is a completed
+architectural break, not a feature configuration: there is no Smithay adapter crate, disabled
+Smithay feature, compatibility implementation, or fallback path.
 
-This document is the exit contract. Work that does not shrink Smithay surface
-area or move policy behind these crates is not exit work.
+`LICENSES/Smithay-MIT.txt` remains because several Tensor-owned implementations were derived from
+or validated against upstream Smithay code. Those source files retain explicit attribution. A
+license notice does not grant Smithay runtime ownership and must not be used to justify restoring
+the dependency.
 
-## Non-goals
+## Current ownership
 
-- Rewrite every protocol handler in one PR.
-- Run Vulkan or KMS on Compio worker threads.
-- Preserve compatibility or dual implementations during replacement. The new Tensor path and
-  deletion of the old adapter land together.
+| Boundary | Owner |
+|----------|-------|
+| Core and extension wire resources | `wayland-server`, `wayland-protocols`, and Tensor dispatch state |
+| Surface/subsurface transactions, SHM, XDG, seat, selection, output, capture | `src/protocol` and `tensor-protocol` |
+| Geometry and scaling | `tensor-util` |
+| Input normalization and device capability values | `tensor-input` |
+| Session, libinput, udev, DRM scanout, atomic KMS, GBM | Tensor tty backend using native crates |
+| Output planning and present policy | `tensor-host`, `tensor-drm`, `tensor-present` |
+| Rootless XWayland process, shell association, XWM | Tensor protocol state plus `x11rb` |
+| Renderer and synchronization | Vulkanalia renderer; Tensor atomic KMS consumes exported dma-bufs and sync files |
+| Semantic event ordering | `tensor-event` |
+| Asynchronous I/O | Compio completion operations with the io_uring driver |
 
-## Target crate map
+Thread-affine Wayland, X11, Vulkan, and KMS objects remain on their owning compositor boundary.
+Workers publish bounded value messages; they do not acquire Wayland objects or DRM/KMS ownership.
 
-| Crate | Owns | Must not own |
-|-------|------|----------------|
-| `tensor-event` | Value events, phases, coalesce, fixed queues | FDs, Wayland objects |
-| `tensor-runtime` | Compio workers, bounded bridges | DRM master, WlSurface |
-| `tensor-host` | Mode, connector id, format codes, input samples, present intent | libdrm, wayland-server |
-| `tensor-drm` | Topology plan, output rules, mode select | Open DRM nodes, atomic |
-| `tensor-present` | Slot readiness, present intent queue | GBM bo, CRTC commit |
-| `tensor-input` | Device caps + `Sample` → bus events | Seat protocol objects, libinput |
-| `tensor-protocol` | Stable surface/buffer IDs, attachment lifecycle, tier policy | Wire objects, ECS entities |
-| `tensor-compositor` | Policy, ECS, Vulkan, adapters | — |
+## Completion model
 
-## Completion gates (delete Smithay only when all pass)
+The Linux product path disables Compio defaults and its `polling` fallback. Runtime construction
+fails if io_uring cannot be created. `PollFd` in Compio source is a wrapper name for one submitted
+`IORING_OP_POLL_ADD`; Tensor consumes its CQE and explicitly rearms the next one-shot operation.
+Tensor owns no poll/epoll readiness registry and has no calloop dependency.
 
-1. **Policy purity**
-   - Output plan / mode / scale / enable live in `tensor-drm` and are unit-tested
-     without Smithay.
-   - Present slot readiness / intent queue live in `tensor-present`.
-   - Event bus never carries `WlSurface`, `DrmDevice`, or Vulkan handles.
+Wayland listener accepts and display dispatch, IPC, signalfd, GPU fences, security-context sockets,
+udev, libinput, libseat, timerfds, DRM page flips, XWayland displayfd, and X11 event notification all
+enter compositor turns through completed operations. X11 property reads use a dedicated
+Compio/io_uring connection: `MapRequest` submits a fixed-capacity batch for `WM_TRANSIENT_FOR`,
+`WM_NORMAL_HINTS`, and `_NET_WM_STATE`; only the returned pure-value completion can publish the map
+request to compositor policy. Property changes use the same channel. Queue failure terminates the
+XWayland subsystem; it never falls back to synchronous property reads.
 
-2. **Type boundary**
-   - `BackendOutputId` ≡ `tensor_host::ConnectorId`.
-   - Physical modes are `tensor_host::PhysicalMode` (not `smithay::output::Mode`)
-     inside policy modules.
-   - DRM fourcc/modifier for negotiation are `tensor_host::{Fourcc,Modifier}`
-     (or thin newtypes) outside the Smithay adapter.
-   - Renderer import/export uses Tensor-owned `Dmabuf` / `ExportedDmabuf`
-     descriptions; Smithay conversion occurs only at protocol and tty edges.
+X11 event ordering is authoritative. A `MapRequest` or `ConfigureRequest` without the preceding
+`CreateNotify` is an invariant error; Tensor does not issue synchronous attribute/geometry queries
+to repair it. The XWM keeps one persistent fixed-capacity event deque, `_NET_WM_STATE` uses a
+fixed-capacity atom array, and EWMH client-list publication borrows the stacking store directly.
+Either capacity being exceeded fails the XWayland session closed instead of reallocating the hot
+path.
 
-3. **Reactor**
-   - Semantic loop is only `tensor-event` drain order.
-   - After **Compio completions** (io_uring driver), inject values into
-     `tensor-event` (calloop readiness only during migration); policy does not
-     depend on readiness callback order.
-   - Spawn / log / IPC workers already use Compio bridges.
+## No-reintroduction rules
 
-4. **Present path**
-   - Compositor thread: Vulkan record → export dma-buf + SYNC_FD →
-     `PresentIntent` → adapter atomic commit.
-   - The tty adapter alone owns Tensor's atomic KMS surface, DRM framebuffers,
-     and GBM imports.
-   - VBlank → `Event::Output(VBlank)` → redraw latch (already started).
+- No manifest may declare `smithay` or `smithay-drm-extras`.
+- No source file may import a `smithay::` path.
+- No `tensor-smithay` or equivalent adapter crate may be added.
+- No legacy API wrapper, dual implementation, feature-gated fallback, or marker dependency may be
+  retained for compatibility.
+- Direct native ownership must replace an obsolete boundary in the same change that deletes it.
+- Performance-sensitive paths use fixed capacities, borrowed slices, stable IDs, and explicit
+  overflow/failure behavior; removal is not permission to add copies or unbounded queues.
+- Rustix is preferred for Linux syscalls. Do not add direct `libc` use when rustix exposes the
+  operation.
 
-5. **Protocol surface**
-   - Tensor-local Dispatch2 extensions (gamma, virtual-pointer, workspace,
-     output-management, capture) remain value-only at ECS/render edges.
-   - Core shell either stays on a thin wayland-server stack **or** moves to a
-     Tensor protocol crate. Tensor `WindowSpace` now owns protocol-window
-     mapping, stacking, hit testing, output overlap, and enter/leave; ECS +
-     scene own policy and rendering order.
+`uv run scripts/check_crate_boundaries.py` enforces the dependency and import bans for the root
+package and every workspace crate.
 
-6. **Input / session**
-   - libinput / libseat behind `tensor-input` / session adapter emitting
-     `tensor_host` samples and `tensor_event::InputEvent`.
-   - Seat protocol state is protocol-layer only.
+## Verification
 
-7. **Verification**
-   - `cargo test --all-targets` with Smithay feature **off** still builds host
-     crates and policy tests.
-   - Full session feature may keep Smithay until the last adapter lands.
-   - Line limits, fmt, and no new Smithay imports outside `src/protocol/` +
-     `src/backend/` adapter modules.
+The removal gate is:
 
-## Migration stages
+```sh
+rg -n "smithay::|use smithay|extern crate smithay|smithay\\s*=" \
+  Cargo.toml Cargo.lock src crates
+cargo tree -i smithay
+cargo tree -i calloop
+cargo fmt --all -- --check
+uv run scripts/check_file_lines.py
+uv run scripts/check_crate_boundaries.py
+cargo test --all-targets
+```
 
-| Stage | Status | Work |
-|-------|--------|------|
-| 0 | Done | `tensor-event`, `tensor-runtime` |
-| 1 | Done | Event idle turn: inject → drain → redraw latch |
-| 2 | **Done** | `tensor-host` / `tensor-drm` / `tensor-present` scaffolded + tests |
-| 3 | **Done** | `backend/output` policy uses host types; Smithay maps only in `host_map` / protocol advertise |
-| 4 | **Done** | Submit path: policy readiness + `PresentIntent` push/pop before KMS; format negotiation and renderer dma-buf descriptions are Smithay-free. `smithay-drm-extras`, Smithay's `backend_gbm`, and Smithay's `backend_drm` feature are removed. Tensor imports renderer-owned dma-bufs directly through GBM, creates explicit-modifier DRM framebuffers, strictly parses primary-plane `IN_FORMATS`, and owns atomic TEST_ONLY/modeset/page-flip/clear/resume requests. Steady-state present submits only `FB_ID + IN_FENCE_FD` from fixed stack arrays; it does not allocate, clone a request, stage geometry, or lock. Tensor owns the shared DRM fd, master lifecycle, startup property snapshot, tty restoration, and bidirectional syncobj/SYNC_FD protocol timeline operations. DRM nodes, connector modes/subpixels, event decode, scanning, and gamma use drm-rs directly. Smithay no longer compiles any DRM backend code |
-| 5 | **In progress** | `run_turn` + `EventfdWake` + `CompletionDriver::IoUring`; the compositor thread now runs a Compio completion loop directly, with no shared relay thread/channel. IPC, signalfd, GPU sync-file, security-context, Wayland listener/display, XWayland displayfd startup, udev hotplug, libinput, Tensor-owned libseat session waits, commit-timing and idle-notify timerfd deadlines, and per-device DRM page-flip waits are Compio-completed operations. Each timerfd has one submitted `IORING_OP_POLL_ADD`; its CQE is consumed before the earliest absolute monotonic deadline is rearmed, with no timer polling or readiness registry. DRM waits stay on the compositor thread, use one submitted op per device, decode one fixed stack batch after the CQE, and rearm explicitly. Libseat, udev, and libinput cursors apply one event at a time without per-completion staging vectors. Session-resume repaint is a completion-turn tail after DRM CQEs; tty no longer owns a calloop handle. The dma-buf client smoke also submits its Wayland socket operations directly through Compio, so `calloop-wayland-source` is gone. The aggregate remains only for Smithay's internal XWM event channel and focus-release ping |
-| 6 | **In progress** | Libinput CQEs normalize keyboard, relative/absolute pointer, button, axis, activity, device ID, and capabilities directly into compact `tensor-input` values. The hot path no longer carries Smithay backend events or allocates device-name keys. Virtual-pointer requests enter the same Tensor value path without per-event Wayland resource clones; its allocation-free axis accumulator preserves source-before-value ordering, v120, and explicit stops. Smithay's `backend_libinput` and `backend_session` features and session wrapper are removed; raw tablet tools terminate at the protocol adapter, whose allocating device descriptor is cached once per hotplug rather than rebuilt per motion |
-| 7 | **In progress** | See the Stage 7 protocol ledger below |
-| 8 | Exit | Smithay and calloop dependencies deleted; no compatibility or adapter crate retained |
-
-### Stage 7 protocol ledger
-
-`tensor-protocol` owns IDs, scene values, attachment lifetime, and tier policy. All wire types now
-come directly from `wayland-server`, `wayland-protocols`, and `wayland-protocols-wlr`; Smithay
-reexports are gone. Tensor `WindowSpace` and compositor-thread `ProtocolWindow` have replaced
-Smithay's desktop space/window types without per-refresh snapshots, query vectors, or shared
-locking. Tensor also owns popup topology, descendant cleanup, dynamic root-relative placement,
-explicit-grab policy, per-output layer maps/surfaces, allocation-free surface traversal, frame
-callback dispatch, presentation capture, and X11 hit testing. Tensor now owns `wl_output` v4,
-xdg-output v3, output identity/lifetime, enter/leave, `wp_presentation`, `wp_fractional_scale_v1`,
-`wp_content_type_v1`, `wp_alpha_modifier_v1`, `wp_fifo_v1`, `wp_commit_timing_v1`, and
-`ext-background-effect-v1` wire state. Fractional scale publishes Tensor's exact 120-based units
-without a float round trip. Content type, exact 32-bit alpha, and background area share one O(1)
-double-buffered metadata table and one post-commit hook installed only on opted-in surfaces, so
-ordinary commits gain no work. FIFO preserves synchronized-subsurface and queued-transaction
-ordering through the transitional core compositor cache, but capture scans only Tensor's
-active-barrier set; atomic KMS acceptance releases submitted barriers, while failed or off-screen
-submissions fail forward at the idle boundary. Commit timing keeps full unsigned wire seconds,
-rejects invalid nanoseconds, and advertises only when its monotonic timerfd exists. Alpha remains an
-integer through `SurfaceContent` and the draw plan, converts only for the final Vulkan push
-constant, and fully transparent surfaces allocate neither descriptors nor draws. Background-effect
-reduces the transient region to the area predicate consumed by current scene policy instead of
-retaining another region-vector copy. Mode, location, scale, transform, and physical state are
-coherent lock-free snapshots; image capture and present read them without locking. Wayland output
-resource lists publish an RCU snapshot only on bind/destroy, so presentation completion neither
-locks nor copies the list. Tensor owns the live renderer-facing surface buffer, size, viewport,
-transform, scale, damage revision, release, and synchronized-subsurface application state. Scene
-extraction consumes those values in the existing single surface-tree traversal, without a damage
-staging allocation or buffer-content copy. Tensor also owns the linux-dmabuf v6 global, immutable
-sealed feedback table, params validation, `wl_buffer` userdata, renderer-registration lifetime,
-inline single-pixel buffer userdata, stable viewporter wire, core `wl_shm`/pool/buffer wire, staging
-`ext-foreign-toplevel-list`, and the complete staging image-capture-source/image-copy-capture wire.
-SHM pool validation, grow-only remapping, truncated-file SIGBUS recovery, and exact-subrange pixel
-access are Tensor-owned; size lookup borrows inline userdata without mapping or locking, while
-surface and capture pixel consumers borrow the mmap directly without staging copies. Capture
-sessions carry their source directly instead of scanning session tables, constraints use fixed
-arrays, and frame fills write into the client mapping on the bounded idle path. Foreign-toplevel
-capture sources retain a weak Tensor handle and resolve directly to the stable surface key; closing
-a toplevel invalidates that identity with no title lookup or session scan. Metadata resource locks
-and string allocation remain confined to map/title/app-id protocol events, outside input, vblank,
-and present paths. Viewport source crop remains exact 24.8 fixed-point state through the registry,
-then composes with buffer scale and transform once at commit; Vulkan recording reads the six
-precomputed UV values without buffer copies, allocation, traversal, or division. Viewport commit
-validation takes the existing surface traversal and performs no allocation on valid input; only
-protocol-error formatting allocates. Client dma-buf import retains one plane vector and uniquely
-owned FDs from wire decode through Vulkan import; there is no Smithay conversion or second plane
-collection, while single-pixel lookup is a zero-copy userdata borrow. Tensor now owns
-`xdg_system_bell_v1`, `wp_pointer_warp_v1`, `xdg_toplevel_tag_v1`, and `xdg_toplevel_icon_v1`
-directly, with no Smithay handler or parallel compatibility path. Pointer warps validate the enter
-serial, focused surface, finite in-bounds coordinates, and client scale exactly once. Toplevel icons
-freeze once into shared `Arc` snapshots; pixel buffers remain zero-copy mmap leases after the icon
-and `wl_buffer` resources are destroyed, while destroying a buffer before its live icon raises
-`no_buffer`. A buffer-to-icon reverse index makes unrelated SHM buffer destruction one hash lookup
-instead of an icon scan. Icon commit hooks are installed only on surfaces that opt in, so ordinary
-commit, input, vblank, and present paths gain no work. Tensor also owns `zxdg_decoration_v1`,
-`ext_idle_notify_v1`, `zwp_idle_inhibit_v1`, and `zwp_keyboard_shortcuts_inhibit_v1` directly.
-Idle notification uses one monotonic timerfd and one explicitly rearmed Compio completion. Shared
-activity epochs and timeout buckets keep steady input O(1): while a timer completion is submitted,
-input performs no timer syscall, notification scan, allocation, lock, or resource clone. An early
-CQE caused by a shifted deadline is consumed once and rearms the later absolute deadline. Only
-objects that actually left idle are visited to emit their required `resumed` events. Input-only
-notifications continue across inhibition, while ordinary notifications restart when the exact
-aggregate inhibitor count returns to zero. Idle inhibition preserves multiple live inhibitors per
-surface without scanning them on input activity. Shortcut inhibitors
-are keyed by stable surface identity, reject duplicates, and add one allocation-free hash lookup to
-the key path only while resolving the focused surface; VT recovery remains compositor-owned. Only
-the core compositor cached-state boundary remains Smithay-backed for surface commits. Tensor now
-owns `zwp_relative_pointer_v1` wire state as well; physical relative motion reaches the protocol
-instead of merely advertising its global. Resources are indexed by focused client, so a motion
-performs one hash lookup and visits only that client's listeners, without a global scan, lock,
-allocation, or Wayland-resource clone. The accelerated delta is converted through the client's
-logical scale while the unaccelerated delta remains device-native, and the target reuses the
-post-grab focus read already required by pointer constraints. Tensor-owned
-`wp_cursor_shape_manager_v1` v2 also replaces Smithay's global and stores persistent cursor images
-in a Tensor enum backed directly by `cursor-icon`. Pointer shapes require the active enter serial
-and focused or grabbed client. Tablet shapes track the exact proximity serial and current client;
-axis tracking is gated on a bound tablet cursor-shape device, so clients that do not opt in add no
-hash lookup, resource access, or client-id copy to tablet motion. Destroyed tablet tools become
-inert immediately. Tensor also owns the complete `wp_pointer_gestures_v1` v3 wire path. Libinput
-swipe, pinch, and hold phases, which were previously discarded, now enter the compositor as compact
-copyable `tensor-input` values after the submitted libinput operation completes. Gesture resources
-are indexed by focused client; updates perform one hash lookup and visit only that client's active
-listeners, without a global scan, lock, allocation, or Wayland-resource clone. Begin captures the
-surface identity and client scale once, resources created mid-gesture remain inactive, and leaving
-the initial surface emits a cancelled end before any later update can cross focus. Tensor-owned
-`zwp_pointer_constraints_v1` now replaces Smithay's state and handler outright. Locked pointers
-suppress absolute `wl_pointer.motion` while continuing the existing client-indexed relative-motion
-completion path; committed cursor hints are applied only when an active lock ends. Confinement
-regions are normalized once on the protocol control path into at most 128 non-overlapping
-rectangles, then segment clipping is bounded, stack-only, lock-free, and allocation-free on input.
-Client-controlled regions that exceed that bound remain inactive instead of controlling compositor
-input latency. Only constrained surfaces receive a commit hook, region and hint state remain
-double-buffered, and oneshot deactivation removes both the direct surface index and hook without a
-compatibility implementation. Tensor also owns `xdg_activation_v1` directly. Compositor launches
-and focused clients share one bounded, one-shot token authority; 256-bit handles come from
-`rustix::rand::getrandom`, expire after ten seconds, and never fall back to weak randomness.
-Keyboard/button interaction grants are fixed-size O(1) overwrites, while focus changes retain only
-weak surface identities, so input adds no scan, lock, allocation, or Wayland-resource clone.
-Tensor-owned `zxdg_exporter_v2` / `zxdg_importer_v2` replace Smithay's xdg-foreign state as well.
-Handles use the same kernel CSPRNG and an O(1) map instead of a handle scan. Every imported object
-owns its own parent relationship, invalidation is exact, destroying an export notifies all live
-importers, and surface teardown uses reverse indices rather than scanning unrelated exports. No
-compatibility implementation remains. Tensor owns `ext-session-lock-v1` directly too: lock and
-surface identity use exact O(1) indices, configure backlog is fixed-capacity, output changes are
-coalesced without an unbounded queue, and no output-name copy is retained. Output-global instance
-identity is distinct from connector identity, so a reconnect cannot inherit a retired lock surface;
-inactive surfaces never remain in the configure index. A lock becomes visible to the client only
-after the exact protected frame submitted for every live output returns through the KMS page-flip
-completion path; an older in-flight frame cannot satisfy the gate. Pending and confirmed locks blank
-outputs without extracting/copying the ordinary scene, normal seat grabs and client cursors are
-cleared, and input-region/subsurface hit testing routes input only to active lock surfaces (apart
-from VT recovery). Unlock, cancellation, output removal, and surface teardown clear the lock seat
-before focus can move. The Smithay session-lock state, handler, wrapper types, and
-immediate-confirmation path are deleted, not retained as an adapter. Tensor-owned
-`wl_data_device_manager`, primary selection, wlr data-control v2, and staging ext-data-control
-now share one Tensor authority as well. Sources and devices use exact client/object indices;
-focus changes visit only the old and new client, while privileged monitors are visited only when
-the selection changes. Outstanding focused offers are rejected after focus loss or replacement,
-and transfer FDs pass directly between protocol peers without compositor payload copies. Core DnD
-uses the same single-use source records and strict accept/action/finish state machine, including
-the pre-v3 copy action and cancellation rules; pointer and touch motion neither scan source tables
-nor read MIME metadata. Smithay selection state, handler traits, focus setters, and wire delegates
-are deleted rather than kept as a compatibility implementation. Tensor-owned
-`wlr-layer-shell-v1` v5 now owns the global, layer resources, double-buffered role state, configure
-queue, output selection, popup parenting, and teardown directly. Smithay's layer-shell state,
-handler trait, wrapper types, cached state, and wire delegate are deleted. Layer resources and
-roots have exact object indices; root-to-output lookup on commit is O(1), while each output retains
-one contiguous creation-order vector for hit testing and frame merge. Configure backlogs are fixed
-at 16 entries, and every unmap advances a generation so an old configure ACK can be consumed but
-can never authorize a buffer in the new mapping. The detach commit does not configure the next
-mapping; the client must first issue the required empty initial commit. Output removal sends
-`closed`, further requests become inert, and transfer to xdg-popup state occurs once without a
-parallel layer adapter. These paths add no lock, allocation, table scan, or resource clone to
-input, vblank, present, or frame traversal. Tensor-owned stable xdg-shell v7 now replaces
-Smithay's XDG state and handler outright. Tensor owns the global, positioners, base surfaces,
-toplevel and popup role resources, client/server double-buffered state, metadata, parent
-relations, configure/ACK lifecycle, and role teardown. Exact resource and `wl_surface` indices
-make ordinary commit role lookup O(1); fixed 16-entry configure queues and per-mapping generations
-prevent stale ACKs from authorizing remaps without an unbounded backlog. Detach does not synthesize
-a configure for the next mapping: the client must issue the new empty initial commit first. Popup
-placement uses saturating arithmetic and a bounded parent walk. The temporary Smithay popup-grab
-trait receives only raw resource identities required by its `Send` bound; Tensor's role, frame
-traversal, hit testing, and commit state remain compositor-thread `Rc` values with no mutex or
-`Arc` conversion. XDG decoration, foreign parenting, desktop controls, and layer-popup parenting
-resolve the same Tensor handles directly. Smithay XDG wrappers, cached role state, handler
-callbacks, wire delegates, and compatibility path are deleted.
-
-Tensor-owned
-gamma, virtual-pointer, workspace,
-output-management, and security-context protocols use a local zero-cost `wayland-server` dispatch
-delegate and no longer import Smithay. Gamma-control lifetime is keyed by stable `ConnectorId`
-rather than Smithay `Output`, and ramp ingestion uses one final allocation without a full-size
-staging copy. The Smithay `desktop` feature is removed; only core compositor/subsurface, seat/input
-protocols, input-method popups, and XWayland/XWM remain at the Smithay boundary
-
-## Performance rules (unchanged)
-
-- Fixed-capacity rings; no alloc on input/vblank/present queue push.
-- Coalesce pointer motion and per-output vblank.
-- Present and Vulkan record stay on the compositor thread.
-- Topology-rate work (output-management advertise, connector rescan) never on
-  page-flip.
-
-## How to review exit PRs
-
-1. Does this PR **reduce** `smithay::` imports outside adapter modules?
-2. Are new types in `tensor-host` / `tensor-drm` / `tensor-present` pure values?
-3. Are hot paths still O(1) / budgeted idle work?
-4. Is there a test that runs **without** opening DRM or a Wayland display?
-
-If the answer to (1) or (2) is no, it is not exit work.
+The two `cargo tree -i` commands are expected to report that no matching package exists.

@@ -1,10 +1,6 @@
 //! Compositor-thread Compio completion loop.
 
-use std::{
-    io,
-    os::fd::{AsFd, OwnedFd},
-    time::Duration,
-};
+use std::{io, os::fd::OwnedFd};
 
 use compio::runtime::fd::PollFd;
 use tensor_runtime::{
@@ -19,9 +15,9 @@ use crate::protocol::state::RuntimeState;
 #[cfg(feature = "tty")]
 const MAX_DRM_COMPLETION_SOURCES: usize = 16;
 #[cfg(feature = "tty")]
-const MAIN_COMPLETION_CAPACITY: usize = 4 + MAX_DRM_COMPLETION_SOURCES;
+const MAIN_COMPLETION_CAPACITY: usize = 3 + MAX_DRM_COMPLETION_SOURCES;
 #[cfg(not(feature = "tty"))]
-const MAIN_COMPLETION_CAPACITY: usize = 4;
+const MAIN_COMPLETION_CAPACITY: usize = 3;
 
 #[derive(Clone, Copy)]
 enum SourceCommand {
@@ -30,7 +26,6 @@ enum SourceCommand {
 
 enum MainCompletion {
     Worker(io::Result<u64>),
-    Legacy(io::Result<()>),
     CommitTimer(io::Result<()>),
     IdleTimer(io::Result<()>),
     #[cfg(feature = "tty")]
@@ -42,7 +37,6 @@ enum MainCompletion {
 
 struct TurnCompletions {
     worker: Option<io::Result<u64>>,
-    legacy: Option<io::Result<()>>,
     commit_timer: Option<io::Result<()>>,
     idle_timer: Option<io::Result<()>>,
     #[cfg(feature = "tty")]
@@ -61,7 +55,6 @@ impl TurnCompletions {
     fn new() -> Self {
         Self {
             worker: None,
-            legacy: None,
             commit_timer: None,
             idle_timer: None,
             #[cfg(feature = "tty")]
@@ -74,7 +67,6 @@ impl TurnCompletions {
     fn record(&mut self, completion: MainCompletion) -> Result<(), ProtocolError> {
         let duplicate = match completion {
             MainCompletion::Worker(result) => self.worker.replace(result).is_some(),
-            MainCompletion::Legacy(result) => self.legacy.replace(result).is_some(),
             MainCompletion::CommitTimer(result) => self.commit_timer.replace(result).is_some(),
             MainCompletion::IdleTimer(result) => self.idle_timer.replace(result).is_some(),
             #[cfg(feature = "tty")]
@@ -109,9 +101,8 @@ impl TurnCompletions {
 impl WaylandRuntime {
     /// Run the product completion loop on the compositor thread.
     ///
-    /// The legacy source is only the transitional Smithay XWM aggregate. It is
-    /// awaited as one submitted Compio operation and dispatched nonblocking
-    /// after its CQE; worker wakes are completed eventfd reads.
+    /// Worker wakes, timer deadlines, and DRM events enter this loop only
+    /// after their submitted io_uring operations complete.
     pub fn run_with_completions<C>(
         &mut self,
         wake: &EventfdWake,
@@ -124,8 +115,6 @@ impl WaylandRuntime {
         if !self.prepared {
             return Err(ProtocolError::RuntimeNotPrepared);
         }
-        let legacy_fd = rustix::io::fcntl_dupfd_cloexec(self.event_loop.as_fd(), 0)
-            .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let commit_timer_fd = self
             .state
             .duplicate_commit_timer_fd()
@@ -140,20 +129,12 @@ impl WaylandRuntime {
             let worker_reader = wake
                 .completion_reader()
                 .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
-            let legacy_reader = PollFd::new(legacy_fd)
-                .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
             let completions = LocalCompletionQueue::bounded(MAIN_COMPLETION_CAPACITY);
             let worker_commands = LocalCompletionQueue::bounded(1);
-            let legacy_commands = LocalCompletionQueue::bounded(1);
             let worker_task = compio::runtime::spawn(wait_for_worker_completions(
                 worker_reader,
                 completions.clone(),
                 worker_commands.clone(),
-            ));
-            let legacy_task = compio::runtime::spawn(wait_for_legacy_completions(
-                legacy_reader,
-                completions.clone(),
-                legacy_commands.clone(),
             ));
             let commit_timer_source = commit_timer_fd
                 .map(|fd| {
@@ -251,21 +232,6 @@ impl WaylandRuntime {
                         drm_sources.rearm(completion.device_id)?;
                     }
                 }
-                if let Some(result) = turn.legacy {
-                    result.map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
-                    self.event_loop
-                        .dispatch(Some(Duration::ZERO), &mut self.state)
-                        .map_err(ProtocolError::Run)?;
-                    if !stop.is_stopped() {
-                        legacy_commands
-                            .try_send(SourceCommand::Rearm)
-                            .map_err(|_| {
-                                ProtocolError::MainCompletion(
-                                    "legacy completion rearm queue is full".to_owned(),
-                                )
-                            })?;
-                    }
-                }
                 if let Some(result) = turn.idle_timer {
                     let rearm = match result {
                         Ok(()) => self.state.complete_idle_timer(),
@@ -287,7 +253,6 @@ impl WaylandRuntime {
             }
 
             let _ = worker_task.cancel().await;
-            let _ = legacy_task.cancel().await;
             if let Some(source) = commit_timer_source {
                 source.shutdown().await;
             }
@@ -311,27 +276,6 @@ async fn wait_for_worker_completions(
         let failed = result.is_err();
         if completions
             .try_send(MainCompletion::Worker(result))
-            .is_err()
-            || failed
-        {
-            return;
-        }
-        if commands.recv().await.is_err() {
-            return;
-        }
-    }
-}
-
-async fn wait_for_legacy_completions(
-    reader: PollFd<OwnedFd>,
-    completions: LocalCompletionQueue<MainCompletion>,
-    commands: LocalCompletionQueue<SourceCommand>,
-) {
-    loop {
-        let result = reader.read_ready().await;
-        let failed = result.is_err();
-        if completions
-            .try_send(MainCompletion::Legacy(result))
             .is_err()
             || failed
         {

@@ -25,7 +25,7 @@ impl RuntimeState {
                     .input_seat
                     .pointer_location()
                     .unwrap_or_else(|| center_pointer_location(bounds));
-                let location = Point::from((
+                let location = LogicalPoint::from((
                     event.x * f64::from(bounds.size.w),
                     event.y * f64::from(bounds.size.h),
                 )) + bounds.loc.to_f64();
@@ -88,11 +88,7 @@ impl RuntimeState {
         }
     }
 
-    fn forward_session_lock_pointer_location(
-        &mut self,
-        location: Point<f64, Logical>,
-        time_ns: u64,
-    ) {
+    fn forward_session_lock_pointer_location(&mut self, location: LogicalPoint<f64>, time_ns: u64) {
         if !self.input_seat.pointer_enabled() {
             return;
         }
@@ -110,8 +106,8 @@ impl RuntimeState {
 
     fn session_lock_pointer_focus(
         &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        location: LogicalPoint<f64>,
+    ) -> Option<(WlSurface, LogicalPoint<f64>)> {
         let output = self.space.output_under(location).next()?;
         let geometry = self.space.output_geometry(output)?;
         let surface = self

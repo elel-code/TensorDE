@@ -10,7 +10,7 @@ use vulkanalia::{Version, vk};
 
 use super::NativeInteropCapabilities;
 
-/// Linux `major()` for a `dev_t` without pulling smithay/rustix into device ranking.
+/// Linux `major()` for a `dev_t` without binding device ranking to rustix types.
 #[inline]
 pub(super) const fn major_dev(dev: u64) -> u32 {
     // glibc: ((dev >> 8) & 0xfff) | ((u32)(dev >> 32) & !0xfff)

@@ -1,8 +1,7 @@
 //! Compositor-owned Wayland extensions on Tensor's direct dispatch path.
 //!
 //! Virtual-pointer and gamma-control follow Niri/Hyprland wlr protocol surfaces
-//! while every extension delegates directly through `wayland-server`. Smithay
-//! protocol state is not part of this boundary.
+//! while every extension delegates directly through `wayland-server`.
 
 pub mod ext_workspace;
 pub mod gamma_control;

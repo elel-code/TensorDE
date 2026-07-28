@@ -21,9 +21,7 @@ pub(in crate::protocol) use surface::{
 #[cfg(feature = "tty")]
 use crate::protocol::globals::compositor::{get_parent, send_surface_state, with_states};
 #[cfg(feature = "tty")]
-use smithay::utils::{Logical, Point};
-#[cfg(feature = "tty")]
-use tensor_util::Rect;
+use tensor_util::{LogicalPoint, LogicalRect, Rect};
 #[cfg(feature = "tty")]
 use tracing::warn;
 #[cfg(feature = "tty")]
@@ -47,9 +45,9 @@ use crate::protocol::serial::{Serial, next_serial};
 #[cfg(feature = "tty")]
 pub(super) struct LayerPopupContext {
     pub(super) output: Output,
-    pub(super) geometry: smithay::utils::Rectangle<i32, Logical>,
+    pub(super) geometry: LogicalRect<i32>,
     pub(super) layer: WlrLayer,
-    pub(super) non_exclusive_zone: smithay::utils::Rectangle<i32, Logical>,
+    pub(super) non_exclusive_zone: LogicalRect<i32>,
 }
 
 impl RuntimeState {
@@ -77,21 +75,13 @@ impl RuntimeState {
     }
 
     #[cfg(all(test, feature = "tty"))]
-    pub(crate) fn layer_test_snapshot(
-        &self,
-        output: &Output,
-    ) -> Option<(usize, smithay::utils::Rectangle<i32, Logical>)> {
+    pub(crate) fn layer_test_snapshot(&self, output: &Output) -> Option<(usize, LogicalRect<i32>)> {
         let output_geometry = self.space.output_geometry(output)?;
         Some(
             self.layer_maps
                 .for_output(output)
                 .map(|map| (map.layers().count(), map.non_exclusive_zone()))
-                .unwrap_or_else(|| {
-                    (
-                        0,
-                        smithay::utils::Rectangle::from_size(output_geometry.size),
-                    )
-                }),
+                .unwrap_or_else(|| (0, LogicalRect::from_size(output_geometry.size))),
         )
     }
 
@@ -126,7 +116,7 @@ impl RuntimeState {
                     layer.wl_surface(),
                     states,
                     super::output_integer_scale(scale),
-                    super::smithay_transform(transform).into(),
+                    super::wayland_transform(transform),
                 );
             });
             self.protocol_globals
@@ -181,8 +171,8 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     pub(crate) fn layer_or_window_pointer_focus(
         &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        location: LogicalPoint<f64>,
+    ) -> Option<(WlSurface, LogicalPoint<f64>)> {
         let (output, output_geo) = self.output_under_location(location)?;
         let pos_in_output = location - output_geo.loc.to_f64();
         let map = self.layer_maps.for_output(&output);
@@ -213,7 +203,7 @@ impl RuntimeState {
 
     /// Click focus: keyboard-capable layers first (same stacking order), else windows.
     #[cfg(feature = "tty")]
-    pub(crate) fn focus_at_pointer(&mut self, location: Point<f64, Logical>, serial: Serial) {
+    pub(crate) fn focus_at_pointer(&mut self, location: LogicalPoint<f64>, serial: Serial) {
         if let Some(layer) = self.keyboard_layer_under(location) {
             self.focus_layer_surface(layer, serial);
             return;
@@ -286,7 +276,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    pub(crate) fn layer_surface_origin(&self, surface: &WlSurface) -> Option<Point<i32, Logical>> {
+    pub(crate) fn layer_surface_origin(&self, surface: &WlSurface) -> Option<LogicalPoint<i32>> {
         let (layer, output) = self.layer_maps.layer_and_output_for_root(surface)?;
         let local = self
             .layer_maps
@@ -525,13 +515,13 @@ impl RuntimeState {
     pub(super) fn exclusive_workspace_area(
         &self,
         output: &Output,
-        geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        geometry: LogicalRect<i32>,
     ) -> Option<Rect> {
         let zone = self
             .layer_maps
             .for_output(output)
             .map(LayerMap::non_exclusive_zone)
-            .unwrap_or_else(|| smithay::utils::Rectangle::from_size(geometry.size));
+            .unwrap_or_else(|| LogicalRect::from_size(geometry.size));
         let width = u32::try_from(zone.size.w).ok()?;
         let height = u32::try_from(zone.size.h).ok()?;
         (width > 0 && height > 0).then(|| {
@@ -547,8 +537,8 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     fn window_pointer_focus(
         &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        location: LogicalPoint<f64>,
+    ) -> Option<(WlSurface, LogicalPoint<f64>)> {
         let mut dnd_active = None;
         let hit = self.space.element_under(&self.popups, location, || {
             *dnd_active.get_or_insert_with(|| self.xwayland_dnd_pointer_grab_active())
@@ -562,8 +552,8 @@ impl RuntimeState {
     #[cfg(feature = "tty")]
     fn output_under_location(
         &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(Output, smithay::utils::Rectangle<i32, Logical>)> {
+        location: LogicalPoint<f64>,
+    ) -> Option<(Output, LogicalRect<i32>)> {
         let output = self.space.output_under(location).next()?.clone();
         let geometry = self.space.output_geometry(&output)?;
         Some((output, geometry))
@@ -571,7 +561,7 @@ impl RuntimeState {
 
     /// Layer under the pointer that can accept keyboard focus.
     #[cfg(feature = "tty")]
-    fn keyboard_layer_under(&self, location: Point<f64, Logical>) -> Option<LayerSurface> {
+    fn keyboard_layer_under(&self, location: LogicalPoint<f64>) -> Option<LayerSurface> {
         let (output, output_geo) = self.output_under_location(location)?;
         let pos_in_output = location - output_geo.loc.to_f64();
         let map = self.layer_maps.for_output(&output)?;
@@ -688,10 +678,10 @@ fn exclusive_layer_on(map: &LayerMap, band: WlrLayer) -> Option<LayerSurface> {
 fn layer_surface_under(
     map: &LayerMap,
     popups: &super::PopupManager,
-    pos_in_output: Point<f64, Logical>,
-    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    pos_in_output: LogicalPoint<f64>,
+    output_geo: LogicalRect<i32>,
     bands: [WlrLayer; 2],
-) -> Option<(WlSurface, Point<f64, Logical>)> {
+) -> Option<(WlSurface, LogicalPoint<f64>)> {
     for band in bands {
         if let Some(layer) = map.layer_under(popups, band, pos_in_output)
             && let Some(layer_geo) = map.layer_geometry(layer)
@@ -710,7 +700,7 @@ fn layer_has_surface_under(
     map: &LayerMap,
     popups: &super::PopupManager,
     layer: &LayerSurface,
-    pos_in_output: Point<f64, Logical>,
+    pos_in_output: LogicalPoint<f64>,
 ) -> bool {
     map.layer_geometry(layer).is_some_and(|layer_geo| {
         layer

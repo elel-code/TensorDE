@@ -2,8 +2,8 @@ use super::{Rect, Size};
 
 /// Output scale represented in the units used by `wp_fractional_scale_v1`.
 ///
-/// Keeping the denominator fixed avoids independently rounding the Smithay,
-/// scene, damage, and Vulkan coordinate domains.
+/// Keeping the denominator fixed avoids independently rounding protocol, scene,
+/// damage, and Vulkan coordinate domains.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OutputScale(u32);
 
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_size_uses_smithay_compatible_ceil_rounding() {
+    fn logical_size_uses_shared_ceil_rounding() {
         let scale = OutputScale::from_f64(1.25).unwrap();
         assert_eq!(
             scale.logical_size_ceil(Size::new(1920, 1080)),

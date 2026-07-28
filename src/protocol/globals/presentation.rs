@@ -1,8 +1,7 @@
 //! Tensor-owned `wp_presentation` wire state.
 //!
-//! The cached surface state still uses Smithay's compositor cache boundary,
-//! but the presentation callback itself only knows about a Tensor output and
-//! its Wayland resources. This keeps Smithay's `Output` out of the frame path.
+//! Cached surface state and presentation callbacks know only about Tensor
+//! outputs and their Wayland resources.
 
 use std::time::Duration;
 

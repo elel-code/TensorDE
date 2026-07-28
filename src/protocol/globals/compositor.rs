@@ -30,11 +30,13 @@ use wayland_server::{
 pub(in crate::protocol) use cache::{Cacheable, MultiCache, SurfaceDataMap};
 pub(in crate::protocol) use transaction::Barrier;
 use transaction::{Transaction, TransactionQueue};
+#[cfg(feature = "tty")]
+pub(in crate::protocol) use tree::remove_pre_commit_hook;
 pub(in crate::protocol) use tree::{
     HookId, TraversalAction, add_blocker, add_destruction_hook, add_post_commit_hook,
     add_pre_commit_hook, get_parent, get_role, give_role, is_sync_subsurface,
-    remove_destruction_hook, remove_post_commit_hook, remove_pre_commit_hook, with_states,
-    with_surface_tree_downward, with_surface_tree_upward,
+    remove_destruction_hook, remove_post_commit_hook, with_states, with_surface_tree_downward,
+    with_surface_tree_upward,
 };
 pub(in crate::protocol) use wire::SubsurfaceCachedState;
 

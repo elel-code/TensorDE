@@ -4,7 +4,7 @@ mod frame;
 
 use std::sync::{Arc, Mutex};
 
-use smithay::utils::{Buffer as BufferCoords, Size};
+use tensor_util::BufferSize;
 use wayland_protocols::ext::image_copy_capture::v1::server::{
     ext_image_copy_capture_cursor_session_v1::{self, ExtImageCopyCaptureCursorSessionV1},
     ext_image_copy_capture_manager_v1::{self, ExtImageCopyCaptureManagerV1},
@@ -57,7 +57,7 @@ pub(in crate::protocol) struct ImageCopyCaptureManagerData;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::protocol) struct BufferConstraints {
-    pub(in crate::protocol) size: Size<i32, BufferCoords>,
+    pub(in crate::protocol) size: BufferSize<i32>,
     pub(in crate::protocol) shm: [wl_shm::Format; 2],
 }
 

@@ -274,7 +274,7 @@ fn pointer_gestures_send_complete_value_sequences_and_release_resources() {
         3
     );
 
-    let pointer_location: smithay::utils::Point<f64, smithay::utils::Logical> = runtime
+    let pointer_location: tensor_util::LogicalPoint<f64> = runtime
         .state
         .space
         .elements()

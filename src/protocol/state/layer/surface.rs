@@ -7,7 +7,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use smithay::utils::{Logical, Size};
+use tensor_util::LogicalSize;
 use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_surface_v1::{
     self, ZwlrLayerSurfaceV1,
 };
@@ -108,7 +108,7 @@ impl BitOrAssign for Anchor {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::protocol) struct LayerSurfaceState {
-    pub(in crate::protocol) size: Size<i32, Logical>,
+    pub(in crate::protocol) size: LogicalSize<i32>,
     pub(in crate::protocol) anchor: Anchor,
     pub(in crate::protocol) exclusive_zone: ExclusiveZone,
     pub(in crate::protocol) exclusive_edge: Option<Anchor>,
@@ -120,7 +120,7 @@ pub(in crate::protocol) struct LayerSurfaceState {
 impl LayerSurfaceState {
     fn initial(layer: Layer) -> Self {
         Self {
-            size: Size::default(),
+            size: LogicalSize::default(),
             anchor: Anchor::empty(),
             exclusive_zone: ExclusiveZone::Neutral,
             exclusive_edge: None,
@@ -134,7 +134,7 @@ impl LayerSurfaceState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Configure {
     serial: u32,
-    size: Size<i32, Logical>,
+    size: LogicalSize<i32>,
     generation: u64,
 }
 
@@ -197,8 +197,8 @@ struct LayerSurfaceInner {
     generation: Cell<u64>,
     configure_ready: Cell<bool>,
     initial_configure_sent: Cell<bool>,
-    pending_server_size: Cell<Option<Size<i32, Logical>>>,
-    last_sent_size: Cell<Option<Size<i32, Logical>>>,
+    pending_server_size: Cell<Option<LogicalSize<i32>>>,
+    last_sent_size: Cell<Option<LogicalSize<i32>>>,
     last_acked: Cell<Option<Configure>>,
     configures: RefCell<ConfigureQueue>,
 }
@@ -353,7 +353,7 @@ impl LayerSurface {
         self.0.last_acked.set(None);
     }
 
-    pub(in crate::protocol) fn set_pending_server_size(&self, size: Size<i32, Logical>) -> bool {
+    pub(in crate::protocol) fn set_pending_server_size(&self, size: LogicalSize<i32>) -> bool {
         let previous = self
             .0
             .pending_server_size
@@ -425,7 +425,7 @@ mod tests {
         for serial in 1..=(MAX_PENDING_CONFIGURES as u32 + 1) {
             queue.push(Configure {
                 serial,
-                size: Size::from((serial as i32, 1)),
+                size: LogicalSize::from((serial as i32, 1)),
                 generation: 1,
             });
         }

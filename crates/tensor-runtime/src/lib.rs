@@ -17,11 +17,11 @@
 //! 2. [`CompioWorker`] — dedicated thread with a Compio [`Runtime`] for async I/O
 //!    (same pattern as the logging drain; completion + io_uring-first).
 //! 3. [`inject_events`] / [`run_turn`] — compositor turn entry **after**
-//!    completions (or a transitional idle slot).
+//!    completions.
 //! 4. [`EventfdWake`] — eventfd that workers write; the compositor **submits**
 //!    a read (or equivalent) so the wake arrives as a **completion**, not as a
 //!    readiness edge in a poll registry.
-//! 5. [`OpaqueFdCompletionRuntime`] — a transitional one-source adapter for
+//! 5. [`OpaqueFdCompletionRuntime`] — a one-source adapter for
 //!    libraries that expose only an opaque notifier fd. It submits one
 //!    `PollOnce`, publishes its CQE, and requires explicit rearm or finish.
 //!

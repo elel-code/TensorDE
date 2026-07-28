@@ -1,8 +1,5 @@
 use std::{ffi::OsString, sync::Arc};
 
-use calloop::EventLoop;
-#[cfg(test)]
-use calloop::channel::Event as ChannelEvent;
 use thiserror::Error;
 use wayland_server::{Display, ListeningSocket};
 
@@ -21,7 +18,12 @@ mod layer_tests;
 mod socket;
 #[cfg(test)]
 mod socket_tests;
+#[cfg(test)]
+mod test_completion;
 mod xwayland;
+
+#[cfg(test)]
+use test_completion::{TestCompletionBridges, TestCompletionLoop};
 
 pub(crate) use display::{
     MAX_PENDING_WAYLAND_DISPLAY_CONTROL_EVENTS, MAX_PENDING_WAYLAND_DISPLAY_EVENTS,
@@ -34,12 +36,15 @@ pub(crate) use socket::{
 };
 #[cfg(feature = "xwayland")]
 pub(crate) use xwayland::{
+    MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_PROPERTY_RESULTS,
     MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
-    XWaylandStartupControlEvent, XWaylandStartupEvent, drain_xwayland_startup_events,
+    XWaylandPropertyControlEvent, XWaylandPropertyEvent, XWaylandStartupControlEvent,
+    XWaylandStartupEvent, drain_xwayland_events,
 };
 
 pub struct WaylandRuntime {
-    event_loop: EventLoop<'static, RuntimeState>,
+    #[cfg(test)]
+    event_loop: TestCompletionLoop,
     state: RuntimeState,
     display_runtime: Option<WaylandDisplayRuntime>,
     socket_runtime: Option<WaylandSocketRuntime>,
@@ -59,7 +64,6 @@ impl WaylandRuntime {
         layout: LayoutEngine,
         appearance: SceneAppearance,
     ) -> Result<Self, ProtocolError> {
-        let event_loop = EventLoop::try_new().map_err(ProtocolError::EventLoop)?;
         let display = Display::new().map_err(ProtocolError::Display)?;
         let state = RuntimeState::with_appearance(display, layout, appearance);
         let socket = bind_socket_source().map_err(ProtocolError::Socket)?;
@@ -68,7 +72,8 @@ impl WaylandRuntime {
             .expect("named Wayland listener must retain its name")
             .to_os_string();
         Ok(Self {
-            event_loop,
+            #[cfg(test)]
+            event_loop: TestCompletionLoop::default(),
             state,
             display_runtime: None,
             socket_runtime: None,
@@ -84,8 +89,7 @@ impl WaylandRuntime {
     }
 
     pub fn backend_name(&self) -> &'static str {
-        let _ = &self.event_loop;
-        "smithay/compio-main"
+        "tensor/compio-main"
     }
 
     pub fn socket_name(&self) -> &std::ffi::OsStr {
@@ -114,7 +118,7 @@ impl WaylandRuntime {
         control: tensor_runtime::WorkerTx<WaylandSocketControlEvent>,
     ) -> Result<(), ProtocolError> {
         if self.socket_runtime.is_some() {
-            return Ok(());
+            return Err(ProtocolError::SocketRuntimeAlreadyInstalled);
         }
         self.socket_runtime = Some(
             WaylandSocketRuntime::start(&self.socket, clients, control)
@@ -129,7 +133,7 @@ impl WaylandRuntime {
         control: tensor_runtime::WorkerTx<WaylandDisplayControlEvent>,
     ) -> Result<(), ProtocolError> {
         if self.display_runtime.is_some() {
-            return Ok(());
+            return Err(ProtocolError::DisplayRuntimeAlreadyInstalled);
         }
         self.display_runtime = Some(
             WaylandDisplayRuntime::start(self.state.display(), events, control)
@@ -151,7 +155,7 @@ impl WaylandRuntime {
         &mut self,
         enable_xwayland: bool,
     ) -> Result<tensor_runtime::EventfdCompletionRelay, ProtocolError> {
-        let (notification_sender, notifications) = calloop::channel::sync_channel(1);
+        let (notification_sender, notifications) = std::sync::mpsc::sync_channel(1);
         let relay = tensor_runtime::EventfdCompletionRelay::start(
             "tensor-wayland-test-completions",
             move |_| {
@@ -189,27 +193,41 @@ impl WaylandRuntime {
                 relay.wake(),
             );
         #[cfg(feature = "xwayland")]
-        self.install_xwayland_completion_channels(xwayland_sender, xwayland_control_sender);
-        self.event_loop
-            .handle()
-            .insert_source(notifications, move |event, _, state| {
-                if matches!(event, ChannelEvent::Msg(()))
-                    && let Err(message) = drain_wayland_socket_events(&clients, &control, state)
-                {
-                    panic!("Wayland accept completion runtime failed: {message}");
-                }
-                if matches!(event, ChannelEvent::Msg(()))
-                    && let Err(message) =
-                        drain_wayland_display_events(&display_events, &display_control, state)
-                {
-                    panic!("Wayland display completion runtime failed: {message}");
-                }
+        let (xwayland_property_sender, xwayland_property_events) =
+            tensor_runtime::WorkerBridge::bounded_with_wake(
+                MAX_PENDING_XWAYLAND_PROPERTY_RESULTS,
+                relay.wake(),
+            );
+        #[cfg(feature = "xwayland")]
+        let (xwayland_property_control_sender, xwayland_property_control) =
+            tensor_runtime::WorkerBridge::bounded_with_wake(
+                MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS,
+                relay.wake(),
+            );
+        #[cfg(feature = "xwayland")]
+        self.install_xwayland_completion_channels(
+            xwayland_sender,
+            xwayland_control_sender,
+            xwayland_property_sender,
+            xwayland_property_control_sender,
+        )?;
+        self.event_loop.install(
+            notifications,
+            TestCompletionBridges {
+                clients,
+                socket_control: control,
+                display: display_events,
+                display_control,
                 #[cfg(feature = "xwayland")]
-                if matches!(event, ChannelEvent::Msg(())) {
-                    drain_xwayland_startup_events(&xwayland_events, &xwayland_control, state);
-                }
-            })
-            .map_err(|error| ProtocolError::ChannelSource(error.to_string()))?;
+                xwayland: xwayland_events,
+                #[cfg(feature = "xwayland")]
+                xwayland_control,
+                #[cfg(feature = "xwayland")]
+                xwayland_properties: xwayland_property_events,
+                #[cfg(feature = "xwayland")]
+                xwayland_property_control,
+            },
+        );
         self.prepare(enable_xwayland)?;
         Ok(relay)
     }
@@ -222,7 +240,7 @@ impl WaylandRuntime {
         #[cfg(feature = "tty")]
         {
             if self.state.backend.is_some() {
-                return Ok(());
+                return Err(ProtocolError::BackendAlreadyInstalled);
             }
             let backend = crate::backend::TtyBackend::new(config, completion_wake)
                 .map_err(|error| ProtocolError::Backend(error.to_string()))?;
@@ -247,7 +265,7 @@ impl WaylandRuntime {
 
     pub fn prepare(&mut self, enable_xwayland: bool) -> Result<(), ProtocolError> {
         if self.prepared {
-            return Ok(());
+            return Err(ProtocolError::RuntimeAlreadyPrepared);
         }
         if enable_xwayland {
             self.start_xwayland()?;
@@ -291,18 +309,21 @@ fn bind_socket_source() -> Result<ListeningSocket, wayland_server::BindError> {
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
-    #[error("failed to initialize the Smithay event loop: {0}")]
-    EventLoop(calloop::Error),
     #[error("failed to initialize the Wayland display: {0}")]
     Display(wayland_server::backend::InitError),
     #[error("failed to bind the Wayland socket: {0}")]
     Socket(wayland_server::BindError),
     #[error("failed to start the Wayland socket completion runtime: {0}")]
     SocketRuntime(String),
+    #[error("Wayland socket completion runtime was installed more than once")]
+    SocketRuntimeAlreadyInstalled,
     #[error("failed to start the Wayland display completion runtime: {0}")]
     DisplayRuntime(String),
-    #[error("failed to register the worker channel source: {0}")]
-    ChannelSource(String),
+    #[error("Wayland display completion runtime was installed more than once")]
+    DisplayRuntimeAlreadyInstalled,
+    #[cfg(test)]
+    #[error("test completion driver failed: {0}")]
+    TestCompletion(String),
     #[cfg(test)]
     #[error(transparent)]
     CompletionRelay(#[from] tensor_runtime::CompletionRelayError),
@@ -312,8 +333,6 @@ pub enum ProtocolError {
     DisplayRuntimeMissing,
     #[error("Wayland runtime must be prepared before entering the event loop")]
     RuntimeNotPrepared,
-    #[error("failed to run the Smithay event loop: {0}")]
-    Run(calloop::Error),
     #[error("compositor-thread completion loop failed: {0}")]
     MainCompletion(String),
     #[error("failed to spawn XWayland: {0}")]
@@ -322,6 +341,12 @@ pub enum ProtocolError {
     XWaylandCompletion(String),
     #[error("XWayland completion channels are not installed")]
     XWaylandCompletionRuntimeMissing,
+    #[error("XWayland completion channels were installed more than once")]
+    XWaylandCompletionChannelsAlreadyInstalled,
+    #[error("XWayland was started more than once")]
+    XWaylandAlreadyStarted,
+    #[error("Wayland runtime was prepared more than once")]
+    RuntimeAlreadyPrepared,
     #[error("XWayland support was not compiled in")]
     #[allow(dead_code)]
     XWaylandDisabled,
@@ -330,6 +355,9 @@ pub enum ProtocolError {
     #[cfg(feature = "tty")]
     #[error("failed to initialize the tty DRM backend: {0}")]
     Backend(String),
+    #[cfg(feature = "tty")]
+    #[error("tty DRM backend was installed more than once")]
+    BackendAlreadyInstalled,
 }
 
 #[cfg(test)]

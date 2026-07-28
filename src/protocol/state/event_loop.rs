@@ -155,7 +155,7 @@ impl RuntimeState {
     /// Notify the bus of a pointer sample (coalesced; seat already applied).
     ///
     /// Built through `tensor_input::Sample` so the bus never depends on
-    /// libinput/Smithay event types. `time_ns` is monotonic nanoseconds.
+    /// libinput event types. `time_ns` is monotonic nanoseconds.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn push_pointer_motion_sample(&mut self, x: f64, y: f64, time_ns: u64) {
         let sample = tensor_input::Sample::pointer_motion(x, y, time_ns);
@@ -301,7 +301,7 @@ impl RuntimeState {
             }
             Event::Launch(outcome) => {
                 // Spawn worker already logged; bus entry enables future
-                // activation / IPC observers without re-entering calloop.
+                // activation / IPC observers without re-entering protocol dispatch.
                 trace!(?outcome, "launch outcome on tensor-event bus");
             }
             Event::Shutdown => {

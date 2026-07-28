@@ -1,3 +1,4 @@
+mod clock;
 #[cfg(feature = "tty")]
 mod cursor;
 mod dispatch;
@@ -28,8 +29,10 @@ pub(crate) use runtime::{
 };
 #[cfg(feature = "xwayland")]
 pub(crate) use runtime::{
+    MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_PROPERTY_RESULTS,
     MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
-    XWaylandStartupControlEvent, XWaylandStartupEvent, drain_xwayland_startup_events,
+    XWaylandPropertyControlEvent, XWaylandPropertyEvent, XWaylandStartupControlEvent,
+    XWaylandStartupEvent, drain_xwayland_events,
 };
 pub use runtime::{ProtocolError, WaylandRuntime};
 pub(crate) use state::RuntimeState;

@@ -39,7 +39,7 @@ use event_loop::EventLoopState;
 use layer::LayerMaps;
 #[cfg(feature = "tty")]
 use layer::LayerSurface;
-use output_values::{output_integer_scale, smithay_transform};
+use output_values::{output_integer_scale, wayland_transform};
 use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
@@ -542,7 +542,7 @@ impl RuntimeState {
                 surface,
                 states,
                 output_integer_scale(scale),
-                smithay_transform(transform).into(),
+                wayland_transform(transform),
             );
         });
         self.protocol_globals
@@ -556,7 +556,7 @@ impl RuntimeState {
                 surface,
                 states,
                 output_integer_scale(scale),
-                smithay_transform(transform).into(),
+                wayland_transform(transform),
             );
             self.protocol_globals
                 .set_preferred_fractional_scale(surface, scale);

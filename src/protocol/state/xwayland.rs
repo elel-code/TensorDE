@@ -1,7 +1,6 @@
 mod popup;
 mod transient;
 
-use smithay::utils::{Logical, Rectangle};
 use tensor_runtime::{OpaqueFdCompletionRuntime, WorkerTx};
 use tracing::warn;
 use wayland_server::{Client, Resource, protocol::wl_surface::WlSurface};
@@ -9,9 +8,11 @@ use wayland_server::{Client, Resource, protocol::wl_surface::WlSurface};
 use crate::{
     ecs::{ViewId, ViewPlacement},
     layout::SizeConstraints,
-    protocol::xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData},
+    protocol::xwayland::{
+        X11PropertyResult, X11PropertyRuntime, X11Surface, X11Wm, XWayland, XWaylandClientData,
+    },
 };
-use tensor_util::{Rect, Size};
+use tensor_util::{LogicalRect, Rect, Size};
 
 use super::{ProtocolWindow, RuntimeState, xdg_size_constraints};
 
@@ -23,11 +24,14 @@ pub(super) struct XWaylandProcess {
     client: Client,
     events: WorkerTx<tensor_runtime::OpaqueFdCompletion>,
     control: WorkerTx<String>,
+    property_events: WorkerTx<X11PropertyResult>,
+    property_control: WorkerTx<String>,
     xwm_runtime: Option<OpaqueFdCompletionRuntime>,
+    property_runtime: Option<X11PropertyRuntime>,
 }
 
 /// The two independent signals needed before an X11 window can become a
-/// rootless Wayland view. Smithay can report them in either order.
+/// rootless Wayland view. X11 mapping and shell association can arrive in either order.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct XWaylandWindowLifecycle {
     map_requested: bool,
@@ -78,6 +82,8 @@ impl RuntimeState {
         client: Client,
         events: WorkerTx<tensor_runtime::OpaqueFdCompletion>,
         control: WorkerTx<String>,
+        property_events: WorkerTx<X11PropertyResult>,
+        property_control: WorkerTx<String>,
     ) {
         assert!(
             self.xwayland_process.is_none(),
@@ -88,7 +94,10 @@ impl RuntimeState {
             client,
             events,
             control,
+            property_events,
+            property_control,
             xwm_runtime: None,
+            property_runtime: None,
         });
     }
 
@@ -97,7 +106,7 @@ impl RuntimeState {
     /// `Ok(None)` means a partial/spurious notification and requires rearming;
     /// `Ok(Some(display))` means the XWM was installed and the watcher can end.
     pub(crate) fn complete_xwayland_startup(&mut self) -> Result<Option<u32>, String> {
-        let (socket, display_number, client, events, control) = {
+        let (socket, display_number, client, events, control, property_events, property_control) = {
             let process = self
                 .xwayland_process
                 .as_mut()
@@ -112,6 +121,8 @@ impl RuntimeState {
                 process.client.clone(),
                 process.events.clone(),
                 process.control.clone(),
+                process.property_events.clone(),
+                process.property_control.clone(),
             )
         };
         let Some(socket) = socket else {
@@ -123,7 +134,12 @@ impl RuntimeState {
 
         // wl_output and fractional-scale state remain the only X11 coordinate authority.
         self.compositor_state.set_client_scale(&client, 1.0);
-        let xwm = X11Wm::start(socket).map_err(|error| error.to_string())?;
+        let (property_runtime, property_requests) =
+            X11PropertyRuntime::prepare().map_err(|error| error.to_string())?;
+        let xwm = X11Wm::start(socket, property_requests).map_err(|error| error.to_string())?;
+        let property_runtime = property_runtime
+            .start(display_number, property_events, property_control)
+            .map_err(|error| error.to_string())?;
         let runtime = OpaqueFdCompletionRuntime::start(
             "tensor-xwayland-x11-completions",
             xwm.completion_fd(),
@@ -131,31 +147,54 @@ impl RuntimeState {
             control,
         )
         .map_err(|error| error.to_string())?;
-        self.install_xwm(xwm);
-        self.xwayland_process
+        self.install_xwm(xwm)?;
+        let process = self
+            .xwayland_process
             .as_mut()
-            .expect("XWayland process disappeared during XWM startup")
-            .xwm_runtime = Some(runtime);
+            .expect("XWayland process disappeared during XWM startup");
+        process.xwm_runtime = Some(runtime);
+        process.property_runtime = Some(property_runtime);
         Ok(Some(display_number))
     }
 
-    pub(crate) fn install_xwm(&mut self, xwm: X11Wm) {
-        if self.xwm.replace(xwm).is_some() {
-            warn!("replacing a live XWayland XWM after a second ready event");
+    pub(crate) fn install_xwm(&mut self, xwm: X11Wm) -> Result<(), String> {
+        if self.xwm.is_some() {
+            return Err("XWayland attempted to install a second live XWM".to_owned());
         }
+        self.xwm = Some(xwm);
+        Ok(())
     }
 
     pub(crate) fn drain_xwm_events(&mut self) -> Result<(), String> {
-        let events = self
-            .xwm
+        self.xwm
             .as_mut()
             .ok_or_else(|| "X11 completion arrived without XWM state".to_owned())?
             .drain_events()
             .map_err(|error| error.to_string())?;
-        for event in events {
+        while let Some(event) = self.xwm.as_mut().and_then(X11Wm::next_event) {
             self.handle_xwm_event(event);
         }
         Ok(())
+    }
+
+    pub(crate) fn apply_x11_property_result(
+        &mut self,
+        result: X11PropertyResult,
+    ) -> Result<(), String> {
+        self.xwm
+            .as_mut()
+            .ok_or_else(|| "X11 property completion arrived without XWM state".to_owned())?
+            .apply_property_result(result)
+            .map_err(|error| error.to_string())?;
+        while let Some(event) = self.xwm.as_mut().and_then(X11Wm::next_event) {
+            self.handle_xwm_event(event);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_xwayland(&mut self) {
+        self.xwm = None;
+        self.xwayland_process = None;
     }
 
     /// Attach an associated, mapped rootless X11 window to the ordinary
@@ -309,8 +348,8 @@ fn x11_size_constraints(x11: &X11Surface) -> SizeConstraints {
     )
 }
 
-fn x11_configure_rect(geometry: Rect) -> Rectangle<i32, Logical> {
-    Rectangle::new(
+fn x11_configure_rect(geometry: Rect) -> LogicalRect<i32> {
+    LogicalRect::new(
         (geometry.x, geometry.y).into(),
         (
             i32::try_from(geometry.width).unwrap_or(i32::MAX),

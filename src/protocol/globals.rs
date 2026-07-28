@@ -1,6 +1,6 @@
-use smithay::utils::{ClockSource, Monotonic};
 use wayland_server::{Client, DisplayHandle};
 
+use super::clock::MONOTONIC_CLOCK_ID;
 use super::extensions::{
     ext_workspace::ExtWorkspaceManagerState, gamma_control::GammaControlManagerState,
     output_management::OutputManagementState, security_context::SecurityContextManagerState,
@@ -139,7 +139,7 @@ impl ProtocolGlobals {
             relative_pointer: RelativePointerProtocol::new(display),
             pointer_gestures: PointerGesturesProtocol::new(display),
             pointer_constraints: PointerConstraintsProtocol::new(display),
-            presentation: PresentationProtocol::new(display, Monotonic::ID as u32),
+            presentation: PresentationProtocol::new(display, MONOTONIC_CLOCK_ID),
             cursor_shape: CursorShapeProtocol::new(display),
             activation: ActivationProtocol::new(display),
             idle_notify: IdleNotifyProtocol::new(display),

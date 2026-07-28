@@ -2,14 +2,13 @@
 //!
 //! This crate is the long-term boundary between compositor policy and OS/backend
 //! adapters. Types here are pure values: no Wayland objects, no DRM FDs, no
-//! Vulkan handles. Adapters (Smithay today, native later) convert at the edge.
+//! Vulkan handles. Tensor's native owners convert at the edge.
 //!
 //! # Exit path
 //!
 //! When every compositor module depends only on `tensor-host` / `tensor-event`
-//! / `tensor-drm` / `tensor-present` for display/input/present *semantics*, the
-//! Smithay dependency can be confined to an optional adapter crate and then
-//! removed. See `docs/smithay-exit.md`.
+//! / `tensor-drm` / `tensor-present` for display/input/present *semantics*, native
+//! owners can exchange values without leaking handles across boundaries.
 
 mod connector;
 mod format;

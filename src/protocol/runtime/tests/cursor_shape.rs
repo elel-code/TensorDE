@@ -148,7 +148,7 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
         dispatch_until_cursor_step(&mut runtime, &step_rx),
         CursorStep::Ready
     );
-    let pointer_location: smithay::utils::Point<f64, smithay::utils::Logical> = runtime
+    let pointer_location: tensor_util::LogicalPoint<f64> = runtime
         .state
         .space
         .elements()

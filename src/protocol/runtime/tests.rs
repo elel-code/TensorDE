@@ -1,6 +1,5 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use smithay::utils::{ClockSource, Monotonic};
 use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
 use tensor_util::OutputScale;
 use wayland_client::{
@@ -29,6 +28,7 @@ use wayland_protocols::{
 };
 use wayland_server::Resource;
 
+use crate::protocol::clock::MONOTONIC_CLOCK_ID;
 use crate::protocol::globals::output::Output;
 
 use super::*;
@@ -47,6 +47,7 @@ mod dmabuf;
 mod foreign_toplevel;
 mod idle_notify;
 mod inhibitors;
+mod invariants;
 mod output;
 #[cfg(feature = "tty")]
 mod pointer_constraints;
@@ -302,7 +303,7 @@ fn presentation_global_uses_monotonic_clock_and_discards_destroyed_surface() {
 
     assert_eq!(
         dispatch_until(&mut runtime, &event_rx),
-        ClientEvent::PresentationClock(Monotonic::ID as u32)
+        ClientEvent::PresentationClock(MONOTONIC_CLOCK_ID)
     );
     release_tx.send(()).unwrap();
     assert_eq!(

@@ -1,11 +1,9 @@
 //! Pointer / keyboard key helpers (value-only; no seat objects).
 
-use smithay::{
-    input::keyboard::keysyms,
-    utils::{Logical, Point, Rectangle},
-};
+use tensor_util::{LogicalPoint, LogicalRect};
+use xkbcommon::xkb::keysyms;
 
-pub(super) fn center_pointer_location(bounds: Rectangle<i32, Logical>) -> Point<f64, Logical> {
+pub(super) fn center_pointer_location(bounds: LogicalRect<i32>) -> LogicalPoint<f64> {
     let min_x = f64::from(bounds.loc.x);
     let min_y = f64::from(bounds.loc.y);
     let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));
@@ -13,7 +11,7 @@ pub(super) fn center_pointer_location(bounds: Rectangle<i32, Logical>) -> Point<
     ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0).into()
 }
 
-pub(super) fn sanitize_relative_pointer_delta(delta: Point<f64, Logical>) -> Point<f64, Logical> {
+pub(super) fn sanitize_relative_pointer_delta(delta: LogicalPoint<f64>) -> LogicalPoint<f64> {
     (
         if delta.x.is_finite() { delta.x } else { 0.0 },
         if delta.y.is_finite() { delta.y } else { 0.0 },
@@ -22,9 +20,9 @@ pub(super) fn sanitize_relative_pointer_delta(delta: Point<f64, Logical>) -> Poi
 }
 
 pub(super) fn replace_non_finite_pointer_location(
-    location: Point<f64, Logical>,
-    fallback: Point<f64, Logical>,
-) -> Point<f64, Logical> {
+    location: LogicalPoint<f64>,
+    fallback: LogicalPoint<f64>,
+) -> LogicalPoint<f64> {
     (
         if location.x.is_finite() {
             location.x
@@ -41,9 +39,9 @@ pub(super) fn replace_non_finite_pointer_location(
 }
 
 pub(crate) fn constrain_pointer_location(
-    location: Point<f64, Logical>,
-    bounds: Rectangle<i32, Logical>,
-) -> Point<f64, Logical> {
+    location: LogicalPoint<f64>,
+    bounds: LogicalRect<i32>,
+) -> LogicalPoint<f64> {
     let min_x = f64::from(bounds.loc.x);
     let min_y = f64::from(bounds.loc.y);
     let max_x = min_x + f64::from(bounds.size.w.saturating_sub(1));

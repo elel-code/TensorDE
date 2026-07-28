@@ -1,6 +1,6 @@
 //! One-operation completion adapter for opaque, thread-affine fd sources.
 //!
-//! Some transitional libraries expose an aggregate or notifier fd but require
+//! Some thread-affine native libraries expose an aggregate or notifier fd but require
 //! the owning thread to consume the underlying object. This adapter duplicates
 //! only that fd and submits one Compio `PollOnce`. On Linux/io_uring it is one
 //! `IORING_OP_POLL_ADD`; a CQE publishes one value-only completion. The owner
@@ -18,8 +18,11 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use compio::runtime::fd::PollFd;
-use futures_util::future::{Either, select};
+use compio::runtime::{CancelToken, FutureExt as _, fd::PollFd};
+use futures_util::{
+    future::{Either, select},
+    pin_mut,
+};
 use rustix::io::fcntl_dupfd_cloexec;
 use thiserror::Error;
 
@@ -157,15 +160,21 @@ async fn run_completion_loop(
     stopping: Arc<AtomicBool>,
 ) {
     loop {
-        let source_wait = Box::pin(poll_fd.read_ready());
-        let command_wait = Box::pin(command_completion.completed());
+        let source_cancel = CancelToken::new();
+        let source_wait = poll_fd.read_ready().with_cancel(source_cancel.clone());
+        let command_wait = command_completion.completed();
+        pin_mut!(source_wait, command_wait);
         match select(source_wait, command_wait).await {
-            Either::Right((result, _source_wait)) => {
+            Either::Right((result, mut source_wait)) => {
                 if let Err(error) = result {
+                    source_cancel.cancel();
+                    let _ = source_wait.as_mut().await;
                     emit_failure_unless_stopping(&failures, &stopping, error);
                     return;
                 }
                 if stopping.load(Ordering::Acquire) {
+                    source_cancel.cancel();
+                    let _ = source_wait.as_mut().await;
                     return;
                 }
             }
@@ -297,6 +306,26 @@ mod tests {
         writer.write_all(&[1]).unwrap();
         let completion = completions.recv_timeout(Duration::from_secs(2)).unwrap();
         drop(completion);
+        let started = Instant::now();
+        drop(runtime);
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(failures.try_recv().is_none());
+    }
+
+    #[test]
+    fn shutdown_completes_cancellation_of_a_pending_source_operation() {
+        let (source, _writer) = UnixStream::pair().unwrap();
+        let (completion_tx, _completions) = WorkerBridge::bounded(1);
+        let (failure_tx, failures) = WorkerBridge::bounded(1);
+        let runtime = OpaqueFdCompletionRuntime::start(
+            "tensor-opaque-fd-pending-shutdown-test",
+            &source,
+            completion_tx,
+            failure_tx,
+        )
+        .unwrap();
+
         let started = Instant::now();
         drop(runtime);
 

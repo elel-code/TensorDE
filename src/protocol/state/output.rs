@@ -1,7 +1,7 @@
 #[cfg(feature = "tty")]
 use std::os::fd::AsFd;
 
-use tensor_util::Rect;
+use tensor_util::{LogicalPoint, Rect};
 use tracing::{debug, info, warn};
 
 use crate::{backend::BackendOutputId, render::NativeOutputBuffer, scene::SceneSnapshot};
@@ -37,10 +37,7 @@ impl RuntimeState {
 
     /// Redraw only the output that contains a logical seat point (pointer).
     #[cfg(feature = "tty")]
-    pub(crate) fn request_redraw_at(
-        &mut self,
-        location: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) {
+    pub(crate) fn request_redraw_at(&mut self, location: LogicalPoint<f64>) {
         if self.force_full_redraw {
             return self.request_redraw_all();
         }
@@ -109,10 +106,7 @@ impl RuntimeState {
     }
 
     #[cfg(feature = "tty")]
-    fn output_id_under(
-        &self,
-        location: smithay::utils::Point<f64, smithay::utils::Logical>,
-    ) -> Option<BackendOutputId> {
+    fn output_id_under(&self, location: LogicalPoint<f64>) -> Option<BackendOutputId> {
         let output = self.space.output_under(location).next()?;
         self.outputs
             .iter()
@@ -332,13 +326,13 @@ impl RuntimeState {
                         output_device = output_id.device_id,
                         output_connector = output_id.connector_id,
                         timeline = frame.timeline_value,
-                        "renderer frame has no Smithay atomic KMS backend"
+                        "renderer frame has no Tensor atomic KMS backend"
                     );
                     self.defer_output_repaint(output_id);
                     return;
                 };
                 // Value-only present intent: readiness table gates the slot
-                // before the adapter touches KMS (Smithay exit stage 4).
+                // before the tty adapter touches KMS.
                 let intent = tensor_host::PresentIntent::new(
                     output_id,
                     tensor_host::PresentSlot(frame.output_slot),

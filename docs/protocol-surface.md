@@ -1,18 +1,18 @@
 # Protocol surface
 
 Tensor aims to exceed Niri/Hyprland/Nourish **client-facing protocol coverage** for
-desktop-class clients, while keeping ownership boundaries: Smithay (or future Tensor
-bindings) own protocol objects; ECS/render/event bus stay value-only.
+desktop-class clients, while keeping ownership boundaries: Tensor's direct `wayland-server`
+bindings own protocol objects; ECS/render/event bus stay value-only.
 
 Protocol **organization and priority** follow
-[wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) categories and
-Smithay’s `wayland` module layout—not ad-hoc “whatever Niri ships.”
+[wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) categories and a
+one-state-owner-per-protocol layout, not ad hoc “whatever Niri ships.”
 
-## Protocol tiers (borrowed from wayland-protocols / Smithay)
+## Protocol tiers
 
 | Tier | Source | Name cues | Tensor policy |
 |------|--------|-----------|----------------|
-| **0 · Core** | `wayland.xml` | `wl_*` | Always required; Smithay compositor/seat/shm |
+| **0 · Core** | `wayland.xml` | `wl_*` | Always required; Tensor compositor/seat/shm |
 | **1 · Stable standard** | wayland-protocols `stable/` + mature shell | `xdg_*`, non-`z` `wp_*` when stable | Prefer; first-class investment |
 | **2 · Staging / ext** | wayland-protocols `staging/`, `ext` module | `ext_*`, many modern `wp_*` | Prefer for new desktop features; implement when the product needs the capability |
 | **3 · Unstable (legacy)** | wayland-protocols `unstable/` | interface prefix `z` | Avoid new work; migrate to staging/stable when available |
@@ -28,9 +28,9 @@ Smithay’s `wayland` module layout—not ad-hoc “whatever Niri ships.”
    implementing staging where the feature is desired; Tensor does the same.
 4. **Community protocols are stopgaps.** When a staging/stable replacement lands upstream,
    new investment moves up-tier; community globals may remain for transitional clients.
-5. **Implementation vehicle:** prefer Smithay’s Dispatch2/`*State` modules (mature, tested).
-   Tensor-local protocol code (gamma, virtual-pointer, future pure event routing) mirrors that
-   shape and still posts **value-only** events into `tensor-event`.
+5. **Implementation vehicle:** use direct `wayland-server::Dispatch` implementations and Tensor's
+   zero-cost delegation bridge, with one explicit state owner per protocol. Wire owners still post
+   **value-only** events into `tensor-event`.
 6. **Security / privilege:** privileged globals (data-control, gamma, virtual-pointer, security
    context, session lock) keep unrestricted-client filters; staging does not mean “open to all.”
 
@@ -109,7 +109,7 @@ checklist of every Hyprland XML.
 
 ## Code layout guidance
 
-- Prefer **one Smithay `*State` / Dispatch2 module per protocol** (Smithay’s pattern).
+- Prefer one Tensor `*State` owner and direct dispatch module per protocol.
 - Tensor-local wire adapters live under `src/protocol/extensions/`; value-only
   protocol policy and lifecycle state belong in `tensor-protocol`. Group by
   **tier** in docs and capability flags, not by “whatever file was handy.”

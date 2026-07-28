@@ -5,8 +5,8 @@ The startup sequence is a set of ordered gates:
 1. Parse CLI arguments and environment overrides.
 2. Resolve, parse, and validate the complete TOML configuration.
 3. Initialize logging and diagnostics.
-4. Create the compositor-thread Compio runtime boundary, Smithay display, transitional calloop
-   aggregate, and Wayland listening socket.
+4. Create the compositor-thread Compio runtime, direct `wayland-server` display, and Wayland
+   listening socket.
 5. Create Vulkan, validate the client-image SPIR-V and descriptor-heap pipeline, and reject
    devices without `VK_EXT_descriptor_heap` or a usable exportable native format/modifier.
 6. Bind the private IPC socket.
@@ -28,7 +28,8 @@ session values first. `Compositor` requires the permit to launch configured comm
 function call cannot accidentally bypass the ordering. Check mode and non-session mode never issue
 a permit.
 
-Logging starts after configuration validation and before any calloop, renderer, or protocol state.
+Logging starts after configuration validation and before the completion loop, renderer, or protocol
+state.
 Every tracing destination uses the same bounded asynchronous path: callers format at most an 8 KiB
 record and try to enqueue it, while a dedicated Compio drain thread owns the selected file or
 `stderr`. `TENSOR_LOG_FILE` selects a compositor log file; without it, the drain writes to
@@ -36,7 +37,7 @@ record and try to enqueue it, while a dedicated Compio drain thread owns the sel
 and records a later drop notice rather than ever blocking frame, input, or protocol dispatch.
 Termination signals are blocked early and consumed by a submitted Compio read on Linux `signalfd`.
 The completion produces a bounded value event; the compositor writes a best-effort line to stderr,
-logs through tracing, and stops the transitional host loop. After the loop returns, Tensor
+logs through tracing, and stops the compositor completion loop. After the loop returns, Tensor
 announces stop (including optional systemd `STOPPING=1`), records that the loop stopped, and joins
 the log drain so queued shutdown lines are flushed before exit.
 
@@ -53,8 +54,8 @@ stall Wayland, input, or presentation dispatch.
 selected physical device, and exits. It must never emit systemd readiness. Partial initialization
 unwinds the logical device, instance, loader, sockets, and other owned handles in dependency order.
 
-Niri is the primary lifecycle reference, particularly its ordering of configuration, calloop,
-Wayland display/socket, IPC, environment publication, watcher registration, and final run loop.
+Niri is the primary lifecycle reference, particularly its ordering of configuration, Wayland
+display/socket, IPC, environment publication, watcher registration, and final run loop.
 Niri waits for both `systemctl --user import-environment` and
 `dbus-update-activation-environment` before notifying readiness and spawning configured commands.
 Tensor preserves that ordering without invoking a shell: it writes explicit values through

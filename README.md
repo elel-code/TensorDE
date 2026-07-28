@@ -2,8 +2,9 @@
 
 Tensor is an early-stage Wayland compositor written in Rust. Its intended stack is:
 
-- Smithay as a transitional Wayland/XWayland protocol adapter.
-- Tensor-owned Compio completion dispatch, input/session adapters, and atomic DRM/KMS submission.
+- Tensor-owned `wayland-server` protocol state, rootless XWayland/XWM, input/session ownership,
+  and atomic DRM/KMS submission.
+- Compio completion dispatch with an io_uring-only Linux product driver.
 - Vulkanalia for a custom Vulkan renderer.
 - A bindless descriptor heap backed by `VK_EXT_descriptor_heap`.
 - Pluggable layouts: scrolling 1D, spatial 2D, and master-stack.
@@ -13,8 +14,8 @@ Design records live in `docs/`: [architecture](docs/architecture.md),
 [IPC/portal gates](docs/ipc-and-portal.md), [testing](docs/testing.md), and
 [contributing](docs/contributing.md).
 
-The repository currently contains the long-lived Smithay protocol state machine (compositor,
-xdg-shell, SHM, output, seat, selection, and data-device globals), rootless XWayland process
+The repository currently contains Tensor-owned protocol state (compositor, xdg-shell, SHM, output,
+seat, selection, and data-device globals), a direct rootless XWayland process and XWM,
 startup, bounded IPC framing, a Bevy ECS scene world, tested layout geometry, tty device/session
 ownership, Tensor-owned atomic KMS output submission, and a Vulkanalia renderer. The renderer
 allocates explicit-modifier output dma-bufs, samples imported one-plane RGB client buffers through
@@ -90,7 +91,7 @@ succeeds.
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 the complete native renderer gate.
-`TENSOR_RENDER_DEVICE` optionally pins the common Vulkan/Smithay DRM primary or render node;
+`TENSOR_RENDER_DEVICE` optionally pins the common Vulkan/tty DRM primary or render node;
 without it Vulkan capability filtering and GPU ranking select the pair.
 The file format is TOML parsed by `serde`/`toml`; `TENSOR_CONFIG` and `--config` select a file, with
 `$XDG_CONFIG_HOME/tensor/config.toml` as the default. Runtime control remains the versioned IPC
@@ -99,10 +100,10 @@ protocol rather than a second configuration dialect.
 ## Architecture
 
 ```text
-Smithay protocol/input events
-             |
-             v
-       Bevy ECS state
+Compio CQEs + direct Wayland/input dispatch
+                    |
+                    v
+              Bevy ECS state
         /          \
  layout systems  scene extraction
                        |
@@ -117,7 +118,7 @@ Smithay protocol/input events
 
 The module boundaries are deliberate ownership boundaries:
 
-- `src/protocol.rs`: Wayland/Smithay adapter ownership; `RuntimeState` serializes protocol, input, popup,
+- `src/protocol.rs`: direct Wayland protocol ownership; `RuntimeState` serializes protocol, input, popup,
   and ECS lifecycle transitions.
 - `src/ipc.rs`: versioned compositor control protocol over a bounded Unix-socket framing layer.
 - `src/ecs.rs`: Bevy ECS components and deterministic scene/layout state.
@@ -171,7 +172,8 @@ can keep the client direct after reporting the scope failure.
 
 ## XWayland, not an X11 session
 
-The default build enables Smithay's rootless XWayland process and event-source bootstrap.
+The default build enables Tensor's rootless XWayland process, direct XWM, and Compio-completed X11
+socket operations.
 `xwayland false` or `TENSOR_XWAYLAND=off` disables it. X11 window-manager policy and surface
 association will use the protocol owner's stable view index; it is not emulated by a second
 backend. Tensor has no X11 compositor backend and refuses `--session` startup when it detects an
@@ -181,4 +183,4 @@ inherited X11-only session.
 
 XDP here means xdg-desktop-portal integration, following Niri's dedicated screencast feature. The
 future portal adapter will be an optional D-Bus/PipeWire boundary: it can request a controlled
-scene capture, but it cannot receive renderer handles, Smithay objects, or unrestricted ECS access.
+scene capture, but it cannot receive renderer handles, Wayland resources, or unrestricted ECS access.

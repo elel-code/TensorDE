@@ -596,6 +596,7 @@ where
     )
 }
 
+#[cfg(feature = "tty")]
 pub(in crate::protocol) fn remove_pre_commit_hook(surface: &WlSurface, hook: &HookId) {
     PrivateSurfaceData::lock(surface)
         .pre_commit_hooks

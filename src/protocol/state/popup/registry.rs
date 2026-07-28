@@ -1,7 +1,7 @@
 // Derived from Smithay's popup manager implementation at commit c0aa71d.
 // Smithay's copyright notice and MIT terms are in LICENSES/Smithay-MIT.txt.
 
-use smithay::utils::{Logical, Point, Rectangle};
+use tensor_util::{LogicalPoint, LogicalRect};
 use thiserror::Error;
 use tracing::trace;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
@@ -26,9 +26,9 @@ impl PopupKind {
         self.0.parent_surface()
     }
 
-    pub(crate) fn geometry(&self) -> Rectangle<i32, Logical> {
+    pub(crate) fn geometry(&self) -> LogicalRect<i32> {
         let geometry = self.0.window_geometry();
-        Rectangle::new(
+        LogicalRect::new(
             (geometry.x, geometry.y).into(),
             (
                 i32::try_from(geometry.width).unwrap_or(i32::MAX),
@@ -38,7 +38,7 @@ impl PopupKind {
         )
     }
 
-    fn location(&self) -> Point<i32, Logical> {
+    fn location(&self) -> LogicalPoint<i32> {
         let placement = self.0.placement();
         (placement.x, placement.y).into()
     }
@@ -111,8 +111,8 @@ impl PopupTree {
         append_popup_children(&self.root, &self.nodes, &mut self.order);
     }
 
-    fn popup_location(&self, mut index: usize) -> Point<i32, Logical> {
-        let mut location = Point::default();
+    fn popup_location(&self, mut index: usize) -> LogicalPoint<i32> {
+        let mut location = LogicalPoint::default();
         for _ in 0..self.nodes.len() {
             let node = &self.nodes[index];
             location += node.popup.location();
@@ -208,7 +208,7 @@ impl<'a> PopupIter<'a> {
         }
     }
 
-    fn item(&self, order_index: usize) -> Option<(&'a PopupKind, Point<i32, Logical>)> {
+    fn item(&self, order_index: usize) -> Option<(&'a PopupKind, LogicalPoint<i32>)> {
         let tree = self.tree?;
         let node_index = *tree.order.get(order_index)?;
         Some((
@@ -219,7 +219,7 @@ impl<'a> PopupIter<'a> {
 }
 
 impl<'a> Iterator for PopupIter<'a> {
-    type Item = (&'a PopupKind, Point<i32, Logical>);
+    type Item = (&'a PopupKind, LogicalPoint<i32>);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.front == self.back {
@@ -310,7 +310,7 @@ impl PopupManager {
     pub(crate) fn popups_for_surface<'a>(
         &'a self,
         surface: &WlSurface,
-    ) -> impl DoubleEndedIterator<Item = (&'a PopupKind, Point<i32, Logical>)> + ExactSizeIterator
+    ) -> impl DoubleEndedIterator<Item = (&'a PopupKind, LogicalPoint<i32>)> + ExactSizeIterator
     {
         PopupIter::new(self.trees.iter().find(|tree| tree.root == *surface))
     }
@@ -386,7 +386,7 @@ pub(crate) fn find_popup_root_surface(popup: &PopupKind) -> Result<WlSurface, De
     popup.0.root_surface().ok_or(DeadResource)
 }
 
-pub(crate) fn get_popup_toplevel_coords(popup: &PopupKind) -> Point<i32, Logical> {
+pub(crate) fn get_popup_toplevel_coords(popup: &PopupKind) -> LogicalPoint<i32> {
     let point = popup.0.toplevel_coords();
     (point.x, point.y).into()
 }

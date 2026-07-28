@@ -4,13 +4,13 @@ use std::{
     time::Duration,
 };
 
-use smithay::utils::{Clock, Monotonic};
 use tensor_host::{VblankClock, VblankMetadata};
 use tensor_util::Rect;
 use tracing::warn;
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
+use crate::protocol::clock::monotonic_now;
 use crate::{
     backend::BackendOutputId,
     ecs::{SurfaceId, ViewId},
@@ -139,19 +139,14 @@ impl RuntimeState {
         else {
             return false;
         };
-        let fallback_time = Duration::from(Clock::<Monotonic>::new().now());
+        let fallback_time = monotonic_now();
         let sample = presentation_sample(
             metadata,
             fallback_time,
             output.current_mode().map(|mode| mode.refresh_millihertz),
         );
         let mut feedback = frame;
-        feedback.presented::<_, Monotonic>(
-            sample.time,
-            sample.refresh,
-            sample.sequence,
-            sample.flags,
-        );
+        feedback.presented(sample.time, sample.refresh, sample.sequence, sample.flags);
         true
     }
 
@@ -251,7 +246,7 @@ impl RuntimeState {
     /// Send frame callbacks once atomic KMS has accepted the submitted frame.
     /// Presentation feedback itself remains pending until the matching vblank.
     pub(super) fn send_submitted_frame_callbacks(&self, frame: &CapturedPresentation) {
-        let time = Duration::from(Clock::<Monotonic>::new().now());
+        let time = monotonic_now();
         let surface_buffers = &self.surface_buffers;
         let submitted_surfaces = &frame.submitted_surfaces;
         let submitted_views = &frame.submitted_views;

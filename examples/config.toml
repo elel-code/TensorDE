@@ -8,7 +8,7 @@ master_width = { proportion = 0.55 }
 ipc_socket = "/run/user/1000/tensor.sock"
 # discrete is the default; integrated and any are also valid.
 gpu = "discrete"
-# Optional common Vulkan/Smithay DRM node; otherwise Vulkan capability ranking selects the pair.
+# Optional common Vulkan/tty DRM node; otherwise Vulkan capability ranking selects the pair.
 # render_device = "/dev/dri/renderD128"
 # auto enables integration when launched by the systemd user manager.
 systemd = "auto"

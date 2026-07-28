@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--render-device",
         type=Path,
-        help="pin Vulkan and Smithay to this DRM primary or render node",
+        help="pin Vulkan and Tensor tty to this DRM primary or render node",
     )
     parser.add_argument(
         "--no-xwayland",

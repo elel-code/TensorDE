@@ -97,7 +97,7 @@ impl RuntimeState {
         self.mapped_root_by_id(root_id)
     }
 
-    /// Rebuild one view's flat surface table in exact draw order. Smithay
+    /// Rebuild one view's flat surface table in exact draw order. Wayland
     /// resources stay local to this traversal; ECS receives only stable IDs,
     /// geometry, buffer identities, and content revisions.
     pub(crate) fn update_surface_content(&mut self, root: &WlSurface) -> bool {
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn popup_surface_origin_matches_smithay_window_rendering() {
+    fn popup_surface_origin_matches_window_rendering() {
         assert_eq!(popup_base((120, 80), (7, 9)), (113, 71));
     }
 }

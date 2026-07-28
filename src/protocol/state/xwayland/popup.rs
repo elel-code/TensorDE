@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use smithay::utils::{Logical, Point};
+use tensor_util::LogicalPoint;
 use tracing::debug;
 use wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface};
 
@@ -15,7 +15,7 @@ pub(super) struct XWaylandPopupAttachment {
     pub(super) window: X11Surface,
     pub(super) surface: WlSurface,
     pub(super) owner: ObjectId,
-    pub(super) offset: Point<i32, Logical>,
+    pub(super) offset: LogicalPoint<i32>,
 }
 
 #[derive(Debug)]
@@ -113,7 +113,7 @@ impl XWaylandPopupRegistry {
         &mut self,
         window: u32,
         owner: ObjectId,
-        offset: Point<i32, Logical>,
+        offset: LogicalPoint<i32>,
     ) -> Option<(XWaylandPopupAttachment, bool)> {
         let state = self.popups.get_mut(&window)?;
         let surface = state.surface.clone()?;
@@ -523,14 +523,14 @@ impl RuntimeState {
     }
 }
 
-fn x11_popup_offset(popup: &X11Surface, owner: &X11Surface) -> Point<i32, Logical> {
+fn x11_popup_offset(popup: &X11Surface, owner: &X11Surface) -> LogicalPoint<i32> {
     relative_popup_offset(popup.last_configure().loc, owner.last_configure().loc)
 }
 
 fn relative_popup_offset(
-    popup_location: Point<i32, Logical>,
-    owner_location: Point<i32, Logical>,
-) -> Point<i32, Logical> {
+    popup_location: LogicalPoint<i32>,
+    owner_location: LogicalPoint<i32>,
+) -> LogicalPoint<i32> {
     popup_location - owner_location
 }
 

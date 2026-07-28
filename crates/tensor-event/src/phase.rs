@@ -1,7 +1,6 @@
 //! Ordered processing phases for one dispatch turn.
 //!
-//! Inspired by calloop's "process sources, then idle work" split, but made
-//! explicit so frame scheduling cannot accidentally interleave with input.
+//! Explicit phase order prevents frame scheduling from accidentally interleaving with input.
 
 /// Processing phase. Lower discriminant runs first when draining.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

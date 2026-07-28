@@ -1,0 +1,68 @@
+use crate::{
+    layout::{LayoutEngine, LayoutKind},
+    scene::SceneAppearance,
+};
+use tensor_runtime::WorkerBridge;
+
+use super::super::{ProtocolError, WaylandRuntime};
+
+fn runtime() -> WaylandRuntime {
+    WaylandRuntime::with_appearance(
+        LayoutEngine::new(LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn completion_runtime_installation_is_single_shot() {
+    let mut runtime = runtime();
+    let _relay = runtime.prepare_for_test(false).unwrap();
+
+    let (clients, _client_events) = WorkerBridge::bounded(1);
+    let (socket_control, _socket_failures) = WorkerBridge::bounded(1);
+    assert!(matches!(
+        runtime.install_socket_runtime(clients, socket_control),
+        Err(ProtocolError::SocketRuntimeAlreadyInstalled)
+    ));
+
+    let (display, _display_events) = WorkerBridge::bounded(1);
+    let (display_control, _display_failures) = WorkerBridge::bounded(1);
+    assert!(matches!(
+        runtime.install_display_runtime(display, display_control),
+        Err(ProtocolError::DisplayRuntimeAlreadyInstalled)
+    ));
+}
+
+#[test]
+fn runtime_preparation_is_single_shot() {
+    let mut runtime = runtime();
+    let _relay = runtime.prepare_for_test(false).unwrap();
+    assert!(matches!(
+        runtime.prepare(false),
+        Err(ProtocolError::RuntimeAlreadyPrepared)
+    ));
+}
+
+#[cfg(feature = "xwayland")]
+#[test]
+fn xwayland_completion_channel_installation_is_single_shot() {
+    let mut runtime = runtime();
+    let (events, _event_rx) = WorkerBridge::bounded(1);
+    let (control, _control_rx) = WorkerBridge::bounded(1);
+    let (properties, _property_rx) = WorkerBridge::bounded(1);
+    let (property_control, _property_control_rx) = WorkerBridge::bounded(1);
+    runtime
+        .install_xwayland_completion_channels(events, control, properties, property_control)
+        .unwrap();
+
+    let (events, _event_rx) = WorkerBridge::bounded(1);
+    let (control, _control_rx) = WorkerBridge::bounded(1);
+    let (properties, _property_rx) = WorkerBridge::bounded(1);
+    let (property_control, _property_control_rx) = WorkerBridge::bounded(1);
+    assert!(matches!(
+        runtime
+            .install_xwayland_completion_channels(events, control, properties, property_control,),
+        Err(ProtocolError::XWaylandCompletionChannelsAlreadyInstalled)
+    ));
+}

@@ -3,13 +3,16 @@
 mod surface;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::UnixStream,
     sync::Arc,
 };
 
-use smithay::utils::Rectangle;
+const MAX_PENDING_XWM_EVENTS: usize = 64;
+
+use tensor_runtime::WorkerTx;
+use tensor_util::LogicalRect;
 use tracing::{debug, trace};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use x11rb::{
@@ -28,6 +31,8 @@ use x11rb::{
 };
 
 pub(crate) use surface::X11Surface;
+
+use super::{X11PropertyRequest, X11PropertyResult, X11PropertyUpdate};
 
 x11rb::atom_manager! {
     pub(crate) Atoms: AtomsCookie {
@@ -56,6 +61,29 @@ x11rb::atom_manager! {
 pub(crate) enum WmWindowProperty {
     NormalHints,
     TransientFor,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PropertyQuery {
+    TransientFor,
+    NormalHints,
+    NetState,
+}
+
+impl PropertyQuery {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::TransientFor => 1 << 0,
+            Self::NormalHints => 1 << 1,
+            Self::NetState => 1 << 2,
+        }
+    }
+}
+
+enum PropertyDisposition {
+    Discard,
+    Resubmitted,
+    Apply,
 }
 
 #[derive(Clone, Debug)]
@@ -92,10 +120,16 @@ pub(crate) struct X11Wm {
     windows: HashMap<u32, X11Surface>,
     unpaired_windows: HashMap<u64, u32>,
     stacking: Vec<u32>,
+    pending_events: VecDeque<XwmEvent>,
+    property_requests: WorkerTx<X11PropertyRequest>,
+    next_window_generation: u64,
 }
 
 impl X11Wm {
-    pub(crate) fn start(socket: UnixStream) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn start(
+        socket: UnixStream,
+        property_requests: WorkerTx<X11PropertyRequest>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let stream = DefaultStream::from_unix_stream(socket)?.0;
         let connection = RustConnection::connect_to_stream(stream, 0)?;
         let atoms = Atoms::new(&connection)?.reply()?;
@@ -182,6 +216,9 @@ impl X11Wm {
             windows: HashMap::new(),
             unpaired_windows: HashMap::new(),
             stacking: Vec::new(),
+            pending_events: VecDeque::with_capacity(MAX_PENDING_XWM_EVENTS),
+            property_requests,
+            next_window_generation: 1,
         })
     }
 
@@ -189,14 +226,89 @@ impl X11Wm {
         self.connection.stream().as_fd()
     }
 
-    pub(crate) fn drain_events(&mut self) -> Result<Vec<XwmEvent>, Box<dyn std::error::Error>> {
-        let mut output = Vec::new();
+    pub(crate) fn drain_events(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(self.pending_events.is_empty());
         while let Some(event) = self.connection.poll_for_event()? {
             trace!(?event, "completed X11 event");
-            self.handle_event(event, &mut output)?;
+            self.handle_event(event)?;
         }
         self.connection.flush()?;
-        Ok(output)
+        Ok(())
+    }
+
+    pub(crate) fn next_event(&mut self) -> Option<XwmEvent> {
+        self.pending_events.pop_front()
+    }
+
+    pub(crate) fn apply_property_result(
+        &mut self,
+        result: X11PropertyResult,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(window) = self.windows.get(&result.target.window).cloned() else {
+            trace!(
+                window = result.target.window,
+                "discarded property completion for a destroyed X11 window"
+            );
+            return Ok(());
+        };
+        if !result.targets(window.property_target()) {
+            trace!(
+                window = result.target.window,
+                generation = result.target.generation,
+                "discarded property completion for a reused X11 id"
+            );
+            return Ok(());
+        };
+        match result.update {
+            X11PropertyUpdate::Initial {
+                transient_for,
+                size_hints,
+                net_state,
+            } => {
+                if window.apply_initial_properties(transient_for, size_hints, net_state) {
+                    self.push_event(XwmEvent::MapRequested(window))?;
+                }
+            }
+            X11PropertyUpdate::TransientFor(transient_for) => {
+                if !matches!(
+                    self.property_disposition(&window, PropertyQuery::TransientFor)?,
+                    PropertyDisposition::Apply
+                ) {
+                    return Ok(());
+                }
+                window.apply_transient_for(transient_for);
+                self.push_event(XwmEvent::PropertyChanged(
+                    window.clone(),
+                    WmWindowProperty::TransientFor,
+                ))?;
+                self.publish_completed_map_request(window)?;
+            }
+            X11PropertyUpdate::NormalHints(size_hints) => {
+                if !matches!(
+                    self.property_disposition(&window, PropertyQuery::NormalHints)?,
+                    PropertyDisposition::Apply
+                ) {
+                    return Ok(());
+                }
+                window.apply_size_hints(size_hints);
+                self.push_event(XwmEvent::PropertyChanged(
+                    window.clone(),
+                    WmWindowProperty::NormalHints,
+                ))?;
+                self.publish_completed_map_request(window)?;
+            }
+            X11PropertyUpdate::NetState(net_state) => {
+                if !matches!(
+                    self.property_disposition(&window, PropertyQuery::NetState)?,
+                    PropertyDisposition::Apply
+                ) {
+                    return Ok(());
+                }
+                window.apply_net_state(net_state);
+                self.publish_completed_map_request(window)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn window(&self, id: u32) -> Option<X11Surface> {
@@ -227,6 +339,9 @@ impl X11Wm {
         &mut self,
         window: &X11Surface,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if window.is_override_redirect() {
+            return Ok(());
+        }
         let id = window.window_id();
         if self.stacking.last() == Some(&id) {
             return Ok(());
@@ -240,33 +355,34 @@ impl X11Wm {
         Ok(())
     }
 
-    fn handle_event(
-        &mut self,
-        event: Event,
-        output: &mut Vec<XwmEvent>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn handle_event(&mut self, event: Event) -> Result<(), Box<dyn std::error::Error>> {
         match event {
             Event::CreateNotify(event) if event.window != self.wm_window => {
-                let (window, created) = self.ensure_created(event)?;
-                if created {
-                    output.push(XwmEvent::NewWindow(window));
-                }
+                let window = self.create_window(event)?;
+                self.push_event(XwmEvent::NewWindow(window))?;
             }
             Event::MapRequest(event) => {
-                let (window, created) = self.ensure_window(event.window)?;
-                if created {
-                    output.push(XwmEvent::NewWindow(window.clone()));
+                let window = self.require_window(event.window)?;
+                if !window.begin_map_request() {
+                    return Ok(());
                 }
-                window.refresh_properties(&self.atoms)?;
-                output.push(XwmEvent::MapRequested(window));
+                if let Err(error) = self.submit_property_request(X11PropertyRequest::Initial {
+                    target: window.property_target(),
+                    net_wm_state: self.atoms._NET_WM_STATE,
+                }) {
+                    window.cancel_map_request();
+                    return Err(error);
+                }
             }
             Event::MapNotify(event) => {
                 if let Some(window) = self.windows.get(&event.window).cloned() {
                     window.mark_mapped(true);
-                    self.stacking.retain(|candidate| *candidate != event.window);
-                    self.stacking.push(event.window);
+                    if !window.is_override_redirect() {
+                        self.stacking.retain(|candidate| *candidate != event.window);
+                        self.stacking.push(event.window);
+                    }
                     self.publish_client_lists()?;
-                    output.push(XwmEvent::Mapped(window));
+                    self.push_event(XwmEvent::Mapped(window))?;
                 }
             }
             Event::UnmapNotify(event) => {
@@ -274,7 +390,7 @@ impl X11Wm {
                     window.mark_mapped(false);
                     self.stacking.retain(|candidate| *candidate != event.window);
                     self.publish_client_lists()?;
-                    output.push(XwmEvent::Unmapped(window));
+                    self.push_event(XwmEvent::Unmapped(window))?;
                 }
             }
             Event::DestroyNotify(event) => {
@@ -284,122 +400,191 @@ impl X11Wm {
                     self.unpaired_windows
                         .retain(|_, candidate| *candidate != event.window);
                     self.publish_client_lists()?;
-                    output.push(XwmEvent::Destroyed(window));
+                    self.push_event(XwmEvent::Destroyed(window))?;
                 }
             }
             Event::ConfigureRequest(event) => {
-                let (window, created) = self.ensure_window(event.window)?;
-                if created {
-                    output.push(XwmEvent::NewWindow(window.clone()));
-                }
+                let window = self.require_window(event.window)?;
                 if window.is_override_redirect() {
-                    let geometry = Rectangle::new(
+                    let geometry = LogicalRect::new(
                         (i32::from(event.x), i32::from(event.y)).into(),
                         (i32::from(event.width), i32::from(event.height)).into(),
                     );
                     window.configure(Some(geometry))?;
                 } else {
-                    output.push(XwmEvent::ConfigureRequested {
+                    self.push_event(XwmEvent::ConfigureRequested {
                         window,
                         width: Some(u32::from(event.width)),
                         height: Some(u32::from(event.height)),
-                    });
+                    })?;
                 }
             }
             Event::ConfigureNotify(event) => {
                 if let Some(window) = self.windows.get(&event.window).cloned() {
-                    let geometry = Rectangle::new(
+                    let geometry = LogicalRect::new(
                         (i32::from(event.x), i32::from(event.y)).into(),
                         (i32::from(event.width), i32::from(event.height)).into(),
                     );
                     window.update_geometry(geometry);
-                    output.push(XwmEvent::Configured {
+                    self.push_event(XwmEvent::Configured {
                         window,
                         above: (event.above_sibling != 0).then_some(event.above_sibling),
-                    });
+                    })?;
                 }
             }
             Event::PropertyNotify(event) => {
-                if let Some(window) = self.windows.get(&event.window).cloned()
-                    && let Some(property) = window.refresh_property(event.atom, &self.atoms)?
-                {
-                    output.push(XwmEvent::PropertyChanged(window, property));
+                if let Some(window) = self.windows.get(&event.window).cloned() {
+                    let query = if event.atom == u32::from(AtomEnum::WM_TRANSIENT_FOR) {
+                        Some(PropertyQuery::TransientFor)
+                    } else if event.atom == u32::from(AtomEnum::WM_NORMAL_HINTS) {
+                        Some(PropertyQuery::NormalHints)
+                    } else if event.atom == self.atoms._NET_WM_STATE {
+                        Some(PropertyQuery::NetState)
+                    } else {
+                        None
+                    };
+                    if let Some(query) = query {
+                        self.schedule_property_query(&window, query)?;
+                    }
                 }
             }
             Event::ClientMessage(event) if event.type_ == self.atoms.WL_SURFACE_SERIAL => {
                 let data = event.data.as_data32();
-                output.push(XwmEvent::SurfaceSerial {
+                self.push_event(XwmEvent::SurfaceSerial {
                     window: event.window,
                     serial: u64::from(data[0]) | (u64::from(data[1]) << 32),
-                });
+                })?;
             }
             Event::ClientMessage(event) if event.type_ == self.atoms._NET_ACTIVE_WINDOW => {
                 if let Some(window) = self.windows.get(&event.window).cloned() {
-                    output.push(XwmEvent::FocusRequested(window));
+                    self.push_event(XwmEvent::FocusRequested(window))?;
                 }
             }
             Event::ClientMessage(event) if event.type_ == self.atoms._NET_WM_MOVERESIZE => {
-                output.push(XwmEvent::ReflowRequested);
+                self.push_event(XwmEvent::ReflowRequested)?;
             }
             other => debug!(?other, "ignored X11 event outside Tensor XWM policy"),
         }
         Ok(())
     }
 
-    fn ensure_created(
+    fn create_window(
         &mut self,
         event: CreateNotifyEvent,
-    ) -> Result<(X11Surface, bool), Box<dyn std::error::Error>> {
-        if let Some(window) = self.windows.get(&event.window) {
-            return Ok((window.clone(), false));
+    ) -> Result<X11Surface, Box<dyn std::error::Error>> {
+        if self.windows.contains_key(&event.window) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("duplicate CreateNotify for X11 window {:#x}", event.window),
+            )
+            .into());
         }
-        let geometry = Rectangle::new(
+        let geometry = LogicalRect::new(
             (i32::from(event.x), i32::from(event.y)).into(),
             (i32::from(event.width), i32::from(event.height)).into(),
         );
         let window = X11Surface::new(
             Arc::clone(&self.connection),
             event.window,
+            self.next_window_generation,
             event.override_redirect,
             geometry,
             self.atoms._NET_WM_STATE,
             self.atoms._NET_WM_STATE_FOCUSED,
         );
+        self.next_window_generation = self
+            .next_window_generation
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("X11 window generation counter overflowed"))?;
         self.windows.insert(event.window, window.clone());
-        Ok((window, true))
+        Ok(window)
     }
 
-    fn ensure_window(&mut self, id: u32) -> Result<(X11Surface, bool), Box<dyn std::error::Error>> {
-        if let Some(window) = self.windows.get(&id) {
-            return Ok((window.clone(), false));
-        }
-        let attributes = self.connection.get_window_attributes(id)?.reply()?;
-        let geometry = self.connection.get_geometry(id)?.reply()?;
-        self.ensure_created(CreateNotifyEvent {
-            response_type: 0,
-            sequence: 0,
-            parent: self.screen.root,
-            window: id,
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-            border_width: geometry.border_width,
-            override_redirect: attributes.override_redirect,
+    fn require_window(&self, id: u32) -> Result<X11Surface, Box<dyn std::error::Error>> {
+        self.windows.get(&id).cloned().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("X11 event for window {id:#x} arrived before CreateNotify"),
+            )
+            .into()
         })
     }
 
+    fn submit_property_request(
+        &self,
+        request: X11PropertyRequest,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.property_requests.try_send(request).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("X11 property completion queue rejected a request: {error:?}"),
+            )
+            .into()
+        })
+    }
+
+    fn schedule_property_query(
+        &self,
+        window: &X11Surface,
+        query: PropertyQuery,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !window.schedule_property_query(query) {
+            return Ok(());
+        }
+        if let Err(error) = self.submit_property_request(self.property_request(window, query)) {
+            window.cancel_property_query(query);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn property_disposition(
+        &self,
+        window: &X11Surface,
+        query: PropertyQuery,
+    ) -> Result<PropertyDisposition, Box<dyn std::error::Error>> {
+        match window.complete_property_query(query) {
+            None => Ok(PropertyDisposition::Discard),
+            Some(false) => Ok(PropertyDisposition::Apply),
+            Some(true) => {
+                if let Err(error) =
+                    self.submit_property_request(self.property_request(window, query))
+                {
+                    window.cancel_property_query(query);
+                    return Err(error);
+                }
+                Ok(PropertyDisposition::Resubmitted)
+            }
+        }
+    }
+
+    fn property_request(&self, window: &X11Surface, query: PropertyQuery) -> X11PropertyRequest {
+        let target = window.property_target();
+        match query {
+            PropertyQuery::TransientFor => X11PropertyRequest::TransientFor { target },
+            PropertyQuery::NormalHints => X11PropertyRequest::NormalHints { target },
+            PropertyQuery::NetState => X11PropertyRequest::NetState {
+                target,
+                net_wm_state: self.atoms._NET_WM_STATE,
+            },
+        }
+    }
+
+    fn publish_completed_map_request(
+        &mut self,
+        window: X11Surface,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if window.take_completed_map_request() {
+            self.push_event(XwmEvent::MapRequested(window))?;
+        }
+        Ok(())
+    }
+
+    fn push_event(&mut self, event: XwmEvent) -> Result<(), Box<dyn std::error::Error>> {
+        push_xwm_event(&mut self.pending_events, event).map_err(Into::into)
+    }
+
     fn publish_client_lists(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let clients = self
-            .stacking
-            .iter()
-            .copied()
-            .filter(|window| {
-                self.windows
-                    .get(window)
-                    .is_some_and(|surface| !surface.is_override_redirect())
-            })
-            .collect::<Vec<_>>();
         for atom in [
             self.atoms._NET_CLIENT_LIST,
             self.atoms._NET_CLIENT_LIST_STACKING,
@@ -409,16 +594,44 @@ impl X11Wm {
                 self.screen.root,
                 atom,
                 AtomEnum::WINDOW,
-                &clients,
+                &self.stacking,
             )?;
         }
         Ok(())
     }
 }
 
+fn push_xwm_event(queue: &mut VecDeque<XwmEvent>, event: XwmEvent) -> std::io::Result<()> {
+    if queue.len() >= MAX_PENDING_XWM_EVENTS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "X11 event queue exceeded Tensor's fixed capacity",
+        ));
+    }
+    queue.push_back(event);
+    Ok(())
+}
+
 impl Drop for X11Wm {
     fn drop(&mut self) {
         let _ = self.connection.destroy_window(self.wm_window);
         let _ = self.connection.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xwm_event_queue_fails_closed_at_its_fixed_capacity() {
+        let mut queue = VecDeque::with_capacity(MAX_PENDING_XWM_EVENTS);
+        for _ in 0..MAX_PENDING_XWM_EVENTS {
+            push_xwm_event(&mut queue, XwmEvent::ReflowRequested).unwrap();
+        }
+
+        let error = push_xwm_event(&mut queue, XwmEvent::ReflowRequested).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+        assert_eq!(queue.len(), MAX_PENDING_XWM_EVENTS);
     }
 }

@@ -1,7 +1,6 @@
 use cursor_icon::CursorIcon;
-use smithay::utils::{IsAlive, Logical, Point, Rectangle};
-use tensor_util::{OutputScale, Rect};
-use wayland_server::protocol::wl_surface::WlSurface;
+use tensor_util::{LogicalPoint, LogicalRect, OutputScale, Rect};
+use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::render::CursorOverlay;
 
@@ -80,8 +79,8 @@ impl CursorState {
     /// renderer a Wayland surface or a second coordinate system.
     pub(crate) fn overlay_for_output(
         &mut self,
-        pointer: Point<f64, Logical>,
-        output: Rectangle<i32, Logical>,
+        pointer: LogicalPoint<f64>,
+        output: LogicalRect<i32>,
         scale: OutputScale,
         viewport: Rect,
     ) -> Option<CursorOverlay> {
@@ -107,7 +106,7 @@ impl CursorState {
     }
 
     fn normalize_surface_liveness(&mut self) {
-        if matches!(&self.image, CursorImage::Surface(surface) if !surface.alive()) {
+        if matches!(&self.image, CursorImage::Surface(surface) if !surface.is_alive()) {
             self.image = CursorImage::default_named();
         }
     }
@@ -122,8 +121,8 @@ impl CursorState {
 mod tests {
     use super::*;
 
-    fn output() -> Rectangle<i32, Logical> {
-        Rectangle::new((10, 20).into(), (100, 80).into())
+    fn output() -> LogicalRect<i32> {
+        LogicalRect::new((10, 20).into(), (100, 80).into())
     }
 
     #[test]

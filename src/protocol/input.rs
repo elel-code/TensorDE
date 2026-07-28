@@ -11,7 +11,7 @@ use pointer_geometry::{
 
 pub(crate) use pointer_geometry::constrain_pointer_location;
 
-use smithay::utils::{Logical, Point, Rectangle};
+use tensor_util::{LogicalPoint, LogicalRect};
 use tracing::{debug, warn};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use xkbcommon::xkb::keysyms;
@@ -183,7 +183,7 @@ impl RuntimeState {
         let shortcuts_inhibited = self
             .input_seat
             .keyboard_focus()
-            .is_some_and(|surface| self.shortcuts_inhibited_for(&surface));
+            .is_some_and(|surface| self.shortcuts_inhibited_for(surface));
         let Some(update) = self.input_seat.update_key(event.key, event.pressed, serial) else {
             return;
         };
@@ -276,7 +276,7 @@ impl RuntimeState {
             .input_seat
             .pointer_location()
             .unwrap_or_else(|| center_pointer_location(bounds));
-        let location = Point::from((
+        let location = LogicalPoint::from((
             event.x * f64::from(bounds.size.w),
             event.y * f64::from(bounds.size.h),
         )) + bounds.loc.to_f64();
@@ -290,7 +290,7 @@ impl RuntimeState {
 
     fn forward_pointer_location(
         &mut self,
-        proposed_location: Point<f64, Logical>,
+        proposed_location: LogicalPoint<f64>,
         time_ns: u64,
         relative: Option<RelativeMotionEvent>,
     ) {
@@ -444,9 +444,9 @@ impl RuntimeState {
     /// real output at all times.
     pub(super) fn relative_pointer_location(
         &self,
-        previous: Point<f64, Logical>,
-        delta: Point<f64, Logical>,
-    ) -> Option<Point<f64, Logical>> {
+        previous: LogicalPoint<f64>,
+        delta: LogicalPoint<f64>,
+    ) -> Option<LogicalPoint<f64>> {
         let proposed = previous + sanitize_relative_pointer_delta(delta);
         if self.space.output_under(proposed).next().is_some() {
             return Some(proposed);
@@ -463,7 +463,7 @@ impl RuntimeState {
     /// every live output. Niri restores it to an actual output rather than a
     /// bounding-box gap. Tensor picks the top-left output deterministically so
     /// hotplug order cannot influence the next pointer event.
-    fn initial_pointer_location(&self) -> Option<Point<f64, Logical>> {
+    fn initial_pointer_location(&self) -> Option<LogicalPoint<f64>> {
         self.space
             .outputs()
             .filter_map(|output| self.space.output_geometry(output))
@@ -480,15 +480,15 @@ impl RuntimeState {
     }
 
     /// Absolute devices are described in one compositor-wide coordinate
-    /// rectangle. This is the union of every mapped Smithay output, so tablet
+    /// rectangle. This is the union of every mapped Tensor output, so tablet
     /// and remote-pointer events do not depend on HashMap iteration order or
     /// an independently selected renderer device.
-    pub(crate) fn pointer_coordinate_space(&self) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn pointer_coordinate_space(&self) -> Option<LogicalRect<i32>> {
         self.space
             .outputs()
             .filter_map(|output| self.space.output_geometry(output))
             .filter(|geometry| geometry.size.w > 0 && geometry.size.h > 0)
-            .reduce(Rectangle::merge)
+            .reduce(LogicalRect::union)
     }
 
     pub(crate) fn forward_pointer_button(&mut self, event: PointerButtonEvent) {
@@ -560,14 +560,14 @@ impl RuntimeState {
     /// XWayland surfaces remain ordinary Wayland pointer targets.
     pub(in crate::protocol) fn pointer_focus_under(
         &self,
-        location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        location: LogicalPoint<f64>,
+    ) -> Option<(WlSurface, LogicalPoint<f64>)> {
         self.layer_or_window_pointer_focus(location)
     }
 
     /// Focus the keyboard-capable target under the pointer: layer shells with
     /// exclusive/on-demand interactivity, otherwise the toplevel/root window.
-    fn focus_window_at(&mut self, location: Point<f64, Logical>, serial: Serial) {
+    fn focus_window_at(&mut self, location: LogicalPoint<f64>, serial: Serial) {
         if self.popup_grab.is_some() {
             return;
         }
@@ -602,8 +602,8 @@ impl RuntimeState {
 
     fn deliver_pointer_motion(
         &mut self,
-        focus: Option<(WlSurface, Point<f64, Logical>)>,
-        location: Point<f64, Logical>,
+        focus: Option<(WlSurface, LogicalPoint<f64>)>,
+        location: LogicalPoint<f64>,
         serial: Serial,
         time: u32,
     ) {

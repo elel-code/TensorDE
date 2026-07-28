@@ -4,49 +4,62 @@ use std::ffi::OsString;
 #[cfg(feature = "xwayland")]
 use tensor_runtime::{OpaqueFdCompletion, OpaqueFdCompletionRuntime, WorkerRx, WorkerTx};
 #[cfg(feature = "xwayland")]
-use tracing::{info, warn};
+use tracing::info;
 
 #[cfg(feature = "xwayland")]
 use super::{ProtocolError, WaylandRuntime};
 #[cfg(feature = "xwayland")]
 use crate::protocol::state::RuntimeState;
 #[cfg(feature = "xwayland")]
-use crate::protocol::xwayland::XWayland;
+use crate::protocol::xwayland::{X11PropertyResult, XWayland};
 
 #[cfg(feature = "xwayland")]
 pub(crate) const MAX_PENDING_XWAYLAND_STARTUP_EVENTS: usize = 1;
 #[cfg(feature = "xwayland")]
 pub(crate) const MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS: usize = 1;
+#[cfg(feature = "xwayland")]
+pub(crate) const MAX_PENDING_XWAYLAND_PROPERTY_RESULTS: usize = 64;
+#[cfg(feature = "xwayland")]
+pub(crate) const MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS: usize = 1;
 
 #[cfg(feature = "xwayland")]
 pub(crate) type XWaylandStartupEvent = OpaqueFdCompletion;
 #[cfg(feature = "xwayland")]
 pub(crate) type XWaylandStartupControlEvent = String;
+#[cfg(feature = "xwayland")]
+pub(crate) type XWaylandPropertyEvent = X11PropertyResult;
+#[cfg(feature = "xwayland")]
+pub(crate) type XWaylandPropertyControlEvent = String;
 
 #[cfg(feature = "xwayland")]
 pub(super) struct XWaylandCompletionChannels {
     events: WorkerTx<XWaylandStartupEvent>,
     control: WorkerTx<XWaylandStartupControlEvent>,
+    property_events: WorkerTx<XWaylandPropertyEvent>,
+    property_control: WorkerTx<XWaylandPropertyControlEvent>,
 }
 
 #[cfg(feature = "xwayland")]
-pub(crate) fn drain_xwayland_startup_events(
+pub(crate) fn drain_xwayland_events(
     events: &WorkerRx<XWaylandStartupEvent>,
     control: &WorkerRx<XWaylandStartupControlEvent>,
+    property_events: &WorkerRx<XWaylandPropertyEvent>,
+    property_control: &WorkerRx<XWaylandPropertyControlEvent>,
     state: &mut RuntimeState,
-) {
+) -> Result<(), String> {
     while let Some(completion) = events.try_recv() {
         if state.xwm.is_some() {
             match state.drain_xwm_events() {
                 Ok(()) => {
                     if let Err(error) = completion.rearm() {
-                        warn!(?error, "failed to rearm the X11 socket completion");
+                        state.stop_xwayland();
+                        return Err(format!("failed to rearm X11 socket completion: {error:?}"));
                     }
                 }
                 Err(error) => {
                     let _ = completion.finish();
-                    state.xwm = None;
-                    warn!(%error, "X11 window manager completion failed");
+                    state.stop_xwayland();
+                    return Err(format!("X11 window manager completion failed: {error}"));
                 }
             }
             continue;
@@ -54,27 +67,45 @@ pub(crate) fn drain_xwayland_startup_events(
         match state.complete_xwayland_startup() {
             Ok(Some(display_number)) => {
                 if let Err(error) = completion.finish() {
-                    warn!(
-                        ?error,
-                        "failed to finish the XWayland startup completion service"
-                    );
+                    state.stop_xwayland();
+                    return Err(format!(
+                        "failed to finish XWayland startup completion: {error:?}"
+                    ));
                 }
                 info!(display_number, "XWayland rootless XWM is ready");
             }
             Ok(None) => {
                 if let Err(error) = completion.rearm() {
-                    warn!(?error, "failed to rearm the XWayland startup completion");
+                    state.stop_xwayland();
+                    return Err(format!(
+                        "failed to rearm XWayland startup completion: {error:?}"
+                    ));
                 }
             }
             Err(error) => {
                 let _ = completion.finish();
-                warn!(%error, "failed to attach rootless XWayland XWM");
+                state.stop_xwayland();
+                return Err(format!("failed to attach rootless XWayland XWM: {error}"));
             }
         }
     }
-    while let Some(error) = control.try_recv() {
-        warn!(%error, "XWayland startup completion runtime failed");
+    if let Some(error) = control.try_recv() {
+        state.stop_xwayland();
+        return Err(format!(
+            "XWayland startup completion runtime failed: {error}"
+        ));
     }
+    while let Some(result) = property_events.try_recv() {
+        if let Err(error) = state.apply_x11_property_result(result) {
+            state.stop_xwayland();
+            return Err(format!("X11 property completion failed: {error}"));
+        }
+    }
+    if let Some(error) = property_control.try_recv() {
+        state.stop_xwayland();
+        return Err(format!("X11 property completion runtime failed: {error}"));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "xwayland")]
@@ -83,11 +114,19 @@ impl WaylandRuntime {
         &mut self,
         events: WorkerTx<XWaylandStartupEvent>,
         control: WorkerTx<XWaylandStartupControlEvent>,
-    ) {
-        if self.xwayland_completion_channels.is_none() {
-            self.xwayland_completion_channels =
-                Some(XWaylandCompletionChannels { events, control });
+        property_events: WorkerTx<XWaylandPropertyEvent>,
+        property_control: WorkerTx<XWaylandPropertyControlEvent>,
+    ) -> Result<(), ProtocolError> {
+        if self.xwayland_completion_channels.is_some() {
+            return Err(ProtocolError::XWaylandCompletionChannelsAlreadyInstalled);
         }
+        self.xwayland_completion_channels = Some(XWaylandCompletionChannels {
+            events,
+            control,
+            property_events,
+            property_control,
+        });
+        Ok(())
     }
 
     pub(crate) fn take_xwayland_completion_runtime(&mut self) -> Option<OpaqueFdCompletionRuntime> {
@@ -96,7 +135,7 @@ impl WaylandRuntime {
 
     pub(super) fn start_xwayland(&mut self) -> Result<(), ProtocolError> {
         if self.state.has_xwayland_process() {
-            return Ok(());
+            return Err(ProtocolError::XWaylandAlreadyStarted);
         }
 
         let channels = self
@@ -119,6 +158,8 @@ impl WaylandRuntime {
             client,
             channels.events.clone(),
             channels.control.clone(),
+            channels.property_events.clone(),
+            channels.property_control.clone(),
         );
         self.xwayland_completion_runtime = Some(completion_runtime);
         self.xwayland_display = Some(OsString::from(format!(":{display_number}")));
@@ -160,6 +201,10 @@ mod tests {
                 .dispatch(Duration::from_millis(5), &mut runtime.state)
                 .unwrap();
             if runtime.state.xwm.is_some() {
+                assert!(matches!(
+                    runtime.start_xwayland(),
+                    Err(super::ProtocolError::XWaylandAlreadyStarted)
+                ));
                 return;
             }
         }

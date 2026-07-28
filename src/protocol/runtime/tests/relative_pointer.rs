@@ -178,7 +178,7 @@ fn relative_pointer_sends_unclipped_motion_and_removes_destroyed_resource() {
             .pointer_count(),
         1
     );
-    let pointer_location: smithay::utils::Point<f64, smithay::utils::Logical> = runtime
+    let pointer_location: tensor_util::LogicalPoint<f64> = runtime
         .state
         .space
         .elements()

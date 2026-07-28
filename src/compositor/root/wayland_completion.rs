@@ -10,8 +10,10 @@ use crate::protocol::{
 };
 #[cfg(feature = "xwayland")]
 use crate::protocol::{
+    MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_PROPERTY_RESULTS,
     MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, MAX_PENDING_XWAYLAND_STARTUP_EVENTS,
-    XWaylandStartupControlEvent, XWaylandStartupEvent, drain_xwayland_startup_events,
+    XWaylandPropertyControlEvent, XWaylandPropertyEvent, XWaylandStartupControlEvent,
+    XWaylandStartupEvent, drain_xwayland_events,
 };
 
 pub(super) struct WaylandCompletionBridges {
@@ -23,6 +25,10 @@ pub(super) struct WaylandCompletionBridges {
     xwayland: WorkerRx<XWaylandStartupEvent>,
     #[cfg(feature = "xwayland")]
     xwayland_control: WorkerRx<XWaylandStartupControlEvent>,
+    #[cfg(feature = "xwayland")]
+    xwayland_properties: WorkerRx<XWaylandPropertyEvent>,
+    #[cfg(feature = "xwayland")]
+    xwayland_property_control: WorkerRx<XWaylandPropertyControlEvent>,
 }
 
 impl WaylandCompletionBridges {
@@ -50,10 +56,25 @@ impl WaylandCompletionBridges {
         let (xwayland_sender, xwayland) =
             WorkerBridge::bounded_with_wake(MAX_PENDING_XWAYLAND_STARTUP_EVENTS, Arc::clone(&wake));
         #[cfg(feature = "xwayland")]
-        let (xwayland_control_sender, xwayland_control) =
-            WorkerBridge::bounded_with_wake(MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS, wake);
+        let (xwayland_control_sender, xwayland_control) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_XWAYLAND_STARTUP_CONTROL_EVENTS,
+            Arc::clone(&wake),
+        );
         #[cfg(feature = "xwayland")]
-        protocol.install_xwayland_completion_channels(xwayland_sender, xwayland_control_sender);
+        let (xwayland_property_sender, xwayland_properties) = WorkerBridge::bounded_with_wake(
+            MAX_PENDING_XWAYLAND_PROPERTY_RESULTS,
+            Arc::clone(&wake),
+        );
+        #[cfg(feature = "xwayland")]
+        let (xwayland_property_control_sender, xwayland_property_control) =
+            WorkerBridge::bounded_with_wake(MAX_PENDING_XWAYLAND_PROPERTY_CONTROL_EVENTS, wake);
+        #[cfg(feature = "xwayland")]
+        protocol.install_xwayland_completion_channels(
+            xwayland_sender,
+            xwayland_control_sender,
+            xwayland_property_sender,
+            xwayland_property_control_sender,
+        )?;
 
         Ok(Self {
             clients,
@@ -64,6 +85,10 @@ impl WaylandCompletionBridges {
             xwayland,
             #[cfg(feature = "xwayland")]
             xwayland_control,
+            #[cfg(feature = "xwayland")]
+            xwayland_properties,
+            #[cfg(feature = "xwayland")]
+            xwayland_property_control,
         })
     }
 
@@ -73,7 +98,14 @@ impl WaylandCompletionBridges {
         drain_wayland_display_events(&self.display, &self.display_control, state)
             .map_err(|message| format!("Wayland display completion failed: {message}"))?;
         #[cfg(feature = "xwayland")]
-        drain_xwayland_startup_events(&self.xwayland, &self.xwayland_control, state);
+        drain_xwayland_events(
+            &self.xwayland,
+            &self.xwayland_control,
+            &self.xwayland_properties,
+            &self.xwayland_property_control,
+            state,
+        )
+        .map_err(|message| format!("XWayland completion failed: {message}"))?;
         Ok(())
     }
 }

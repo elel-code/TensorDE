@@ -28,7 +28,7 @@ master_width = { proportion = 0.55 }
 
 ipc_socket = "/run/user/1000/tensor.sock"
 gpu = "discrete"
-# Optional DRM primary or render node. Without this, Smithay selects the seat's primary GPU.
+# Optional DRM primary or render node. Without this, Tensor capability ranking selects the pair.
 # render_device = "/dev/dri/renderD128"
 systemd = "auto"
 xwayland = true
@@ -85,7 +85,7 @@ silently repaired.
 Each `[[outputs]]` entry matches the connector name reported by DRM. Its optional `scale` is
 constrained to `0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation
 sent by `wp_fractional_scale_v1`. An output without a rule uses the Niri/Mutter-style DPI heuristic
-and a quarter-step scale. Smithay exposes the resulting fractional value to clients, while
+and a quarter-step scale. Tensor exposes the resulting fractional value to clients, while
 `wl_output` continues to receive the required rounded-up integer scale.
 
 An optional `mode` uses `<width>x<height>` or `<width>x<height>@<refresh>`, where refresh has at
@@ -131,7 +131,7 @@ primary/render pair, external dma-buf memory with DRM modifiers, foreign queue-f
 transfer, and bidirectional binary `SYNC_FD` semaphores. Use `integrated` or `any` only when the
 machine's topology requires it. `TENSOR_GPU` overrides the file for local development.
 
-`render_device` constrains the common Vulkan and Smithay device. Either a primary node (`cardN`) or
+`render_device` constrains the common Vulkan and Tensor tty device. Either a primary node (`cardN`) or
 render node (`renderDN`) is accepted. Tensor resolves its major/minor identity, selects only the
 matching Vulkan physical device, requires its paired node, and passes the selected render node to
 the tty backend. When omitted, Vulkan capability filtering and `gpu` ranking choose the pair.
@@ -143,9 +143,10 @@ the `systemd` Cargo feature is present and `NOTIFY_SOCKET`, `SYSTEMD_EXEC_PID`, 
 identifies a user-manager launch. Without that feature, `auto` resolves to the direct path while
 `enabled` fails startup. Explicit configuration never manufactures unavailable integration.
 
-`xwayland` defaults to `true`. It starts the rootless XWayland process, awaits the displayfd through
-a Compio completion, then attaches Smithay's XWM on the compositor thread. Smithay's internal X11
-event source remains a transitional calloop adapter.
+`xwayland` defaults to `true`. It starts Tensor's rootless XWayland process, awaits the displayfd
+through a Compio completion, then starts the direct XWM on the compositor thread. X11 event
+notification uses a one-shot io_uring poll operation with explicit CQE rearm. Runtime property
+reads use a dedicated Compio X11 connection and fixed-capacity completion bridge.
 Normal rootless X11 windows enter the same Wayland surface, ECS, and Vulkan scene path as native
 clients. This is not an X11 backend: Tensor rejects primary X11 sessions, keeps layout coordinates
 authoritative, and does not provide an X11 session entry. Override-redirect X11 menus and tooltips
@@ -177,7 +178,7 @@ snapshot and publishes readiness. Inherited session values are cleared before th
 disabling XWayland cannot leak a host `DISPLAY` into children. Only then does the one-shot autostart
 gate queue commands in configuration order on the asynchronous launch worker. Process creation and
 optional systemd scope setup complete off the compositor thread; outcomes are logged when the
-calloop channel drains. `--check`, ordinary non-session startup, environment-sync failure, and
+completion bridge drains. `--check`, ordinary non-session startup, environment-sync failure, and
 readiness failure launch none of them.
 
 Values are passed directly to the executable: Tensor does not invoke a shell, expand variables, or

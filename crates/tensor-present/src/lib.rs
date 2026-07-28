@@ -1,7 +1,7 @@
 //! Value-only present scheduling helpers.
 //!
 //! Tracks per-output redraw / slot readiness **without** DRM or Vulkan handles.
-//! The Smithay (or future native) KMS path maps [`PresentIntent`] to real
+//! Tensor's native KMS path maps [`PresentIntent`] to real
 //! atomic commits. This keeps page-flip policy testable offline.
 
 mod readiness;

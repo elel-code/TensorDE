@@ -1,6 +1,6 @@
 //! Bounded asynchronous compositor diagnostics.
 //!
-//! Smithay callbacks and Vulkan frame work may emit tracing events, but neither
+//! Protocol dispatch and Vulkan frame work may emit tracing events, but neither
 //! may wait for a terminal, journal, or filesystem write. This boundary turns
 //! each formatted record into a bounded value-only message and gives a single
 //! Compio-owned drain thread sole ownership of the output handle. Compio is a

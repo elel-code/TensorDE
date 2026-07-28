@@ -4,8 +4,7 @@
 //!
 //! A monolithic queue forces either (a) sort-by-phase every drain or (b) unfair
 //! FIFO that can starve present behind IPC. Per-phase rings keep **O(1) push**,
-//! **O(1) pop**, and **phase order without sorting** — the same idea as
-//! calloop processing sources then running idle work, made explicit.
+//! **O(1) pop**, and **phase order without sorting**.
 //!
 //! Capacity is fixed at construction. Overflow never blocks; producers see
 //! [`PushResult::Dropped`] and can log via [`QueueStats`].

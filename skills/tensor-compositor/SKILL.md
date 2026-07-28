@@ -1,6 +1,6 @@
 ---
 name: tensor-compositor
-description: Use when changing the Tensor Wayland compositor, its Smithay/Vulkanalia renderer, Bevy ECS state, TOML configuration, startup sequence, IPC, or optional systemd and xdg-desktop-portal gates. Enforces the repository's descriptor-heap-only and modern Rust module contracts.
+description: Use when changing the Tensor Wayland compositor, its direct Wayland/Vulkanalia stack, Bevy ECS state, TOML configuration, startup sequence, IPC, or optional systemd and xdg-desktop-portal gates. Enforces the repository's completion-only, descriptor-heap-only, and modern Rust module contracts.
 ---
 
 # Tensor Compositor Engineering
@@ -10,13 +10,16 @@ are preferred over compatibility layers that would constrain the renderer or IPC
 
 ## Hard Contracts
 
-- Use Smithay `master` for Wayland protocol, input, session, and calloop integration.
+- Do not depend on or import Smithay and do not add an adapter, compatibility feature, or fallback
+  for it. Use direct `wayland-server` dispatch and Tensor-owned input/session/DRM/XWayland state.
+- Compio is submit-to-complete with io_uring. Keep defaults and `polling` disabled; do not add a
+  readiness reactor or marker runtime.
 - Use Vulkanalia with `VK_EXT_descriptor_heap` as a required, first-class `DescriptorHeap`.
   Never add descriptor-set or descriptor-buffer fallback paths.
 - Keep physical-device enumeration/ranking in the renderer `device` module. The default prefers a
   discrete GPU, then integrated/virtual hardware, with CPU last; every candidate must support the
   descriptor heap.
-- Use `bevy_ecs` directly, not the Bevy engine. Keep Smithay/non-thread-safe handles outside normal
+- Use `bevy_ecs` directly, not the Bevy engine. Keep Wayland/non-thread-safe handles outside normal
   components, in protocol-owned state or `NonSend` resources. Components should be IDs, lifecycle
   state, geometry, and render extraction data.
 - Parse user configuration as TOML with `serde`/`toml`. Configuration loading and validation must be
@@ -24,7 +27,7 @@ are preferred over compatibility layers that would constrain the renderer or IPC
 - Keep IPC versioned, request-ID based, length-prefixed, bounded, and structurally errorful over a
   private Unix socket. Do not invent compatibility shims for a new protocol.
 - Make systemd notification and xdg-desktop-portal/PipeWire support optional feature boundaries.
-  Portal code must not own renderer or Smithay internals.
+  Portal code must not own renderer or Wayland internals.
 - Keep dependency ranges broad but bounded by compatible major/minor versions; do not use `"*"`.
 
 ## Rust Layout
@@ -36,7 +39,8 @@ generated bindings and explicit fixtures are the only exclusions.
 ## Startup Review
 
 When modifying startup, preserve the gate order: CLI/environment, TOML load and validation,
-logging, calloop/Smithay display, Vulkan descriptor-heap probe, IPC bind, ECS scene construction,
+logging, Compio completion loop/direct Wayland display, Vulkan descriptor-heap probe, IPC bind,
+ECS scene construction,
 watchers/signals, then the event loop. `READY=1` is emitted only after every required gate passes.
 
 ## Validation
@@ -45,7 +49,8 @@ Run:
 
 ```sh
 cargo fmt --all
-./scripts/check-file-lines.sh
+uv run scripts/check_file_lines.py
+uv run scripts/check_crate_boundaries.py
 cargo test --all-targets
 ```
 

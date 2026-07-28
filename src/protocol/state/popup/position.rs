@@ -1,7 +1,6 @@
 //! xdg-popup positioning against window and layer-shell parents.
 
-use smithay::utils::{Logical, Rectangle};
-use tensor_util::Rect;
+use tensor_util::{LogicalRect, Rect};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 #[cfg(feature = "tty")]
@@ -41,7 +40,7 @@ impl RuntimeState {
         let Some(window_geo) = self.space.element_geometry(window) else {
             return;
         };
-        let mut target = Rectangle::new(
+        let mut target = LogicalRect::new(
             (
                 output_geo.loc.x.saturating_sub(window_geo.loc.x),
                 output_geo.loc.y.saturating_sub(window_geo.loc.y),
@@ -63,7 +62,7 @@ impl RuntimeState {
         };
         let mut target = match context.layer {
             WlrLayer::Background | WlrLayer::Bottom => context.non_exclusive_zone,
-            WlrLayer::Top | WlrLayer::Overlay => Rectangle::from_size(output_geo.size),
+            WlrLayer::Top | WlrLayer::Overlay => LogicalRect::from_size(output_geo.size),
         };
         target.loc -= context.geometry.loc;
         target.loc -= get_popup_toplevel_coords(popup);
@@ -71,7 +70,7 @@ impl RuntimeState {
     }
 }
 
-fn position_xdg_popup(popup: &PopupKind, target: Rectangle<i32, Logical>) {
+fn position_xdg_popup(popup: &PopupKind, target: LogicalRect<i32>) {
     let surface = &popup.0;
     surface.constrain(Rect::new(
         target.loc.x,
@@ -85,10 +84,10 @@ fn position_xdg_popup(popup: &PopupKind, target: Rectangle<i32, Logical>) {
 mod tests {
     use super::position_xdg_popup;
     use crate::protocol::state::popup::PopupKind;
-    use smithay::utils::{Logical, Rectangle};
+    use tensor_util::LogicalRect;
 
     #[test]
     fn position_helper_accepts_tensor_popup_kinds() {
-        let _ = position_xdg_popup as fn(&PopupKind, Rectangle<i32, Logical>);
+        let _ = position_xdg_popup as fn(&PopupKind, LogicalRect<i32>);
     }
 }

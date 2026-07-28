@@ -6,7 +6,7 @@
 
 use std::io;
 
-use smithay::utils::{Logical, Point};
+use tensor_util::LogicalPoint;
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use xkbcommon::xkb;
 
@@ -154,13 +154,13 @@ impl KeyboardState {
 pub(crate) struct PointerGrabStart {
     pub(crate) serial: Serial,
     pub(crate) focus: Option<WlSurface>,
-    pub(crate) origin: Point<f64, Logical>,
+    pub(crate) origin: LogicalPoint<f64>,
 }
 
 pub(crate) struct PointerState {
-    location: Point<f64, Logical>,
+    location: LogicalPoint<f64>,
     focus: Option<WlSurface>,
-    focus_origin: Point<f64, Logical>,
+    focus_origin: LogicalPoint<f64>,
     buttons: [u64; BUTTON_WORDS],
     grab_start: Option<PointerGrabStart>,
 }
@@ -284,11 +284,11 @@ impl InputSeat {
         self.pointer.is_some()
     }
 
-    pub(crate) fn pointer_location(&self) -> Option<Point<f64, Logical>> {
+    pub(crate) fn pointer_location(&self) -> Option<LogicalPoint<f64>> {
         Some(self.pointer.as_ref()?.location)
     }
 
-    pub(crate) fn set_pointer_location(&mut self, location: Point<f64, Logical>) {
+    pub(crate) fn set_pointer_location(&mut self, location: LogicalPoint<f64>) {
         if let Some(pointer) = self.pointer.as_mut() {
             pointer.location = location;
         }
@@ -304,7 +304,7 @@ impl InputSeat {
 
     pub(crate) fn replace_pointer_focus(
         &mut self,
-        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        focus: Option<(WlSurface, LogicalPoint<f64>)>,
     ) -> Option<WlSurface> {
         let pointer = self.pointer.as_mut()?;
         let (focus, origin) = focus
@@ -314,7 +314,7 @@ impl InputSeat {
         std::mem::replace(&mut pointer.focus, focus)
     }
 
-    pub(crate) fn update_pointer_origin(&mut self, origin: Point<f64, Logical>) {
+    pub(crate) fn update_pointer_origin(&mut self, origin: LogicalPoint<f64>) {
         if let Some(pointer) = self.pointer.as_mut() {
             pointer.focus_origin = origin;
         }

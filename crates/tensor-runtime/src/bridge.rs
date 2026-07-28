@@ -1,7 +1,6 @@
-//! Bounded cross-thread channel (std-backed, calloop-channel idea).
+//! Bounded std-backed cross-thread channel.
 //!
-//! Same **bounded non-blocking** contract as calloop's channel. The compositor
-//! injects on its turn after I/O **completions**. On the product path a worker
+//! The compositor injects values on its turn after I/O **completions**. On the product path a worker
 //! write to [`crate::EventfdWake`] completes a submitted Compio/io_uring read —
 //! completion model, not readiness registration.
 

@@ -4,9 +4,9 @@ Tensor is a Rust Wayland compositor built around five ownership domains:
 
 1. **`tensor-event` / `tensor-runtime`** own compositor event semantics (phase order, coalescing,
    fixed-capacity queues) and Compio-backed worker bridges. See `docs/event-layer.md`.
-2. **Host contracts** (`tensor-host` / `tensor-drm` / `tensor-present`) own display/input/present
-   *values* without Smithay. **Smithay** remains a transitional adapter for protocol objects and,
-   today, input/session/DRM bindings plus the calloop wait layer. Exit plan: `docs/smithay-exit.md`.
+2. **Native host and protocol owners** (`tensor-host` / `tensor-drm` / `tensor-present` /
+   `tensor-protocol` plus `src/protocol` and `src/backend`) own values, wire state, input/session,
+   XWayland, and DRM/KMS directly. Smithay and calloop are absent from the dependency graph.
 3. **Bevy ECS** owns compositor intent: stable IDs, lifecycle, workspace membership, focus, geometry.
 4. **Vulkanalia** owns GPU handles, descriptor heaps, frame extraction, rendering, and
    synchronization. It returns dma-bufs and fences for present instead of owning KMS state.
@@ -14,16 +14,15 @@ Tensor is a Rust Wayland compositor built around five ownership domains:
 
 ## Async execution and the event layer
 
-The long-term I/O runtime is **Compio (completion model) + io_uring driver**
+The I/O runtime is **Compio (completion model) + io_uring driver**
 (`tensor-runtime`); the semantic loop is always `tensor-event::EventQueue`. Turn contracts live
 in `tensor_runtime::{run_turn, EventfdWake, CompletionDriver::IoUring}`. Compio is **submit →
 complete**, not a readiness poll loop. On Linux the product driver is **io_uring**; Compio's
 `polling` feature is disabled, so inability to create io_uring is a runtime initialization error.
-calloop still owns some Smithay fds as a **readiness** loop during
-migration (direct dependency, not via Smithay reexports). Tensor-owned local I/O (logging, IPC,
-udev hotplug waits, libinput waits, libseat session waits, blocked process signals, and worker
-notifications) uses Compio completions and posts value-only messages across bounded bridges. Workers never own
-Smithay objects or DRM/KMS descriptors. Present and Vulkan record stay on the compositor thread
+Logging, IPC, Wayland listener/display operations, X11 property reads, udev hotplug waits, libinput
+waits, libseat session waits, blocked process signals, and worker notifications use Compio
+completions and bounded bridges. Workers never own Wayland objects or DRM/KMS descriptors. Present
+and Vulkan record stay on the compositor thread
 for latency predictability. Input samples go through `tensor-input` at the bus edge.
 
 Every Compio service constructs its ring through `tensor_runtime::io_uring_runtime` with the
@@ -42,15 +41,15 @@ owns either the selected `TENSOR_LOG_FILE` or `stderr` (and therefore the system
 service). Writes complete through Compio's io_uring driver; failure to initialize that driver
 fails startup. Queue saturation is intentionally lossy, but the drain emits a later
 dropped-record notice; this is preferable to allowing logging to delay input, page-flip, or frame
-submission. The worker has no Smithay, Vulkan, DRM/KMS, or ECS ownership.
+submission. The worker has no Wayland, Vulkan, DRM/KMS, or ECS ownership.
 
 Application launch is the second. `ProcessLauncher` still owns double-fork and optional
-transient-systemd scope setup, but those waits never run inside a calloop callback. The
+transient-systemd scope setup, but those waits never run on the compositor thread. The
 compositor submits value-only `LaunchRequest` messages to a dedicated launch worker; the worker
 returns value-only `LaunchOutcome` results through a bounded Tensor bridge. A submitted Compio
-eventfd read must complete before the transitional calloop notification drains those outcomes.
+eventfd read must complete before the compositor drains those outcomes.
 Queue saturation rejects new submissions or drops late completion logs rather than blocking the
-compositor thread. The worker owns neither Smithay objects nor DRM/KMS descriptors.
+compositor thread. The worker owns neither Wayland objects nor DRM/KMS descriptors.
 
 IPC also carries runtime **workspace** and **output layout** commands
 (`set-workspace`, `set-output-position` / `enabled` / `scale`) that mutate value-only
@@ -66,15 +65,15 @@ configuration language. The TOML/`serde` boundary remains authoritative for
 startup, device, layout, and session policy; live control stays on versioned
 IPC. If scripting is added later,
 it must be an optional capability boundary: scripts may receive value-only
-snapshots and issue versioned IPC or policy commands, but may not hold Smithay
+snapshots and issue versioned IPC or policy commands, but may not hold Wayland
 resources, Vulkan handles, Bevy entities, or portal ownership. Execution
 budgets, transactional reload, an explicit API version, and a process or
-sandbox boundary are prerequisites so the core event loop and readiness gates
+sandbox boundary are prerequisites so the core event loop and completion gates
 remain deterministic when scripting is disabled.
 
-Smithay and Vulkan objects do not become ordinary ECS components. Thread-affine Smithay state stays
-in the protocol owner or a Bevy `NonSend` resource. `RuntimeState` is the calloop data object and
-serializes Smithay dispatch, popup/seat state, surface-to-view indexing, layout intent, and ECS
+Wayland and Vulkan objects do not become ordinary ECS components. Thread-affine protocol state
+stays in the protocol owner or a Bevy `NonSend` resource. `RuntimeState` is the compositor owner and
+serializes direct dispatch, popup/seat state, surface-to-view indexing, layout intent, and ECS
 lifecycle changes. The renderer consumes a compact scene extracted from ECS once per frame rather
 than issuing ECS queries in GPU submission loops.
 
@@ -91,9 +90,8 @@ commit: initial XDG configuration, committed min/max changes, output topology, a
 commands recompute geometry. The resulting snapshot relocates Tensor `WindowSpace` entries without
 changing their stacking order and supplies both the XDG suggested size and output-relative bounds.
 `ProtocolWindow` owns stable window identity and cached surface-tree bounds on the compositor
-thread. Its `Rc` clones share state without copying geometry. Tensor owns the underlying stable
-XDG role objects directly; Smithay remains only at the transitional core-surface, seat/input, and
-XWayland/XWM boundaries.
+thread. Its `Rc` clones share state without copying geometry. Tensor owns the underlying stable XDG,
+core-surface, seat/input, and XWayland/XWM objects directly.
 
 Scene extraction is a separate once-per-frame boundary. Nodes are stored in stable `ViewId` order
 for linear snapshot comparison and carry an independent stacking-order index for drawing. Effect
@@ -105,10 +103,10 @@ allocation, three native output slots, and timeline retirement, and is connected
 output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
 client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports
 a Tensor-owned dma-buf description plus binary `SYNC_FD`, and hands both to the tty adapter for the
-Tensor-owned atomic KMS path. Renderer production code does not depend on Smithay types. The
+Tensor-owned atomic KMS path. Renderer production code depends only on Tensor value contracts. The
 current slice is intentionally limited to one-plane RGB; implicit dma-buf synchronization,
-multi-plane formats, and damage-driven partial rendering remain later gates. Explicit clients use Smithay's
-`wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
+multi-plane formats, and damage-driven partial rendering remain later gates. Explicit clients use
+Tensor's `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
 sync-file fds and stable `SurfaceId` values reach Vulkanalia.
 
 Compositor-owned appearance crosses the configuration boundary as a small value-only `SceneAppearance`
@@ -124,7 +122,7 @@ a descriptor-set fallback: sampled client images continue to use `VK_EXT_descrip
 
 Output scale is a shared value primitive, represented exactly in the `N/120` units of
 `wp_fractional_scale_v1`. DRM mode dimensions and Vulkan native targets remain physical pixels;
-Smithay output geometry, ECS layout, XDG configure sizes, hit testing, and relative-pointer
+Tensor output geometry, ECS layout, XDG configure sizes, hit testing, and relative-pointer
 locations remain logical coordinates. Frame extraction maps shared logical rectangle edges to the
 same rounded physical edge, while damage and scissors round outward and clip to the physical mode.
 This keeps adjacent tiles gapless without allowing partial-edge damage to leave stale pixels.
@@ -132,7 +130,7 @@ This keeps adjacent tiles gapless without allowing partial-edge damage to leave 
 The protocol owner traverses each mapped toplevel, subsurface tree, and popup tree in Tensor's
 back-to-front window order and copies only stable identities, buffer metadata, placement, and layer
 policy into the flat ECS content table. Synchronized subsurface callbacks are deferred until their non-synchronized
-ancestor applies the complete Smithay transaction; explicit acquire/release points follow the same
+ancestor applies the complete Tensor surface transaction; explicit acquire/release points follow the same
 gate. Popup content remains owned by its toplevel but is clipped by the output rather than the
 layout tile, and its old/new bounds participate in scene damage.
 
@@ -142,7 +140,7 @@ through an exact double-ended iterator, with no popup clones, mutex, or staging 
 locations walk only the bounded popup parent chain. Destruction removes a complete descendant tree,
 and destroying a parent before its live XDG child reports the required `not_the_topmost_popup`
 protocol error immediately. Tensor-owned XDG role handles share the same compositor-thread `Rc`
-state as popup topology; the temporary Smithay seat grab receives only raw resource identity, so
+state as popup topology; the Tensor seat grab receives only raw resource identity, so
 render, hit-test, and commit paths gain no `Arc`, mutex, or handle copy.
 
 Wayland and IPC boundaries address views by compositor-owned stable IDs, never Bevy `Entity`
@@ -164,11 +162,11 @@ device enables only the extensions for this native path and descriptor heap; the
 descriptor-set or descriptor-buffer fallback.
 Before ranking, each otherwise eligible device must also expose at least one explicit DRM modifier
 that supports the real native image usage and exportable dma-buf memory. Import and export support
-remain separate values. After Smithay opens the selected DRM pair, `render/format.rs` intersects
+remain separate values. After the Tensor tty backend opens the selected DRM pair, `render/format.rs` intersects
 that Vulkan snapshot with each active output's primary-plane `FormatSet` and GBM capability. Only
 fourcc, modifier, plane count, and capability flags cross this boundary; neither side receives the
 other subsystem's handles.
-The selected DRM identity is then passed to Smithay as the sole native device choice. An explicit
+The selected DRM identity is then passed to the tty backend as the sole native device choice. An explicit
 `render-device` filters Vulkan candidates by major/minor before ranking; Vulkan and the tty backend
 never choose devices independently. Pure ranking remains testable without a GPU. The complete
 buffer and synchronization contract is recorded in `docs/rendering.md`.
@@ -185,15 +183,15 @@ created.
 XWayland is a rootless compatibility server for individual applications, never a compositor
 backend. Tensor ships only a Wayland session entry and rejects an inherited X11-only session. Niri's
 current integration obtains its clean scaling boundary by letting `xwayland-satellite` expose X11
-windows as ordinary Wayland surfaces. Tensor's direct Smithay XWayland/XWM path follows the same
+windows as ordinary Wayland surfaces. Tensor's direct XWayland/XWM path follows the same
 architectural invariant: on XWayland readiness, Tensor starts an XWM and uses the
-`xwayland-shell` association to place each normal mapped X11 window into the ordinary Smithay
-`Window`, ECS view, surface tree, scene, and logical-to-physical output path. X11 configure
+`xwayland-shell` association to place each normal mapped X11 window into the ordinary Tensor
+`ProtocolWindow`, ECS view, surface tree, scene, and logical-to-physical output path. X11 configure
 requests are hints; layout remains authoritative and sends its existing logical rectangle back to
 XWayland. Tensor never derives a second X11 coordinate space from an output scale.
 
 Pointer hit-testing stays on the associated Wayland surface tree, including ordinary popup input
-regions. Keyboard activation deliberately targets `X11Surface` for an X11 root window so Smithay
+regions. Keyboard activation deliberately targets `X11Surface` for an X11 root window so Tensor
 performs the ICCCM input-focus / `WM_TAKE_FOCUS` handshake; it targets the native root surface for
 Wayland clients. Either route updates the same ECS focus, stacking, and layout reflow state, and a
 destroyed root clears keyboard focus before its surface association disappears.
@@ -201,7 +199,7 @@ destroyed root clears keyboard focus before its surface association disappears.
 Override-redirect X11 windows use popup/parent semantics rather than becoming independent tiled
 views. Tensor admits one only after its map state and `xwayland-shell` association are both known
 and its `WM_TRANSIENT_FOR` chain resolves to a managed X11 root. The popup's configured X11
-location becomes an offset relative to that root's configured rectangle; it is mapped in Smithay's
+location becomes an offset relative to that root's configured rectangle; it is mapped in Tensor's
 input/output space and flattened into the root view's scene content. Its stacking, explicit-sync
 ownership, frame callbacks, and presentation feedback therefore remain attached to the root view.
 An unowned popup is rejected instead of creating a fallback global X11 placement path.
@@ -219,7 +217,7 @@ belong in `crates/tensor-util`, while protocol, renderer, and compositor-specifi
 own crates/modules.
 
 The protocol layer owns long-lived globals as a single `ProtocolGlobals` capability set. Alongside
-the transitional compositor/subcompositor and seat globals, Tensor-owned xdg-shell, SHM,
+Tensor-owned compositor/subcompositor and seat globals, Tensor-owned xdg-shell, SHM,
 xdg-output, data-device, and popup tracking, Tensor
 advertises viewporter, fractional-scale, xdg-decoration, primary selection, relative pointer,
 pointer gestures, pointer-constraints, presentation-time v2, cursor-shape, xdg-activation,
@@ -232,8 +230,8 @@ xdg-foreign, xdg-system-bell, pointer-warp,
 content-type, alpha-modifier, ext-background-effect (blur), xdg-toplevel-icon, xdg-toplevel-tag, fifo,
 commit-timing, xwayland-keyboard-grab, ext-data-control (preferred) plus wlr-data-control
 (compat), virtual-pointer, gamma-control, and linux-dmabuf when the selected Vulkan device exposes
-a non-empty validated client-import format list. Protocol work follows wayland-protocols /
-Smithay-style **tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
+a non-empty validated client-import format list. Protocol work follows wayland-protocols
+**tiers** (core → stable → staging/`ext` → unstable → community → proprietary);
 higher tiers win for the same capability, and `zwlr_*` is community-only when no standard path
 exists (see `docs/protocol-surface.md`). Tensor-local ports stay value-only at the ECS/event
 boundary. Tensor directly owns stable xdg-shell v7: `xdg_wm_base`, positioners, surfaces,
@@ -242,10 +240,10 @@ Role and root lookup use exact resource/surface indices. Toplevel and popup conf
 fixed at 16 entries, and every unmap advances a mapping generation so a delayed ACK can be consumed
 without authorizing a new mapping. A detach commit never emits the next initial configure; a new
 empty commit is required first. Popup placement uses saturating coordinates and bounded parent
-walks. There is no Smithay XDG state, handler, wrapper, cached state, or parallel path.
+walks. There is no alternate XDG state, wrapper, cached state, or parallel path.
 
 Tensor also directly owns the wlr-layer-shell v5 global, wire requests, double-buffered role
-state, and fixed-capacity configure queues; there is no Smithay layer-shell handler or wrapper.
+state, and fixed-capacity configure queues; there is no alternate layer-shell handler or wrapper.
 Layer surfaces map through compositor-thread Tensor state: exact root/output indices make commit
 lookup O(1), while one compact `Vec` per active output preserves creation/stacking order without a
 per-frame hashed staging collection. On commit, Tensor arranges exclusive zones, sends pending
@@ -292,7 +290,7 @@ udev hotplug, delayed mode discovery, DP-MST removal, and session resume.
 The scanner is an adapter, not Tensor's output model. Every connector is copied into a complete
 device-local snapshot, including connected connectors that do not yet have a mode or CRTC. One
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered
-`OutputPlan`; only that plan drives Smithay `Output`, Wayland global, and Tensor `WindowSpace`
+`OutputPlan`; only that plan drives Wayland globals and Tensor `WindowSpace`
 lifecycles. Future
 EDID profiles, enablement, failover, mirroring, and CRTC allocation belong in this policy boundary.
 The plan also carries the selected progressive DRM mode, native fourcc, explicit modifier, plane
@@ -306,9 +304,9 @@ enter ECS or the renderer.
 Focused state is one contract across ECS, protocol, and rendering: a `Focused` ECS component
 extracts a value-only focus outline into the scene, the selected Tensor `ProtocolWindow` updates
 `xdg_toplevel::State::Activated` (or the corresponding XWayland activation), and the seat owns the
-keyboard focus. A true active-view transition raises the same attachment family in ECS and Smithay,
+keyboard focus. A true active-view transition raises the same attachment family in ECS and Tensor `WindowSpace`,
 updates activation, then delivers seat focus; a later seat-focus repair does not alter stacking or
-emit a duplicate scene transition. Smithay suppresses equal keyboard targets, so a repair does not
+emit a duplicate scene transition. The Tensor seat suppresses equal keyboard targets, so a repair does not
 emit redundant `wl_keyboard.enter`/`leave` events. The Vulkan path preserves each view's order as
 ring, client tree, then later stacked nodes, with the cursor last; this is compositor-owned geometry,
 not a descriptor-set fallback for client or output resources.

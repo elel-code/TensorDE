@@ -35,10 +35,7 @@ fn output_location(state: &RuntimeState, name: &str) -> i32 {
         .0
 }
 
-fn output_geometry(
-    state: &RuntimeState,
-    name: &str,
-) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+fn output_geometry(state: &RuntimeState, name: &str) -> tensor_util::LogicalRect<i32> {
     let output = state
         .space
         .outputs()

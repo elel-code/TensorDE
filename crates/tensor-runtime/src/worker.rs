@@ -1,7 +1,7 @@
 //! Dedicated Compio runtime thread for async I/O services.
 //!
 //! Mirrors the logging drain pattern: one thread, one [`compio::runtime::Runtime`],
-//! no Smithay/DRM ownership. Work is submitted as closures that may use
+//! no Wayland/DRM ownership. Work is submitted as closures that may use
 //! `block_on` for Compio futures.
 
 use std::{

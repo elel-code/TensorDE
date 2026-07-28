@@ -1,6 +1,6 @@
 //! Value-only input layer for Tensor.
 //!
-//! Device adapters (libinput via Smithay today, native later) convert OS events
+//! Tensor's native libinput adapter converts OS events
 //! into [`Sample`] values. Policy and the event bus never see libinput objects.
 //!
 //! # Performance
