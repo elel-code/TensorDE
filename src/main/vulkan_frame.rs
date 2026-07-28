@@ -53,6 +53,15 @@ pub(crate) fn compile_frame_barriers(
         let index = u32::try_from(index)
             .map_err(|_| "Vulkan frame has too many vertex buffer streams".to_string())?;
         let resource = ResourceId(FIRST_VERTEX_BUFFER + u64::from(index));
+        // Dynamic buffers return to vertex-read state at the end of every
+        // frame. Declaring that carried state emits the required read-to-write
+        // dependency before an in-place upload; a freshly reallocated buffer
+        // merely receives the same harmless execution dependency.
+        graph.set_initial_state(
+            resource,
+            ResourceKind::Buffer,
+            ResourceState::vertex_buffer(queue_family),
+        );
         if vertex_buffer.uploaded {
             let upload_pass = PassId(
                 FIRST_UPLOAD_PASS

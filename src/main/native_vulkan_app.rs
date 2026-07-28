@@ -23,15 +23,15 @@ use crate::windowing::{
     WindowAttributes, WindowEvent, WindowId,
 };
 use crate::{
-    ShellItemActivation, ShellScene, read_shell_entries_sync, scroll_delta_xy,
-    view_point_from_physical_position, window_title,
+    ShellItemActivation, ShellScene, TextEngine, TextFrameBuilder, TextFrameResources,
+    read_shell_entries_sync, scroll_delta_xy, view_point_from_physical_position, window_title,
 };
 
-/// Native Vulkan migration host for Fika's texture-free chrome layers.
+/// Native Vulkan migration host for Fika's analytic chrome and R8 atlas text.
 ///
 /// This deliberately creates no wgpu object. It is selected only by
-/// `FIKA_VULKAN_RENDERER=1` while text, icons, SVG, and retained textures move
-/// to the same native submission path in later vertical slices.
+/// `FIKA_VULKAN_RENDERER=1` while icons, SVG, and retained textures move to the
+/// same native submission path in later vertical slices.
 pub(crate) struct FikaNativeVulkanApp {
     scene: ShellScene,
     event_loop_proxy: EventLoopProxy,
@@ -39,6 +39,7 @@ pub(crate) struct FikaNativeVulkanApp {
     navigation_rx: Receiver<ShellAsyncNavigationCompletion>,
     navigation_generations: [u64; 2],
     modifiers: Modifiers,
+    text_engine: TextEngine,
     // Drop before the Wayland window because its swapchain retains the surface.
     renderer: Option<VulkanState>,
     window: Option<Arc<Window>>,
@@ -54,6 +55,7 @@ impl FikaNativeVulkanApp {
             navigation_rx,
             navigation_generations: [0; 2],
             modifiers: Modifiers::default(),
+            text_engine: TextEngine::new(),
             renderer: None,
             window: None,
         }
@@ -334,8 +336,29 @@ impl FikaNativeVulkanApp {
         let layers = self
             .scene
             .build_native_frame_layers(size, projections.projections());
+        self.text_engine.begin_frame();
+        let text_pixels = self.text_engine.take_staging_pixels();
+        let mut text_builder = TextFrameBuilder::new(
+            TextFrameResources::from_engine(&mut self.text_engine),
+            size,
+            self.scene.ui_scale(),
+            text_pixels,
+        );
+        self.scene
+            .push_native_frame_text(&mut text_builder, projections.projections());
+        let mut text_frame = text_builder.finish();
         drop(projections);
-        renderer.present_layers(event_loop, window, [0.0, 0.0, 0.0, 0.0], layers.as_refs())
+        let result = renderer.present_layers(
+            event_loop,
+            window,
+            [0.0, 0.0, 0.0, 0.0],
+            layers.as_refs(),
+            &mut text_frame,
+        );
+        self.text_engine.staging_pixels = std::mem::take(&mut text_frame.pixels);
+        self.text_engine.staging_pixels.clear();
+        self.text_engine.trim_caches();
+        result
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), String> {

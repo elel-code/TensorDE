@@ -249,9 +249,11 @@ impl Image {
         let handle = unsafe { self.inner.owner.device.create_image_view(&create, None) }
             .map_err(|source| Error::vulkan("vkCreateImageView", source))?;
         Ok(ImageView {
-            image: Arc::clone(&self.inner),
-            handle,
-            descriptor: descriptor.clone(),
+            inner: Arc::new(ImageViewInner {
+                image: Arc::clone(&self.inner),
+                handle,
+                descriptor: descriptor.clone(),
+            }),
         })
     }
 }
@@ -295,8 +297,16 @@ pub struct ImageViewDescriptor {
     pub subresource_range: vk::ImageSubresourceRange,
 }
 
-/// Image view retaining its parent image allocation.
+/// Cloneable ownership handle for an image view and its parent allocation.
+///
+/// The Vulkan view is destroyed only after both the application handle and
+/// every submitted [`crate::SubmissionLease`] have been released.
+#[derive(Clone)]
 pub struct ImageView {
+    inner: Arc<ImageViewInner>,
+}
+
+struct ImageViewInner {
     image: Arc<ImageInner>,
     handle: vk::ImageView,
     descriptor: ImageViewDescriptor,
@@ -306,49 +316,52 @@ impl fmt::Debug for ImageView {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ImageView")
-            .field("label", &self.descriptor.label)
-            .field("handle", &self.handle)
-            .field("format", &self.descriptor.format)
-            .field("subresource_range", &self.descriptor.subresource_range)
+            .field("label", &self.inner.descriptor.label)
+            .field("handle", &self.inner.handle)
+            .field("format", &self.inner.descriptor.format)
+            .field(
+                "subresource_range",
+                &self.inner.descriptor.subresource_range,
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl ImageView {
-    pub const fn raw(&self) -> vk::ImageView {
-        self.handle
+    pub fn raw(&self) -> vk::ImageView {
+        self.inner.handle
     }
 
-    pub const fn format(&self) -> vk::Format {
-        self.descriptor.format
+    pub fn format(&self) -> vk::Format {
+        self.inner.descriptor.format
     }
 
     pub fn sample_count(&self) -> vk::SampleCountFlags {
-        self.image.samples
+        self.inner.image.samples
     }
 
     pub(crate) fn owner(&self) -> &Arc<crate::backend::DeviceOwner> {
-        &self.image.owner
+        &self.inner.image.owner
     }
 
     pub fn create_info(&self) -> vk::ImageViewCreateInfo {
         vk::ImageViewCreateInfo::builder()
-            .image(self.image.handle)
-            .view_type(self.descriptor.view_type)
-            .format(self.descriptor.format)
-            .components(self.descriptor.components)
-            .subresource_range(self.descriptor.subresource_range)
+            .image(self.inner.image.handle)
+            .view_type(self.inner.descriptor.view_type)
+            .format(self.inner.descriptor.format)
+            .components(self.inner.descriptor.components)
+            .subresource_range(self.inner.descriptor.subresource_range)
             .build()
     }
 }
 
 impl crate::SubmissionResource for ImageView {
     fn submission_lease(&self) -> crate::SubmissionLease {
-        crate::SubmissionLease::new(Arc::clone(&self.image))
+        crate::SubmissionLease::new(Arc::clone(&self.inner))
     }
 }
 
-impl Drop for ImageView {
+impl Drop for ImageViewInner {
     fn drop(&mut self) {
         unsafe {
             self.image

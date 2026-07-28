@@ -15,6 +15,10 @@ runtime; the previous UI runtimes have been removed from the source tree.
 - `wayland-client-runtime` is the reusable SCTK-based protocol, surface and
   event layer. Fika itself has no direct winit or SCTK dependency.
 - `wgpu` comes from the official crates.io release.
+- `FIKA_VULKAN_RENDERER=1` selects the direct Vulkan 1.4 main-window path. It
+  already renders retained analytic chrome and visible file labels through a
+  device-local R8 glyph atlas, dynamic vertex buffers, descriptor heaps, and
+  timeline-managed resources without creating wgpu objects.
 - `fika-core` stays UI-neutral and owns filesystem/domain behavior.
 - Clipboard and DnD use Wayland `wl_data_device`; rendering handles can be
   consumed by wgpu or direct Vulkan, and KDE blur keeps full region semantics.
@@ -48,6 +52,7 @@ src/
     fika-xdp-filechooser.rs      XDG Desktop Portal FileChooser backend
     fika-privileged-helper.rs    D-Bus helper for privileged operations
 crates/
+  vulkan-renderer/               Reusable Vulkan 1.4 rendering standard/backend
   wayland-client-runtime/        Reusable SCTK Wayland protocol/event crate
 ```
 

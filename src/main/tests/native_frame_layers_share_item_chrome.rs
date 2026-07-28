@@ -62,3 +62,30 @@ fn native_frame_layers_encode_filter_and_details_chrome_as_instances() {
     let details_layers = native_frame_layers(&mut details, size);
     assert!(details_layers.base_rects.len() >= plain.base_rects.len() + 2);
 }
+
+#[test]
+fn native_text_atlas_uses_retained_item_label_recipe_without_cpu_quads() {
+    let mut scene = test_scene(
+        vec![test_entry("alpha.txt", false), test_entry("beta.txt", false)],
+        ShellViewMode::Icons,
+    );
+    let size = PhysicalSize::new(720, 420);
+    let mut layouts = scene.prepare_frame_projection_layouts(size);
+    scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
+    let projections = scene.pane_projections_from_layouts(layouts);
+    let mut engine = TextEngine::new();
+    engine.begin_frame();
+    let mut text = TextFrameBuilder::new(
+        TextFrameResources::from_engine(&mut engine),
+        size,
+        scene.ui_scale(),
+        Vec::new(),
+    );
+
+    scene.push_native_frame_text(&mut text, projections.projections());
+    let frame = text.finish();
+
+    assert_eq!(frame.stats.labels, 2);
+    assert_eq!(frame.vertices.len(), 12);
+    assert!(!frame.uploads.is_empty());
+}

@@ -598,6 +598,22 @@ impl ShellScene {
         layers
     }
 
+    /// Populates the R8 atlas stage for native Vulkan directly from retained
+    /// pane projections. This intentionally bypasses icon resolution and the
+    /// regular CPU quad stream while sharing the exact file-item text recipe.
+    pub(crate) fn push_native_frame_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        projections: &[ShellPaneProjection<'_>],
+    ) {
+        let theme = ShellPaintPalettes::from_shell_theme(self.theme()).shell;
+        for projection in projections {
+            for item in projection.visible_items.iter().copied() {
+                self.push_native_pane_item_text(text, projection, item, theme);
+            }
+        }
+    }
+
     fn push_native_places_chrome(
         &self,
         instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,

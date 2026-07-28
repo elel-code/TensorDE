@@ -81,7 +81,8 @@ sampler heap descriptors for an `ImageView`, produces a checked
 `ShaderBindingMap` from explicit set/binding locations, and has explicit
 `release` (never submitted) and `retire` (timeline-safe reuse) transitions.
 The image view implements `SubmissionResource`, so command recording can retain
-it without an application-owned per-frame lifetime list.
+both the `VkImageView` and its parent image without an application-owned
+per-frame lifetime list.
 `SampledTextureShaderBindings::push_index_shader_binding_map` instead keeps the
 pipeline independent of concrete heap slots; `SampledTextureBinding` supplies
 the checked image/sampler byte offsets to write into push data after an atlas

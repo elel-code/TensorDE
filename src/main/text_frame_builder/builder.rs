@@ -27,13 +27,17 @@ impl<'a> TextFrameResources<'a> {
     }
 
     fn from_renderer(renderer: &'a mut TextRenderer) -> Self {
+        Self::from_engine(&mut renderer.engine)
+    }
+
+    fn from_engine(engine: &'a mut TextEngine) -> Self {
         Self::new(
-            &mut renderer.font_system,
-            &mut renderer.swash_cache,
-            &mut renderer.text_buffer,
-            &mut renderer.label_cache,
-            &mut renderer.metrics_cache,
-            &mut renderer.atlas_cache,
+            &mut engine.font_system,
+            &mut engine.swash_cache,
+            &mut engine.text_buffer,
+            &mut engine.label_cache,
+            &mut engine.metrics_cache,
+            &mut engine.atlas_cache,
         )
     }
 }

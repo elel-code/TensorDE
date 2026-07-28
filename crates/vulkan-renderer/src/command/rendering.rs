@@ -282,6 +282,19 @@ impl CommandEncoder {
 }
 
 impl RenderingEncoder<'_> {
+    /// Retains an arbitrary renderer resource through the enclosing command
+    /// buffer's eventual submission.
+    ///
+    /// This is primarily used for resources reached indirectly through
+    /// descriptor heaps, because binding a heap cannot infer the image views
+    /// or buffers encoded in its descriptor bytes.
+    pub fn retain_resource<R>(&mut self, resource: &R)
+    where
+        R: crate::SubmissionResource + ?Sized,
+    {
+        self.encoder.retain_resource(resource);
+    }
+
     /// Copies a small shader payload using the descriptor-heap push-data path.
     pub fn push_data(&mut self, offset: u32, data: &[u8]) -> Result<()> {
         self.encoder.push_data(offset, data)

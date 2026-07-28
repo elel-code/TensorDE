@@ -626,19 +626,24 @@ fn rasterize_gpu_drag_preview_label(
         return None;
     }
     let font_size = (height as f32 * 0.58).max(10.0);
-    renderer.text_buffer.set_metrics(Metrics::new(font_size, height as f32));
-    renderer.text_buffer.set_wrap(Wrap::None);
-    renderer.text_buffer.set_size(Some(width as f32), Some(height as f32));
-    renderer.text_buffer.set_text(
+    let engine = &mut renderer.engine;
+    engine
+        .text_buffer
+        .set_metrics(Metrics::new(font_size, height as f32));
+    engine.text_buffer.set_wrap(Wrap::None);
+    engine
+        .text_buffer
+        .set_size(Some(width as f32), Some(height as f32));
+    engine.text_buffer.set_text(
         label,
         &Attrs::new().family(Family::SansSerif),
         Shaping::Advanced,
         Some(Align::Left),
     );
     let mut alpha = vec![0; width.saturating_mul(height) as usize];
-    renderer.text_buffer.draw(
-        &mut renderer.font_system,
-        &mut renderer.swash_cache,
+    engine.text_buffer.draw(
+        &mut engine.font_system,
+        &mut engine.swash_cache,
         TextColor::rgba(255, 255, 255, 255),
         |x, y, w, h, glyph_color| {
             fill_text_alpha_pixels(

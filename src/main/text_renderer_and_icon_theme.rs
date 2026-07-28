@@ -42,6 +42,10 @@ struct TextRenderer {
     vertex_count: usize,
     last_vertices_hash: Option<u64>,
     last_text_upload_keys: HashSet<TextAtlasUploadKey>,
+    engine: TextEngine,
+}
+
+struct TextEngine {
     font_system: FontSystem,
     swash_cache: SwashCache,
     text_buffer: Buffer,
@@ -50,6 +54,61 @@ struct TextRenderer {
     atlas_cache: TextAtlasFrameCache,
     staging_pixels: Vec<u8>,
 }
+
+impl TextEngine {
+    fn new() -> Self {
+        let mut font_system = FontSystem::new();
+        let mut text_buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT),
+        );
+        text_buffer.set_wrap(Wrap::WordOrGlyph);
+        Self {
+            font_system,
+            swash_cache: SwashCache::new(),
+            text_buffer,
+            label_cache: LabelRasterCache::new(TEXT_LABEL_CACHE_MAX_BYTES),
+            metrics_cache: LabelMetricsCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES),
+            atlas_cache: TextAtlasFrameCache::default(),
+            staging_pixels: Vec::new(),
+        }
+    }
+
+    fn begin_frame(&mut self) {
+        self.label_cache.begin_frame();
+        self.metrics_cache.begin_frame();
+    }
+
+    fn trim_caches(&mut self) -> (usize, usize, bool) {
+        let image_entries = self.swash_cache.image_cache.len();
+        let outline_entries = self.swash_cache.outline_command_cache.len();
+        let reset = image_entries > TEXT_SWASH_IMAGE_CACHE_MAX_ENTRIES
+            || outline_entries > TEXT_SWASH_OUTLINE_CACHE_MAX_ENTRIES;
+        if reset {
+            self.swash_cache = SwashCache::new();
+        }
+        (image_entries, outline_entries, reset)
+    }
+
+    fn take_staging_pixels(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.staging_pixels)
+    }
+}
+
+impl std::ops::Deref for TextRenderer {
+    type Target = TextEngine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+
+impl std::ops::DerefMut for TextRenderer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.engine
+    }
+}
+
 impl TextRenderer {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -122,16 +181,6 @@ impl TextRenderer {
             cache: None,
         });
 
-        let mut font_system = FontSystem::new();
-        let mut text_buffer = Buffer::new(
-            &mut font_system,
-            Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT),
-        );
-        text_buffer.set_wrap(Wrap::WordOrGlyph);
-        let swash_cache = SwashCache::new();
-        let label_cache = LabelRasterCache::new(TEXT_LABEL_CACHE_MAX_BYTES);
-        let metrics_cache = LabelMetricsCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES);
-        let atlas_cache = TextAtlasFrameCache::default();
         let vertex_capacity = 6;
         let vertex_buffer = create_text_vertex_buffer(device, vertex_capacity);
 
@@ -149,29 +198,16 @@ impl TextRenderer {
             vertex_count: 0,
             last_vertices_hash: None,
             last_text_upload_keys: HashSet::new(),
-            font_system,
-            swash_cache,
-            text_buffer,
-            label_cache,
-            metrics_cache,
-            atlas_cache,
-            staging_pixels: Vec::new(),
+            engine: TextEngine::new(),
         }
     }
 
     fn trim_text_engine_caches(&mut self) -> (usize, usize, bool) {
-        let image_entries = self.swash_cache.image_cache.len();
-        let outline_entries = self.swash_cache.outline_command_cache.len();
-        let reset = image_entries > TEXT_SWASH_IMAGE_CACHE_MAX_ENTRIES
-            || outline_entries > TEXT_SWASH_OUTLINE_CACHE_MAX_ENTRIES;
-        if reset {
-            self.swash_cache = SwashCache::new();
-        }
-        (image_entries, outline_entries, reset)
+        self.engine.trim_caches()
     }
 
     fn take_staging_pixels(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.staging_pixels)
+        self.engine.take_staging_pixels()
     }
 
     fn upload(
@@ -255,8 +291,8 @@ impl TextRenderer {
             &frame.vertices,
             &mut self.last_vertices_hash,
         );
-        self.staging_pixels = std::mem::take(&mut frame.pixels);
-        self.staging_pixels.clear();
+        self.engine.staging_pixels = std::mem::take(&mut frame.pixels);
+        self.engine.staging_pixels.clear();
         vertex_upload_stats
     }
 

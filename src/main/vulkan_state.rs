@@ -3,17 +3,19 @@ use std::sync::Arc;
 use vulkan_renderer::{
     Adapter, BackendProfile, BinarySemaphore, BinarySemaphoreDescriptor, ColorAttachment,
     CommandEncoderDescriptor, Device, DeviceDescriptor, FrameToken, Instance, InstanceDescriptor,
-    LoadOp, MemoryAllocatorConfig, PipelineCache, PipelineCacheDescriptor, PowerPreference,
-    PresentMode, PresentStatus, Queue, RenderingDescriptor, RequestAdapterOptions, StoreOp,
-    Surface, SurfaceConfiguration, SurfaceConfigurationRequest, Swapchain, SwapchainDescriptor,
-    UploadBelt, UploadBeltDescriptor, vk,
+    LoadOp, MemoryAllocator, MemoryAllocatorConfig, PipelineCache, PipelineCacheDescriptor,
+    PowerPreference, PresentMode, PresentStatus, Queue, RenderingDescriptor, RequestAdapterOptions,
+    StoreOp, Surface, SurfaceConfiguration, SurfaceConfigurationRequest, Swapchain,
+    SwapchainDescriptor, UploadBelt, UploadBeltDescriptor, vk,
 };
 
+use crate::TextFrame;
 use crate::ViewRect;
 use crate::vulkan_frame::{FrameVertexBuffer, compile_frame_barriers};
 use crate::vulkan_rect::{
     NativeFrameLayerRefs, VulkanRectInstance, VulkanRectRenderer, VulkanRectStream,
 };
+use crate::vulkan_text::VulkanTextRenderer;
 use crate::windowing::{ActiveEventLoop, PhysicalSize, Window};
 
 const FRAME_SLOTS: usize = 3;
@@ -33,7 +35,9 @@ pub(crate) struct VulkanState {
     queue: Queue,
     swapchain: Swapchain,
     pipeline_cache: PipelineCache,
+    allocator: MemoryAllocator,
     rect_renderer: VulkanRectRenderer,
+    text_renderer: VulkanTextRenderer,
     base_rect_stream: VulkanRectStream,
     overlay_rect_stream: VulkanRectStream,
     upload_belt: UploadBelt,
@@ -42,6 +46,7 @@ pub(crate) struct VulkanState {
     initialized_images: Vec<bool>,
     next_frame_slot: usize,
     frame_count: u64,
+    last_submission: Option<FrameToken>,
 }
 
 impl VulkanState {
@@ -100,6 +105,12 @@ impl VulkanState {
             .map_err(|error| format!("create Fika Vulkan pipeline cache: {error}"))?;
         let rect_renderer =
             VulkanRectRenderer::new(&device, &pipeline_cache, swapchain.configuration().format)?;
+        let text_renderer = VulkanTextRenderer::new(
+            &device,
+            &allocator,
+            &pipeline_cache,
+            swapchain.configuration().format,
+        )?;
         let base_rect_stream =
             rect_renderer.create_stream(&allocator, "fika-vulkan-base-analytic-rects")?;
         let overlay_rect_stream =
@@ -139,7 +150,9 @@ impl VulkanState {
             queue,
             swapchain,
             pipeline_cache,
+            allocator,
             rect_renderer,
+            text_renderer,
             base_rect_stream,
             overlay_rect_stream,
             upload_belt,
@@ -148,6 +161,7 @@ impl VulkanState {
             initialized_images,
             next_frame_slot: 0,
             frame_count: 0,
+            last_submission: None,
         })
     }
 
@@ -178,15 +192,15 @@ impl VulkanState {
             .map_err(|error| format!("idle Vulkan device for {label}: {error}"))
     }
 
-    /// Records analytic rectangle layers in one dynamic-rendering scope and
-    /// one acquire/submit/present transaction. Fika's native path submits no
-    /// CPU-generated vertex stream here.
+    /// Records analytic chrome and R8-atlas text in one dynamic-rendering scope
+    /// and one acquire/submit/present transaction.
     pub(crate) fn present_layers(
         &mut self,
         event_loop: &ActiveEventLoop,
         window: &Window,
         clear: [f32; 4],
         layers: NativeFrameLayerRefs<'_>,
+        text: &mut TextFrame,
     ) -> Result<(), String> {
         let slot_index = self.next_frame_slot;
         self.next_frame_slot = (self.next_frame_slot + 1) % self.frame_slots.len();
@@ -196,6 +210,11 @@ impl VulkanState {
                 .wait_for(frame, u64::MAX)
                 .map_err(|error| format!("wait Vulkan frame slot: {error}"))?;
         }
+        let completed = self
+            .queue
+            .completed_timeline()
+            .map_err(|error| format!("query completed Vulkan text frames: {error}"))?;
+        self.text_renderer.reclaim(completed);
 
         let acquired = unsafe { self.swapchain.acquire_next_image(u64::MAX, &slot.acquire) }
             .map_err(|error| format!("acquire Vulkan swapchain image: {error}"))?;
@@ -217,7 +236,14 @@ impl VulkanState {
         let overlay_rect_upload = self
             .overlay_rect_stream
             .upload(&mut uploads, layers.overlay_rects)?;
-        let mut vertex_buffers = Vec::with_capacity(2);
+        let text_vertex_uploaded = self.text_renderer.upload(
+            &self.allocator,
+            &mut uploads,
+            text,
+            self.last_submission,
+            queue_family,
+        )?;
+        let mut vertex_buffers = Vec::with_capacity(3);
         if let Some(buffer) = self.base_rect_stream.vertex_buffer() {
             vertex_buffers.push(FrameVertexBuffer {
                 buffer,
@@ -228,6 +254,12 @@ impl VulkanState {
             vertex_buffers.push(FrameVertexBuffer {
                 buffer,
                 uploaded: overlay_rect_upload.bytes != 0,
+            });
+        }
+        if let Some(buffer) = self.text_renderer.vertex_buffer() {
+            vertex_buffers.push(FrameVertexBuffer {
+                buffer,
+                uploaded: text_vertex_uploaded,
             });
         }
         let barriers = compile_frame_barriers(
@@ -281,6 +313,7 @@ impl VulkanState {
                 .map_err(|error| format!("set Vulkan scissor: {error}"))?;
             self.rect_renderer
                 .draw(&mut rendering, &self.base_rect_stream)?;
+            self.text_renderer.draw(&mut rendering)?;
             self.rect_renderer
                 .draw(&mut rendering, &self.overlay_rect_stream)?;
             rendering.end();
@@ -296,6 +329,7 @@ impl VulkanState {
         }
         .map_err(|error| format!("submit Vulkan frame: {error}"))?;
         slot.in_flight = Some(frame);
+        self.last_submission = Some(frame);
         self.initialized_images[image_index] = true;
         event_loop.pre_present_notify(window.id());
         let present_status = unsafe { acquired.present(&self.queue, &[present_complete]) }
@@ -332,6 +366,11 @@ impl VulkanState {
             )
             .map_err(|error| format!("replace Vulkan swapchain: {error}"))?;
         self.rect_renderer.set_format(
+            &self.device,
+            &self.pipeline_cache,
+            replacement.configuration().format,
+        )?;
+        self.text_renderer.set_format(
             &self.device,
             &self.pipeline_cache,
             replacement.configuration().format,
@@ -379,6 +418,14 @@ impl VulkanState {
             NativeFrameLayerRefs {
                 base_rects: &probes,
                 overlay_rects: &[],
+            },
+            &mut TextFrame {
+                vertices: Vec::new(),
+                pixels: Vec::new(),
+                uploads: Vec::new(),
+                width: 1,
+                height: 1,
+                stats: crate::TextFrameStats::default(),
             },
         )?;
         renderer

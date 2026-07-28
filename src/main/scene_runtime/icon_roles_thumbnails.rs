@@ -528,8 +528,6 @@ impl ShellScene {
             text_rect: item.text_rect,
             text_midline_shift: text.file_manager_midline_shift(),
         };
-        let selected = projection.view.selection.contains(entry_index);
-
         let folder_preview =
             self.folder_preview_role_for_pane_entry(projection.view, entry_index, pixmap_layout);
         if !icons.push_thumbnail_or_icon(
@@ -549,9 +547,31 @@ impl ShellScene {
             );
         }
 
-        let base_text_color =
-            pane_item_text_color(projection.view.view_mode, entry, selected, theme);
-        let text_color = base_text_color;
+        self.push_pane_item_text(
+            text,
+            projection,
+            item,
+            untransformed_item_rect,
+            untransformed_text_rect,
+            theme,
+        );
+    }
+
+    fn push_pane_item_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        projection: &ShellPaneProjection<'_>,
+        item: PreparedPaneItem,
+        untransformed_item_rect: ViewRect,
+        untransformed_text_rect: ViewRect,
+        theme: ShellTheme,
+    ) {
+        let entry_index = item.entry_index;
+        let Some(entry) = projection.view.entries.get(entry_index) else {
+            return;
+        };
+        let selected = projection.view.selection.contains(entry_index);
+        let text_color = pane_item_text_color(projection.view.view_mode, entry, selected, theme);
         let muted_text = theme.muted_text();
         match projection.view.view_mode {
             ShellViewMode::Compact => {
@@ -628,5 +648,28 @@ impl ShellScene {
                 LabelAlignment::Start,
             );
         }
+    }
+
+    /// Adds visible file-item labels to the native atlas without running icon
+    /// resolution or CPU quad generation. Geometry comes from the same
+    /// prepared item and text recipe as the regular frame.
+    fn push_native_pane_item_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        projection: &ShellPaneProjection<'_>,
+        item: ShellPaneVisibleItem,
+        theme: ShellTheme,
+    ) {
+        let Some(item) = self.prepare_pane_item(projection, item) else {
+            return;
+        };
+        self.push_pane_item_text(
+            text,
+            projection,
+            item,
+            item.item_rect,
+            item.text_rect,
+            theme,
+        );
     }
 }

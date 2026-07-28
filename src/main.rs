@@ -10,6 +10,10 @@ mod vulkan_rect;
 mod vulkan_rect_spirv;
 #[path = "main/vulkan_state.rs"]
 mod vulkan_state;
+#[path = "main/vulkan_text.rs"]
+mod vulkan_text;
+#[path = "main/vulkan_text_spirv.rs"]
+mod vulkan_text_spirv;
 
 include!("main/crate_prelude.rs");
 
