@@ -131,6 +131,13 @@ both clients for 60 seconds. Fcitx obtains its keyboard grab after a focused
 text input activates. `scripts/tty-all-clients.sh forever` leaves the session
 running until it is stopped.
 
+GUI.for.SingBox is a Wails application with a session-wide D-Bus
+single-instance lock. If its niri instance is still running when the TTY
+session begins, Wails forwards the second launch to that instance and exits
+with status `1` before it can create a Tensor window. Close that GUI instance
+first when it is the client under test; the launcher deliberately does not add
+an existing-process check or bypass the application's lock.
+
 Any client command follows this same path; it captures the application's output
 in the launcher log and never supplies the suspended host's `DISPLAY`. This is
 the appropriate route for an application that works under one compositor but
