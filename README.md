@@ -88,6 +88,11 @@ it does not force the client backend. The bounded run returns to the prior
 session automatically; use `--forever` only after the first visual check
 succeeds.
 
+Add `--fcitx` to make the TTY launcher attach the existing Fcitx daemon to
+Tensor before Ghostty starts, and use `--application /absolute/path/to/app` to
+exercise a different native Wayland client. Both routes remove the suspended
+host `DISPLAY`; neither turns the test into an X11 fallback.
+
 `TENSOR_LAYOUT` accepts `scrolling-1d`, `spatial-2d`, and `master-stack`.
 `TENSOR_GPU` accepts `discrete` (default), `integrated`, and `any`; every choice still requires
 the complete native renderer gate.

@@ -15,7 +15,23 @@ import stat
 import subprocess
 import sys
 import threading
-from typing import BinaryIO
+
+from tty_clients import (
+    InteractiveClient,
+    application_client,
+    fcitx_launcher_command,
+    ghostty_client,
+    session_client_environment,
+)
+from tty_support import (
+    note,
+    send_process_group_signal,
+    send_signal,
+    smoke_command,
+    terminate_process_group,
+    wait_for_exit,
+    write_launcher_log,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +46,7 @@ INPUT_METHOD_KEYBOARD_GRAB_MARKER = b"input-method keyboard grab registered"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, help="KDL configuration path")
+    parser.add_argument("--config", type=Path, help="TOML configuration path")
     parser.add_argument(
         "--log",
         type=Path,
@@ -60,12 +76,30 @@ def parse_args() -> argparse.Namespace:
             "it requires real buffer import, KMS presentation, and release before succeeding"
         ),
     )
-    parser.add_argument(
+    client = parser.add_mutually_exclusive_group()
+    client.add_argument(
         "--ghostty",
         action="store_true",
         help=(
             "start a fresh Ghostty after Tensor enters its event loop; it uses Ghostty's "
             "normal backend selection with Tensor's session Wayland endpoint"
+        ),
+    )
+    client.add_argument(
+        "--application",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "start one executable application after Tensor enters its event loop, "
+            "with Tensor's native Wayland session environment"
+        ),
+    )
+    parser.add_argument(
+        "--fcitx",
+        action="store_true",
+        help=(
+            "ask the running Fcitx 5 service to attach a native Wayland input-method "
+            "client to Tensor before launching the interactive client"
         ),
     )
     lifetime = parser.add_mutually_exclusive_group()
@@ -91,12 +125,15 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration <= 0:
         parser.error("--duration must be greater than zero")
-    if args.check and (args.dmabuf_smoke or args.ghostty):
-        parser.error("--dmabuf-smoke and --ghostty require a real TTY compositor session")
+    interactive_client = args.ghostty or args.application is not None
+    if args.check and (args.dmabuf_smoke or interactive_client or args.fcitx):
+        parser.error("TTY smoke clients require a real compositor session, not --check")
     if args.forever and args.dmabuf_smoke:
         parser.error("--dmabuf-smoke has its own bounded health loop and cannot use --forever")
-    if args.dmabuf_smoke and args.ghostty:
-        parser.error("run --dmabuf-smoke and --ghostty as separate focused tests")
+    if args.dmabuf_smoke and interactive_client:
+        parser.error("run --dmabuf-smoke and an interactive client as separate focused tests")
+    if args.fcitx and not interactive_client:
+        parser.error("--fcitx requires --ghostty or --application")
     return args
 
 
@@ -231,88 +268,14 @@ def runtime_dir_for_client() -> Path:
     return Path(value)
 
 
-def smoke_command(socket: Path, duration: float | None) -> list[str]:
-    command = [
-        str(ROOT / "target" / "debug" / "tensor-dmabuf-smoke"),
-        "--socket",
-        socket.name,
-    ]
-    if duration is not None:
-        timeout = max(1, int(duration - 2))
-        command.extend(["--timeout", str(timeout)])
-    return command
-
-
-def ghostty_command() -> list[str]:
-    # This only makes the command a new process. It does not choose a GTK/GDK
-    # backend: Ghostty still performs its ordinary Wayland-vs-X11 selection.
-    # Without it, a Ghostty already serving the suspended host desktop can
-    # accept this request over D-Bus and leave Tensor with no client at all.
-    return ["ghostty", "--gtk-single-instance=false"]
-
-
-def session_client_environment(
-    environment: dict[str, str], socket: Path
-) -> dict[str, str]:
-    """Recreate Tensor's published session values for one external test client.
-
-    ``tty.py`` is the parent of Tensor, so it cannot inherit the environment
-    that Tensor publishes to its own autostart children.  The new Wayland
-    socket is therefore supplied explicitly.  A stale DISPLAY from the
-    suspended desktop is removed just as ProcessLauncher removes the managed
-    session values before it installs Tensor's values; this is not a request
-    for a particular Ghostty/GDK backend.
-    """
-    client_environment = environment.copy()
-    client_environment["WAYLAND_DISPLAY"] = socket.name
-    client_environment["XDG_CURRENT_DESKTOP"] = "tensor"
-    client_environment["XDG_SESSION_TYPE"] = "wayland"
-    client_environment.pop("DISPLAY", None)
-    return client_environment
-
-
-def write_launcher_log(log: BinaryIO, output_lock: threading.Lock, chunk: bytes) -> None:
-    with output_lock:
-        log.write(chunk)
-
-
-def note(log: BinaryIO, output_lock: threading.Lock, message: str) -> None:
-    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    write_launcher_log(log, output_lock, f"[tensor-tty {timestamp}] {message}\n".encode())
-
-
-def send_signal(process: subprocess.Popen[bytes] | None, signal_number: int) -> bool:
-    """Best-effort signal delivery without making shutdown depend on logging."""
-    if process is None or process.poll() is not None:
-        return False
-    try:
-        process.send_signal(signal_number)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def wait_for_exit(process: subprocess.Popen[bytes], timeout: float) -> int | None:
-    """Reap a child only for a bounded period.
-
-    A wedged graphics driver can leave a process in uninterruptible kernel
-    sleep, including after SIGKILL. A TTY recovery tool must report that state
-    rather than turn an already unusable virtual terminal into an infinite
-    wait.
-    """
-    try:
-        return process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return None
-
-
 def launch(
     command: list[str],
     environment: dict[str, str],
     tensor_log_path: Path,
     duration: float | None,
     dmabuf_smoke: bool,
-    ghostty: bool,
+    client: InteractiveClient | None,
+    fcitx: bool,
 ) -> int:
     launcher_log_path = launcher_log_path_for(tensor_log_path)
     launcher_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,7 +284,7 @@ def launch(
     force_kill_sent = threading.Event()
     shutdown_unresponsive = threading.Event()
     output_lock = threading.Lock()
-    runtime_dir = runtime_dir_for_client() if dmabuf_smoke or ghostty else None
+    runtime_dir = runtime_dir_for_client() if dmabuf_smoke or client is not None else None
     known_sockets = tensor_sockets(runtime_dir) if runtime_dir is not None else {}
     try:
         tensor_log_offset = tensor_log_path.stat().st_size
@@ -333,7 +296,8 @@ def launch(
         header = (
             f"\n=== Tensor TTY run {started} ===\n"
             f"$ {shlex.join(command)}\n"
-            f"clients: dmabuf-smoke={dmabuf_smoke} ghostty={ghostty} "
+            f"clients: dmabuf-smoke={dmabuf_smoke} "
+            f"interactive={client.name if client is not None else 'none'} fcitx={fcitx} "
             f"duration={duration if duration is not None else 'forever'}\n"
             f"ipc-socket: {environment['TENSOR_IPC_SOCKET']}\n"
             f"compositor-log: {tensor_log_path}\n"
@@ -351,9 +315,12 @@ def launch(
         selector.register(process.stdout, selectors.EVENT_READ, "tensor")
         smoke_process: subprocess.Popen[bytes] | None = None
         smoke_status: int | None = None
-        ghostty_process: subprocess.Popen[bytes] | None = None
-        ghostty_status: int | None = None
-        ghostty_failed = False
+        interactive_process: subprocess.Popen[bytes] | None = None
+        interactive_status: int | None = None
+        interactive_failed = False
+        fcitx_process: subprocess.Popen[bytes] | None = None
+        fcitx_status: int | None = None
+        fcitx_failed = False
         tensor_log_tail = b""
         event_loop_ready = False
         input_method_registered = False
@@ -400,20 +367,19 @@ def launch(
             )
             tensor_log_tail = combined[-keep:] if keep else b""
 
+        def ready_socket() -> Path | None:
+            if runtime_dir is None or not event_loop_ready or shutdown_requested.is_set():
+                return None
+            return new_tensor_socket(runtime_dir, known_sockets)
+
         def start_smoke_client() -> None:
             nonlocal smoke_process
-            if (
-                not dmabuf_smoke
-                or smoke_process is not None
-                or runtime_dir is None
-                or not event_loop_ready
-                or shutdown_requested.is_set()
-            ):
+            if not dmabuf_smoke or smoke_process is not None:
                 return
-            socket = new_tensor_socket(runtime_dir, known_sockets)
+            socket = ready_socket()
             if socket is None:
                 return
-            client_command = smoke_command(socket, duration)
+            client_command = smoke_command(ROOT, socket, duration)
             note(
                 log,
                 output_lock,
@@ -431,74 +397,133 @@ def launch(
             assert smoke_process.stdout is not None
             selector.register(smoke_process.stdout, selectors.EVENT_READ, "dmabuf-smoke")
 
-        def start_ghostty() -> None:
-            nonlocal ghostty_process, ghostty_status, ghostty_failed
+        def start_fcitx() -> None:
+            nonlocal fcitx_process, fcitx_status, fcitx_failed
             if (
-                not ghostty
-                or ghostty_process is not None
-                or ghostty_status is not None
-                or runtime_dir is None
-                or not event_loop_ready
-                or shutdown_requested.is_set()
+                not fcitx
+                or fcitx_process is not None
+                or fcitx_status is not None
+                or input_method_keyboard_grab
             ):
                 return
-            socket = new_tensor_socket(runtime_dir, known_sockets)
+            socket = ready_socket()
             if socket is None:
                 return
-            client_command = ghostty_command()
+            try:
+                fcitx_command = fcitx_launcher_command()
+            except FileNotFoundError as error:
+                fcitx_status = 127
+                fcitx_failed = True
+                note(log, output_lock, str(error))
+                request_shutdown("Fcitx Wayland launcher could not start")
+                return
             note(
                 log,
                 output_lock,
-                f"Tensor is ready on Wayland socket {socket.name}; starting Ghostty "
-                f"with its normal backend selection: "
-                f"{shlex.join(client_command)}",
+                f"Tensor is ready on Wayland socket {socket.name}; asking Fcitx to attach "
+                f"its Wayland input-method frontend: {shlex.join(fcitx_command)}",
             )
             try:
-                ghostty_process = subprocess.Popen(
-                    client_command,
+                fcitx_process = subprocess.Popen(
+                    fcitx_command,
                     cwd=ROOT,
                     env=session_client_environment(environment, socket),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
             except OSError as error:
-                ghostty_status = 127
-                ghostty_failed = True
-                note(log, output_lock, f"failed to start Ghostty: {error}")
-                request_shutdown("Ghostty could not start")
+                fcitx_status = 127
+                fcitx_failed = True
+                note(log, output_lock, f"failed to start Fcitx Wayland launcher: {error}")
+                request_shutdown("Fcitx Wayland launcher could not start")
                 return
-            assert ghostty_process.stdout is not None
-            selector.register(ghostty_process.stdout, selectors.EVENT_READ, "ghostty")
+            assert fcitx_process.stdout is not None
+            selector.register(fcitx_process.stdout, selectors.EVENT_READ, "fcitx")
 
-        def observe_ghostty_exit() -> None:
-            nonlocal ghostty_status, ghostty_failed
-            if ghostty_process is None or ghostty_status is not None:
+        def observe_fcitx_exit() -> None:
+            nonlocal fcitx_status, fcitx_failed
+            if fcitx_process is None or fcitx_status is not None:
                 return
-            status = ghostty_process.poll()
+            status = fcitx_process.poll()
             if status is None:
                 return
-            ghostty_status = status
-            note(log, output_lock, f"native Ghostty exited with status {status}")
+            fcitx_status = status
+            note(log, output_lock, f"Fcitx Wayland launcher exited with status {status}")
             if not shutdown_requested.is_set():
-                ghostty_failed = status != 0
-                request_shutdown("native Ghostty closed")
+                fcitx_failed = True
+                request_shutdown("Fcitx Wayland launcher exited before Tensor stopped")
+
+        def start_interactive_client() -> None:
+            nonlocal interactive_process, interactive_status, interactive_failed
+            if client is None or interactive_process is not None or interactive_status is not None:
+                return
+            if fcitx and not input_method_keyboard_grab:
+                return
+            socket = ready_socket()
+            if socket is None:
+                return
+            client_command = list(client.command)
+            note(
+                log,
+                output_lock,
+                f"Tensor is ready on Wayland socket {socket.name}; starting {client.name} "
+                f"with its normal backend selection: {shlex.join(client_command)}",
+            )
+            try:
+                interactive_process = subprocess.Popen(
+                    client_command,
+                    cwd=client.cwd or ROOT,
+                    env=session_client_environment(environment, socket),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as error:
+                interactive_status = 127
+                interactive_failed = True
+                note(log, output_lock, f"failed to start {client.name}: {error}")
+                request_shutdown(f"{client.name} could not start")
+                return
+            assert interactive_process.stdout is not None
+            selector.register(interactive_process.stdout, selectors.EVENT_READ, "interactive")
+
+        def observe_interactive_client_exit() -> None:
+            nonlocal interactive_status, interactive_failed
+            if interactive_process is None or interactive_status is not None:
+                return
+            status = interactive_process.poll()
+            if status is None:
+                return
+            interactive_status = status
+            assert client is not None
+            note(log, output_lock, f"{client.name} exited with status {status}")
+            if not shutdown_requested.is_set():
+                interactive_failed = status != 0
+                request_shutdown(f"{client.name} closed")
 
         def stop_smoke_client(reason: str) -> None:
             if not send_signal(smoke_process, signal.SIGTERM):
                 return
             note(log, output_lock, f"{reason}; sent SIGTERM to dma-buf smoke client")
 
-        def stop_ghostty(reason: str) -> None:
-            if not send_signal(ghostty_process, signal.SIGTERM):
+        def stop_fcitx(reason: str) -> None:
+            if not send_signal(fcitx_process, signal.SIGTERM):
                 return
-            note(log, output_lock, f"{reason}; sent SIGTERM to Ghostty")
+            note(log, output_lock, f"{reason}; sent SIGTERM to Fcitx Wayland launcher")
+
+        def stop_interactive_client(reason: str) -> None:
+            if not send_process_group_signal(interactive_process, signal.SIGTERM):
+                return
+            assert client is not None
+            note(log, output_lock, f"{reason}; sent SIGTERM to {client.name}")
 
         def request_shutdown(reason: str) -> None:
             if completed.is_set() or shutdown_requested.is_set():
                 return
             shutdown_requested.set()
             smoke_stopped = send_signal(smoke_process, signal.SIGTERM)
-            ghostty_stopped = send_signal(ghostty_process, signal.SIGTERM)
+            fcitx_stopped = send_signal(fcitx_process, signal.SIGTERM)
+            interactive_stopped = send_process_group_signal(interactive_process, signal.SIGTERM)
             tensor_stopped = send_signal(process, signal.SIGTERM)
 
             def force_shutdown() -> None:
@@ -508,7 +533,8 @@ def launch(
                     return
                 force_kill_sent.set()
                 send_signal(smoke_process, signal.SIGKILL)
-                send_signal(ghostty_process, signal.SIGKILL)
+                send_signal(fcitx_process, signal.SIGKILL)
+                send_process_group_signal(interactive_process, signal.SIGKILL)
                 if completed.wait(KILL_GRACE_SECONDS) or process.poll() is not None:
                     note(log, output_lock, "Tensor did not exit after SIGTERM; sent SIGKILL")
                     return
@@ -525,8 +551,11 @@ def launch(
             # This remains true even if a storage failure blocks logging.
             if smoke_stopped:
                 note(log, output_lock, f"{reason}; sent SIGTERM to dma-buf smoke client")
-            if ghostty_stopped:
-                note(log, output_lock, f"{reason}; sent SIGTERM to Ghostty")
+            if fcitx_stopped:
+                note(log, output_lock, f"{reason}; sent SIGTERM to Fcitx Wayland launcher")
+            if interactive_stopped:
+                assert client is not None
+                note(log, output_lock, f"{reason}; sent SIGTERM to {client.name}")
             if tensor_stopped:
                 note(log, output_lock, f"{reason}; sent SIGTERM to Tensor")
 
@@ -549,8 +578,10 @@ def launch(
                 try:
                     observe_tensor_log()
                     start_smoke_client()
-                    start_ghostty()
-                    observe_ghostty_exit()
+                    start_fcitx()
+                    observe_fcitx_exit()
+                    start_interactive_client()
+                    observe_interactive_client_exit()
                     events = selector.select(timeout=0.1)
                 except KeyboardInterrupt:
                     request_shutdown("interrupt received")
@@ -587,7 +618,7 @@ def launch(
                         else:
                             request_shutdown("dma-buf smoke client failed")
                         continue
-                    if key.data == "ghostty":
+                    if key.data in {"fcitx", "interactive"}:
                         continue
                     raise AssertionError(f"unexpected TTY client stream {key.data!r}")
             if shutdown_unresponsive.is_set():
@@ -600,27 +631,29 @@ def launch(
                     output_lock,
                     "Tensor exited before opening the dma-buf smoke launch gate",
                 )
-            if ghostty and ghostty_process is None:
-                ghostty_failed = True
+            if client is not None and interactive_process is None:
+                interactive_failed = True
                 note(
                     log,
                     output_lock,
-                    "Tensor exited before opening the Ghostty launch gate",
+                    f"Tensor exited before opening the {client.name} launch gate",
                 )
-            if ghostty and not input_method_registered:
+            if client is not None and not input_method_registered:
                 note(
                     log,
                     output_lock,
-                    "no Wayland input-method client registered; an IM started by another "
-                    "compositor session cannot bind Tensor's socket",
+                    "no Wayland input-method client registered; the active IM did not bind "
+                    "Tensor's socket",
                 )
-            elif ghostty and not input_method_keyboard_grab:
+            elif client is not None and not input_method_keyboard_grab:
                 note(
                     log,
                     output_lock,
                     "a Wayland input-method client registered but did not request its "
                     "keyboard grab",
                 )
+            if fcitx and (fcitx_process is None or not input_method_keyboard_grab):
+                fcitx_failed = True
             compositor_status = process.poll()
             if compositor_status is None:
                 compositor_status = wait_for_exit(process, SHUTDOWN_GRACE_SECONDS)
@@ -640,8 +673,10 @@ def launch(
                     return 1
                 if smoke_status != 0:
                     return smoke_status
-            if ghostty and (ghostty_process is None or ghostty_failed):
-                return ghostty_status if ghostty_status is not None else 1
+            if client is not None and (interactive_process is None or interactive_failed):
+                return interactive_status if interactive_status is not None else 1
+            if fcitx and fcitx_failed:
+                return fcitx_status if fcitx_status is not None else 1
             return compositor_status
         except KeyboardInterrupt:
             request_shutdown("interrupt received")
@@ -673,13 +708,22 @@ def launch(
                         note(log, output_lock, "sent SIGKILL to dma-buf smoke client")
                     if wait_for_exit(smoke_process, KILL_GRACE_SECONDS) is None:
                         note(log, output_lock, "dma-buf smoke client remained alive after SIGKILL")
-            if ghostty_process is not None and ghostty_process.poll() is None:
-                stop_ghostty("TTY launcher is stopping")
-                if wait_for_exit(ghostty_process, SHUTDOWN_GRACE_SECONDS) is None:
-                    if send_signal(ghostty_process, signal.SIGKILL):
-                        note(log, output_lock, "sent SIGKILL to Ghostty")
-                    if wait_for_exit(ghostty_process, KILL_GRACE_SECONDS) is None:
-                        note(log, output_lock, "Ghostty remained alive after SIGKILL")
+            if fcitx_process is not None and fcitx_process.poll() is None:
+                stop_fcitx("TTY launcher is stopping")
+                if wait_for_exit(fcitx_process, SHUTDOWN_GRACE_SECONDS) is None:
+                    if send_signal(fcitx_process, signal.SIGKILL):
+                        note(log, output_lock, "sent SIGKILL to Fcitx Wayland launcher")
+                    if wait_for_exit(fcitx_process, KILL_GRACE_SECONDS) is None:
+                        note(log, output_lock, "Fcitx Wayland launcher remained alive after SIGKILL")
+            if interactive_process is not None:
+                stopped, killed = terminate_process_group(
+                    interactive_process, SHUTDOWN_GRACE_SECONDS, KILL_GRACE_SECONDS
+                )
+                assert client is not None
+                if killed:
+                    note(log, output_lock, f"sent SIGKILL to {client.name}'s process group")
+                if not stopped:
+                    note(log, output_lock, f"{client.name}'s process group remained alive")
             completed.set()
             if watchdog is not None:
                 watchdog.join()
@@ -696,6 +740,14 @@ def main() -> int:
     log_path = log_path_for(args.log)
     command = command_for(args)
     environment = environment_for(args)
+    try:
+        client = (
+            ghostty_client()
+            if args.ghostty
+            else application_client(args.application) if args.application is not None else None
+        )
+    except ValueError as error:
+        raise SystemExit(error) from error
     # Tensor itself owns its tracing file. The launcher only watches appended
     # readiness records and keeps its small control/client diagnostic log
     # separate, so compositor logging has no parent-pipe backpressure path.
@@ -716,11 +768,13 @@ def main() -> int:
                 "health gate: wait for Tensor to enter its event loop, then require native "
                 "linux-dmabuf import, KMS presentation, and wl_buffer release"
             )
-        if args.ghostty:
+        if client is not None:
             print(
-                "client: wait for Tensor to enter its event loop, then start a fresh Ghostty "
+                f"client: wait for Tensor to enter its event loop, then start {client.name} "
                 "with normal backend selection on Tensor's session endpoint"
             )
+        if args.fcitx:
+            print("input method: attach the running Fcitx 5 daemon before starting the client")
         for name in (
             "RUST_LOG",
             "TENSOR_IPC_SOCKET",
@@ -737,7 +791,7 @@ def main() -> int:
         return build_status
     print(f"Tensor log: {log_path}")
     print(f"Launcher log: {launcher_log_path_for(log_path)}")
-    return launch(command, environment, log_path, duration, args.dmabuf_smoke, args.ghostty)
+    return launch(command, environment, log_path, duration, args.dmabuf_smoke, client, args.fcitx)
 
 
 if __name__ == "__main__":

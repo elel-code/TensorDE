@@ -91,15 +91,26 @@ normal backend selection`. The terminal must appear and accept input before
 the bounded launch restores the previous session. Ghostty's stdout and stderr
 are retained in the launcher log for diagnosis.
 
-This smoke does not itself start an input method. A pre-existing fcitx process
-that was started by another compositor is attached to that compositor's
-Wayland socket; it cannot service Tensor merely because Tensor creates an
-XWayland server. A complete Tensor session must start or restart its input
-method after Tensor publishes `WAYLAND_DISPLAY`. On a native client focus,
-the Tensor log records either `input-method client registered` followed by
-`input-method keyboard grab registered`, or `text input activated without a
-registered input method`; those records distinguish a missing Wayland input
-method client from compositor keyboard-routing failures.
+To include the native Fcitx path, run:
+
+```sh
+uv run scripts/tty.py --ghostty --fcitx --duration 30
+```
+
+`--fcitx` runs Fcitx's `fcitx5-wayland-launcher` after Tensor publishes its
+socket, then waits for Tensor to record `input-method client registered` and
+`input-method keyboard grab registered` before it starts Ghostty. The launcher
+asks the existing Fcitx daemon to attach a second Wayland connection; it never
+uses `fcitx5 --replace`, so the Fcitx instance serving a suspended niri session
+is not restarted or taken over. A missing Fcitx daemon, missing launcher, or
+missing keyboard grab fails this focused smoke instead of silently testing
+without an input method.
+
+Use `--application PATH` to run another executable under the same native
+Wayland environment. It is mutually exclusive with `--ghostty`, captures the
+application's output in the launcher log, and never supplies the suspended
+host's `DISPLAY`. This is the appropriate route for an application that works
+under one compositor but not another.
 
 The compositor-owned arrow must be visible as soon as libinput publishes a
 pointer capability, including when that device appears after the first output
