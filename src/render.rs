@@ -17,7 +17,7 @@ pub(crate) use completion::{
     GpuFenceEvent, GpuFenceRuntime, GpuFenceRuntimeError, GpuFenceSubmitter, MAX_PENDING_GPU_FENCES,
 };
 #[cfg(feature = "tty")]
-pub(crate) use cursor::{CursorOverlay, CursorOverlays};
+pub(crate) use cursor::{CursorOverlay, CursorOverlays, CursorTexture};
 pub use device::{
     DescriptorHeapProperties, DeviceCandidate, DeviceSelectionError, DrmDeviceIdentity,
     DrmNodeError, DrmNodeId, GpuPreference, ParseGpuPreferenceError,

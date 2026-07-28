@@ -228,18 +228,22 @@ impl VulkanFrameExecutor {
             self.heap.resource_heap_base(),
         )
         .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
-        let cursors = prepare_cursor_draws(frame)
-            .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
+        let cursors = prepare_cursor_draws(
+            frame,
+            self.heap.descriptor_stride(),
+            self.heap.resource_heap_base(),
+        )
+        .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let focus_rings = prepare_focus_ring_draws(frame)
             .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let scene_draws = prepare_scene_draws(frame.draw_plan.scene_draws(), &draws, &focus_rings)
             .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
-        let client_pipeline = if draws.is_empty() {
+        let client_pipeline = if draws.is_empty() && !cursors.has_textures() {
             None
         } else {
             Some(self.pipeline_for(device, image.view_info.format)?)
         };
-        let cursor_pipeline = if !cursors.is_empty() {
+        let cursor_pipeline = if cursors.has_vectors() {
             let pipeline = self.cursor_pipeline_for(device, image.view_info.format)?;
             Some((pipeline.handle(), pipeline.layout()))
         } else {

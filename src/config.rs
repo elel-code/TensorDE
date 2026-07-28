@@ -514,8 +514,9 @@ pub struct EnvironmentConfig {
     pub set: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorConfig {
+    pub theme: String,
     pub size: u32,
     pub hide_when_typing: bool,
 }
@@ -523,6 +524,7 @@ pub struct CursorConfig {
 impl Default for CursorConfig {
     fn default() -> Self {
         Self {
+            theme: "default".to_owned(),
             size: 24,
             hide_when_typing: false,
         }
@@ -556,6 +558,7 @@ impl EnvironmentFileConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CursorFileConfig {
+    theme: Option<String>,
     size: Option<u32>,
     hide_when_typing: Option<bool>,
 }
@@ -564,6 +567,7 @@ impl CursorFileConfig {
     fn resolve(self) -> CursorConfig {
         let defaults = CursorConfig::default();
         CursorConfig {
+            theme: self.theme.unwrap_or(defaults.theme),
             size: self.size.unwrap_or(defaults.size).max(1),
             hide_when_typing: self.hide_when_typing.unwrap_or(defaults.hide_when_typing),
         }

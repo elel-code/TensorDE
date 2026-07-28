@@ -11,7 +11,6 @@ use vulkanalia::{Device, vk};
 
 use crate::render::{
     FrameSubmission,
-    cursor::MAX_CURSOR_OVERLAYS,
     frame::{HeapAllocation, SceneDrawCommand},
 };
 
@@ -35,7 +34,7 @@ struct DrawPushData {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct CursorPushData {
+pub(super) struct CursorPushData {
     destination: [f32; 4],
 }
 
@@ -52,39 +51,6 @@ struct FocusRingPushData {
 pub(super) struct PreparedDraw {
     push: DrawPushData,
     scissor: vk::Rect2D,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PreparedCursorDraw {
-    push: CursorPushData,
-    scissor: vk::Rect2D,
-}
-
-pub(super) struct PreparedCursorDraws {
-    entries: [Option<PreparedCursorDraw>; MAX_CURSOR_OVERLAYS],
-    len: usize,
-}
-
-impl PreparedCursorDraws {
-    fn new() -> Self {
-        Self {
-            entries: [None; MAX_CURSOR_OVERLAYS],
-            len: 0,
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn push(&mut self, draw: PreparedCursorDraw) {
-        self.entries[self.len] = Some(draw);
-        self.len += 1;
-    }
-
-    fn iter(&self) -> impl Iterator<Item = PreparedCursorDraw> + '_ {
-        self.entries[..self.len].iter().flatten().copied()
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,34 +144,6 @@ pub(super) fn prepare_draws(
             })
         })
         .collect()
-}
-
-pub(super) fn prepare_cursor_draws(
-    frame: &FrameSubmission,
-) -> Result<PreparedCursorDraws, FrameRecordError> {
-    let mut draws = PreparedCursorDraws::new();
-    if frame.draw_plan.cursors().is_empty() {
-        return Ok(draws);
-    }
-    let viewport = validate_viewport(frame.target.viewport)?;
-    for cursor in frame.draw_plan.cursors() {
-        draws.push(PreparedCursorDraw {
-            push: CursorPushData {
-                destination: destination_to_ndc(cursor.destination, viewport),
-            },
-            scissor: vk::Rect2D {
-                offset: vk::Offset2D {
-                    x: cursor.clip.x,
-                    y: cursor.clip.y,
-                },
-                extent: vk::Extent2D {
-                    width: cursor.clip.width,
-                    height: cursor.clip.height,
-                },
-            },
-        });
-    }
-    Ok(draws)
 }
 
 pub(super) fn prepare_focus_ring_draws(
@@ -528,27 +466,61 @@ pub(super) unsafe fn record_scene(
             }
         }
     }
-    if let Some((pipeline, layout)) = cursor_pipeline {
-        unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        }
-        for cursor in cursors.iter() {
-            let push_bytes = unsafe {
-                slice::from_raw_parts(
-                    (&cursor.push as *const CursorPushData).cast::<u8>(),
-                    mem::size_of::<CursorPushData>(),
-                )
-            };
-            unsafe {
-                device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&cursor.scissor));
-                device.cmd_push_constants(
-                    command_buffer,
-                    layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    push_bytes,
-                );
-                device.cmd_draw(command_buffer, 6, 1, 0, 0);
+    for cursor in cursors.iter() {
+        match cursor {
+            PreparedCursorDraw::Vector { push, scissor } => {
+                let Some((pipeline, layout)) = cursor_pipeline else {
+                    continue;
+                };
+                unsafe {
+                    device.cmd_bind_pipeline(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline,
+                    );
+                }
+                let push_bytes = unsafe {
+                    slice::from_raw_parts(
+                        (&push as *const CursorPushData).cast::<u8>(),
+                        mem::size_of::<CursorPushData>(),
+                    )
+                };
+                unsafe {
+                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&scissor));
+                    device.cmd_push_constants(
+                        command_buffer,
+                        layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        push_bytes,
+                    );
+                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
+                }
+            }
+            PreparedCursorDraw::Texture(draw) => {
+                let Some(pipeline) = client_pipeline else {
+                    continue;
+                };
+                unsafe {
+                    device.cmd_bind_pipeline(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline,
+                    );
+                }
+                let push_bytes = unsafe {
+                    slice::from_raw_parts(
+                        (&draw.push as *const DrawPushData).cast::<u8>(),
+                        mem::size_of::<DrawPushData>(),
+                    )
+                };
+                let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
+                let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
+                unsafe {
+                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
+                    device.cmd_push_data_ext(command_buffer, &push);
+                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
+                }
             }
         }
     }
@@ -771,6 +743,9 @@ pub(super) enum FrameRecordError {
     #[error("scene command references missing {kind} draw {index}")]
     MissingSceneDraw { kind: &'static str, index: usize },
 }
+
+mod cursor;
+pub(super) use cursor::{PreparedCursorDraw, PreparedCursorDraws, prepare_cursor_draws};
 
 #[cfg(test)]
 mod tests;

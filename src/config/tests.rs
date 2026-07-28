@@ -206,6 +206,7 @@ fn parses_environment_cursor_and_debug_tables() {
         set = { EDITOR = "hx", BROWSER = "firefox" }
 
         [cursor]
+        theme = "Adwaita"
         size = 32
         hide_when_typing = true
 
@@ -228,6 +229,7 @@ fn parses_environment_cursor_and_debug_tables() {
     assert_eq!(
         config.cursor,
         CursorConfig {
+            theme: "Adwaita".to_owned(),
             size: 32,
             hide_when_typing: true,
         }

@@ -166,11 +166,48 @@ impl RuntimeState {
         }
 
         let scene = self.scene_for_output(&output, logical);
+        {
+            let renderer = self
+                .renderer
+                .as_mut()
+                .expect("renderer presence was checked above");
+            let surface_buffers = &mut self.surface_buffers;
+            self.cursor
+                .prepare_named_rasters(target.scale, |size, pixels| {
+                    let expected = usize::try_from(size.width)
+                        .ok()
+                        .and_then(|width| width.checked_mul(4))
+                        .and_then(|stride| {
+                            stride.checked_mul(usize::try_from(size.height).ok()?)
+                        })?;
+                    if pixels.len() != expected {
+                        return None;
+                    }
+                    let id = surface_buffers.allocate_buffer_id_for_import()?;
+                    if let Err(error) = renderer.upload_client_shm(
+                        id,
+                        size,
+                        tensor_host::Fourcc::ARGB8888,
+                        |destination| {
+                            destination.copy_from_slice(pixels);
+                            Ok(())
+                        },
+                    ) {
+                        warn!(%error, "failed to upload named cursor image");
+                        return None;
+                    }
+                    Some(id)
+                });
+        }
+        let surface_buffers = &self.surface_buffers;
         let cursors = self.cursor.overlays_for_output(
             self.input_seat.pointer_location(),
             geometry,
             target.scale,
             target.viewport,
+            |surface, scale| {
+                super::surfaces::cursor_surface_raster(surface_buffers, surface, scale)
+            },
         );
         let has_presented = self
             .outputs
@@ -240,7 +277,8 @@ impl RuntimeState {
         };
         // Drain feedback only after all retry gates passed. The local owner
         // below discards it if Vulkan or atomic KMS cannot accept this frame.
-        let mut captured_presentation = self.capture_scene_presentation(output_id, &output, &scene);
+        let mut captured_presentation =
+            self.capture_scene_presentation(output_id, &output, &scene, &cursors);
         let Some(result) = self
             .renderer
             .as_mut()

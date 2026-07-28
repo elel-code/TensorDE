@@ -1,4 +1,7 @@
+use tensor_protocol::SurfaceSampleTransform;
 use tensor_util::Rect;
+
+use crate::ecs::SurfaceBufferId;
 
 pub(crate) const MAX_CURSOR_OVERLAYS: usize = 65;
 
@@ -11,6 +14,13 @@ pub(crate) struct CursorOverlay {
     pub(crate) source: u64,
     pub(crate) destination: Rect,
     pub(crate) clip: Rect,
+    pub(crate) texture: Option<CursorTexture>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CursorTexture {
+    pub(crate) buffer_id: SurfaceBufferId,
+    pub(crate) sample_transform: SurfaceSampleTransform,
 }
 
 impl CursorOverlay {
@@ -18,6 +28,7 @@ impl CursorOverlay {
         source: 0,
         destination: Rect::new(0, 0, 0, 0),
         clip: Rect::new(0, 0, 0, 0),
+        texture: None,
     };
 
     pub(crate) fn new(source: u64, destination: Rect, viewport: Rect) -> Option<Self> {
@@ -26,7 +37,13 @@ impl CursorOverlay {
             source,
             destination,
             clip,
+            texture: None,
         })
+    }
+
+    pub(crate) fn with_texture(mut self, texture: CursorTexture) -> Self {
+        self.texture = Some(texture);
+        self
     }
 }
 

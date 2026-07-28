@@ -82,7 +82,10 @@ use presentation::PendingPresentations;
 #[cfg(feature = "tty")]
 use surfaces::SurfaceBufferRegistry;
 pub(in crate::protocol) use surfaces::surface_contains_point;
-pub(crate) use surfaces::{apply_surface_alpha, destroy_surface_state, on_commit_surface_handler};
+pub(crate) use surfaces::{
+    apply_cursor_surface_delta, apply_surface_alpha, destroy_surface_state,
+    on_commit_surface_handler,
+};
 pub(in crate::protocol) use surfaces::{pending_buffer_logical_size, surface_has_buffer};
 #[cfg(test)]
 pub(crate) use surfaces::{test_surface_buffer, test_surface_tree_states};
@@ -268,7 +271,10 @@ impl RuntimeState {
     ) {
         #[cfg(feature = "tty")]
         {
-            self.cursor.configure(cursor.size, cursor.hide_when_typing);
+            let released =
+                self.cursor
+                    .configure(cursor.theme, cursor.size, cursor.hide_when_typing);
+            self.release_client_buffers(released);
             self.force_full_redraw = debug.force_full_redraw;
             self.frame_stats = debug.frame_stats;
         }

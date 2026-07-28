@@ -1,8 +1,14 @@
+use std::collections::HashMap;
+
 use cursor_icon::CursorIcon;
-use tensor_util::{LogicalPoint, LogicalRect, OutputScale, Rect};
+use tensor_protocol::SurfaceSampleTransform;
+use tensor_util::{LogicalPoint, LogicalRect, OutputScale, Point, Rect, Size};
 use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
-use crate::render::{CursorOverlay, CursorOverlays};
+use crate::{
+    ecs::SurfaceBufferId,
+    render::{CursorOverlay, CursorOverlays, CursorTexture},
+};
 
 const MAX_TABLET_CURSORS: usize = 64;
 
@@ -28,6 +34,9 @@ pub(crate) struct CursorState {
     logical_size: u32,
     hide_when_typing: bool,
     hidden_for_typing: bool,
+    theme_name: String,
+    theme: xcursor::CursorTheme,
+    named_rasters: HashMap<(CursorIcon, OutputScale), Option<CursorRaster>>,
 }
 
 #[derive(Clone)]
@@ -35,6 +44,21 @@ struct TabletCursor {
     tool: tensor_event::TabletToolId,
     image: CursorImage,
     location: LogicalPoint<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct CursorOutput {
+    logical: LogicalRect<i32>,
+    scale: OutputScale,
+    viewport: Rect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::protocol) struct CursorRaster {
+    pub(in crate::protocol) buffer_id: SurfaceBufferId,
+    pub(in crate::protocol) size: Size,
+    pub(in crate::protocol) hotspot: Point,
+    pub(in crate::protocol) sample_transform: SurfaceSampleTransform,
 }
 
 impl Default for CursorState {
@@ -45,17 +69,113 @@ impl Default for CursorState {
             logical_size: 24,
             hide_when_typing: false,
             hidden_for_typing: false,
+            theme_name: "default".to_owned(),
+            theme: xcursor::CursorTheme::load("default"),
+            named_rasters: HashMap::with_capacity(16),
         }
     }
 }
 
 impl CursorState {
-    pub(crate) fn configure(&mut self, size: u32, hide_when_typing: bool) {
-        self.logical_size = size.max(1);
+    pub(crate) fn configure(
+        &mut self,
+        theme: String,
+        size: u32,
+        hide_when_typing: bool,
+    ) -> Vec<SurfaceBufferId> {
+        let size = size.max(1);
+        let changed = self.theme_name != theme || self.logical_size != size;
+        let released = if changed {
+            self.named_rasters
+                .drain()
+                .filter_map(|(_, raster)| raster.map(|raster| raster.buffer_id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if self.theme_name != theme {
+            self.theme = xcursor::CursorTheme::load(&theme);
+            self.theme_name = theme;
+        }
+        self.logical_size = size;
         self.hide_when_typing = hide_when_typing;
         if !hide_when_typing {
             self.hidden_for_typing = false;
         }
+        released
+    }
+
+    pub(crate) fn prepare_named_rasters(
+        &mut self,
+        scale: OutputScale,
+        mut upload: impl FnMut(Size, &[u8]) -> Option<SurfaceBufferId>,
+    ) {
+        if let CursorImage::Named(icon) = self.image {
+            self.prepare_named_raster(icon, scale, &mut upload);
+        }
+        for index in 0..self.tablets.len() {
+            let CursorImage::Named(icon) = self.tablets[index].image else {
+                continue;
+            };
+            self.prepare_named_raster(icon, scale, &mut upload);
+        }
+    }
+
+    fn prepare_named_raster(
+        &mut self,
+        icon: CursorIcon,
+        scale: OutputScale,
+        upload: &mut impl FnMut(Size, &[u8]) -> Option<SurfaceBufferId>,
+    ) {
+        let key = (icon, scale);
+        if self.named_rasters.contains_key(&key) {
+            return;
+        }
+        let desired = scale.physical_length_round(self.logical_size).max(1);
+        let raster = self.load_named_image(icon, desired).and_then(|image| {
+            let size = Size::new(image.width, image.height);
+            let buffer_id = upload(size, &image.pixels_rgba)?;
+            Some(CursorRaster {
+                buffer_id,
+                size,
+                hotspot: Point::new(
+                    i32::try_from(image.xhot).unwrap_or(i32::MAX),
+                    i32::try_from(image.yhot).unwrap_or(i32::MAX),
+                ),
+                sample_transform: SurfaceSampleTransform::IDENTITY,
+            })
+        });
+        if raster.is_none() {
+            tracing::warn!(
+                theme = self.theme_name,
+                shape = icon.name(),
+                desired,
+                "cursor theme image is unavailable; using vector fallback"
+            );
+        }
+        self.named_rasters.insert(key, raster);
+    }
+
+    fn load_named_image(&self, icon: CursorIcon, desired: u32) -> Option<xcursor::parser::Image> {
+        let names = std::iter::once(icon.name()).chain(icon.alt_names().iter().copied());
+        for name in names {
+            let Some(path) = self.theme.load_icon(name) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Some(images) = xcursor::parser::parse_xcursor(&bytes) else {
+                continue;
+            };
+            if let Some(image) = images
+                .into_iter()
+                .min_by_key(|image| image.size.abs_diff(desired))
+            {
+                return Some(image);
+            }
+        }
+        None
     }
 
     pub(in crate::protocol) fn set_image(&mut self, image: CursorImage) -> bool {
@@ -133,22 +253,27 @@ impl CursorState {
         true
     }
 
-    /// Produce the universal software fallback for a visible pointer source.
-    /// Keeping the source state here is intentional: named-theme and client
-    /// cursor rasters will feed this same overlay contract without giving the
-    /// renderer a Wayland surface or a second coordinate system.
-    pub(crate) fn overlays_for_output(
+    /// Resolve a visible pointer source to a sampled cursor image or the
+    /// vector fallback without giving the renderer a Wayland resource or a
+    /// second coordinate system.
+    pub(in crate::protocol) fn overlays_for_output(
         &mut self,
         pointer: Option<LogicalPoint<f64>>,
         output: LogicalRect<i32>,
         scale: OutputScale,
         viewport: Rect,
+        mut resolve: impl FnMut(&WlSurface, OutputScale) -> Option<CursorRaster>,
     ) -> CursorOverlays {
         self.normalize_surface_liveness();
         let mut overlays = CursorOverlays::default();
+        let output = CursorOutput {
+            logical: output,
+            scale,
+            viewport,
+        };
         if !self.hidden_for_typing
             && let Some(pointer) = pointer
-            && let Some(overlay) = self.overlay(0, pointer, &self.image, output, scale, viewport)
+            && let Some(overlay) = self.overlay(0, pointer, &self.image, output, &mut resolve)
         {
             assert!(overlays.push(overlay), "pointer cursor has a reserved slot");
         }
@@ -158,8 +283,7 @@ impl CursorState {
                 tablet.location,
                 &tablet.image,
                 output,
-                scale,
-                viewport,
+                &mut resolve,
             ) {
                 assert!(
                     overlays.push(overlay),
@@ -175,28 +299,81 @@ impl CursorState {
         source: u64,
         location: LogicalPoint<f64>,
         image: &CursorImage,
-        output: LogicalRect<i32>,
-        scale: OutputScale,
-        viewport: Rect,
+        output: CursorOutput,
+        resolve: &mut impl FnMut(&WlSurface, OutputScale) -> Option<CursorRaster>,
     ) -> Option<CursorOverlay> {
         if matches!(image, CursorImage::Hidden) {
             return None;
         }
-        let local_x = location.x - f64::from(output.loc.x);
-        let local_y = location.y - f64::from(output.loc.y);
-        if output.size.w <= 0
-            || output.size.h <= 0
+        let local_x = location.x - f64::from(output.logical.loc.x);
+        let local_y = location.y - f64::from(output.logical.loc.y);
+        if output.logical.size.w <= 0
+            || output.logical.size.h <= 0
             || local_x < 0.0
             || local_y < 0.0
-            || local_x >= f64::from(output.size.w)
-            || local_y >= f64::from(output.size.h)
+            || local_x >= f64::from(output.logical.size.w)
+            || local_y >= f64::from(output.logical.size.h)
         {
             return None;
         }
-        let x = scale.physical_coordinate_round(local_x)?;
-        let y = scale.physical_coordinate_round(local_y)?;
-        let size = scale.physical_length_round(self.logical_size).max(1);
-        CursorOverlay::new(source, Rect::new(x, y, size, size), viewport)
+        let x = output.scale.physical_coordinate_round(local_x)?;
+        let y = output.scale.physical_coordinate_round(local_y)?;
+        let raster = match image {
+            CursorImage::Hidden => None,
+            CursorImage::Named(icon) => self
+                .named_rasters
+                .get(&(*icon, output.scale))
+                .copied()
+                .flatten(),
+            CursorImage::Surface(surface) => resolve(surface, output.scale),
+        };
+        if let Some(raster) = raster {
+            return CursorOverlay::new(
+                source,
+                Rect::new(
+                    x.saturating_sub(raster.hotspot.x),
+                    y.saturating_sub(raster.hotspot.y),
+                    raster.size.width,
+                    raster.size.height,
+                ),
+                output.viewport,
+            )
+            .map(|overlay| {
+                overlay.with_texture(CursorTexture {
+                    buffer_id: raster.buffer_id,
+                    sample_transform: raster.sample_transform,
+                })
+            });
+        }
+        let fallback_size = output.scale.physical_length_round(self.logical_size).max(1);
+        CursorOverlay::new(
+            source,
+            Rect::new(x, y, fallback_size, fallback_size),
+            output.viewport,
+        )
+    }
+
+    pub(in crate::protocol) fn uses_surface(&self, surface: &WlSurface) -> bool {
+        matches!(&self.image, CursorImage::Surface(current) if current == surface)
+            || self.tablets.iter().any(
+                |tablet| matches!(&tablet.image, CursorImage::Surface(current) if current == surface),
+            )
+    }
+
+    pub(in crate::protocol) fn surface_for_source(&self, source: u64) -> Option<WlSurface> {
+        let image = if source == 0 {
+            &self.image
+        } else {
+            &self
+                .tablets
+                .iter()
+                .find(|tablet| tablet.tool.get() == source)?
+                .image
+        };
+        match image {
+            CursorImage::Surface(surface) if surface.is_alive() => Some(surface.clone()),
+            _ => None,
+        }
     }
 
     fn normalize_surface_liveness(&mut self) {
@@ -232,6 +409,7 @@ mod tests {
             output(),
             OutputScale::from_f64(1.25).unwrap(),
             Rect::new(0, 0, 125, 100),
+            |_, _| None,
         );
         let overlay = overlays.as_slice()[0];
 
@@ -251,6 +429,7 @@ mod tests {
                     output(),
                     OutputScale::ONE,
                     Rect::new(0, 0, 100, 80),
+                    |_, _| None,
                 )
                 .as_slice(),
             []
@@ -263,6 +442,7 @@ mod tests {
                     output(),
                     OutputScale::ONE,
                     Rect::new(0, 0, 100, 80),
+                    |_, _| None,
                 )
                 .as_slice(),
             []
@@ -280,6 +460,7 @@ mod tests {
             output(),
             OutputScale::ONE,
             Rect::new(0, 0, 100, 80),
+            |_, _| None,
         );
         assert_eq!(overlays.as_slice().len(), 2);
         assert_eq!(
@@ -298,10 +479,45 @@ mod tests {
                     output(),
                     OutputScale::ONE,
                     Rect::new(0, 0, 100, 80),
+                    |_, _| None,
                 )
                 .as_slice()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn named_raster_uses_physical_hotspot_and_sample_transform() {
+        let mut cursor = CursorState::default();
+        let scale = OutputScale::from_f64(1.25).unwrap();
+        let transform = SurfaceSampleTransform::new((0.25, 0.5), (0.5, 0.0), (0.0, 0.25));
+        cursor.named_rasters.insert(
+            (CursorIcon::Default, scale),
+            Some(CursorRaster {
+                buffer_id: SurfaceBufferId::new(7),
+                size: Size::new(32, 40),
+                hotspot: Point::new(3, 4),
+                sample_transform: transform,
+            }),
+        );
+
+        let overlays = cursor.overlays_for_output(
+            Some((20.0, 30.0).into()),
+            output(),
+            scale,
+            Rect::new(0, 0, 125, 100),
+            |_, _| None,
+        );
+        let overlay = overlays.as_slice()[0];
+
+        assert_eq!(overlay.destination, Rect::new(10, 9, 32, 40));
+        assert_eq!(
+            overlay.texture,
+            Some(CursorTexture {
+                buffer_id: SurfaceBufferId::new(7),
+                sample_transform: transform,
+            })
         );
     }
 }

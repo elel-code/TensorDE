@@ -4,6 +4,7 @@ use tensor_util::{OutputScale, Rect};
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::LayoutPlacement,
+    render::CursorTexture,
     scene::{
         ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot, SurfaceContent,
         SurfaceLayer, SurfaceSampleTransform,
@@ -72,6 +73,13 @@ fn cursors(entries: &[(i32, i32)]) -> CursorOverlays {
         assert!(cursors.push(cursor(source as u64, x, y)));
     }
     cursors
+}
+
+fn textured_cursor(source: u64, buffer_id: u64, x: i32, y: i32) -> CursorOverlay {
+    cursor(source, x, y).with_texture(CursorTexture {
+        buffer_id: SurfaceBufferId::new(buffer_id),
+        sample_transform: SurfaceSampleTransform::IDENTITY,
+    })
 }
 
 #[test]
@@ -158,4 +166,40 @@ fn independent_cursors_draw_in_order_and_damage_every_changed_slot() {
         second.damage.regions(),
         [Rect::new(40, 50, 24, 24), Rect::new(80, 90, 24, 24),]
     );
+}
+
+#[test]
+fn cursor_images_share_the_scene_descriptor_table_without_duplicates() {
+    let mut cursor_overlays = CursorOverlays::default();
+    assert!(cursor_overlays.push(textured_cursor(0, 1, 10, 20)));
+    assert!(cursor_overlays.push(textured_cursor(1, 9, 40, 50)));
+
+    let plan = FrameDrawPlan::build_with_cursors(&scene(), target(), cursor_overlays).unwrap();
+
+    assert_eq!(
+        plan.images(),
+        [SurfaceBufferId::new(1), SurfaceBufferId::new(9)]
+    );
+    assert_eq!(plan.cursor_image_descriptors(), [Some(1), Some(2)]);
+}
+
+#[test]
+fn replacing_a_cursor_texture_damages_its_bounds() {
+    let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+    scheduler.register_output(target()).unwrap();
+    let mut first_cursors = CursorOverlays::default();
+    assert!(first_cursors.push(textured_cursor(0, 7, 10, 20)));
+    let first = scheduler
+        .prepare_with_cursors(OUTPUT, scene(), first_cursors, 0)
+        .unwrap();
+    scheduler.commit(&first).unwrap();
+    scheduler.retire_completed(first.timeline_value);
+
+    let mut second_cursors = CursorOverlays::default();
+    assert!(second_cursors.push(textured_cursor(0, 8, 10, 20)));
+    let second = scheduler
+        .prepare_with_cursors(OUTPUT, scene(), second_cursors, first.timeline_value)
+        .unwrap();
+
+    assert_eq!(second.damage.regions(), [Rect::new(10, 20, 24, 24)]);
 }

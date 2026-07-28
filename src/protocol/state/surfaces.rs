@@ -11,7 +11,7 @@ use crate::protocol::globals::compositor::{
     BufferAssignment, Damage, SUBSURFACE_ROLE, SubsurfaceCachedState, SurfaceAttributes,
     SurfaceData, TraversalAction, is_sync_subsurface, with_states, with_surface_tree_upward,
 };
-use tensor_protocol::{SurfaceAlpha, SurfaceSourceRect, SurfaceTransform};
+use tensor_protocol::{SurfaceAlpha, SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform};
 use wayland_server::{
     Resource,
     protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
@@ -301,6 +301,89 @@ pub(super) fn surface_buffer(surface: &WlSurface) -> Option<WlBuffer> {
             .buffer
             .clone()
     })
+}
+
+pub(crate) fn apply_cursor_surface_delta(surface: &WlSurface) {
+    with_states(surface, |states| {
+        let Some(storage) = states
+            .data_map
+            .get::<Mutex<crate::protocol::globals::seat::CursorSurfaceState>>()
+        else {
+            return;
+        };
+        let delta = states
+            .cached_state
+            .get::<SurfaceAttributes>()
+            .current()
+            .buffer_delta
+            .take();
+        let Some(delta) = delta else {
+            return;
+        };
+        let mut cursor = storage.lock().unwrap();
+        cursor.hotspot.x = cursor.hotspot.x.saturating_sub(delta.x);
+        cursor.hotspot.y = cursor.hotspot.y.saturating_sub(delta.y);
+    });
+}
+
+#[cfg(feature = "tty")]
+pub(super) fn cursor_surface_raster(
+    registry: &SurfaceBufferRegistry,
+    surface: &WlSurface,
+    scale: tensor_util::OutputScale,
+) -> Option<crate::protocol::cursor::CursorRaster> {
+    let (buffer, logical_size, buffer_scale, transform, source, hotspot) =
+        with_states(surface, |states| {
+            let state = states.data_map.get::<Mutex<SurfaceState>>()?.lock().ok()?;
+            let view = state.view?;
+            let buffer = state.buffer.as_ref()?.id();
+            let hotspot = states
+                .data_map
+                .get::<Mutex<crate::protocol::globals::seat::CursorSurfaceState>>()?
+                .lock()
+                .ok()?
+                .hotspot;
+            Some((
+                buffer,
+                view.size,
+                state.buffer_scale,
+                state.transform,
+                state.source,
+                hotspot,
+            ))
+        })?;
+    let (buffer_id, buffer_size) = registry.imported_buffer(&buffer)?;
+    let width = scale.physical_length_round(u32::try_from(logical_size.0).ok()?);
+    let height = scale.physical_length_round(u32::try_from(logical_size.1).ok()?);
+    let hotspot_x = scale.physical_coordinate_round(f64::from(hotspot.x))?;
+    let hotspot_y = scale.physical_coordinate_round(f64::from(hotspot.y))?;
+    Some(crate::protocol::cursor::CursorRaster {
+        buffer_id,
+        size: tensor_util::Size::new(width.max(1), height.max(1)),
+        hotspot: tensor_util::Point::new(hotspot_x, hotspot_y),
+        sample_transform: SurfaceSampleTransform::for_surface(
+            buffer_size,
+            buffer_scale,
+            transform,
+            source,
+        ),
+    })
+}
+
+#[cfg(all(test, feature = "tty"))]
+impl RuntimeState {
+    pub(in crate::protocol) fn test_cursor_raster(
+        &self,
+    ) -> Option<crate::protocol::cursor::CursorRaster> {
+        let crate::protocol::cursor::CursorImage::Surface(surface) = self.cursor.image() else {
+            return None;
+        };
+        cursor_surface_raster(
+            &self.surface_buffers,
+            surface,
+            tensor_util::OutputScale::ONE,
+        )
+    }
 }
 
 #[cfg(test)]

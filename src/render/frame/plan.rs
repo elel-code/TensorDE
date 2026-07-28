@@ -24,6 +24,7 @@ pub(crate) struct FrameDrawPlan {
     focus_rings: Vec<FocusRingDraw>,
     scene_draws: Vec<SceneDrawCommand>,
     cursors: CursorOverlays,
+    cursor_image_descriptors: Vec<Option<u32>>,
 }
 
 /// One compositor scene command in back-to-front order.
@@ -168,12 +169,26 @@ impl FrameDrawPlan {
             }
         }
 
+        let cursor_image_descriptors = cursors
+            .as_slice()
+            .iter()
+            .map(|cursor| {
+                cursor
+                    .texture
+                    .map(|texture| {
+                        image_descriptor_for(texture.buffer_id, &mut images, &mut image_descriptors)
+                    })
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Self {
             images,
             draws,
             focus_rings,
             scene_draws,
             cursors,
+            cursor_image_descriptors,
         })
     }
 
@@ -196,6 +211,27 @@ impl FrameDrawPlan {
     pub(crate) fn cursors(&self) -> &[CursorOverlay] {
         self.cursors.as_slice()
     }
+
+    pub(crate) fn cursor_image_descriptors(&self) -> &[Option<u32>] {
+        &self.cursor_image_descriptors
+    }
+}
+
+fn image_descriptor_for(
+    buffer: SurfaceBufferId,
+    images: &mut Vec<SurfaceBufferId>,
+    descriptors: &mut HashMap<SurfaceBufferId, u32>,
+) -> Result<u32, FrameError> {
+    if let Some(index) = descriptors.get(&buffer) {
+        return Ok(*index);
+    }
+    let index = u32::try_from(images.len())
+        .ok()
+        .and_then(|index| index.checked_add(1))
+        .ok_or(FrameError::DescriptorSizeOverflow)?;
+    images.push(buffer);
+    descriptors.insert(buffer, index);
+    Ok(index)
 }
 
 fn focus_ring_draw(

@@ -14,6 +14,7 @@ use crate::protocol::clock::monotonic_now;
 use crate::{
     backend::BackendOutputId,
     ecs::{SurfaceId, ViewId},
+    render::CursorOverlays,
     scene::{SceneSnapshot, SurfaceContent, SurfaceLayer},
 };
 
@@ -39,6 +40,7 @@ pub(super) struct CapturedPresentation {
     feedback: OutputPresentationFeedback,
     submitted_surfaces: HashSet<SurfaceId>,
     submitted_views: HashSet<ViewId>,
+    cursor_surfaces: Vec<WlSurface>,
     fifo_barriers: Vec<SurfaceBarrier>,
 }
 
@@ -98,8 +100,24 @@ impl RuntimeState {
         output_id: BackendOutputId,
         output: &Output,
         scene: &SceneSnapshot,
+        cursors: &CursorOverlays,
     ) -> CapturedPresentation {
-        self.capture_presentation(output_id, output, scene, submitted_scene_surfaces(scene))
+        let mut cursor_surfaces = Vec::with_capacity(cursors.as_slice().len());
+        for cursor in cursors.as_slice() {
+            let Some(surface) = self.cursor.surface_for_source(cursor.source) else {
+                continue;
+            };
+            if !cursor_surfaces.iter().any(|current| current == &surface) {
+                cursor_surfaces.push(surface);
+            }
+        }
+        self.capture_presentation(
+            output_id,
+            output,
+            scene,
+            submitted_scene_surfaces(scene),
+            cursor_surfaces,
+        )
     }
 
     pub(super) fn queue_presentation(
@@ -164,6 +182,7 @@ impl RuntimeState {
         output: &Output,
         scene: &SceneSnapshot,
         mut submitted: HashMap<SurfaceId, ViewId>,
+        cursor_surfaces: Vec<WlSurface>,
     ) -> CapturedPresentation {
         let output_regions = self.output_regions();
         let bounds = scene_surface_bounds(scene);
@@ -183,12 +202,14 @@ impl RuntimeState {
                 surface_buffers
                     .surface_id(surface)
                     .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
+                    || cursor_surfaces.iter().any(|cursor| cursor.id() == *surface)
             });
         let mut feedback = OutputPresentationFeedback::new(output);
         let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
                 .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
+                || cursor_surfaces.iter().any(|cursor| cursor == surface)
         };
         let mut feedback_flags =
             |_: &WlSurface, _: &SurfaceData| wp_presentation_feedback::Kind::empty();
@@ -229,10 +250,19 @@ impl RuntimeState {
                 }
             }
         }
+        for surface in &cursor_surfaces {
+            take_presentation_feedback_surface_tree(
+                surface,
+                &mut feedback,
+                &mut is_submitted,
+                &mut feedback_flags,
+            );
+        }
         CapturedPresentation {
             feedback,
             submitted_surfaces,
             submitted_views,
+            cursor_surfaces,
             fifo_barriers,
         }
     }
@@ -262,10 +292,12 @@ impl RuntimeState {
         let surface_buffers = &self.surface_buffers;
         let submitted_surfaces = &frame.submitted_surfaces;
         let submitted_views = &frame.submitted_views;
+        let cursor_surfaces = &frame.cursor_surfaces;
         let mut is_submitted = |surface: &WlSurface, _: &SurfaceData| {
             surface_buffers
                 .surface_id(&surface.id())
                 .is_some_and(|surface_id| submitted_surfaces.contains(&surface_id))
+                || cursor_surfaces.iter().any(|cursor| cursor == surface)
         };
         for window in self.space.elements() {
             let Some(root) = window.wl_surface() else {
@@ -292,6 +324,9 @@ impl RuntimeState {
                     send_frame_callbacks_surface_tree(&popup, time, &mut is_submitted);
                 }
             }
+        }
+        for surface in cursor_surfaces {
+            send_frame_callbacks_surface_tree(surface, time, &mut is_submitted);
         }
     }
 

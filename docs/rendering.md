@@ -182,11 +182,16 @@ simulation.
 
 Pointer visibility is a compositor overlay, not client-scene state. Tensor cursor state and any
 client cursor surface stay in the protocol owner; at frame submission
-they become a value-only, output-local physical `CursorOverlay`. The current visible fallback is a
-small vector arrow, including for a named or client-provided cursor image until cursor-raster
-upload is added. It draws after all client content, is clipped to the native target, and damages
-both its old and new physical bounds on motion. Its pipeline has no sampled resources and uses only
-a 16-byte vertex push constant with a zero-set layout; it is not a descriptor-set rendering path.
+they become a value-only, output-local physical `CursorOverlay`. Named `wp_cursor_shape` images are
+loaded lazily from the configured XCursor theme at the output's fractional scale. Client
+`wl_pointer.set_cursor` and tablet cursor surfaces reuse the normal SHM image cache and preserve
+their viewport/buffer transform. Both paths enter the same deduplicated descriptor heap as scene
+images and draw after all client content. Pixel data is copied only once into the persistent Vulkan
+staging allocation when an image version is imported; normal cursor frames carry only stable buffer
+IDs and transforms. The small descriptor-free vector arrow remains only for a missing theme image
+or a client surface without committed image content. Hotspots include committed `wl_surface.offset`
+deltas, cursor image or geometry changes damage the old and new physical bounds, and successfully
+submitted cursor surfaces receive frame callbacks so client-driven animation can advance.
 
 This is a deliberately distilled contract from the local Niri, Hyprland, and Nourish references:
 Niri establishes pointer-as-topmost-render-element and output-aware relative motion; Hyprland
@@ -201,7 +206,7 @@ The current command stream is deliberately limited to:
 2. acquire the selected output and imported client images from `VK_QUEUE_FAMILY_FOREIGN_EXT`;
 3. run dynamic rendering and draw sampled client rectangles with transform, opacity, clip, and
    corner-radius data;
-4. draw the compositor-owned vector cursor over client content when the pointer is visible;
+4. draw sampled named/client cursors, or the descriptor-free fallback arrow, over client content;
 5. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Tensor KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a

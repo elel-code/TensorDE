@@ -7,7 +7,10 @@ use crate::render::vulkan::import::ClientImageUpload;
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::LayoutPlacement,
-    render::{FrameScheduler, NativeOutputTarget, OutputFormat, RenderOutputId},
+    render::{
+        CursorOverlay, CursorOverlays, CursorTexture, FrameScheduler, NativeOutputTarget,
+        OutputFormat, RenderOutputId,
+    },
     scene::{
         ContentRevision, ContentSpan, EffectStyle, SceneNode, SceneSnapshot, SurfaceContent,
         SurfaceLayer, SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
@@ -293,4 +296,51 @@ fn scene_commands_reject_missing_prepared_draws() {
             index: 0,
         })
     ));
+}
+
+#[test]
+fn textured_cursor_uses_the_client_image_pipeline_and_descriptor_heap() {
+    let viewport = Rect::new(0, 0, 100, 80);
+    let target = NativeOutputTarget {
+        output: RenderOutputId {
+            device_id: 1,
+            connector_id: 2,
+        },
+        viewport,
+        format: OutputFormat {
+            format: DrmFormat::new(Fourcc::XRGB8888, Modifier::from_raw(9)),
+            plane_count: 1,
+        },
+        scale: OutputScale::ONE,
+    };
+    let transform =
+        SurfaceSampleTransform::for_surface(Size::new(32, 24), 1, SurfaceTransform::Rotate90, None);
+    let mut cursors = CursorOverlays::default();
+    assert!(
+        cursors.push(
+            CursorOverlay::new(0, Rect::new(10, 20, 32, 24), viewport)
+                .unwrap()
+                .with_texture(CursorTexture {
+                    buffer_id: SurfaceBufferId::new(7),
+                    sample_transform: transform,
+                })
+        )
+    );
+    let scene = SceneSnapshot::new(WorkspaceId::new(1), viewport, Vec::new());
+    let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+    scheduler.register_output(target).unwrap();
+    let frame = scheduler
+        .prepare_with_cursors(target.output, scene, cursors, 0)
+        .unwrap();
+
+    let prepared = prepare_cursor_draws(&frame, 32, 0).unwrap();
+    let PreparedCursorDraw::Texture(draw) = prepared.iter().next().unwrap() else {
+        panic!("cursor image must use the sampled-image pipeline");
+    };
+    assert_eq!(draw.push.descriptor_index, 1);
+    assert_eq!(draw.push.destination, [-0.8, -0.5, 0.64, 0.6]);
+    assert_eq!(draw.push.uv_origin_axis_x, [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(draw.push.uv_axis_y_surface_size, [-1.0, 0.0, 32.0, 24.0]);
+    assert_eq!(draw.scissor.extent.width, 32);
+    assert_eq!(draw.scissor.extent.height, 24);
 }

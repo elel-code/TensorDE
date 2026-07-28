@@ -10,8 +10,8 @@ use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use super::{
     globals::compositor::{get_parent, is_sync_subsurface},
     state::{
-        PopupKind, RuntimeState, destroy_surface_state, on_commit_surface_handler,
-        xdg_size_constraints,
+        PopupKind, RuntimeState, apply_cursor_surface_delta, destroy_surface_state,
+        on_commit_surface_handler, xdg_size_constraints,
     },
 };
 
@@ -39,6 +39,9 @@ impl RuntimeState {
         let _ = on_commit_surface_handler(surface);
         #[cfg(feature = "tty")]
         self.upload_shm_buffers(shm_uploads);
+        apply_cursor_surface_delta(surface);
+        #[cfg(feature = "tty")]
+        let cursor_commit = self.cursor.uses_surface(surface);
         let fifo_activated = self
             .protocol_globals
             .surface_timing
@@ -144,6 +147,10 @@ impl RuntimeState {
             if !reflowed {
                 self.request_redraw_workspace();
             }
+        }
+        #[cfg(feature = "tty")]
+        if cursor_commit {
+            self.request_redraw_all();
         }
         #[cfg(feature = "tty")]
         if input_popup_commit {
