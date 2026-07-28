@@ -1,8 +1,8 @@
 //! Internal scene semantic entity handles.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
 
 use super::super::abi::SceneObjectHandle;
 

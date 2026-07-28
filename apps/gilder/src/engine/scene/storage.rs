@@ -1,12 +1,12 @@
 //! Scene storage for the new engine binary.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `references/godot/servers/rendering/storage/*`
-//! - `references/godot/servers/rendering/rendering_server_default.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `references/gilder/godot/servers/rendering/storage/*`
+//! - `references/gilder/godot/servers/rendering/rendering_server_default.*`
 
 use std::fmt;
 use std::io::Read;

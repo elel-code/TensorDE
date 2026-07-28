@@ -1,9 +1,9 @@
 //! Wallpaper Engine project ingest into scene IR.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/scene-pkg-format.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/scene-pkg-format.md`
 
 mod animation_layer;
 mod asset_source;

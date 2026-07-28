@@ -1,14 +1,14 @@
 //! New Gilder scene engine binary reader/writer.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/project-format.md`
-//! - `reverse-engineered/docs/scene-pkg-format.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
-//! - `references/godot/servers/rendering/storage/*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/project-format.md`
+//! - `reverse-engineered/gilder/docs/scene-pkg-format.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
+//! - `references/gilder/godot/servers/rendering/storage/*`
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

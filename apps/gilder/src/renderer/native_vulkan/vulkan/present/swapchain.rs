@@ -422,7 +422,7 @@ fn with_vulkanalia_surface_swapchain(
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
         present_backend: "vulkanalia-wayland-surface-swapchain",
-        ffmpeg_reference: "references/ffmpeg/libavutil/vulkan.c",
+        ffmpeg_reference: "references/gilder/ffmpeg/libavutil/vulkan.c",
     })
 }
 

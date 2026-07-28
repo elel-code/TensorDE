@@ -1,10 +1,10 @@
 //! Effect-instance material specialization during WE ingest.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
 
 use std::collections::BTreeMap;
 

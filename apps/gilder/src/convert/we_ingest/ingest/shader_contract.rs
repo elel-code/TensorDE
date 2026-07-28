@@ -1,9 +1,9 @@
 //! Shader descriptor requirements derived during WE ingest.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/shader-conventions.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/shader-conventions.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
 
 use std::collections::BTreeSet;
 

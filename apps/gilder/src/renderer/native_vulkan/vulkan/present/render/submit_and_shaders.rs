@@ -9,7 +9,7 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
     decode_waits: &[VulkanaliaDecodedImagePresentDecodeWait],
 ) -> Result<(), String> {
     // Wait for the swapchain image at color output. FFmpeg mirrors AVVkFrame
-    // semaphore values as frame dependencies (references/ffmpeg/libavcodec/
+    // semaphore values as frame dependencies (references/gilder/ffmpeg/libavcodec/
     // vulkan_decode.c:575-586); the decode submit signals at video-decode
     // completion, while this present submit waits before any graphics command
     // mutates the decoded image layout.

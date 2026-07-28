@@ -1,9 +1,9 @@
 //! Generic Vulkan sampled image allocation and staging upload helpers.
 //!
 //! References:
-//! - `references/godot/servers/rendering/rendering_device.h`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
-//! - `references/godot/servers/rendering/storage/texture_storage.h`
+//! - `references/gilder/godot/servers/rendering/rendering_device.h`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+//! - `references/gilder/godot/servers/rendering/storage/texture_storage.h`
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;

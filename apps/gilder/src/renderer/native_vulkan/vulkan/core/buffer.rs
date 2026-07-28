@@ -1,9 +1,9 @@
 //! Generic Vulkan buffer allocation helpers for scene resource residency.
 //!
 //! References:
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
-//! - `references/godot/servers/rendering/rendering_device.h`
-//! - `references/godot/servers/rendering/storage/`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+//! - `references/gilder/godot/servers/rendering/rendering_device.h`
+//! - `references/gilder/godot/servers/rendering/storage/`
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;

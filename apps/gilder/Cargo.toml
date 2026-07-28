@@ -6,6 +6,9 @@ license = "MPL-2.0"
 repository = "https://github.com/elel-code/Gilder"
 homepage = "https://github.com/elel-code/Gilder"
 build = "build.rs"
+exclude = [
+    ".claude/**",
+]
 
 [features]
 default = []

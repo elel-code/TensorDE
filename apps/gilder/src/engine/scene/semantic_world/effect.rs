@@ -1,9 +1,9 @@
 //! Semantic ECS-like effect state for object-bound WE effects.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
 
 use super::super::abi::*;
 use super::entity::SemanticEntity;

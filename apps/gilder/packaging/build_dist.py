@@ -4,8 +4,8 @@
 # ///
 """Build a Gilder distribution tarball without shell scripts.
 
-Invoke with:
-  uv run python packaging/build_dist.py
+Invoke from the workspace root with:
+  uv run python apps/gilder/packaging/build_dist.py
 """
 
 from __future__ import annotations
@@ -22,25 +22,34 @@ from pathlib import Path
 
 BINARIES = ["gilderd", "gilderctl", "gilder-convert", "gilder-native-vulkan"]
 PYTHON_HELPERS = [
-    "scripts/ffmpeg_vulkan_hwdecode_matrix.py",
-    "scripts/performance_snapshot.py",
-    "scripts/wallpaper_engine_workshop_download.py",
+    "ffmpeg_vulkan_hwdecode_matrix.py",
+    "performance_snapshot.py",
+    "wallpaper_engine_workshop_download.py",
 ]
 
 
 def main() -> int:
     args = parse_args()
-    repo_root = Path(__file__).resolve().parents[1]
-    os.chdir(repo_root)
+    package_root = Path(__file__).resolve().parents[1]
+    workspace_root = package_root.parents[1]
+    os.chdir(workspace_root)
 
     cargo_profile_args, target_profile_dir = cargo_profile(args.profile)
     if args.build:
         subprocess.run(
-            ["cargo", "build", *cargo_profile_args, "--features", args.features],
+            [
+                "cargo",
+                "build",
+                "-p",
+                "gilder",
+                *cargo_profile_args,
+                "--features",
+                args.features,
+            ],
             check=True,
         )
 
-    version = cargo_version(Path("Cargo.toml"))
+    version = cargo_version(package_root / "Cargo.toml")
     system = platform.system().lower()
     arch = platform.machine()
     package_name = f"gilder-{version}-{system}-{arch}"
@@ -66,19 +75,28 @@ def main() -> int:
             raise SystemExit(f"missing built binary: {source}")
         install(source, stage_dir / "bin" / binary, executable=True)
 
-    copy_glob("docs/man/*.1", stage_dir / "share/man/man1")
-    copy_glob("completions/bash/*", stage_dir / "share/bash-completion/completions")
-    copy_glob("completions/zsh/*", stage_dir / "share/zsh/site-functions")
-    install(Path("packaging/systemd/gilder.service"), stage_dir / "lib/systemd/user/gilder.service")
+    copy_glob(
+        package_root,
+        "completions/bash/*",
+        stage_dir / "share/bash-completion/completions",
+    )
+    copy_glob(
+        package_root,
+        "completions/zsh/*",
+        stage_dir / "share/zsh/site-functions",
+    )
+    install(
+        package_root / "packaging/systemd/gilder.service",
+        stage_dir / "lib/systemd/user/gilder.service",
+    )
     for doc in [
-        "README.zh-CN.md",
-        "docs/packaging.md",
-        "docs/gilder-scene-engine-architecture.md",
-        "docs/native-vulkan-video-ffmpeg-mainline.md",
+        package_root / "README.zh-CN.md",
+        workspace_root / "docs/gilder/gilder-scene-engine-architecture.md",
     ]:
-        install(Path(doc), stage_dir / "share/doc/gilder" / Path(doc).name)
+        install(doc, stage_dir / "share/doc/gilder" / doc.name)
     for helper in PYTHON_HELPERS:
-        install(Path(helper), stage_dir / "share/doc/gilder/scripts" / Path(helper).name)
+        source = workspace_root / "scripts/gilder" / helper
+        install(source, stage_dir / "share/doc/gilder/scripts" / source.name)
 
     manifest = stage_dir / "MANIFEST.txt"
     manifest.write_text(
@@ -140,8 +158,8 @@ def install(source: Path, dest: Path, executable: bool = False) -> None:
         dest.chmod(0o755)
 
 
-def copy_glob(pattern: str, dest_dir: Path) -> None:
-    for path in sorted(Path().glob(pattern)):
+def copy_glob(root: Path, pattern: str, dest_dir: Path) -> None:
+    for path in sorted(root.glob(pattern)):
         if path.is_file():
             install(path, dest_dir / path.name)
 

@@ -1,11 +1,11 @@
 //! Backend-independent scene engine boundary.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/project-format.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `references/godot/servers/rendering/rendering_server_default.*`
-//! - `references/godot/servers/rendering/storage/*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/project-format.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `references/gilder/godot/servers/rendering/rendering_server_default.*`
+//! - `references/gilder/godot/servers/rendering/storage/*`
 
 pub mod abi;
 pub mod binary;

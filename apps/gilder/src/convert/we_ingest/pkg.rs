@@ -1,9 +1,9 @@
 //! Wallpaper Engine `scene.pkg` reader.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-pkg-format.md`
-//! - `reverse-engineered/tools/unpack_pkg.py`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-pkg-format.md`
+//! - `reverse-engineered/gilder/tools/unpack_pkg.py`
 
 use std::collections::BTreeMap;
 use std::fmt;

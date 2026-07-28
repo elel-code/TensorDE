@@ -1,10 +1,10 @@
 //! GPU image creation for material textures lowered into `.gscene`.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/texture-and-format.md`
-//! - `references/godot/servers/rendering/storage/texture_storage.h`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/texture-and-format.md`
+//! - `references/gilder/godot/servers/rendering/storage/texture_storage.h`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
 use std::collections::BTreeSet;
 

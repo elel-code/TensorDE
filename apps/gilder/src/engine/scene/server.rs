@@ -1,12 +1,12 @@
 //! RenderingServer boundary for the new scene engine.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/scene-and-object.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `references/godot/servers/rendering/rendering_server_default.*`
-//! - `references/godot/servers/rendering/renderer_scene_render.*`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/scene-and-object.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `references/gilder/godot/servers/rendering/rendering_server_default.*`
+//! - `references/gilder/godot/servers/rendering/renderer_scene_render.*`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 use serde::{Deserialize, Serialize};
 

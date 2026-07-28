@@ -1,8 +1,8 @@
 //! Optional GPU timestamp measurement for the Vulkan scene frame.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;

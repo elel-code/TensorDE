@@ -1,8 +1,8 @@
 //! Wallpaper Engine particle definition ingest and particle render-graph lowering.
 //!
 //! References:
-//! - `reverse-engineered/docs/exe/particle-system.md`
-//! - `reverse-engineered/docs/particle-format.md`
+//! - `reverse-engineered/gilder/docs/exe/particle-system.md`
+//! - `reverse-engineered/gilder/docs/particle-format.md`
 
 use super::*;
 use crate::core::SceneBlendMode;

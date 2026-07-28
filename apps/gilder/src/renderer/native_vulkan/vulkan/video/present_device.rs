@@ -46,7 +46,7 @@ use super::video_surface_host::{
     NativeVulkanVideoSurfaceHost, NativeVulkanVideoSurfaceHostSnapshot,
 };
 
-const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_decode.c";
+const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/gilder/ffmpeg/libavcodec/vulkan_decode.c";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
@@ -601,7 +601,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     );
     // FFmpeg's Vulkan hwcontext keeps the queue count for each selected family
     // and locks individual queue indices, not the whole queue family
-    // (references/ffmpeg/libavutil/hwcontext_vulkan.c:1580-1665,2005-2035).
+    // (references/gilder/ffmpeg/libavutil/hwcontext_vulkan.c:1580-1665,2005-2035).
     // Request two queues when decode and present share a family and the driver
     // exposes them, so FIFO present cannot serialize decode submits through one
     // host-side VkQueue lock.

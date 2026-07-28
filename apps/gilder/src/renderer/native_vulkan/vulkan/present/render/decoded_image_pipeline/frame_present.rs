@@ -329,7 +329,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
     // FFmpeg/libplacebo unmaps the AVFrame immediately after the rendered
     // frame is submitted/swapped, not after the next FIFO pacing wait
-    // (references/ffmpeg/fftools/ffplay_renderer.c:780-786).
+    // (references/gilder/ffmpeg/fftools/ffplay_renderer.c:780-786).
     let after_render_submit_before_present_result =
         if let Some(after_render_submit_before_present) =
             after_render_submit_before_present.as_deref_mut()

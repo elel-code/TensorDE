@@ -443,7 +443,7 @@ fn swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
 
 fn choose_composite_alpha(flags: vk::CompositeAlphaFlagsKHR) -> vk::CompositeAlphaFlagsKHR {
     // WE's DirectComposition handoff uses DXGI_ALPHA_MODE_PREMULTIPLIED.
-    // Reference: reverse-engineered/docs/exe/d3d11-context-calls.md.
+    // Reference: reverse-engineered/gilder/docs/exe/d3d11-context-calls.md.
     [
         vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
         vk::CompositeAlphaFlagsKHR::OPAQUE,

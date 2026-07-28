@@ -1,9 +1,9 @@
 //! Semantic ECS-like components for scene runtime state.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/exe/scene-and-object.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/exe/scene-and-object.md`
 
 use super::super::abi::*;
 

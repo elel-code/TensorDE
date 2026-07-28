@@ -1,11 +1,11 @@
 //! Wallpaper Engine `.tex` parsing and GPU upload lowering.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/tex-format.md`
-//! - `reverse-engineered/docs/exe/texture-and-format.md`
-//! - `reverse-engineered/tools/parse_tex.py`
-//! - `reverse-engineered/tools/audit_texb_legacy_payloads.py`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/tex-format.md`
+//! - `reverse-engineered/gilder/docs/exe/texture-and-format.md`
+//! - `reverse-engineered/gilder/tools/parse_tex.py`
+//! - `reverse-engineered/gilder/tools/audit_texb_legacy_payloads.py`
 
 use std::fmt;
 

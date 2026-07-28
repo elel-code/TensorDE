@@ -1,7 +1,7 @@
 //! Dynamic-rendering local-read command metadata and synchronization.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
 //! - Vulkan 1.4 `VK_KHR_dynamic_rendering_local_read` / roadmap-2026 revision 11
 //! - Vulkan 1.4 valid usage VUIDs 09512..09525
 //!

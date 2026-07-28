@@ -1,9 +1,9 @@
 //! Built-in scene shader catalog.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/shader-conventions.md`
-//! - `reverse-engineered/shaders/**`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/shader-conventions.md`
+//! - `reverse-engineered/gilder/shaders/**`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

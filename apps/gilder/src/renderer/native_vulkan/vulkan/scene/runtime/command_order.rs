@@ -1,8 +1,8 @@
 //! Scene Vulkan runtime command order labels used by smoke snapshots.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 pub(in crate::renderer::native_vulkan) fn scene_command_order(
     no_sampled_slots: bool,

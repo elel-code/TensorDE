@@ -1,10 +1,10 @@
 //! Scene Vulkan pipeline selection for mesh and fullscreen effect draws.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `references/godot/servers/rendering/renderer_rd/pipeline_hash_map_rd.h`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `references/gilder/godot/servers/rendering/renderer_rd/pipeline_hash_map_rd.h`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};

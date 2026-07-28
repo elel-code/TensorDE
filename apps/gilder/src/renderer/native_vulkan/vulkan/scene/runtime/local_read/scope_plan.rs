@@ -1,8 +1,8 @@
 //! Typed planning for a retained dynamic-rendering local-read scope.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
 //! - Vulkan 1.4 `VK_KHR_dynamic_rendering_local_read`
 //!
 //! A typed input attachment is executable only when its producer is the

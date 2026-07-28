@@ -4,9 +4,9 @@
 //! workshop `scene.pkg` files reference them without embedding their payloads.
 //!
 //! References:
-//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `reverse-engineered/docs/javascript-api.md`
+//! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/gilder/docs/javascript-api.md`
 
 use crate::convert::we_ingest::ir::WeIrUtilityLayerKind;
 

@@ -1,0 +1,16 @@
+[package]
+name = "desktop-shell"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Native GPU-first desktop environment shell"
+
+[dependencies]
+thiserror = "2"
+vulkan-renderer = { path = "../../crates/vulkan-renderer" }
+wayland-client-runtime = { path = "../../crates/wayland-client-runtime", features = ["compio"] }
+
+[lints]
+workspace = true

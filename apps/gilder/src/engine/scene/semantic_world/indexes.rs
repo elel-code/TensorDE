@@ -1,8 +1,8 @@
 //! Lookup indexes for the scene semantic world.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
 
 use std::collections::BTreeMap;
 

@@ -1,10 +1,10 @@
 //! Packed resolved semantic frame produced before RenderingServer planning.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/exe/scene-and-object.md`
-//! - `reverse-engineered/docs/exe/model-and-animation.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/exe/scene-and-object.md`
+//! - `reverse-engineered/gilder/docs/exe/model-and-animation.md`
 
 use super::super::abi::*;
 use super::super::event::{SceneMediaClockState, SceneVideoState};

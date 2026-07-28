@@ -1,10 +1,21 @@
 /target/
+__pycache__/
+*.py[cod]
+/artifacts/
+/docs/gilder/
+/references/
+/reverse-engineered/gilder/
 .agents/
-.codex/
-# Local source references (Dolphin, KIO, cosmic-files) live here.
-/reference/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/tensorde-workspace/
+!.codex/skills/tensorde-workspace/**
+!.codex/skills/gilder-scene-engine/
+!.codex/skills/gilder-scene-engine/**
 REFACTOR_REPLACEMENTS.md
 STEP4_PLAN.md
 .codewhale/
 .deepseek/state/
-artifacts/deepin-file-manager/
+apps/fika/artifacts/deepin-file-manager/
+artifacts/gilder/

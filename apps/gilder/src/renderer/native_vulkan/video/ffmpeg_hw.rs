@@ -18,12 +18,12 @@ use vulkanalia::vk::{self, Handle};
 
 use super::codec::NativeVulkanVideoSessionCodec;
 
-const FFMPEG_HWCONTEXT_REFERENCE: &str = "references/ffmpeg/libavutil/hwcontext.h";
-const FFMPEG_VULKAN_HWCONTEXT_REFERENCE: &str = "references/ffmpeg/libavutil/hwcontext_vulkan.h";
-const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_decode.c";
-const FFMPEG_VULKAN_H264_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_h264.c";
-const FFMPEG_VULKAN_H265_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_hevc.c";
-const FFMPEG_VULKAN_AV1_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_av1.c";
+const FFMPEG_HWCONTEXT_REFERENCE: &str = "references/gilder/ffmpeg/libavutil/hwcontext.h";
+const FFMPEG_VULKAN_HWCONTEXT_REFERENCE: &str = "references/gilder/ffmpeg/libavutil/hwcontext_vulkan.h";
+const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/gilder/ffmpeg/libavcodec/vulkan_decode.c";
+const FFMPEG_VULKAN_H264_REFERENCE: &str = "references/gilder/ffmpeg/libavcodec/vulkan_h264.c";
+const FFMPEG_VULKAN_H265_REFERENCE: &str = "references/gilder/ffmpeg/libavcodec/vulkan_hevc.c";
+const FFMPEG_VULKAN_AV1_REFERENCE: &str = "references/gilder/ffmpeg/libavcodec/vulkan_av1.c";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

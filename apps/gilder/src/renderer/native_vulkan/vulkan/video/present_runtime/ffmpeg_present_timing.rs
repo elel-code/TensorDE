@@ -615,7 +615,7 @@ impl NativeVulkanVulkanaliaPresentFrameTimer {
         {
             // FFmpeg's video_refresh() advances frame_timer by the nominal
             // delay, then only resynchronizes on large lateness
-            // (references/ffmpeg/fftools/ffplay.c:1665-1683).
+            // (references/gilder/ffmpeg/fftools/ffplay.c:1665-1683).
             self.frame_timer = Some(after_wait);
         }
         self.last_pts_ns = pts_ns;
@@ -787,7 +787,7 @@ pub(super) fn native_vulkan_vulkanalia_ffmpeg_decode_async_exec_depth(video_queu
     let queue_context_count = video_queue_count.max(1);
     let thread_count = FFMPEG_SINGLE_DECODE_THREAD_COUNT.max(1);
     // Exact FFmpeg Vulkan decode async-depth formula for this runtime's single
-    // decode worker thread (references/ffmpeg/libavcodec/vulkan_decode.c:1368-1378).
+    // decode worker thread (references/gilder/ffmpeg/libavcodec/vulkan_decode.c:1368-1378).
     queue_context_count
         .saturating_mul(2)
         .min(thread_count.saturating_mul(2))

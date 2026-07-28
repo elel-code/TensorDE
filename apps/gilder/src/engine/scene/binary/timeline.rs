@@ -1,10 +1,10 @@
 //! Timeline chunk codec for scene binary records.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/mdl-format.md`
-//! - `reverse-engineered/docs/exe/model-and-animation.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/mdl-format.md`
+//! - `reverse-engineered/gilder/docs/exe/model-and-animation.md`
 
 use super::SceneBinaryError;
 use crate::engine::scene::abi::{

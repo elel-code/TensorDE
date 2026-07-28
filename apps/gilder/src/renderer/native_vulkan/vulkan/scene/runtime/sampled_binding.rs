@@ -1,9 +1,9 @@
 //! Per-draw sampled-image lowering for scene descriptor heaps.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 use crate::engine::scene::{
     SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,

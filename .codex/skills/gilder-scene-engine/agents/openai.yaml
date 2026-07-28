@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gilder Scene Engine"
+  short_description: "Validate authored Vulkan 2026 scene semantics"
+  default_prompt: "Use $gilder-scene-engine to evolve a Gilder scene-engine change with authored command-stream correctness and release performance evidence."

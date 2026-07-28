@@ -1,0 +1,4 @@
+interface:
+  display_name: "TensorDE Workspace"
+  short_description: "Evolve the GPU-first TensorDE workspace safely"
+  default_prompt: "Use $tensorde-workspace to evolve and validate a shared TensorDE capability."

@@ -1,14 +1,14 @@
 //! New scene engine ABI records.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/project-format.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `reverse-engineered/docs/tex-format.md`
-//! - `reverse-engineered/docs/mdl-format.md`
-//! - `references/godot/servers/rendering/rendering_server_default.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/project-format.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `reverse-engineered/gilder/docs/tex-format.md`
+//! - `reverse-engineered/gilder/docs/mdl-format.md`
+//! - `references/gilder/godot/servers/rendering/rendering_server_default.*`
 
 use serde::{Deserialize, Serialize};
 

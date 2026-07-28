@@ -1,11 +1,11 @@
 //! Vulkanalia scene mesh present runtime.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
-//! - `reverse-engineered/docs/shader-conventions.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
+//! - `reverse-engineered/gilder/docs/shader-conventions.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 use std::thread;
 use std::time::{Duration, Instant};

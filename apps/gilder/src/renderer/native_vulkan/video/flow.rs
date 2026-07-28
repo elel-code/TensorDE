@@ -67,10 +67,10 @@ pub struct NativeVulkanVideoFlowContract {
 
 pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
     NativeVulkanVideoFlowContract {
-        first_reference_root: "references/ffmpeg",
-        canonical_player_reference: "references/ffmpeg/fftools/ffplay.c",
-        canonical_demux_reference: "references/ffmpeg/fftools/ffmpeg_demux.c",
-        canonical_decode_reference: "references/ffmpeg/fftools/ffmpeg_dec.c",
+        first_reference_root: "references/gilder/ffmpeg",
+        canonical_player_reference: "references/gilder/ffmpeg/fftools/ffplay.c",
+        canonical_demux_reference: "references/gilder/ffmpeg/fftools/ffmpeg_demux.c",
+        canonical_decode_reference: "references/gilder/ffmpeg/fftools/ffmpeg_dec.c",
         queues: vec![
             NativeVulkanVideoFlowQueueContract {
                 kind: NativeVulkanVideoFlowQueueKind::PacketQueue,
@@ -169,7 +169,7 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
             },
         ],
         invariants: &[
-            "FFmpeg under references/ffmpeg is the first source for queue, serial, clock and refresh semantics",
+            "FFmpeg under references/gilder/ffmpeg is the first source for queue, serial, clock and refresh semantics",
             "FFmpeg owns demux/parser/packet send and Vulkan hw decode; Gilder owns descriptor heap/render/present",
             "PacketQueue semantics apply to compressed packets; FrameQueue semantics apply to AVVkFrame decoded images and keep-last refresh",
             "every cross-thread video/audio handoff carries a serial or is explicitly proven not to cross loop/seek state",
@@ -187,7 +187,7 @@ mod tests {
     fn flow_contract_uses_local_ffmpeg_as_first_reference() {
         let contract = native_vulkan_video_flow_contract();
 
-        assert_eq!(contract.first_reference_root, "references/ffmpeg");
+        assert_eq!(contract.first_reference_root, "references/gilder/ffmpeg");
         assert!(contract.canonical_player_reference.ends_with("ffplay.c"));
         assert!(
             contract
@@ -203,7 +203,7 @@ mod tests {
             contract
                 .invariants
                 .iter()
-                .any(|invariant| invariant.contains("references/ffmpeg"))
+                .any(|invariant| invariant.contains("references/gilder/ffmpeg"))
         );
     }
 

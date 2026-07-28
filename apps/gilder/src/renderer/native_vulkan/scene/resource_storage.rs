@@ -1,11 +1,11 @@
 //! Native Vulkan scene resource storage planning.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `references/godot/servers/rendering/storage/*`
-//! - `references/godot/servers/rendering/rendering_device.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `references/gilder/godot/servers/rendering/storage/*`
+//! - `references/gilder/godot/servers/rendering/rendering_device.*`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 use serde::Serialize;

@@ -1,10 +1,10 @@
 //! Vulkan scene effect target images for dynamic-rendering graph passes.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};

@@ -1,10 +1,10 @@
 //! RenderingDevice graph plan for scene storage.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
-//! - `references/godot/servers/rendering/renderer_scene_render.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
+//! - `references/gilder/godot/servers/rendering/renderer_scene_render.*`
 
 use serde::{Deserialize, Serialize};
 

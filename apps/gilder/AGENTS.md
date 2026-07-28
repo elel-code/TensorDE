@@ -36,9 +36,9 @@ These instructions apply to the entire repository.
 - Follow Godot-style ownership boundaries without copying compatibility
   behavior. Keep renderer handles out of semantic ECS and Vulkan decisions out
   of the binary/IR layers.
-- Keep Rust files at or below 1000 lines, use semantic same-name file/directory
+- Keep Rust files at or below 800 lines, use semantic same-name file/directory
   modules, and do not add `mod.rs` or mechanical `__split` files. Run
-  `uv run python scripts/scene_engine_constraints.py` after structural changes.
+  `uv run python scripts/gilder/scene_engine_constraints.py` after structural changes.
 
 ## Scene regression selection
 
@@ -105,7 +105,7 @@ repository policy.
 
 - Inspect both staged and unstaged diffs before editing. Preserve unrelated user
   changes, especially files reported as `MM`.
-- Keep `reverse-engineered/` on disk but ignored by Git. Do not force-add it.
+- Keep `reverse-engineered/gilder/` on disk but ignored by Git. Do not force-add it.
 - Store generated `.gscene`, command traces, plans, and performance reports under
   `/tmp` or ignored artifact directories; do not commit them.
 - Run focused tests while iterating, then `cargo fmt --all`, relevant full tests,

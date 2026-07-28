@@ -401,7 +401,7 @@ fn with_vulkanalia_clear_present(
         uses_synchronization2: true,
         uses_submit2: true,
         present_backend: "vulkanalia-clear-present-runtime",
-        ffmpeg_reference: "references/ffmpeg/libavutil/vulkan.c",
+        ffmpeg_reference: "references/gilder/ffmpeg/libavutil/vulkan.c",
     })
 }
 

@@ -1,11 +1,11 @@
 //! ECS-like semantic world for scene runtime semantics.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/scene-format.md`
-//! - `reverse-engineered/docs/exe/scene-and-object.md`
-//! - `reverse-engineered/docs/exe/model-and-animation.md`
-//! - `references/godot/servers/rendering/storage/*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/scene-format.md`
+//! - `reverse-engineered/gilder/docs/exe/scene-and-object.md`
+//! - `reverse-engineered/gilder/docs/exe/model-and-animation.md`
+//! - `references/gilder/godot/servers/rendering/storage/*`
 pub mod components;
 mod dynamic_property;
 pub mod effect;

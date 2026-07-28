@@ -78,13 +78,13 @@ use super::video_surface_host::{
 };
 
 const FFMPEG_VULKAN_DECODE_REFERENCE: &str =
-    "references/ffmpeg/libavcodec/vulkan_decode.c";
+    "references/gilder/ffmpeg/libavcodec/vulkan_decode.c";
 const FFMPEG_VULKAN_HWDECODE_FRAME_QUEUE_SIZE_DEFAULT: usize = 1;
 const FFMPEG_VULKAN_HWDECODE_FRAME_QUEUE_SIZE_ENV: &str =
     "GILDER_FFMPEG_VULKAN_HWDECODE_FRAME_QUEUE_SIZE";
 const FFMPEG_SINGLE_DECODE_THREAD_COUNT: u32 = 1;
 const FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE: &str =
-    "references/ffmpeg/fftools/ffplay.c:125-179,2205-2210";
+    "references/gilder/ffmpeg/fftools/ffplay.c:125-179,2205-2210";
 const FFMPEG_AV_SYNC_THRESHOLD_MAX: Duration = Duration::from_millis(100);
 const DECODED_IMAGE_PRESENT_SLOW_FRAME_THRESHOLD_MICROS: u64 = 6_250;
 const DECODED_IMAGE_PRESENT_SLOW_FRAME_TELEMETRY_LIMIT: usize = 0;

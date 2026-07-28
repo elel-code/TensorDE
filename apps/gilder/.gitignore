@@ -3,14 +3,11 @@
 /artifacts/video-real-source-matrix/
 /artifacts/tools/
 /artifacts/vulkanalia-smoke/
-/artifacts/wallpaper-engine-workshop/
+/artifacts/gilder/wallpaper-engine-workshop/
 **/*.rs.bk
 *.gwp
 *.gwp.tmp
 .DS_Store
-/references/*
-artifacts/
-/docs/
-/reverse-engineered/
+/.claude/
 **/__pycache__/
 *.py[cod]

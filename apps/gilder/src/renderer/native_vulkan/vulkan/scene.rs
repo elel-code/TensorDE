@@ -1,11 +1,11 @@
 //! Vulkanalia scene runtime entrypoint.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
 mod runtime;
 

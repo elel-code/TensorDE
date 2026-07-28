@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-max_lines="${RUST_FILE_MAX_LINES:-1000}"
+max_lines="${RUST_FILE_MAX_LINES:-800}"
 
 if [[ ! "$max_lines" =~ ^[1-9][0-9]*$ ]]; then
     echo "fail: RUST_FILE_MAX_LINES must be a positive integer, got: $max_lines" >&2
@@ -27,6 +27,10 @@ done < <(
     find "$repo_root" \
         -path "$repo_root/.git" -prune -o \
         -path "$repo_root/target" -prune -o \
+        -path "$repo_root/artifacts" -prune -o \
+        -path "$repo_root/docs/gilder" -prune -o \
+        -path "$repo_root/references" -prune -o \
+        -path "$repo_root/reverse-engineered" -prune -o \
         -type f -name '*.rs' -print0
 )
 

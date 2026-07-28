@@ -1,10 +1,10 @@
 //! Wallpaper Engine MDLV mesh parser for cold-path scene IR ingest.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/mdl-format.md`
-//! - `reverse-engineered/docs/exe/model-and-animation.md`
-//! - `reverse-engineered/shaders/**`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/mdl-format.md`
+//! - `reverse-engineered/gilder/docs/exe/model-and-animation.md`
+//! - `reverse-engineered/gilder/shaders/**`
 
 use std::fmt;
 

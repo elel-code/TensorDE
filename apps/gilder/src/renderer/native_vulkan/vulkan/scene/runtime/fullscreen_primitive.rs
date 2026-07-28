@@ -1,9 +1,9 @@
 //! Fullscreen utility primitive payloads for scene effect passes.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
-//! - `reverse-engineered/docs/effect-format.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
 
 use crate::engine::scene::SceneRenderingDeviceGraphPlan;
 

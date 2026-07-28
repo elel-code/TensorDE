@@ -25,7 +25,7 @@ use super::policy::NativeVulkanAudioOutputMode;
 pub(in crate::renderer::native_vulkan) const NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS: usize = 3;
 
 const FFMPEG_AUDIO_CLOCK_REFERENCE: &str =
-    "references/ffmpeg/fftools/ffplay.c:114-123,1375-1483,1629-1740";
+    "references/gilder/ffmpeg/fftools/ffplay.c:114-123,1375-1483,1629-1740";
 const AUDIO_CLOCK_QUEUE_POLICY: &str = "FFmpeg-style PacketQueue serial metadata; clock-only packets are consumed as timestamp metadata and AVPacket payloads are unref'd immediately";
 const AUDIO_CLOCK_MODEL: &str = "muted clock-only audio master: packet PTS/duration advances a serial-scoped audio clock; serial changes invalidate stale samples across loop/seek";
 const NATIVE_VULKAN_AUDIO_SIGNAL_SCALE: f32 = 1_000_000.0;

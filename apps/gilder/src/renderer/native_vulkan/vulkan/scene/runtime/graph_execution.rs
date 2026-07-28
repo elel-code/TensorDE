@@ -4,8 +4,8 @@
 //! targets are reused by the next graph.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
