@@ -146,36 +146,23 @@ impl RuntimeState {
             collect_surface_tree(&popup, base, SurfaceLayer::Popup, &mut commits);
         }
 
-        let input_popup_base = self
-            .protocol_globals
+        self.protocol_globals
             .input_method
-            .active_popup_context()
-            .and_then(|(focused, rectangle)| {
-                let focused_offset = commits
-                    .iter()
-                    .find(|(surface, _)| *surface == focused.id())?
-                    .1
-                    .local_offset;
-                Some((
-                    focused_offset.0.saturating_add(rectangle.loc.x),
-                    focused_offset
-                        .1
-                        .saturating_add(rectangle.loc.y)
-                        .saturating_add(rectangle.size.h),
-                ))
-            });
-        if let Some(base) = input_popup_base {
-            self.protocol_globals
-                .input_method
-                .for_each_visible_popup(|popup| {
+            .for_each_visible_popup(|popup| {
+                let Some((popup_root, base)) =
+                    self.input_method_popup_tree_context(popup.wl_surface())
+                else {
+                    return;
+                };
+                if popup_root.id() == root.id() {
                     collect_surface_tree(
                         popup.wl_surface(),
-                        base,
+                        (base.x, base.y),
                         SurfaceLayer::Popup,
                         &mut commits,
                     );
-                });
-        }
+                }
+            });
 
         let Some(update) = self.surface_buffers.update_view_tree(&root.id(), commits) else {
             warn!(
