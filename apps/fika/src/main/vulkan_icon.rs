@@ -20,8 +20,16 @@ use crate::{
 
 use super::vulkan_icon_spirv;
 
+#[path = "vulkan_icon/bitmap.rs"]
+mod bitmap;
 #[path = "vulkan_icon/pipeline.rs"]
 mod pipeline;
+#[path = "vulkan_icon/svg.rs"]
+mod svg;
+use bitmap::{
+    DecodedBitmap, SCALE_BLIT, SCALE_SAMPLE, SCALE_SOURCE, SCALE_SOURCE_UPLOAD, SCALE_TARGET,
+    SCALE_TARGET_CLEAR, compile_scale_graph, decode_bitmap, fit_bitmap_blit,
+};
 use pipeline::create_pipeline;
 
 const IMAGE_PUSH_OFFSET: u32 = 0;
@@ -32,19 +40,6 @@ const INITIAL_VERTEX_CAPACITY: u64 = std::mem::size_of::<IconVertex>() as u64 * 
 const ICON_IMAGE: ResourceId = ResourceId(1);
 const ICON_UPLOAD: PassId = PassId(1);
 const ICON_SAMPLE: PassId = PassId(2);
-const SCALE_SOURCE: ResourceId = ResourceId(2);
-const SCALE_TARGET: ResourceId = ResourceId(3);
-const SCALE_SOURCE_UPLOAD: PassId = PassId(10);
-const SCALE_TARGET_CLEAR: PassId = PassId(11);
-const SCALE_BLIT: PassId = PassId(12);
-const SCALE_SAMPLE: PassId = PassId(13);
-
-struct DecodedBitmap {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
-
 struct VulkanIconTexture {
     _image: Image,
     view: ImageView,
@@ -71,6 +66,7 @@ pub(crate) struct VulkanIconRenderer {
     sampler: SamplerBinding,
     upload_graph: CompiledGraph,
     scale_graph: CompiledGraph,
+    svg: svg::SvgIconRasterizer,
     textures: HashMap<IconGpuUploadKey, VulkanIconTexture>,
     unsupported_sources: HashMap<IconGpuUploadKey, (u64, u32, u32)>,
     frame_slot_keys: Vec<IconGpuUploadKey>,
@@ -125,14 +121,16 @@ impl VulkanIconRenderer {
             },
         )
         .map_err(|error| format!("create Vulkan icon vertex buffer: {error}"))?;
+        let queue_family = device.device_info().queues.graphics;
         Ok(Self {
             pipeline: create_pipeline(device, pipeline_cache, format)?,
             vertices,
             resource_heap,
             sampler_heap,
             sampler,
-            upload_graph: compile_upload_graph(device.device_info().queues.graphics)?,
-            scale_graph: compile_scale_graph(device.device_info().queues.graphics)?,
+            upload_graph: compile_upload_graph(queue_family)?,
+            scale_graph: compile_scale_graph(queue_family)?,
+            svg: svg::SvgIconRasterizer::new(device, pipeline_cache, queue_family)?,
             textures: HashMap::new(),
             unsupported_sources: HashMap::new(),
             frame_slot_keys: Vec::new(),
@@ -210,13 +208,25 @@ impl VulkanIconRenderer {
             {
                 continue;
             }
-            let Some(bitmap) = decode_bitmap(slot) else {
+            let texture = if svg::is_svg_source(slot) {
+                self.svg.create_texture(
+                    &self.resource_heap,
+                    allocator,
+                    uploads,
+                    slot,
+                    self.gpu_frame,
+                )?
+            } else {
+                decode_bitmap(slot)
+                    .map(|bitmap| self.create_texture(allocator, uploads, slot, &bitmap))
+                    .transpose()?
+            };
+            let Some(texture) = texture else {
                 self.unsupported_sources
                     .insert(key, (slot.content_hash, slot.width, slot.height));
                 continue;
             };
             self.unsupported_sources.remove(&key);
-            let texture = self.create_texture(allocator, uploads, slot, &bitmap)?;
             if let Some(previous) = self.textures.insert(key, texture) {
                 self.retire_texture(previous, last_submission)?;
             }
@@ -528,27 +538,6 @@ impl VulkanIconRenderer {
     }
 }
 
-fn decode_bitmap(slot: &IconGpuSlot) -> Option<DecodedBitmap> {
-    let IconGpuSource::File { path, .. } = slot.source.as_ref()? else {
-        return None;
-    };
-    if is_svg_path(path) {
-        return None;
-    }
-    match LoadedIconSource::load(path)? {
-        LoadedIconSource::Bitmap {
-            width,
-            height,
-            pixels,
-        } => Some(DecodedBitmap {
-            width,
-            height,
-            pixels,
-        }),
-        LoadedIconSource::Svg { .. } => None,
-    }
-}
-
 fn create_rgba_image(
     allocator: &MemoryAllocator,
     label: &str,
@@ -600,39 +589,6 @@ fn upload_rgba_pixels(
             .map_err(|error| format!("upload Vulkan RGBA image: {error}"))?;
     }
     Ok(())
-}
-
-fn fit_bitmap_blit(source: vk::Extent3D, target: vk::Extent3D) -> ImageBlit {
-    let scale = (target.width as f64 / source.width as f64)
-        .min(target.height as f64 / source.height as f64);
-    let width = (source.width as f64 * scale)
-        .round()
-        .clamp(1.0, target.width as f64) as i32;
-    let height = (source.height as f64 * scale)
-        .round()
-        .clamp(1.0, target.height as f64) as i32;
-    let x = (target.width as i32 - width) / 2;
-    let y = (target.height as i32 - height) / 2;
-    ImageBlit {
-        source_subresource: color_layers(),
-        source_offsets: [
-            vk::Offset3D::default(),
-            vk::Offset3D {
-                x: source.width as i32,
-                y: source.height as i32,
-                z: 1,
-            },
-        ],
-        destination_subresource: color_layers(),
-        destination_offsets: [
-            vk::Offset3D { x, y, z: 0 },
-            vk::Offset3D {
-                x: x + width,
-                y: y + height,
-                z: 1,
-            },
-        ],
-    }
 }
 
 const fn color_layers() -> vk::ImageSubresourceLayers {
@@ -701,100 +657,4 @@ fn compile_upload_graph(queue_family: u32) -> Result<CompiledGraph, String> {
     graph
         .compile()
         .map_err(|error| format!("compile Vulkan icon upload graph: {error}"))
-}
-
-fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, String> {
-    let mut graph = RenderGraph::default();
-    for resource in [SCALE_SOURCE, SCALE_TARGET] {
-        graph.set_initial_state(
-            resource,
-            ResourceKind::Image,
-            ResourceState::image(
-                vk::PipelineStageFlags2::NONE,
-                vk::AccessFlags2::NONE,
-                vk::ImageLayout::UNDEFINED,
-                queue_family,
-            ),
-        );
-    }
-    graph.add_pass(RenderPass {
-        id: SCALE_SOURCE_UPLOAD,
-        label: "fika-vulkan-icon-scale-source-upload".into(),
-        depends_on: Vec::new(),
-        resources: vec![ResourceUse {
-            resource: SCALE_SOURCE,
-            kind: ResourceKind::Image,
-            access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COPY,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
-        }],
-    });
-    graph.add_pass(RenderPass {
-        id: SCALE_TARGET_CLEAR,
-        label: "fika-vulkan-icon-scale-target-clear".into(),
-        depends_on: Vec::new(),
-        resources: vec![ResourceUse {
-            resource: SCALE_TARGET,
-            kind: ResourceKind::Image,
-            access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::CLEAR,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
-        }],
-    });
-    graph.add_pass(RenderPass {
-        id: SCALE_BLIT,
-        label: "fika-vulkan-icon-scale-blit".into(),
-        depends_on: vec![SCALE_SOURCE_UPLOAD, SCALE_TARGET_CLEAR],
-        resources: vec![
-            ResourceUse {
-                resource: SCALE_SOURCE,
-                kind: ResourceKind::Image,
-                access: AccessKind::Read,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::BLIT,
-                    vk::AccessFlags2::TRANSFER_READ,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                    queue_family,
-                ),
-            },
-            ResourceUse {
-                resource: SCALE_TARGET,
-                kind: ResourceKind::Image,
-                access: AccessKind::Write,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::BLIT,
-                    vk::AccessFlags2::TRANSFER_WRITE,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    queue_family,
-                ),
-            },
-        ],
-    });
-    graph.add_pass(RenderPass {
-        id: SCALE_SAMPLE,
-        label: "fika-vulkan-icon-scale-sample".into(),
-        depends_on: vec![SCALE_BLIT],
-        resources: vec![ResourceUse {
-            resource: SCALE_TARGET,
-            kind: ResourceKind::Image,
-            access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
-        }],
-    });
-    graph
-        .compile()
-        .map_err(|error| format!("compile Vulkan icon scale graph: {error}"))
 }
