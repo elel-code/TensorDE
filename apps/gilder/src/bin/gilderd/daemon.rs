@@ -139,7 +139,7 @@ fn accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
     }
 }
 
-fn prepare_socket_parent(socket: &PathBuf) -> Result<(), String> {
+fn prepare_socket_parent(socket: &Path) -> Result<(), String> {
     let parent = socket
         .parent()
         .ok_or_else(|| format!("invalid socket path {}", socket.display()))?;

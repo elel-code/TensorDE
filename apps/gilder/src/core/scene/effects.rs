@@ -522,6 +522,10 @@ fn push_native_text_glow_snapshot_layers(
     }
 }
 
+// These decimal offsets are part of the historical scene-document contract;
+// preserving their authored precision is more important than substituting a
+// mathematically exact library constant.
+#[allow(clippy::approx_constant)]
 const NATIVE_TEXT_GLOW_OFFSETS: [[f64; 2]; 8] = [
     [-1.0, 0.0],
     [1.0, 0.0],

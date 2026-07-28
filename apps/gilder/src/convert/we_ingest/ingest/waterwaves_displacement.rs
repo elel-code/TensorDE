@@ -32,6 +32,8 @@ struct WaterWavesStageMaterial {
     masked: bool,
 }
 
+// Keep every authored chain decision explicit at this cold lowering boundary.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn create_waterwaves_displacement_materials(
     builder: &mut WeIrBuilder,
     authored_texture_space: bool,

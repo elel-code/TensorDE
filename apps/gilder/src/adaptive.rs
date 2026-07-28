@@ -14,21 +14,11 @@ const SYS_CLASS_POWER_SUPPLY: &str = "/sys/class/power_supply";
 const SYS_CLASS_DRM: &str = "/sys/class/drm";
 const ENV_ADAPTIVE_STATE: &str = "GILDER_ADAPTIVE_STATE";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AdaptiveMonitor {
     last_refresh: Option<Instant>,
     active_until: Option<Instant>,
     retained_triggers: Vec<AdaptiveTrigger>,
-}
-
-impl Default for AdaptiveMonitor {
-    fn default() -> Self {
-        Self {
-            last_refresh: None,
-            active_until: None,
-            retained_triggers: Vec::new(),
-        }
-    }
 }
 
 impl AdaptiveMonitor {
@@ -267,8 +257,7 @@ fn validation_sample_override(
                 config
                     .adaptive
                     .battery_capacity_threshold_percent
-                    .max(1)
-                    .min(100),
+                    .clamp(1, 100),
             );
         }
         "all" => {
@@ -292,8 +281,7 @@ fn validation_sample_override(
                 config
                     .adaptive
                     .battery_capacity_threshold_percent
-                    .max(1)
-                    .min(100),
+                    .clamp(1, 100),
             );
         }
         _ => {
@@ -310,7 +298,7 @@ fn pressure_override_value(threshold_percent: u32) -> u32 {
 }
 
 fn percent_override_value(threshold_percent: u32) -> u32 {
-    threshold_percent.max(1).min(100)
+    threshold_percent.clamp(1, 100)
 }
 
 fn temperature_override_millicelsius(threshold_celsius: u32) -> i32 {
@@ -513,10 +501,10 @@ fn read_power_supply_sample(root: impl AsRef<Path>) -> io::Result<AdaptiveSystem
                 .as_str()
             {
                 "discharging" => sample.power_battery_discharging = Some(true),
-                "charging" | "full" | "not charging" => {
-                    if sample.power_battery_discharging != Some(true) {
-                        sample.power_battery_discharging = Some(false);
-                    }
+                "charging" | "full" | "not charging"
+                    if sample.power_battery_discharging != Some(true) =>
+                {
+                    sample.power_battery_discharging = Some(false);
                 }
                 _ => {}
             }
@@ -530,11 +518,10 @@ fn read_power_supply_sample(root: impl AsRef<Path>) -> io::Result<AdaptiveSystem
         } else if is_external_supply(&supply_type) {
             match read_bool(path.join("online")) {
                 Some(true) => sample.power_external_online = Some(true),
-                Some(false) => {
-                    if sample.power_external_online != Some(true) {
-                        sample.power_external_online = Some(false);
-                    }
+                Some(false) if sample.power_external_online != Some(true) => {
+                    sample.power_external_online = Some(false);
                 }
+                Some(false) => {}
                 None => {}
             }
         }
@@ -543,9 +530,8 @@ fn read_power_supply_sample(root: impl AsRef<Path>) -> io::Result<AdaptiveSystem
     if sample.power_system_battery_present.is_none() {
         sample.power_system_battery_present = Some(false);
     }
-    if battery_capacity_count > 0 {
-        sample.power_battery_capacity_percent =
-            Some((battery_capacity_sum / battery_capacity_count) as u32);
+    if let Some(capacity) = battery_capacity_sum.checked_div(battery_capacity_count) {
+        sample.power_battery_capacity_percent = Some(capacity as u32);
     }
     Ok(sample)
 }

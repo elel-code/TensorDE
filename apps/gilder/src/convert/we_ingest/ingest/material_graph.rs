@@ -400,6 +400,9 @@ impl WeIrBuilder {
         }
     }
 
+    // This cold-path lowering boundary carries the complete authored object,
+    // effect, blend, and puppet contract explicitly.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn add_render_graph_for_object(
         &mut self,
         object: u32,
@@ -451,20 +454,20 @@ impl WeIrBuilder {
         let framebuffer_snapshot_available =
             utility_layer.is_some_and(|layer| layer.samples_scene_color());
         let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
-        let waterwaves_displacement = (!preserve_authored_effect_target_boundary)
-            .then(|| {
-                waterwaves_displacement::create_waterwaves_displacement_materials(
-                    self,
-                    effects_in_authored_texture_space,
-                    base_material_handle as usize,
-                    final_scene_blend,
-                    object_is_puppet,
-                    static_black_output,
-                    puppet_group_visual_required,
-                    &effect_passes,
-                )
-            })
-            .unwrap_or_default();
+        let waterwaves_displacement = if preserve_authored_effect_target_boundary {
+            Default::default()
+        } else {
+            waterwaves_displacement::create_waterwaves_displacement_materials(
+                self,
+                effects_in_authored_texture_space,
+                base_material_handle as usize,
+                final_scene_blend,
+                object_is_puppet,
+                static_black_output,
+                puppet_group_visual_required,
+                &effect_passes,
+            )
+        };
         let foliage_ripple = (!preserve_authored_effect_target_boundary
             && !puppet_group_visual_required)
             .then(|| {

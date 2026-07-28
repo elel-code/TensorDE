@@ -706,7 +706,7 @@ fn wallpaper_package_fingerprints(context: &DaemonContext) -> Vec<PackageInputFi
 
     paths
         .into_iter()
-        .map(|path| PackageInputFingerprint::new(path))
+        .map(PackageInputFingerprint::new)
         .collect()
 }
 

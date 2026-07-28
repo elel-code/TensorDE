@@ -23,15 +23,15 @@ pub(super) fn ingest_object_transform_tracks(
         let Some(binding) = value.get(property_name).and_then(Value::as_object) else {
             continue;
         };
-        if let Some(animation) = binding.get("animation") {
-            if !append_keyframed_track(object, property, animation, tracks, channels, keyframes) {
-                unsupported.push(unsupported_property(
-                    object,
-                    property_name,
-                    "malformed-keyframed-transform-animation",
-                    "object-transform-animation-skipped",
-                ));
-            }
+        if let Some(animation) = binding.get("animation")
+            && !append_keyframed_track(object, property, animation, tracks, channels, keyframes)
+        {
+            unsupported.push(unsupported_property(
+                object,
+                property_name,
+                "malformed-keyframed-transform-animation",
+                "object-transform-animation-skipped",
+            ));
         }
     }
 }

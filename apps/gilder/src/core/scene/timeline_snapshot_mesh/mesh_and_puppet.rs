@@ -14,6 +14,13 @@ pub struct SceneMesh {
     pub puppet_clipping_active_sources: Vec<SceneMeshPuppetClippingActiveSource>,
 }
 
+type SampledPuppetPose<'a> = (
+    &'a SceneMeshSkin,
+    Vec<ScenePuppetTransform>,
+    Vec<[f64; 16]>,
+    Vec<[f64; 16]>,
+);
+
 impl SceneMesh {
     fn validate(&self, node_id: &str) -> Result<(), SceneError> {
         if self.vertices.len() < 3 {
@@ -21,7 +28,7 @@ impl SceneMesh {
                 "scene node {node_id:?} mesh must contain at least 3 vertices"
             )));
         }
-        if self.indices.len() < 3 || self.indices.len() % 3 != 0 {
+        if self.indices.len() < 3 || !self.indices.len().is_multiple_of(3) {
             return Err(SceneError::invalid(format!(
                 "scene node {node_id:?} mesh indices must contain complete triangles"
             )));
@@ -356,12 +363,7 @@ impl SceneMesh {
         clips: &[ScenePuppetAnimationClip],
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
-    ) -> Option<(
-        &SceneMeshSkin,
-        Vec<ScenePuppetTransform>,
-        Vec<[f64; 16]>,
-        Vec<[f64; 16]>,
-    )> {
+    ) -> Option<SampledPuppetPose<'_>> {
         let (skin, local_pose) =
             self.sample_puppet_local_pose_with_clips(clips, layers, time_ms)?;
         let bind_world = scene_puppet_world_matrices(

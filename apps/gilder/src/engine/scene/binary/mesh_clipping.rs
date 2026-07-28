@@ -69,17 +69,14 @@ pub(super) fn encode(
     Ok(())
 }
 
-pub(super) fn decode(
-    decoder: &mut Decoder<'_>,
-) -> Result<
-    (
-        Vec<SceneMeshSourceRecord>,
-        Vec<SceneMeshClippingSubdrawRecord>,
-        Vec<u32>,
-        Vec<SceneMeshClippingSliceRecord>,
-    ),
-    SceneBinaryError,
-> {
+type DecodedMeshClipping = (
+    Vec<SceneMeshSourceRecord>,
+    Vec<SceneMeshClippingSubdrawRecord>,
+    Vec<u32>,
+    Vec<SceneMeshClippingSliceRecord>,
+);
+
+pub(super) fn decode(decoder: &mut Decoder<'_>) -> Result<DecodedMeshClipping, SceneBinaryError> {
     let source_record_count = decoder.u32()? as usize;
     let mut source_records = Vec::with_capacity(source_record_count);
     for _ in 0..source_record_count {

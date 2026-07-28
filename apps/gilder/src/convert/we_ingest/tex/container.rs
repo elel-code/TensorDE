@@ -105,7 +105,7 @@ fn parse_texb0004<'a>(
         }
         levels.push(parse_texb0004_level(cursor, width, height)?);
     }
-    let sampler_seed = payload_format | u32::from(level_count < 2) * 0x8;
+    let sampler_seed = payload_format | (u32::from(level_count < 2) * 0x8);
     Ok((levels, sampler_seed))
 }
 

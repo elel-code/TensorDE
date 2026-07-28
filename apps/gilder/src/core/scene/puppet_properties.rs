@@ -502,20 +502,12 @@ fn scene_texture_region_from_properties(
     let atlas_height = scene_property_u32(spritesheet, "atlas_height")?;
     let frame_width = scene_property_u32(spritesheet, "frame_width")?;
     let frame_height = scene_property_u32(spritesheet, "frame_height")?;
-    let columns = scene_property_u32(spritesheet, "columns").unwrap_or_else(|| {
-        if frame_width == 0 {
-            0
-        } else {
-            atlas_width / frame_width
-        }
-    });
-    let rows = scene_property_u32(spritesheet, "rows").unwrap_or_else(|| {
-        if frame_height == 0 {
-            0
-        } else {
-            atlas_height / frame_height
-        }
-    });
+    let columns = scene_property_u32(spritesheet, "columns")
+        .or_else(|| atlas_width.checked_div(frame_width))
+        .unwrap_or(0);
+    let rows = scene_property_u32(spritesheet, "rows")
+        .or_else(|| atlas_height.checked_div(frame_height))
+        .unwrap_or(0);
     let frame_count = scene_property_u32(spritesheet, "frame_count")
         .unwrap_or_else(|| columns.saturating_mul(rows));
     if atlas_width == 0

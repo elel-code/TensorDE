@@ -26,6 +26,9 @@ pub(super) struct SceneTimelineRecords {
     pub object_transform_keyframes: Vec<SceneObjectTransformKeyframeRecord>,
 }
 
+// Timeline chunks intentionally expose each typed table instead of hiding
+// ordering behind a compatibility container.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_timelines(
     animation_layers: &[SceneObjectAnimationLayerRecord],
     puppet_clips: &[ScenePuppetAnimationClipRecord],

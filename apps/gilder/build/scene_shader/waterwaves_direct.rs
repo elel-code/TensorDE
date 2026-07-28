@@ -1,6 +1,6 @@
 //! Direct typed evaluation of a complete authored WaterWaves chain.
 //!
-//! Authored sampling reference: `reverse-engineered/shaders/effects/waterwaves.frag`.
+//! Authored sampling reference: `reverse-engineered/gilder/shaders/effects/waterwaves.frag`.
 
 pub(crate) fn waterwaves_direct_sources(
     puppet_skinning: bool,
@@ -85,9 +85,11 @@ fn waterwaves_direct_fragment(
             })
             .collect::<String>()
     };
-    let premultiply = premultiply_output
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or_default();
+    let premultiply = if premultiply_output {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     let stage_count_declaration = stage_count.map_or_else(
         || "    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 9);\n".to_owned(),
         |count| format!("    int stage_count = {count};\n"),
@@ -121,9 +123,11 @@ fn waterwaves_direct_fragment(
             }
         },
         |count| {
-            let declaration = track_effect_displacement
-                .then_some("    bool any_displacement = false;\n")
-                .unwrap_or_default();
+            let declaration = if track_effect_displacement {
+                "    bool any_displacement = false;\n"
+            } else {
+                ""
+            };
             let stages = (0..count)
                 .rev()
                 .map(|stage| {

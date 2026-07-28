@@ -604,6 +604,8 @@ pub fn wallpaper_plan(
     )
 }
 
+// Cold plan construction carries all policy inputs explicitly.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn wallpaper_plan_with_target(
     output_name: impl Into<String>,
     package: &WallpaperPackage,
@@ -636,6 +638,7 @@ pub(super) fn wallpaper_plan_with_target(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn wallpaper_entry_plan_with_target(
     output_name: &str,
     package: &WallpaperPackage,
@@ -779,6 +782,7 @@ pub(super) fn wallpaper_entry_plan_with_target(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn scene_wallpaper_plan(
     output_name: String,
     package: &WallpaperPackage,

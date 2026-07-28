@@ -101,10 +101,10 @@ mod tests {
         let rows = texture_alpha_coverage_rows(&upload);
         let center_row = 3 * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE / 8;
         let center_column = 4 * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE / 8;
-        for row in center_row - SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS
-            ..=center_row + SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS
-        {
-            assert_ne!(rows[row] & (1 << center_column), 0);
+        let guarded_rows = &rows[center_row - SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS
+            ..=center_row + SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS];
+        for coverage in guarded_rows {
+            assert_ne!(coverage & (1 << center_column), 0);
         }
     }
 

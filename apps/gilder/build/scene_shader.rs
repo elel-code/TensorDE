@@ -67,9 +67,11 @@ pub(super) fn generic_image_multiply_fragment_source() -> String {
 }
 
 fn generic_image_fragment(premultiply: bool) -> String {
-    let premultiply = premultiply
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or("");
+    let premultiply = if premultiply {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     [
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
@@ -202,9 +204,11 @@ pub(super) fn image_effect_modulate_composite_sources() -> (String, String) {
 
 fn image_effect_composite_sources_with_premultiply(premultiply: bool) -> (String, String) {
     let vertex = super::scene_mesh_vertex_source();
-    let premultiply = premultiply
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or_default();
+    let premultiply = if premultiply {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     let fragment = [
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
@@ -355,9 +359,11 @@ pub(super) fn image_foliage_ripple_screen_composite_sources(
 }
 
 fn foliage_ripple_fragment_source(premultiply_output: bool, foliage_power_two: bool) -> String {
-    let premultiply = premultiply_output
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or_default();
+    let premultiply = if premultiply_output {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     let shaped_sine = if foliage_power_two {
         r#"vec4 shapedSine(vec4 phase, float power) {
     vec4 wave = sin(phase);
@@ -482,9 +488,11 @@ pub(super) fn image_ripple_flow_multiply_composite_sources() -> (String, String)
 
 fn image_ripple_flow_composite_sources_with_premultiply(premultiply: bool) -> (String, String) {
     let vertex = image_ripple_flow_composite_vertex_source();
-    let premultiply = premultiply
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or("");
+    let premultiply = if premultiply {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     let fragment = [
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
@@ -595,9 +603,11 @@ pub(super) fn puppet_waterwaves_composite_sources() -> (String, String) {
 }
 
 fn image_waterwaves_composite_fragment(premultiply: bool) -> String {
-    let premultiply = premultiply
-        .then_some("    color.rgb *= color.a;\n")
-        .unwrap_or("");
+    let premultiply = if premultiply {
+        "    color.rgb *= color.a;\n"
+    } else {
+        ""
+    };
     [
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;

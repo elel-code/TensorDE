@@ -91,6 +91,8 @@ pub struct SceneParticleSystemRecord {
 }
 
 impl SceneParticleSystemRecord {
+    // The constructor mirrors the compact particle ABI fields one-for-one.
+    #[allow(clippy::too_many_arguments)]
     pub const fn unsupported(
         object: SceneObjectHandle,
         resource: SceneResourceId,

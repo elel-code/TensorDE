@@ -401,16 +401,13 @@ pub(super) fn encode_puppets(
     Ok(out)
 }
 
-pub(super) fn decode_puppets(
-    data: &[u8],
-) -> Result<
-    (
-        Vec<ScenePuppetRecord>,
-        Vec<ScenePuppetBoneRecord>,
-        Vec<ScenePuppetAttachmentRecord>,
-    ),
-    SceneBinaryError,
-> {
+type DecodedPuppets = (
+    Vec<ScenePuppetRecord>,
+    Vec<ScenePuppetBoneRecord>,
+    Vec<ScenePuppetAttachmentRecord>,
+);
+
+pub(super) fn decode_puppets(data: &[u8]) -> Result<DecodedPuppets, SceneBinaryError> {
     let mut decoder = Decoder::new(data);
     let puppet_count = decoder.u32()? as usize;
     let mut puppets = Vec::with_capacity(puppet_count);

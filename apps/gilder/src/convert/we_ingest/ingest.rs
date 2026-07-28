@@ -838,6 +838,8 @@ impl WeIrBuilder {
             .collect()
     }
 
+    // The MDL ingest boundary mirrors the typed puppet record fields.
+    #[allow(clippy::too_many_arguments)]
     fn add_mdl_puppet(
         &mut self,
         object: u32,

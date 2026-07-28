@@ -636,21 +636,21 @@ impl PropertySpec {
                         message: "range requires finite min < max".to_owned(),
                     });
                 }
-                if let Some(step) = step {
-                    if !step.is_finite() || *step <= 0.0 {
-                        return Err(ManifestError::InvalidProperty {
-                            name: name.to_owned(),
-                            message: "range step must be finite and greater than 0".to_owned(),
-                        });
-                    }
+                if let Some(step) = step
+                    && (!step.is_finite() || *step <= 0.0)
+                {
+                    return Err(ManifestError::InvalidProperty {
+                        name: name.to_owned(),
+                        message: "range step must be finite and greater than 0".to_owned(),
+                    });
                 }
-                if let Some(default) = default {
-                    if !default.is_finite() || default < min || default > max {
-                        return Err(ManifestError::InvalidProperty {
-                            name: name.to_owned(),
-                            message: "range default must be inside min/max".to_owned(),
-                        });
-                    }
+                if let Some(default) = default
+                    && (!default.is_finite() || default < min || default > max)
+                {
+                    return Err(ManifestError::InvalidProperty {
+                        name: name.to_owned(),
+                        message: "range default must be inside min/max".to_owned(),
+                    });
                 }
             }
             Self::Choice { choices, default } => {
@@ -660,13 +660,13 @@ impl PropertySpec {
                         message: "choice requires at least one value".to_owned(),
                     });
                 }
-                if let Some(default) = default {
-                    if !choices.contains(default) {
-                        return Err(ManifestError::InvalidProperty {
-                            name: name.to_owned(),
-                            message: "choice default must be present in choices".to_owned(),
-                        });
-                    }
+                if let Some(default) = default
+                    && !choices.contains(default)
+                {
+                    return Err(ManifestError::InvalidProperty {
+                        name: name.to_owned(),
+                        message: "choice default must be present in choices".to_owned(),
+                    });
                 }
             }
             Self::Number { default } => {

@@ -99,20 +99,18 @@ impl RenderGraph {
             if let Some((before_pass_id, previous_access, previous_usage)) = last_use_by_resource
                 .get(&resource_use.resource_key)
                 .copied()
+                && resource_use.pass_id != before_pass_id
+                && resource_use.access.conflicts_after(previous_access)
             {
-                if resource_use.pass_id != before_pass_id
-                    && resource_use.access.conflicts_after(previous_access)
-                {
-                    barriers.push(RenderGraphBarrier {
-                        resource_key: resource_use.resource_key.clone(),
-                        before_pass_id,
-                        after_pass_id: resource_use.pass_id,
-                        previous_access,
-                        next_access: resource_use.access,
-                        previous_usage,
-                        next_usage: resource_use.usage,
-                    });
-                }
+                barriers.push(RenderGraphBarrier {
+                    resource_key: resource_use.resource_key.clone(),
+                    before_pass_id,
+                    after_pass_id: resource_use.pass_id,
+                    previous_access,
+                    next_access: resource_use.access,
+                    previous_usage,
+                    next_usage: resource_use.usage,
+                });
             }
             last_use_by_resource.insert(
                 resource_use.resource_key,

@@ -469,6 +469,8 @@ impl<'a> SceneSemanticWorld<'a> {
         Ok(())
     }
 
+    // Recursive resolution keeps every mutable traversal table explicit.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_entity(
         &self,
         entity_index: usize,
@@ -598,6 +600,7 @@ impl<'a> SceneSemanticWorld<'a> {
         Ok(state)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_parented_transform(
         &self,
         object: &SceneObjectRecord,

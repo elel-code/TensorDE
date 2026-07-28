@@ -58,7 +58,7 @@ fn material_static_rgb(constants: &[WeIrMaterialConstant], name: &str) -> Option
     }
     let cleaned = raw.trim_matches(|c| c == '"' || c == '[' || c == ']');
     let mut parts = cleaned
-        .split(|c: char| c == ' ' || c == ',' || c == '\t')
+        .split([' ', ',', '\t'])
         .filter(|part| !part.is_empty());
     let r = parts.next()?.parse::<f32>().ok()?;
     let g = parts.next()?.parse::<f32>().ok()?;

@@ -313,11 +313,13 @@ pub(super) fn rasterize_text_layer(
         bound_string(object.get("horizontalalign")).as_deref(),
     );
     let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
-    let outline_radius = outline_enabled
-        .then(|| value_f32(object.get("outlinethickness")).unwrap_or(1.0))
-        .unwrap_or(0.0)
-        .round()
-        .clamp(0.0, 16.0) as f32;
+    let outline_radius = if outline_enabled {
+        value_f32(object.get("outlinethickness")).unwrap_or(1.0)
+    } else {
+        0.0
+    }
+    .round()
+    .clamp(0.0, 16.0);
     let (padding_x, padding_y) = retained_text_padding(object.get("padding"));
     let (width, height, origin) =
         if let Some((min_x, min_y, max_x, max_y)) = glyph_ink_bounds(&font, &glyphs, scale) {

@@ -84,23 +84,6 @@ fn flow_composite_shader(scene_blend: SceneBlendMode) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aggregate_flow_material_matches_the_typed_multiply_shader() {
-        assert_eq!(
-            flow_composite_shader(SceneBlendMode::Multiply),
-            RIPPLE_FLOW_MULTIPLY_COMPOSITE_SHADER
-        );
-        assert_eq!(
-            flow_composite_shader(SceneBlendMode::Alpha),
-            RIPPLE_FLOW_COMPOSITE_SHADER
-        );
-    }
-}
-
 fn push_material(
     builder: &mut WeIrBuilder,
     resource: u32,
@@ -196,4 +179,21 @@ fn prefixed_constants(
             value_json: constant.value_json.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_flow_material_matches_the_typed_multiply_shader() {
+        assert_eq!(
+            flow_composite_shader(SceneBlendMode::Multiply),
+            RIPPLE_FLOW_MULTIPLY_COMPOSITE_SHADER
+        );
+        assert_eq!(
+            flow_composite_shader(SceneBlendMode::Alpha),
+            RIPPLE_FLOW_COMPOSITE_SHADER
+        );
+    }
 }

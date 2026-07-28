@@ -384,7 +384,7 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
     let byte_len = fs::metadata(&spirv_path)
         .expect("stat build-time scene shader SPIR-V")
         .len();
-    if byte_len < 4 || byte_len % 4 != 0 {
+    if byte_len < 4 || !byte_len.is_multiple_of(4) {
         panic!(
             "built-in scene shader {key} {stage} SPIR-V length {} is invalid",
             byte_len

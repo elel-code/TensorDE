@@ -451,6 +451,8 @@ fn parse_mdla_animations_from(
     Ok(clips)
 }
 
+type MdlaOpacityTracks = (usize, Vec<(u32, Vec<f32>)>);
+
 fn parse_mdla_opacity_tracks(
     bytes: &[u8],
     offset: usize,
@@ -458,7 +460,7 @@ fn parse_mdla_opacity_tracks(
     bone_count: u32,
     sample_count: u32,
     remaining_clip_count: u32,
-) -> Option<(usize, Vec<(u32, Vec<f32>)>)> {
+) -> Option<MdlaOpacityTracks> {
     let track_bytes = usize::try_from(sample_count).ok()?.checked_mul(4)?;
     let block_bytes = track_bytes.checked_add(8)?;
     let total_bytes = usize::try_from(bone_count).ok()?.checked_mul(block_bytes)?;

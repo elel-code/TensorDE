@@ -529,16 +529,13 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         if node.target == RenderTargetRole::SceneColor && !is_final_effect_scene_composite {
             node.state.pipeline_blend = final_pipeline_blend;
         }
-        if node.effect_visibility.policy
+        let missing_passthrough_source = node.effect_visibility.policy
             == super::pass::RenderPassEffectVisibilityPolicy::Passthrough
             && !node
                 .bindings
                 .iter()
-                .any(|binding| texture_binding_uses_slot(binding, 0))
-        {
-            node.bindings
-                .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
-        } else if node.bindings.is_empty() {
+                .any(|binding| texture_binding_uses_slot(binding, 0));
+        if missing_passthrough_source || node.bindings.is_empty() {
             node.bindings
                 .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
         }

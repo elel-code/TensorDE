@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GilderConfig {
     #[serde(default)]
     pub default_wallpaper: Option<String>,
@@ -22,20 +22,6 @@ pub struct GilderConfig {
     pub performance: PerformanceConfig,
     #[serde(default)]
     pub adapters: AdapterConfig,
-}
-
-impl Default for GilderConfig {
-    fn default() -> Self {
-        Self {
-            default_wallpaper: None,
-            outputs: BTreeMap::new(),
-            adaptive: AdaptiveConfig::default(),
-            video: VideoConfig::default(),
-            cache: CacheConfig::default(),
-            performance: PerformanceConfig::default(),
-            adapters: AdapterConfig::default(),
-        }
-    }
 }
 
 impl GilderConfig {
@@ -252,48 +238,33 @@ pub struct OutputPerformanceConfig {
     pub battery: Option<PowerPolicy>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThrottlePolicy {
     Continue,
     Throttle,
+    #[default]
     Pause,
     PauseDynamic,
 }
 
-impl Default for ThrottlePolicy {
-    fn default() -> Self {
-        Self::Pause
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DynamicPausePolicy {
     Continue,
+    #[default]
     Pause,
     PauseDynamic,
 }
 
-impl Default for DynamicPausePolicy {
-    fn default() -> Self {
-        Self::Pause
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PowerPolicy {
     Continue,
+    #[default]
     Throttle,
     Pause,
     PauseDynamic,
-}
-
-impl Default for PowerPolicy {
-    fn default() -> Self {
-        Self::Throttle
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

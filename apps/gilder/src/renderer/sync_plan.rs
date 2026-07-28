@@ -294,6 +294,8 @@ impl SceneWallpaperPlan {
     }
 }
 
+// Keeping the cold-path plan inline avoids an allocation in every output plan.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum WallpaperRenderPlan {
@@ -541,6 +543,7 @@ pub fn static_render_sync_plan_with_performance(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn static_render_sync_plan_inner(
     performance_config: &PerformanceConfig,
     video_decoder_policy: VideoDecoderPolicy,

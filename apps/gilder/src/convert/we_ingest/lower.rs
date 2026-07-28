@@ -217,8 +217,8 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
                 WeIrObjectTransformProperty::Angles => SceneObjectTransformProperty::Angles,
                 WeIrObjectTransformProperty::Scale => SceneObjectTransformProperty::Scale,
             },
-            flags: u32::from(track.relative) * SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE
-                | u32::from(track.wrap_loop) * SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP,
+            flags: (u32::from(track.relative) * SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE)
+                | (u32::from(track.wrap_loop) * SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP),
             playback: strings.optional_id(&track.playback),
             fps: track.fps,
             frame_count: track.frame_count,
@@ -254,10 +254,12 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             value: keyframe.value,
             back: keyframe.back,
             front: keyframe.front,
-            flags: u32::from(keyframe.back_enabled) * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED
-                | u32::from(keyframe.front_enabled) * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED
-                | u32::from(keyframe.back_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_MAGIC
-                | u32::from(keyframe.front_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_MAGIC,
+            flags: (u32::from(keyframe.back_enabled)
+                * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED)
+                | (u32::from(keyframe.front_enabled)
+                    * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED)
+                | (u32::from(keyframe.back_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_MAGIC)
+                | (u32::from(keyframe.front_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_MAGIC),
         })
         .collect();
     let puppet_animation_clips = ir
@@ -671,18 +673,17 @@ fn push_image_target(
     }
 }
 
+type LoweredRenderGraphs = (
+    Vec<SceneRenderGraphRecord>,
+    Vec<SceneRenderPassRecord>,
+    Vec<SceneRenderBindingRecord>,
+    Vec<SceneUnsupportedRecord>,
+);
+
 fn lower_render_graphs(
     ir: &WeSceneIr,
     strings: &mut StringInterner,
-) -> Result<
-    (
-        Vec<SceneRenderGraphRecord>,
-        Vec<SceneRenderPassRecord>,
-        Vec<SceneRenderBindingRecord>,
-        Vec<SceneUnsupportedRecord>,
-    ),
-    WeLowerError,
-> {
+) -> Result<LoweredRenderGraphs, WeLowerError> {
     let mut graphs = Vec::new();
     let mut passes = Vec::new();
     let mut bindings = Vec::new();

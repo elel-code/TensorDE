@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(bc7.mips.len(), 1);
         assert_eq!(bc7.mips[0].width, 8);
         assert_eq!(bc7.mips[0].height, 4);
-        assert_eq!(bc7.mips[0].payload_len, 16 * 2 * 1);
+        assert_eq!(bc7.mips[0].payload_len, 16 * 2);
         assert_eq!(bc7.payload.len() as u64, bc7.mips[0].payload_len);
 
         let mask = upload(SceneTextureFormat::R8Unorm, 5, 3, 5 * 3);
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(bc4.metadata.storage_height, 4);
         assert_eq!(bc4.mips[0].width, 8);
         assert_eq!(bc4.mips[0].height, 4);
-        assert_eq!(bc4.mips[0].payload_len, 8 * 2 * 1);
+        assert_eq!(bc4.mips[0].payload_len, 8 * 2);
     }
 
     fn upload(format: SceneTextureFormat, width: u32, height: u32, bytes: usize) -> TexUpload {

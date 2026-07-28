@@ -466,9 +466,7 @@ fn pass_utility_primitive(
     pass_object_state: Option<&ResolvedObjectState>,
 ) -> Option<SceneRenderingDeviceDrawPrimitive> {
     if pass.draw_primitive == SceneRenderPassDrawPrimitive::ParticleBillboard {
-        if pass_object_state.is_none() {
-            return None;
-        }
+        pass_object_state?;
         return storage
             .particle_for_object(pass.object)
             .filter(|particle| {
@@ -637,10 +635,10 @@ fn authored_source_extent(storage: &SceneStorage, object: SceneObjectHandle) -> 
         .unwrap_or([0.0; 2])
 }
 
-fn source_texture_for_material<'storage>(
-    storage: &'storage SceneStorage,
+fn source_texture_for_material(
+    storage: &SceneStorage,
     material: SceneMaterialHandle,
-) -> Option<&'storage SceneTextureRecord> {
+) -> Option<&SceneTextureRecord> {
     let material = storage.material(material)?;
     storage
         .material_passes(material)

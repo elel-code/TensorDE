@@ -1,4 +1,6 @@
 impl SceneNode {
+    // Snapshot expansion receives the already-resolved scene context explicitly.
+    #[allow(clippy::too_many_arguments)]
     fn push_particle_snapshot_layers(
         &self,
         time_ms: u64,
@@ -121,6 +123,7 @@ impl SceneNode {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_particle_sampled_image_snapshot_layers(
         &self,
         time_ms: u64,

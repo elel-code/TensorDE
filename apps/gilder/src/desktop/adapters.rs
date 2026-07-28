@@ -18,16 +18,18 @@ pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
         return with_runtime_state(snapshot);
     }
 
-    if config.hyprland && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
-        if let Ok(snapshot) = hyprland::read_snapshot() {
-            return with_runtime_state(snapshot);
-        }
+    if config.hyprland
+        && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && let Ok(snapshot) = hyprland::read_snapshot()
+    {
+        return with_runtime_state(snapshot);
     }
 
-    if config.niri && std::env::var_os("NIRI_SOCKET").is_some() {
-        if let Ok(snapshot) = niri::read_snapshot() {
-            return with_runtime_state(snapshot);
-        }
+    if config.niri
+        && std::env::var_os("NIRI_SOCKET").is_some()
+        && let Ok(snapshot) = niri::read_snapshot()
+    {
+        return with_runtime_state(snapshot);
     }
 
     let mut snapshot = DesktopSnapshot::placeholder();

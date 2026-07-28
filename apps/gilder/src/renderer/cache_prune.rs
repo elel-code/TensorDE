@@ -219,6 +219,7 @@ fn mark_static_image_cache_used(path: &Path) {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     include!("render_plan_tests.rs");
     include!("cache_policy_tests.rs");
