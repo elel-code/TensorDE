@@ -93,7 +93,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for XdgClient {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum XdgViolation {
     BufferBeforeAck,
     InvalidSerial,
@@ -103,37 +103,38 @@ enum XdgViolation {
 
 #[test]
 fn xdg_shell_reports_tensor_owned_wire_errors() {
-    assert_eq!(
-        xdg_protocol_error(XdgViolation::BufferBeforeAck),
-        (
-            "xdg_surface".to_owned(),
-            u32::from(xdg_surface::Error::UnconfiguredBuffer),
-        )
+    assert_xdg_protocol_error(
+        XdgViolation::BufferBeforeAck,
+        u32::from(xdg_surface::Error::UnconfiguredBuffer),
     );
-    assert_eq!(
-        xdg_protocol_error(XdgViolation::InvalidSerial),
-        (
-            "xdg_surface".to_owned(),
-            u32::from(xdg_surface::Error::InvalidSerial),
-        )
+    assert_xdg_protocol_error(
+        XdgViolation::InvalidSerial,
+        u32::from(xdg_surface::Error::InvalidSerial),
     );
-    assert_eq!(
-        xdg_protocol_error(XdgViolation::DefunctRole),
-        (
-            "xdg_surface".to_owned(),
-            u32::from(xdg_surface::Error::DefunctRoleObject),
-        )
+    assert_xdg_protocol_error(
+        XdgViolation::DefunctRole,
+        u32::from(xdg_surface::Error::DefunctRoleObject),
     );
-    assert_eq!(
-        xdg_protocol_error(XdgViolation::IncompletePositioner),
-        (
-            "xdg_wm_base".to_owned(),
-            u32::from(xdg_wm_base::Error::InvalidPositioner),
-        )
+    assert_xdg_protocol_error(
+        XdgViolation::IncompletePositioner,
+        u32::from(xdg_wm_base::Error::InvalidPositioner),
     );
 }
 
-fn xdg_protocol_error(violation: XdgViolation) -> (String, u32) {
+fn assert_xdg_protocol_error(violation: XdgViolation, expected_code: u32) {
+    let (object_id, expected_object_id, code) = xdg_protocol_error(violation);
+    if violation == XdgViolation::DefunctRole {
+        // The destructor removes the proxy from the client object table before
+        // wl_display.error is consumed. wayland-client can therefore expose
+        // either the original wire ID or its invalid-object sentinel.
+        assert!(object_id == expected_object_id || object_id == 0);
+    } else {
+        assert_eq!(object_id, expected_object_id);
+    }
+    assert_eq!(code, expected_code);
+}
+
+fn xdg_protocol_error(violation: XdgViolation) -> (u32, u32, u32) {
     let mut runtime = test_runtime();
     let socket_path = runtime_socket(&runtime);
     let _socket_completions = runtime.prepare_for_test(false).unwrap();
@@ -153,6 +154,10 @@ fn xdg_protocol_error(violation: XdgViolation) -> (String, u32) {
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        let expected_object_id = match violation {
+            XdgViolation::IncompletePositioner => base.id().protocol_id(),
+            _ => xdg_surface.id().protocol_id(),
+        };
 
         match violation {
             XdgViolation::BufferBeforeAck => {
@@ -186,12 +191,12 @@ fn xdg_protocol_error(violation: XdgViolation) -> (String, u32) {
             .protocol_error()
             .expect("expected XDG protocol error");
         result_tx
-            .send((error.object_interface, error.code))
+            .send((error.object_id, expected_object_id, error.code))
             .unwrap();
         drop(toplevel);
     });
 
-    let result = dispatch_until_error(&mut runtime, &result_rx);
+    let result = dispatch_until_result(&mut runtime, &result_rx);
     client.join().unwrap();
     result
 }

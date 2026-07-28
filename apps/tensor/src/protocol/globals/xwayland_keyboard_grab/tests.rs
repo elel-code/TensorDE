@@ -24,6 +24,7 @@ use super::*;
 #[derive(Debug, Default)]
 struct GrabClient {
     focus_events: Vec<(bool, u32)>,
+    focused_surface: Option<u32>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for GrabClient {
@@ -57,10 +58,19 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for GrabClient {
     ) {
         match event {
             wl_keyboard::Event::Enter { surface, .. } => {
-                state.focus_events.push((true, surface.id().protocol_id()));
+                let surface = surface.id().protocol_id();
+                state.focused_surface = Some(surface);
+                state.focus_events.push((true, surface));
             }
             wl_keyboard::Event::Leave { surface, .. } => {
-                state.focus_events.push((false, surface.id().protocol_id()));
+                let observed = surface.id().protocol_id();
+                let surface = if observed == 0 {
+                    state.focused_surface.unwrap_or(observed)
+                } else {
+                    observed
+                };
+                state.focused_surface = None;
+                state.focus_events.push((false, surface));
             }
             _ => {}
         }
