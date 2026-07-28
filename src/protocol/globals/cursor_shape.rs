@@ -36,7 +36,7 @@ pub(in crate::protocol) struct CursorShapeGlobalData;
 pub(in crate::protocol) struct CursorShapeManagerData;
 
 pub(in crate::protocol) enum CursorShapeDeviceData {
-    Pointer(bool),
+    Pointer(Option<ObjectId>),
     Tablet(Option<tensor_event::TabletToolId>),
 }
 
@@ -68,7 +68,11 @@ impl DispatchDelegate<WpCursorShapeManagerV1, RuntimeState> for CursorShapeManag
                 cursor_shape_device,
                 pointer,
             } => {
-                let pointer = state.protocol_globals.seat.owns_pointer(&pointer);
+                let pointer = state
+                    .protocol_globals
+                    .seat
+                    .owns_pointer(&pointer)
+                    .then(|| pointer.id());
                 data_init.init(cursor_shape_device, CursorShapeDeviceData::Pointer(pointer));
             }
             wp_cursor_shape_manager_v1::Request::GetTabletToolV2 {
@@ -117,8 +121,8 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
                     return;
                 };
                 match self {
-                    Self::Pointer(true)
-                        if pointer_may_set_cursor(state, Serial::from(serial), &device.id()) =>
+                    Self::Pointer(Some(pointer))
+                        if pointer_may_set_cursor(state, Serial::from(serial), pointer) =>
                     {
                         set_named_pointer_cursor(state, icon);
                     }
@@ -131,7 +135,7 @@ impl DispatchDelegate<WpCursorShapeDeviceV1, RuntimeState> for CursorShapeDevice
                     {
                         set_named_tablet_cursor(state, *tool, icon);
                     }
-                    Self::Pointer(false) | Self::Pointer(true) | Self::Tablet(_) => {}
+                    Self::Pointer(None) | Self::Pointer(Some(_)) | Self::Tablet(_) => {}
                 }
             }
             wp_cursor_shape_device_v1::Request::SetShape {
@@ -175,11 +179,11 @@ fn set_named_tablet_cursor(
     let _ = (state, tool, icon);
 }
 
-fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, device: &ObjectId) -> bool {
+fn pointer_may_set_cursor(state: &RuntimeState, serial: Serial, pointer: &ObjectId) -> bool {
     state
         .protocol_globals
         .seat
-        .pointer_may_set_cursor(serial, device, false)
+        .pointer_may_set_cursor(serial, pointer, false)
 }
 
 fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {

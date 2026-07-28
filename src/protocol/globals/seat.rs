@@ -168,15 +168,16 @@ impl SeatProtocol {
     pub(crate) fn pointer_may_set_cursor(
         &self,
         serial: Serial,
-        object: &ObjectId,
+        pointer: &ObjectId,
         current_surface: bool,
     ) -> bool {
-        self.pointer_enter_serial == Some(serial)
+        self.pointer_enabled
+            && self.pointer_received_enter(pointer, serial)
             && (current_surface
                 || self
                     .pointer_focus_surface
                     .as_ref()
-                    .is_some_and(|surface| surface.same_client_as(object)))
+                    .is_some_and(|surface| surface.same_client_as(pointer)))
     }
 }
 

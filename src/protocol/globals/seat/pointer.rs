@@ -1,7 +1,7 @@
 use tensor_event::{AxisDirection, AxisSource, PointerAxisEvent};
 use wayland_server::{
     Resource,
-    backend::ClientId,
+    backend::{ClientId, ObjectId},
     protocol::{
         wl_pointer::{self, WlPointer},
         wl_surface::WlSurface,
@@ -15,6 +15,7 @@ use crate::protocol::serial::Serial;
 pub(super) struct PointerResource {
     resource: WlPointer,
     v120: [i32; 2],
+    enter_serial: Option<Serial>,
 }
 
 impl PointerResource {
@@ -44,6 +45,11 @@ impl SeatProtocol {
                 pointer
                     .resource
                     .enter(serial.into(), surface, location.0, location.1);
+            }
+        }
+        if let Some(pointers) = self.pointers.get_mut(&client_id) {
+            for pointer in pointers {
+                pointer.enter_serial = Some(serial);
             }
         }
     }
@@ -129,7 +135,14 @@ impl SeatProtocol {
             .push(PointerResource {
                 resource: pointer,
                 v120: [0; 2],
+                enter_serial: None,
             });
+    }
+
+    pub(super) fn pointer_received_enter(&self, pointer: &ObjectId, serial: Serial) -> bool {
+        self.pointers.values().flatten().any(|candidate| {
+            candidate.resource.id() == *pointer && candidate.enter_serial == Some(serial)
+        })
     }
 
     pub(super) fn remove_pointer(&mut self, client: &ClientId, pointer: &WlPointer) {
