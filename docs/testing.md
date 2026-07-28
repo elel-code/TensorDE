@@ -89,6 +89,11 @@ adds a direct argv item to the most recent client without invoking a shell. Use
 `--gtk-single-instance=false` only ensures that an existing host Ghostty cannot
 receive the request over D-Bus; it does not select a client backend.
 
+Each supplied client is supervised independently. If one cannot start or exits
+unsuccessfully, the launcher records that status but leaves the remaining
+clients, Fcitx, and Tensor running. It shuts down only after every client has
+closed or the selected duration expires, then returns the first client failure.
+
 This is a native Wayland rendering and input test, not an X11-client test. The
 Tensor log should contain `entering compositor event loop`; the launcher log
 should contain `client launch gate opened` and the supplied client command. The

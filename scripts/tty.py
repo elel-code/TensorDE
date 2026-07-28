@@ -440,10 +440,13 @@ def launch(
                 except OSError as error:
                     interactive_statuses[index] = 127
                     interactive_failed = True
-                    interactive_failure_status = 127
+                    if interactive_failure_status is None:
+                        interactive_failure_status = 127
                     note(log, output_lock, f"failed to start {client.name}: {error}")
-                    request_shutdown(f"{client.name} could not start")
-                    return
+                    # Each explicit client is an independent smoke target. A
+                    # broken application must not tear down a terminal that is
+                    # useful for isolating the failure, or Fcitx and Tensor.
+                    continue
                 interactive_process = interactive_processes[index]
                 assert interactive_process is not None and interactive_process.stdout is not None
                 selector.register(interactive_process.stdout, selectors.EVENT_READ, "interactive")
@@ -462,9 +465,8 @@ def launch(
                 note(log, output_lock, f"{client.name} exited with status {status}")
                 if not shutdown_requested.is_set() and status != 0:
                     interactive_failed = True
-                    interactive_failure_status = status
-                    request_shutdown(f"{client.name} failed")
-                    return
+                    if interactive_failure_status is None:
+                        interactive_failure_status = status
             if clients and all(status is not None for status in interactive_statuses):
                 request_shutdown("all interactive clients closed")
 
