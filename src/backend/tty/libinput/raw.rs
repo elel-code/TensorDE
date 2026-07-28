@@ -7,9 +7,9 @@
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use input::{AsRaw, FromRaw as _, Libinput};
+use libinput::{AsRaw, FromRaw as _, Libinput};
 
-/// One tablet dial sample that `input::Event` cannot currently represent.
+/// One tablet dial sample that `libinput::Event` cannot currently represent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DialEvent {
     pub device_raw: usize,
@@ -23,44 +23,46 @@ pub struct DialEvent {
 /// A standard safe wrapper event or the missing libinput 1.26 dial value.
 #[derive(Debug)]
 pub enum Event {
-    Standard(input::Event),
+    Standard(libinput::Event),
     Dial(DialEvent),
 }
 
 /// Dequeue one event, preserving dial events and destroying unknown events.
 pub fn next_event(context: &mut Libinput) -> Option<Event> {
     loop {
-        let raw = unsafe { input::ffi::libinput_get_event(context.as_raw_mut()) };
+        let raw = unsafe { libinput::ffi::libinput_get_event(context.as_raw_mut()) };
         if raw.is_null() {
             return None;
         }
-        let event_type = unsafe { input::ffi::libinput_event_get_type(raw) };
-        if event_type == input::ffi::libinput_event_type_LIBINPUT_EVENT_TABLET_PAD_DIAL {
-            let pad = unsafe { input::ffi::libinput_event_get_tablet_pad_event(raw) };
-            let group = unsafe { input::ffi::libinput_event_tablet_pad_get_mode_group(pad) };
+        let event_type = unsafe { libinput::ffi::libinput_event_get_type(raw) };
+        if event_type == libinput::ffi::libinput_event_type_LIBINPUT_EVENT_TABLET_PAD_DIAL {
+            let pad = unsafe { libinput::ffi::libinput_event_get_tablet_pad_event(raw) };
+            let group = unsafe { libinput::ffi::libinput_event_tablet_pad_get_mode_group(pad) };
             let event = DialEvent {
-                device_raw: unsafe { input::ffi::libinput_event_get_device(raw) } as usize,
-                index: unsafe { input::ffi::libinput_event_tablet_pad_get_dial_number(pad) },
-                mode_group: unsafe { input::ffi::libinput_tablet_pad_mode_group_get_index(group) },
-                mode: unsafe { input::ffi::libinput_event_tablet_pad_get_mode(pad) },
-                delta_v120: unsafe {
-                    input::ffi::libinput_event_tablet_pad_get_dial_delta_v120(pad)
+                device_raw: unsafe { libinput::ffi::libinput_event_get_device(raw) } as usize,
+                index: unsafe { libinput::ffi::libinput_event_tablet_pad_get_dial_number(pad) },
+                mode_group: unsafe {
+                    libinput::ffi::libinput_tablet_pad_mode_group_get_index(group)
                 },
-                time_usec: unsafe { input::ffi::libinput_event_tablet_pad_get_time_usec(pad) },
+                mode: unsafe { libinput::ffi::libinput_event_tablet_pad_get_mode(pad) },
+                delta_v120: unsafe {
+                    libinput::ffi::libinput_event_tablet_pad_get_dial_delta_v120(pad)
+                },
+                time_usec: unsafe { libinput::ffi::libinput_event_tablet_pad_get_time_usec(pad) },
             };
-            unsafe { input::ffi::libinput_event_destroy(raw) };
+            unsafe { libinput::ffi::libinput_event_destroy(raw) };
             return Some(Event::Dial(event));
         }
-        if let Some(event) = unsafe { input::Event::try_from_raw(raw, context) } {
+        if let Some(event) = unsafe { libinput::Event::try_from_raw(raw, context) } {
             return Some(Event::Standard(event));
         }
-        unsafe { input::ffi::libinput_event_destroy(raw) };
+        unsafe { libinput::ffi::libinput_event_destroy(raw) };
     }
 }
 
 /// Number of dials reported by a pad, absent when called for another device.
-pub fn pad_dial_count(device: &input::Device) -> Option<u32> {
+pub fn pad_dial_count(device: &libinput::Device) -> Option<u32> {
     let count =
-        unsafe { input::ffi::libinput_device_tablet_pad_get_num_dials(device.as_raw_mut()) };
+        unsafe { libinput::ffi::libinput_device_tablet_pad_get_num_dials(device.as_raw_mut()) };
     u32::try_from(count).ok()
 }

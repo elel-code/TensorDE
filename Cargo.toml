@@ -27,7 +27,7 @@ tty = [
     "dep:drm",
     "dep:drm-ffi",
     "dep:gbm",
-    "dep:input",
+    "dep:libinput",
     "dep:libseat",
     "dep:udev",
 ]
@@ -47,7 +47,7 @@ drm-ffi = { version = "0.9", optional = true }
 futures-channel = "0.3"
 futures-util = "0.3"
 gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
-input = { version = "0.10", default-features = false, optional = true, features = ["libinput_1_26", "udev"] }
+libinput = { package = "input", version = "0.10", default-features = false, optional = true, features = ["libinput_1_26", "udev"] }
 libseat = { version = "0.2", default-features = false, optional = true }
 rustix = { version = "1", features = ["fs", "mm", "net", "pipe", "process", "rand", "runtime", "thread", "time"] }
 sd-notify = { version = "0.5", optional = true }

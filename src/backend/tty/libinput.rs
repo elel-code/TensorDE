@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use input::{
+use libinput::{
     AsRaw, DeviceCapability, Libinput, event,
     event::{
         EventTrait as _,
@@ -34,12 +34,13 @@ use tensor_event::{
 };
 
 mod raw;
+mod tablet;
+
+use tablet::{PendingEvents, ToolRegistry};
 
 use super::session::SeatSession;
 
 const MAX_EVENTS_PER_COMPLETION: usize = 256;
-const MAX_PENDING_TABLET_EVENTS: usize = 12;
-const MAX_TABLET_TOOLS: usize = 64;
 const MAX_PAD_GROUPS: usize = 8;
 const MAX_PAD_BUTTONS: usize = 64;
 const MAX_PAD_AXES: usize = 16;
@@ -53,7 +54,7 @@ impl From<SeatSession> for LibinputSessionInterface {
     }
 }
 
-impl input::LibinputInterface for LibinputSessionInterface {
+impl libinput::LibinputInterface for LibinputSessionInterface {
     fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
         self.0
             .open(path, OFlags::from_bits_truncate(flags as u32))
@@ -80,11 +81,8 @@ pub(super) struct LibinputSource {
     dropped_events: u64,
     events_in_completion: usize,
     dropped_in_completion: u64,
-    pending: [Option<BackendInputEvent>; MAX_PENDING_TABLET_EVENTS],
-    pending_head: usize,
-    pending_len: usize,
-    tools: Vec<(usize, TabletToolId)>,
-    next_tool_id: u64,
+    pending: PendingEvents,
+    tools: ToolRegistry,
 }
 
 impl LibinputSource {
@@ -103,11 +101,8 @@ impl LibinputSource {
             dropped_events: 0,
             events_in_completion: 0,
             dropped_in_completion: 0,
-            pending: [None; MAX_PENDING_TABLET_EVENTS],
-            pending_head: 0,
-            pending_len: 0,
-            tools: Vec::with_capacity(MAX_TABLET_TOOLS),
-            next_tool_id: 1,
+            pending: PendingEvents::new(),
+            tools: ToolRegistry::new(),
         })
     }
 
@@ -168,9 +163,9 @@ impl LibinputSource {
         }
     }
 
-    fn map_event(&mut self, event: input::Event) -> Option<LibinputEvent> {
+    fn map_event(&mut self, event: libinput::Event) -> Option<LibinputEvent> {
         match event {
-            input::Event::Device(event) => match event {
+            libinput::Event::Device(event) => match event {
                 event::DeviceEvent::Added(event) => {
                     self.map_device(event.device(), DeviceChange::Added)
                 }
@@ -179,13 +174,13 @@ impl LibinputSource {
                 }
                 _ => None,
             },
-            input::Event::Touch(
+            libinput::Event::Touch(
                 event::TouchEvent::Down(_)
                 | event::TouchEvent::Motion(_)
                 | event::TouchEvent::Up(_),
             ) => Some(LibinputEvent::Input(BackendInputEvent::Activity)),
-            input::Event::Touch(_) => None,
-            input::Event::Keyboard(event::KeyboardEvent::Key(event)) => {
+            libinput::Event::Touch(_) => None,
+            libinput::Event::Keyboard(event::KeyboardEvent::Key(event)) => {
                 let pressed = event.key_state() == event::keyboard::KeyState::Pressed;
                 Some(LibinputEvent::Input(BackendInputEvent::Keyboard(
                     KeyboardEvent {
@@ -195,16 +190,20 @@ impl LibinputSource {
                     },
                 )))
             }
-            input::Event::Keyboard(_) => None,
-            input::Event::Pointer(event) => self.map_pointer_event(event),
-            input::Event::Gesture(event) => map_gesture_event(event),
-            input::Event::Tablet(event) => self.map_tablet_tool_event(event),
-            input::Event::TabletPad(event) => self.map_tablet_pad_event(event),
+            libinput::Event::Keyboard(_) => None,
+            libinput::Event::Pointer(event) => self.map_pointer_event(event),
+            libinput::Event::Gesture(event) => map_gesture_event(event),
+            libinput::Event::Tablet(event) => self.map_tablet_tool_event(event),
+            libinput::Event::TabletPad(event) => self.map_tablet_pad_event(event),
             _ => None,
         }
     }
 
-    fn map_device(&mut self, device: input::Device, change: DeviceChange) -> Option<LibinputEvent> {
+    fn map_device(
+        &mut self,
+        device: libinput::Device,
+        change: DeviceChange,
+    ) -> Option<LibinputEvent> {
         let raw = device.as_raw() as usize;
         let raw_group = device.device_group().as_raw() as usize;
         let group = match change {
@@ -255,10 +254,14 @@ impl LibinputSource {
                     id
                 }
             }
-            DeviceChange::Removed => self.device_ids.remove(&raw).unwrap_or_else(|| {
-                tracing::warn!(device = %device.sysname(), "removed unknown libinput device");
-                DeviceId::new(0)
-            }),
+            DeviceChange::Removed => {
+                let id = self.device_ids.remove(&raw).unwrap_or_else(|| {
+                    tracing::warn!(device = %device.sysname(), "removed unknown libinput device");
+                    DeviceId::new(0)
+                });
+                self.tools.remove_device(id);
+                id
+            }
         };
         let capabilities = DeviceCapabilities {
             keyboard: device.has_capability(DeviceCapability::Keyboard),
@@ -288,26 +291,14 @@ impl LibinputSource {
     }
 
     fn enqueue(&mut self, event: BackendInputEvent) -> bool {
-        if self.pending_len == self.pending.len() {
-            return false;
-        }
-        let tail = (self.pending_head + self.pending_len) % self.pending.len();
-        self.pending[tail] = Some(event);
-        self.pending_len += 1;
-        true
+        self.pending.push(event)
     }
 
     fn pop_pending(&mut self) -> Option<BackendInputEvent> {
-        if self.pending_len == 0 {
-            return None;
-        }
-        let event = self.pending[self.pending_head].take();
-        self.pending_head = (self.pending_head + 1) % self.pending.len();
-        self.pending_len -= 1;
-        event
+        self.pending.pop()
     }
 
-    fn enqueue_pad_description(&mut self, device: &input::Device, id: DeviceId) -> bool {
+    fn enqueue_pad_description(&mut self, device: &libinput::Device, id: DeviceId) -> bool {
         let counts = (
             usize::try_from(device.tablet_pad_number_of_buttons()).ok(),
             usize::try_from(device.tablet_pad_number_of_rings()).ok(),
@@ -327,19 +318,8 @@ impl LibinputSource {
         {
             return false;
         }
-        if !self.enqueue(BackendInputEvent::TabletPad(TabletPadEvent::Added(
-            TabletPadDescriptor {
-                device: id,
-                buttons: buttons as u8,
-                rings: rings as u8,
-                strips: strips as u8,
-                dials: dials as u8,
-                groups: groups as u8,
-            },
-        ))) {
-            return false;
-        }
-        for index in 0..groups {
+        let mut descriptions = [None; MAX_PAD_GROUPS];
+        for (index, description) in descriptions.iter_mut().enumerate().take(groups) {
             let Some(group) = device.tablet_pad_mode_group(index as u32) else {
                 return false;
             };
@@ -359,21 +339,37 @@ impl LibinputSource {
             for dial in 0..dials {
                 dial_mask |= u16::from(group.has_dial(dial as u32)) << dial;
             }
-            if !self.enqueue(BackendInputEvent::TabletPad(TabletPadEvent::Group(
-                TabletPadGroupDescriptor {
-                    device: id,
-                    index: index as u8,
-                    modes: group.number_of_modes().min(u32::from(u8::MAX)) as u8,
-                    current_mode: group.mode().min(u32::from(u8::MAX)) as u8,
-                    buttons: button_mask,
-                    rings: ring_mask,
-                    strips: strip_mask,
-                    dials: dial_mask,
-                    final_group: index + 1 == groups,
-                },
-            ))) {
-                return false;
-            }
+            *description = Some(TabletPadGroupDescriptor {
+                device: id,
+                index: index as u8,
+                modes: group.number_of_modes().min(u32::from(u8::MAX)) as u8,
+                current_mode: group.mode().min(u32::from(u8::MAX)) as u8,
+                buttons: button_mask,
+                rings: ring_mask,
+                strips: strip_mask,
+                dials: dial_mask,
+                final_group: index + 1 == groups,
+            });
+        }
+        if !self.pending.can_push(groups + 1) {
+            return false;
+        }
+        let added = BackendInputEvent::TabletPad(TabletPadEvent::Added(TabletPadDescriptor {
+            device: id,
+            buttons: buttons as u8,
+            rings: rings as u8,
+            strips: strips as u8,
+            dials: dials as u8,
+            groups: groups as u8,
+        }));
+        assert!(self.enqueue(added), "preflighted tablet queue capacity");
+        for descriptor in descriptions.into_iter().take(groups).flatten() {
+            assert!(
+                self.enqueue(BackendInputEvent::TabletPad(TabletPadEvent::Group(
+                    descriptor
+                ))),
+                "preflighted tablet queue capacity"
+            );
         }
         true
     }
@@ -433,22 +429,29 @@ impl LibinputSource {
     }
 
     fn map_tablet_tool_event(&mut self, event: event::TabletToolEvent) -> Option<LibinputEvent> {
+        if !self.pending.can_push(2) {
+            tracing::warn!("tablet event expansion exceeds fixed pending capacity");
+            return None;
+        }
         let device = self.device_id(&event)?;
         let tool = event.tool();
+        let tool_type = map_tool_type(tool.tool_type()?)?;
+        let capabilities = map_tool_capabilities(&tool);
         let raw_tool = tool.as_raw() as usize;
-        let (id, added) = self.tool_id(raw_tool)?;
+        let (id, added) = self.tools.id_for(raw_tool, device)?;
         let descriptor = if added {
             Some(TabletToolDescriptor {
                 id,
                 device,
                 hardware_serial: tool.serial(),
                 hardware_id: tool.tool_id(),
-                tool_type: map_tool_type(tool.tool_type()?)?,
-                capabilities: map_tool_capabilities(&tool),
+                tool_type,
+                capabilities,
             })
         } else {
             None
         };
+        let mut queued_after_descriptor = false;
         let mapped = match event {
             event::TabletToolEvent::Proximity(event) => {
                 let in_proximity = event.proximity_state() == ProximityState::In;
@@ -463,13 +466,21 @@ impl LibinputSource {
                 if in_proximity {
                     let axes = map_tool_axes(id, &event, true);
                     if descriptor.is_some() {
-                        self.enqueue(proximity);
-                        self.enqueue(BackendInputEvent::TabletToolAxes(axes));
+                        assert!(self.enqueue(proximity), "preflighted tablet queue capacity");
+                        assert!(
+                            self.enqueue(BackendInputEvent::TabletToolAxes(axes)),
+                            "preflighted tablet queue capacity"
+                        );
+                        queued_after_descriptor = true;
                     } else {
-                        self.enqueue(BackendInputEvent::TabletToolAxes(axes));
+                        assert!(
+                            self.enqueue(BackendInputEvent::TabletToolAxes(axes)),
+                            "preflighted tablet queue capacity"
+                        );
                     }
                 } else if descriptor.is_some() {
-                    self.enqueue(proximity);
+                    assert!(self.enqueue(proximity), "preflighted tablet queue capacity");
+                    queued_after_descriptor = true;
                 }
                 proximity
             }
@@ -484,8 +495,15 @@ impl LibinputSource {
                 });
                 let axes = map_tool_axes(id, &event, false);
                 if axes.has_axes() {
-                    self.enqueue(tip);
-                    BackendInputEvent::TabletToolAxes(axes)
+                    let axes = BackendInputEvent::TabletToolAxes(axes);
+                    if descriptor.is_some() {
+                        assert!(self.enqueue(axes), "preflighted tablet queue capacity");
+                        assert!(self.enqueue(tip), "preflighted tablet queue capacity");
+                        queued_after_descriptor = true;
+                    } else {
+                        assert!(self.enqueue(tip), "preflighted tablet queue capacity");
+                    }
+                    axes
                 } else {
                     tip
                 }
@@ -501,8 +519,8 @@ impl LibinputSource {
             _ => return None,
         };
         let mapped = if let Some(descriptor) = descriptor {
-            if !matches!(mapped, BackendInputEvent::TabletToolProximity(_)) {
-                self.enqueue(mapped);
+            if !queued_after_descriptor {
+                assert!(self.enqueue(mapped), "preflighted tablet queue capacity");
             }
             BackendInputEvent::TabletToolAdded(descriptor)
         } else {
@@ -575,23 +593,6 @@ impl LibinputSource {
         self.device_ids
             .get(&(event.device().as_raw() as usize))
             .copied()
-    }
-
-    fn tool_id(&mut self, raw: usize) -> Option<(TabletToolId, bool)> {
-        if let Some((_, id)) = self.tools.iter().find(|(candidate, _)| *candidate == raw) {
-            return Some((*id, false));
-        }
-        if self.tools.len() == MAX_TABLET_TOOLS {
-            tracing::warn!("tablet tool capacity exceeded");
-            return None;
-        }
-        let id = TabletToolId::new(self.next_tool_id);
-        self.next_tool_id = self.next_tool_id.checked_add(1).or_else(|| {
-            tracing::error!("tablet tool identity space exhausted");
-            None
-        })?;
-        self.tools.push((raw, id));
-        Some((id, true))
     }
 
     fn report_dropped_events(&mut self) {
