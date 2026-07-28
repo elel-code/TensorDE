@@ -109,6 +109,7 @@ impl SeatProtocol {
             self.keyboard_enabled = enabled;
             if !enabled {
                 self.keyboard_focus = None;
+                self.keyboard_focus_surface = None;
                 self.keyboard_enter_serial = None;
             }
             self.send_capabilities();
@@ -122,6 +123,7 @@ impl SeatProtocol {
         };
         let client_id = client.id();
         self.keyboard_focus = Some(client_id.clone());
+        self.keyboard_focus_surface = Some(surface.downgrade());
         self.keyboard_enter_serial = Some(serial);
         let Some(keyboards) = self.keyboards.get(&client_id) else {
             return;
@@ -137,6 +139,7 @@ impl SeatProtocol {
 
     pub(crate) fn keyboard_leave(&mut self, surface: &WlSurface, serial: Serial) {
         let focus = self.keyboard_focus.take();
+        self.keyboard_focus_surface = None;
         self.keyboard_enter_serial = None;
         if !surface.is_alive() {
             return;
@@ -216,11 +219,15 @@ impl SeatProtocol {
     pub(super) fn remove_keyboard(&mut self, client: &ClientId, keyboard: &WlKeyboard) {
         remove_resource(&mut self.keyboards, client, keyboard);
     }
+
+    pub(crate) fn keyboard_focus_surface(&self) -> Option<WlSurface> {
+        self.keyboard_focus_surface.as_ref()?.upgrade().ok()
+    }
 }
 
 impl RuntimeState {
     pub(super) fn keyboard_snapshot(&self, client: &ClientId) -> Option<KeyboardSnapshot> {
-        let surface = self.input_seat.keyboard_focus()?.clone();
+        let surface = self.protocol_globals.seat.keyboard_focus_surface()?;
         if surface.client()?.id() != *client {
             return None;
         }

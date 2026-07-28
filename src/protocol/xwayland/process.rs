@@ -143,6 +143,15 @@ pub(crate) struct XWaylandClientData {
     child: Mutex<Option<Child>>,
 }
 
+#[cfg(test)]
+impl XWaylandClientData {
+    pub(crate) fn for_test() -> Arc<Self> {
+        Arc::new(Self {
+            child: Mutex::new(None),
+        })
+    }
+}
+
 impl ClientData for XWaylandClientData {
     fn disconnected(&self, _client: ClientId, reason: DisconnectReason) {
         if let DisconnectReason::ProtocolError(error) = reason {

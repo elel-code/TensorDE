@@ -160,6 +160,14 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         let previous_input_popup_root = self.input_method_popup_root();
         self.input_seat.surface_destroyed(surface);
+        #[cfg(feature = "xwayland")]
+        if self
+            .protocol_globals
+            .xwayland_keyboard_grab
+            .surface_destroyed(surface)
+        {
+            self.sync_keyboard_wire_focus(crate::protocol::serial::next_serial());
+        }
         self.selection_surface_destroyed(surface);
         self.layer_surface_wl_destroyed(surface);
         self.remove_session_lock_surface(surface);

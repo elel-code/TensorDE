@@ -43,6 +43,8 @@ pub(in crate::protocol) mod viewporter;
 pub(in crate::protocol) mod xdg_decoration;
 pub(in crate::protocol) mod xdg_foreign;
 pub(in crate::protocol) mod xdg_shell;
+#[cfg(feature = "xwayland")]
+pub(in crate::protocol) mod xwayland_keyboard_grab;
 
 use activation::ActivationProtocol;
 use background_effect::BackgroundEffectProtocol;
@@ -81,6 +83,8 @@ use viewporter::ViewporterProtocol;
 use xdg_decoration::XdgDecorationProtocol;
 use xdg_foreign::XdgForeignProtocol;
 use xdg_shell::XdgShellProtocol;
+#[cfg(feature = "xwayland")]
+use xwayland_keyboard_grab::XWaylandKeyboardGrabProtocol;
 
 pub(crate) struct ProtocolGlobals {
     pub(super) seat: SeatProtocol,
@@ -117,6 +121,8 @@ pub(crate) struct ProtocolGlobals {
     image_capture_source: ImageCaptureSourceProtocol,
     image_copy_capture: ImageCopyCaptureProtocol,
     pub(super) input_method: InputMethodProtocol,
+    #[cfg(feature = "xwayland")]
+    pub(super) xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol,
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
@@ -178,6 +184,8 @@ impl ProtocolGlobals {
             image_capture_source: ImageCaptureSourceProtocol::new(display, unrestricted),
             image_copy_capture: ImageCopyCaptureProtocol::new(display, unrestricted),
             input_method: InputMethodProtocol::new(display),
+            #[cfg(feature = "xwayland")]
+            xwayland_keyboard_grab: XWaylandKeyboardGrabProtocol::new(display),
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]

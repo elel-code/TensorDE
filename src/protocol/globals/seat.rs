@@ -10,6 +10,7 @@ use wayland_server::{
         wl_keyboard::WlKeyboard,
         wl_pointer::WlPointer,
         wl_seat::{self, WlSeat},
+        wl_surface::WlSurface,
         wl_touch::WlTouch,
     },
 };
@@ -46,6 +47,7 @@ pub(crate) struct SeatProtocol {
     repeat_rate: i32,
     repeat_delay: i32,
     keyboard_focus: Option<ClientId>,
+    keyboard_focus_surface: Option<Weak<WlSurface>>,
     keyboard_enter_serial: Option<Serial>,
     pointer_focus: Option<ClientId>,
     pointer_focus_surface: Option<ObjectId>,
@@ -67,6 +69,7 @@ impl SeatProtocol {
             repeat_rate: 25,
             repeat_delay: 200,
             keyboard_focus: None,
+            keyboard_focus_surface: None,
             keyboard_enter_serial: None,
             pointer_focus: None,
             pointer_focus_surface: None,

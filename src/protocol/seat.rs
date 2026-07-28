@@ -408,31 +408,26 @@ impl InputSeat {
 
 impl RuntimeState {
     pub(crate) fn set_keyboard_focus(&mut self, focus: Option<WlSurface>, serial: Serial) {
-        if !self.input_seat.keyboard_enabled() || self.input_seat.keyboard_focus() == focus.as_ref()
-        {
+        if !self.input_seat.keyboard_enabled() {
+            return;
+        }
+        let focus = focus.filter(Resource::is_alive);
+        if self.input_seat.keyboard_focus() == focus.as_ref() {
+            self.sync_keyboard_wire_focus(serial);
             return;
         }
         #[cfg(feature = "tty")]
         let previous_input_popup_root = self.input_method_popup_root();
         let old = self.input_seat.set_keyboard_focus(focus.clone());
         if let Some(old) = old {
-            self.protocol_globals.seat.keyboard_leave(&old, serial);
             remove_keyboard_focus_hook(&old);
         }
-        let focus = focus.filter(Resource::is_alive);
         if let Some(surface) = focus.as_ref() {
-            self.protocol_globals.seat.keyboard_enter(
-                surface,
-                self.input_seat.pressed_key_bytes(),
-                serial,
-            );
-            self.protocol_globals
-                .seat
-                .modifiers(self.input_seat.keyboard_modifiers(), serial);
             install_keyboard_focus_hook(surface);
         } else if self.input_seat.keyboard_focus().is_some() {
             self.input_seat.set_keyboard_focus(None);
         }
+        self.sync_keyboard_wire_focus(serial);
         self.protocol_globals
             .activation
             .sync_keyboard_focus(focus.as_ref());
@@ -442,6 +437,40 @@ impl RuntimeState {
         self.protocol_globals
             .selection
             .set_focus(focus.and_then(|surface| surface.client().map(|client| client.id())));
+    }
+
+    pub(crate) fn sync_keyboard_wire_focus(&mut self, serial: Serial) {
+        if !self.input_seat.keyboard_enabled() {
+            return;
+        }
+        #[cfg(feature = "xwayland")]
+        let grabbed = (!self.session_is_locked())
+            .then(|| {
+                self.protocol_globals
+                    .xwayland_keyboard_grab
+                    .active_surface()
+            })
+            .flatten();
+        #[cfg(not(feature = "xwayland"))]
+        let grabbed: Option<WlSurface> = None;
+        let desired = grabbed.or_else(|| self.input_seat.keyboard_focus().cloned());
+        let current = self.protocol_globals.seat.keyboard_focus_surface();
+        if current.as_ref().map(Resource::id) == desired.as_ref().map(Resource::id) {
+            return;
+        }
+        if let Some(current) = current {
+            self.protocol_globals.seat.keyboard_leave(&current, serial);
+        }
+        if let Some(desired) = desired.filter(Resource::is_alive) {
+            self.protocol_globals.seat.keyboard_enter(
+                &desired,
+                self.input_seat.pressed_key_bytes(),
+                serial,
+            );
+            self.protocol_globals
+                .seat
+                .modifiers(self.input_seat.keyboard_modifiers(), serial);
+        }
     }
 }
 
