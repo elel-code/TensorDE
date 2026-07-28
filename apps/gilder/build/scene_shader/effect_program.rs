@@ -14,8 +14,11 @@ use super::swing::swing_fragment_source;
 
 #[path = "effect_program/audio_bars.rs"]
 mod audio_bars;
+#[path = "effect_program/caustics.rs"]
+mod caustics;
 
 use audio_bars::audio_bars_fragment_source;
+use caustics::caustics_effect_fragment_source;
 
 pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
     if key.contains("__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1") {
