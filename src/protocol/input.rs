@@ -104,6 +104,7 @@ impl RuntimeState {
             self.cursor.clear_tablet(event.id)
         };
         if changed {
+            self.refresh_cursor_surface_outputs();
             self.request_redraw_all();
         }
     }
@@ -118,6 +119,7 @@ impl RuntimeState {
         if let Some(location) = cursor_location
             && self.cursor.note_tablet_activity(event.id, location)
         {
+            self.refresh_cursor_surface_outputs();
             self.request_redraw_at(location);
         }
     }
@@ -451,6 +453,7 @@ impl RuntimeState {
                 )
                 .into_event(),
             );
+            self.refresh_cursor_surface_outputs();
             self.request_redraw_at(planned_location);
             return;
         }
@@ -523,6 +526,7 @@ impl RuntimeState {
         let _ = self.push_event(
             tensor_event::Sample::pointer_motion(location.x, location.y, time_ns).into_event(),
         );
+        self.refresh_cursor_surface_outputs();
         // The cursor is a compositor-owned overlay, so pointer motion must
         // request a presentation even when no client surface changed. Target
         // only the head under the pointer so dual high-refresh outputs do not

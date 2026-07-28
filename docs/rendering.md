@@ -193,7 +193,10 @@ that cold load, then a dedicated one-shot timerfd advances their IDs through Com
 completions; there is no readiness loop or periodic polling. The small descriptor-free vector arrow remains only for a missing theme image
 or a client surface without committed image content. Hotspots include committed `wl_surface.offset`
 deltas, cursor image or geometry changes damage the old and new physical bounds, and successfully
-submitted cursor surfaces receive frame callbacks so client-driven animation can advance.
+submitted cursor surfaces receive frame callbacks so client-driven animation can advance. Cursor
+role state also tracks output-instance membership: crossing a head emits `wl_surface.enter/leave`
+and publishes that head's integer and fractional preferred scale. Stable membership is cached, so
+ordinary high-rate motion does not lock or rescan each output's protocol surface list.
 
 This is a deliberately distilled contract from the local Niri, Hyprland, and Nourish references:
 Niri establishes pointer-as-topmost-render-element and output-aware relative motion; Hyprland

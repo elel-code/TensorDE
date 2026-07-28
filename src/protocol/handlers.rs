@@ -150,6 +150,7 @@ impl RuntimeState {
         }
         #[cfg(feature = "tty")]
         if cursor_commit {
+            self.refresh_cursor_surface_outputs();
             self.request_redraw_all();
         }
         #[cfg(feature = "tty")]

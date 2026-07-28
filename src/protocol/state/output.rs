@@ -9,32 +9,6 @@ use crate::{backend::BackendOutputId, render::NativeOutputBuffer, scene::SceneSn
 use super::{OutputRedrawState, RuntimeState, output_helpers::renderer_target};
 
 impl RuntimeState {
-    pub(crate) fn duplicate_cursor_animation_timer_fd(
-        &self,
-    ) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
-        self.cursor.duplicate_animation_timer_fd()
-    }
-
-    pub(crate) fn complete_cursor_animation_timer(&mut self) -> bool {
-        match self.cursor.complete_animation_timer() {
-            Ok(redraw) => {
-                if redraw {
-                    self.request_redraw_all();
-                }
-                true
-            }
-            Err(error) => {
-                self.cursor_animation_timer_failed(&error);
-                false
-            }
-        }
-    }
-
-    pub(crate) fn cursor_animation_timer_failed(&mut self, error: &std::io::Error) {
-        warn!(%error, "cursor animation io_uring completion failed");
-        self.cursor.animation_timer_failed();
-    }
-
     #[cfg(feature = "tty")]
     pub(crate) fn request_redraw_all(&mut self) {
         self.queue_redraw_all();
@@ -766,3 +740,5 @@ impl RuntimeState {
         Ok(())
     }
 }
+
+mod cursor;

@@ -307,6 +307,7 @@ impl RuntimeState {
             self.publish_window_activation(None);
             self.cursor
                 .set_image(crate::protocol::cursor::CursorImage::default_named());
+            self.refresh_cursor_surface_outputs();
             let serial = crate::protocol::serial::next_serial();
             self.set_keyboard_focus(None, serial);
             self.clear_pointer_focus(serial, 0);
@@ -357,6 +358,7 @@ impl RuntimeState {
     fn release_session_lock_seat(&mut self) {
         self.cursor
             .set_image(crate::protocol::cursor::CursorImage::default_named());
+        self.refresh_cursor_surface_outputs();
         let serial = crate::protocol::serial::next_serial();
         self.set_keyboard_focus(None, serial);
         self.clear_pointer_focus(serial, 0);
@@ -411,6 +413,7 @@ impl RuntimeState {
         }
         self.cursor
             .set_image(crate::protocol::cursor::CursorImage::default_named());
+        self.refresh_cursor_surface_outputs();
         let serial = crate::protocol::serial::next_serial();
         self.clear_pointer_focus(serial, 0);
     }

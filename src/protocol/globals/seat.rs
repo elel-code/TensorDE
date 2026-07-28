@@ -29,9 +29,19 @@ use wire::{PointerData, SeatData, SeatGlobalData};
 
 pub(in crate::protocol) const CURSOR_IMAGE_ROLE: &str = "cursor_image";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::protocol) struct CursorSurfaceState {
     pub(in crate::protocol) hotspot: Point,
+    pub(in crate::protocol) outputs: Vec<crate::protocol::globals::output::OutputInstanceId>,
+}
+
+impl Default for CursorSurfaceState {
+    fn default() -> Self {
+        Self {
+            hotspot: Point::default(),
+            outputs: Vec::with_capacity(2),
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -138,6 +138,7 @@ fn set_named_tablet_cursor(
         .cursor
         .set_tablet_image(tool, crate::protocol::cursor::CursorImage::Named(icon))
     {
+        state.refresh_cursor_surface_outputs();
         state.request_redraw_all();
     }
     #[cfg(not(feature = "tty"))]
@@ -162,6 +163,7 @@ fn set_named_pointer_cursor(state: &mut RuntimeState, icon: CursorIcon) {
         .cursor
         .set_image(crate::protocol::cursor::CursorImage::Named(icon))
     {
+        state.refresh_cursor_surface_outputs();
         if let Some(location) = state.input_seat.pointer_location() {
             state.request_redraw_at(location);
         } else {

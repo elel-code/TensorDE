@@ -296,7 +296,6 @@ impl Output {
     }
 
     #[inline]
-    #[cfg(test)]
     pub(crate) fn current_scale(&self) -> OutputScale {
         self.snapshot().scale
     }
@@ -438,6 +437,17 @@ impl Output {
                 surface.leave(&output);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_surface(&self, surface: &WlSurface) -> bool {
+        self.0
+            .resources
+            .lock()
+            .unwrap()
+            .surfaces
+            .iter()
+            .any(|current| current.id() == surface.id())
     }
 
     pub(crate) fn cleanup(&self) {

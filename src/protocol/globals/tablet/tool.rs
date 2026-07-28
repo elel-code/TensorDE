@@ -689,14 +689,18 @@ impl DispatchDelegate<ZwpTabletToolV2, RuntimeState> for ToolData {
                     None => None,
                 };
                 #[cfg(feature = "tty")]
-                if state.cursor.set_tablet_image(
-                    self.id,
-                    match surface {
-                        Some(surface) => CursorImage::Surface(surface),
-                        None => CursorImage::Hidden,
-                    },
-                ) {
-                    state.request_redraw_all();
+                {
+                    let changed = state.cursor.set_tablet_image(
+                        self.id,
+                        match surface {
+                            Some(surface) => CursorImage::Surface(surface),
+                            None => CursorImage::Hidden,
+                        },
+                    );
+                    state.refresh_cursor_surface_outputs();
+                    if changed {
+                        state.request_redraw_all();
+                    }
                 }
                 #[cfg(not(feature = "tty"))]
                 let _ = surface;

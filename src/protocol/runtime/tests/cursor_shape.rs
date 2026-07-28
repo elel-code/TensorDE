@@ -8,10 +8,13 @@ use std::{
 use cursor_icon::CursorIcon;
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, WEnum,
+    backend::ObjectId,
+    delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
-        wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+        wl_buffer, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+        wl_surface,
     },
 };
 use wayland_protocols::{
@@ -33,6 +36,7 @@ enum CursorStep {
     ValidShapeSent,
     ClientSurfaceSent,
     OffsetSent,
+    SurfaceRetired,
     Destroyed,
 }
 
@@ -41,6 +45,10 @@ struct CursorClient {
     configured: bool,
     pointer: Option<wl_pointer::WlPointer>,
     enter_serial: Option<u32>,
+    cursor_surface: Option<ObjectId>,
+    cursor_entered: bool,
+    cursor_left: bool,
+    cursor_scale: Option<i32>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for CursorClient {
@@ -90,6 +98,29 @@ impl Dispatch<wl_pointer::WlPointer, ()> for CursorClient {
     }
 }
 
+impl Dispatch<wl_surface::WlSurface, ()> for CursorClient {
+    fn event(
+        state: &mut Self,
+        surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if state.cursor_surface.as_ref() != Some(&surface.id()) {
+            return;
+        }
+        match event {
+            wl_surface::Event::Enter { .. } => state.cursor_entered = true,
+            wl_surface::Event::Leave { .. } => state.cursor_left = true,
+            wl_surface::Event::PreferredBufferScale { factor } => {
+                state.cursor_scale = Some(factor);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<xdg_wm_base::XdgWmBase, ()> for CursorClient {
     fn event(
         _: &mut Self,
@@ -123,9 +154,9 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for CursorClient {
 
 delegate_noop!(CursorClient: ignore wl_buffer::WlBuffer);
 delegate_noop!(CursorClient: ignore wl_compositor::WlCompositor);
+delegate_noop!(CursorClient: ignore wl_output::WlOutput);
 delegate_noop!(CursorClient: ignore wl_shm::WlShm);
 delegate_noop!(CursorClient: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(CursorClient: ignore wl_surface::WlSurface);
 delegate_noop!(CursorClient: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 delegate_noop!(CursorClient: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(CursorClient: ignore wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1);
@@ -214,6 +245,7 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
         CursorStep::ClientSurfaceSent
     );
     assert_eq!(cursor_hotspot(&runtime), tensor_util::Point::new(5, 7));
+    assert_eq!(runtime.state.test_cursor_surface_output_count(), 1);
     let raster = runtime.state.test_cursor_raster().unwrap();
     assert_eq!(raster.size, tensor_util::Size::new(16, 16));
     assert_eq!(raster.hotspot, tensor_util::Point::new(5, 7));
@@ -224,6 +256,16 @@ fn cursor_shape_requires_the_active_enter_serial_and_focused_client() {
         CursorStep::OffsetSent
     );
     assert_eq!(cursor_hotspot(&runtime), tensor_util::Point::new(3, 4));
+    advance_tx.send(()).unwrap();
+
+    assert_eq!(
+        dispatch_until_cursor_step(&mut runtime, &step_rx),
+        CursorStep::SurfaceRetired
+    );
+    assert_eq!(
+        runtime.state.cursor.image(),
+        &CursorImage::Named(CursorIcon::Pointer)
+    );
     advance_tx.send(()).unwrap();
 
     assert_eq!(
@@ -251,6 +293,9 @@ fn spawn_cursor_client(
             .unwrap();
         let seat = globals
             .bind::<wl_seat::WlSeat, _, _>(&handle, 1..=9, ())
+            .unwrap();
+        let _output = globals
+            .bind::<wl_output::WlOutput, _, _>(&handle, 1..=4, ())
             .unwrap();
         let shm = globals
             .bind::<wl_shm::WlShm, _, _>(&handle, 1..=2, ())
@@ -313,6 +358,7 @@ fn spawn_cursor_client(
         advances.recv().unwrap();
 
         let cursor_surface = compositor.create_surface(&handle, ());
+        state.cursor_surface = Some(cursor_surface.id());
         let cursor_viewport = viewporter.get_viewport(&cursor_surface, &handle, ());
         cursor_viewport.set_destination(16, 16);
         let cursor_buffer = create_cursor_buffer(&shm, &handle);
@@ -328,6 +374,14 @@ fn spawn_cursor_client(
         cursor_surface.commit();
         queue.roundtrip(&mut state).unwrap();
         steps.send(CursorStep::OffsetSent).unwrap();
+        advances.recv().unwrap();
+
+        assert!(state.cursor_entered);
+        assert_eq!(state.cursor_scale, Some(2));
+        cursor_device.set_shape(serial, wp_cursor_shape_device_v1::Shape::Pointer);
+        queue.roundtrip(&mut state).unwrap();
+        assert!(state.cursor_left);
+        steps.send(CursorStep::SurfaceRetired).unwrap();
         advances.recv().unwrap();
 
         cursor_device.destroy();
