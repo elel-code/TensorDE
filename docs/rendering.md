@@ -204,6 +204,8 @@ Pointer and tablet damage is selected from the complete old/new cursor rectangle
 hotspot alone. A cursor can therefore straddle differently scaled CRTCs without either clipping its
 adjacent-output pixels or leaving stale pixels behind. A client cursor surface with no committed
 buffer is invisible; it never falls through to the compositor's vector cursor.
+Tablet device removal snapshots at most 64 active tool positions in fixed-capacity storage, damages
+only their old extents, and retires cursor-surface output membership before one batched redraw.
 Presentation capture keeps the ordinary pointer cursor surface inline, so a pointer-only frame
 does not allocate a cursor-surface vector; storage grows only when tablet cursor surfaces are
 actually visible.

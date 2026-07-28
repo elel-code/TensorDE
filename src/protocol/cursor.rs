@@ -18,6 +18,19 @@ mod animation;
 
 const MAX_TABLET_CURSORS: usize = 64;
 
+pub(in crate::protocol) struct TabletCursorPositions {
+    entries: [Option<(tensor_event::TabletToolId, LogicalPoint<f64>)>; MAX_TABLET_CURSORS],
+    len: usize,
+}
+
+impl TabletCursorPositions {
+    pub(in crate::protocol) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (tensor_event::TabletToolId, LogicalPoint<f64>)> + '_ {
+        self.entries[..self.len].iter().flatten().copied()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::protocol) enum CursorImage {
     Hidden,
@@ -336,6 +349,27 @@ impl CursorState {
             .iter()
             .find(|tablet| tablet.tool == tool)
             .map(|tablet| tablet.location)
+    }
+
+    pub(in crate::protocol) fn tablet_positions_for(
+        &self,
+        tools: impl Iterator<Item = tensor_event::TabletToolId>,
+    ) -> TabletCursorPositions {
+        let mut positions = TabletCursorPositions {
+            entries: [None; MAX_TABLET_CURSORS],
+            len: 0,
+        };
+        for tool in tools {
+            let Some(location) = self.tablet_location(tool) else {
+                continue;
+            };
+            let Some(entry) = positions.entries.get_mut(positions.len) else {
+                unreachable!("tablet cursor positions share the cursor capacity");
+            };
+            *entry = Some((tool, location));
+            positions.len += 1;
+        }
+        positions
     }
 
     pub(in crate::protocol) fn set_tablet_image(

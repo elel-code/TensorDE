@@ -313,6 +313,81 @@ fn straddling_pointer_and_tablet_extents_redraw_both_heads() {
 }
 
 #[test]
+fn tablet_device_removal_redraws_only_the_cursor_extent() {
+    use tensor_event::{
+        DeviceCapabilities, DeviceChange, DeviceEvent, DeviceGroupId, DeviceId,
+        TabletToolCapabilities, TabletToolDescriptor, TabletToolId, TabletToolType,
+    };
+
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display,
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([
+            BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920)),
+            BackendOutputEvent::Connected(descriptor(2, "DP-2", 1280)),
+        ])
+        .unwrap();
+    let primary = BackendOutputId::new(1, 1);
+    let secondary = BackendOutputId::new(1, 2);
+    state.redraw_states.insert(primary, OutputRedrawState::Idle);
+    state
+        .redraw_states
+        .insert(secondary, OutputRedrawState::Idle);
+    let device = DeviceEvent {
+        id: DeviceId::new(7),
+        group: DeviceGroupId::new(3),
+        bus_type: 3,
+        vendor_id: 1,
+        product_id: 2,
+        capabilities: DeviceCapabilities {
+            tablet: true,
+            ..DeviceCapabilities::empty()
+        },
+        change: DeviceChange::Added,
+    };
+    state
+        .protocol_globals
+        .tablet
+        .device_changed(&state.display_handle, device);
+    let tool = TabletToolId::new(11);
+    state.protocol_globals.tablet.add_tool(
+        &state.display_handle,
+        TabletToolDescriptor {
+            id: tool,
+            device: device.id,
+            hardware_serial: 12,
+            hardware_id: 13,
+            tool_type: TabletToolType::Pen,
+            capabilities: TabletToolCapabilities::from_bits(0),
+        },
+    );
+    assert!(
+        state
+            .cursor
+            .note_tablet_activity(tool, (2000.0, 20.0).into())
+    );
+
+    state.process_input_event(crate::backend::LibinputEvent::Device(DeviceEvent {
+        change: DeviceChange::Removed,
+        ..device
+    }));
+
+    assert_eq!(state.cursor.tablet_location(tool), None);
+    assert_eq!(
+        state.redraw_states.get(&primary).copied(),
+        Some(OutputRedrawState::Idle)
+    );
+    assert_eq!(
+        state.redraw_states.get(&secondary).copied(),
+        Some(OutputRedrawState::Queued)
+    );
+}
+
+#[test]
 fn queue_marks_idle_and_waiting_outputs_dirty() {
     assert_eq!(OutputRedrawState::Idle.queue(), OutputRedrawState::Queued);
     assert_eq!(OutputRedrawState::Queued.queue(), OutputRedrawState::Queued);
