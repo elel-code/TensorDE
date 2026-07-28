@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::scene::{DamageSet, SceneSnapshot};
 
-use super::{CursorOverlay, format::OutputFormat};
+use super::{CursorOverlay, CursorOverlays, cursor::MAX_CURSOR_OVERLAYS, format::OutputFormat};
 
 #[cfg(test)]
 mod cursor_tests;
@@ -43,7 +43,6 @@ pub(crate) struct FrameSubmission {
     pub(crate) serial: u64,
     pub(crate) timeline_value: u64,
     pub(crate) scene: SceneSnapshot,
-    pub(crate) cursor: Option<CursorOverlay>,
     pub(crate) damage: DamageSet,
     pub(crate) descriptors: HeapAllocation,
     pub(crate) client_image_descriptors: u32,
@@ -115,7 +114,7 @@ impl FrameScheduler {
                 }
                 state.target = target;
                 state.previous_scene = None;
-                state.previous_cursor = None;
+                state.previous_cursors.clear();
                 state.next_slot = 0;
             }
         } else {
@@ -178,17 +177,17 @@ impl FrameScheduler {
         scene: SceneSnapshot,
         completed_timeline: u64,
     ) -> Result<FrameSubmission, FrameError> {
-        self.prepare_with_cursor(output, scene, None, completed_timeline)
+        self.prepare_with_cursors(output, scene, CursorOverlays::default(), completed_timeline)
     }
 
     /// Prepare a frame with a compositor-owned output overlay. Client scene
     /// state remains in ECS; input-driven overlays enter only here after the
     /// protocol boundary has converted them to physical output coordinates.
-    pub(crate) fn prepare_with_cursor(
+    pub(crate) fn prepare_with_cursors(
         &mut self,
         output: RenderOutputId,
         scene: SceneSnapshot,
-        cursor: Option<CursorOverlay>,
+        cursors: CursorOverlays,
         completed_timeline: u64,
     ) -> Result<FrameSubmission, FrameError> {
         if self.device_lost {
@@ -219,7 +218,7 @@ impl FrameScheduler {
             .ok_or(FrameError::TimelineExhausted)?;
         let serial = state.next_serial;
         serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
-        let draw_plan = FrameDrawPlan::build_with_cursor(&scene, state.target, cursor)?;
+        let draw_plan = FrameDrawPlan::build_with_cursors(&scene, state.target, cursors)?;
         let client_image_descriptors = u32::try_from(draw_plan.images().len())
             .map_err(|_| FrameError::DescriptorSizeOverflow)?;
         let descriptor_count = 1u64
@@ -235,10 +234,31 @@ impl FrameScheduler {
         let mut damage = scene
             .damage_since(state.previous_scene.as_ref())
             .to_physical(scene.viewport, state.target.viewport, state.target.scale);
-        if state.previous_cursor != cursor {
-            for overlay in [state.previous_cursor, cursor].into_iter().flatten() {
-                damage.add_region(overlay.clip, state.target.viewport);
+        let current_cursors = draw_plan.cursors();
+        let mut previous = state.previous_cursors.as_slice();
+        let mut current = current_cursors;
+        while let (Some(before), Some(after)) = (previous.first(), current.first()) {
+            match before.source.cmp(&after.source) {
+                std::cmp::Ordering::Less => {
+                    damage.add_region(before.clip, state.target.viewport);
+                    previous = &previous[1..];
+                }
+                std::cmp::Ordering::Greater => {
+                    damage.add_region(after.clip, state.target.viewport);
+                    current = &current[1..];
+                }
+                std::cmp::Ordering::Equal => {
+                    if before != after {
+                        damage.add_region(before.clip, state.target.viewport);
+                        damage.add_region(after.clip, state.target.viewport);
+                    }
+                    previous = &previous[1..];
+                    current = &current[1..];
+                }
             }
+        }
+        for overlay in previous.iter().chain(current) {
+            damage.add_region(overlay.clip, state.target.viewport);
         }
         let output_slot = state.next_slot;
         self.next_timeline_value = next_timeline_value;
@@ -255,7 +275,6 @@ impl FrameScheduler {
             serial,
             timeline_value,
             scene,
-            cursor,
             damage,
             descriptors,
             client_image_descriptors,
@@ -299,7 +318,10 @@ impl FrameScheduler {
             .checked_add(1)
             .ok_or(FrameError::SerialExhausted)?;
         state.previous_scene = Some(frame.scene.clone());
-        state.previous_cursor = frame.cursor;
+        state.previous_cursors.clear();
+        state
+            .previous_cursors
+            .extend_from_slice(frame.draw_plan.cursors());
         state.last_submitted_timeline = prepared.timeline_value;
         state.in_flight = true;
         Ok(())
@@ -340,7 +362,7 @@ impl FrameScheduler {
 struct OutputFrameState {
     target: NativeOutputTarget,
     previous_scene: Option<SceneSnapshot>,
-    previous_cursor: Option<CursorOverlay>,
+    previous_cursors: Vec<CursorOverlay>,
     next_serial: u64,
     last_submitted_timeline: u64,
     in_flight: bool,
@@ -372,7 +394,7 @@ impl OutputFrameState {
         Self {
             target,
             previous_scene: None,
-            previous_cursor: None,
+            previous_cursors: Vec::with_capacity(MAX_CURSOR_OVERLAYS),
             next_serial: 1,
             last_submitted_timeline: 0,
             in_flight: false,

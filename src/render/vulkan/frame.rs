@@ -24,8 +24,8 @@ pub(super) use super::heap::sampler_heap_layout;
 
 mod record;
 use record::{
-    SceneRecord, prepare_cursor_draw, prepare_draws, prepare_focus_ring_draws, prepare_scene_draws,
-    record_scene,
+    SceneRecord, prepare_cursor_draws, prepare_draws, prepare_focus_ring_draws,
+    prepare_scene_draws, record_scene,
 };
 
 const COMMAND_BUFFER_COUNT: usize = 3;
@@ -228,7 +228,7 @@ impl VulkanFrameExecutor {
             self.heap.resource_heap_base(),
         )
         .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
-        let cursor = prepare_cursor_draw(frame)
+        let cursors = prepare_cursor_draws(frame)
             .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let focus_rings = prepare_focus_ring_draws(frame)
             .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
@@ -239,7 +239,7 @@ impl VulkanFrameExecutor {
         } else {
             Some(self.pipeline_for(device, image.view_info.format)?)
         };
-        let cursor_pipeline = if cursor.is_some() {
+        let cursor_pipeline = if !cursors.is_empty() {
             let pipeline = self.cursor_pipeline_for(device, image.view_info.format)?;
             Some((pipeline.handle(), pipeline.layout()))
         } else {
@@ -275,7 +275,7 @@ impl VulkanFrameExecutor {
                     cursor_pipeline,
                     graphics_queue_family: self.graphics_queue_family,
                     scene_draws: &scene_draws,
-                    cursor,
+                    cursors: &cursors,
                 },
             );
             device

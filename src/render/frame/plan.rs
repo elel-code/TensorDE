@@ -4,7 +4,7 @@ use tensor_util::Rect;
 
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId},
-    render::CursorOverlay,
+    render::{CursorOverlay, CursorOverlays},
     scene::{
         ContentRevision, EffectStyle, FocusOutline, LinearRgba16, SceneSnapshot, SurfaceAlpha,
         SurfaceLayer, SurfaceSampleTransform,
@@ -23,7 +23,7 @@ pub(crate) struct FrameDrawPlan {
     draws: Vec<SurfaceDraw>,
     focus_rings: Vec<FocusRingDraw>,
     scene_draws: Vec<SceneDrawCommand>,
-    cursor: Option<CursorDraw>,
+    cursors: CursorOverlays,
 }
 
 /// One compositor scene command in back-to-front order.
@@ -51,15 +51,6 @@ pub(crate) struct SurfaceDraw {
     pub(crate) sample_transform: SurfaceSampleTransform,
 }
 
-/// A vector cursor draws after every client surface and therefore needs no
-/// sampled-image descriptor. Its rectangle is already output-local physical
-/// geometry, keeping pointer coordinates out of the Vulkan boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CursorDraw {
-    pub(crate) destination: Rect,
-    pub(crate) clip: Rect,
-}
-
 /// A compositor-owned rounded outline around one active view.
 ///
 /// Both rectangles use output-local physical coordinates. Keeping the inner
@@ -82,13 +73,13 @@ impl FrameDrawPlan {
         scene: &SceneSnapshot,
         target: NativeOutputTarget,
     ) -> Result<Self, FrameError> {
-        Self::build_with_cursor(scene, target, None)
+        Self::build_with_cursors(scene, target, CursorOverlays::default())
     }
 
-    pub(crate) fn build_with_cursor(
+    pub(crate) fn build_with_cursors(
         scene: &SceneSnapshot,
         target: NativeOutputTarget,
-        cursor: Option<CursorOverlay>,
+        cursors: CursorOverlays,
     ) -> Result<Self, FrameError> {
         let mut images = Vec::new();
         let mut image_descriptors = HashMap::new();
@@ -182,10 +173,7 @@ impl FrameDrawPlan {
             draws,
             focus_rings,
             scene_draws,
-            cursor: cursor.map(|overlay| CursorDraw {
-                destination: overlay.destination,
-                clip: overlay.clip,
-            }),
+            cursors,
         })
     }
 
@@ -205,8 +193,8 @@ impl FrameDrawPlan {
         &self.scene_draws
     }
 
-    pub(crate) const fn cursor(&self) -> Option<CursorDraw> {
-        self.cursor
+    pub(crate) fn cursors(&self) -> &[CursorOverlay] {
+        self.cursors.as_slice()
     }
 }
 

@@ -166,14 +166,12 @@ impl RuntimeState {
         }
 
         let scene = self.scene_for_output(&output, logical);
-        let pointer_location = self.input_seat.pointer_location();
-        let cursor = match (pointer_location, self.space.output_geometry(&output)) {
-            (Some(pointer), Some(geometry)) => {
-                self.cursor
-                    .overlay_for_output(pointer, geometry, target.scale, target.viewport)
-            }
-            _ => None,
-        };
+        let cursors = self.cursor.overlays_for_output(
+            self.input_seat.pointer_location(),
+            geometry,
+            target.scale,
+            target.viewport,
+        );
         let has_presented = self
             .outputs
             .get(&output_id)
@@ -181,7 +179,7 @@ impl RuntimeState {
         if has_presented
             && !self.session_is_locked()
             && scene.nodes().is_empty()
-            && cursor.is_none()
+            && cursors.is_empty()
         {
             self.set_redraw_state(output_id, OutputRedrawState::Idle);
             debug!(
@@ -246,7 +244,7 @@ impl RuntimeState {
         let Some(result) = self
             .renderer
             .as_mut()
-            .map(|renderer| renderer.submit_scene(render_output, scene, cursor))
+            .map(|renderer| renderer.submit_scene(render_output, scene, cursors))
         else {
             self.discard_captured_presentation(captured_presentation);
             self.set_redraw_state(output_id, OutputRedrawState::Idle);
@@ -415,7 +413,7 @@ impl RuntimeState {
                     output_slot = frame.output_slot,
                     serial = frame.serial,
                     timeline = frame.timeline_value,
-                    cursor = ?frame.cursor,
+                    cursors = frame.draw_plan.cursors().len(),
                     damage_regions = frame.damage.regions().len(),
                     descriptor_offset = frame.descriptors.offset,
                     descriptor_bytes = frame.descriptors.size,

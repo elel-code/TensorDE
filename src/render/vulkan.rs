@@ -17,7 +17,7 @@ use vulkanalia::{
 
 #[cfg(feature = "tty")]
 use super::{
-    CursorOverlay, Dmabuf, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId,
+    CursorOverlays, Dmabuf, FrameScheduler, FrameSubmission, NativeOutputTarget, RenderOutputId,
 };
 use super::{
     DescriptorHeapProperties, DeviceSelectionError, DrmDeviceIdentity, DrmNodeId,
@@ -476,12 +476,12 @@ impl VulkanRenderer {
         &mut self,
         output: RenderOutputId,
         scene: crate::scene::SceneSnapshot,
-        cursor: Option<CursorOverlay>,
+        cursors: CursorOverlays,
     ) -> Result<FrameSubmission, RendererError> {
         let completed = self.refresh_completed()?;
         let frame = self
             .frames
-            .prepare_with_cursor(output, scene, cursor, completed)
+            .prepare_with_cursors(output, scene, cursors, completed)
             .map_err(|error| RendererError::Frame(error.to_string()))?;
         let client_ids = frame.draw_plan.images().to_vec();
         debug!(

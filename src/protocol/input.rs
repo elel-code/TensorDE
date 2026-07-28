@@ -1,3 +1,4 @@
+mod device;
 mod focus;
 mod pointer_geometry;
 mod session_lock;
@@ -17,9 +18,8 @@ use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use xkbcommon::xkb::keysyms;
 
 use tensor_event::{
-    AbsoluteMotionEvent, BackendInputEvent, DeviceChange, KeyboardEvent, PointerAxisEvent,
-    PointerButtonEvent, PointerGestureEvent, RelativeMotionEvent, TabletToolAxesEvent,
-    TabletToolProximityEvent,
+    AbsoluteMotionEvent, BackendInputEvent, KeyboardEvent, PointerAxisEvent, PointerButtonEvent,
+    PointerGestureEvent, RelativeMotionEvent, TabletToolAxesEvent, TabletToolProximityEvent,
 };
 
 use crate::backend::LibinputEvent;
@@ -89,21 +89,6 @@ impl RuntimeState {
         if activity {
             self.notify_idle_activity();
         }
-    }
-
-    fn process_input_device_change(&mut self, event: tensor_event::DeviceEvent) {
-        self.protocol_globals
-            .tablet
-            .device_changed(&self.display_handle, event);
-        match event.change {
-            DeviceChange::Added => {
-                self.input_devices.insert(event.id, event.capabilities);
-            }
-            DeviceChange::Removed => {
-                self.input_devices.remove(&event.id);
-            }
-        }
-        self.reconcile_seat_capabilities();
     }
 
     pub(super) fn forward_tablet_proximity(&mut self, event: TabletToolProximityEvent) {

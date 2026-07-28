@@ -169,6 +169,16 @@ pub(super) fn announce_tool(
 }
 
 impl TabletProtocol {
+    pub(in crate::protocol) fn tool_ids_for_device(
+        &self,
+        device: DeviceId,
+    ) -> impl Iterator<Item = TabletToolId> + '_ {
+        self.tools
+            .iter()
+            .filter(move |tool| tool.descriptor.device == device)
+            .map(|tool| tool.descriptor.id)
+    }
+
     #[cfg(test)]
     pub(crate) fn client_for_tool(
         &self,

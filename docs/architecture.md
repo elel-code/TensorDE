@@ -247,7 +247,9 @@ boundary. Stable tablet-v2 is also direct Tensor state: libinput device groups d
 tablets, compact fixed-size values carry tool and pad frames, and compositor-thread owners retain
 all Wayland resources. Tool focus is independent of pointer focus, respects session lock and
 button/tip grabs, and pad groups expose buttons, modes, rings, strips, and version-2 dials without
-placing libinput or Wayland handles in Compio workers.
+placing libinput or Wayland handles in Compio workers. Pointer and tool cursors remain independent;
+the frame boundary carries at most one pointer plus 64 tool overlays in a fixed-capacity batch and
+damages only sources whose geometry changed.
 
 Tensor directly owns stable xdg-shell v7: `xdg_wm_base`, positioners, surfaces,
 toplevels, popups, client/server double-buffering, metadata, parents, and configure ACK lifecycle.
