@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
     sync::mpsc,
@@ -25,6 +26,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2, zwp_input_method_manager_v2, zwp_input_method_v2,
     zwp_input_popup_surface_v2,
 };
+use xkbcommon::xkb;
 
 use super::*;
 
@@ -266,8 +268,24 @@ impl Dispatch<zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2, (
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_input_method_keyboard_grab_v2::Event::Keymap { size, .. } => {
-                state.keymap = size > 0;
+            zwp_input_method_keyboard_grab_v2::Event::Keymap { fd, size, .. } => {
+                let mut keymap_bytes = Vec::with_capacity(size as usize);
+                let mut keymap_reader = std::fs::File::from(fd).take(u64::from(size));
+                let keymap = keymap_reader
+                    .read_to_end(&mut keymap_bytes)
+                    .ok()
+                    .filter(|read| *read == size as usize)
+                    .and_then(|_| String::from_utf8(keymap_bytes).ok());
+                let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                state.keymap = keymap.is_some_and(|keymap| {
+                    xkb::Keymap::new_from_string(
+                        &context,
+                        keymap,
+                        xkb::KEYMAP_FORMAT_TEXT_V1,
+                        xkb::KEYMAP_COMPILE_NO_FLAGS,
+                    )
+                    .is_some()
+                });
             }
             zwp_input_method_keyboard_grab_v2::Event::Key {
                 time,

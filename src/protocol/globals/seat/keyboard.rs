@@ -21,7 +21,7 @@ use crate::protocol::{seat::ModifiersState, serial::Serial, state::RuntimeState}
 #[derive(Debug)]
 pub(in crate::protocol::globals) struct KeymapFile {
     fd: OwnedFd,
-    size: u32,
+    nul_terminated_size: u32,
 }
 
 impl KeymapFile {
@@ -43,15 +43,30 @@ impl KeymapFile {
             &fd,
             SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL,
         )?;
-        Ok(Self { fd, size })
+        Ok(Self {
+            fd,
+            nul_terminated_size: size,
+        })
     }
 
     fn send(&self, keyboard: &WlKeyboard) {
-        keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, self.fd.as_fd(), self.size);
+        keyboard.keymap(
+            wl_keyboard::KeymapFormat::XkbV1,
+            self.fd.as_fd(),
+            self.nul_terminated_size,
+        );
     }
 
     fn send_input_method(&self, keyboard: &ZwpInputMethodKeyboardGrabV2) {
-        keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, self.fd.as_fd(), self.size);
+        // Input-method clients parse this event as a sized XKB buffer, unlike
+        // wl_keyboard consumers that expect a C string. Keep one sealed memfd
+        // but exclude its trailing NUL from this wire view. Fcitx rejects that
+        // terminator as an extra token when it is included in `size`.
+        keyboard.keymap(
+            wl_keyboard::KeymapFormat::XkbV1,
+            self.fd.as_fd(),
+            self.nul_terminated_size - 1,
+        );
     }
 }
 
