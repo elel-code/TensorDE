@@ -487,27 +487,6 @@ struct IconGpuTexture {
     source: crate::ui::render::dmabuf::ExternalTextureSource,
 }
 
-/// Snapshot of resident GPU icon sizes at frame start (avoids mut borrow splits).
-#[derive(Clone, Debug, Default)]
-struct IconGpuResidentIndex {
-    entries: HashMap<IconGpuUploadKey, IconGpuResidentEntry>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct IconGpuResidentEntry {
-    width: u32,
-    height: u32,
-    content_width: u32,
-    content_height: u32,
-    content_hash: u64,
-    rounding: Option<IconRounding>,
-}
-
-impl IconGpuResidentIndex {
-    fn get(&self, key: &IconGpuUploadKey) -> Option<IconGpuResidentEntry> {
-        self.entries.get(key).copied()
-    }
-}
 struct IconRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -535,20 +514,6 @@ struct IconRenderer {
     dmabuf_imports: u64,
     gpu_source_renderer: Option<GpuIconSourceRenderer>,
     engine: IconEngine,
-}
-
-struct IconEngine {
-    resolver: FileIconResolver,
-    thumbnails: ThumbnailSourceResolver,
-}
-
-impl IconEngine {
-    fn new() -> Self {
-        Self {
-            resolver: FileIconResolver::new(),
-            thumbnails: ThumbnailSourceResolver::new(),
-        }
-    }
 }
 
 impl std::ops::Deref for IconRenderer {

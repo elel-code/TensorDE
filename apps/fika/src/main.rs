@@ -1,5 +1,7 @@
 mod windowing;
 
+#[path = "main/icon_engine.rs"]
+mod icon_engine;
 #[path = "main/native_vulkan_app.rs"]
 mod native_vulkan_app;
 #[path = "main/navigation_completion.rs"]
@@ -26,6 +28,7 @@ mod vulkan_text;
 mod vulkan_text_spirv;
 
 include!("main/crate_prelude.rs");
+use icon_engine::*;
 use scene_types::*;
 use text_frame::*;
 
