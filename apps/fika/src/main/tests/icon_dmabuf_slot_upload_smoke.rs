@@ -94,7 +94,6 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
     let plan = DmabufImportPlan {
         fourcc: fourcc::ARGB8888,
         modifier: fourcc::MOD_LINEAR,
-        texture_format: wgpu::TextureFormat::Bgra8Unorm,
         main_device: 0,
         scanout_preferred: false,
     };

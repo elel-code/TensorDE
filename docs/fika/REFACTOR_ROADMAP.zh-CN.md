@@ -8,7 +8,7 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
 - 每一步只移动一个明确边界，避免把行为改动混进结构调整。
 - 保持测试先行的回归 gate：`cargo fmt`、`cargo check`、`cargo test`、
   `scripts/check-rust-file-lines.sh`、`git diff --check`。
-- 每个 Rust 源文件严格限制为最多 1000 行，不设历史文件豁免；达到上限前应按职责拆成
+- 每个 Rust 源文件严格限制为最多 800 行，不设历史文件豁免；达到上限前应按职责拆成
   子模块，不能通过提高阈值或排除测试文件绕过。
 - 性能相关变更遵循 `docs/PERFORMANCE_ALIGNMENT.zh-CN.md`，需要 Dolphin
   reference 时必须写明本地源码路径和 Fika 映射。
@@ -45,7 +45,9 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   timeline 保活、retire 与 reclaim。原生路径不运行 icon resolver，也不生成 CPU quad。
   早期在 wgpu 初始化前临时创建第二套 Vulkan device 的单帧 probe 已删除；它会增加
   启动时间、显存峰值和双设备生命周期复杂度，又不能证明持久原生主线。后续只继续迁移
-  并删除 `WgpuState`，不再增加临时双 renderer 入口。
+  并删除 `WgpuState`，不再增加临时双 renderer 入口。dma-buf cold-path 协商结果也已删除
+  可由 DRM fourcc 推导的 `wgpu::TextureFormat` 字段，只保留 fourcc、modifier、device 与
+  scanout 偏好；旧 wgpu 格式映射被限制在待删除 importer 的最终调用边界。
 - 独立 dialog window host：
   `src/ui/dialog_window.rs` 管理 dialog window 创建、同步、关闭、cursor、resize、
   renderer size、scale factor 和 window id 路由。

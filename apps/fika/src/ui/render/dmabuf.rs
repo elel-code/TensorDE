@@ -80,6 +80,18 @@ pub(crate) fn texture_format_for_fourcc(code: u32) -> Option<wgpu::TextureFormat
     }
 }
 
+const fn sampled_fourcc_supported(code: u32) -> bool {
+    matches!(
+        code,
+        fourcc::ARGB8888
+            | fourcc::XRGB8888
+            | fourcc::BGRA8888
+            | fourcc::ABGR8888
+            | fourcc::XBGR8888
+            | fourcc::RGBA8888
+    )
+}
+
 /// Whether the adapter can import dmabuf fds through wgpu-hal Vulkan.
 pub(crate) fn adapter_supports_dmabuf_import(adapter: &wgpu::Adapter) -> bool {
     adapter
@@ -97,10 +109,10 @@ pub(crate) fn optional_dmabuf_features(adapter: &wgpu::Adapter) -> wgpu::Feature
     want
 }
 
-/// Fourccs we can import into wgpu textures, in preference order.
+/// Fourccs the Vulkan import path accepts, in preference order.
 ///
 /// Prefer BGRA/ARGB (native LE layout for `Bgra8Unorm`) over RGBA variants.
-pub(crate) const WGPU_IMPORT_FOURCC_PREFERENCE: &[u32] = &[
+pub(crate) const VULKAN_IMPORT_FOURCC_PREFERENCE: &[u32] = &[
     fourcc::ARGB8888,
     fourcc::BGRA8888,
     fourcc::XRGB8888,
@@ -109,14 +121,14 @@ pub(crate) const WGPU_IMPORT_FOURCC_PREFERENCE: &[u32] = &[
     fourcc::XBGR8888,
 ];
 
-/// Pick a compositor-advertised format that wgpu can import.
+/// Pick a compositor-advertised format that the Vulkan path can import.
 ///
 /// Uses tranche preference from feedback, constrained to formats we map to a
-/// wgpu [`TextureFormat`]. Returns `None` if feedback has no overlap.
+/// sampleable format. Returns `None` if feedback has no overlap.
 pub(crate) fn pick_import_format(
     feedback: &wayland_client_runtime::DmabufFeedback,
 ) -> Option<wayland_client_runtime::DmabufFormat> {
-    feedback.pick_format(WGPU_IMPORT_FOURCC_PREFERENCE)
+    feedback.pick_format(VULKAN_IMPORT_FOURCC_PREFERENCE)
 }
 
 /// Same as [`pick_import_format`], but only consider scan-out tranches when
@@ -129,7 +141,7 @@ pub(crate) fn pick_scanout_import_format(
     if scanout.is_empty() {
         return pick_import_format(feedback);
     }
-    for &cand in WGPU_IMPORT_FOURCC_PREFERENCE {
+    for &cand in VULKAN_IMPORT_FOURCC_PREFERENCE {
         if let Some(fmt) = scanout.iter().find(|f| f.format == cand) {
             return Some(*fmt);
         }
@@ -137,12 +149,11 @@ pub(crate) fn pick_scanout_import_format(
     None
 }
 
-/// Negotiated plan for importing external dmabuf content into wgpu.
+/// Backend-neutral plan for importing external dma-buf content on Vulkan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DmabufImportPlan {
     pub fourcc: u32,
     pub modifier: u64,
-    pub texture_format: wgpu::TextureFormat,
     /// Compositor main device (`dev_t`) from feedback, when known.
     pub main_device: u64,
     pub scanout_preferred: bool,
@@ -176,7 +187,7 @@ impl DmabufReadiness {
     }
 }
 
-/// Build an import plan from compositor feedback (if any) + local wgpu capability.
+/// Build an import plan from compositor feedback and local Vulkan capability.
 pub(crate) fn build_import_plan(
     vulkan_import: bool,
     feedback: Option<&wayland_client_runtime::DmabufFeedback>,
@@ -194,11 +205,10 @@ pub(crate) fn build_import_plan(
     } else {
         (pick_import_format(feedback)?, false)
     };
-    let texture_format = texture_format_for_fourcc(fmt.format)?;
+    sampled_fourcc_supported(fmt.format).then_some(())?;
     Some(DmabufImportPlan {
         fourcc: fmt.format,
         modifier: fmt.modifier,
-        texture_format,
         main_device: feedback.main_device(),
         scanout_preferred,
     })
@@ -379,11 +389,10 @@ pub(crate) fn acquire_external_texture(
     let plane = plane.ok_or(DmabufImportError::FeatureUnavailable)?;
     let desc = import_desc_from_plan(plan, width, height, plane, external_sample_usages(), label);
     let texture = import_dmabuf_texture(device, desc)?;
+    let format = texture_format_for_fourcc(plan.fourcc)
+        .ok_or(DmabufImportError::UnsupportedFourcc(plan.fourcc))?;
     Ok(ExternalTexture::from_imported(
-        texture,
-        width,
-        height,
-        plan.texture_format,
+        texture, width, height, format,
     ))
 }
 
@@ -686,7 +695,6 @@ mod tests {
         let plan = ready.plan.expect("plan");
         assert_eq!(plan.fourcc, fourcc::ARGB8888);
         assert_eq!(plan.main_device, 42);
-        assert_eq!(plan.texture_format, wgpu::TextureFormat::Bgra8Unorm);
     }
 
     #[test]
@@ -741,7 +749,6 @@ mod tests {
         let plan = DmabufImportPlan {
             fourcc: fourcc::ARGB8888,
             modifier: fourcc::MOD_LINEAR,
-            texture_format: wgpu::TextureFormat::Bgra8Unorm,
             main_device: 0,
             scanout_preferred: false,
         };
