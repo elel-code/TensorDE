@@ -15,6 +15,8 @@ const SESSION_ENVIRONMENT: &[&str] = &[
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_TYPE",
     "TENSOR_IPC_SOCKET",
+    "XCURSOR_THEME",
+    "XCURSOR_SIZE",
 ];
 
 fn main() -> ExitCode {

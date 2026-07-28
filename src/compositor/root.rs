@@ -24,7 +24,7 @@ use wayland_completion::WaylandCompletionBridges;
 use crate::render::{GpuFenceEvent, GpuFenceRuntime, GpuFenceRuntimeError, MAX_PENDING_GPU_FENCES};
 use crate::{
     backend::BackendConfig,
-    config::{Config, EnvironmentConfig, StartupCommand},
+    config::{Config, CursorConfig, EnvironmentConfig, StartupCommand},
     ipc::{
         IpcControlEvent, IpcError, IpcEvent, IpcRuntime, IpcServer, MAX_PENDING_IPC_CONTROL_EVENTS,
         MAX_PENDING_IPC_REQUESTS,
@@ -74,6 +74,7 @@ pub struct Compositor {
     launch_worker: Option<LaunchWorker>,
     startup_commands: Vec<StartupCommand>,
     environment: EnvironmentConfig,
+    cursor: CursorConfig,
     systemd: SystemdMode,
     xwayland: XWaylandConfig,
 }
@@ -99,7 +100,9 @@ impl Compositor {
             LayoutEngine::with_options(initial_layout, layout_options),
             appearance,
         )?;
-        protocol.state_mut().apply_runtime_policy(cursor, debug);
+        protocol
+            .state_mut()
+            .apply_runtime_policy(cursor.clone(), debug);
         let requested_drm_node = render_device
             .as_deref()
             .map(DrmNodeId::from_path)
@@ -177,6 +180,7 @@ impl Compositor {
             launch_worker: None,
             startup_commands,
             environment,
+            cursor,
             systemd,
             xwayland,
         })
@@ -312,6 +316,8 @@ impl Compositor {
             self.protocol.socket_name().to_os_string(),
             OsString::from(self.ipc.path()),
             self.protocol.xwayland_display(),
+            self.cursor.theme.clone(),
+            self.cursor.size,
         );
         apply_user_environment(&mut environment, &self.environment);
         self.launcher
@@ -371,6 +377,7 @@ impl Compositor {
             launch_worker,
             startup_commands,
             environment,
+            cursor: _,
             systemd,
             xwayland,
         } = self;
@@ -657,18 +664,31 @@ mod tests {
 
     #[test]
     fn user_environment_cannot_override_session_names() {
-        let mut environment = session_environment("wayland-1", "/tmp/tensor.sock", None);
+        let mut environment =
+            session_environment("wayland-1", "/tmp/tensor.sock", None, "default", 24);
         apply_user_environment(
             &mut environment,
             &EnvironmentConfig {
-                clear: vec!["WAYLAND_DISPLAY".to_owned(), "EDITOR".to_owned()],
+                clear: vec![
+                    "WAYLAND_DISPLAY".to_owned(),
+                    "XCURSOR_THEME".to_owned(),
+                    "EDITOR".to_owned(),
+                ],
                 set: [
                     ("WAYLAND_DISPLAY".to_owned(), "evil".to_owned()),
+                    ("XCURSOR_THEME".to_owned(), "evil".to_owned()),
                     ("EDITOR".to_owned(), "hx".to_owned()),
                 ]
                 .into_iter()
                 .collect(),
             },
+        );
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "XCURSOR_THEME")
+                .map(|(_, value)| value.as_os_str()),
+            Some(std::ffi::OsStr::new("default"))
         );
         assert_eq!(
             environment

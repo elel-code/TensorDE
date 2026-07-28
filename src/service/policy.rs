@@ -59,12 +59,16 @@ pub(crate) const SESSION_ENVIRONMENT_NAMES: &[&str] = &[
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_TYPE",
     "TENSOR_IPC_SOCKET",
+    "XCURSOR_THEME",
+    "XCURSOR_SIZE",
 ];
 
 pub fn session_environment(
     wayland_display: impl Into<OsString>,
     ipc_socket: impl Into<OsString>,
     xwayland_display: Option<OsString>,
+    cursor_theme: impl Into<OsString>,
+    cursor_size: u32,
 ) -> Vec<EnvironmentValue> {
     let mut environment = vec![
         (OsString::from("WAYLAND_DISPLAY"), wayland_display.into()),
@@ -77,6 +81,11 @@ pub fn session_environment(
             OsString::from("wayland"),
         ),
         (OsString::from("TENSOR_IPC_SOCKET"), ipc_socket.into()),
+        (OsString::from("XCURSOR_THEME"), cursor_theme.into()),
+        (
+            OsString::from("XCURSOR_SIZE"),
+            OsString::from(cursor_size.to_string()),
+        ),
     ];
     if let Some(display) = xwayland_display {
         environment.push((OsString::from("DISPLAY"), display));
@@ -114,11 +123,27 @@ mod tests {
 
     #[test]
     fn session_environment_includes_only_an_allocated_xwayland_display() {
-        let without_xwayland = session_environment("wayland-1", "/tmp/tensor.sock", None);
+        let without_xwayland =
+            session_environment("wayland-1", "/tmp/tensor.sock", None, "Adwaita", 32);
         assert!(!without_xwayland.iter().any(|(name, _)| name == "DISPLAY"));
+        assert!(
+            without_xwayland
+                .iter()
+                .any(|(name, value)| name == "XCURSOR_THEME" && value == "Adwaita")
+        );
+        assert!(
+            without_xwayland
+                .iter()
+                .any(|(name, value)| name == "XCURSOR_SIZE" && value == "32")
+        );
 
-        let with_xwayland =
-            session_environment("wayland-1", "/tmp/tensor.sock", Some(OsString::from(":7")));
+        let with_xwayland = session_environment(
+            "wayland-1",
+            "/tmp/tensor.sock",
+            Some(OsString::from(":7")),
+            "Adwaita",
+            32,
+        );
         assert!(
             with_xwayland
                 .iter()
