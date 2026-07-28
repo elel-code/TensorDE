@@ -1,0 +1,42 @@
+#compdef gilderctl
+
+local -a commands
+commands=(
+  'ping:check daemon availability'
+  'status:show daemon state'
+  'outputs:list desktop outputs'
+  'watch:stream daemon events'
+  'properties:read or write wallpaper properties'
+  'set:set wallpaper package'
+  'pause:pause wallpapers'
+  'resume:resume wallpapers'
+  'stop:remove wallpapers'
+)
+
+_arguments -C \
+  '1:command:->command' \
+  '*::arg:->args'
+
+case $state in
+  command)
+    _describe 'command' commands
+    ;;
+  args)
+    case $words[2] in
+      properties)
+        _arguments \
+          '1:subcommand:(get set unset)' \
+          '*:argument:_files' \
+          '--output[select output]:output:'
+        ;;
+      set)
+        _arguments \
+          '1:wallpaper package:_files' \
+          '--output[select output]:output:'
+        ;;
+      pause|resume|stop)
+        _arguments '--output[select output]:output:'
+        ;;
+    esac
+    ;;
+esac

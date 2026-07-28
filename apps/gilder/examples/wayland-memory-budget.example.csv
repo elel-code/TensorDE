@@ -1,0 +1,55 @@
+scenario,phase,metric,max,min_release_from_active_kib
+active,active,max_uss_kib,280000
+active,active,max_private_kib,280000
+active,active,max_private_dirty_kib,163840
+active,active,max_pss_kib,320000
+active,active,max_rss_kib,420000
+active,active,avg_cpu_percent,25
+active,active,renderer_video_pipelines_latest,1
+active,active,renderer_video_surfaces_latest,1
+active,active,renderer_static_surfaces_latest,0
+active,active,render_sync_planned_video_source_references_latest,1
+active,active,render_sync_planned_unique_video_sources_latest,1
+active,active,render_sync_planned_duplicate_video_source_references_latest,0
+active,active,render_sync_planned_max_video_source_outputs_latest,1
+active,user-paused,renderer_video_pipelines_latest,0
+active,user-paused,render_sync_planned_video_source_references_latest,0
+active,user-paused,retained_uss_delta_kib,40960
+active,user-paused,retained_private_delta_kib,40960
+active,user-paused,retained_private_dirty_delta_kib,40960
+battery,battery,renderer_video_pipelines_latest,1
+*,*,render_sync_planned_duplicate_video_source_references_latest,0
+*,*,render_sync_planned_max_video_source_outputs_latest,1
+*,*,render_sync_planned_unique_video_sources_latest,1
+*,*,render_sync_planned_video_source_references_latest,1
+unfocused,unfocused,renderer_video_pipelines_latest,1
+fullscreen,fullscreen,renderer_video_pipelines_latest,0
+hidden,hidden,renderer_video_pipelines_latest,0
+session-inactive,session-inactive,renderer_video_pipelines_latest,0
+session-locked,session-locked,renderer_video_pipelines_latest,0
+# Enable these when running with --scenario fullscreen-resume.
+# fullscreen-resume,resumed,renderer_video_pipelines_latest,1
+# fullscreen-resume,resumed,retained_uss_delta_kib,40960
+# fullscreen-resume,resumed,retained_private_delta_kib,40960
+# fullscreen-resume,resumed,retained_private_dirty_delta_kib,40960
+*,*,render_sync_package_cache_retained_unique_resource_bytes_latest,104857600
+*,*,render_sync_package_cache_retained_unique_preview_resource_bytes_latest,52428800
+*,*,render_sync_package_cache_max_retained_unique_resource_bytes_latest,536870912
+*,*,render_sync_static_image_cache_bytes_latest,104857600
+# NVIDIA-only 4K/240 direct gtk4paintablesink guardrail, enable on hosts where
+# nvidia-smi reports per-process memory:
+# active,active,max_nvidia_process_gpu_memory_mib,550
+# Category Private_Dirty guardrails are host/driver-specific. Enable after one
+# local baseline run with memory-mapping-categories.csv evidence.
+# active,active,memory_category_anonymous_private_dirty_kib,65536
+# active,active,memory_category_heap_private_dirty_kib,32768
+# active,active,memory_category_nvidia_device_private_dirty_kib,32768
+# active,active,memory_category_nvidia_library_private_dirty_kib,16384
+# fullscreen,fullscreen,memory_category_nvidia_device_private_dirty_kib,8192
+# fullscreen,fullscreen,memory_category_anonymous_private_dirty_kib,32768
+# Release guardrails use memory-category-deltas.csv and require the lifecycle
+# phase to release at least the configured KiB from the active,active baseline.
+# Enable only after accepting a host-specific release baseline:
+# active,user-paused,memory_category_nvidia_device_private_dirty_kib,,8192
+# fullscreen,fullscreen,memory_category_nvidia_device_private_dirty_kib,,8192
+# hidden,hidden,memory_category_anonymous_private_dirty_kib,,16384

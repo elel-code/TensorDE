@@ -1,0 +1,41 @@
+_gilderctl()
+{
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="ping status outputs watch properties set pause resume stop"
+    local property_subcommands="get set unset"
+
+    if [[ ${cword} -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
+        return
+    fi
+
+    case "${words[1]}" in
+        properties)
+            if [[ ${cword} -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "${property_subcommands}" -- "${cur}"))
+            elif [[ "${prev}" == "--output" ]]; then
+                COMPREPLY=()
+            else
+                COMPREPLY=($(compgen -W "--output" -- "${cur}"))
+            fi
+            ;;
+        set)
+            if [[ "${prev}" == "--output" ]]; then
+                COMPREPLY=()
+            else
+                COMPREPLY=($(compgen -f -W "--output" -- "${cur}"))
+            fi
+            ;;
+        pause|resume|stop)
+            if [[ "${prev}" == "--output" ]]; then
+                COMPREPLY=()
+            else
+                COMPREPLY=($(compgen -W "--output" -- "${cur}"))
+            fi
+            ;;
+    esac
+}
+
+complete -F _gilderctl gilderctl

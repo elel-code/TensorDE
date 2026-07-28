@@ -1,0 +1,66 @@
+[package]
+name = "gilder"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/elel-code/Gilder"
+homepage = "https://github.com/elel-code/Gilder"
+build = "build.rs"
+
+[features]
+default = []
+native-wayland-renderer = [
+    "dep:rustix",
+    "dep:smithay-client-toolkit",
+]
+native-vulkan-renderer = [
+    "native-wayland-renderer",
+    "dep:vulkanalia",
+]
+native-vulkan-video = ["native-vulkan-renderer"]
+native-vulkan-vulkanalia = ["native-vulkan-renderer"]
+
+[[bin]]
+name = "gilderd"
+path = "src/bin/gilderd.rs"
+
+[[bin]]
+name = "gilderctl"
+path = "src/bin/gilderctl.rs"
+
+[[bin]]
+name = "gilder-convert"
+path = "src/bin/gilder-convert.rs"
+
+[[bin]]
+name = "gilder-native-vulkan"
+path = "src/bin/gilder-native-vulkan.rs"
+required-features = ["native-vulkan-renderer"]
+
+[dependencies]
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+intel_tex_2 = "0.5.0"
+jiff = "0.2"
+oxc_allocator = "0"
+oxc_ast = "0"
+oxc_ast_visit = "0"
+oxc_parser = "0"
+oxc_span = "0"
+rquickjs = { version = "0", features = ["loader"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+smithay-client-toolkit = { version = "0.21", features = ["system"], optional = true }
+rustix = { version = "1.1", features = ["event"], optional = true }
+toml = "1"
+vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
+zip = { version = "4", default-features = false, features = ["deflate"] }
+
+# [profile.release]
+# codegen-units = 1
+# lto = "thin"
+# panic = "abort"
+# strip = "symbols"
+
+[lints.rust]
+unsafe_code = "warn"

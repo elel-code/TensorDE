@@ -1,0 +1,61 @@
+{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "org.gilder.examples.shader-demo",
+  "version": "1.0.0",
+  "title": "Shader Demo",
+  "authors": [
+    "Gilder"
+  ],
+  "license": "MIT",
+  "kind": "shader",
+  "tags": [
+    "example",
+    "shader",
+    "fallback"
+  ],
+  "preview": {
+    "thumbnail": "previews/thumbnail.svg",
+    "poster": "previews/poster.svg"
+  },
+  "entry": {
+    "type": "shader",
+    "source": "shaders/main.frag",
+    "fallback": "previews/poster.svg",
+    "language": "glsl",
+    "max_fps": 60,
+    "uniforms": [
+      {
+        "name": "u_time",
+        "source": "time"
+      },
+      {
+        "name": "u_resolution",
+        "source": "resolution"
+      },
+      {
+        "name": "u_mouse",
+        "source": "mouse"
+      },
+      {
+        "name": "u_intensity",
+        "source": "property",
+        "property": "intensity"
+      }
+    ]
+  },
+  "properties": {
+    "intensity": {
+      "type": "range",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.65
+    }
+  },
+  "runtime": {
+    "pause_when_fullscreen": true,
+    "pause_when_unfocused": false,
+    "allow_audio": false
+  }
+}

@@ -1,0 +1,28 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneEngineTelemetry {
+    pub render_graph_passes: u32,
+    pub unsupported_graph_boundaries: u32,
+    pub render_graph_resource_uses: u32,
+    pub render_graph_derived_barriers: u32,
+    pub render_graph_execution_dependencies: u32,
+    pub render_graph_execution_levels: u32,
+    pub render_graph_semantic_target_runs: u32,
+    pub render_graph_semantic_scene_color_runs: u32,
+    pub render_graph_semantic_offscreen_target_runs: u32,
+    pub render_graph_semantic_repeated_target_runs: u32,
+    pub render_graph_semantic_max_target_runs: u32,
+    pub render_graph_semantic_max_run_passes: u32,
+    pub render_graph_run_plan_schedule: String,
+    pub render_graph_run_plan_candidate_count: u32,
+    pub render_graph_run_plan_candidate_min_physical_targets: u32,
+    pub render_graph_run_plan_candidate_min_target_runs: u32,
+    pub render_graph_logical_targets: u32,
+    pub render_graph_physical_target_slots: u32,
+    pub render_graph_aliased_targets: u32,
+    pub retained_layer_pose_timeline_bytes: u64,
+    pub retained_layer_pose_timeline_layers: u32,
+    pub retained_layer_pose_timeline_frames: u32,
+    pub retained_layer_pose_timeline_model: &'static str,
+}

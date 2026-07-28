@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gilder Scene Engine"
+  short_description: "Validate general Vulkan 2026 scene-engine changes"
+  default_prompt: "Use $gilder-scene-engine to validate a Gilder scene-engine change for authored correctness and release performance."

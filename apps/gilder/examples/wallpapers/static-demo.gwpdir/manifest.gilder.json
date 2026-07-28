@@ -1,0 +1,36 @@
+{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "org.gilder.examples.static-demo",
+  "version": "0.1.0",
+  "title": "Static Demo",
+  "authors": ["Gilder Project"],
+  "license": "CC0-1.0",
+  "kind": "static-image",
+  "tags": ["example", "static"],
+  "preview": {
+    "thumbnail": "previews/thumbnail.svg",
+    "poster": "previews/poster.svg"
+  },
+  "entry": {
+    "type": "static-image",
+    "source": "assets/wallpaper.svg",
+    "fit": "cover",
+    "background": "#101418",
+    "orientation": "ignore"
+  },
+  "properties": {
+    "fit": {
+      "type": "choice",
+      "default": "cover",
+      "choices": ["cover", "contain", "stretch", "tile", "center"]
+    }
+  },
+  "runtime": {
+    "pause_when_fullscreen": true,
+    "pause_when_unfocused": false,
+    "allow_network": false,
+    "allow_audio": false
+  }
+}
+

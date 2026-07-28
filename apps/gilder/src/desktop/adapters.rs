@@ -1,0 +1,885 @@
+//! Compositor adapter helpers for building desktop snapshots.
+
+use super::{CompositorKind, DesktopCursorParallax, DesktopOutput, DesktopSnapshot, PowerState};
+use crate::config::AdapterConfig;
+use serde_json::Value;
+use std::fmt;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+const OUTPUT_STATE_OVERRIDE: &str = "GILDER_OUTPUT_STATE";
+const OUTPUT_STATE_OVERRIDE_FILE: &str = "GILDER_OUTPUT_STATE_FILE";
+const DESKTOP_OUTPUTS_OVERRIDE: &str = "GILDER_DESKTOP_OUTPUTS";
+const CURSOR_PARALLAX_OVERRIDE: &str = "GILDER_CURSOR_PARALLAX";
+
+pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
+    if let Some(snapshot) = read_desktop_outputs_override() {
+        return with_runtime_state(snapshot);
+    }
+
+    if config.hyprland && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        if let Ok(snapshot) = hyprland::read_snapshot() {
+            return with_runtime_state(snapshot);
+        }
+    }
+
+    if config.niri && std::env::var_os("NIRI_SOCKET").is_some() {
+        if let Ok(snapshot) = niri::read_snapshot() {
+            return with_runtime_state(snapshot);
+        }
+    }
+
+    let mut snapshot = DesktopSnapshot::placeholder();
+    if config.generic_wayland {
+        snapshot.compositor = Some(CompositorKind::GenericWayland);
+    }
+    with_runtime_state(snapshot)
+}
+
+fn read_desktop_outputs_override() -> Option<DesktopSnapshot> {
+    let outputs = std::env::var(DESKTOP_OUTPUTS_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_desktop_outputs_override(&value))?;
+    Some(DesktopSnapshot {
+        outputs,
+        ..DesktopSnapshot::default()
+    })
+}
+
+fn parse_desktop_outputs_override(value: &str) -> Option<Vec<DesktopOutput>> {
+    let value = value.trim();
+    if value.is_empty() || matches!(value.to_ascii_lowercase().as_str(), "auto" | "compositor") {
+        return None;
+    }
+
+    let outputs = value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(parse_desktop_output_override)
+        .collect::<Option<Vec<_>>>()?;
+    if outputs.is_empty() {
+        None
+    } else {
+        Some(outputs)
+    }
+}
+
+fn parse_desktop_output_override(entry: &str) -> Option<DesktopOutput> {
+    let (name, geometry) = match entry.split_once(':') {
+        Some((name, geometry)) => (name.trim(), Some(geometry.trim())),
+        None => (entry.trim(), None),
+    };
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut output = DesktopOutput::virtual_output(name);
+    let Some(geometry) = geometry else {
+        return Some(output);
+    };
+
+    let (size, scale) = match geometry.split_once('@') {
+        Some((size, scale)) => (size.trim(), Some(scale.trim())),
+        None => (geometry.trim(), None),
+    };
+    let (width, height) = size.split_once('x')?;
+    output.width = Some(width.trim().parse().ok()?);
+    output.height = Some(height.trim().parse().ok()?);
+    if let Some(scale) = scale {
+        let parsed_scale = scale.parse().ok()?;
+        if parsed_scale <= 0.0 {
+            return None;
+        }
+        output.scale = parsed_scale;
+    }
+
+    Some(output)
+}
+
+fn with_runtime_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
+    if let Some(power) = super::power::read_power_state_override() {
+        snapshot.power = power;
+    } else if snapshot.power == PowerState::Unknown {
+        snapshot.power = super::power::read_power_state();
+    }
+    if let Some(output_state) = read_output_state_override() {
+        apply_output_state_override(&mut snapshot, output_state);
+    }
+    if let Some((output_name, parallax)) = read_cursor_parallax_override() {
+        apply_cursor_parallax_override(&mut snapshot, output_name.as_deref(), parallax);
+    }
+    let session = super::session::read_session_state();
+    snapshot.session_active = snapshot.session_active && session.active;
+    snapshot.session_locked = snapshot.session_locked || session.locked;
+    snapshot
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputStateOverride {
+    Active,
+    Unfocused,
+    Fullscreen,
+    Hidden,
+}
+
+fn read_output_state_override() -> Option<OutputStateOverride> {
+    std::env::var(OUTPUT_STATE_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_output_state_override(&value))
+        .or_else(|| {
+            std::env::var_os(OUTPUT_STATE_OVERRIDE_FILE).and_then(read_output_state_override_file)
+        })
+}
+
+fn read_output_state_override_file(path: impl AsRef<Path>) -> Option<OutputStateOverride> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| parse_output_state_override(&value))
+}
+
+fn parse_output_state_override(value: &str) -> Option<OutputStateOverride> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "active" | "focused" | "visible" => Some(OutputStateOverride::Active),
+        "unfocused" | "background" => Some(OutputStateOverride::Unfocused),
+        "fullscreen" | "full-screen" => Some(OutputStateOverride::Fullscreen),
+        "hidden" | "output-hidden" | "disabled" => Some(OutputStateOverride::Hidden),
+        "" | "auto" | "compositor" => None,
+        _ => None,
+    }
+}
+
+fn apply_output_state_override(snapshot: &mut DesktopSnapshot, state: OutputStateOverride) {
+    for output in &mut snapshot.outputs {
+        match state {
+            OutputStateOverride::Active => {
+                output.focused = true;
+                output.visible = true;
+                output.has_fullscreen = false;
+            }
+            OutputStateOverride::Unfocused => {
+                output.focused = false;
+                output.visible = true;
+                output.has_fullscreen = false;
+            }
+            OutputStateOverride::Fullscreen => {
+                output.focused = true;
+                output.visible = true;
+                output.has_fullscreen = true;
+            }
+            OutputStateOverride::Hidden => {
+                output.focused = false;
+                output.visible = false;
+                output.has_fullscreen = false;
+            }
+        }
+    }
+}
+
+fn read_cursor_parallax_override() -> Option<(Option<String>, DesktopCursorParallax)> {
+    std::env::var(CURSOR_PARALLAX_OVERRIDE)
+        .ok()
+        .and_then(|value| DesktopCursorParallax::parse_override(&value))
+}
+
+fn apply_cursor_parallax_override(
+    snapshot: &mut DesktopSnapshot,
+    output_name: Option<&str>,
+    parallax: DesktopCursorParallax,
+) {
+    if let Some(output_name) = output_name {
+        if let Some(output) = snapshot
+            .outputs
+            .iter_mut()
+            .find(|output| output.name == output_name)
+        {
+            output.cursor_parallax = Some(parallax);
+        }
+        return;
+    }
+    if let Some(output) = snapshot.outputs.iter_mut().find(|output| output.focused) {
+        output.cursor_parallax = Some(parallax);
+    } else if let Some(output) = snapshot.outputs.first_mut() {
+        output.cursor_parallax = Some(parallax);
+    }
+}
+
+#[derive(Debug)]
+pub enum AdapterError {
+    CommandFailed {
+        program: String,
+        args: Vec<String>,
+        message: String,
+    },
+    Parse(serde_json::Error),
+}
+
+impl fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CommandFailed {
+                program,
+                args,
+                message,
+            } => write!(f, "{} {} failed: {message}", program, args.join(" ")),
+            Self::Parse(source) => write!(f, "failed to parse compositor JSON: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for AdapterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Parse(source) => Some(source),
+            Self::CommandFailed { .. } => None,
+        }
+    }
+}
+
+mod hyprland {
+    use super::*;
+
+    pub fn read_snapshot() -> Result<DesktopSnapshot, AdapterError> {
+        let monitors = run_json_command("hyprctl", &["-j", "monitors"])?;
+        let clients = run_json_command("hyprctl", &["-j", "clients"])?;
+        let cursor = run_json_command("hyprctl", &["cursorpos", "-j"]).ok();
+        Ok(snapshot_from_json(&monitors, &clients, cursor.as_ref()))
+    }
+
+    fn snapshot_from_json(
+        monitors: &Value,
+        clients: &Value,
+        cursor: Option<&Value>,
+    ) -> DesktopSnapshot {
+        let mut outputs = Vec::new();
+        for monitor in value_array(monitors) {
+            let Some(name) = string_field(monitor, "name") else {
+                continue;
+            };
+            let workspace =
+                nested_string_field(monitor, &["activeWorkspace", "name"]).or_else(|| {
+                    nested_i64_field(monitor, &["activeWorkspace", "id"]).map(|id| id.to_string())
+                });
+            let workspace_id = nested_i64_field(monitor, &["activeWorkspace", "id"]);
+            let monitor_id = i64_field(monitor, "id");
+            outputs.push(DesktopOutput {
+                name,
+                logical_x: i64_field(monitor, "x").and_then(|value| i32::try_from(value).ok()),
+                logical_y: i64_field(monitor, "y").and_then(|value| i32::try_from(value).ok()),
+                make: string_field(monitor, "make"),
+                model: string_field(monitor, "model"),
+                width: u32_field(monitor, "width"),
+                height: u32_field(monitor, "height"),
+                scale: f32_field(monitor, "scale").unwrap_or(1.0),
+                focused: bool_field(monitor, "focused").unwrap_or(false),
+                visible: bool_field(monitor, "disabled")
+                    .map(|disabled| !disabled)
+                    .unwrap_or(true),
+                has_fullscreen: has_fullscreen_client(
+                    clients,
+                    monitor_id,
+                    workspace_id,
+                    workspace.as_deref(),
+                ),
+                active_workspace: workspace,
+                cursor_parallax: cursor
+                    .and_then(|cursor| cursor_parallax_for_monitor(cursor, monitor)),
+            });
+        }
+
+        DesktopSnapshot {
+            compositor: Some(CompositorKind::Hyprland),
+            outputs,
+            power: PowerState::Unknown,
+            session_active: true,
+            session_locked: false,
+        }
+    }
+
+    fn cursor_parallax_for_monitor(
+        cursor: &Value,
+        monitor: &Value,
+    ) -> Option<DesktopCursorParallax> {
+        let cursor_x = f64_field(cursor, "x")?;
+        let cursor_y = f64_field(cursor, "y")?;
+        let output_x = i64_field(monitor, "x").unwrap_or(0) as f64;
+        let output_y = i64_field(monitor, "y").unwrap_or(0) as f64;
+        let width = f64_field(monitor, "width")?;
+        let height = f64_field(monitor, "height")?;
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        if cursor_x < output_x
+            || cursor_y < output_y
+            || cursor_x > output_x + width
+            || cursor_y > output_y + height
+        {
+            return None;
+        }
+        Some(DesktopCursorParallax {
+            x: (((cursor_x - output_x) / width) * 2.0 - 1.0).clamp(-1.0, 1.0),
+            y: (((cursor_y - output_y) / height) * 2.0 - 1.0).clamp(-1.0, 1.0),
+        })
+    }
+
+    fn has_fullscreen_client(
+        clients: &Value,
+        monitor_id: Option<i64>,
+        workspace_id: Option<i64>,
+        workspace_name: Option<&str>,
+    ) -> bool {
+        value_array(clients).into_iter().any(|client| {
+            if !bool_field(client, "fullscreen").unwrap_or(false) {
+                return false;
+            }
+            if bool_field(client, "hidden").unwrap_or(false) {
+                return false;
+            }
+            let client_monitor = i64_field(client, "monitor");
+            let client_workspace_id = nested_i64_field(client, &["workspace", "id"]);
+            let client_workspace_name = nested_string_field(client, &["workspace", "name"]);
+            monitor_id.is_some() && client_monitor == monitor_id
+                || workspace_id.is_some() && client_workspace_id == workspace_id
+                || workspace_name.is_some() && client_workspace_name.as_deref() == workspace_name
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn maps_hyprland_monitors_and_fullscreen_clients() {
+            let monitors = json!([
+                {
+                    "id": 0,
+                    "name": "eDP-1",
+                    "make": "Framework",
+                    "model": "Laptop",
+                    "x": 0,
+                    "y": 0,
+                    "width": 2256,
+                    "height": 1504,
+                    "scale": 1.5,
+                    "focused": true,
+                    "activeWorkspace": { "id": 3, "name": "3" }
+                },
+                {
+                    "id": 1,
+                    "name": "DP-1",
+                    "x": 2256,
+                    "y": 0,
+                    "disabled": true,
+                    "activeWorkspace": { "id": 4, "name": "web" }
+                }
+            ]);
+            let clients = json!([
+                {
+                    "monitor": 0,
+                    "fullscreen": true,
+                    "hidden": false,
+                    "workspace": { "id": 3, "name": "3" }
+                }
+            ]);
+            let cursor = json!({ "x": 564, "y": 376 });
+
+            let snapshot = snapshot_from_json(&monitors, &clients, Some(&cursor));
+            assert_eq!(snapshot.compositor, Some(CompositorKind::Hyprland));
+            assert_eq!(snapshot.outputs.len(), 2);
+            assert!(snapshot.outputs[0].focused);
+            assert!(snapshot.outputs[0].has_fullscreen);
+            assert_eq!(snapshot.outputs[0].scale, 1.5);
+            assert_eq!(snapshot.outputs[0].logical_x, Some(0));
+            assert_eq!(snapshot.outputs[0].logical_y, Some(0));
+            assert_eq!(
+                snapshot.outputs[0].cursor_parallax,
+                Some(DesktopCursorParallax { x: -0.5, y: -0.5 })
+            );
+            assert!(!snapshot.outputs[1].visible);
+            assert_eq!(snapshot.outputs[1].cursor_parallax, None);
+        }
+    }
+}
+
+mod niri {
+    use super::*;
+
+    pub fn read_snapshot() -> Result<DesktopSnapshot, AdapterError> {
+        let outputs = run_json_command("niri", &["msg", "--json", "outputs"])?;
+        let workspaces = run_json_command("niri", &["msg", "--json", "workspaces"])?;
+        let windows = run_json_command("niri", &["msg", "--json", "windows"])?;
+        Ok(snapshot_from_json(&outputs, &workspaces, &windows))
+    }
+
+    fn snapshot_from_json(outputs: &Value, workspaces: &Value, windows: &Value) -> DesktopSnapshot {
+        let workspaces = value_array(workspaces);
+        let windows = value_array(windows);
+        let mut snapshot_outputs = Vec::new();
+
+        for (fallback_name, output) in output_objects(outputs) {
+            let Some(name) = string_field(output, "name").or(fallback_name) else {
+                continue;
+            };
+            let active_workspace = active_workspace_for_output(&workspaces, &name);
+            let focused = active_workspace
+                .as_ref()
+                .and_then(|workspace| bool_field(workspace.value, "is_focused"))
+                .or_else(|| bool_field(output, "focused"))
+                .unwrap_or(false);
+            let active_workspace_id =
+                active_workspace.and_then(|workspace| i64_field(workspace.value, "id"));
+            let active_workspace_name = active_workspace.and_then(|workspace| {
+                string_field(workspace.value, "name")
+                    .or_else(|| i64_field(workspace.value, "idx").map(|idx| idx.to_string()))
+            });
+            let has_fullscreen = has_fullscreen_window(&windows, active_workspace_id, &name);
+
+            snapshot_outputs.push(DesktopOutput {
+                name,
+                logical_x: nested_i64_field(output, &["logical", "x"])
+                    .or_else(|| i64_field(output, "x"))
+                    .and_then(|value| i32::try_from(value).ok()),
+                logical_y: nested_i64_field(output, &["logical", "y"])
+                    .or_else(|| i64_field(output, "y"))
+                    .and_then(|value| i32::try_from(value).ok()),
+                make: string_field(output, "make"),
+                model: string_field(output, "model"),
+                width: nested_u32_field(output, &["logical", "width"])
+                    .or_else(|| nested_u32_field(output, &["current_mode", "width"]))
+                    .or_else(|| u32_field(output, "width")),
+                height: nested_u32_field(output, &["logical", "height"])
+                    .or_else(|| nested_u32_field(output, &["current_mode", "height"]))
+                    .or_else(|| u32_field(output, "height")),
+                scale: f32_field(output, "scale").unwrap_or(1.0),
+                focused,
+                visible: bool_field(output, "power").unwrap_or(true),
+                has_fullscreen,
+                active_workspace: active_workspace_name,
+                cursor_parallax: None,
+            });
+        }
+
+        DesktopSnapshot {
+            compositor: Some(CompositorKind::Niri),
+            outputs: snapshot_outputs,
+            power: PowerState::Unknown,
+            session_active: true,
+            session_locked: false,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct WorkspaceRef<'a> {
+        value: &'a Value,
+    }
+
+    fn active_workspace_for_output<'a>(
+        workspaces: &'a [&'a Value],
+        output_name: &str,
+    ) -> Option<WorkspaceRef<'a>> {
+        workspaces
+            .iter()
+            .copied()
+            .find(|workspace| {
+                workspace_output_name(workspace).as_deref() == Some(output_name)
+                    && bool_field(workspace, "is_active").unwrap_or(false)
+            })
+            .or_else(|| {
+                workspaces.iter().copied().find(|workspace| {
+                    workspace_output_name(workspace).as_deref() == Some(output_name)
+                })
+            })
+            .map(|value| WorkspaceRef { value })
+    }
+
+    fn workspace_output_name(workspace: &Value) -> Option<String> {
+        string_field(workspace, "output")
+            .or_else(|| nested_string_field(workspace, &["output", "name"]))
+            .or_else(|| string_field(workspace, "output_name"))
+    }
+
+    fn has_fullscreen_window(
+        windows: &[&Value],
+        active_workspace_id: Option<i64>,
+        output_name: &str,
+    ) -> bool {
+        windows.iter().copied().any(|window| {
+            if !bool_field(window, "is_fullscreen")
+                .or_else(|| bool_field(window, "fullscreen"))
+                .unwrap_or(false)
+            {
+                return false;
+            }
+
+            let workspace_match = active_workspace_id.is_some()
+                && (i64_field(window, "workspace_id") == active_workspace_id
+                    || nested_i64_field(window, &["workspace", "id"]) == active_workspace_id);
+            let output_match = string_field(window, "output").as_deref() == Some(output_name)
+                || nested_string_field(window, &["output", "name"]).as_deref() == Some(output_name);
+            workspace_match || output_match
+        })
+    }
+
+    fn output_objects(value: &Value) -> Vec<(Option<String>, &Value)> {
+        if let Some(array) = value.as_array() {
+            return array.iter().map(|output| (None, output)).collect();
+        }
+        value
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .map(|(name, output)| (Some(name.clone()), output))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn maps_niri_outputs_workspaces_and_fullscreen_windows() {
+            let outputs = json!({
+                "eDP-1": {
+                    "make": "Framework",
+                    "model": "Laptop",
+                    "logical": { "width": 1504, "height": 1002 },
+                    "scale": 1.5,
+                    "power": true
+                },
+                "DP-1": {
+                    "name": "DP-1",
+                    "current_mode": { "width": 2560, "height": 1440 },
+                    "power": false
+                }
+            });
+            let workspaces = json!([
+                { "id": 10, "idx": 1, "output": "eDP-1", "is_active": true, "is_focused": true },
+                { "id": 11, "name": "web", "output": "DP-1", "is_active": true, "is_focused": false }
+            ]);
+            let windows = json!([
+                { "workspace_id": 10, "is_fullscreen": true }
+            ]);
+
+            let snapshot = snapshot_from_json(&outputs, &workspaces, &windows);
+            assert_eq!(snapshot.compositor, Some(CompositorKind::Niri));
+            assert_eq!(snapshot.outputs.len(), 2);
+            assert_eq!(snapshot.outputs[0].name, "DP-1");
+            assert!(!snapshot.outputs[0].visible);
+            assert_eq!(snapshot.outputs[1].name, "eDP-1");
+            assert!(snapshot.outputs[1].focused);
+            assert!(snapshot.outputs[1].has_fullscreen);
+            assert_eq!(snapshot.outputs[1].active_workspace.as_deref(), Some("1"));
+        }
+    }
+}
+
+fn run_json_command(program: &str, args: &[&str]) -> Result<Value, AdapterError> {
+    let output =
+        Command::new(program)
+            .args(args)
+            .output()
+            .map_err(|err| AdapterError::CommandFailed {
+                program: program.to_owned(),
+                args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+                message: err.to_string(),
+            })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let message = if stderr.is_empty() {
+            format!("exited with status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(AdapterError::CommandFailed {
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            message,
+        });
+    }
+    serde_json::from_slice(&output.stdout).map_err(AdapterError::Parse)
+}
+
+fn value_array(value: &Value) -> Vec<&Value> {
+    value
+        .as_array()
+        .map(|array| array.iter().collect())
+        .unwrap_or_default()
+}
+
+fn string_field(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn bool_field(value: &Value, field: &str) -> Option<bool> {
+    value.get(field).and_then(value_as_bool)
+}
+
+fn i64_field(value: &Value, field: &str) -> Option<i64> {
+    value.get(field).and_then(value_as_i64)
+}
+
+fn u32_field(value: &Value, field: &str) -> Option<u32> {
+    value.get(field).and_then(value_as_u32)
+}
+
+fn f32_field(value: &Value, field: &str) -> Option<f32> {
+    value.get(field).and_then(value_as_f32)
+}
+
+fn f64_field(value: &Value, field: &str) -> Option<f64> {
+    value.get(field).and_then(value_as_f64)
+}
+
+fn nested_string_field(value: &Value, path: &[&str]) -> Option<String> {
+    nested_value(value, path)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn nested_i64_field(value: &Value, path: &[&str]) -> Option<i64> {
+    nested_value(value, path).and_then(value_as_i64)
+}
+
+fn nested_u32_field(value: &Value, path: &[&str]) -> Option<u32> {
+    nested_value(value, path).and_then(value_as_u32)
+}
+
+fn nested_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for field in path {
+        current = current.get(field)?;
+    }
+    Some(current)
+}
+
+fn value_as_bool(value: &Value) -> Option<bool> {
+    if let Some(value) = value.as_bool() {
+        return Some(value);
+    }
+    if let Some(value) = value.as_i64() {
+        return Some(value != 0);
+    }
+    value.as_str().and_then(|value| match value {
+        "true" | "yes" | "1" => Some(true),
+        "false" | "no" | "0" => Some(false),
+        _ => None,
+    })
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn value_as_u32(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| value.as_i64().and_then(|value| u32::try_from(value).ok()))
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn value_as_f32(value: &Value) -> Option<f32> {
+    value
+        .as_f64()
+        .map(|value| value as f32)
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|value| value as f64))
+        .or_else(|| value.as_u64().map(|value| value as f64))
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn falls_back_to_generic_snapshot_when_compositor_adapters_are_disabled() {
+        let config = AdapterConfig {
+            generic_wayland: true,
+            hyprland: false,
+            niri: false,
+        };
+
+        let snapshot = read_desktop_snapshot(&config);
+        assert_eq!(snapshot.compositor, Some(CompositorKind::GenericWayland));
+        assert!(snapshot.outputs.is_empty());
+    }
+
+    #[test]
+    fn allows_disabling_all_adapters() {
+        let config = AdapterConfig {
+            generic_wayland: false,
+            hyprland: false,
+            niri: false,
+        };
+
+        let snapshot = read_desktop_snapshot(&config);
+        assert_eq!(snapshot.compositor, None);
+        assert!(snapshot.outputs.is_empty());
+    }
+
+    #[test]
+    fn parses_output_state_override_values() {
+        assert_eq!(
+            parse_output_state_override("unfocused"),
+            Some(OutputStateOverride::Unfocused)
+        );
+        assert_eq!(
+            parse_output_state_override("fullscreen"),
+            Some(OutputStateOverride::Fullscreen)
+        );
+        assert_eq!(
+            parse_output_state_override("hidden"),
+            Some(OutputStateOverride::Hidden)
+        );
+        assert_eq!(parse_output_state_override("auto"), None);
+        assert_eq!(parse_output_state_override("invalid"), None);
+    }
+
+    #[test]
+    fn reads_output_state_override_from_file() {
+        let path = std::env::temp_dir().join(format!(
+            "gilder-output-state-override-{}",
+            std::process::id()
+        ));
+        fs::write(&path, "fullscreen\n").unwrap();
+
+        assert_eq!(
+            read_output_state_override_file(&path),
+            Some(OutputStateOverride::Fullscreen)
+        );
+
+        fs::write(&path, "active").unwrap();
+        assert_eq!(
+            read_output_state_override_file(&path),
+            Some(OutputStateOverride::Active)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn parses_desktop_outputs_override_values() {
+        let outputs = parse_desktop_outputs_override("eDP-1:1920x1080@1.5, HDMI-A-1").unwrap();
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].name, "eDP-1");
+        assert_eq!(outputs[0].width, Some(1920));
+        assert_eq!(outputs[0].height, Some(1080));
+        assert_eq!(outputs[0].scale, 1.5);
+        assert_eq!(outputs[1].name, "HDMI-A-1");
+        assert_eq!(outputs[1].width, None);
+        assert_eq!(outputs[1].height, None);
+
+        assert_eq!(parse_desktop_outputs_override("auto"), None);
+        assert_eq!(parse_desktop_outputs_override("compositor"), None);
+        assert_eq!(parse_desktop_outputs_override("eDP-1:bad"), None);
+        assert_eq!(parse_desktop_outputs_override("eDP-1:1920x1080@0"), None);
+    }
+
+    #[test]
+    fn parses_cursor_parallax_override_values() {
+        assert_eq!(
+            DesktopCursorParallax::parse_override("HDMI-A-1:0.25,-0.5"),
+            Some((
+                Some("HDMI-A-1".to_owned()),
+                DesktopCursorParallax { x: 0.25, y: -0.5 }
+            ))
+        );
+        assert_eq!(
+            DesktopCursorParallax::parse_override("2,-2"),
+            Some((None, DesktopCursorParallax { x: 1.0, y: -1.0 }))
+        );
+        assert_eq!(DesktopCursorParallax::parse_override("auto"), None);
+        assert_eq!(DesktopCursorParallax::parse_override("bad"), None);
+    }
+
+    #[test]
+    fn applies_cursor_parallax_override_to_named_or_focused_output() {
+        let mut snapshot = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput {
+                    focused: false,
+                    ..DesktopOutput::virtual_output("eDP-1")
+                },
+                DesktopOutput {
+                    focused: true,
+                    ..DesktopOutput::virtual_output("HDMI-A-1")
+                },
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        apply_cursor_parallax_override(
+            &mut snapshot,
+            Some("eDP-1"),
+            DesktopCursorParallax { x: -0.25, y: 0.5 },
+        );
+        assert_eq!(
+            snapshot.outputs[0].cursor_parallax,
+            Some(DesktopCursorParallax { x: -0.25, y: 0.5 })
+        );
+
+        apply_cursor_parallax_override(
+            &mut snapshot,
+            None,
+            DesktopCursorParallax { x: 0.75, y: -0.5 },
+        );
+        assert_eq!(
+            snapshot.outputs[1].cursor_parallax,
+            Some(DesktopCursorParallax { x: 0.75, y: -0.5 })
+        );
+    }
+
+    #[test]
+    fn applies_output_state_override_to_snapshot_outputs() {
+        let mut snapshot = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput {
+                    focused: true,
+                    visible: true,
+                    has_fullscreen: false,
+                    ..DesktopOutput::virtual_output("eDP-1")
+                },
+                DesktopOutput {
+                    focused: true,
+                    visible: false,
+                    has_fullscreen: true,
+                    ..DesktopOutput::virtual_output("HDMI-A-1")
+                },
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        apply_output_state_override(&mut snapshot, OutputStateOverride::Unfocused);
+
+        assert!(snapshot.outputs.iter().all(|output| !output.focused));
+        assert!(snapshot.outputs.iter().all(|output| output.visible));
+        assert!(snapshot.outputs.iter().all(|output| !output.has_fullscreen));
+
+        apply_output_state_override(&mut snapshot, OutputStateOverride::Fullscreen);
+
+        assert!(snapshot.outputs.iter().all(|output| output.focused));
+        assert!(snapshot.outputs.iter().all(|output| output.visible));
+        assert!(snapshot.outputs.iter().all(|output| output.has_fullscreen));
+    }
+}
