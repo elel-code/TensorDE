@@ -24,6 +24,9 @@ const NO_INPUT_FENCE: u64 = u64::MAX;
 
 mod cursor;
 mod formats;
+mod present;
+
+use present::PresentRequest;
 
 pub(in crate::backend::tty::kms) use cursor::{
     CursorPlaneCapabilities, CursorPlaneSelection, discover_cursor_planes,
@@ -142,27 +145,19 @@ impl AtomicSurface {
             return Ok(());
         }
 
-        // Fixed two-property request: no allocation, lock, staging, or request clone
-        // occurs on the steady-state present path.
-        let mut objects = [u32::from(self.plane)];
-        let mut property_counts = [2];
-        let mut properties = [
-            u32::from(self.properties.plane.framebuffer),
-            u32::from(self.properties.plane.input_fence),
-        ];
-        let mut values = [
-            u64::from(u32::from(framebuffer)),
-            fence.as_raw_fd() as i64 as u64,
-        ];
-        drm_ffi::mode::atomic_commit(
-            self.device.as_fd(),
-            (AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK).bits(),
-            &mut objects,
-            &mut property_counts,
-            &mut properties,
-            &mut values,
-        )
-        .map_err(AtomicError::Commit)
+        let mut request = PresentRequest::new(
+            self.plane,
+            &self.properties.plane,
+            framebuffer,
+            fence,
+            self.cursor_plane.zip(self.properties.cursor),
+        );
+        request
+            .commit(
+                self.device.as_fd(),
+                (AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK).bits(),
+            )
+            .map_err(AtomicError::Commit)
     }
 
     pub(super) fn reset_after_session_resume(

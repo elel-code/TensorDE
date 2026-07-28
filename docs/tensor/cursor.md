@@ -72,8 +72,12 @@ renderer and imported into Tensor-owned DRM framebuffers without stripping the a
 planes already claimed by another output are skipped deterministically. The slots are not yet
 rendered or attached to atomic cursor-plane commits. The selected plane is nevertheless owned by
 the output's atomic modeset lifecycle: test-only modesets and session-resume rebuilds explicitly
-disable it, and teardown clears its `CRTC_ID` and `FB_ID` in the same request as the primary plane.
-The milestone remains open and software composition remains the correctness path.
+disable it, teardown clears its `CRTC_ID` and `FB_ID` in the same request as the primary plane, and
+every steady-state primary page flip carries the same explicit disabled cursor state. The
+steady-state request is a typed fixed-capacity stack value and performs no frame-time allocation.
+The slots still need GPU rendering, exported binary fences, active geometry attachment, and joint
+retirement before the plane can be enabled. The milestone remains open and software composition
+remains the correctness path.
 
 ### 1. Capability and identity discovery
 
