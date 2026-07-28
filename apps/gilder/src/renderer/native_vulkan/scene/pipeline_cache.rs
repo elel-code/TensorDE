@@ -1,25 +1,32 @@
 //! Native Vulkan scene pipeline cache planning.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/material-format.md`
-//! - `reverse-engineered/docs/effect-format.md`
-//! - `references/godot/servers/rendering/renderer_rd/pipeline_hash_map_rd.h`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/material-format.md`
+//! - `reverse-engineered/gilder/docs/effect-format.md`
+//! - `references/gilder/godot/servers/rendering/renderer_rd/pipeline_hash_map_rd.h`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 
 use serde::Serialize;
 
-use crate::engine::scene::{ScenePipelineBlend, SceneStorage, SceneStringId};
+use crate::engine::scene::{
+    ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive, SceneStorage, SceneStringId,
+};
 
 use super::resource_storage::{
     NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneShaderHeapSlice,
 };
-use super::shader_catalog::native_vulkan_scene_shader_for_key;
+use super::shader_catalog::{
+    BuiltinSceneShader, native_vulkan_scene_shader_for_key,
+    native_vulkan_scene_vertex_spirv_for_primitive,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanScenePipelineCachePlan {
     pub pipeline_count: usize,
     pub entries: Vec<NativeVulkanScenePipelineCacheEntry>,
+    pub shader_program_count: usize,
+    pub shader_programs: Vec<NativeVulkanSceneShaderProgramSet>,
     pub shader_catalog_entry_count: usize,
     pub shader_catalog_hit_count: usize,
     pub missing_shader_keys: Vec<String>,
@@ -41,8 +48,28 @@ pub struct NativeVulkanScenePipelineCacheEntry {
     pub primary_blend: ScenePipelineBlend,
     pub shader_catalog_available: bool,
     pub shader_catalog_key: Option<&'static str>,
-    pub vertex_spirv_bytes: usize,
-    pub fragment_spirv_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneShaderProgramSet {
+    pub shader_key: SceneStringId,
+    pub shader_catalog_key: &'static str,
+    pub vertex_programs: Vec<NativeVulkanSceneVertexProgram>,
+    pub base_fragment_program: NativeVulkanSceneSpirvProgram,
+    pub local_read_fragment_program: Option<NativeVulkanSceneSpirvProgram>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneVertexProgram {
+    pub primitive: SceneRenderingDeviceDrawPrimitive,
+    #[serde(flatten)]
+    pub program: NativeVulkanSceneSpirvProgram,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneSpirvProgram {
+    pub spirv_bytes: usize,
+    pub spirv_words: &'static [u32],
 }
 
 pub fn native_vulkan_scene_pipeline_cache_plan(
@@ -64,10 +91,13 @@ pub fn native_vulkan_scene_pipeline_cache_plan(
         .filter_map(|entry| storage.string(entry.shader_key))
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    let shader_programs = shader_programs_for_entries(storage, &entries);
 
     NativeVulkanScenePipelineCachePlan {
         pipeline_count: entries.len(),
         entries,
+        shader_program_count: shader_programs.len(),
+        shader_programs,
         shader_catalog_entry_count: super::shader_catalog::native_vulkan_scene_shader_catalog()
             .len(),
         shader_catalog_hit_count,
@@ -114,8 +144,72 @@ fn pipeline_entry_for_slice(
         primary_blend,
         shader_catalog_available: shader.is_some(),
         shader_catalog_key: shader.map(|shader| shader.key),
-        vertex_spirv_bytes: shader.map_or(0, |shader| shader.vertex_spirv.len() * 4),
-        fragment_spirv_bytes: shader.map_or(0, |shader| shader.fragment_spirv.len() * 4),
+    }
+}
+
+fn shader_programs_for_entries(
+    storage: &SceneStorage,
+    entries: &[NativeVulkanScenePipelineCacheEntry],
+) -> Vec<NativeVulkanSceneShaderProgramSet> {
+    let mut programs = Vec::new();
+    for entry in entries {
+        if programs.iter().any(
+            |program: &NativeVulkanSceneShaderProgramSet| {
+                program.shader_key == entry.shader_key
+            },
+        ) {
+            continue;
+        }
+        let Some(shader) = storage
+            .string(entry.shader_key)
+            .and_then(native_vulkan_scene_shader_for_key)
+        else {
+            continue;
+        };
+        programs.push(shader_program_set(entry.shader_key, shader));
+    }
+    programs
+}
+
+fn shader_program_set(
+    shader_key: SceneStringId,
+    shader: &'static BuiltinSceneShader,
+) -> NativeVulkanSceneShaderProgramSet {
+    const PRIMITIVES: [SceneRenderingDeviceDrawPrimitive; 4] = [
+        SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad,
+        SceneRenderingDeviceDrawPrimitive::ParticleBillboard,
+    ];
+    let vertex_programs = PRIMITIVES
+        .into_iter()
+        .filter_map(|primitive| {
+            native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive).map(|spirv| {
+                NativeVulkanSceneVertexProgram {
+                    primitive,
+                    program: spirv_program(spirv),
+                }
+            })
+        })
+        .collect();
+    NativeVulkanSceneShaderProgramSet {
+        shader_key,
+        shader_catalog_key: shader.key,
+        vertex_programs,
+        base_fragment_program: spirv_program(shader.fragment_spirv),
+        local_read_fragment_program: shader
+            .local_read_shader
+            .map(|variant| spirv_program(variant.fragment_spirv)),
+    }
+}
+
+fn spirv_program(spirv_words: &'static [u32]) -> NativeVulkanSceneSpirvProgram {
+    NativeVulkanSceneSpirvProgram {
+        spirv_bytes: spirv_words
+            .len()
+            .checked_mul(std::mem::size_of::<u32>())
+            .expect("built-in SPIR-V byte count overflow"),
+        spirv_words,
     }
 }
 
@@ -178,8 +272,60 @@ mod tests {
             cache.entries[0].shader_catalog_key,
             Some("we/genericimage4")
         );
-        assert!(cache.entries[0].vertex_spirv_bytes > 0);
-        assert!(cache.entries[0].fragment_spirv_bytes > 0);
+        assert_eq!(cache.shader_program_count, 1);
+        assert_eq!(cache.shader_programs[0].vertex_programs.len(), 1);
+        assert_eq!(
+            cache.shader_programs[0].vertex_programs[0].primitive,
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh
+        );
+        assert!(cache.shader_programs[0].vertex_programs[0].program.spirv_bytes > 0);
+        assert_eq!(
+            cache.shader_programs[0].vertex_programs[0]
+                .program
+                .spirv_words[0],
+            0x0723_0203
+        );
+        assert!(
+            cache.shader_programs[0]
+                .base_fragment_program
+                .spirv_bytes
+                > 0
+        );
+        assert!(
+            cache.shader_programs[0]
+                .local_read_fragment_program
+                .is_none()
+        );
         assert_eq!(cache.shader_catalog_source, "built-in-scene-shader-catalog");
+    }
+
+    #[test]
+    fn shader_program_inventory_exposes_primitive_and_local_read_variants() {
+        let shimmer = native_vulkan_scene_shader_for_key("effects/shimmer__SLOTS_9")
+            .expect("shimmer shader");
+        let shimmer_programs = shader_program_set(SceneStringId(4), shimmer);
+        assert_eq!(shimmer_programs.vertex_programs.len(), 2);
+        assert!(shimmer_programs.vertex_programs.iter().any(|program| {
+            program.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+                && program.program.spirv_words == shimmer.vertex_spirv
+        }));
+        assert!(shimmer_programs.vertex_programs.iter().any(|program| {
+            program.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                && Some(program.program.spirv_words) == shimmer.object_mesh_vertex_spirv
+        }));
+
+        let passthrough = native_vulkan_scene_shader_for_key("we/passthrough")
+            .expect("passthrough shader");
+        let passthrough_programs = shader_program_set(SceneStringId(9), passthrough);
+        assert_eq!(
+            passthrough_programs
+                .local_read_fragment_program
+                .expect("local-read fragment program")
+                .spirv_words,
+            passthrough
+                .local_read_shader
+                .expect("local-read shader")
+                .fragment_spirv
+        );
     }
 }

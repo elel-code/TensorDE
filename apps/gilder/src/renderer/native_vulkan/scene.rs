@@ -1,12 +1,12 @@
 //! Native Vulkan scene backend contracts.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
-//! - `references/godot/servers/rendering/renderer_scene_render.*`
-//! - `references/godot/servers/rendering/rendering_device.*`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
+//! - `references/gilder/godot/servers/rendering/renderer_scene_render.*`
+//! - `references/gilder/godot/servers/rendering/rendering_device.*`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 mod backend_plan;
@@ -24,7 +24,8 @@ pub use backend_plan::{
 };
 pub use pipeline_cache::{
     NativeVulkanScenePipelineCacheEntry, NativeVulkanScenePipelineCachePlan,
-    native_vulkan_scene_pipeline_cache_plan,
+    NativeVulkanSceneShaderProgramSet, NativeVulkanSceneSpirvProgram,
+    NativeVulkanSceneVertexProgram, native_vulkan_scene_pipeline_cache_plan,
 };
 pub use render_graph_executor::{
     NativeVulkanSceneRenderGraphCommand, NativeVulkanSceneRenderGraphCommandKind,

@@ -6,6 +6,10 @@ use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "native-vulkan-renderer")]
+#[path = "gilder-native-vulkan/scene_backend_plan_report.rs"]
+mod scene_backend_plan_report;
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn main() {
     #[cfg(target_os = "linux")]
     native_vulkan_allocator_env_bootstrap();
@@ -125,10 +129,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSceneRunOptions,
         NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionCodec, backend_contract,
-        capabilities, native_vulkan_scene_backend_plan_from_semantic_frame,
-        native_vulkan_video_duration_playback_frames, native_vulkan_video_playback_frame_count,
-        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene_with_options,
-        run_static_image, wallpaper_type_support_matrix,
+        capabilities, native_vulkan_video_duration_playback_frames,
+        native_vulkan_video_playback_frame_count, probe_vulkan_video_decode, probe_wayland_surface,
+        run_clear, run_scene_with_options, run_static_image, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
@@ -144,6 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_wayland::{
         NativeWaylandFractionalScaleRounding, NativeWaylandLayer,
     };
+    use scene_backend_plan_report::scene_backend_plan_report;
     use serde_json::{Map, json};
     use std::time::Duration;
 
@@ -420,20 +424,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let semantic_frame = RenderingServer::new(&storage)
                 .semantic_world()?
                 .resolve_frame_with_user_properties_at(0.0, &scene_user_property_overrides)?;
-            let mut report = json!(native_vulkan_scene_backend_plan_from_semantic_frame(
-                &storage,
-                &semantic_frame,
-            ));
-            let report = report
-                .as_object_mut()
-                .ok_or("native Vulkan scene backend plan report must be a JSON object")?;
-            report.insert("scene_backend_plan_report_version".to_owned(), json!(2));
-            report.insert(
-                "scene_render_passes".to_owned(),
-                json!(&storage.document().render_passes),
-            );
-            report.insert("scene_strings".to_owned(), json!(storage.strings()));
-            serde_json::Value::Object(std::mem::take(report))
+            json!(scene_backend_plan_report(&storage, &semantic_frame)?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunStatic => {

@@ -1,10 +1,10 @@
 //! Native Vulkan scene render graph executor planning.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
+//! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
 use serde::Serialize;
 
@@ -329,6 +329,8 @@ mod tests {
         let pipeline_cache = NativeVulkanScenePipelineCachePlan {
             pipeline_count: 1,
             entries: Vec::new(),
+            shader_program_count: 0,
+            shader_programs: Vec::new(),
             shader_catalog_entry_count: 1,
             shader_catalog_hit_count: 1,
             missing_shader_keys: Vec::new(),
@@ -608,6 +610,8 @@ mod tests {
         NativeVulkanScenePipelineCachePlan {
             pipeline_count,
             entries: Vec::new(),
+            shader_program_count: 0,
+            shader_programs: Vec::new(),
             shader_catalog_entry_count: 1,
             shader_catalog_hit_count: pipeline_count,
             missing_shader_keys: Vec::new(),

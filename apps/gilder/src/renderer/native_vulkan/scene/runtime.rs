@@ -1,11 +1,11 @@
 //! Native Vulkan scene present runtime boundary.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
-//! - `references/godot/servers/rendering/renderer_scene_render.*`
-//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
+//! - `references/gilder/godot/servers/rendering/renderer_scene_render.*`
+//! - `references/gilder/godot/servers/rendering/rendering_device_graph.*`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 use std::path::PathBuf;
@@ -351,6 +351,8 @@ mod tests {
             pipeline_cache: NativeVulkanScenePipelineCachePlan {
                 pipeline_count: 0,
                 entries: Vec::new(),
+                shader_program_count: 0,
+                shader_programs: Vec::new(),
                 shader_catalog_entry_count: 0,
                 shader_catalog_hit_count: 0,
                 missing_shader_keys: Vec::new(),

@@ -1,10 +1,10 @@
 //! Per-draw vertex-stage uniform packing for mesh and fullscreen effect shaders.
 //!
 //! References:
-//! - `docs/gilder-scene-engine-architecture.md`
-//! - `reverse-engineered/effects/iris.md`
-//! - `reverse-engineered/shaders/effects/iris.vert`
-//! - `reverse-engineered/docs/exe/global-uniforms.md`
+//! - `docs/gilder/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/gilder/effects/iris.md`
+//! - `reverse-engineered/gilder/shaders/effects/iris.vert`
+//! - `reverse-engineered/gilder/docs/exe/global-uniforms.md`
 
 use std::mem::size_of;
 
@@ -510,6 +510,9 @@ fn bool_float(value: bool) -> f32 {
 }
 
 #[cfg(test)]
+mod target_local_uv_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene::{
@@ -554,26 +557,6 @@ mod tests {
         assert_eq!(payload_f32(&payload, 20), 3.0);
         assert_eq!(payload_f32(&payload, 24), 0.4);
         assert_eq!(payload_f32(&payload, 28), 1.0);
-    }
-
-    #[test]
-    fn audio_image_local_pass_uses_target_local_uvs() {
-        let storage = audio_bars_storage();
-        let mut draw = draw_with_material(SceneMaterialHandle(0));
-        draw.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
-        draw.authored_source_extent = [1000.0, 1000.0];
-        draw.clip_transform = [
-            [0.000313, 0.0, 0.0, 0.5315],
-            [0.0, -0.000557, 0.0, 0.6945],
-            [0.0, 0.0, 0.6, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-
-        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [3840, 2160]);
-
-        for (lane, expected) in [(0, 1.0), (1, 0.0), (2, 0.0), (4, 0.0), (5, 1.0), (6, 0.0)] {
-            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
-        }
     }
 
     #[test]
@@ -826,9 +809,7 @@ mod tests {
 
     fn audio_bars_storage() -> SceneStorage {
         SceneStorage::from_document(SceneBinaryDocument {
-            strings: vec![
-                "effects/simple_audio_bars__SLOTS_1__SHAPE_7".to_owned(),
-            ],
+            strings: vec!["effects/simple_audio_bars__SLOTS_1__SHAPE_7".to_owned()],
             materials: vec![SceneMaterialRecord {
                 id: SceneMaterialHandle(0),
                 resource: SceneResourceId::NONE,

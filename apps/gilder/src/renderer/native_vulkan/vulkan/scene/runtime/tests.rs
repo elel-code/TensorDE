@@ -61,7 +61,6 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         &layout,
         &[2],
         &[None],
-        &[Vec::new()],
     );
 
     assert_eq!(
