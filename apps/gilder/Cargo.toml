@@ -13,8 +13,7 @@ exclude = [
 [features]
 default = []
 native-wayland-renderer = [
-    "dep:rustix",
-    "dep:smithay-client-toolkit",
+    "dep:wayland-client-runtime",
 ]
 native-vulkan-renderer = [
     "native-wayland-renderer",
@@ -53,10 +52,9 @@ oxc_span = "0"
 rquickjs = { version = "0", features = ["loader"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-smithay-client-toolkit = { version = "0.21", features = ["system"], optional = true }
-rustix = { version = "1.1", features = ["event"], optional = true }
 toml = "1"
 vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
+wayland-client-runtime = { path = "../../crates/wayland-client-runtime", default-features = false, optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 # [profile.release]

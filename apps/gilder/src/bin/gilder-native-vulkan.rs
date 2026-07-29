@@ -202,8 +202,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let value = args.next().ok_or("--layer requires a value")?;
                 options.host.layer = value.parse::<NativeWaylandLayer>()?;
             }
-            "--parent-mapping-buffer" => options.host.attach_parent_mapping_buffer = true,
-            "--no-parent-mapping-buffer" => options.host.attach_parent_mapping_buffer = false,
             "--fractional-scale-rounding" => {
                 let value = args
                     .next()

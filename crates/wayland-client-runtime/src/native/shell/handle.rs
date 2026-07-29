@@ -81,6 +81,24 @@ impl NativeSurfaceHandle {
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
+
+    /// Raw `wl_display*` for `VK_KHR_wayland_surface` creation.
+    pub fn display_ptr(&self) -> NonNull<std::ffi::c_void> {
+        let display = self.connection.display();
+        NonNull::new(display.id().as_ptr().cast())
+            .expect("a live wl_display proxy always has a non-null pointer")
+    }
+
+    /// Raw `wl_surface*` for `VK_KHR_wayland_surface` creation.
+    pub fn surface_ptr(&self) -> NonNull<std::ffi::c_void> {
+        NonNull::new(self.surface.id().as_ptr().cast())
+            .expect("a live wl_surface proxy always has a non-null pointer")
+    }
+
+    /// Wayland protocol object id of the leased `wl_surface`.
+    pub fn protocol_id(&self) -> u32 {
+        self.surface.id().protocol_id()
+    }
 }
 
 impl fmt::Debug for NativeSurfaceHandle {

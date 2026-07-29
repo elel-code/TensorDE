@@ -40,7 +40,7 @@ impl NativeVulkanVideoSurfaceHost {
             snapshot: NativeVulkanVideoSurfaceHostSnapshot {
                 binding: "native-vulkan-video-surface-host",
                 platform_backend: "wayland-layer-shell",
-                event_loop_backend: "smithay-client-toolkit-event-queue",
+                event_loop_backend: "tensorde-native-shell-event-queue",
                 surface_handle_model: "raw-wayland-display-and-surface-handles",
                 wait_configure_roundtrips,
                 requested_output_name,

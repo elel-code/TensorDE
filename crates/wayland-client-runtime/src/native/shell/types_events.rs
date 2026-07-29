@@ -2,6 +2,18 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NativeSurfaceId(pub(crate) u32);
 
+impl NativeSurfaceId {
+    /// Rebuild an id previously obtained from [`Self::get`].
+    pub const fn from_raw(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Runtime-local numeric identity of this surface.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// Events emitted by the native shell (grows toward the public crate Event model).
 #[derive(Clone, Debug)]
 pub enum NativeShellEvent {

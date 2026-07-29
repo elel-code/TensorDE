@@ -1,29 +1,34 @@
-//! Wayland protocol adapters for backend-independent scene events.
+//! Shared Wayland events to backend-independent scene events.
 
 mod pointer;
+
+use wayland_client_runtime::{NativeShellEvent, NativeSurfaceId};
 
 use crate::engine::scene::{SceneEvent, SceneEventQueue};
 
 #[derive(Debug, Default)]
 pub(super) struct NativeWaylandEventSource {
     pending: Vec<SceneEvent>,
-    last_pointer_time_millis: u32,
+    pointer: pointer::PointerState,
 }
 
 impl NativeWaylandEventSource {
-    pub(super) fn push_pointer_event(
+    pub(super) fn push_native_event(
         &mut self,
-        surface_id: u64,
-        surface_size: [u32; 2],
-        event: &smithay_client_toolkit::seat::pointer::PointerEvent,
+        surface: NativeSurfaceId,
+        surface_protocol_id: u32,
+        surface_size: (u32, u32),
+        event: &NativeShellEvent,
     ) {
-        let event = pointer::scene_pointer_event(
+        if let Some(event) = pointer::scene_pointer_event(
             event,
-            surface_id,
-            surface_size,
-            &mut self.last_pointer_time_millis,
-        );
-        self.pending.push(SceneEvent::Pointer(event));
+            surface,
+            u64::from(surface_protocol_id),
+            [surface_size.0, surface_size.1],
+            &mut self.pointer,
+        ) {
+            self.pending.push(SceneEvent::Pointer(event));
+        }
     }
 
     pub(super) fn publish_to(&mut self, queue: &mut SceneEventQueue) {
