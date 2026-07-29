@@ -1,5 +1,7 @@
 //! Retained semantic-frame resolution with ECS-style dynamic dependency propagation.
 
+mod local_time;
+
 use super::{
     ResolveVisitState, ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
     ResolvedPuppetBonePalette, ResolvedSemanticFrame, RetainedSceneEventSystem, SceneSemanticWorld,
@@ -18,6 +20,7 @@ use crate::engine::scene::{
 use serde_json::{Map, Value};
 
 use super::pointer_parallax::cover_mapped_position;
+use local_time::local_time_dirty_events;
 
 const LINUX_INPUT_BUTTON_LEFT: u32 = 0x110;
 
@@ -43,6 +46,7 @@ pub struct SemanticFrameResolver {
     last_audio_sequence: Option<SceneEventSequence>,
     last_media_sequence: Option<SceneEventSequence>,
     last_local_minute: Option<(i32, u8, u8, u8, u8)>,
+    last_local_second: Option<(i32, u8, u8, u8, u8, u8)>,
     last_scene_time_seconds: Option<f32>,
 }
 
@@ -108,6 +112,7 @@ impl SemanticFrameResolver {
             last_audio_sequence: None,
             last_media_sequence: None,
             last_local_minute: None,
+            last_local_second: None,
             last_scene_time_seconds: None,
         })
     }
@@ -255,17 +260,11 @@ impl SemanticFrameResolver {
             self.last_media_sequence = media_sequence;
         }
         if let Some(local_time) = events.local_time {
-            let minute = (
-                local_time.year,
-                local_time.month,
-                local_time.day,
-                local_time.hour,
-                local_time.minute,
-            );
-            if self.last_local_minute != Some(minute) {
-                dirty = dirty.union(SceneScriptSubscriptions::LOCAL_TIME);
-                self.last_local_minute = Some(minute);
-            }
+            dirty = dirty.union(local_time_dirty_events(
+                local_time,
+                &mut self.last_local_minute,
+                &mut self.last_local_second,
+            ));
         }
         let pointer = events
             .pointer

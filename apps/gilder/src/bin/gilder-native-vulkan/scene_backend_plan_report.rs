@@ -1,13 +1,14 @@
 use gilder::engine::scene::{
     INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneObjectHandle, SceneObjectRecord,
-    SceneRenderPassRecord, SceneResourceRecord, SceneStorage, SceneTextureRecord,
+    SceneRenderPassRecord, SceneResourceRecord, SceneScriptProgramRecord, SceneStorage,
+    SceneTextureRecord,
 };
 use gilder::renderer::native_vulkan::{
     NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan_from_semantic_frame,
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 4;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 5;
 
 #[derive(Debug, Serialize)]
 pub(super) struct SceneBackendPlanReport<'a> {
@@ -18,6 +19,7 @@ pub(super) struct SceneBackendPlanReport<'a> {
     pub scene_resources: &'a [SceneResourceRecord],
     pub scene_textures: &'a [SceneTextureRecord],
     pub scene_render_passes: &'a [SceneRenderPassRecord],
+    pub scene_script_programs: &'a [SceneScriptProgramRecord],
     pub scene_strings: &'a [String],
     pub checkpoint_scene_time_seconds: f32,
     pub checkpoint_draw_visibility: Vec<SceneBackendPlanDrawVisibility>,
@@ -79,6 +81,7 @@ pub(super) fn scene_backend_plan_report<'a>(
         scene_resources: storage.resources(),
         scene_textures: storage.textures(),
         scene_render_passes: &storage.document().render_passes,
+        scene_script_programs: storage.script_programs(),
         scene_strings: storage.strings(),
         checkpoint_scene_time_seconds: 0.0,
         checkpoint_draw_visibility,

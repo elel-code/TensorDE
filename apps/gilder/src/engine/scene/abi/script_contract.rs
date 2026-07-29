@@ -19,6 +19,7 @@ impl SceneScriptSubscriptions {
     pub const MEDIA: Self = Self(1 << 5);
     pub const USER_PROPERTY: Self = Self(1 << 6);
     pub const POINTER_CLICK: Self = Self(1 << 7);
+    pub const LOCAL_TIME_SECOND: Self = Self(1 << 8);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0

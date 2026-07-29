@@ -20,6 +20,8 @@ pub(super) struct SceneScriptAnalysis {
     pub(super) uses_audio: bool,
     pub(super) uses_pointer: bool,
     pub(super) uses_local_time: bool,
+    pub(super) uses_local_time_seconds: bool,
+    pub(super) uses_local_time_subseconds: bool,
     pub(super) uses_scene_api: bool,
     pub(super) may_mutate_effect_visibility: bool,
     pub(super) imports: Vec<String>,
@@ -82,6 +84,8 @@ pub(super) fn analyze_scene_script(
         uses_audio: visitor.uses_audio,
         uses_pointer: visitor.uses_pointer,
         uses_local_time: visitor.uses_local_time,
+        uses_local_time_seconds: visitor.uses_local_time_seconds,
+        uses_local_time_subseconds: visitor.uses_local_time_subseconds,
         uses_scene_api: visitor.uses_scene_api,
         may_mutate_effect_visibility: visitor.uses_get_effect && visitor.accesses_visible,
         imports: parsed
@@ -100,6 +104,8 @@ struct CapabilityVisitor {
     uses_audio: bool,
     uses_pointer: bool,
     uses_local_time: bool,
+    uses_local_time_seconds: bool,
+    uses_local_time_subseconds: bool,
     uses_scene_api: bool,
     uses_get_effect: bool,
     accesses_visible: bool,
@@ -121,6 +127,7 @@ impl<'a> Visit<'a> for CapabilityVisitor {
         }
         if expression.is_specific_member_access("Date", "now") {
             self.uses_local_time = true;
+            self.uses_local_time_subseconds = true;
         }
         if expression.static_property_name().is_some_and(|property| {
             matches!(
@@ -140,6 +147,14 @@ impl<'a> Visit<'a> for CapabilityVisitor {
         match expression.callee_name() {
             Some("registerAudioBuffers") => self.uses_audio = true,
             Some("getEffect") => self.uses_get_effect = true,
+            Some("getMilliseconds") => {
+                self.uses_local_time = true;
+                self.uses_local_time_subseconds = true;
+            }
+            Some("getSeconds") => {
+                self.uses_local_time = true;
+                self.uses_local_time_seconds = true;
+            }
             Some("getDate" | "getDay" | "getFullYear" | "getHours" | "getMinutes" | "getMonth") => {
                 self.uses_local_time = true
             }
@@ -242,5 +257,21 @@ mod tests {
         )
         .expect("analysis");
         assert!(analysis.handles_pointer_click);
+    }
+
+    #[test]
+    fn distinguishes_second_and_subsecond_clock_dependencies() {
+        let seconds = analyze_scene_script(
+            "export function update() { const now = new Date(); return now.getSeconds(); }",
+        )
+        .expect("seconds");
+        assert!(seconds.uses_local_time_seconds);
+        assert!(!seconds.uses_local_time_subseconds);
+
+        let milliseconds = analyze_scene_script(
+            "export function update() { return new Date().getMilliseconds() + Date.now(); }",
+        )
+        .expect("milliseconds");
+        assert!(milliseconds.uses_local_time_subseconds);
     }
 }

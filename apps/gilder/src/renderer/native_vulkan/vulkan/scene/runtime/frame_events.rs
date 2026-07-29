@@ -12,7 +12,7 @@ use crate::renderer::native_vulkan::audio::event_source::{
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_wayland::NativeWaylandHost;
 
-use local_time_source::SceneLocalTimeEventSource;
+use local_time_source::{SceneLocalTimeEventSource, SceneLocalTimePrecision};
 
 pub(super) struct SceneRuntimeEventSources {
     audio_monitor: NativeVulkanSystemAudioMonitor,
@@ -44,13 +44,7 @@ impl SceneRuntimeEventSources {
                 audio_spectrum_required,
             ),
             audio: NativeVulkanAudioEventSource,
-            local_time: SceneLocalTimeEventSource::new(storage.script_programs().iter().any(
-                |program| {
-                    program
-                        .subscriptions
-                        .contains(crate::engine::scene::SceneScriptSubscriptions::LOCAL_TIME)
-                },
-            )),
+            local_time: SceneLocalTimeEventSource::new(local_time_precision(storage)),
             queue: SceneEventQueue::default(),
             frame: SceneFrameEvents::default(),
             pointer_replay_normalized,
@@ -124,5 +118,23 @@ impl SceneRuntimeEventSources {
             peak,
             active_band_count,
         }
+    }
+}
+
+fn local_time_precision(storage: &SceneStorage) -> Option<SceneLocalTimePrecision> {
+    use crate::engine::scene::SceneScriptSubscriptions;
+
+    let subscriptions = storage
+        .script_programs()
+        .iter()
+        .fold(SceneScriptSubscriptions::NONE, |subscriptions, program| {
+            subscriptions.union(program.subscriptions)
+        });
+    if subscriptions.intersects(SceneScriptSubscriptions::LOCAL_TIME_SECOND) {
+        Some(SceneLocalTimePrecision::Second)
+    } else if subscriptions.intersects(SceneScriptSubscriptions::LOCAL_TIME) {
+        Some(SceneLocalTimePrecision::Minute)
+    } else {
+        None
     }
 }

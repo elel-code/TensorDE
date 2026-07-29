@@ -7,6 +7,7 @@ pub struct SceneLocalTime {
     pub day: u8,
     pub hour: u8,
     pub minute: u8,
+    pub second: u8,
     pub weekday_sunday_zero: u8,
 }
 
@@ -25,6 +26,7 @@ impl SceneLocalTime {
             day,
             hour: u8::try_from(value.hour()).unwrap_or(0),
             minute: u8::try_from(value.minute()).unwrap_or(0),
+            second: u8::try_from(value.second()).unwrap_or(0),
             weekday_sunday_zero: gregorian_weekday_sunday_zero(year, month, day),
         }
     }

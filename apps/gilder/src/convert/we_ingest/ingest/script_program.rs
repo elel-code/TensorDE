@@ -43,7 +43,7 @@ pub(super) fn object_script_programs(
             source: source.to_owned(),
             properties_json,
             initial_text: initial_text.unwrap_or_default().to_owned(),
-            subscriptions: subscriptions(&analysis, target),
+            subscriptions: subscriptions(&analysis, target, Some(binding)),
             initial_numeric: initial_numeric(binding, target),
         });
     }
@@ -126,7 +126,11 @@ pub(super) fn effect_script_programs(
                 .map(|binding| resolved_script_properties(binding, project_properties))
                 .unwrap_or_else(|| "{}".to_owned()),
             initial_text: String::new(),
-            subscriptions: subscriptions(&analysis, SceneScriptTarget::TechCircleSectorWidth),
+            subscriptions: subscriptions(
+                &analysis,
+                SceneScriptTarget::TechCircleSectorWidth,
+                binding.as_object(),
+            ),
             initial_numeric: [value_f32(Some(binding)).unwrap_or(0.0), 0.0, 0.0, 0.0],
         });
     }
@@ -165,16 +169,18 @@ fn resolved_script_properties(
 fn subscriptions(
     analysis: &SceneScriptAnalysis,
     target: SceneScriptTarget,
+    binding: Option<&Map<String, Value>>,
 ) -> SceneScriptSubscriptions {
     let local_time_only = target == SceneScriptTarget::Text
         && analysis.uses_local_time
         && !analysis.uses_runtime
         && !analysis.uses_frame_time
         && !analysis.uses_audio;
+    let local_time = local_time_subscription(analysis, binding);
     let mut subscriptions = if !analysis.exports_update {
         SceneScriptSubscriptions::NONE
     } else if local_time_only {
-        SceneScriptSubscriptions::LOCAL_TIME
+        local_time
     } else {
         SceneScriptSubscriptions::FRAME
     };
@@ -191,7 +197,7 @@ fn subscriptions(
         subscriptions = subscriptions.union(SceneScriptSubscriptions::POINTER_CLICK);
     }
     if analysis.uses_local_time {
-        subscriptions = subscriptions.union(SceneScriptSubscriptions::LOCAL_TIME);
+        subscriptions = subscriptions.union(local_time);
     }
     if analysis.handles_media {
         subscriptions = subscriptions.union(SceneScriptSubscriptions::MEDIA);
@@ -200,6 +206,46 @@ fn subscriptions(
         subscriptions = subscriptions.union(SceneScriptSubscriptions::USER_PROPERTY);
     }
     subscriptions
+}
+
+fn local_time_subscription(
+    analysis: &SceneScriptAnalysis,
+    binding: Option<&Map<String, Value>>,
+) -> SceneScriptSubscriptions {
+    let format = binding
+        .and_then(|binding| binding.get("scriptproperties"))
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("format"))
+        .and_then(Value::as_str);
+    if let Some(format) = format {
+        let mut escaped = false;
+        let mut seconds = false;
+        for character in format.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+            } else if character == 'S' {
+                return SceneScriptSubscriptions::FRAME;
+            } else if character == 's' {
+                seconds = true;
+            }
+        }
+        return if seconds {
+            SceneScriptSubscriptions::LOCAL_TIME_SECOND
+        } else {
+            SceneScriptSubscriptions::LOCAL_TIME
+        };
+    }
+    if analysis.uses_local_time_subseconds {
+        SceneScriptSubscriptions::FRAME
+    } else if analysis.uses_local_time_seconds {
+        SceneScriptSubscriptions::LOCAL_TIME_SECOND
+    } else {
+        SceneScriptSubscriptions::LOCAL_TIME
+    }
 }
 
 fn initial_numeric(
@@ -356,6 +402,23 @@ mod tests {
         assert_eq!(
             programs[0].subscriptions,
             SceneScriptSubscriptions::LOCAL_TIME
+        );
+    }
+
+    #[test]
+    fn formatted_time_text_subscribes_at_authored_precision() {
+        let object = json!({
+            "text": {
+                "value": "23",
+                "script": "export function update() { return new Date().getSeconds(); }",
+                "scriptproperties": {"format": "ss"}
+            }
+        });
+        let programs =
+            object_script_programs(7, &object, Some("23"), &Map::new()).expect("programs");
+        assert_eq!(
+            programs[0].subscriptions,
+            SceneScriptSubscriptions::LOCAL_TIME_SECOND
         );
     }
 
