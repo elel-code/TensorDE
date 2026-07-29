@@ -12,6 +12,7 @@ members = [
     "crates/tensor-runtime",
     "crates/tensor-util",
     "crates/vulkan-renderer",
+    "crates/vulkan-renderer-build",
     "crates/wayland-client-runtime",
 ]
 resolver = "3"

@@ -7,9 +7,9 @@ use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
 use vulkanalia::{Device, vk};
 
 const VERTEX_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_focus_ring.vert.spv"));
+    vulkan_renderer::include_spirv!("../../../../shaders/spirv/focus_ring.vert.spv");
 const FRAGMENT_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_focus_ring.frag.spv"));
+    vulkan_renderer::include_spirv!("../../../../shaders/spirv/focus_ring.frag.spv");
 
 /// Descriptor-free pipeline for the compositor-owned active-view ring.
 ///
@@ -210,5 +210,16 @@ mod tests {
             shader_module_info(FRAGMENT_SHADER).code_size,
             mem::size_of_val(FRAGMENT_SHADER)
         );
+        for (label, spirv) in [
+            ("focus-ring-vertex", VERTEX_SHADER),
+            ("focus-ring-fragment", FRAGMENT_SHADER),
+        ] {
+            vulkan_renderer::ShaderModuleDescriptor {
+                label: Some(label.to_owned()),
+                spirv: spirv.to_vec(),
+            }
+            .validate()
+            .unwrap();
+        }
     }
 }

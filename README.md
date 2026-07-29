@@ -17,6 +17,9 @@ standards live under `crates/`.
 - `crates/vulkan-renderer` — Vulkanalia-based Vulkan 1.4 / Roadmap 2026 rendering
   standard, with descriptor-heap-first resource binding and FIFO latest-ready
   presentation.
+- `crates/vulkan-renderer-build` — pinned Slang-to-SPIR-V generation,
+  reflection contracts, Vulkan 1.4 validation, and reproducibility checks;
+  applications do not link it at runtime.
 - `crates/wayland-client-runtime` — native Wayland protocols and event-loop
   integration shared by applications and the shell.
 - `crates/tensor-*` — value-only event, runtime, host, DRM, presentation,

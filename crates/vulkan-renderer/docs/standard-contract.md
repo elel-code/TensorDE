@@ -325,6 +325,13 @@ asset as an aligned `&[u32]` and rejects byte lengths that are not multiples of
 four at compile time. It is the standard asset-inclusion surface; consumers do
 not need a direct `vulkanalia` dependency for this operation.
 
+Authored Slang is a cold-path source format. Standard builds compile it through
+`vulkan-renderer-build` with a pinned `slangc`, strict reflection contracts,
+and external Vulkan 1.4 `spirv-val` validation. Applications distribute the
+resulting SPIR-V, not Slang, LLVM, or a runtime shader compiler. Runtime shader
+compilation is a separate opt-in product capability and MUST NOT enter the
+default frame path.
+
 1. Shader modules MUST reject malformed SPIR-V before calling Vulkan. The core
    accepts SPIR-V versions through 1.6 and MUST retain owned, aligned words for
    the duration of `vkCreateShaderModule`.
@@ -353,9 +360,14 @@ not need a direct `vulkanalia` dependency for this operation.
    direct and indirect draw, buffer update, and image-to-image copy MUST retain
    explicit unsafe lifetime and render-graph synchronization obligations.
 10. Small shader parameters for descriptor-heap pipelines MUST use
-    `vkCmdPushDataEXT`, not a hidden legacy pipeline layout. Offset and byte
-    length MUST be four-byte aligned, non-empty, overflow checked, and bounded
-    by the adapter's `maxPushDataSize`.
+   `vkCmdPushDataEXT`, not a hidden legacy pipeline layout. Offset and byte
+   length MUST be four-byte aligned, non-empty, overflow checked, and bounded
+   by the adapter's `maxPushDataSize`.
+11. Descriptor-bearing Slang MUST be compiled with the
+    `spvDescriptorHeapEXT` capability. Its SPIR-V MUST declare
+    `DescriptorHeapEXT` and `SPV_EXT_descriptor_heap` and MUST NOT contain
+    `Binding` or `DescriptorSet` decorations. Descriptor-free stages MUST NOT
+    declare the heap extension.
 
 ## Linux dma-buf and explicit sync
 

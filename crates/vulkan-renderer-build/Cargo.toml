@@ -1,0 +1,12 @@
+[package]
+name = "vulkan-renderer-build"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+description = "Reproducible Slang-to-SPIR-V tooling for the TensorDE Vulkan standard"
+readme = "README.md"
+
+[dependencies]
+serde_json = "1"

@@ -4139,6 +4139,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "udev",
+ "vulkan-renderer",
  "vulkanalia",
  "wayland-client",
  "wayland-protocols",
@@ -4593,6 +4594,13 @@ version = "0.1.0"
 dependencies = [
  "raw-window-handle",
  "vulkanalia",
+]
+
+[[package]]
+name = "vulkan-renderer-build"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
