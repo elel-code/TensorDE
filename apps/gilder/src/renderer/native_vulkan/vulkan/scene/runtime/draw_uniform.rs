@@ -72,23 +72,8 @@ pub(super) fn pack_scene_draw_uniforms_into(
                 | BuiltinSceneParameterLayout::WaterWavesUvField => {
                     waterwaves_draw_values(storage, draw, output_extent)
                 }
-                BuiltinSceneParameterLayout::AudioBars
-                | BuiltinSceneParameterLayout::TechCircle => {
-                    effect_uv_affine_draw_values(storage, draw, output_extent)
-                }
-                BuiltinSceneParameterLayout::Oscilloscope
-                    if draw.primitive
-                        == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh =>
-                {
-                    matrix_draw_values(scene_cover_clip_transform(
-                        storage.project(),
-                        output_extent,
-                        draw.clip_transform,
-                    ))
-                }
                 BuiltinSceneParameterLayout::Blend
                 | BuiltinSceneParameterLayout::BlendGradient
-                | BuiltinSceneParameterLayout::Oscilloscope
                 | BuiltinSceneParameterLayout::Scroll
                 | BuiltinSceneParameterLayout::Skew => {
                     effect_uv_affine_draw_values(storage, draw, output_extent)
@@ -193,9 +178,7 @@ fn effect_uv_affine_draw_values(
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
-    if draw.primitive
-        == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
-    {
+    if draw.primitive == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh {
         return projected_object_uv_draw_values(storage, draw, output_extent);
     }
     object_local_effect_draw_values(storage, draw, output_extent)

@@ -324,10 +324,11 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
         output: normalized_path.clone(),
         include_directories: input.include_directories.to_vec(),
         definitions: input.definitions.to_vec(),
-        // WE follows the C preprocessor for undeclared #if identifiers (zero) and reuses helper
-        // macro names across conditional functions. Preserve those expansion rules without
-        // promoting Slang's diagnostics to hard failures; all later validation remains strict.
-        disabled_warnings: vec![15205, 15400, 30081],
+        // WE follows the C preprocessor for undeclared #if identifiers (zero), reuses helper
+        // macro names across conditional functions, and specializes blend helpers until later
+        // returns are unreachable. Preserve those rules without promoting frontend diagnostics
+        // to hard failures; all later type, reflection and SPIR-V validation remains strict.
+        disabled_warnings: vec![15205, 15400, 30081, 41000],
     };
     let preprocessed = input
         .compiler

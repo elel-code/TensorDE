@@ -1,38 +1,5 @@
 use super::*;
 
-pub(super) fn auto_sway_values(
-    parameters: &MaterialParameters<'_>,
-    scene_time_seconds: f32,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0] = scene_time_seconds;
-    values[1] = parameters.scalar(&["timeoffset"], 0.0);
-    values[2] = parameters.scalar(&["speed"], 0.75);
-    values[3] = parameters.scalar(&["inertia"], 0.3);
-    values[4] = parameters.scalar(&["sigment"], 1.0);
-    values[5] = parameters.scalar(&["weightCenterOffset"], 0.0);
-    values[6] = parameters.scalar(&["smoothDistance"], 1.0);
-    values[7] = parameters.scalar(&["directionalCompensation"], 0.0);
-    values[8] = parameters.scalar(&["strength"], 0.25);
-    values[9] = parameters.scalar(&["末端阻尼"], 0.25);
-    values[10] = parameters.scalar(&["xFeather"], 0.2);
-    values[11] = parameters.scalar(&["windDirectionOffset"], 0.0);
-    for (node, base) in [(1, 12), (2, 14), (3, 16), (4, 18)] {
-        let name = format!("center{node}");
-        values[base..base + 2].copy_from_slice(&[0.0, 0.5]);
-        set_vector(&mut values, base, &parameters.values(&[name.as_str()]), 2);
-    }
-    for node in 1..=4 {
-        let name = format!("size{node}");
-        values[19 + node] = parameters.scalar(&[name.as_str()], 0.1);
-    }
-    for node in 2..=5 {
-        let name = format!("angle{node}");
-        values[22 + node] = parameters.scalar(&[name.as_str()], -1.57075);
-    }
-    values
-}
-
 pub(super) fn shake_values(
     parameters: &MaterialParameters<'_>,
     scene_time_seconds: f32,

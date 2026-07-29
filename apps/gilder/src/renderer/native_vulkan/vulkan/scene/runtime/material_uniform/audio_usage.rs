@@ -22,8 +22,8 @@ pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn scene_uses_aud
 fn draw_uses_audio_spectrum(storage: &SceneStorage, draw: &SceneRenderingDeviceMeshDraw) -> bool {
     scene_owned_shader_uses_audio_spectrum(storage, draw.shader_key)
         || storage
-        .string(draw.shader_key)
-        .is_some_and(shader_uses_audio_spectrum)
+            .string(draw.shader_key)
+            .is_some_and(shader_uses_audio_spectrum)
         || material_uses_audio_spectrum(storage, draw.material)
 }
 
@@ -57,11 +57,8 @@ pub(super) fn material_uses_audio_spectrum(
 
 fn shader_uses_audio_spectrum(shader_key: &str) -> bool {
     native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
-        shader.parameter_layout == BuiltinSceneParameterLayout::AudioBars
-            || shader.parameter_layout == BuiltinSceneParameterLayout::AudioLine
-            || shader.parameter_layout == BuiltinSceneParameterLayout::Oscilloscope
-            || (shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
-                && shader_key.eq_ignore_ascii_case("we/audio-bars-final"))
+        shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
+            && shader_key.eq_ignore_ascii_case("we/audio-bars-final")
     })
 }
 
@@ -83,10 +80,7 @@ mod tests {
             &storage,
             SceneStringId(0)
         ));
-        assert!(native_vulkan_scene_shader_for_key(
-            "package/effects/audioline__SLOTS_1"
-        )
-        .is_none());
+        assert!(native_vulkan_scene_shader_for_key("package/effects/audioline__SLOTS_1").is_none());
     }
 
     fn scene_owned_audio_document() -> SceneBinaryDocument {

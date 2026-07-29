@@ -23,9 +23,7 @@ use super::material_uniform::{
     SceneMaterialFrameInputs, pack_scene_material_uniforms_with_frame_inputs,
 };
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
-use super::scene_owned_uniform::{
-    SceneOwnedUniformArenaPlan, SceneOwnedUniformFrameInputs,
-};
+use super::scene_owned_uniform::{SceneOwnedUniformArenaPlan, SceneOwnedUniformFrameInputs};
 
 mod topology;
 
@@ -412,7 +410,6 @@ pub(super) fn write_scene_frame_buffers(
             output_extent,
             SceneMaterialFrameInputs {
                 average_spectrum32: average_spectrum32.as_ref(),
-                stereo_spectrum64,
                 audio_material_values: &semantic_frame.audio_band_material_values,
                 material_scalar_values: &semantic_frame.material_scalar_values,
             },

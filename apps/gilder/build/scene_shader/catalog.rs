@@ -1,11 +1,14 @@
 use super::super::*;
 use std::collections::BTreeSet;
 
+#[path = "catalog/installed_effects.rs"]
+mod installed_effects;
 #[path = "catalog/key.rs"]
 mod key;
 #[path = "catalog/specs.rs"]
 mod specs;
 
+use installed_effects::INSTALLED_EFFECT_PROGRAMS;
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
 use vulkan_renderer_build::{ShaderCompileRequest, ShaderContract, ShaderStage, SlangCompiler};
 
@@ -54,12 +57,21 @@ pub(crate) enum SceneShaderFamily {
 use specs::BUILTIN_SCENE_SHADER_SPECS;
 
 pub(crate) fn build_scene_shader_origin_catalog() {
-    let programs = BUILTIN_SCENE_SHADER_SPECS
+    let programs = INSTALLED_EFFECT_PROGRAMS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for program in BUILTIN_SCENE_SHADER_SPECS
         .iter()
         .chain(super::FINAL_EFFECT_SHADER_SPECS)
         .map(|spec| spec.key.split_once("__").map_or(spec.key, |(key, _)| key))
         .filter(|key| key.starts_with("effects/"))
-        .collect::<BTreeSet<_>>();
+    {
+        assert!(
+            programs.contains(program),
+            "scene catalog effect {program:?} is not owned by the installed 46-effect registry"
+        );
+    }
     let patterns = programs
         .into_iter()
         .map(|program| format!("        {program:?}"))
@@ -223,41 +235,24 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::EffectWaterWavesUvField => "WaterWavesUvField",
         SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
-            "effects/111" => "Lightning",
-            "effects/audioline" => "AudioLine",
-            "effects/auto_sway" => "AutoSway",
             "effects/blend" => "Blend",
             "effects/blendgradient" => "BlendGradient",
             "effects/blur_combine" => "BlurCombine",
             "effects/blur_downsample4" => "None",
             "effects/blur_gaussian" => "BlurGaussian",
-            "effects/lut_loader" => "Lut",
-            "effects/raindrop_on_glass" => "Raindrop",
-            "effects/audio_responsive_oscilloscope" => "Oscilloscope",
             "effects/caustics" => "Caustics",
             "effects/cloudmotion" => "CloudMotion",
-            "effects/clipping_mask" => "ClippingMask",
             "effects/colorkey" => "ColorKey",
-            "effects/custom_user_texture" => "CustomUserTexture",
-            "effects/gradient_color" => "GradientColor",
-            "effects/huan" => "Ring",
             "effects/iris" => "Iris",
             "effects/opacity" => "Opacity",
-            "effects/user_texture_alpha_overwrite_workaround" => "Opacity",
-            "effects/procedural_noise" => "ProceduralNoise",
             "effects/scroll" => "Scroll",
             "effects/skew" => "Skew",
-            "effects/rounded_mask" => "RoundedMask",
-            "effects/rounded_mask_effect_edit" => "RoundedMask",
-            "effects/qiu" => "Sphere",
             "effects/tint" => "Tint",
             "effects/spin" => "Spin",
             "effects/shake" => "Shake",
             "effects/shimmer" => "Shimmer",
             "effects/swing" => "Swing",
             "effects/foliagesway" => "FoliageSway",
-            "effects/tech_circle" => "TechCircle",
-            "effects/simple_audio_bars" => "AudioBars",
             "effects/waterwaves" => "WaterWaves",
             "effects/waterripple" => "WaterRipple",
             "effects/waterflow" => "WaterFlow",
@@ -267,12 +262,8 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
     }
 }
 
-fn scene_fragment_descriptor_heap_mode(key: &str) -> &'static str {
-    if key == "effects/audioline__SLOTS_1" {
-        "Native"
-    } else {
-        "Mapped"
-    }
+fn scene_fragment_descriptor_heap_mode(_key: &str) -> &'static str {
+    "Mapped"
 }
 
 fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {

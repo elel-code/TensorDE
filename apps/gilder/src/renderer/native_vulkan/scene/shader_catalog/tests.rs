@@ -113,6 +113,12 @@
         assert!(!shader.fragment_spirv.is_empty());
         assert!(shader.local_read_shader.is_none());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
+        assert!(
+            native_vulkan_scene_shader_for_key(
+                "effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64"
+            )
+            .is_none()
+        );
         assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key(" we/genericimage4").is_none());

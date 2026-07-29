@@ -3,9 +3,7 @@
 use vulkan_renderer::descriptor_heap_element_index;
 
 use crate::engine::scene::{SceneRenderingDeviceMeshDraw, SceneStorage};
-use crate::renderer::native_vulkan::scene::{
-    BuiltinSceneDescriptorHeapMode, BuiltinSceneParameterLayout,
-};
+use crate::renderer::native_vulkan::scene::BuiltinSceneDescriptorHeapMode;
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -20,45 +18,20 @@ use super::shader_program::{
 };
 use super::{SceneGpuDrawCommand, ScenePipelineDescriptorLayout};
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SceneAudioLineHeapPush {
-    pub texture_index: u32,
-    pub sampler_index: u32,
-    pub material_index: u32,
-}
-
-impl SceneAudioLineHeapPush {
-    fn bytes(self) -> [u8; 12] {
-        let mut bytes = [0; 12];
-        for (destination, word) in bytes.chunks_exact_mut(4).zip([
-            self.texture_index,
-            self.sampler_index,
-            self.material_index,
-        ]) {
-            destination.copy_from_slice(&word.to_le_bytes());
-        }
-        bytes
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SceneNativeDescriptorPush {
-    AudioLine([u8; 12]),
     SceneOwned(Vec<u8>),
 }
 
 impl SceneNativeDescriptorPush {
     pub(super) fn bytes(&self) -> &[u8] {
         match self {
-            Self::AudioLine(bytes) => bytes,
             Self::SceneOwned(bytes) => bytes,
         }
     }
 
     fn byte_len(&self) -> u64 {
         match self {
-            Self::AudioLine(_) => 12,
             Self::SceneOwned(bytes) => bytes.len() as u64,
         }
     }
@@ -92,21 +65,9 @@ pub(super) fn resolve_scene_native_descriptor_pushes(
                 match shader.fragment_descriptor_heap_mode {
                     BuiltinSceneDescriptorHeapMode::Mapped => None,
                     BuiltinSceneDescriptorHeapMode::Native => {
-                        let push = match shader.parameter_layout {
-                            BuiltinSceneParameterLayout::AudioLine => {
-                                SceneNativeDescriptorPush::AudioLine(
-                                    audio_line_heap_push(layout, plan, command)?.bytes(),
-                                )
-                            }
-                            parameter_layout => {
-                                return Err(format!(
-                                    "native descriptor-heap scene shader {key:?} has unsupported push layout \
-                             {parameter_layout:?}"
-                                ));
-                            }
-                        };
-                        validate_native_push_size(key, &push, plan.max_push_data_size)?;
-                        Some(push)
+                        return Err(format!(
+                            "native descriptor-heap scene shader {key:?} has no typed push contract"
+                        ));
                     }
                 }
             }
@@ -290,71 +251,6 @@ fn sampled_slot_index(
         .ok_or_else(|| format!("scene-owned shader requires unplanned sampled slot {register}"))
 }
 
-fn audio_line_heap_push(
-    layout: &ScenePipelineDescriptorLayout,
-    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    draw: &SceneGpuDrawCommand,
-) -> Result<SceneAudioLineHeapPush, String> {
-    let sampled_index = layout
-        .sampled_slots
-        .iter()
-        .position(|slot| *slot == 0)
-        .ok_or_else(|| "native audioline shader requires sampled texture slot 0".to_owned())?;
-    let resource_slice_base = descriptor_slice_base(
-        &plan.resource_descriptor_offsets,
-        draw.resource_descriptor_base,
-        plan.resource_heap_alignment,
-        "resource",
-    )?;
-    let sampler_slice_base = descriptor_slice_base(
-        &plan.sampler_descriptor_offsets,
-        draw.sampler_descriptor_base,
-        plan.sampler_heap_alignment,
-        "sampler",
-    )?;
-    let texture_descriptor = draw.sampled_resource_descriptor_base + sampled_index;
-    validate_resource_kind(
-        plan,
-        texture_descriptor,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-        "audioline texture",
-    )?;
-    let material_descriptor = draw.material_resource_descriptor.ok_or_else(|| {
-        "native audioline shader requires a material uniform descriptor".to_owned()
-    })?;
-    validate_resource_kind(
-        plan,
-        material_descriptor,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-        "audioline material",
-    )?;
-    let sampler_descriptor = draw.sampler_descriptor_base + sampled_index;
-
-    Ok(SceneAudioLineHeapPush {
-        texture_index: relative_element_index(
-            &plan.resource_descriptor_offsets,
-            texture_descriptor,
-            resource_slice_base,
-            plan.image_descriptor_size,
-            "audioline texture",
-        )?,
-        sampler_index: relative_element_index(
-            &plan.sampler_descriptor_offsets,
-            sampler_descriptor,
-            sampler_slice_base,
-            plan.sampler_descriptor_size,
-            "audioline sampler",
-        )?,
-        material_index: relative_element_index(
-            &plan.resource_descriptor_offsets,
-            material_descriptor,
-            resource_slice_base,
-            plan.buffer_descriptor_size,
-            "audioline material",
-        )?,
-    })
-}
-
 fn descriptor_slice_base(
     offsets: &[u64],
     descriptor: usize,
@@ -474,9 +370,7 @@ mod tests {
 
         let push = scene_owned_pipeline_push(&vertex, &fragment, &layout, &plan, &draw)
             .expect("owned push");
-        let SceneNativeDescriptorPush::SceneOwned(bytes) = push else {
-            panic!("scene-owned push kind");
-        };
+        let SceneNativeDescriptorPush::SceneOwned(bytes) = push;
         assert_eq!(
             bytes
                 .chunks_exact(4)
@@ -484,101 +378,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 3, 0, 2]
         );
-    }
-
-    #[test]
-    fn audioline_indices_are_relative_to_aligned_bound_heap_slices() {
-        let layout = ScenePipelineDescriptorLayout {
-            sampled_slots: vec![0],
-            input_attachment_slots: Vec::new(),
-            material_uniform_enabled: true,
-            skinning_storage_enabled: false,
-            scene_owned_uniform_count: 0,
-        };
-        let kinds = [
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-        ]
-        .repeat(2);
-        let plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
-            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
-                resource_descriptors: kinds,
-                sampler_count: 2,
-                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
-                    resource_heap_alignment: 128,
-                    sampler_heap_alignment: 64,
-                    max_resource_heap_size: 4096,
-                    max_sampler_heap_size: 4096,
-                    image_descriptor_size: 32,
-                    image_descriptor_alignment: 32,
-                    buffer_descriptor_size: 32,
-                    buffer_descriptor_alignment: 32,
-                    sampler_descriptor_size: 16,
-                    sampler_descriptor_alignment: 16,
-                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
-                },
-            },
-        );
-        assert!(plan.backend_ready);
-        let draw = |base, sampler_base| SceneGpuDrawCommand {
-            enabled: true,
-            primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
-            pipeline_index: 0,
-            authored_pipeline_index: 0,
-            disabled_pipeline_index: None,
-            first_index: 0,
-            index_count: 0,
-            vertex_offset: 0,
-            vertex_count: 3,
-            instance_count: 1,
-            instance_capacity: 1,
-            first_instance: 0,
-            dynamic_text: false,
-            particle_indirect_index: None,
-            resource_descriptor_base: base,
-            material_resource_descriptor: Some(base + 1),
-            skinning_resource_descriptor: None,
-            scene_owned_uniform_descriptor_base: base + 2,
-            sampled_resource_descriptor_base: base + 2,
-            input_attachment_resource_descriptor_base: base + 3,
-            sampler_descriptor_base: sampler_base,
-            native_descriptor_push: None,
-            skinning_byte_offset: 0,
-            skinning_byte_count: 0,
-            scissor: None,
-        };
-
-        assert_eq!(
-            audio_line_heap_push(&layout, &plan, &draw(0, 0)).unwrap(),
-            SceneAudioLineHeapPush {
-                texture_index: 2,
-                sampler_index: 0,
-                material_index: 1,
-            }
-        );
-        assert_eq!(
-            audio_line_heap_push(&layout, &plan, &draw(3, 1)).unwrap(),
-            SceneAudioLineHeapPush {
-                texture_index: 5,
-                sampler_index: 1,
-                material_index: 4,
-            }
-        );
-    }
-
-    #[test]
-    fn audioline_push_size_fails_instead_of_exceeding_the_device_limit() {
-        let push = SceneNativeDescriptorPush::AudioLine(
-            SceneAudioLineHeapPush {
-                texture_index: 0,
-                sampler_index: 0,
-                material_index: 0,
-            }
-            .bytes(),
-        );
-        assert!(validate_native_push_size("audioline", &push, 11).is_err());
-        assert!(validate_native_push_size("audioline", &push, 12).is_ok());
     }
 
     fn owned_stage(

@@ -31,15 +31,6 @@ pub(super) fn blend_gradient_values(
     values
 }
 
-pub(super) fn lut_values(
-    parameters: &MaterialParameters<'_>,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0] = parameters.scalar(&["multiply1", "multiply"], 1.0);
-    values[1] = parameters.scalar(&["tc", "translucentcompensation"], 0.0);
-    values
-}
-
 pub(super) fn shimmer_values(
     parameters: &MaterialParameters<'_>,
     scene_time_seconds: f32,

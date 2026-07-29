@@ -52,6 +52,7 @@ mod tests {
             "genericimage4",
             "effects/tint__SLOTS_1",
             "shaders/effects/blur_gaussian",
+            "effects/filmgrain",
             "we/passthrough",
             "gilder/dynamic-text",
         ] {
@@ -78,6 +79,7 @@ mod tests {
             "effects/huan__SLOTS_1",
             "effects/qiu__SLOTS_1",
             "effects/rounded_mask__SLOTS_1__SOFT_1",
+            "effects/lut_loader__SLOTS_3__QUAD_SIZE_64",
         ] {
             assert_eq!(scene_shader_origin(key), WeIrShaderOrigin::AuthoredPackage);
         }

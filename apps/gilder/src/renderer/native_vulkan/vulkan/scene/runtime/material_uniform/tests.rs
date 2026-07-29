@@ -36,7 +36,6 @@ fn material_scalar_override_replaces_only_its_typed_constant() {
         TEST_OUTPUT_EXTENT,
         SceneMaterialFrameInputs {
             average_spectrum32: None,
-            stereo_spectrum64: None,
             audio_material_values: &[],
             material_scalar_values: &[override_value],
         },

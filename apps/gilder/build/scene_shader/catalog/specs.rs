@@ -102,14 +102,6 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
-        key: "effects/lut_loader__SLOTS_3__QUAD_SIZE_64",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
         key: "effects/opacity__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },

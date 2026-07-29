@@ -8,27 +8,23 @@
 
 use std::mem::size_of;
 
-mod audio_line;
 mod audio_usage;
 mod color_effect;
 mod deformation;
 mod final_effect;
-mod oscilloscope;
 mod particle;
 mod shader_key;
 mod source_extent;
 mod value_writer;
 mod weather_effect;
-mod workshop_effect;
 
 #[cfg(test)]
 use audio_usage::material_uses_audio_spectrum;
 pub(super) use audio_usage::scene_uses_audio_spectrum;
-use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values, tint_values};
+use color_effect::{blend_gradient_values, blend_values, shimmer_values, tint_values};
 use deformation::{
-    auto_sway_values, draw_effect_enabled, foliage_ripple_composite_values, foliage_sway_values,
-    shake_values, waterripple_values, waterwaves_direct_values, waterwaves_uv_field_values,
-    waterwaves_values,
+    draw_effect_enabled, foliage_ripple_composite_values, foliage_sway_values, shake_values,
+    waterripple_values, waterwaves_direct_values, waterwaves_uv_field_values, waterwaves_values,
 };
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
 use source_extent::draw_source_aspect_ratio;
@@ -48,7 +44,7 @@ use crate::engine::scene::semantic_world::{
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneAudioBandMaterialTarget, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage,
-    SceneTextureRecord, StereoSpectrum64,
+    SceneTextureRecord,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -61,7 +57,6 @@ const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
 #[derive(Clone, Copy)]
 pub(super) struct SceneMaterialFrameInputs<'a> {
     pub average_spectrum32: Option<&'a [f32; 32]>,
-    pub stereo_spectrum64: Option<&'a StereoSpectrum64>,
     pub audio_material_values: &'a [ResolvedAudioBandMaterialValue],
     pub material_scalar_values: &'a [ResolvedMaterialScalarValue],
 }
@@ -95,7 +90,6 @@ fn pack_scene_material_uniforms_with_spectrum(
         output_extent,
         SceneMaterialFrameInputs {
             average_spectrum32,
-            stereo_spectrum64: None,
             audio_material_values: &[],
             material_scalar_values: &[],
         },
@@ -152,13 +146,6 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::Particle => {
             particle::particle_values(storage, draw, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::AudioBars => {
-            audio_bars_values(&parameters, frame_inputs.average_spectrum32)
-        }
-        BuiltinSceneParameterLayout::AudioLine => {
-            audio_line::audio_line_values(&parameters, frame_inputs.stereo_spectrum64)
-        }
-        BuiltinSceneParameterLayout::AutoSway => auto_sway_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Blend => blend_values(&parameters, storage, shader_key),
         BuiltinSceneParameterLayout::BlendGradient => {
             blend_gradient_values(&parameters, storage, shader_key)
@@ -194,55 +181,18 @@ fn material_uniform_values(
             cloudmotion_values(&parameters, draw, scene_time_seconds, output_extent)
         }
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
-        BuiltinSceneParameterLayout::ClippingMask => {
-            workshop_effect::clipping_mask_values(&parameters, storage, draw)
-        }
-        BuiltinSceneParameterLayout::CustomUserTexture => {
-            workshop_effect::custom_user_texture_values(&parameters)
-        }
-        BuiltinSceneParameterLayout::GradientColor => {
-            workshop_effect::gradient_color_values(&parameters, scene_time_seconds)
-        }
-        BuiltinSceneParameterLayout::Ring => workshop_effect::ring_values(&parameters),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
-        BuiltinSceneParameterLayout::Lightning => {
-            weather_effect::lightning_values(&parameters, scene_time_seconds)
-        }
-        BuiltinSceneParameterLayout::Lut => lut_values(&parameters),
-        BuiltinSceneParameterLayout::Oscilloscope => oscilloscope::oscilloscope_values(
-            &parameters,
-            frame_inputs.average_spectrum32,
-            draw.authored_source_extent,
-        ),
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
-        BuiltinSceneParameterLayout::ProceduralNoise => {
-            procedural_noise_values(&parameters, scene_time_seconds)
-        }
-        BuiltinSceneParameterLayout::Raindrop => {
-            weather_effect::raindrop_values(&parameters, storage, scene_time_seconds)
-        }
         BuiltinSceneParameterLayout::RoundedMask => {
             rounded_mask_values(&parameters, draw, draw_effect_enabled(draw, 0))
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
         BuiltinSceneParameterLayout::Spin => spin_values(&parameters, scene_time_seconds),
-        BuiltinSceneParameterLayout::Sphere => {
-            workshop_effect::sphere_values(&parameters, scene_time_seconds)
-        }
         BuiltinSceneParameterLayout::Shimmer => shimmer_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Swing => {
             weather_effect::swing_values(&parameters, storage, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::TechCircle => tech_circle_values(
-            &parameters,
-            scene_time_seconds,
-            audio_material_value(
-                frame_inputs.audio_material_values,
-                draw,
-                SceneAudioBandMaterialTarget::TechCircleSectorWidth,
-            ),
-        ),
         BuiltinSceneParameterLayout::Tint => tint_values(&parameters),
         BuiltinSceneParameterLayout::FoliageSway => {
             foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
@@ -316,34 +266,6 @@ fn resolved_visual_material_values(
     values
 }
 
-fn procedural_noise_values(
-    parameters: &MaterialParameters<'_>,
-    scene_time_seconds: f32,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0] = scene_time_seconds;
-    values[1] = parameters.scalar(&["animationspeed"], 1.0);
-    values[2] = parameters.scalar(&["scrollirection"], 0.0);
-    values[3] = parameters.scalar(&["scrollspeed"], 0.0);
-    set_vector(&mut values, 4, &parameters.values(&["Offset"]), 2);
-    values[6..8].copy_from_slice(&[1.0, 1.0]);
-    set_vector(&mut values, 6, &parameters.values(&["Scale"]), 2);
-    values[8..10].copy_from_slice(&[1.0, 1.0]);
-    set_vector(&mut values, 8, &parameters.values(&["Magnitude"]), 2);
-    values[10] = parameters.scalar(&["Seed"], 0.0);
-    values[11] = parameters.scalar(&["FPS"], 0.0);
-    values[12] = parameters.scalar(&["Opacity"], 1.0);
-    values[13] = parameters.scalar(&["Fractals"], 1.0);
-    values[14] = parameters.scalar(&["Fractal scaling"], 2.0);
-    values[15] = parameters.scalar(&["Fractal influence"], 0.5);
-    values[16..18].copy_from_slice(&[0.0, 1.0]);
-    set_vector(&mut values, 16, &parameters.values(&["Thresholds"]), 2);
-    values[18] = parameters.scalar(&["Thresholds offset"], 0.0);
-    values[19] = parameters.scalar(&["Exponent"], 1.0);
-    values[20] = parameters.scalar(&["Gradient"], 1.0);
-    values
-}
-
 fn blur_gaussian_values(
     parameters: &MaterialParameters<'_>,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
@@ -376,43 +298,6 @@ fn waterflow_values(
     values[3] = parameters.scalar(&["strength"], 1.0);
     values[4] = parameters.scalar(&["phasescale"], 2.0);
     values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
-    values
-}
-
-fn audio_bars_values(
-    parameters: &MaterialParameters<'_>,
-    spectrum: Option<&[f32; 32]>,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(&mut values, 0, &parameters.values(&["Bar Color"]), 3);
-    values[3] = parameters.scalar(&["ui_editor_properties_opacity"], 1.0);
-    values[4] = parameters.scalar(&["Bar Count"], 32.0);
-    values[5] = parameters.scalar(&["Bar Spacing"], 0.1);
-    values[6..8].copy_from_slice(&[0.0, 1.0]);
-    set_vector(
-        &mut values,
-        6,
-        &parameters.values(&["Lower/Upper Bar Bounds"]),
-        2,
-    );
-    values[8] = parameters.scalar(
-        &["Minimum Height (Will be multiplied by the bar width) "],
-        0.0,
-    );
-    values[9] = parameters.scalar(&["Radius"], 1.0);
-    values[10] = parameters.scalar(&["Volume Factor"], 1.0);
-    values[11..13].copy_from_slice(&[0.05, 0.0]);
-    set_vector(
-        &mut values,
-        11,
-        &parameters.values(&["Anti-alias blurring "]),
-        2,
-    );
-    if let Some(spectrum) = spectrum {
-        values[16..48].copy_from_slice(spectrum);
-        values[48..80].copy_from_slice(spectrum);
-    }
     values
 }
 
@@ -477,35 +362,6 @@ fn spin_values(
     set_vector(&mut values, 5, &parameters.values(&["center"]), 2);
     values[8] = parameters.scalar(&["size"], 0.1);
     values[9] = parameters.scalar(&["feather"], 0.002);
-    values
-}
-
-fn tech_circle_values(
-    parameters: &MaterialParameters<'_>,
-    scene_time_seconds: f32,
-    sector_width_override: Option<f32>,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(
-        &mut values,
-        0,
-        &parameters.values(&["ui_editor_properties_1_color"]),
-        3,
-    );
-    values[3] = parameters.scalar(&["ui_editor_properties_2_alpha"], 1.0);
-    values[4] = scene_time_seconds;
-    values[5] = parameters.scalar(&["ui_editor_properties_3_speed"], 0.1);
-    values[6] = parameters.scalar(&["ui_editor_properties_6_skew"], 0.0);
-    values[7] = parameters.scalar(&["ui_editor_properties_4_ring_1_radius"], 0.5);
-    values[8] = parameters.scalar(&["ui_editor_properties_4_ring_1_width"], 0.2);
-    values[9] = parameters.scalar(&["ui_editor_properties_4_ring_2_segment_count"], 2.0);
-    values[10] = parameters.scalar(&["ui_editor_properties_4_ring_2_segment_width"], 0.25);
-    values[11] = parameters.scalar(&["ui_editor_properties_5_sector_1_offset"], 0.0);
-    values[12] = sector_width_override
-        .unwrap_or_else(|| parameters.scalar(&["ui_editor_properties_5_sector_1_width"], 0.3));
-    values[13] = parameters.scalar(&["ui_editor_properties_5_sector_segment_count"], 5.0);
-    values[14] = parameters.scalar(&["ui_editor_properties_5_sector_segment_width"], 0.75);
     values
 }
 

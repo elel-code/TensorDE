@@ -1,51 +1,25 @@
-#[path = "scene_shader/audio_line.rs"]
-mod audio_line;
-#[path = "scene_shader/auto_sway.rs"]
-mod auto_sway;
 #[path = "scene_shader/blend.rs"]
 mod blend;
 #[path = "scene_shader/blur.rs"]
 mod blur;
 #[path = "scene_shader/catalog.rs"]
 mod catalog;
-#[path = "scene_shader/clipping_mask.rs"]
-mod clipping_mask;
 #[path = "scene_shader/core_material.rs"]
 mod core_material;
-#[path = "scene_shader/custom_user_texture.rs"]
-mod custom_user_texture;
 #[path = "scene_shader/effect_program.rs"]
 mod effect_program;
 #[path = "scene_shader/final_effect.rs"]
 mod final_effect;
 #[path = "scene_shader/flat_rounded_hsl.rs"]
 mod flat_rounded_hsl;
-#[path = "scene_shader/gradient_color.rs"]
-mod gradient_color;
-#[path = "scene_shader/lightning.rs"]
-mod lightning;
 #[path = "scene_shader/local_read.rs"]
 mod local_read;
-#[path = "scene_shader/lut.rs"]
-mod lut;
-#[path = "scene_shader/oscilloscope.rs"]
-mod oscilloscope;
 #[path = "scene_shader/particle.rs"]
 mod particle;
 #[path = "scene_shader/particle_compute.rs"]
 mod particle_compute;
-#[path = "scene_shader/procedural_noise.rs"]
-mod procedural_noise;
-#[path = "scene_shader/raindrop.rs"]
-mod raindrop;
-#[path = "scene_shader/ring.rs"]
-mod ring;
-#[path = "scene_shader/rounded_mask.rs"]
-mod rounded_mask;
 #[path = "scene_shader/shimmer.rs"]
 mod shimmer;
-#[path = "scene_shader/sphere.rs"]
-mod sphere;
 #[path = "scene_shader/spin.rs"]
 mod spin;
 #[path = "scene_shader/swing.rs"]

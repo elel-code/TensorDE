@@ -15,9 +15,6 @@ pub enum BuiltinSceneDescriptorHeapMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSceneParameterLayout {
     None,
-    AudioBars,
-    AudioLine,
-    AutoSway,
     Blend,
     BlendGradient,
     BlurCombine,
@@ -25,35 +22,24 @@ pub enum BuiltinSceneParameterLayout {
     Particle,
     StandardMaterial,
     Iris,
-    Lightning,
-    Lut,
-    Oscilloscope,
     Opacity,
-    ProceduralNoise,
-    Raindrop,
     RoundedMask,
     Scroll,
     Skew,
     Spin,
     Shimmer,
     Swing,
-    TechCircle,
     Tint,
     Caustics,
     CloudMotion,
-    ClippingMask,
     ColorKey,
-    CustomUserTexture,
     FoliageSway,
     FoliageRippleComposite,
     FinalEffectProgram,
     FinalWaterRipple,
     FinalWaterWaves,
-    GradientColor,
-    Ring,
     RippleFlowComposite,
     Shake,
-    Sphere,
     WaterWaves,
     WaterWavesDirect,
     WaterWavesUvField,
@@ -69,10 +55,8 @@ impl BuiltinSceneParameterLayout {
     pub const fn uses_effect_draw_uniform(self) -> bool {
         matches!(
             self,
-            Self::AudioBars
-                | Self::Blend
+            Self::Blend
                 | Self::BlendGradient
-                | Self::Oscilloscope
                 | Self::FinalEffectProgram
                 | Self::Iris
                 | Self::Particle
@@ -80,7 +64,6 @@ impl BuiltinSceneParameterLayout {
                 | Self::Scroll
                 | Self::Spin
                 | Self::Skew
-                | Self::TechCircle
                 | Self::Tint
                 | Self::WaterFlow
                 | Self::WaterWaves
@@ -92,22 +75,14 @@ impl BuiltinSceneParameterLayout {
     pub const fn uses_dynamic_material_input(self) -> bool {
         matches!(
             self,
-            Self::AudioBars
-                | Self::AudioLine
-                | Self::AutoSway
-                | Self::Blend
+            Self::Blend
                 | Self::BlendGradient
                 | Self::BlurCombine
                 | Self::BlurGaussian
                 | Self::Iris
-                | Self::Lightning
-                | Self::Oscilloscope
                 | Self::Particle
-                | Self::ProceduralNoise
                 | Self::Caustics
                 | Self::CloudMotion
-                | Self::GradientColor
-                | Self::Ring
                 | Self::FoliageSway
                 | Self::FoliageRippleComposite
                 | Self::FinalEffectProgram
@@ -115,12 +90,9 @@ impl BuiltinSceneParameterLayout {
                 | Self::FinalWaterWaves
                 | Self::RippleFlowComposite
                 | Self::Shake
-                | Self::Sphere
                 | Self::Scroll
-                | Self::Raindrop
                 | Self::Shimmer
                 | Self::Swing
-                | Self::TechCircle
                 | Self::WaterFlow
                 | Self::WaterWaves
                 | Self::WaterWavesUvField
