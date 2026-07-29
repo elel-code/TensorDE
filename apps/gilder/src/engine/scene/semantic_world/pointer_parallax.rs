@@ -55,7 +55,7 @@ impl RetainedPointerParallaxSystem {
         if !self.camera.enabled || self.root_bindings.is_empty() {
             return;
         }
-        let normalized = pointer_scene_position(world, events).unwrap_or([0.5; 2]);
+        let normalized = retained_camera_pointer_position(events).unwrap_or([0.5; 2]);
         let project = world.storage.project();
         let target = [
             project.camera_eye.x
@@ -124,22 +124,16 @@ fn topmost_object_index(
     root.0 as usize
 }
 
-fn pointer_scene_position(
-    world: &SceneSemanticWorld<'_>,
-    events: &SceneFrameEvents,
-) -> Option<[f32; 2]> {
+fn retained_camera_pointer_position(events: &SceneFrameEvents) -> Option<[f32; 2]> {
     // Wallpaper Engine samples a retained desktop pointer position; a Wayland
     // wl_pointer.leave only means that another surface gained protocol focus.
     // Keep the last surface-local position for camera parallax after leave.
     // Script hover/click dispatch still observes `inside` independently.
     let normalized = events.pointer.normalized_position_top_left()?;
-    let project = world.storage.project();
-    let mapped = cover_mapped_position(
-        normalized,
-        [project.logical_width, project.logical_height],
-        events.pointer.surface_size,
-    );
-    Some([mapped[0], 1.0 - mapped[1]])
+    // Camera parallax consumes the complete surface-normalized input domain.
+    // Cover mapping belongs to scene projection and pointer hit-testing; using
+    // its cropped visible range here weakens edge motion on unlike aspects.
+    Some([normalized[0], 1.0 - normalized[1]])
 }
 
 pub(super) fn cover_mapped_position(
@@ -167,6 +161,20 @@ pub(super) fn cover_mapped_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_camera_uses_complete_surface_normalized_domain() {
+        let events = SceneFrameEvents {
+            pointer: crate::engine::scene::ScenePointerState {
+                position: [90.0, 10.0],
+                surface_size: [100, 200],
+                ..crate::engine::scene::ScenePointerState::default()
+            },
+            ..SceneFrameEvents::default()
+        };
+
+        assert_eq!(retained_camera_pointer_position(&events), Some([0.9, 0.95]));
+    }
 
     #[test]
     fn cover_mapping_preserves_center_and_crops_wide_scene_x() {
