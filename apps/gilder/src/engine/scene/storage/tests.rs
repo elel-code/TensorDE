@@ -25,6 +25,89 @@ fn storage_rejects_overlapping_sampled_and_input_attachment_slots() {
 }
 
 #[test]
+fn storage_accepts_native_heap_spirv_and_exposes_borrowed_program_slices() {
+    let mut spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+    spirv.extend(spirv_instruction(17, &[5_128]));
+    spirv.extend(spirv_string_instruction(10, "SPV_EXT_descriptor_heap"));
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "workshop/example/effects/wave__SLOTS_1".to_owned(),
+            "main".to_owned(),
+        ],
+        shader_programs: vec![SceneShaderProgramRecord {
+            program_key: SceneStringId(0),
+            stage: SceneShaderStage::Fragment,
+            entry_point: SceneStringId(1),
+            spirv_start: 0,
+            spirv_count: spirv.len() as u32,
+            binding_start: 0,
+            binding_count: 1,
+            push_constant_bytes: 4,
+        }],
+        shader_bindings: vec![SceneShaderBindingRecord {
+            kind: SceneShaderBindingKind::SampledImage,
+            register: 0,
+            descriptor_count: 1,
+            push_offset: 0,
+        }],
+        shader_spirv: spirv.clone(),
+        ..SceneBinaryDocument::default()
+    };
+
+    let storage = SceneStorage::from_document(document).expect("native heap SPIR-V storage");
+    let program = &storage.shader_programs()[0];
+    assert_eq!(storage.shader_program_spirv(program), spirv);
+    assert_eq!(storage.shader_program_bindings(program).len(), 1);
+}
+
+#[test]
+fn storage_rejects_scene_spirv_with_legacy_descriptor_decorations() {
+    let mut spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+    spirv.extend(spirv_instruction(71, &[1, 33, 0]));
+    let document = SceneBinaryDocument {
+        strings: vec!["program".to_owned(), "main".to_owned()],
+        shader_programs: vec![SceneShaderProgramRecord {
+            program_key: SceneStringId(0),
+            stage: SceneShaderStage::Fragment,
+            entry_point: SceneStringId(1),
+            spirv_start: 0,
+            spirv_count: spirv.len() as u32,
+            binding_start: 0,
+            binding_count: 0,
+            push_constant_bytes: 0,
+        }],
+        shader_spirv: spirv,
+        ..SceneBinaryDocument::default()
+    };
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidShaderProgram {
+            reason: "SPIR-V contains legacy descriptor decorations",
+            ..
+        })
+    ));
+}
+
+fn spirv_instruction(opcode: u32, operands: &[u32]) -> Vec<u32> {
+    let word_count = u32::try_from(operands.len() + 1).expect("instruction word count");
+    std::iter::once((word_count << 16) | opcode)
+        .chain(operands.iter().copied())
+        .collect()
+}
+
+fn spirv_string_instruction(opcode: u32, value: &str) -> Vec<u32> {
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(0);
+    bytes.resize(bytes.len().next_multiple_of(4), 0);
+    let operands = bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("SPIR-V word")))
+        .collect::<Vec<_>>();
+    spirv_instruction(opcode, &operands)
+}
+
+#[test]
 fn storage_rejects_duplicate_material_scalar_script_selectors() {
     let object = SceneObjectRecord {
         id: SceneObjectHandle(0),

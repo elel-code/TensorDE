@@ -24,6 +24,7 @@ mod particle;
 mod pointer_binding;
 mod scene_chunks;
 mod script_binding;
+mod shader_program;
 mod texture;
 mod timeline;
 mod user_property_binding;
@@ -34,6 +35,7 @@ use particle::{decode_particles, encode_particles};
 use pointer_binding::{decode_pointer_bindings, encode_pointer_bindings};
 use scene_chunks::*;
 use script_binding::{decode_script_bindings, encode_script_bindings};
+use shader_program::{DecodedShaderPrograms, decode_shader_programs, encode_shader_programs};
 
 pub use document::SceneBinaryDocument;
 #[cfg(test)]
@@ -244,6 +246,17 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "shader contracts",
         shader_contracts.len(),
     )?;
+    let DecodedShaderPrograms {
+        programs: shader_programs,
+        bindings: shader_bindings,
+        spirv: shader_spirv,
+    } = decode_shader_programs(chunk_payload(&chunks, CHUNK_SHADER_PROGRAM)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_SHADER_PROGRAM,
+        "shader programs",
+        shader_programs.len(),
+    )?;
     let script_programs = decode_script_bindings(chunk_payload(&chunks, CHUNK_SCRIPT_BINDING)?)?;
     ensure_chunk_count(
         &chunks,
@@ -323,6 +336,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         image_targets,
         shader_contracts,
         shader_constant_names,
+        shader_programs,
+        shader_bindings,
+        shader_spirv,
         script_programs,
         dynamic_texts,
         dynamic_text_glyphs,
@@ -561,6 +577,15 @@ fn encode_chunks(
             data: encode_shader_contracts(
                 &document.shader_contracts,
                 &document.shader_constant_names,
+            )?,
+        },
+        SceneEncodedChunk {
+            kind: CHUNK_SHADER_PROGRAM,
+            item_count: checked_u32(document.shader_programs.len(), "shader program count")?,
+            data: encode_shader_programs(
+                &document.shader_programs,
+                &document.shader_bindings,
+                &document.shader_spirv,
             )?,
         },
     ];

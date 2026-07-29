@@ -6,11 +6,14 @@ mod user_property;
 use user_property::validate_user_property_bindings;
 mod dynamic_text;
 use dynamic_text::validate_dynamic_text;
+mod shader_program;
+use shader_program::validate_shader_programs;
 
 pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
     validate_project(document)?;
     validate_user_property_bindings(document)?;
     validate_pointer_parallax(document)?;
+    validate_shader_programs(document)?;
     for resource in &document.resources {
         validate_string(document, "resource.path", resource.path)?;
         validate_string(document, "resource.source", resource.source)?;

@@ -1,7 +1,7 @@
 //! Scene binary compatibility and fixed-size texture metadata contracts.
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 30;
+pub const SCENE_BINARY_VERSION: u32 = 31;
 pub const SCENE_BINARY_MIN_READ_VERSION: u32 = SCENE_BINARY_VERSION;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
 
@@ -35,6 +35,7 @@ pub const CHUNK_USER_PROPERTY_BINDING: u32 = u32::from_le_bytes(*b"UBND");
 pub const CHUNK_RENDER_GRAPH: u32 = u32::from_le_bytes(*b"RGRF");
 pub const CHUNK_IMAGE_TARGET: u32 = u32::from_le_bytes(*b"IMGT");
 pub const CHUNK_SHADER_CONTRACT: u32 = u32::from_le_bytes(*b"SHDR");
+pub const CHUNK_SHADER_PROGRAM: u32 = u32::from_le_bytes(*b"SPRV");
 pub const CHUNK_DYNAMIC_TEXT: u32 = u32::from_le_bytes(*b"DTXT");
 
 pub const REQUIRED_SCENE_CHUNKS: &[u32] = &[
@@ -59,6 +60,7 @@ pub const REQUIRED_SCENE_CHUNKS: &[u32] = &[
     CHUNK_RENDER_GRAPH,
     CHUNK_IMAGE_TARGET,
     CHUNK_SHADER_CONTRACT,
+    CHUNK_SHADER_PROGRAM,
     CHUNK_DYNAMIC_TEXT,
 ];
 

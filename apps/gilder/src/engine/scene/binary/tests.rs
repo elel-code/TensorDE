@@ -36,6 +36,43 @@ fn scene_binary_round_trip_preserves_typed_image_access_masks() {
 }
 
 #[test]
+fn scene_binary_round_trip_preserves_only_spirv_and_compact_shader_abi() {
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "workshop/example/effects/wave__SLOTS_1".to_owned(),
+            "main".to_owned(),
+        ],
+        shader_programs: vec![SceneShaderProgramRecord {
+            program_key: SceneStringId(0),
+            stage: SceneShaderStage::Fragment,
+            entry_point: SceneStringId(1),
+            spirv_start: 0,
+            spirv_count: 6,
+            binding_start: 0,
+            binding_count: 1,
+            push_constant_bytes: 4,
+        }],
+        shader_bindings: vec![SceneShaderBindingRecord {
+            kind: SceneShaderBindingKind::SampledImage,
+            register: 0,
+            descriptor_count: 1,
+            push_offset: 0,
+        }],
+        shader_spirv: vec![0x0723_0203, 0x0001_0600, 0, 2, 0, 0x0001_0000],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+    write_scene_binary(&document, &mut bytes).expect("write scene");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene");
+
+    assert_eq!(decoded.shader_programs, document.shader_programs);
+    assert_eq!(decoded.shader_bindings, document.shader_bindings);
+    assert_eq!(decoded.shader_spirv, document.shader_spirv);
+    assert!(!bytes.windows(4).any(|bytes| bytes == b"GLSL"));
+    assert!(!bytes.windows(5).any(|bytes| bytes == b"Slang"));
+}
+
+#[test]
 fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
     let mut document = SceneBinaryDocument {
         strings: vec![

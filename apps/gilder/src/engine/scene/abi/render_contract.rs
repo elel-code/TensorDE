@@ -43,3 +43,88 @@ pub struct SceneShaderContractRecord {
     pub resource_heap_count: u32,
     pub sampler_heap_count: u32,
 }
+
+/// A single optimized SPIR-V stage embedded by the cold scene converter.
+///
+/// Source languages and compiler intermediates are intentionally absent from
+/// this ABI. `spirv_start` and `spirv_count` address words in the document's
+/// `shader_spirv` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneShaderProgramRecord {
+    pub program_key: SceneStringId,
+    pub stage: SceneShaderStage,
+    pub entry_point: SceneStringId,
+    pub spirv_start: u32,
+    pub spirv_count: u32,
+    pub binding_start: u32,
+    pub binding_count: u32,
+    pub push_constant_bytes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneShaderBindingRecord {
+    pub kind: SceneShaderBindingKind,
+    pub register: u32,
+    pub descriptor_count: u32,
+    pub push_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneShaderStage {
+    Vertex,
+    Fragment,
+    Compute,
+}
+
+impl SceneShaderStage {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Vertex => 1,
+            Self::Fragment => 2,
+            Self::Compute => 3,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Vertex),
+            2 => Some(Self::Fragment),
+            3 => Some(Self::Compute),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneShaderBindingKind {
+    SampledImage,
+    StorageImage,
+    Sampler,
+    UniformBuffer,
+    StorageBuffer,
+}
+
+impl SceneShaderBindingKind {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::SampledImage => 1,
+            Self::StorageImage => 2,
+            Self::Sampler => 3,
+            Self::UniformBuffer => 4,
+            Self::StorageBuffer => 5,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::SampledImage),
+            2 => Some(Self::StorageImage),
+            3 => Some(Self::Sampler),
+            4 => Some(Self::UniformBuffer),
+            5 => Some(Self::StorageBuffer),
+            _ => None,
+        }
+    }
+}

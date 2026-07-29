@@ -428,6 +428,25 @@ impl SceneStorage {
         &self.document.shader_contracts
     }
 
+    pub fn shader_programs(&self) -> &[SceneShaderProgramRecord] {
+        &self.document.shader_programs
+    }
+
+    pub fn shader_program_bindings(
+        &self,
+        program: &SceneShaderProgramRecord,
+    ) -> &[SceneShaderBindingRecord] {
+        let start = program.binding_start as usize;
+        let end = start + program.binding_count as usize;
+        &self.document.shader_bindings[start..end]
+    }
+
+    pub fn shader_program_spirv(&self, program: &SceneShaderProgramRecord) -> &[u32] {
+        let start = program.spirv_start as usize;
+        let end = start + program.spirv_count as usize;
+        &self.document.shader_spirv[start..end]
+    }
+
     pub fn resource_payload_bytes(&self) -> usize {
         self.document.resource_payload.len()
     }
@@ -557,6 +576,10 @@ pub enum SceneStorageError {
         shader: SceneStringId,
         overlap: u32,
     },
+    InvalidShaderProgram {
+        program: SceneStringId,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for SceneStorageError {
@@ -659,6 +682,9 @@ impl fmt::Display for SceneStorageError {
                 "scene shader {} declares overlapping sampled/input-attachment slots: {overlap:#x}",
                 shader.0
             ),
+            Self::InvalidShaderProgram { program, reason } => {
+                write!(f, "scene shader program {} is invalid: {reason}", program.0)
+            }
         }
     }
 }
