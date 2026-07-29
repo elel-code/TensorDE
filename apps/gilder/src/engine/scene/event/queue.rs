@@ -219,7 +219,7 @@ mod tests {
         let replay = |events: &[ScenePointerEvent]| {
             let mut queue = SceneEventQueue::default();
             for event in events {
-                queue.publish_pointer(event.clone());
+                queue.publish_pointer(*event);
             }
             queue.finish_frame()
         };
