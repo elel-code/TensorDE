@@ -71,7 +71,7 @@ impl Default for NativeWaylandHostOptions {
     fn default() -> Self {
         Self {
             namespace: "gilder-wallpaper-native".to_owned(),
-            layer: NativeWaylandLayer::Bottom,
+            layer: NativeWaylandLayer::Background,
             output_name: None,
             opaque_region: true,
             input_passthrough: true,

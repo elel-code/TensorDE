@@ -215,7 +215,7 @@ impl Default for NativeVulkanOptions {
             host,
             wait_configure_roundtrips: 8,
             clear_color: NativeVulkanClearColor::default(),
-            target_max_fps: Some(240),
+            target_max_fps: None,
         }
     }
 }

@@ -194,6 +194,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_scene_defaults_to_background_and_uncapped_present() {
+        use gilder::renderer::native_vulkan::NativeVulkanOptions;
+        use gilder::renderer::native_wayland::NativeWaylandLayer;
+
+        let options = NativeVulkanOptions::default();
+        assert_eq!(options.host.layer, NativeWaylandLayer::Background);
+        assert_eq!(options.target_max_fps, None);
+    }
+
+    #[test]
     fn scene_pointer_position_accepts_finite_normalized_surface_coordinates() {
         assert_eq!(
             parse_scene_pointer_position(Some("0, 0.5".to_owned())),
