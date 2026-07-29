@@ -8,7 +8,9 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         UploadBeltDescriptor, vk,
     };
 
-    let _gpu = GPU_TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _gpu = GPU_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let instance = match Instance::new(InstanceDescriptor::default()) {
         Ok(instance) => instance,
         Err(error) => {
@@ -135,7 +137,7 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         )
         .unwrap();
     renderer
-        .upload(&allocator, &mut uploads, &mut frame, None)
+        .upload(&device, &allocator, &mut uploads, &mut frame, None)
         .unwrap();
     let token = uploads.submit(&queue, &[]).unwrap();
     queue.wait_for(token, u64::MAX).unwrap();
@@ -159,7 +161,7 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         )
         .unwrap();
     renderer
-        .upload(&allocator, &mut uploads, &mut frame, Some(token))
+        .upload(&device, &allocator, &mut uploads, &mut frame, Some(token))
         .unwrap();
     let token = uploads.submit(&queue, &[]).unwrap();
     queue.wait_for(token, u64::MAX).unwrap();

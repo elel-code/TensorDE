@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use vulkan_renderer::{
     Adapter, BackendProfile, BinarySemaphore, BinarySemaphoreDescriptor, ColorAttachment,
-    CommandEncoderDescriptor, Device, DeviceDescriptor, FrameToken, Instance, InstanceDescriptor,
-    LoadOp, MemoryAllocator, MemoryAllocatorConfig, PipelineCache, PipelineCacheDescriptor,
-    PowerPreference, PresentMode, PresentStatus, Queue, RenderingDescriptor, RequestAdapterOptions,
-    StoreOp, Surface, SurfaceConfiguration, SurfaceConfigurationRequest, Swapchain,
-    SwapchainDescriptor, UploadBelt, UploadBeltDescriptor, vk,
+    CommandEncoderDescriptor, Device, DeviceDescriptor, Features, FrameToken, Instance,
+    InstanceDescriptor, LoadOp, MemoryAllocator, MemoryAllocatorConfig, PipelineCache,
+    PipelineCacheDescriptor, PowerPreference, PresentMode, PresentStatus, Queue,
+    RenderingDescriptor, RequestAdapterOptions, StoreOp, Surface, SurfaceConfiguration,
+    SurfaceConfigurationRequest, Swapchain, SwapchainDescriptor, UploadBelt, UploadBeltDescriptor,
+    vk,
 };
 
 use crate::IconFrame;
@@ -66,9 +67,17 @@ impl VulkanState {
                 compatible_surface: Some(&surface),
             })
             .map_err(|error| format!("request Vulkan adapter: {error}"))?;
+        let mut required_features = DeviceDescriptor::default().required_features;
+        if adapter
+            .features()
+            .contains(Features::EXTERNAL_MEMORY_DMA_BUF)
+        {
+            required_features |= Features::EXTERNAL_MEMORY_DMA_BUF;
+        }
         let (device, queue) = adapter
             .request_device(DeviceDescriptor {
                 label: Some("fika-vulkan-device".into()),
+                required_features,
                 ..DeviceDescriptor::default()
             })
             .map_err(|error| format!("request Vulkan device: {error}"))?;
@@ -257,6 +266,7 @@ impl VulkanState {
             queue_family,
         )?;
         let icon_vertex_uploaded = self.icon_renderer.upload(
+            &self.device,
             &self.allocator,
             &mut uploads,
             icons,

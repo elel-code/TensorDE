@@ -15,8 +15,8 @@ use super::{
     HeapDescriptorType,
 };
 use crate::{
-    ConstantOffsetMapping, Error, FrameToken, ImageView, PushIndexMapping, Result,
-    ShaderBindingMap, ShaderBindingMapping, ShaderBindingSource,
+    ConstantOffsetMapping, Error, ExportedDmaBufImage, FrameToken, ImageView, ImportedDmaBufImage,
+    PushIndexMapping, Result, ShaderBindingMap, ShaderBindingMapping, ShaderBindingSource,
 };
 
 /// Filtering mode for a descriptor-heap sampler.
@@ -361,15 +361,52 @@ impl SampledImageBinding {
         layout: vk::ImageLayout,
     ) -> Result<Self> {
         validate_resource_heap_and_view(resource_heap, view)?;
+        Self::new_with_view_create_info(resource_heap, &view.create_info(), layout)
+    }
+
+    /// Allocates and writes a sampled-image descriptor for an imported
+    /// dma-buf image.
+    ///
+    /// The imported image must remain alive through the last submitted use;
+    /// attach it to each consuming encoder with
+    /// `CommandEncoder::retain_resource`.
+    pub fn new_imported_dma_buf(
+        resource_heap: &DescriptorHeap,
+        image: &ImportedDmaBufImage,
+        layout: vk::ImageLayout,
+    ) -> Result<Self> {
+        validate_resource_heap_and_owner(resource_heap, image.owner())?;
+        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout)
+    }
+
+    /// Allocates and writes a sampled-image descriptor for an exportable
+    /// dma-buf image.
+    ///
+    /// The exported image must remain alive through the last submitted use;
+    /// attach it to each consuming encoder with
+    /// `CommandEncoder::retain_resource`.
+    pub fn new_exported_dma_buf(
+        resource_heap: &DescriptorHeap,
+        image: &ExportedDmaBufImage,
+        layout: vk::ImageLayout,
+    ) -> Result<Self> {
+        validate_resource_heap_and_owner(resource_heap, image.owner())?;
+        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout)
+    }
+
+    fn new_with_view_create_info(
+        resource_heap: &DescriptorHeap,
+        view_create_info: &vk::ImageViewCreateInfo,
+        layout: vk::ImageLayout,
+    ) -> Result<Self> {
         let image = resource_heap
             .allocate(HeapDescriptorType::SampledImage)
             .map_err(descriptor_error)?;
-        let view_create_info = view.create_info();
         if let Err(error) = unsafe {
             resource_heap.write_image(
                 &image,
                 HeapDescriptorType::SampledImage,
-                &view_create_info,
+                view_create_info,
                 layout,
             )
         } {
@@ -696,12 +733,19 @@ fn validate_heaps_and_view(
 }
 
 fn validate_resource_heap_and_view(resource_heap: &DescriptorHeap, view: &ImageView) -> Result<()> {
+    validate_resource_heap_and_owner(resource_heap, view.owner())
+}
+
+fn validate_resource_heap_and_owner(
+    resource_heap: &DescriptorHeap,
+    owner: &Arc<crate::backend::DeviceOwner>,
+) -> Result<()> {
     if resource_heap.kind() != DescriptorHeapKind::Resource {
         return Err(Error::Validation(
             "sampled images require a resource descriptor heap".into(),
         ));
     }
-    if !Arc::ptr_eq(view.owner(), &resource_heap.owner) {
+    if !Arc::ptr_eq(owner, &resource_heap.owner) {
         return Err(Error::Validation(
             "sampled image view and descriptor heap must share one Device".into(),
         ));

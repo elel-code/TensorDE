@@ -49,7 +49,11 @@ dialog、render damage 和异步操作持续演进提供稳定边界。
   可由 DRM fourcc 推导的 `wgpu::TextureFormat` 字段，只保留 fourcc、modifier、device 与
   scanout 偏好；import descriptor 的 usage 也已改为 `vulkan-renderer` 公开的 Vulkan typed
   flags，旧 wgpu 格式与 usage 映射都被限制在待删除 importer 的最终调用边界，并对无法
-  表达的 usage 显式失败。
+  表达的 usage 显式失败。原生 icon resident cache 现已消费 `IconFrame` 携带的 dma-buf：
+  DRM fourcc 直接映射为 Vulkan format/component swizzle，经
+  `FOREIGN/GENERAL -> graphics/SHADER_READ_ONLY_OPTIMAL` barrier 导入，再写入
+  `VK_EXT_descriptor_heap` sampled-image descriptor；imported image 和 descriptor 都随
+  submission timeline 保活。真实 `/dev/udmabuf` smoke 已覆盖该路径，不使用 CPU fallback。
 - 独立 dialog window host：
   `src/ui/dialog_window.rs` 管理 dialog window 创建、同步、关闭、cursor、resize、
   renderer size、scale factor 和 window id 路由。

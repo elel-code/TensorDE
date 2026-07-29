@@ -15,7 +15,7 @@ use crate::{
     vulkan_icon_spirv,
 };
 
-use super::{VulkanIconTexture, create_rgba_image};
+use super::{VulkanIconImage, VulkanIconTexture, create_rgba_image};
 
 const SVG_IMAGE: ResourceId = ResourceId(1);
 const SVG_VERTICES: ResourceId = ResourceId(2);
@@ -71,8 +71,10 @@ impl SvgIconRasterizer {
             SampledImageBinding::new(heap, &view, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .map_err(|error| format!("create Vulkan SVG icon descriptor: {error}"))?;
         Ok(Some(VulkanIconTexture {
-            _image: image,
-            view,
+            image: VulkanIconImage::Resident {
+                _image: image,
+                view,
+            },
             binding,
             width,
             height,

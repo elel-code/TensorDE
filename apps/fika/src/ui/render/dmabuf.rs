@@ -85,6 +85,39 @@ pub(crate) fn texture_format_for_fourcc(code: u32) -> Option<wgpu::TextureFormat
     }
 }
 
+/// Map a sampled DRM fourcc to its Vulkan format and component mapping.
+///
+/// The XRGB variants force alpha to one instead of exposing the undefined X
+/// channel to blending.
+pub(crate) fn vulkan_format_for_fourcc(
+    code: u32,
+) -> Option<(
+    vulkan_renderer::vk::Format,
+    vulkan_renderer::vk::ComponentMapping,
+)> {
+    use vulkan_renderer::vk;
+
+    let alpha = if matches!(code, fourcc::XRGB8888 | fourcc::XBGR8888) {
+        vk::ComponentSwizzle::ONE
+    } else {
+        vk::ComponentSwizzle::A
+    };
+    let format = match code {
+        fourcc::ARGB8888 | fourcc::XRGB8888 | fourcc::BGRA8888 => vk::Format::B8G8R8A8_UNORM,
+        fourcc::ABGR8888 | fourcc::XBGR8888 | fourcc::RGBA8888 => vk::Format::R8G8B8A8_UNORM,
+        _ => return None,
+    };
+    Some((
+        format,
+        vk::ComponentMapping {
+            r: vk::ComponentSwizzle::R,
+            g: vk::ComponentSwizzle::G,
+            b: vk::ComponentSwizzle::B,
+            a: alpha,
+        },
+    ))
+}
+
 const fn sampled_fourcc_supported(code: u32) -> bool {
     matches!(
         code,

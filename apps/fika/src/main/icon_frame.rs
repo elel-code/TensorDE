@@ -58,6 +58,7 @@ pub(crate) struct IconFrame {
 
 /// Optional single-plane dmabuf consumed when a cold GPU slot is populated.
 pub(crate) struct IconDmabufSource {
+    pub(crate) fourcc: u32,
     pub(crate) plane: crate::ui::render::dmabuf::DmabufImportPlane,
 }
 

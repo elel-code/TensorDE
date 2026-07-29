@@ -60,6 +60,7 @@ struct IconDmabufDraw {
     width: u32,
     height: u32,
     content_hash: u64,
+    fourcc: u32,
     rect: ViewRect,
     screen: ViewRect,
     layer: IconDrawLayer,
@@ -74,11 +75,7 @@ impl<'a> IconFrameBuilder<'a> {
         surface_size: PhysicalSize<u32>,
     ) -> Self {
         Self::new(
-            IconFrameResources::new(
-                resolver,
-                thumbnails,
-                IconGpuResidentIndex::default(),
-            ),
+            IconFrameResources::new(resolver, thumbnails, IconGpuResidentIndex::default()),
             IconFrameConfig::new(surface_size, 1.0, 0),
         )
     }
@@ -154,9 +151,7 @@ impl<'a> IconFrameBuilder<'a> {
             icon_size,
         );
         let role_key = path_key.role.clone();
-        let (snapshot, deferred) = self
-            .resolver
-            .resolve_path_cache_key_visible(path_key);
+        let (snapshot, deferred) = self.resolver.resolve_path_cache_key_visible(path_key);
         if deferred {
             self.deferred += 1;
         }
@@ -265,13 +260,7 @@ impl<'a> IconFrameBuilder<'a> {
             }
         }
         self.folder_previews_loaded += 1;
-        self.push_gpu_source_draw(
-            gpu_key,
-            preview.source.clone(),
-            preview_rect,
-            screen,
-            layer,
-        );
+        self.push_gpu_source_draw(gpu_key, preview.source.clone(), preview_rect, screen, layer);
         self.folder_preview_quads += 1;
         drew_folder_shell
     }
@@ -426,7 +415,10 @@ impl<'a> IconFrameBuilder<'a> {
         if icon_name.is_empty() {
             return false;
         }
-        let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0 * self.ui_scale);
+        let icon_size = rect
+            .width
+            .max(rect.height)
+            .clamp(16.0, 256.0 * self.ui_scale);
         let size_px = icon_cache_size(icon_size);
         let Some(path) = self.resolver.resolve_named_exact_fast(icon_name, icon_size) else {
             return false;
@@ -523,7 +515,9 @@ impl<'a> IconFrameBuilder<'a> {
         };
         let slot = if let Some(&slot) = self.slot_by_identity.get(&identity) {
             let existing = &mut self.slots[slot as usize];
-            let old_area = existing.content_width.saturating_mul(existing.content_height);
+            let old_area = existing
+                .content_width
+                .saturating_mul(existing.content_height);
             let new_area = side.saturating_mul(side);
             if new_area > old_area || existing.content_hash != content_hash {
                 existing.width = side;
@@ -550,8 +544,16 @@ impl<'a> IconFrameBuilder<'a> {
                 identity: identity.clone(),
                 width: if rerender { side } else { resident.width },
                 height: if rerender { side } else { resident.height },
-                content_width: if rerender { side } else { resident.content_width },
-                content_height: if rerender { side } else { resident.content_height },
+                content_width: if rerender {
+                    side
+                } else {
+                    resident.content_width
+                },
+                content_height: if rerender {
+                    side
+                } else {
+                    resident.content_height
+                },
                 content_hash: if rerender {
                     content_hash
                 } else {
@@ -596,6 +598,7 @@ impl<'a> IconFrameBuilder<'a> {
             width,
             height,
             content_hash,
+            fourcc,
             rect,
             screen,
             layer,
@@ -613,7 +616,7 @@ impl<'a> IconFrameBuilder<'a> {
             content_hash,
             rounding: None,
             source: None,
-            dmabuf: Some(IconDmabufSource { plane }),
+            dmabuf: Some(IconDmabufSource { fourcc, plane }),
         });
         self.slot_by_identity.insert(identity, slot);
         self.push_slot_draw(slot, rect, screen, layer);

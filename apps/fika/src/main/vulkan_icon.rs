@@ -2,15 +2,16 @@ use std::collections::{BTreeMap, HashMap};
 
 use vulkan_renderer::{
     AccessKind, BlendState, Buffer, ColorAttachment, ColorTargetState, CompiledGraph,
-    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer,
-    DynamicBufferDescriptor, FragmentState, FrameToken, GraphicsPipeline,
-    GraphicsPipelineDescriptor, Image, ImageBlit, ImageBlitFilter, ImageDataLayout,
-    ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor, LoadOp, MemoryAllocator,
-    MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
-    RenderGraph, RenderPass, RenderingDescriptor, RenderingEncoder, ResourceBinding, ResourceId,
-    ResourceKind, ResourceState, ResourceUse, SampledImageBinding, SamplerBinding,
-    SamplerDescriptor, ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TexelBlockLayout,
-    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, vk,
+    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DmaBufImageDescriptor,
+    DmaBufPlaneLayout, DynamicBuffer, DynamicBufferDescriptor, FragmentState, FrameToken,
+    GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageBlit, ImageBlitFilter,
+    ImageDataLayout, ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor,
+    ImportedDmaBufImage, LoadOp, MemoryAllocator, MemoryLocation, MultisampleState, PassId,
+    PipelineCache, PrimitiveState, ProgrammableStage, RenderGraph, RenderPass, RenderingDescriptor,
+    RenderingEncoder, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
+    SampledImageBinding, SamplerBinding, SamplerDescriptor, ShaderBindingMap,
+    ShaderModuleDescriptor, StoreOp, TexelBlockLayout, UploadBatch, VertexAttribute,
+    VertexBufferLayout, VertexState, VertexStepMode, vk,
 };
 
 use crate::{
@@ -22,17 +23,26 @@ use super::vulkan_icon_spirv;
 
 #[path = "vulkan_icon/bitmap.rs"]
 mod bitmap;
+#[path = "vulkan_icon/dmabuf.rs"]
+mod dmabuf;
 #[path = "vulkan_icon/folder_preview.rs"]
 mod folder_preview;
 #[path = "vulkan_icon/pipeline.rs"]
 mod pipeline;
+#[path = "vulkan_icon/resources.rs"]
+mod resources;
 #[path = "vulkan_icon/svg.rs"]
 mod svg;
 use bitmap::{
     DecodedBitmap, SCALE_BLIT, SCALE_SAMPLE, SCALE_SOURCE, SCALE_SOURCE_UPLOAD, SCALE_TARGET,
     SCALE_TARGET_CLEAR, compile_scale_graph, decode_bitmap, fit_bitmap_blit,
 };
+use dmabuf::compile_import_graph;
 use pipeline::create_pipeline;
+use resources::{
+    VulkanIconImage, color_layers, compile_upload_graph, create_rgba_image, descriptor_capacity,
+    upload_rgba_pixels,
+};
 
 /// Byte offset of the `[image_index, sampler_index]` pair in push data.
 const IMAGE_PUSH_OFFSET: u32 = 0;
@@ -42,9 +52,10 @@ const INITIAL_VERTEX_CAPACITY: u64 = std::mem::size_of::<IconVertex>() as u64 * 
 const ICON_IMAGE: ResourceId = ResourceId(1);
 const ICON_UPLOAD: PassId = PassId(1);
 const ICON_SAMPLE: PassId = PassId(2);
+const ICON_IMPORT_SAMPLE: PassId = PassId(3);
+
 struct VulkanIconTexture {
-    _image: Image,
-    view: ImageView,
+    image: VulkanIconImage,
     binding: SampledImageBinding,
     width: u32,
     height: u32,
@@ -67,6 +78,7 @@ pub(crate) struct VulkanIconRenderer {
     sampler_heap: DescriptorHeap,
     sampler: SamplerBinding,
     upload_graph: CompiledGraph,
+    import_graph: CompiledGraph,
     scale_graph: CompiledGraph,
     svg: svg::SvgIconRasterizer,
     preview: folder_preview::FolderPreviewCompositor,
@@ -135,6 +147,7 @@ impl VulkanIconRenderer {
             sampler_heap,
             sampler,
             upload_graph: compile_upload_graph(queue_family)?,
+            import_graph: compile_import_graph(queue_family)?,
             scale_graph: compile_scale_graph(queue_family)?,
             svg: svg::SvgIconRasterizer::new(device, pipeline_cache, queue_family)?,
             preview: folder_preview::FolderPreviewCompositor::new(
@@ -194,6 +207,7 @@ impl VulkanIconRenderer {
 
     pub(crate) fn upload(
         &mut self,
+        device: &Device,
         allocator: &MemoryAllocator,
         uploads: &mut UploadBatch<'_>,
         frame: &mut IconFrame,
@@ -227,7 +241,9 @@ impl VulkanIconRenderer {
             {
                 continue;
             }
-            let texture = if folder_preview::is_folder_preview_source(slot) {
+            let texture = if slot.source.is_none() && slot.dmabuf.is_some() {
+                self.import_dmabuf_texture(device, uploads, slot)?
+            } else if folder_preview::is_folder_preview_source(slot) {
                 self.create_folder_preview_texture(allocator, uploads, slot)?
             } else if svg::is_svg_source(slot) {
                 self.svg.create_texture(
@@ -482,8 +498,10 @@ impl VulkanIconRenderer {
         )
         .map_err(|error| format!("create Vulkan folder-preview descriptor: {error}"))?;
         Ok(Some(VulkanIconTexture {
-            _image: image,
-            view,
+            image: VulkanIconImage::Resident {
+                _image: image,
+                view,
+            },
             binding,
             width: side,
             height: side,
@@ -564,8 +582,10 @@ impl VulkanIconRenderer {
         )
         .map_err(|error| format!("create Vulkan resident icon descriptor: {error}"))?;
         Ok(VulkanIconTexture {
-            _image: image,
-            view,
+            image: VulkanIconImage::Resident {
+                _image: image,
+                view,
+            },
             binding,
             width,
             height,
@@ -726,7 +746,7 @@ impl VulkanIconRenderer {
             rendering
                 .push_data(IMAGE_PUSH_OFFSET, bytemuck::cast_slice(&push))
                 .map_err(|error| format!("push Vulkan icon descriptor indices: {error}"))?;
-            rendering.retain_resource(&texture.view);
+            texture.image.retain(rendering);
             let start = vertex_base.saturating_add(batch.vertex_start);
             let end = start.saturating_add(batch.vertex_count);
             unsafe {
@@ -767,125 +787,4 @@ impl VulkanIconRenderer {
         }
         .map_err(|error| format!("retire Vulkan resident icon descriptor: {error}"))
     }
-}
-
-fn create_rgba_image(
-    allocator: &MemoryAllocator,
-    label: &str,
-    width: u32,
-    height: u32,
-    usage: vk::ImageUsageFlags,
-) -> Result<Image, String> {
-    allocator
-        .create_image(&ImageDescriptor {
-            label: Some(label.into()),
-            image_type: vk::ImageType::_2D,
-            format: vk::Format::R8G8B8A8_UNORM,
-            extent: vk::Extent3D {
-                width: width.max(1),
-                height: height.max(1),
-                depth: 1,
-            },
-            mip_levels: 1,
-            array_layers: 1,
-            samples: vk::SampleCountFlags::_1,
-            tiling: vk::ImageTiling::OPTIMAL,
-            usage,
-            memory: MemoryLocation::Device,
-        })
-        .map_err(|error| format!("create Vulkan RGBA image {label}: {error}"))
-}
-
-fn upload_rgba_pixels(
-    uploads: &mut UploadBatch<'_>,
-    image: &Image,
-    pixels: &[u8],
-) -> Result<(), String> {
-    let extent = image.extent();
-    unsafe {
-        uploads
-            .write_image_data(
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                ImageUpload {
-                    data_layout: ImageDataLayout::tightly_packed(extent, TexelBlockLayout::RGBA8)
-                        .map_err(|error| format!("layout Vulkan RGBA upload: {error}"))?,
-                    texel_block: TexelBlockLayout::RGBA8,
-                    image_subresource: color_layers(),
-                    image_offset: vk::Offset3D::default(),
-                    image_extent: extent,
-                },
-                pixels,
-            )
-            .map_err(|error| format!("upload Vulkan RGBA image: {error}"))?;
-    }
-    Ok(())
-}
-
-const fn color_layers() -> vk::ImageSubresourceLayers {
-    vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
-    }
-}
-
-fn descriptor_capacity(size: u64, alignment: u64, slots: u64) -> Result<u64, String> {
-    if size == 0 || !alignment.is_power_of_two() || slots == 0 {
-        return Err("Vulkan icon descriptor layout is unusable".into());
-    }
-    size.checked_add(alignment - 1)
-        .map(|value| value & !(alignment - 1))
-        .and_then(|stride| stride.checked_mul(slots))
-        .ok_or_else(|| "Vulkan icon descriptor capacity overflows".into())
-}
-
-fn compile_upload_graph(queue_family: u32) -> Result<CompiledGraph, String> {
-    let mut graph = RenderGraph::default();
-    graph.set_initial_state(
-        ICON_IMAGE,
-        ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
-    );
-    graph.add_pass(RenderPass {
-        id: ICON_UPLOAD,
-        label: "fika-vulkan-icon-upload".into(),
-        depends_on: Vec::new(),
-        resources: vec![ResourceUse {
-            resource: ICON_IMAGE,
-            kind: ResourceKind::Image,
-            access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COPY,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
-        }],
-    });
-    graph.add_pass(RenderPass {
-        id: ICON_SAMPLE,
-        label: "fika-vulkan-icon-sample".into(),
-        depends_on: vec![ICON_UPLOAD],
-        resources: vec![ResourceUse {
-            resource: ICON_IMAGE,
-            kind: ResourceKind::Image,
-            access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
-        }],
-    });
-    graph
-        .compile()
-        .map_err(|error| format!("compile Vulkan icon upload graph: {error}"))
 }

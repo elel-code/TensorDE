@@ -18,7 +18,9 @@ UI runtime 已经从源码树移除。
 - `FIKA_VULKAN_RENDERER=1` 选择直接 Vulkan 1.4 主窗口路径；该路径已不创建
   wgpu 对象，并通过 device-local R8 glyph atlas、动态 vertex buffer、descriptor
   heap 和 timeline 资源生命周期渲染 retained analytic chrome，以及 Places、地址栏、
-  Filter、Details、文件项和状态栏文字。
+  Filter、Details、文件项和状态栏文字。外部 icon dma-buf 会经显式 foreign queue
+  ownership transfer 直接进入同一套 Vulkan resident cache，不再经过 wgpu-hal 包装或
+  CPU 像素回读。
 - `fika-core` 保持 UI-neutral，负责文件系统和领域行为。
 - 剪贴板和 DnD 使用 Wayland `wl_data_device`；渲染句柄可供 wgpu 或直接
   Vulkan 使用，KDE blur 保留完整的 region 语义。

@@ -19,7 +19,9 @@ client runtime; the previous UI runtimes have been removed from the source tree.
   already renders retained analytic chrome plus Places, location/filter,
   Details, file-item, and status labels through a device-local R8 glyph atlas,
   dynamic vertex buffers, descriptor heaps, and timeline-managed resources
-  without creating wgpu objects.
+  without creating wgpu objects. External icon dma-bufs are imported directly
+  into the same Vulkan resident cache with explicit foreign-queue ownership
+  transfer; no wgpu-hal wrapper or CPU pixel readback is involved.
 - `fika-core` stays UI-neutral and owns filesystem/domain behavior.
 - Clipboard and DnD use Wayland `wl_data_device`; rendering handles can be
   consumed by wgpu or direct Vulkan, and KDE blur keeps full region semantics.
