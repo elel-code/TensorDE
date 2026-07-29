@@ -616,6 +616,7 @@ pub struct WeIrShaderUniformBuffer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeIrShaderUniformMember {
     pub name: String,
+    pub material_parameter: Option<String>,
     pub byte_offset: u32,
     pub byte_size: u32,
     pub scalar_type: WeIrShaderScalarType,

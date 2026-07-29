@@ -321,6 +321,7 @@ mod tests {
     ) -> SceneOwnedUniformMemberPlan<'a> {
         let record = SceneShaderUniformMemberRecord {
             name: crate::engine::scene::SceneStringId::NONE,
+            material_parameter: crate::engine::scene::SceneStringId::NONE,
             byte_offset,
             byte_size,
             scalar_type: SceneShaderScalarType::F32,

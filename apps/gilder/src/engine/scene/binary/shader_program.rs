@@ -64,6 +64,7 @@ pub(super) fn encode_shader_programs(
     );
     for member in uniform_members {
         put_string_id(&mut output, member.name);
+        put_string_id(&mut output, member.material_parameter);
         put_u32(&mut output, member.byte_offset);
         put_u32(&mut output, member.byte_size);
         put_u32(&mut output, member.scalar_type.to_u32());
@@ -167,6 +168,7 @@ pub(super) fn decode_shader_programs(
     let mut uniform_members = Vec::with_capacity(uniform_member_count);
     for _ in 0..uniform_member_count {
         let name = decoder.string_id()?;
+        let material_parameter = decoder.string_id()?;
         let byte_offset = decoder.u32()?;
         let byte_size = decoder.u32()?;
         let scalar_raw = decoder.u32()?;
@@ -175,6 +177,7 @@ pub(super) fn decode_shader_programs(
         )?;
         uniform_members.push(SceneShaderUniformMemberRecord {
             name,
+            material_parameter,
             byte_offset,
             byte_size,
             scalar_type,

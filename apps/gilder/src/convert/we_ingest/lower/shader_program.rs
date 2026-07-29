@@ -3,7 +3,7 @@
 use crate::engine::scene::{
     SceneShaderBindingKind, SceneShaderBindingRecord, SceneShaderIoDirection,
     SceneShaderProgramRecord, SceneShaderScalarType, SceneShaderStage, SceneShaderStageIoRecord,
-    SceneShaderUniformBufferRecord, SceneShaderUniformMemberRecord,
+    SceneShaderUniformBufferRecord, SceneShaderUniformMemberRecord, SceneStringId,
 };
 
 use super::super::ir::{
@@ -77,22 +77,23 @@ fn lower_program(
         let member_start = count(lowered.uniform_members.len(), "shader uniform-member start")?;
         lowered
             .uniform_members
-            .extend(
-                buffer
-                    .members
-                    .iter()
-                    .map(|member| SceneShaderUniformMemberRecord {
-                        name: strings.id(&member.name),
-                        byte_offset: member.byte_offset,
-                        byte_size: member.byte_size,
-                        scalar_type: lower_scalar_type(member.scalar_type),
-                        rows: member.rows,
-                        columns: member.columns,
-                        array_count: member.array_count,
-                        array_stride: member.array_stride,
-                        matrix_stride: member.matrix_stride,
-                    }),
-            );
+            .extend(buffer.members.iter().map(|member| {
+                SceneShaderUniformMemberRecord {
+                    name: strings.id(&member.name),
+                    material_parameter: member
+                        .material_parameter
+                        .as_deref()
+                        .map_or(SceneStringId::NONE, |name| strings.id(name)),
+                    byte_offset: member.byte_offset,
+                    byte_size: member.byte_size,
+                    scalar_type: lower_scalar_type(member.scalar_type),
+                    rows: member.rows,
+                    columns: member.columns,
+                    array_count: member.array_count,
+                    array_stride: member.array_stride,
+                    matrix_stride: member.matrix_stride,
+                }
+            }));
         lowered
             .uniform_buffers
             .push(SceneShaderUniformBufferRecord {

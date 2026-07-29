@@ -45,6 +45,7 @@ fn scene_binary_round_trip_preserves_only_spirv_and_compact_shader_abi() {
             "fragColor".to_owned(),
             "GlobalParams".to_owned(),
             "g_Time".to_owned(),
+            "time".to_owned(),
         ],
         shader_programs: vec![SceneShaderProgramRecord {
             program_key: SceneStringId(0),
@@ -95,6 +96,7 @@ fn scene_binary_round_trip_preserves_only_spirv_and_compact_shader_abi() {
         }],
         shader_uniform_members: vec![SceneShaderUniformMemberRecord {
             name: SceneStringId(5),
+            material_parameter: SceneStringId(6),
             byte_offset: 0,
             byte_size: 4,
             scalar_type: SceneShaderScalarType::F32,

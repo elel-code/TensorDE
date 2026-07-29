@@ -287,6 +287,7 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
                 byte_size: 16,
                 members: vec![WeIrShaderUniformMember {
                     name: "g_Time".to_owned(),
+                    material_parameter: None,
                     byte_offset: 0,
                     byte_size: 4,
                     scalar_type: WeIrShaderScalarType::F32,

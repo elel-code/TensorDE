@@ -51,6 +51,21 @@ fn rejects_uniform_member_outside_buffer() {
 }
 
 #[test]
+fn rejects_empty_uniform_material_parameter() {
+    let mut document = native_uniform_document();
+    document.strings.push(String::new());
+    document.shader_uniform_members[0].material_parameter = SceneStringId(4);
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidShaderProgram {
+            reason: "shader uniform material parameter is empty",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rejects_incompatible_fragment_input() {
     let spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
     let document = SceneBinaryDocument {
@@ -182,6 +197,7 @@ fn native_uniform_document() -> SceneBinaryDocument {
         }],
         shader_uniform_members: vec![SceneShaderUniformMemberRecord {
             name: SceneStringId(3),
+            material_parameter: SceneStringId::NONE,
             byte_offset: 0,
             byte_size: 4,
             scalar_type: SceneShaderScalarType::F32,

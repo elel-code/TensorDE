@@ -16,7 +16,7 @@ pub use contract::ShaderContract;
 pub use error::{Error, Result};
 pub use heap_lowering::{
     DescriptorHeapBinding, DescriptorHeapBindingKind, DescriptorHeapSlang,
-    lower_slang_bindings_to_descriptor_heap,
+    lower_slang_bindings_to_descriptor_heap, lower_slang_bindings_to_descriptor_heap_at_offset,
 };
 pub use reflection::{
     ShaderInterface, ShaderIoDirection, ShaderScalarType, ShaderStageIo, ShaderUniformBuffer,

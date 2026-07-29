@@ -33,6 +33,25 @@ pub fn lower_slang_bindings_to_descriptor_heap(
     source: &str,
     entry_point: &str,
 ) -> Result<DescriptorHeapSlang> {
+    lower_slang_bindings_to_descriptor_heap_at_offset(source, entry_point, 0)
+}
+
+/// Lowers shader resources into the pipeline-global descriptor push-data
+/// address space beginning at `push_base_bytes`.
+///
+/// Graphics stages share the bytes written by `vkCmdPushDataEXT`; callers
+/// compiling a multi-stage program must therefore assign non-overlapping
+/// ranges instead of restarting every stage at byte zero.
+pub fn lower_slang_bindings_to_descriptor_heap_at_offset(
+    source: &str,
+    entry_point: &str,
+    push_base_bytes: u32,
+) -> Result<DescriptorHeapSlang> {
+    if !push_base_bytes.is_multiple_of(4) {
+        return Err(Error::SourceLowering(
+            "descriptor push base must be a multiple of four bytes".to_owned(),
+        ));
+    }
     let mut retained = Vec::new();
     let mut bindings = Vec::new();
     let mut lines = source.lines().peekable();
@@ -88,13 +107,22 @@ pub fn lower_slang_bindings_to_descriptor_heap(
     let entry_offset = entry_definition_offset(&body, entry_point)?;
     let mut prelude = String::new();
     prelude.push_str("struct GilderDescriptorHeapPush\n{\n");
+    if push_base_bytes != 0 {
+        prelude.push_str(&format!(
+            "    uint reservedPipelineWords[{}];\n",
+            push_base_bytes / 4
+        ));
+    }
     let bindings = bindings
         .into_iter()
         .enumerate()
         .map(|(index, binding)| {
-            let push_offset = u32::try_from(index)
+            let local_offset = u32::try_from(index)
                 .ok()
                 .and_then(|index| index.checked_mul(4))
+                .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
+            let push_offset = push_base_bytes
+                .checked_add(local_offset)
                 .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
             prelude.push_str(&format!("    uint binding{index}Index;\n"));
             Ok(DescriptorHeapBinding {
@@ -117,9 +145,12 @@ pub fn lower_slang_bindings_to_descriptor_heap(
         ));
     }
     body.insert_str(entry_offset, &prelude);
-    let push_constant_bytes = u32::try_from(bindings.len())
+    let local_bytes = u32::try_from(bindings.len())
         .ok()
         .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
+    let push_constant_bytes = push_base_bytes
+        .checked_add(local_bytes)
         .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
     Ok(DescriptorHeapSlang {
         source: body,
@@ -329,5 +360,34 @@ FragmentOutput main(float2 uv : COLOR0)
     fn rejects_duplicate_registers_instead_of_aliasing_them() {
         let source = "Texture2D<float4> a : register(t0);\nTexture2D<float4> b : register(t0);\nfloat4 main() { return a.Load(0) + b.Load(0); }";
         assert!(lower_slang_bindings_to_descriptor_heap(source, "main").is_err());
+    }
+
+    #[test]
+    fn pipeline_global_base_pads_source_and_rebases_binding_offsets() {
+        let source = r#"Texture2D<float4> image : register(t0);
+SamplerState samplerState : register(s0);
+float4 main(float2 uv : COLOR0) : SV_TARGET0
+{
+    return image.Sample(samplerState, uv);
+}"#;
+
+        let lowered = lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", 4).unwrap();
+
+        assert_eq!(lowered.push_constant_bytes, 12);
+        assert_eq!(
+            lowered
+                .bindings
+                .iter()
+                .map(|binding| binding.push_offset)
+                .collect::<Vec<_>>(),
+            vec![4, 8]
+        );
+        assert!(lowered.source.contains("uint reservedPipelineWords[1];"));
+    }
+
+    #[test]
+    fn pipeline_global_base_must_be_word_aligned() {
+        let source = "Texture2D<float4> image : register(t0);\nfloat4 main() : SV_TARGET0 { return image.Load(0); }";
+        assert!(lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", 2).is_err());
     }
 }

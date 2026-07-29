@@ -176,6 +176,16 @@ fn validate_uniform_members(
     let mut names = BTreeSet::new();
     for member in members {
         validate_string(document, "shader_uniform_member.name", member.name)?;
+        validate_string(
+            document,
+            "shader_uniform_member.material_parameter",
+            member.material_parameter,
+        )?;
+        if member.material_parameter.is_some()
+            && document.strings[member.material_parameter.0 as usize].is_empty()
+        {
+            return invalid(program, "shader uniform material parameter is empty");
+        }
         if !member.name.is_some() || !names.insert(member.name) {
             return invalid(
                 program,

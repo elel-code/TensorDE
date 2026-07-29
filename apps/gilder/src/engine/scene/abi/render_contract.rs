@@ -96,6 +96,7 @@ pub struct SceneShaderUniformBufferRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneShaderUniformMemberRecord {
     pub name: SceneStringId,
+    pub material_parameter: SceneStringId,
     pub byte_offset: u32,
     pub byte_size: u32,
     pub scalar_type: SceneShaderScalarType,

@@ -6,6 +6,7 @@
 
 mod compiler_environment;
 mod stage_io;
+mod uniform_metadata;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vulkan_renderer_build::{
     DescriptorHeapBindingKind, GlslToSlangRequest, ShaderCompileRequest, ShaderContract,
     ShaderIoDirection, ShaderScalarType, ShaderStage, SlangCompiler,
-    lower_slang_bindings_to_descriptor_heap, reflect_shader_interface,
+    lower_slang_bindings_to_descriptor_heap_at_offset, reflect_shader_interface,
 };
 
 use crate::convert::we_ingest::ir::{
@@ -28,6 +29,7 @@ use super::WeIngestError;
 use super::asset_source::WeAssetSource;
 use compiler_environment::{compiler_definitions, inject_we_compiler_preamble};
 use stage_io::normalize_stage_io_pair;
+use uniform_metadata::{ShaderUniformMetadata, parse_shader_uniform_metadata};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -103,35 +105,42 @@ fn compile_program(
 ) -> Result<[WeIrShaderProgram; 2], WeIngestError> {
     let vertex = read_stage_source(source, spec, "vert")?;
     let fragment = read_stage_source(source, spec, "frag")?;
+    let vertex_uniforms = parse_shader_uniform_metadata(&vertex)
+        .map_err(|error| shader_error(&spec.program_key, "vertex", error))?;
+    let fragment_uniforms = parse_shader_uniform_metadata(&fragment)
+        .map_err(|error| shader_error(&spec.program_key, "fragment", error))?;
     let definitions = compiler_definitions(spec, [&vertex, &fragment])?;
     let [vertex, fragment] = normalize_stage_io_pair(&vertex, &fragment, &spec.program_key)?;
     let vertex = inject_we_compiler_preamble(&vertex);
     let fragment = inject_we_compiler_preamble(&fragment);
     let include_directories = source.shader_include_directories(&spec.source_key);
-    Ok([
-        compile_stage(StageCompileInput {
-            compiler,
-            temporary,
-            program_index,
-            spec,
-            stage: ShaderStage::Vertex,
-            ir_stage: WeIrShaderStage::Vertex,
-            source: &vertex,
-            definitions: &definitions,
-            include_directories: &include_directories,
-        })?,
-        compile_stage(StageCompileInput {
-            compiler,
-            temporary,
-            program_index,
-            spec,
-            stage: ShaderStage::Fragment,
-            ir_stage: WeIrShaderStage::Fragment,
-            source: &fragment,
-            definitions: &definitions,
-            include_directories: &include_directories,
-        })?,
-    ])
+    let vertex = compile_stage(StageCompileInput {
+        compiler,
+        temporary,
+        program_index,
+        spec,
+        stage: ShaderStage::Vertex,
+        ir_stage: WeIrShaderStage::Vertex,
+        source: &vertex,
+        definitions: &definitions,
+        include_directories: &include_directories,
+        push_base_bytes: 0,
+        uniform_metadata: &vertex_uniforms,
+    })?;
+    let fragment = compile_stage(StageCompileInput {
+        compiler,
+        temporary,
+        program_index,
+        spec,
+        stage: ShaderStage::Fragment,
+        ir_stage: WeIrShaderStage::Fragment,
+        source: &fragment,
+        definitions: &definitions,
+        include_directories: &include_directories,
+        push_base_bytes: vertex.push_constant_bytes,
+        uniform_metadata: &fragment_uniforms,
+    })?;
+    Ok([vertex, fragment])
 }
 
 fn read_stage_source(
@@ -160,6 +169,8 @@ struct StageCompileInput<'a> {
     source: &'a str,
     definitions: &'a [(String, String)],
     include_directories: &'a [PathBuf],
+    push_base_bytes: u32,
+    uniform_metadata: &'a ShaderUniformMetadata,
 }
 
 fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIngestError> {
@@ -197,8 +208,12 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             format!("failed to read normalized Slang: {error}"),
         )
     })?;
-    let lowered = lower_slang_bindings_to_descriptor_heap(&normalized, "main")
-        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    let lowered = lower_slang_bindings_to_descriptor_heap_at_offset(
+        &normalized,
+        "main",
+        input.push_base_bytes,
+    )
+    .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
     fs::write(&native_path, &lowered.source).map_err(|error| {
         shader_error(
             &input.spec.program_key,
@@ -262,6 +277,10 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
                     .members
                     .into_iter()
                     .map(|member| WeIrShaderUniformMember {
+                        material_parameter: input
+                            .uniform_metadata
+                            .material_parameter(&member.name)
+                            .map(str::to_owned),
                         name: member.name,
                         byte_offset: member.byte_offset,
                         byte_size: member.byte_size,

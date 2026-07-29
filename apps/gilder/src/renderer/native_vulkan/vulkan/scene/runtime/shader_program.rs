@@ -5,6 +5,9 @@
 //! the final compiled stage interface; authored locations are never replaced
 //! with the catalog's fixed location convention.
 
+#[cfg(test)]
+mod uniform_alias_tests;
+
 use vulkanalia::vk;
 
 use crate::engine::scene::{
@@ -198,7 +201,12 @@ pub(super) fn scene_owned_stage_resource_plan<'a>(
                     })?;
                     Ok(SceneOwnedUniformMemberPlan {
                         name,
-                        source: scene_owned_uniform_source(key, name, member)?,
+                        source: scene_owned_uniform_source(
+                            key,
+                            name,
+                            storage.string(member.material_parameter),
+                            member,
+                        )?,
                         byte_offset: member.byte_offset,
                         byte_size: member.byte_size,
                         scalar_type: member.scalar_type,
@@ -229,8 +237,12 @@ pub(super) fn scene_owned_stage_resource_plan<'a>(
 fn scene_owned_uniform_source<'a>(
     key: &str,
     name: &'a str,
+    material_parameter: Option<&'a str>,
     member: &crate::engine::scene::SceneShaderUniformMemberRecord,
 ) -> Result<SceneOwnedUniformSource<'a>, String> {
+    if let Some(authored_name) = material_parameter {
+        return Ok(SceneOwnedUniformSource::MaterialParameter { authored_name });
+    }
     match name {
         "g_ModelViewProjectionMatrix" => {
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
@@ -251,9 +263,6 @@ fn scene_owned_uniform_source<'a>(
                 })?;
             Ok(SceneOwnedUniformSource::SampledTextureResolution { slot })
         }
-        _ if name.starts_with("u_") => Ok(SceneOwnedUniformSource::MaterialParameter {
-            authored_name: &name[2..],
-        }),
         _ => Err(format!(
             "scene-owned uniform {name:?} in {key:?} has no typed runtime source"
         )),
@@ -543,13 +552,13 @@ mod tests {
                     authored_name: "Radius",
                 },
                 SceneOwnedUniformSource::MaterialParameter {
-                    authored_name: "BorderWidth",
+                    authored_name: "Border width",
                 },
                 SceneOwnedUniformSource::MaterialParameter {
                     authored_name: "Softness",
                 },
                 SceneOwnedUniformSource::MaterialParameter {
-                    authored_name: "Alpha",
+                    authored_name: "ui_editor_properties_opacity",
                 },
             ]
         );
@@ -651,6 +660,11 @@ mod tests {
             "u_BorderWidth",
             "u_Softness",
             "u_Alpha",
+            "Color",
+            "Radius",
+            "Border width",
+            "Softness",
+            "ui_editor_properties_opacity",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -684,14 +698,14 @@ mod tests {
                 },
             ],
             shader_uniform_members: vec![
-                uniform_member(3, 0, 64, 4, 4, 16),
-                uniform_member(4, 64, 64, 4, 4, 16),
-                uniform_member(5, 0, 16, 4, 1, 0),
-                uniform_member(6, 16, 16, 4, 1, 0),
-                uniform_member(7, 32, 4, 1, 1, 0),
-                uniform_member(8, 36, 4, 1, 1, 0),
-                uniform_member(9, 40, 4, 1, 1, 0),
-                uniform_member(10, 44, 4, 1, 1, 0),
+                uniform_member(3, u32::MAX, 0, 64, 4, 4, 16),
+                uniform_member(4, u32::MAX, 64, 64, 4, 4, 16),
+                uniform_member(5, 11, 0, 16, 4, 1, 0),
+                uniform_member(6, u32::MAX, 16, 16, 4, 1, 0),
+                uniform_member(7, 12, 32, 4, 1, 1, 0),
+                uniform_member(8, 13, 36, 4, 1, 1, 0),
+                uniform_member(9, 14, 40, 4, 1, 1, 0),
+                uniform_member(10, 15, 44, 4, 1, 1, 0),
             ],
             shader_spirv: spirv,
             ..SceneBinaryDocument::default()
@@ -737,6 +751,7 @@ mod tests {
 
     fn uniform_member(
         name: u32,
+        material_parameter: u32,
         byte_offset: u32,
         byte_size: u32,
         rows: u32,
@@ -745,6 +760,7 @@ mod tests {
     ) -> SceneShaderUniformMemberRecord {
         SceneShaderUniformMemberRecord {
             name: SceneStringId(name),
+            material_parameter: SceneStringId(material_parameter),
             byte_offset,
             byte_size,
             scalar_type: SceneShaderScalarType::F32,

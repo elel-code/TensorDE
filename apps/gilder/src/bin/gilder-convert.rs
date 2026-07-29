@@ -136,8 +136,11 @@ fn inspect_scene(source: &std::path::Path) -> Result<(), String> {
                 let name = storage
                     .string(member.name)
                     .ok_or_else(|| "validated shader uniform member has no name".to_owned())?;
+                let material = storage
+                    .string(member.material_parameter)
+                    .map_or("<system>", |name| name);
                 println!(
-                    "    shader-uniform-member offset={} bytes={} name={name} type={:?}{}x{} array={} stride={} matrix-stride={}",
+                    "    shader-uniform-member offset={} bytes={} name={name} material={material} type={:?}{}x{} array={} stride={} matrix-stride={}",
                     member.byte_offset,
                     member.byte_size,
                     member.scalar_type,
