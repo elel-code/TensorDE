@@ -92,6 +92,7 @@ mod scene_color_clear;
 mod scene_color_msaa;
 mod scene_texture;
 mod scene_viewport;
+mod shader_program;
 
 use present_loop::with_scene_present;
 use resource_setup::*;
