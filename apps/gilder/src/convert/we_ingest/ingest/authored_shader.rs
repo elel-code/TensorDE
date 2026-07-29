@@ -206,7 +206,7 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             format!("failed to stage native Slang: {error}"),
         )
     })?;
-    input
+    let compiled = input
         .compiler
         .compile(&ShaderCompileRequest {
             source: native_path,
@@ -215,6 +215,8 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             output: spirv_path.clone(),
             contract: ShaderContract::descriptor_heap(u64::from(lowered.push_constant_bytes)),
         })
+        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    let final_interface = reflect_shader_interface(&compiled.reflection, "main", input.stage)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
     let spirv = read_spirv_words(&spirv_path, &input.spec.program_key, stage_name)?;
     let bindings = lowered
@@ -233,7 +235,7 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
         entry_point: "main".to_owned(),
         push_constant_bytes: lowered.push_constant_bytes,
         bindings,
-        stage_io: interface
+        stage_io: final_interface
             .stage_io
             .into_iter()
             .map(|item| WeIrShaderStageIo {

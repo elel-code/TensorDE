@@ -29,6 +29,7 @@ pub struct ShaderCompileRequest {
 pub struct CompileReport {
     pub output: PathBuf,
     pub spirv_bytes: usize,
+    pub reflection: Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,11 +60,10 @@ impl SlangCompiler {
         }
         let temporary = TemporaryOutputs::new(&request.output);
         self.run_slang(request, &temporary)?;
-        request.contract.validate(
-            &read_reflection(&temporary.reflection)?,
-            &request.entry_point,
-            request.stage,
-        )?;
+        let reflection = read_reflection(&temporary.reflection)?;
+        request
+            .contract
+            .validate(&reflection, &request.entry_point, request.stage)?;
         self.validate_spirv(&temporary.spirv)?;
         let bytes = fs::read(&temporary.spirv)
             .map_err(|error| Error::io("read generated SPIR-V", &temporary.spirv, error))?;
@@ -74,6 +74,7 @@ impl SlangCompiler {
         Ok(CompileReport {
             output: request.output.clone(),
             spirv_bytes: bytes.len(),
+            reflection,
         })
     }
 
@@ -99,6 +100,7 @@ impl SlangCompiler {
         Ok(CompileReport {
             output: request.output.clone(),
             spirv_bytes: report.spirv_bytes,
+            reflection: report.reflection,
         })
     }
 
