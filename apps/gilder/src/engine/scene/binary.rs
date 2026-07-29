@@ -249,6 +249,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let DecodedShaderPrograms {
         programs: shader_programs,
         bindings: shader_bindings,
+        stage_io: shader_stage_io,
+        uniform_buffers: shader_uniform_buffers,
+        uniform_members: shader_uniform_members,
         spirv: shader_spirv,
     } = decode_shader_programs(chunk_payload(&chunks, CHUNK_SHADER_PROGRAM)?)?;
     ensure_chunk_count(
@@ -338,6 +341,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_constant_names,
         shader_programs,
         shader_bindings,
+        shader_stage_io,
+        shader_uniform_buffers,
+        shader_uniform_members,
         shader_spirv,
         script_programs,
         dynamic_texts,
@@ -585,6 +591,9 @@ fn encode_chunks(
             data: encode_shader_programs(
                 &document.shader_programs,
                 &document.shader_bindings,
+                &document.shader_stage_io,
+                &document.shader_uniform_buffers,
+                &document.shader_uniform_members,
                 &document.shader_spirv,
             )?,
         },

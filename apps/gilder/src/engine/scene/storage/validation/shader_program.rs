@@ -35,6 +35,18 @@ pub(super) fn validate_shader_programs(
             program.binding_count,
             document.shader_bindings.len(),
         )?;
+        validate_range(
+            "shader_program.stage_io_range",
+            program.stage_io_start,
+            program.stage_io_count,
+            document.shader_stage_io.len(),
+        )?;
+        validate_range(
+            "shader_program.uniform_buffer_range",
+            program.uniform_buffer_start,
+            program.uniform_buffer_count,
+            document.shader_uniform_buffers.len(),
+        )?;
         if !program.push_constant_bytes.is_multiple_of(4) {
             return invalid(program, "push-constant byte size is not word aligned");
         }
@@ -48,8 +60,198 @@ pub(super) fn validate_shader_programs(
             program.binding_start,
             program.binding_count,
         );
+        let stage_io = slice(
+            &document.shader_stage_io,
+            program.stage_io_start,
+            program.stage_io_count,
+        );
+        let uniform_buffers = slice(
+            &document.shader_uniform_buffers,
+            program.uniform_buffer_start,
+            program.uniform_buffer_count,
+        );
         validate_spirv(program, spirv, !bindings.is_empty())?;
         validate_bindings(program, bindings)?;
+        validate_stage_io(document, program, stage_io)?;
+        validate_uniform_buffers(document, program, bindings, uniform_buffers)?;
+    }
+    validate_stage_links(document)?;
+    Ok(())
+}
+
+fn validate_stage_io(
+    document: &SceneBinaryDocument,
+    program: &SceneShaderProgramRecord,
+    stage_io: &[SceneShaderStageIoRecord],
+) -> Result<(), SceneStorageError> {
+    if program.stage == SceneShaderStage::Compute && !stage_io.is_empty() {
+        return invalid(program, "compute program exposes graphics stage I/O");
+    }
+    let mut names = BTreeSet::new();
+    let mut locations = BTreeSet::new();
+    for item in stage_io {
+        validate_string(document, "shader_stage_io.name", item.name)?;
+        if !item.name.is_some() {
+            return invalid(program, "shader stage-I/O name is empty");
+        }
+        if item.rows == 0
+            || item.columns == 0
+            || item.location_count == 0
+            || item.location_count != item.columns
+        {
+            return invalid(program, "shader stage-I/O shape is invalid");
+        }
+        if !names.insert((item.direction, item.name)) {
+            return invalid(program, "shader stage-I/O repeats a name");
+        }
+        let Some(location_end) = item.location.checked_add(item.location_count) else {
+            return invalid(program, "shader stage-I/O location range overflows");
+        };
+        for location in item.location..location_end {
+            if !locations.insert((item.direction, location)) {
+                return invalid(program, "shader stage-I/O locations overlap");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_uniform_buffers(
+    document: &SceneBinaryDocument,
+    program: &SceneShaderProgramRecord,
+    bindings: &[SceneShaderBindingRecord],
+    buffers: &[SceneShaderUniformBufferRecord],
+) -> Result<(), SceneStorageError> {
+    let mut names = BTreeSet::new();
+    let mut registers = BTreeSet::new();
+    for buffer in buffers {
+        validate_string(document, "shader_uniform_buffer.name", buffer.name)?;
+        validate_range(
+            "shader_uniform_buffer.member_range",
+            buffer.member_start,
+            buffer.member_count,
+            document.shader_uniform_members.len(),
+        )?;
+        if !buffer.name.is_some() || buffer.byte_size == 0 || buffer.member_count == 0 {
+            return invalid(program, "shader uniform buffer is empty");
+        }
+        if !names.insert(buffer.name) || !registers.insert(buffer.register) {
+            return invalid(program, "shader uniform buffer repeats a name or register");
+        }
+        validate_uniform_members(
+            document,
+            program,
+            buffer,
+            slice(
+                &document.shader_uniform_members,
+                buffer.member_start,
+                buffer.member_count,
+            ),
+        )?;
+    }
+    let reflected_registers = buffers
+        .iter()
+        .map(|buffer| buffer.register)
+        .collect::<BTreeSet<_>>();
+    let bound_registers = bindings
+        .iter()
+        .filter(|binding| binding.kind == SceneShaderBindingKind::UniformBuffer)
+        .map(|binding| binding.register)
+        .collect::<BTreeSet<_>>();
+    if reflected_registers != bound_registers {
+        return invalid(
+            program,
+            "shader uniform-buffer bindings do not match typed reflection",
+        );
+    }
+    Ok(())
+}
+
+fn validate_uniform_members(
+    document: &SceneBinaryDocument,
+    program: &SceneShaderProgramRecord,
+    buffer: &SceneShaderUniformBufferRecord,
+    members: &[SceneShaderUniformMemberRecord],
+) -> Result<(), SceneStorageError> {
+    let mut names = BTreeSet::new();
+    for member in members {
+        validate_string(document, "shader_uniform_member.name", member.name)?;
+        if !member.name.is_some() || !names.insert(member.name) {
+            return invalid(
+                program,
+                "shader uniform member has an empty or duplicate name",
+            );
+        }
+        if member.byte_size == 0
+            || member.rows == 0
+            || member.columns == 0
+            || member.array_count == 0
+        {
+            return invalid(program, "shader uniform member shape is empty");
+        }
+        if member
+            .byte_offset
+            .checked_add(member.byte_size)
+            .is_none_or(|end| end > buffer.byte_size)
+        {
+            return invalid(program, "shader uniform member exceeds its buffer");
+        }
+        if (member.array_count == 1) != (member.array_stride == 0) {
+            return invalid(program, "shader uniform member array stride is invalid");
+        }
+        if member.array_count > 1
+            && member
+                .array_count
+                .checked_sub(1)
+                .and_then(|count| count.checked_mul(member.array_stride))
+                .is_none_or(|last_offset| last_offset >= member.byte_size)
+        {
+            return invalid(program, "shader uniform member array extent is invalid");
+        }
+        if (member.columns == 1) != (member.matrix_stride == 0) {
+            return invalid(program, "shader uniform member matrix stride is invalid");
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_links(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
+    for fragment in document
+        .shader_programs
+        .iter()
+        .filter(|program| program.stage == SceneShaderStage::Fragment)
+    {
+        let Some(vertex) = document.shader_programs.iter().find(|program| {
+            program.program_key == fragment.program_key && program.stage == SceneShaderStage::Vertex
+        }) else {
+            continue;
+        };
+        let vertex_io = slice(
+            &document.shader_stage_io,
+            vertex.stage_io_start,
+            vertex.stage_io_count,
+        );
+        let fragment_io = slice(
+            &document.shader_stage_io,
+            fragment.stage_io_start,
+            fragment.stage_io_count,
+        );
+        for input in fragment_io
+            .iter()
+            .filter(|item| item.direction == SceneShaderIoDirection::Input)
+        {
+            let compatible = vertex_io.iter().any(|output| {
+                output.direction == SceneShaderIoDirection::Output
+                    && output.location == input.location
+                    && output.scalar_type == input.scalar_type
+                    && output.rows == input.rows
+                    && output.columns == input.columns
+                    && output.location_count == input.location_count
+            });
+            if !compatible {
+                return invalid(fragment, "fragment input has no compatible vertex output");
+            }
+        }
     }
     Ok(())
 }

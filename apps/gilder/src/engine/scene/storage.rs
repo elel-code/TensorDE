@@ -452,6 +452,33 @@ impl SceneStorage {
         &self.document.shader_bindings[start..end]
     }
 
+    pub fn shader_program_stage_io(
+        &self,
+        program: &SceneShaderProgramRecord,
+    ) -> &[SceneShaderStageIoRecord] {
+        let start = program.stage_io_start as usize;
+        let end = start + program.stage_io_count as usize;
+        &self.document.shader_stage_io[start..end]
+    }
+
+    pub fn shader_program_uniform_buffers(
+        &self,
+        program: &SceneShaderProgramRecord,
+    ) -> &[SceneShaderUniformBufferRecord] {
+        let start = program.uniform_buffer_start as usize;
+        let end = start + program.uniform_buffer_count as usize;
+        &self.document.shader_uniform_buffers[start..end]
+    }
+
+    pub fn shader_uniform_buffer_members(
+        &self,
+        buffer: &SceneShaderUniformBufferRecord,
+    ) -> &[SceneShaderUniformMemberRecord] {
+        let start = buffer.member_start as usize;
+        let end = start + buffer.member_count as usize;
+        &self.document.shader_uniform_members[start..end]
+    }
+
     pub fn shader_program_spirv(&self, program: &SceneShaderProgramRecord) -> &[u32] {
         let start = program.spirv_start as usize;
         let end = start + program.spirv_count as usize;

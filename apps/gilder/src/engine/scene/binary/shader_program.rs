@@ -2,13 +2,17 @@
 
 use super::codec::{Decoder, checked_u32, put_string_id, put_u32};
 use super::{
-    SceneBinaryError, SceneShaderBindingKind, SceneShaderBindingRecord, SceneShaderProgramRecord,
-    SceneShaderStage,
+    SceneBinaryError, SceneShaderBindingKind, SceneShaderBindingRecord, SceneShaderIoDirection,
+    SceneShaderProgramRecord, SceneShaderScalarType, SceneShaderStage, SceneShaderStageIoRecord,
+    SceneShaderUniformBufferRecord, SceneShaderUniformMemberRecord,
 };
 
 pub(super) fn encode_shader_programs(
     programs: &[SceneShaderProgramRecord],
     bindings: &[SceneShaderBindingRecord],
+    stage_io: &[SceneShaderStageIoRecord],
+    uniform_buffers: &[SceneShaderUniformBufferRecord],
+    uniform_members: &[SceneShaderUniformMemberRecord],
     spirv: &[u32],
 ) -> Result<Vec<u8>, SceneBinaryError> {
     let mut output = Vec::new();
@@ -24,7 +28,50 @@ pub(super) fn encode_shader_programs(
         put_u32(&mut output, program.spirv_count);
         put_u32(&mut output, program.binding_start);
         put_u32(&mut output, program.binding_count);
+        put_u32(&mut output, program.stage_io_start);
+        put_u32(&mut output, program.stage_io_count);
+        put_u32(&mut output, program.uniform_buffer_start);
+        put_u32(&mut output, program.uniform_buffer_count);
         put_u32(&mut output, program.push_constant_bytes);
+    }
+    put_u32(
+        &mut output,
+        checked_u32(stage_io.len(), "shader stage-I/O count")?,
+    );
+    for item in stage_io {
+        put_string_id(&mut output, item.name);
+        put_u32(&mut output, item.direction.to_u32());
+        put_u32(&mut output, item.location);
+        put_u32(&mut output, item.scalar_type.to_u32());
+        put_u32(&mut output, item.rows);
+        put_u32(&mut output, item.columns);
+        put_u32(&mut output, item.location_count);
+    }
+    put_u32(
+        &mut output,
+        checked_u32(uniform_buffers.len(), "shader uniform-buffer count")?,
+    );
+    for buffer in uniform_buffers {
+        put_string_id(&mut output, buffer.name);
+        put_u32(&mut output, buffer.register);
+        put_u32(&mut output, buffer.byte_size);
+        put_u32(&mut output, buffer.member_start);
+        put_u32(&mut output, buffer.member_count);
+    }
+    put_u32(
+        &mut output,
+        checked_u32(uniform_members.len(), "shader uniform-member count")?,
+    );
+    for member in uniform_members {
+        put_string_id(&mut output, member.name);
+        put_u32(&mut output, member.byte_offset);
+        put_u32(&mut output, member.byte_size);
+        put_u32(&mut output, member.scalar_type.to_u32());
+        put_u32(&mut output, member.rows);
+        put_u32(&mut output, member.columns);
+        put_u32(&mut output, member.array_count);
+        put_u32(&mut output, member.array_stride);
+        put_u32(&mut output, member.matrix_stride);
     }
     put_u32(
         &mut output,
@@ -49,6 +96,9 @@ pub(super) fn encode_shader_programs(
 pub(super) struct DecodedShaderPrograms {
     pub programs: Vec<SceneShaderProgramRecord>,
     pub bindings: Vec<SceneShaderBindingRecord>,
+    pub stage_io: Vec<SceneShaderStageIoRecord>,
+    pub uniform_buffers: Vec<SceneShaderUniformBufferRecord>,
+    pub uniform_members: Vec<SceneShaderUniformMemberRecord>,
     pub spirv: Vec<u32>,
 }
 
@@ -72,7 +122,67 @@ pub(super) fn decode_shader_programs(
             spirv_count: decoder.u32()?,
             binding_start: decoder.u32()?,
             binding_count: decoder.u32()?,
+            stage_io_start: decoder.u32()?,
+            stage_io_count: decoder.u32()?,
+            uniform_buffer_start: decoder.u32()?,
+            uniform_buffer_count: decoder.u32()?,
             push_constant_bytes: decoder.u32()?,
+        });
+    }
+    let stage_io_count = decoder.u32()? as usize;
+    let mut stage_io = Vec::with_capacity(stage_io_count);
+    for _ in 0..stage_io_count {
+        let name = decoder.string_id()?;
+        let direction_raw = decoder.u32()?;
+        let direction = SceneShaderIoDirection::from_u32(direction_raw).ok_or(
+            SceneBinaryError::InvalidChunkValue("shader I/O direction", direction_raw),
+        )?;
+        let location = decoder.u32()?;
+        let scalar_raw = decoder.u32()?;
+        let scalar_type = SceneShaderScalarType::from_u32(scalar_raw).ok_or(
+            SceneBinaryError::InvalidChunkValue("shader scalar type", scalar_raw),
+        )?;
+        stage_io.push(SceneShaderStageIoRecord {
+            name,
+            direction,
+            location,
+            scalar_type,
+            rows: decoder.u32()?,
+            columns: decoder.u32()?,
+            location_count: decoder.u32()?,
+        });
+    }
+    let uniform_buffer_count = decoder.u32()? as usize;
+    let mut uniform_buffers = Vec::with_capacity(uniform_buffer_count);
+    for _ in 0..uniform_buffer_count {
+        uniform_buffers.push(SceneShaderUniformBufferRecord {
+            name: decoder.string_id()?,
+            register: decoder.u32()?,
+            byte_size: decoder.u32()?,
+            member_start: decoder.u32()?,
+            member_count: decoder.u32()?,
+        });
+    }
+    let uniform_member_count = decoder.u32()? as usize;
+    let mut uniform_members = Vec::with_capacity(uniform_member_count);
+    for _ in 0..uniform_member_count {
+        let name = decoder.string_id()?;
+        let byte_offset = decoder.u32()?;
+        let byte_size = decoder.u32()?;
+        let scalar_raw = decoder.u32()?;
+        let scalar_type = SceneShaderScalarType::from_u32(scalar_raw).ok_or(
+            SceneBinaryError::InvalidChunkValue("shader scalar type", scalar_raw),
+        )?;
+        uniform_members.push(SceneShaderUniformMemberRecord {
+            name,
+            byte_offset,
+            byte_size,
+            scalar_type,
+            rows: decoder.u32()?,
+            columns: decoder.u32()?,
+            array_count: decoder.u32()?,
+            array_stride: decoder.u32()?,
+            matrix_stride: decoder.u32()?,
         });
     }
     let binding_count = decoder.u32()? as usize;
@@ -97,6 +207,9 @@ pub(super) fn decode_shader_programs(
     Ok(DecodedShaderPrograms {
         programs,
         bindings,
+        stage_io,
+        uniform_buffers,
+        uniform_members,
         spirv,
     })
 }

@@ -40,10 +40,21 @@ impl SlangCompiler {
         }
         let source_output = temporary_path(&request.output, "slang");
         let reflection_output = temporary_path(&request.output, "reflection.json");
-        let result = self.run_glsl_frontend(request, &source_output, &reflection_output);
+        let reflected_source_output = temporary_path(&request.output, "reflected.hlsl");
+        let result = self
+            .run_glsl_frontend(request, &source_output, &reflection_output)
+            .and_then(|()| {
+                self.run_normalized_reflection(
+                    request,
+                    &source_output,
+                    &reflected_source_output,
+                    &reflection_output,
+                )
+            });
         if result.is_err() {
             let _ = fs::remove_file(&source_output);
             let _ = fs::remove_file(&reflection_output);
+            let _ = fs::remove_file(&reflected_source_output);
         }
         result?;
         let source_bytes = fs::metadata(&source_output)
@@ -54,6 +65,7 @@ impl SlangCompiler {
         })?;
         let reflection = serde_json::from_slice(&reflection_bytes)
             .map_err(|error| Error::Reflection(format!("invalid frontend JSON: {error}")))?;
+        let _ = fs::remove_file(&reflected_source_output);
         fs::rename(&source_output, &request.output).map_err(|error| {
             Error::io("install normalized Slang source", &request.output, error)
         })?;
@@ -89,6 +101,7 @@ impl SlangCompiler {
             OsString::from("-profile"),
             OsString::from("glsl_450"),
             OsString::from("-matrix-layout-row-major"),
+            OsString::from("-no-mangle"),
             OsString::from("-O2"),
             OsString::from("-warnings-as-errors"),
             OsString::from("all"),
@@ -113,6 +126,50 @@ impl SlangCompiler {
             request.source.as_os_str().to_owned(),
         ]);
         run(&self.slangc, arguments).map(|_| ())
+    }
+
+    fn run_normalized_reflection(
+        &self,
+        request: &GlslToSlangRequest,
+        source: &std::path::Path,
+        output: &std::path::Path,
+        reflection_output: &std::path::Path,
+    ) -> Result<()> {
+        let mut disabled_warnings = request.disabled_warnings.clone();
+        disabled_warnings.push(15601);
+        disabled_warnings.sort_unstable();
+        disabled_warnings.dedup();
+        let mut arguments = vec![
+            OsString::from("-lang"),
+            OsString::from("hlsl"),
+            source.as_os_str().to_owned(),
+            OsString::from("-entry"),
+            request.entry_point.clone().into(),
+            OsString::from("-stage"),
+            request.stage.slang_name().into(),
+            OsString::from("-target"),
+            OsString::from("hlsl"),
+            OsString::from("-profile"),
+            OsString::from("sm_6_0"),
+            OsString::from("-matrix-layout-row-major"),
+            OsString::from("-O2"),
+            OsString::from("-warnings-as-errors"),
+            OsString::from("all"),
+            OsString::from("-warnings-disable"),
+            OsString::from(
+                disabled_warnings
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            OsString::from("-restrictive-capability-check"),
+            OsString::from("-reflection-json"),
+            reflection_output.as_os_str().to_owned(),
+            OsString::from("-o"),
+            output.as_os_str().to_owned(),
+        ];
+        run(&self.slangc, arguments.drain(..)).map(|_| ())
     }
 }
 

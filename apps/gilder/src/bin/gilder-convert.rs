@@ -86,6 +86,10 @@ fn inspect_scene(source: &std::path::Path) -> Result<(), String> {
         .map_err(|error| format!("failed to open scene {}: {error}", source.display()))?;
     let storage = gilder::engine::scene::SceneStorage::from_binary_reader(input)
         .map_err(|error| format!("failed to validate scene {}: {error}", source.display()))?;
+    println!(
+        "scene-binary-version={}",
+        gilder::engine::scene::SCENE_BINARY_VERSION
+    );
     for program in storage.shader_programs() {
         let key = storage
             .string(program.program_key)
@@ -105,6 +109,45 @@ fn inspect_scene(source: &std::path::Path) -> Result<(), String> {
                 "  shader-binding kind={:?} register={} descriptors={} push-offset={}",
                 binding.kind, binding.register, binding.descriptor_count, binding.push_offset,
             );
+        }
+        for item in storage.shader_program_stage_io(program) {
+            let name = storage
+                .string(item.name)
+                .ok_or_else(|| "validated shader stage-I/O has no name".to_owned())?;
+            println!(
+                "  shader-io direction={:?} location={} span={} name={name} type={:?}{}x{}",
+                item.direction,
+                item.location,
+                item.location_count,
+                item.scalar_type,
+                item.rows,
+                item.columns,
+            );
+        }
+        for buffer in storage.shader_program_uniform_buffers(program) {
+            let name = storage
+                .string(buffer.name)
+                .ok_or_else(|| "validated shader uniform buffer has no name".to_owned())?;
+            println!(
+                "  shader-uniform-buffer register={} bytes={} name={name} members={}",
+                buffer.register, buffer.byte_size, buffer.member_count,
+            );
+            for member in storage.shader_uniform_buffer_members(buffer) {
+                let name = storage
+                    .string(member.name)
+                    .ok_or_else(|| "validated shader uniform member has no name".to_owned())?;
+                println!(
+                    "    shader-uniform-member offset={} bytes={} name={name} type={:?}{}x{} array={} stride={} matrix-stride={}",
+                    member.byte_offset,
+                    member.byte_size,
+                    member.scalar_type,
+                    member.rows,
+                    member.columns,
+                    member.array_count,
+                    member.array_stride,
+                    member.matrix_stride,
+                );
+            }
         }
     }
     println!(

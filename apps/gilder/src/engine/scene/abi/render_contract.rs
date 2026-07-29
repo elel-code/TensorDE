@@ -58,6 +58,10 @@ pub struct SceneShaderProgramRecord {
     pub spirv_count: u32,
     pub binding_start: u32,
     pub binding_count: u32,
+    pub stage_io_start: u32,
+    pub stage_io_count: u32,
+    pub uniform_buffer_start: u32,
+    pub uniform_buffer_count: u32,
     pub push_constant_bytes: u32,
 }
 
@@ -67,6 +71,93 @@ pub struct SceneShaderBindingRecord {
     pub register: u32,
     pub descriptor_count: u32,
     pub push_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneShaderStageIoRecord {
+    pub name: SceneStringId,
+    pub direction: SceneShaderIoDirection,
+    pub location: u32,
+    pub scalar_type: SceneShaderScalarType,
+    pub rows: u32,
+    pub columns: u32,
+    pub location_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneShaderUniformBufferRecord {
+    pub name: SceneStringId,
+    pub register: u32,
+    pub byte_size: u32,
+    pub member_start: u32,
+    pub member_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneShaderUniformMemberRecord {
+    pub name: SceneStringId,
+    pub byte_offset: u32,
+    pub byte_size: u32,
+    pub scalar_type: SceneShaderScalarType,
+    pub rows: u32,
+    pub columns: u32,
+    pub array_count: u32,
+    pub array_stride: u32,
+    pub matrix_stride: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneShaderIoDirection {
+    Input,
+    Output,
+}
+
+impl SceneShaderIoDirection {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Input => 1,
+            Self::Output => 2,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Input),
+            2 => Some(Self::Output),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneShaderScalarType {
+    Bool,
+    I32,
+    U32,
+    F32,
+}
+
+impl SceneShaderScalarType {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Bool => 1,
+            Self::I32 => 2,
+            Self::U32 => 3,
+            Self::F32 => 4,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Bool),
+            2 => Some(Self::I32),
+            3 => Some(Self::U32),
+            4 => Some(Self::F32),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -545,6 +545,9 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
     let LoweredShaderPrograms {
         programs: shader_programs,
         bindings: shader_bindings,
+        stage_io: shader_stage_io,
+        uniform_buffers: shader_uniform_buffers,
+        uniform_members: shader_uniform_members,
         spirv: shader_spirv,
     } = lower_shader_programs(ir, &mut strings)?;
     let event_bindings = event_binding::lower_event_bindings(ir, &mut strings);
@@ -637,6 +640,9 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         shader_constant_names,
         shader_programs,
         shader_bindings,
+        shader_stage_io,
+        shader_uniform_buffers,
+        shader_uniform_members,
         shader_spirv,
         script_programs: event_bindings.scripts,
         dynamic_texts,

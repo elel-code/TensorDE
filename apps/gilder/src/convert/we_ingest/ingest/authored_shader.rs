@@ -14,12 +14,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use vulkan_renderer_build::{
     DescriptorHeapBindingKind, GlslToSlangRequest, ShaderCompileRequest, ShaderContract,
-    ShaderStage, SlangCompiler, lower_slang_bindings_to_descriptor_heap,
+    ShaderIoDirection, ShaderScalarType, ShaderStage, SlangCompiler,
+    lower_slang_bindings_to_descriptor_heap, reflect_shader_interface,
 };
 
 use crate::convert::we_ingest::ir::{
-    WeIrShaderBinding, WeIrShaderBindingKind, WeIrShaderOrigin, WeIrShaderProgram, WeIrShaderStage,
-    WeSceneIr,
+    WeIrShaderBinding, WeIrShaderBindingKind, WeIrShaderIoDirection, WeIrShaderOrigin,
+    WeIrShaderProgram, WeIrShaderScalarType, WeIrShaderStage, WeIrShaderStageIo,
+    WeIrShaderUniformBuffer, WeIrShaderUniformMember, WeSceneIr,
 };
 
 use super::WeIngestError;
@@ -174,7 +176,7 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             format!("failed to stage GLSL source: {error}"),
         )
     })?;
-    input
+    let frontend = input
         .compiler
         .transpile_glsl(&GlslToSlangRequest {
             source: glsl_path,
@@ -185,6 +187,8 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             definitions: input.definitions.to_vec(),
             disabled_warnings: vec![30081],
         })
+        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    let interface = reflect_shader_interface(&frontend.reflection, "main", input.stage)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
     let normalized = fs::read_to_string(&normalized_path).map_err(|error| {
         shader_error(
@@ -229,8 +233,57 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
         entry_point: "main".to_owned(),
         push_constant_bytes: lowered.push_constant_bytes,
         bindings,
+        stage_io: interface
+            .stage_io
+            .into_iter()
+            .map(|item| WeIrShaderStageIo {
+                name: item.name,
+                direction: match item.direction {
+                    ShaderIoDirection::Input => WeIrShaderIoDirection::Input,
+                    ShaderIoDirection::Output => WeIrShaderIoDirection::Output,
+                },
+                location: item.location,
+                scalar_type: lower_scalar_type(item.scalar_type),
+                rows: item.rows,
+                columns: item.columns,
+                location_count: item.location_count,
+            })
+            .collect(),
+        uniform_buffers: interface
+            .uniform_buffers
+            .into_iter()
+            .map(|buffer| WeIrShaderUniformBuffer {
+                name: buffer.name,
+                register: buffer.register,
+                byte_size: buffer.byte_size,
+                members: buffer
+                    .members
+                    .into_iter()
+                    .map(|member| WeIrShaderUniformMember {
+                        name: member.name,
+                        byte_offset: member.byte_offset,
+                        byte_size: member.byte_size,
+                        scalar_type: lower_scalar_type(member.scalar_type),
+                        rows: member.rows,
+                        columns: member.columns,
+                        array_count: member.array_count,
+                        array_stride: member.array_stride,
+                        matrix_stride: member.matrix_stride,
+                    })
+                    .collect(),
+            })
+            .collect(),
         spirv,
     })
+}
+
+fn lower_scalar_type(scalar_type: ShaderScalarType) -> WeIrShaderScalarType {
+    match scalar_type {
+        ShaderScalarType::Bool => WeIrShaderScalarType::Bool,
+        ShaderScalarType::I32 => WeIrShaderScalarType::I32,
+        ShaderScalarType::U32 => WeIrShaderScalarType::U32,
+        ShaderScalarType::F32 => WeIrShaderScalarType::F32,
+    }
 }
 
 fn read_spirv_words(

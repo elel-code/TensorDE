@@ -251,7 +251,7 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
             program_key: "workshop/test/effects/example__SLOTS_1".to_owned(),
             stage: WeIrShaderStage::Fragment,
             entry_point: "main".to_owned(),
-            push_constant_bytes: 8,
+            push_constant_bytes: 12,
             bindings: vec![
                 WeIrShaderBinding {
                     kind: WeIrShaderBindingKind::SampledImage,
@@ -265,7 +265,38 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
                     descriptor_count: 1,
                     push_offset: 4,
                 },
+                WeIrShaderBinding {
+                    kind: WeIrShaderBindingKind::UniformBuffer,
+                    register: 0,
+                    descriptor_count: 1,
+                    push_offset: 8,
+                },
             ],
+            stage_io: vec![WeIrShaderStageIo {
+                name: "v_TexCoord".to_owned(),
+                direction: WeIrShaderIoDirection::Input,
+                location: 0,
+                scalar_type: WeIrShaderScalarType::F32,
+                rows: 2,
+                columns: 1,
+                location_count: 1,
+            }],
+            uniform_buffers: vec![WeIrShaderUniformBuffer {
+                name: "GlobalParams".to_owned(),
+                register: 0,
+                byte_size: 16,
+                members: vec![WeIrShaderUniformMember {
+                    name: "g_Time".to_owned(),
+                    byte_offset: 0,
+                    byte_size: 4,
+                    scalar_type: WeIrShaderScalarType::F32,
+                    rows: 1,
+                    columns: 1,
+                    array_count: 1,
+                    array_stride: 0,
+                    matrix_stride: 0,
+                }],
+            }],
             spirv: vec![0x0723_0203, 0x0001_0600, 0, 2, 0],
         }],
         unsupported: Vec::new(),
@@ -282,11 +313,13 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
     assert_eq!(binary.shader_programs.len(), 1);
     assert_eq!(binary.shader_programs[0].stage, SceneShaderStage::Fragment);
     assert_eq!(binary.shader_programs[0].binding_start, 0);
-    assert_eq!(binary.shader_programs[0].binding_count, 2);
+    assert_eq!(binary.shader_programs[0].binding_count, 3);
     assert_eq!(binary.shader_programs[0].spirv_start, 0);
     assert_eq!(binary.shader_programs[0].spirv_count, 5);
-    assert_eq!(binary.shader_programs[0].push_constant_bytes, 8);
-    assert_eq!(binary.shader_bindings.len(), 2);
+    assert_eq!(binary.shader_programs[0].stage_io_count, 1);
+    assert_eq!(binary.shader_programs[0].uniform_buffer_count, 1);
+    assert_eq!(binary.shader_programs[0].push_constant_bytes, 12);
+    assert_eq!(binary.shader_bindings.len(), 3);
     assert_eq!(
         binary.shader_bindings[0].kind,
         SceneShaderBindingKind::SampledImage
@@ -295,6 +328,13 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
         binary.shader_bindings[1].kind,
         SceneShaderBindingKind::Sampler
     );
+    assert_eq!(
+        binary.shader_bindings[2].kind,
+        SceneShaderBindingKind::UniformBuffer
+    );
+    assert_eq!(binary.shader_stage_io[0].rows, 2);
+    assert_eq!(binary.shader_uniform_buffers[0].byte_size, 16);
+    assert_eq!(binary.shader_uniform_members[0].byte_offset, 0);
     assert_eq!(binary.shader_spirv, [0x0723_0203, 0x0001_0600, 0, 2, 0]);
     assert!(
         binary

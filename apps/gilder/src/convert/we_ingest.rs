@@ -44,6 +44,7 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
     let mut ir = ingest_wallpaper_engine_project(project_root)?;
     ingest::compile_authored_shader_programs(project_root, &mut ir)?;
     let binary = lower_ir_to_scene_binary(&ir)?;
+    let storage = SceneStorage::from_document(binary)?;
     let output_path = output_path.as_ref();
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| WeConvertError::CreateOutputDir {
@@ -55,8 +56,7 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
         path: output_path.to_path_buf(),
         source,
     })?;
-    write_scene_binary(&binary, &mut output)?;
-    let storage = SceneStorage::from_document(binary)?;
+    write_scene_binary(storage.document(), &mut output)?;
     let render_plan = RenderingServer::new(&storage).renderer_scene_render_plan();
     Ok(WeConvertSummary {
         output_path: output_path.to_path_buf(),

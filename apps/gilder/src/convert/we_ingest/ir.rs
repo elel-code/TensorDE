@@ -573,7 +573,57 @@ pub struct WeIrShaderProgram {
     pub entry_point: String,
     pub push_constant_bytes: u32,
     pub bindings: Vec<WeIrShaderBinding>,
+    pub stage_io: Vec<WeIrShaderStageIo>,
+    pub uniform_buffers: Vec<WeIrShaderUniformBuffer>,
     pub spirv: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderStageIo {
+    pub name: String,
+    pub direction: WeIrShaderIoDirection,
+    pub location: u32,
+    pub scalar_type: WeIrShaderScalarType,
+    pub rows: u32,
+    pub columns: u32,
+    pub location_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrShaderIoDirection {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrShaderScalarType {
+    Bool,
+    I32,
+    U32,
+    F32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderUniformBuffer {
+    pub name: String,
+    pub register: u32,
+    pub byte_size: u32,
+    pub members: Vec<WeIrShaderUniformMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderUniformMember {
+    pub name: String,
+    pub byte_offset: u32,
+    pub byte_size: u32,
+    pub scalar_type: WeIrShaderScalarType,
+    pub rows: u32,
+    pub columns: u32,
+    pub array_count: u32,
+    pub array_stride: u32,
+    pub matrix_stride: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
