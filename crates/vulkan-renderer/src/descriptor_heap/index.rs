@@ -6,10 +6,7 @@ use crate::{Error, Result};
 /// `DescriptorHandle<T>` indexes a runtime array whose stride is the
 /// driver-reported size of `T`'s descriptor. Byte offsets used by mapped
 /// set/binding shaders therefore must not be passed to a native heap shader.
-pub fn descriptor_heap_element_index(
-    byte_offset: u64,
-    descriptor_size: u64,
-) -> Result<u32> {
+pub fn descriptor_heap_element_index(byte_offset: u64, descriptor_size: u64) -> Result<u32> {
     if descriptor_size == 0 {
         return Err(Error::Validation(
             "descriptor heap element size is zero".into(),

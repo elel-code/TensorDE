@@ -68,9 +68,7 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
     generated.push_str("    #[cfg(test)]\n    pub fragment_source: &'static str,\n");
-    generated.push_str(
-        "    pub fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,\n",
-    );
+    generated.push_str("    pub fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,\n");
     generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n    pub fragment_coordinate_fetch_slot_mask: u32,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");

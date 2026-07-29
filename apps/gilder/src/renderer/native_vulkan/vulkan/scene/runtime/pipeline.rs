@@ -21,8 +21,6 @@ use crate::renderer::native_vulkan::scene::{
 };
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
-    native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
@@ -42,6 +40,7 @@ use super::local_read::{
 };
 
 mod blend;
+mod descriptor_mapping;
 mod diagnostics;
 mod graphics;
 mod local_read_key;
@@ -50,6 +49,7 @@ mod samples;
 mod shader_module;
 
 pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
+use descriptor_mapping::scene_fragment_descriptor_mappings;
 use graphics::create_graphics_pipeline;
 use local_read_key::{ScenePipelineLocalReadRole, local_read_pipeline_role};
 use samples::ScenePipelineSamples;
@@ -802,8 +802,7 @@ fn create_scene_pipeline(
     let vertex_module = create_shader_module(device, vertex_spirv, "scene vertex")?;
     let result = (|| -> Result<vk::Pipeline, String> {
         let local_read_fragment_spirv = local_read_metadata
-            .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv)
-            ;
+            .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv);
         let (fragment_spirv, fragment_descriptor_heap_mode) =
             if let Some(local_read_fragment_spirv) = local_read_fragment_spirv {
                 (
@@ -903,62 +902,13 @@ fn create_scene_pipeline_with_modules(
         .build();
     vertex_stage.next = &mut vertex_mapping_info as *mut _ as *const std::ffi::c_void;
 
-    let mut fragment_mappings = Vec::new();
-    if fragment_descriptor_heap_mode == BuiltinSceneDescriptorHeapMode::Mapped {
-        if descriptor_layout.material_uniform_enabled {
-            fragment_mappings.push(
-                native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
-                    descriptor_heap_plan,
-                    3,
-                    0,
-                    1,
-                )?,
-            );
-        }
-        for slot in &descriptor_access.sampled_slots {
-            let sampled_index = descriptor_layout
-                .sampled_slots
-                .iter()
-                .position(|candidate| candidate == slot)
-                .ok_or_else(|| {
-                    format!("scene shader sampled slot {slot} is absent from the global descriptor layout")
-                })?;
-            fragment_mappings.push(
-                native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
-                    descriptor_heap_plan,
-                    scene_sampled_shader_binding(*slot),
-                    0,
-                    descriptor_layout.sampled_resource_offset() + sampled_index,
-                    0,
-                    sampled_index,
-                )?,
-            );
-        }
-        for slot in &descriptor_access.input_attachment_slots {
-            let shader_binding = local_read_metadata
-                .and_then(|metadata| metadata.input_attachment_binding(*slot))
-                .ok_or_else(|| {
-                    format!(
-                        "scene shader input-attachment slot {slot} has no typed local-read shader binding"
-                    )
-                })?;
-            let input_index = descriptor_layout
-                .input_attachment_slots
-                .iter()
-                .position(|candidate| candidate == slot)
-                .ok_or_else(|| {
-                    format!("scene shader input-attachment slot {slot} is absent from the global descriptor layout")
-                })?;
-            fragment_mappings.push(
-                native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping(
-                    descriptor_heap_plan,
-                    shader_binding,
-                    0,
-                    descriptor_layout.input_attachment_resource_offset() + input_index,
-                )?,
-            );
-        }
-    }
+    let fragment_mappings = scene_fragment_descriptor_mappings(
+        fragment_descriptor_heap_mode,
+        descriptor_heap_plan,
+        descriptor_layout,
+        descriptor_access,
+        local_read_metadata,
+    )?;
     let mut fragment_mapping_info =
         native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(&fragment_mappings)?;
     let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
@@ -983,13 +933,6 @@ fn create_scene_pipeline_with_modules(
         dynamic_text,
         local_read_metadata,
     )
-}
-
-fn scene_sampled_shader_binding(slot: u32) -> u32 {
-    // Fragment binding 3 is reserved for material/effect uniforms. WE's
-    // logical texture slot stays 3 in IR and heap planning, while SPIR-V uses
-    // a collision-free binding selected here and in build.rs.
-    if slot == 3 { 35 } else { slot }
 }
 
 #[cfg(test)]

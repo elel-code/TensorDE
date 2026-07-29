@@ -42,6 +42,12 @@ impl SceneNativeFragmentPush {
         }
         bytes
     }
+
+    const fn byte_len(self) -> u64 {
+        match self {
+            Self::AudioLine(_) => 12,
+        }
+    }
 }
 
 pub(super) fn resolve_scene_native_fragment_pushes(
@@ -62,20 +68,39 @@ pub(super) fn resolve_scene_native_fragment_pushes(
             .ok_or_else(|| format!("scene shader {key:?} is not built into the catalog"))?;
         command.native_fragment_push = match shader.fragment_descriptor_heap_mode {
             BuiltinSceneDescriptorHeapMode::Mapped => None,
-            BuiltinSceneDescriptorHeapMode::Native => match shader.parameter_layout {
-                BuiltinSceneParameterLayout::AudioLine => Some(
-                    SceneNativeFragmentPush::AudioLine(audio_line_heap_push(
-                        layout, plan, command,
-                    )?),
-                ),
-                parameter_layout => {
-                    return Err(format!(
-                        "native descriptor-heap scene shader {key:?} has unsupported push layout \
-                         {parameter_layout:?}"
-                    ));
-                }
-            },
+            BuiltinSceneDescriptorHeapMode::Native => {
+                let push = match shader.parameter_layout {
+                    BuiltinSceneParameterLayout::AudioLine => {
+                        SceneNativeFragmentPush::AudioLine(audio_line_heap_push(
+                            layout, plan, command,
+                        )?)
+                    }
+                    parameter_layout => {
+                        return Err(format!(
+                            "native descriptor-heap scene shader {key:?} has unsupported push layout \
+                             {parameter_layout:?}"
+                        ));
+                    }
+                };
+                validate_native_push_size(key, push, plan.max_push_data_size)?;
+                Some(push)
+            }
         };
+    }
+    Ok(())
+}
+
+fn validate_native_push_size(
+    key: &str,
+    push: SceneNativeFragmentPush,
+    max_push_data_size: u64,
+) -> Result<(), String> {
+    if push.byte_len() > max_push_data_size {
+        return Err(format!(
+            "native descriptor-heap scene shader {key:?} requires {} push-data bytes, device \
+             supports {max_push_data_size}",
+            push.byte_len()
+        ));
     }
     Ok(())
 }
@@ -286,5 +311,16 @@ mod tests {
                 material_index: 4,
             }
         );
+    }
+
+    #[test]
+    fn audioline_push_size_fails_instead_of_exceeding_the_device_limit() {
+        let push = SceneNativeFragmentPush::AudioLine(SceneAudioLineHeapPush {
+            texture_index: 0,
+            sampler_index: 0,
+            material_index: 0,
+        });
+        assert!(validate_native_push_size("audioline", push, 11).is_err());
+        assert!(validate_native_push_size("audioline", push, 12).is_ok());
     }
 }
