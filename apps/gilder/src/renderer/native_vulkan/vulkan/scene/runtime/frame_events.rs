@@ -3,7 +3,7 @@
 mod local_time_source;
 
 use crate::engine::scene::{
-    SceneEvent, SceneEventQueue, SceneFrameEvents, ScenePointerEvent, ScenePointerEventKind,
+    SceneEventQueue, SceneFrameEvents, ScenePointerEvent, ScenePointerEventKind,
     ScenePointerSource, SceneStorage,
 };
 use crate::renderer::native_vulkan::audio::event_source::{
@@ -73,8 +73,7 @@ impl SceneRuntimeEventSources {
         surface_size: Option<(u32, u32)>,
     ) -> &SceneFrameEvents {
         self.publish_pointer_replay(sample_time_ns, surface_size);
-        self.queue
-            .publish(SceneEvent::Audio(self.audio.capture(sample_time_ns)));
+        self.queue.publish_audio(self.audio.capture(sample_time_ns));
         self.frame = self.queue.finish_frame();
         self.frame.local_time = self.local_time.capture();
         &self.frame
@@ -87,7 +86,7 @@ impl SceneRuntimeEventSources {
         let surface_size = surface_size
             .map(|(width, height)| [width, height])
             .unwrap_or(self.pointer_replay_fallback_size);
-        self.queue.publish(SceneEvent::Pointer(ScenePointerEvent {
+        self.queue.publish_pointer(ScenePointerEvent {
             source: ScenePointerSource::Replay,
             surface_id: 0,
             time_millis: (sample_time_ns / 1_000_000).min(u64::from(u32::MAX)) as u32,
@@ -101,7 +100,7 @@ impl SceneRuntimeEventSources {
             } else {
                 ScenePointerEventKind::Enter { serial: 0 }
             },
-        }));
+        });
         self.pointer_replay_entered = true;
     }
 

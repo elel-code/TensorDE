@@ -4,11 +4,11 @@ mod pointer;
 
 use wayland_client_runtime::{NativeShellEvent, NativeSurfaceId};
 
-use crate::engine::scene::{SceneEvent, SceneEventQueue};
+use crate::engine::scene::{SceneEventQueue, ScenePointerEvent};
 
 #[derive(Debug, Default)]
 pub(super) struct NativeWaylandEventSource {
-    pending: Vec<SceneEvent>,
+    pending: Vec<ScenePointerEvent>,
     pointer: pointer::PointerState,
 }
 
@@ -27,13 +27,13 @@ impl NativeWaylandEventSource {
             [surface_size.0, surface_size.1],
             &mut self.pointer,
         ) {
-            self.pending.push(SceneEvent::Pointer(event));
+            self.pending.push(event);
         }
     }
 
     pub(super) fn publish_to(&mut self, queue: &mut SceneEventQueue) {
         for event in self.pending.drain(..) {
-            queue.publish(event);
+            queue.publish_pointer(event);
         }
     }
 

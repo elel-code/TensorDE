@@ -18,43 +18,54 @@ pub struct SceneEventQueue {
 }
 
 impl SceneEventQueue {
-    pub fn publish(&mut self, event: SceneEvent) -> SceneEventSequence {
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let sequence = SceneEventSequence(self.next_sequence);
-        match event {
-            SceneEvent::Pointer(event) => self.publish_pointer(sequence, event),
-            SceneEvent::Audio(mut state) => {
-                state.sequence = sequence;
-                if self.audio_is_current(&state) {
-                    self.audio = state;
-                }
-            }
-            SceneEvent::Media(mut state) => {
-                state.sequence = sequence;
-                if self.media_is_current(&state) {
-                    let transition = self.media.is_none_or(|current| {
-                        current.session != state.session
-                            || current.generation != state.generation
-                            || current.playback != state.playback
-                            || current.loop_index != state.loop_index
-                    });
-                    self.media = Some(state);
-                    if transition {
-                        self.ordered.push(SceneSequencedEvent {
-                            sequence,
-                            event: SceneEvent::Media(state),
-                        });
-                    }
-                }
-            }
-            SceneEvent::Video(mut state) => {
-                state.sequence = sequence;
-                if self.video_is_current(&state) {
-                    self.video = Some(state);
-                }
+    pub fn publish_pointer(&mut self, event: ScenePointerEvent) -> SceneEventSequence {
+        let sequence = self.next_sequence();
+        self.apply_pointer(sequence, event);
+        sequence
+    }
+
+    pub fn publish_audio(&mut self, mut state: SceneAudioState) -> SceneEventSequence {
+        let sequence = self.next_sequence();
+        state.sequence = sequence;
+        if self.audio_is_current(&state) {
+            self.audio = state;
+        }
+        sequence
+    }
+
+    pub fn publish_media(&mut self, mut state: SceneMediaClockState) -> SceneEventSequence {
+        let sequence = self.next_sequence();
+        state.sequence = sequence;
+        if self.media_is_current(&state) {
+            let transition = self.media.is_none_or(|current| {
+                current.session != state.session
+                    || current.generation != state.generation
+                    || current.playback != state.playback
+                    || current.loop_index != state.loop_index
+            });
+            self.media = Some(state);
+            if transition {
+                self.ordered.push(SceneSequencedEvent {
+                    sequence,
+                    event: SceneEvent::Media(state),
+                });
             }
         }
         sequence
+    }
+
+    pub fn publish_video(&mut self, mut state: SceneVideoState) -> SceneEventSequence {
+        let sequence = self.next_sequence();
+        state.sequence = sequence;
+        if self.video_is_current(&state) {
+            self.video = Some(state);
+        }
+        sequence
+    }
+
+    fn next_sequence(&mut self) -> SceneEventSequence {
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        SceneEventSequence(self.next_sequence)
     }
 
     pub fn finish_frame(&mut self) -> SceneFrameEvents {
@@ -77,7 +88,7 @@ impl SceneEventQueue {
         }
     }
 
-    fn publish_pointer(&mut self, sequence: SceneEventSequence, event: ScenePointerEvent) {
+    fn apply_pointer(&mut self, sequence: SceneEventSequence, event: ScenePointerEvent) {
         self.pointer.sequence = sequence;
         self.pointer.source = event.source;
         self.pointer.surface_id = event.surface_id;
@@ -144,24 +155,24 @@ mod tests {
         SceneMediaGeneration, SceneMediaSessionId, ScenePointerSource,
     };
 
-    fn pointer(kind: ScenePointerEventKind, x: f64) -> SceneEvent {
-        SceneEvent::Pointer(ScenePointerEvent {
+    fn pointer(kind: ScenePointerEventKind, x: f64) -> ScenePointerEvent {
+        ScenePointerEvent {
             source: ScenePointerSource::Replay,
             surface_id: 7,
             time_millis: x as u32,
             position: [x, 20.0],
             surface_size: [100, 100],
             kind,
-        })
+        }
     }
 
     #[test]
     fn coalesces_motion_and_preserves_discrete_pointer_order() {
         let mut queue = SceneEventQueue::default();
-        queue.publish(pointer(ScenePointerEventKind::Motion, 1.0));
-        queue.publish(pointer(ScenePointerEventKind::Motion, 2.0));
-        queue.publish(pointer(ScenePointerEventKind::Enter { serial: 3 }, 3.0));
-        queue.publish(pointer(
+        queue.publish_pointer(pointer(ScenePointerEventKind::Motion, 1.0));
+        queue.publish_pointer(pointer(ScenePointerEventKind::Motion, 2.0));
+        queue.publish_pointer(pointer(ScenePointerEventKind::Enter { serial: 3 }, 3.0));
+        queue.publish_pointer(pointer(
             ScenePointerEventKind::Button {
                 button: 0x110,
                 pressed: true,
@@ -180,17 +191,15 @@ mod tests {
     #[test]
     fn rejects_stale_video_generation_and_serial() {
         let mut queue = SceneEventQueue::default();
-        let state = |generation, serial| {
-            SceneEvent::Video(SceneVideoState {
-                session: SceneMediaSessionId(9),
-                generation: SceneMediaGeneration(generation),
-                frame_serial: serial,
-                ..SceneVideoState::default()
-            })
+        let state = |generation, serial| SceneVideoState {
+            session: SceneMediaSessionId(9),
+            generation: SceneMediaGeneration(generation),
+            frame_serial: serial,
+            ..SceneVideoState::default()
         };
-        queue.publish(state(2, 10));
-        queue.publish(state(1, 99));
-        queue.publish(state(2, 9));
+        queue.publish_video(state(2, 10));
+        queue.publish_video(state(1, 99));
+        queue.publish_video(state(2, 9));
         assert_eq!(queue.finish_frame().video.unwrap().frame_serial, 10);
     }
 
@@ -207,10 +216,10 @@ mod tests {
                 25.0,
             ),
         ];
-        let replay = |events: &[SceneEvent]| {
+        let replay = |events: &[ScenePointerEvent]| {
             let mut queue = SceneEventQueue::default();
             for event in events {
-                queue.publish(event.clone());
+                queue.publish_pointer(event.clone());
             }
             queue.finish_frame()
         };

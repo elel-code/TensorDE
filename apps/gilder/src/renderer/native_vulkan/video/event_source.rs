@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 
 use crate::engine::scene::{
-    SceneAudioSource, SceneAudioState, SceneEvent, SceneEventQueue, SceneFrameEvents,
+    SceneAudioSource, SceneAudioState, SceneEventQueue, SceneFrameEvents,
     SceneMediaClockState, SceneMediaGeneration, SceneMediaPlaybackState, SceneMediaSessionId,
     SceneVideoState, StereoSpectrum64,
 };
@@ -152,7 +152,7 @@ impl NativeVulkanMediaEventSource {
         sample: NativeVulkanVideoEventSample,
     ) {
         let generation = SceneMediaGeneration(sample.generation);
-        queue.publish(SceneEvent::Media(SceneMediaClockState {
+        queue.publish_media(SceneMediaClockState {
             session: self.session,
             generation,
             playback: sample.playback,
@@ -161,8 +161,8 @@ impl NativeVulkanMediaEventSource {
             rate_milli: sample.rate_milli,
             loop_index: sample.loop_index,
             ..SceneMediaClockState::default()
-        }));
-        queue.publish(SceneEvent::Video(SceneVideoState {
+        });
+        queue.publish_video(SceneVideoState {
             session: self.session,
             generation,
             frame_serial: sample.frame_serial,
@@ -171,7 +171,7 @@ impl NativeVulkanMediaEventSource {
             duration_ns: sample.frame_duration_ns,
             ready: sample.ready,
             ..SceneVideoState::default()
-        }));
+        });
     }
 
     pub(in crate::renderer::native_vulkan) fn publish_audio(
@@ -182,7 +182,7 @@ impl NativeVulkanMediaEventSource {
         spectrum: StereoSpectrum64,
         ready: bool,
     ) {
-        queue.publish(SceneEvent::Audio(SceneAudioState {
+        queue.publish_audio(SceneAudioState {
             source: SceneAudioSource::MediaSession,
             media_session: Some(self.session),
             media_generation: SceneMediaGeneration(generation),
@@ -190,7 +190,7 @@ impl NativeVulkanMediaEventSource {
             spectrum,
             ready,
             ..SceneAudioState::default()
-        }));
+        });
     }
 }
 

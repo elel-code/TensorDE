@@ -29,7 +29,5 @@ pub struct SceneEventSequence(pub u64);
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneEvent {
     Pointer(ScenePointerEvent),
-    Audio(SceneAudioState),
     Media(SceneMediaClockState),
-    Video(SceneVideoState),
 }
