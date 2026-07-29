@@ -11,6 +11,8 @@ use crate::renderer::native_vulkan::{
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 
+use super::shader_module::create_shader_module;
+
 pub(super) fn create_optional_particle_compute_pipeline(
     device: &Device,
     graph: &SceneRenderingDeviceGraphPlan,
@@ -43,7 +45,7 @@ fn create_particle_compute_pipeline(
     descriptor_base: usize,
 ) -> Result<vk::Pipeline, String> {
     let shader = native_vulkan_particle_compute_shader();
-    let module = create_shader_module(device, shader.spirv)?;
+    let module = create_shader_module(device, shader.spirv, "particle compute")?;
     let result = (|| {
         let mappings = [
             native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
@@ -94,15 +96,4 @@ fn create_particle_compute_pipeline(
         device.destroy_shader_module(module, None);
     }
     result
-}
-
-fn create_shader_module(device: &Device, code: &[u32]) -> Result<vk::ShaderModule, String> {
-    if code.first().copied() != Some(0x0723_0203) {
-        return Err("particle compute shader is not valid SPIR-V bytecode".to_owned());
-    }
-    let info = vk::ShaderModuleCreateInfo::builder()
-        .code(code)
-        .code_size(std::mem::size_of_val(code));
-    unsafe { device.create_shader_module(&info, None) }
-        .map_err(|err| format!("vkCreateShaderModule(particle compute): {err:?}"))
 }

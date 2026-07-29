@@ -92,7 +92,10 @@ fn shader_module_create_info(words: &[u32]) -> vk::ShaderModuleCreateInfo {
         .build()
 }
 
-fn validate_spirv(words: &[u32]) -> Result<(), SpirvValidationError> {
+/// Validates a complete SPIR-V word stream without allocating or requiring a
+/// Vulkan device. Consumers with an externally owned device can use the same
+/// strict module gate while their ownership is migrated into [`Backend`].
+pub fn validate_spirv(words: &[u32]) -> Result<(), SpirvValidationError> {
     if words.len() < 5 {
         return Err(SpirvValidationError::HeaderTooShort(words.len()));
     }

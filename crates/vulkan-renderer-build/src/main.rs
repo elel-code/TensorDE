@@ -44,6 +44,7 @@ fn run() -> Result<(), String> {
     let contract = match descriptor_mode.as_str() {
         "descriptor-free" => ShaderContract::descriptor_free(push_constant_bytes),
         "descriptor-heap" => ShaderContract::descriptor_heap(push_constant_bytes),
+        "mapped-descriptor-heap" => ShaderContract::mapped_descriptor_heap(push_constant_bytes),
         _ => return Err(usage()),
     };
 
@@ -66,5 +67,5 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: vulkan-renderer-build <compile|verify> <source> <entry> <vertex|fragment|compute> <output.spv> <push-constant-bytes> <descriptor-free|descriptor-heap>".to_owned()
+    "usage: vulkan-renderer-build <compile|verify> <source> <entry> <vertex|fragment|compute> <output.spv> <push-constant-bytes> <descriptor-free|descriptor-heap|mapped-descriptor-heap>".to_owned()
 }

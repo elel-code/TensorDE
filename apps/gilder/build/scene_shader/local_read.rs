@@ -39,7 +39,7 @@ impl InputAttachmentFragmentSource {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "Some(BuiltinSceneLocalReadShader {{ fragment_spirv: vulkanalia::include_shader_code!({:?}), input_attachments: &[{inputs}], color_output_locations: &[{outputs}] }})",
+            "Some(BuiltinSceneLocalReadShader {{ fragment_spirv: vulkan_renderer::include_spirv!({:?}), input_attachments: &[{inputs}], color_output_locations: &[{outputs}] }})",
             path.to_str()
                 .expect("built-in input-attachment fragment shader path must be UTF-8")
         )

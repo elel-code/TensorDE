@@ -144,14 +144,18 @@ mod tests {
     use super::*;
 
     const SPIRV_OP_NAME: u16 = 5;
+    const SPIRV_OP_TYPE_POINTER: u16 = 32;
     const SPIRV_OP_VARIABLE: u16 = 59;
     const SPIRV_OP_DECORATE: u16 = 71;
+    const SPIRV_OP_MEMBER_DECORATE: u16 = 72;
+    const SPIRV_STORAGE_UNIFORM_CONSTANT: u32 = 0;
     const SPIRV_STORAGE_INPUT: u32 = 1;
     const SPIRV_STORAGE_UNIFORM: u32 = 2;
     const SPIRV_STORAGE_OUTPUT: u32 = 3;
     const SPIRV_DECORATION_LOCATION: u32 = 30;
     const SPIRV_DECORATION_BINDING: u32 = 33;
     const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
+    const SPIRV_DECORATION_OFFSET: u32 = 35;
 
     fn spirv_instructions(words: &[u32]) -> Vec<&[u32]> {
         assert!(words.len() >= 5, "SPIR-V module must contain its header");
@@ -229,6 +233,57 @@ mod tests {
         let id = assert_spirv_variable(words, "u_Effect", SPIRV_STORAGE_UNIFORM);
         assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
         assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, 3);
+    }
+
+    fn assert_spirv_sampled_binding(words: &[u32], name: &str, binding: u32) {
+        let id = assert_spirv_variable(words, name, SPIRV_STORAGE_UNIFORM_CONSTANT);
+        assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
+        assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, binding);
+    }
+
+    fn spirv_uniform_block_type(words: &[u32], variable_name: &str) -> u32 {
+        let variable = spirv_named_id(words, variable_name);
+        let pointer = spirv_instructions(words)
+            .into_iter()
+            .find(|instruction| {
+                (instruction[0] & 0xffff) as u16 == SPIRV_OP_VARIABLE
+                    && instruction.len() >= 4
+                    && instruction[2] == variable
+            })
+            .expect("uniform variable declaration")[1];
+        spirv_instructions(words)
+            .into_iter()
+            .find(|instruction| {
+                (instruction[0] & 0xffff) as u16 == SPIRV_OP_TYPE_POINTER
+                    && instruction.len() >= 4
+                    && instruction[1] == pointer
+            })
+            .expect("uniform pointer declaration")[3]
+    }
+
+    fn assert_spirv_member_offset(words: &[u32], block: u32, member: u32, offset: u32) {
+        assert!(spirv_instructions(words).into_iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_MEMBER_DECORATE
+                && instruction.len() >= 5
+                && instruction[1] == block
+                && instruction[2] == member
+                && instruction[3] == SPIRV_DECORATION_OFFSET
+                && instruction[4] == offset
+        }));
+    }
+
+    #[test]
+    fn audioline_slang_preserves_stereo64_uniform_abi() {
+        let shader = native_vulkan_scene_shader_for_key("effects/audioline__SLOTS_1")
+            .expect("audioline shader");
+        assert!(!shader.fragment_source.contains("#version"));
+        assert!(!shader.fragment_source.contains("layout("));
+        assert!(shader.fragment_source.contains("[shader(\"fragment\")]"));
+        assert_spirv_sampled_binding(shader.fragment_spirv, "g_Texture0", 0);
+        assert_spirv_material_uniform(shader.fragment_spirv);
+        let block = spirv_uniform_block_type(shader.fragment_spirv, "u_Effect");
+        assert_spirv_member_offset(shader.fragment_spirv, block, 4, 64);
+        assert_spirv_member_offset(shader.fragment_spirv, block, 5, 320);
     }
 
     #[test]

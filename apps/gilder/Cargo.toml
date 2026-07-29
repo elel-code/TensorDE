@@ -17,6 +17,7 @@ native-wayland-renderer = [
 ]
 native-vulkan-renderer = [
     "native-wayland-renderer",
+    "dep:vulkan-renderer",
     "dep:vulkanalia",
 ]
 native-vulkan-video = ["native-vulkan-renderer"]
@@ -54,8 +55,12 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toml = "1"
 vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
+vulkan-renderer = { path = "../../crates/vulkan-renderer", optional = true }
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", default-features = false, optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+vulkan-renderer-build = { path = "../../crates/vulkan-renderer-build" }
 
 # [profile.release]
 # codegen-units = 1

@@ -86,7 +86,9 @@ pub use render_graph::{
     AccessKind, Barrier, CompiledGraph, PassId, RenderGraph, RenderGraphError, RenderPass,
     ResourceId, ResourceKind, ResourceState, ResourceUse,
 };
-pub use shader::{ShaderModule, ShaderModuleDescriptor, ShaderModuleError, SpirvValidationError};
+pub use shader::{
+    ShaderModule, ShaderModuleDescriptor, ShaderModuleError, SpirvValidationError, validate_spirv,
+};
 pub use standard::{
     Adapter, Device, DeviceDescriptor, Instance, InstanceDescriptor, PowerPreference,
     RequestAdapterOptions,

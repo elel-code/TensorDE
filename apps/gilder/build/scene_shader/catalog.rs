@@ -6,6 +6,7 @@ mod key;
 mod specs;
 
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
+use vulkan_renderer_build::{ShaderCompileRequest, ShaderContract, ShaderStage, SlangCompiler};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SceneShaderSpec {
@@ -96,7 +97,8 @@ pub(crate) fn build_scene_shader_catalog() {
         };
         let fragment_path =
             compile_scene_shader_stage(&shader_dir, spec.key, "frag", &fragment_source);
-        let fragment_source_path = fragment_path.with_extension("glsl");
+        let fragment_source_path =
+            fragment_path.with_extension(scene_shader_source_extension(spec.key, "frag"));
         let input_attachment_fragment_source = super::input_attachment_fragment_source(matches!(
             spec.family,
             SceneShaderFamily::FlatPassthrough
@@ -130,7 +132,7 @@ pub(crate) fn build_scene_shader_catalog() {
             || "None".to_owned(),
             |path| {
                 format!(
-                    "Some(vulkanalia::include_shader_code!({:?}))",
+                    "Some(vulkan_renderer::include_spirv!({:?}))",
                     path.to_str()
                         .expect("built-in object-mesh vertex shader path must be UTF-8")
                 )
@@ -141,7 +143,7 @@ pub(crate) fn build_scene_shader_catalog() {
         let fragment_coordinate_fetch_slot_mask =
             u32::from(spec.key == "we/flat-rounded-hsl-source");
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkanalia::include_shader_code!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkanalia::include_shader_code!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkan_renderer::include_spirv!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkan_renderer::include_spirv!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key,
             vertex_path,
             fragment_path,
@@ -166,7 +168,7 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub spirv: &'static [u32],\n");
     generated.push_str("}\n\n");
     generated.push_str(&format!(
-        "pub static BUILTIN_PARTICLE_COMPUTE_SHADER: BuiltinParticleComputeShader = BuiltinParticleComputeShader {{ spirv: vulkanalia::include_shader_code!({:?}) }};\n",
+        "pub static BUILTIN_PARTICLE_COMPUTE_SHADER: BuiltinParticleComputeShader = BuiltinParticleComputeShader {{ spirv: vulkan_renderer::include_spirv!({:?}) }};\n",
         compute_path
     ));
 
@@ -372,9 +374,33 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect::<String>();
-    let source_path = shader_dir.join(format!("{safe_name}.{stage}.glsl"));
+    let source_extension = scene_shader_source_extension(key, stage);
+    let source_path = shader_dir.join(format!("{safe_name}.{stage}.{source_extension}"));
     let spirv_path = shader_dir.join(format!("{safe_name}.{stage}.spv"));
     fs::write(&source_path, source).expect("write build-time scene shader source");
+    if source_extension == "slang" {
+        let shader_stage = match stage {
+            "vert" => ShaderStage::Vertex,
+            "frag" => ShaderStage::Fragment,
+            "comp" => ShaderStage::Compute,
+            _ => panic!("unsupported Slang scene shader stage {stage}"),
+        };
+        let entry_point = match shader_stage {
+            ShaderStage::Vertex => "vertexMain",
+            ShaderStage::Fragment => "fragmentMain",
+            ShaderStage::Compute => "computeMain",
+        };
+        SlangCompiler::from_environment()
+            .compile(&ShaderCompileRequest {
+                source: source_path,
+                entry_point: entry_point.to_owned(),
+                stage: shader_stage,
+                output: spirv_path.clone(),
+                contract: ShaderContract::mapped_descriptor_heap(0),
+            })
+            .unwrap_or_else(|error| panic!("compile built-in scene shader {key} {stage}: {error}"));
+        return spirv_path;
+    }
     let output = Command::new("glslangValidator")
         .args(["-V", "--target-env", "vulkan1.4", "-S", stage, "-o"])
         .arg(&spirv_path)
@@ -398,4 +424,12 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
         );
     }
     spirv_path
+}
+
+fn scene_shader_source_extension(key: &str, stage: &str) -> &'static str {
+    if key == "effects/audioline__SLOTS_1" && stage == "frag" {
+        "slang"
+    } else {
+        "glsl"
+    }
 }
