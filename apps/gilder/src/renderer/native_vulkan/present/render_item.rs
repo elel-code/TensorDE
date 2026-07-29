@@ -349,6 +349,7 @@ mod tests {
                         shader_key: crate::engine::scene::SceneStringId::NONE,
                         mesh_index: 0,
                         resolved_object_index: 0,
+                        render_world_matrix: identity_clip_transform(),
                         clip_transform: identity_clip_transform(),
                         authored_source_extent: [0.0; 2],
                         skinning_palette_start: INVALID_OBJECT_ID,

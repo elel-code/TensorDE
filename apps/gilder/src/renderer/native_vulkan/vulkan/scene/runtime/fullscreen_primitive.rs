@@ -69,6 +69,7 @@ mod tests {
                 shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
                 resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
+                render_world_matrix: [[0.0; 4]; 4],
                 clip_transform: [[0.0; 4]; 4],
                 authored_source_extent: [0.0; 2],
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,

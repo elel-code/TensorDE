@@ -19,6 +19,7 @@ fn audio_image_local_pass_uses_target_local_uvs() {
         shader_key: SceneStringId::NONE,
         mesh_index: 0,
         resolved_object_index: 0,
+        render_world_matrix: [[0.0; 4]; 4],
         clip_transform: [
             [0.000313, 0.0, 0.0, 0.5315],
             [0.0, -0.000557, 0.0, 0.6945],

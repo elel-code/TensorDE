@@ -15,6 +15,8 @@ use super::storage::SceneStorage;
 
 mod draw_support;
 mod effect_batch;
+mod queries;
+mod types;
 
 use draw_support::{
     image_binding_access, material_sampled_bindings, pass_draw_material, rows_from_column_major,
@@ -25,6 +27,7 @@ pub use effect_batch::{
     SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
     SceneRenderingDeviceEffectBatchInstance,
 };
+pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceGraphPlan {
@@ -109,6 +112,9 @@ impl SceneRenderingDeviceGraphPlan {
                                 shader_key: pass.shader_key,
                                 mesh_index: mesh_index as u32,
                                 resolved_object_index,
+                                render_world_matrix: rows_from_column_major(
+                                    pass_object_state.render_world_matrix,
+                                ),
                                 clip_transform: scene_clip_transform(
                                     storage.project(),
                                     pass_object_state.render_world_matrix,
@@ -237,189 +243,6 @@ impl SceneRenderingDeviceGraphPlan {
             fifo_latest_ready_present_required: render_plan.fifo_latest_ready_present_required,
         }
     }
-
-    pub fn fullscreen_utility_draw_count(&self) -> usize {
-        self.mesh_draws
-            .iter()
-            .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
-            .count()
-    }
-
-    pub fn uses_fullscreen_utility_primitive(&self) -> bool {
-        self.fullscreen_utility_draw_count() != 0
-    }
-
-    pub fn effect_batch_atlas_tile(
-        &self,
-        graph_index: u32,
-        target: SceneRenderTargetKind,
-        target_name: SceneStringId,
-    ) -> Option<u32> {
-        self.effect_batch_instances
-            .iter()
-            .find(|instance| {
-                instance.graph_index == graph_index
-                    && instance.target == target
-                    && instance.target_name == target_name
-            })
-            .map(|instance| instance.atlas_tile)
-    }
-
-    pub fn effect_batch_field_count(&self, physical_slot: u32) -> u32 {
-        self.effect_batches
-            .iter()
-            .find(|batch| batch.physical_slot == physical_slot)
-            .map_or(1, |batch| batch.layer_count.max(1))
-    }
-
-    pub fn effect_batch_atlas_grid(&self, physical_slot: u32) -> [u32; 2] {
-        self.effect_batches
-            .iter()
-            .find(|batch| batch.physical_slot == physical_slot)
-            .map_or([1, 1], |batch| {
-                [batch.atlas_columns.max(1), batch.atlas_rows.max(1)]
-            })
-    }
-
-    pub fn effect_batch_field_extent_divisor(&self, physical_slot: u32) -> u32 {
-        self.effect_batches
-            .iter()
-            .find(|batch| batch.physical_slot == physical_slot)
-            .map_or(1, |batch| batch.field_extent_divisor.max(1))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneRenderingDevicePassNode {
-    pub graph_index: u32,
-    pub graph_activation_policy: SceneRenderGraphActivationPolicy,
-    pub pass_record_index: u32,
-    pub pass_id: u32,
-    pub role: SceneRenderPassKind,
-    pub target: SceneRenderTargetKind,
-    pub target_name: SceneStringId,
-    pub binding_start: u32,
-    pub binding_count: u32,
-    pub effect_binding_start: u32,
-    pub effect_binding_count: u32,
-    pub effect_visibility_policy: SceneRenderEffectVisibilityPolicy,
-    pub mesh_draw_start: u32,
-    pub mesh_draw_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneRenderingDeviceTargetAllocation {
-    pub graph_index: u32,
-    pub target: SceneRenderTargetKind,
-    pub target_name: SceneStringId,
-    pub first_write_pass_id: u32,
-    pub last_use_pass_id: u32,
-    pub physical_slot: u32,
-    /// Non-zero dimensions select a graph-local authored-texture target.
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SceneRenderingDeviceImageAccess {
-    /// A sampled image plus a sampler; UV/filter/mip semantics are retained.
-    SampledImage,
-    /// An exact-pixel dynamic-rendering local read; no sampler is involved.
-    InputAttachment,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneRenderingDeviceSampledBinding {
-    pub pass_node_index: u32,
-    pub graph_index: u32,
-    pub mesh_draw_start: u32,
-    pub mesh_draw_count: u32,
-    pub kind: SceneRenderBindingKind,
-    pub slot: u32,
-    pub target: SceneRenderTargetKind,
-    pub target_name: SceneStringId,
-    pub access: SceneRenderingDeviceImageAccess,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SceneRenderingDeviceMaterialSampledBinding {
-    pub draw_index: u32,
-    pub slot: u32,
-    pub resource: SceneResourceId,
-}
-
-impl SceneRenderingDeviceSampledBinding {
-    pub fn logical_target(self) -> Option<(u32, SceneRenderTargetKind, SceneStringId)> {
-        match self.kind {
-            SceneRenderBindingKind::PreviousGraphTarget
-            | SceneRenderBindingKind::GraphTarget
-            | SceneRenderBindingKind::NamedFboBind
-            | SceneRenderBindingKind::EffectTarget => {
-                Some((self.graph_index, self.target, self.target_name))
-            }
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SceneRenderingDeviceMeshDraw {
-    pub primitive: SceneRenderingDeviceDrawPrimitive,
-    /// Shader selected by the actual render pass. Synthetic composites can differ from
-    /// the authored material's first pass.
-    pub shader_key: SceneStringId,
-    pub mesh_index: u32,
-    pub resolved_object_index: u32,
-    pub clip_transform: [[f32; 4]; 4],
-    pub authored_source_extent: [f32; 2],
-    pub skinning_palette_start: u32,
-    pub skinning_palette_count: u32,
-    pub resolved_color: SceneVec3,
-    pub resolved_alpha: f32,
-    pub apply_resolved_visual: bool,
-    /// Layer in a scene-level GPU effect batch, or `INVALID_OBJECT_ID` for ordinary draws.
-    pub effect_batch_atlas_tile: u32,
-    /// Column/row count of the scene-level 2D effect atlas; `[0, 0]` means no batch.
-    pub effect_batch_atlas_grid: [u32; 2],
-    pub effect_binding_start: u32,
-    pub effect_binding_count: u32,
-    pub effect_visibility_policy: SceneRenderEffectVisibilityPolicy,
-    pub resolved_effect_visibility_mask: u32,
-    pub object: SceneObjectHandle,
-    pub material: SceneMaterialHandle,
-    pub vertex_start: u32,
-    pub vertex_count: u32,
-    pub index_start: u32,
-    pub index_count: u32,
-    pub instance_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SceneRenderingDeviceDrawPrimitive {
-    ObjectMesh,
-    FullscreenTriangle,
-    ObjectUvSupportQuad,
-    ParticleBillboard,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SceneRenderingDevicePuppetBonePalette {
-    pub object: SceneObjectHandle,
-    pub puppet_index: u32,
-    pub bone_matrix_start: u32,
-    pub bone_matrix_count: u32,
-    pub resolved_visible: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SceneRenderingDevicePuppetBoneMatrix {
-    pub puppet_index: u32,
-    pub bone_index: u32,
-    pub parent_index: i32,
-    pub matrix: [[f32; 4]; 4],
-    pub alpha: f32,
 }
 
 fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
@@ -515,6 +338,9 @@ fn utility_primitive_draw(
         resolved_object_index: pass_object_state
             .map(|object| object.object_index)
             .unwrap_or(INVALID_OBJECT_ID),
+        render_world_matrix: pass_object_state.map_or_else(identity_clip_transform, |object| {
+            rows_from_column_major(object.render_world_matrix)
+        }),
         clip_transform: pass_object_state.map_or_else(identity_clip_transform, |object| {
             scene_clip_transform(storage.project(), object.render_world_matrix)
         }),

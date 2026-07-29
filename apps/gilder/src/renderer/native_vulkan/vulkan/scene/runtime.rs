@@ -92,7 +92,9 @@ mod scene_color_clear;
 mod scene_color_msaa;
 mod scene_texture;
 mod scene_viewport;
+mod shader_descriptor_push;
 mod shader_program;
+mod shader_uniform;
 
 use present_loop::with_scene_present;
 use resource_setup::*;

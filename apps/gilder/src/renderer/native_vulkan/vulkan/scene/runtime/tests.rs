@@ -26,6 +26,7 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         shader_key: crate::engine::scene::SceneStringId::NONE,
         mesh_index: 0,
         resolved_object_index: 0,
+        render_world_matrix: [[0.0; 4]; 4],
         clip_transform: [[0.0; 4]; 4],
         authored_source_extent: [0.0; 2],
         skinning_palette_start: 2,
