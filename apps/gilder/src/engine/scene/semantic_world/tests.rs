@@ -660,7 +660,7 @@ fn cursor_click_requires_a_matching_press_release_hit_target() {
 }
 
 #[test]
-fn pointer_parallax_uses_frame_delta_and_propagates_topmost_root_depth() {
+fn pointer_parallax_propagates_root_depth_and_retains_position_after_leave() {
     let mut document = semantic_document();
     document.project.logical_width = 100;
     document.project.logical_height = 100;
@@ -725,8 +725,9 @@ fn pointer_parallax_uses_frame_delta_and_propagates_topmost_root_depth() {
         .resolve_frame_with_events_at(&world, 7.0, 1.0, &events)
         .expect("pointer leave frame");
     let root = frame.object(SceneObjectHandle(0)).expect("root image");
-    assert_close(root.render_world_matrix[12], 12.25);
-    assert_close(root.render_world_matrix[13], 23.7);
+    // Protocol focus loss must not synthesize a desktop-pointer recenter.
+    assert_close(root.render_world_matrix[12], 14.75);
+    assert_close(root.render_world_matrix[13], 28.7);
 }
 
 #[test]

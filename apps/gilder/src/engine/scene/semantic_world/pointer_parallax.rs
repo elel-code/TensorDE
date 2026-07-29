@@ -128,9 +128,10 @@ fn pointer_scene_position(
     world: &SceneSemanticWorld<'_>,
     events: &SceneFrameEvents,
 ) -> Option<[f32; 2]> {
-    if !events.pointer.inside {
-        return None;
-    }
+    // Wallpaper Engine samples a retained desktop pointer position; a Wayland
+    // wl_pointer.leave only means that another surface gained protocol focus.
+    // Keep the last surface-local position for camera parallax after leave.
+    // Script hover/click dispatch still observes `inside` independently.
     let normalized = events.pointer.normalized_position_top_left()?;
     let project = world.storage.project();
     let mapped = cover_mapped_position(
