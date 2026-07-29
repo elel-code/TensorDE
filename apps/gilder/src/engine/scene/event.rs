@@ -11,7 +11,7 @@ pub mod pointer;
 pub mod queue;
 pub mod video;
 
-pub use audio::{SceneAudioSource, SceneAudioState};
+pub use audio::{SceneAudioSource, SceneAudioState, StereoSpectrum64};
 pub use frame::{SceneFrameEvents, SceneSequencedEvent};
 pub use local_time::SceneLocalTime;
 pub use media::{

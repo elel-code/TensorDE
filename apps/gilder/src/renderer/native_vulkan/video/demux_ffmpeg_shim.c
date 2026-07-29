@@ -43,10 +43,6 @@
 #define GILDER_FFMPEG_STREAMING_FORMAT_PROBESIZE_BYTES 32768
 #define GILDER_FFMPEG_STREAMING_DURATION_PROBESIZE_BYTES 0
 #define GILDER_FFMPEG_STREAMING_MAX_ANALYZE_DURATION_US 0
-#define GILDER_AUDIO_SPECTRUM_BANDS 32
-#define GILDER_AUDIO_SPECTRUM_PACKED_WORDS 16
-#define GILDER_AUDIO_PI 3.14159265358979323846
-
 typedef struct GilderAudioOutput {
     SwrContext *swr;
     struct pw_thread_loop *loop;
@@ -1278,7 +1274,7 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
     uint8_t buffer[GILDER_AUDIO_PIPEWIRE_FORMAT_BUFFER_BYTES];
     struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
     struct spa_audio_info_raw audio_info = {
-        .format = SPA_AUDIO_FORMAT_S16_LE,
+        .format = SPA_AUDIO_FORMAT_F32_LE,
         .flags = SPA_AUDIO_FLAG_UNPOSITIONED,
         .rate = (uint32_t)sample_rate,
         .channels = (uint32_t)channels,
@@ -1390,7 +1386,7 @@ static int gilder_audio_output_ensure_started(
     int ret = gilder_swresample_api.swr_alloc_set_opts2(
         &out->swr,
         &out_layout,
-        AV_SAMPLE_FMT_S16,
+        AV_SAMPLE_FMT_FLT,
         sample_rate,
         &in_layout,
         frame->format,
@@ -1458,104 +1454,21 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
     return ret;
 }
 
-static int gilder_audio_output_signal_level_micros(const uint8_t *data, int byte_count) {
-    if (!data || byte_count <= 1)
+static int gilder_audio_output_signal_level_micros(const float *samples, int sample_count) {
+    if (!samples || sample_count <= 0)
         return 0;
-    int sample_count = byte_count / (int)sizeof(int16_t);
-    if (sample_count <= 0)
-        return 0;
-    const int16_t *samples = (const int16_t *)data;
-    int64_t sum = 0;
+    double sum = 0.0;
     for (int i = 0; i < sample_count; ++i) {
-        int value = samples[i];
-        sum += (int64_t)value * (int64_t)value;
+        double value = samples[i];
+        sum += value * value;
     }
-    double mean_square = (double)sum / (double)sample_count;
-    int64_t micros = (int64_t)(sqrt(mean_square) * 1000000.0 / 32768.0 + 0.5);
+    double mean_square = sum / (double)sample_count;
+    int64_t micros = (int64_t)(sqrt(mean_square) * 1000000.0 + 0.5);
     if (micros < 0)
         return 0;
     if (micros > 1000000LL)
         return 1000000;
     return (int)micros;
-}
-
-static uint32_t gilder_audio_output_quantize_u16(double value) {
-    if (!(value > 0.0))
-        return 0;
-    if (value > 1.0)
-        value = 1.0;
-    return (uint32_t)(value * 65535.0 + 0.5);
-}
-
-static double gilder_audio_output_mono_sample(
-    const int16_t *samples,
-    int frame_index,
-    int channels
-) {
-    int64_t sum = 0;
-    int base = frame_index * channels;
-    for (int channel = 0; channel < channels; ++channel)
-        sum += samples[base + channel];
-    return ((double)sum / (double)channels) / 32768.0;
-}
-
-static double gilder_audio_output_we_spectrum_response(double power, int band) {
-    if (!isfinite(power) || power <= 0.0)
-        return 0.0;
-    double level = 0.35 * log10(power * 4.0);
-    double position = (double)band / (double)(GILDER_AUDIO_SPECTRUM_BANDS - 1);
-    double weighted = level * (2.0 - exp(0.5 - position));
-    if (!isfinite(weighted) || weighted <= 0.0)
-        return 0.0;
-    return weighted >= 1.0 ? 1.0 : weighted;
-}
-
-static void gilder_audio_output_spectrum32_packed(
-    const uint8_t *data,
-    int byte_count,
-    int channels,
-    uint32_t *spectrum32_packed
-) {
-    if (!spectrum32_packed)
-        return;
-    for (int word = 0; word < GILDER_AUDIO_SPECTRUM_PACKED_WORDS; ++word)
-        spectrum32_packed[word] = 0;
-    if (!data || byte_count <= 1 || channels <= 0)
-        return;
-    int frame_count = byte_count / ((int)sizeof(int16_t) * channels);
-    if (frame_count < 4)
-        return;
-
-    const int16_t *samples = (const int16_t *)data;
-    for (int band = 0; band < GILDER_AUDIO_SPECTRUM_BANDS; ++band) {
-        double position = (double)band / (double)(GILDER_AUDIO_SPECTRUM_BANDS - 1);
-        double frequency = 50.0 * pow(16000.0 / 50.0, position);
-        double omega = 2.0 * GILDER_AUDIO_PI * frequency / 48000.0;
-        double coeff = 2.0 * cos(omega);
-        double q0 = 0.0;
-        double q1 = 0.0;
-        double q2 = 0.0;
-        for (int frame = 0; frame < frame_count; ++frame) {
-            double window = 0.5 - 0.5 * cos(
-                2.0 * GILDER_AUDIO_PI * (double)frame / (double)(frame_count - 1)
-            );
-            q0 = coeff * q1 - q2
-                + gilder_audio_output_mono_sample(samples, frame, channels) * window;
-            q2 = q1;
-            q1 = q0;
-        }
-        double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
-        if (power < 0.0)
-            power = 0.0;
-        uint32_t quantized = gilder_audio_output_quantize_u16(
-            gilder_audio_output_we_spectrum_response(power, band)
-        );
-        int word = band / 2;
-        if ((band & 1) == 0)
-            spectrum32_packed[word] |= quantized;
-        else
-            spectrum32_packed[word] |= quantized << 16;
-    }
 }
 
 int gilder_audio_output_write_frame(
@@ -1576,7 +1489,8 @@ int gilder_audio_output_write_frame(
     int64_t *ready_state_changes,
     int *stream_state,
     int *signal_level_micros,
-    uint32_t *spectrum32_packed
+    const float **pcm,
+    int *pcm_sample_count
 ) {
     if (!out || !codec_ctx || !frame)
         return AVERROR(EINVAL);
@@ -1597,7 +1511,7 @@ int gilder_audio_output_write_frame(
         NULL,
         out->channels,
         dst_samples,
-        AV_SAMPLE_FMT_S16,
+        AV_SAMPLE_FMT_FLT,
         1
     );
     if (dst_buffer_size < 0)
@@ -1626,19 +1540,20 @@ int gilder_audio_output_write_frame(
         NULL,
         out->channels,
         converted,
-        AV_SAMPLE_FMT_S16,
+        AV_SAMPLE_FMT_FLT,
         1
     );
     if (byte_count < 0)
         return byte_count;
+    int sample_count = converted * out->channels;
     if (signal_level_micros)
-        *signal_level_micros = gilder_audio_output_signal_level_micros(dst_data[0], byte_count);
-    gilder_audio_output_spectrum32_packed(
-        dst_data[0],
-        byte_count,
-        out->channels,
-        spectrum32_packed
-    );
+        *signal_level_micros = gilder_audio_output_signal_level_micros(
+            (const float *)dst_data[0], sample_count
+        );
+    if (pcm)
+        *pcm = (const float *)dst_data[0];
+    if (pcm_sample_count)
+        *pcm_sample_count = sample_count;
 
     ret = gilder_audio_output_write_bytes(out, dst_data[0], (size_t)byte_count);
     if (write_calls)

@@ -1,4 +1,3 @@
-
 #[cfg(feature = "native-vulkan-video")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -121,7 +120,8 @@ unsafe extern "C" {
         ready_state_changes: *mut c_longlong,
         stream_state: *mut c_int,
         signal_level_micros: *mut c_int,
-        spectrum32_packed: *mut c_uint,
+        pcm: *mut *const f32,
+        pcm_sample_count: *mut c_int,
     ) -> c_int;
 }
 
@@ -240,7 +240,7 @@ impl NativeVulkanFfmpegAudioClockReader {
                     decoded_frames: decoded.decoded_frames,
                     decoded_samples: decoded.decoded_samples,
                     audio_signal_level_micros: decoded.audio_signal_level_micros,
-                    audio_spectrum32_packed: decoded.audio_spectrum32_packed,
+                    audio_spectrum: decoded.audio_spectrum,
                     sample_rate_hz: decoded
                         .sample_rate_hz
                         .or_else(|| self.decoder_sample_rate_hz()),
@@ -367,7 +367,7 @@ struct NativeVulkanFfmpegAudioDecodedPacket {
     decoded_frames: u32,
     decoded_samples: u32,
     audio_signal_level_micros: u32,
-    audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+    audio_spectrum: Option<StereoSpectrum64>,
     sample_rate_hz: Option<u32>,
     channel_count: Option<u32>,
     output_frames: u32,
@@ -392,6 +392,8 @@ struct NativeVulkanFfmpegAudioDecoder {
     frame: NonNull<AVFrame>,
     frame_pool: Arc<NativeVulkanFfmpegAudioAvObjectPool>,
     output: Option<NonNull<GilderAudioOutput>>,
+    spectrum_producer: Option<crate::renderer::native_vulkan::audio::spectrum::PcmSpectrumProducer>,
+    spectrum_format: Option<(u32, u32)>,
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -455,6 +457,8 @@ impl NativeVulkanFfmpegAudioDecoder {
                 frame,
                 frame_pool,
                 output,
+                spectrum_producer: None,
+                spectrum_format: None,
             }),
             Err(err) => {
                 let mut ptr = context.as_ptr();
@@ -561,7 +565,8 @@ impl NativeVulkanFfmpegAudioDecoder {
         let mut ready_state_changes: c_longlong = 0;
         let mut stream_state: c_int = 0;
         let mut signal_level_micros: c_int = 0;
-        let mut spectrum32_packed = [0u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS];
+        let mut pcm = std::ptr::null();
+        let mut pcm_sample_count = 0;
         let ret = unsafe {
             gilder_audio_output_write_frame(
                 output.as_ptr(),
@@ -581,7 +586,8 @@ impl NativeVulkanFfmpegAudioDecoder {
                 &mut ready_state_changes,
                 &mut stream_state,
                 &mut signal_level_micros,
-                spectrum32_packed.as_mut_ptr(),
+                &mut pcm,
+                &mut pcm_sample_count,
             )
         };
         if ret < 0 {
@@ -601,7 +607,37 @@ impl NativeVulkanFfmpegAudioDecoder {
             decoded.audio_signal_level_micros = decoded
                 .audio_signal_level_micros
                 .max(native_vulkan_audio_positive_c_int(signal_level_micros).unwrap_or(0));
-            decoded.audio_spectrum32_packed = spectrum32_packed;
+            let spectrum_format = (
+                native_vulkan_audio_positive_c_int(sample_rate).unwrap_or(48_000),
+                native_vulkan_audio_positive_c_int(channels).unwrap_or(2),
+            );
+            if self.spectrum_format != Some(spectrum_format) {
+                self.spectrum_producer = Some(
+                    crate::renderer::native_vulkan::audio::spectrum::PcmSpectrumProducer::new(
+                        spectrum_format.0,
+                        spectrum_format.1,
+                        crate::renderer::native_vulkan::audio::spectrum::DEFAULT_INPUT_VOLUME,
+                        0.0,
+                    )
+                    .map_err(|error| {
+                        NativeVulkanError::Video(format!(
+                            "create canonical decoded-audio spectrum analyzer: {error:?}"
+                        ))
+                    })?,
+                );
+                self.spectrum_format = Some(spectrum_format);
+            }
+            if !pcm.is_null()
+                && pcm_sample_count > 0
+                && let Some(producer) = self.spectrum_producer.as_mut()
+            {
+                // SAFETY: the C output owns this retained buffer and keeps it valid until the
+                // next output write; analysis completes synchronously before that call.
+                let pcm = unsafe { std::slice::from_raw_parts(pcm, pcm_sample_count as usize) };
+                if let Some(spectrum) = producer.push_interleaved(pcm) {
+                    decoded.audio_spectrum = Some(spectrum);
+                }
+            }
         }
         if decoded.output_sample_rate_hz.is_none() {
             decoded.output_sample_rate_hz = native_vulkan_audio_positive_c_int(sample_rate);

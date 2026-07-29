@@ -10,7 +10,9 @@ use serde_json::{Map, Value};
 use crate::engine::scene::abi::{
     SceneObjectHandle, SceneScriptProgramRecord, SceneScriptSubscriptions, SceneScriptTarget,
 };
-use crate::engine::scene::event::{SceneMediaClockState, SceneMediaPlaybackState};
+use crate::engine::scene::event::{
+    SceneMediaClockState, SceneMediaPlaybackState, StereoSpectrum64,
+};
 use crate::engine::scene::storage::SceneStorage;
 
 use super::standard_library;
@@ -26,11 +28,16 @@ const NUMERIC_DELTA_LANES: usize = 7;
 const HOST_PRELUDE: &str = r#"
 (() => {
     const programs = [];
-    const audio = {
-        average: new Float32Array(32),
-        peak: new Float32Array(32),
-    };
-    const spectrum = new Float32Array(32);
+    const makeAudioBuffers = (resolution) => Object.freeze({
+        left: new Float32Array(resolution),
+        right: new Float32Array(resolution),
+        average: new Float32Array(resolution),
+    });
+    const audio16 = makeAudioBuffers(16);
+    const audio32 = makeAudioBuffers(32);
+    const audio64 = makeAudioBuffers(64);
+    const spectrumLeft = new Float32Array(64);
+    const spectrumRight = new Float32Array(64);
     const pointer = { x: 0, y: 0 };
     const media = { state: 0, position: 0, duration: 0 };
     const texts = [];
@@ -42,7 +49,8 @@ const HOST_PRELUDE: &str = r#"
     let userProperties = Object.freeze(Object.create(null));
     let numeric = new Float64Array(0);
     const batch = { numeric, numericCount: 0, texts };
-    globalThis.__gilderSpectrum = spectrum;
+    globalThis.__gilderSpectrumLeft = spectrumLeft;
+    globalThis.__gilderSpectrumRight = spectrumRight;
     globalThis.__gilderSetMedia = (state, position, duration) => {
         media.state = state;
         media.position = position;
@@ -143,7 +151,12 @@ const HOST_PRELUDE: &str = r#"
         AUDIO_RESOLUTION_16: 16,
         AUDIO_RESOLUTION_32: 32,
         AUDIO_RESOLUTION_64: 64,
-        registerAudioBuffers() { return audio; },
+        registerAudioBuffers(resolution = 16) {
+            if (resolution === 16) return audio16;
+            if (resolution === 32) return audio32;
+            if (resolution === 64) return audio64;
+            throw new RangeError('Resolution must be either 16, 32 or 64.');
+        },
         registerAsset(path) { return path; },
     };
     globalThis.MediaPlaybackEvent = Object.freeze({
@@ -268,10 +281,24 @@ const HOST_PRELUDE: &str = r#"
         pointer.y = pointerY;
         engine.pointer = pointer;
         if ((eventMask & 4) !== 0) {
+            for (let i = 0; i < 64; i++) {
+                const left = spectrumLeft[i] || 0;
+                const right = spectrumRight[i] || 0;
+                audio64.left[i] = left;
+                audio64.right[i] = right;
+                audio64.average[i] = 0.5 * (left + right);
+            }
             for (let i = 0; i < 32; i++) {
-                const value = spectrum[i] || 0;
-                audio.average[i] = value;
-                audio.peak[i] = value;
+                const source = 2 * i;
+                audio32.left[i] = Math.max(audio64.left[source], audio64.left[source + 1]);
+                audio32.right[i] = Math.max(audio64.right[source], audio64.right[source + 1]);
+                audio32.average[i] = Math.max(audio64.average[source], audio64.average[source + 1]);
+            }
+            for (let i = 0; i < 16; i++) {
+                const source = 2 * i;
+                audio16.left[i] = Math.max(audio32.left[source], audio32.left[source + 1]);
+                audio16.right[i] = Math.max(audio32.right[source], audio32.right[source + 1]);
+                audio16.average[i] = Math.max(audio32.average[source], audio32.average[source + 1]);
             }
         }
         ensureNumericCapacity(programs.length + sceneEffects.length);
@@ -402,7 +429,7 @@ pub struct SceneScriptFrameInput<'a> {
     pub dirty_events: SceneScriptSubscriptions,
     pub pointer: [f32; 2],
     pub pointer_clicks: &'a [SceneScriptPointerClick],
-    pub audio_spectrum32: &'a [f32; 32],
+    pub audio_spectrum: &'a StereoSpectrum64,
     pub media: Option<SceneMediaClockState>,
 }
 
@@ -665,14 +692,27 @@ impl SceneScriptRuntime {
                 .globals()
                 .get("__gilderDispatch")
                 .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
-            let spectrum: Object = ctx
+            let spectrum_left: Object = ctx
                 .globals()
-                .get("__gilderSpectrum")
+                .get("__gilderSpectrumLeft")
+                .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+            let spectrum_right: Object = ctx
+                .globals()
+                .get("__gilderSpectrumRight")
                 .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
             if input.dirty_events.contains(SceneScriptSubscriptions::AUDIO) {
-                for (index, value) in input.audio_spectrum32.iter().enumerate() {
-                    spectrum
-                        .set(index as u32, *value)
+                for (index, (left, right)) in input
+                    .audio_spectrum
+                    .left
+                    .iter()
+                    .zip(&input.audio_spectrum.right)
+                    .enumerate()
+                {
+                    spectrum_left
+                        .set(index as u32, *left)
+                        .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+                    spectrum_right
+                        .set(index as u32, *right)
                         .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
                 }
             }

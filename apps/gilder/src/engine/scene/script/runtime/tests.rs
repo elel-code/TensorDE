@@ -32,7 +32,10 @@ fn input(events: SceneScriptSubscriptions) -> SceneScriptFrameInput<'static> {
         dirty_events: events,
         pointer: [0.25, 0.75],
         pointer_clicks: &[],
-        audio_spectrum32: &[0.5; 32],
+        audio_spectrum: &StereoSpectrum64 {
+            left: [0.25; 64],
+            right: [0.75; 64],
+        },
         media: None,
     }
 }
@@ -367,6 +370,41 @@ fn audio_spectrum_drives_typed_effect_target_through_quickjs() {
     let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::AUDIO)).expect("dispatch");
     assert_eq!(deltas[0].target, SceneScriptTarget::TechCircleSectorWidth);
     assert_eq!(deltas[0].numeric[0], 10.5);
+}
+
+#[test]
+fn audio_buffers_keep_stereo_channels_and_derive_each_resolution() {
+    let runtime = SceneScriptRuntime::new(&[program(
+        SceneScriptTarget::Alpha,
+        SceneScriptSubscriptions::AUDIO,
+        "const a16 = engine.registerAudioBuffers(); const a32 = engine.registerAudioBuffers(32); const a64 = engine.registerAudioBuffers(64); export function update() { return a64.left[2] + a64.right[2] * 10 + a32.left[1] * 100 + a16.right[0] * 1000; }",
+    )], &SceneScriptHostCatalog::empty())
+    .expect("runtime");
+    let spectrum = StereoSpectrum64 {
+        left: std::array::from_fn(|band| band as f32),
+        right: std::array::from_fn(|band| (band * 2) as f32),
+    };
+    let frame = SceneScriptFrameInput {
+        audio_spectrum: &spectrum,
+        ..input(SceneScriptSubscriptions::AUDIO)
+    };
+    let deltas = dispatch(&runtime, frame).expect("dispatch");
+    assert_eq!(deltas[0].numeric[0], 6_342.0);
+}
+
+#[test]
+fn register_audio_buffers_rejects_noncanonical_resolution() {
+    let error = SceneScriptRuntime::new(&[program(
+        SceneScriptTarget::Alpha,
+        SceneScriptSubscriptions::AUDIO,
+        "const audio = engine.registerAudioBuffers(24); export function update() { return audio.average[0]; }",
+    )], &SceneScriptHostCatalog::empty())
+    .expect_err("resolution 24 must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("Resolution must be either 16, 32 or 64")
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::ptr::{self, NonNull};
 #[cfg(feature = "native-vulkan-video")]
 use std::num::NonZeroI32;
 #[cfg(feature = "native-vulkan-video")]
-use std::os::raw::{c_char, c_int, c_longlong, c_uint};
+use std::os::raw::{c_char, c_int, c_longlong};
 #[cfg(feature = "native-vulkan-video")]
 use std::os::unix::ffi::OsStrExt;
 use std::sync::Mutex;
@@ -21,6 +21,7 @@ use serde::Serialize;
 use super::super::NativeVulkanError;
 use super::event_source::NativeVulkanAudioEventChannel;
 use super::policy::NativeVulkanAudioOutputMode;
+use crate::engine::scene::StereoSpectrum64;
 
 pub(in crate::renderer::native_vulkan) const NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS: usize = 3;
 
@@ -29,13 +30,10 @@ const FFMPEG_AUDIO_CLOCK_REFERENCE: &str =
 const AUDIO_CLOCK_QUEUE_POLICY: &str = "FFmpeg-style PacketQueue serial metadata; clock-only packets are consumed as timestamp metadata and AVPacket payloads are unref'd immediately";
 const AUDIO_CLOCK_MODEL: &str = "muted clock-only audio master: packet PTS/duration advances a serial-scoped audio clock; serial changes invalidate stale samples across loop/seek";
 const NATIVE_VULKAN_AUDIO_SIGNAL_SCALE: f32 = 1_000_000.0;
-const NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS: usize = 16;
 static NATIVE_VULKAN_AUDIO_SIGNAL_READY: AtomicBool = AtomicBool::new(false);
 static NATIVE_VULKAN_AUDIO_SIGNAL_LEVEL_MICROS: AtomicU32 = AtomicU32::new(0);
-static NATIVE_VULKAN_AUDIO_SPECTRUM32_READY: AtomicBool = AtomicBool::new(false);
-static NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED: Mutex<
-    [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
-> = Mutex::new([0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]);
+static NATIVE_VULKAN_AUDIO_SPECTRUM64_READY: AtomicBool = AtomicBool::new(false);
+static NATIVE_VULKAN_AUDIO_SPECTRUM64: Mutex<StereoSpectrum64> = Mutex::new(StereoSpectrum64::ZERO);
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_signal_level() -> Option<f32> {
     NATIVE_VULKAN_AUDIO_SIGNAL_READY
@@ -46,12 +44,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_signal_level() -> 
         })
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_spectrum32_packed()
--> Option<[u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]> {
-    if !NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.load(Ordering::Relaxed) {
+pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_spectrum64()
+-> Option<StereoSpectrum64> {
+    if !NATIVE_VULKAN_AUDIO_SPECTRUM64_READY.load(Ordering::Acquire) {
         return None;
     }
-    NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED
+    NATIVE_VULKAN_AUDIO_SPECTRUM64
         .lock()
         .ok()
         .map(|spectrum| *spectrum)
@@ -62,19 +60,17 @@ fn native_vulkan_audio_publish_signal_level(level_micros: u32) {
     NATIVE_VULKAN_AUDIO_SIGNAL_READY.store(true, Ordering::Relaxed);
 }
 
-pub(super) fn native_vulkan_audio_publish_spectrum32_packed(
-    spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
-) {
-    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED.lock() {
-        *spectrum = spectrum32_packed;
-        NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.store(true, Ordering::Relaxed);
+pub(super) fn native_vulkan_audio_publish_spectrum64(spectrum64: StereoSpectrum64) {
+    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM64.lock() {
+        *spectrum = spectrum64;
+        NATIVE_VULKAN_AUDIO_SPECTRUM64_READY.store(true, Ordering::Release);
     }
 }
 
-pub(super) fn native_vulkan_audio_clear_spectrum32() {
-    NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.store(false, Ordering::Relaxed);
-    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED.lock() {
-        *spectrum = [0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS];
+pub(super) fn native_vulkan_audio_clear_spectrum64() {
+    NATIVE_VULKAN_AUDIO_SPECTRUM64_READY.store(false, Ordering::Release);
+    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM64.lock() {
+        *spectrum = StereoSpectrum64::ZERO;
     }
 }
 
@@ -118,7 +114,7 @@ pub struct NativeVulkanAudioClockPacketSnapshot {
     pub channel_count: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub route: &'static str,
     pub boundary: &'static str,
@@ -159,7 +155,7 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub decoded_samples: u64,
     pub audio_signal_level_micros: u32,
     pub audio_signal_model: &'static str,
-    pub audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+    pub audio_spectrum: StereoSpectrum64,
     pub audio_spectrum_model: &'static str,
     pub audio_sample_rate_hz: Option<u32>,
     pub audio_channel_count: Option<u32>,
@@ -190,7 +186,7 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub packets_head: Vec<NativeVulkanAudioClockPacketSnapshot>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockPacket {
     pub(in crate::renderer::native_vulkan) serial: u32,
     pub(in crate::renderer::native_vulkan) pts_ns: Option<u64>,
@@ -199,8 +195,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockPacket {
     pub(in crate::renderer::native_vulkan) decoded_frames: u32,
     pub(in crate::renderer::native_vulkan) decoded_samples: u32,
     pub(in crate::renderer::native_vulkan) audio_signal_level_micros: u32,
-    pub(in crate::renderer::native_vulkan) audio_spectrum32_packed:
-        [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+    pub(in crate::renderer::native_vulkan) audio_spectrum: Option<StereoSpectrum64>,
     pub(in crate::renderer::native_vulkan) sample_rate_hz: Option<u32>,
     pub(in crate::renderer::native_vulkan) channel_count: Option<u32>,
     pub(in crate::renderer::native_vulkan) output_frames: u32,
@@ -370,7 +365,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     decoded_frames: u32,
     decoded_samples: u64,
     audio_signal_level_micros: u32,
-    audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+    audio_spectrum: StereoSpectrum64,
     audio_sample_rate_hz: Option<u32>,
     audio_channel_count: Option<u32>,
     audio_output_frames: u32,
@@ -417,7 +412,7 @@ impl NativeVulkanAudioClockRuntime {
             decoded_frames: 0,
             decoded_samples: 0,
             audio_signal_level_micros: 0,
-            audio_spectrum32_packed: [0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+            audio_spectrum: StereoSpectrum64::ZERO,
             audio_sample_rate_hz: None,
             audio_channel_count: None,
             audio_output_frames: 0,
@@ -503,18 +498,23 @@ impl NativeVulkanAudioClockRuntime {
             .max(packet.audio_signal_level_micros);
         let has_output_pcm = packet.output_bytes > 0 && packet.output_samples > 0;
         if has_output_pcm {
-            self.audio_spectrum32_packed = packet.audio_spectrum32_packed;
-            if let Some(event_channel) = &self.event_channel {
-                event_channel.publish_packed(
-                    u64::from(packet.serial),
-                    packet.pts_ns.unwrap_or_default(),
-                    packet.audio_spectrum32_packed,
-                );
+            if let Some(spectrum) = packet.audio_spectrum {
+                self.audio_spectrum = spectrum;
+                if let Some(event_channel) = &self.event_channel {
+                    event_channel.publish(
+                        u64::from(packet.serial),
+                        packet.pts_ns.unwrap_or_default(),
+                        spectrum,
+                    );
+                }
+                #[cfg(not(test))]
+                if self.event_channel.is_none() {
+                    native_vulkan_audio_publish_spectrum64(spectrum);
+                }
             }
             #[cfg(not(test))]
             if self.event_channel.is_none() {
                 native_vulkan_audio_publish_signal_level(packet.audio_signal_level_micros);
-                native_vulkan_audio_publish_spectrum32_packed(packet.audio_spectrum32_packed);
             }
         }
         if self.audio_sample_rate_hz.is_none() {
@@ -641,11 +641,11 @@ impl NativeVulkanAudioClockRuntime {
             clock_model: AUDIO_CLOCK_MODEL,
             audible_output_started: self.audible_output_started,
             audio_output_backend: match self.output_mode {
-                NativeVulkanAudioOutputMode::Auto => "pipewire-s16le",
+                NativeVulkanAudioOutputMode::Auto => "pipewire-f32le",
                 NativeVulkanAudioOutputMode::ClockOnly => "none",
             },
             audio_output_sample_format: match self.output_mode {
-                NativeVulkanAudioOutputMode::Auto => "s16le-interleaved",
+                NativeVulkanAudioOutputMode::Auto => "f32le-interleaved",
                 NativeVulkanAudioOutputMode::ClockOnly => "none",
             },
             audio_output_frames: self.audio_output_frames,
@@ -690,9 +690,9 @@ impl NativeVulkanAudioClockRuntime {
             decoded_frames: self.decoded_frames,
             decoded_samples: self.decoded_samples,
             audio_signal_level_micros: self.audio_signal_level_micros,
-            audio_signal_model: "decoded-s16le-frame-rms",
-            audio_spectrum32_packed: self.audio_spectrum32_packed,
-            audio_spectrum_model: "decoded-s16le-we-log-goertzel-spectrum32-average",
+            audio_signal_model: "decoded-f32le-frame-rms",
+            audio_spectrum: self.audio_spectrum,
+            audio_spectrum_model: "decoded-f32-canonical-stereo64",
             audio_sample_rate_hz: self.audio_sample_rate_hz,
             audio_channel_count: self.audio_channel_count,
             capacity: self.queue.capacity.min(u32::MAX as usize) as u32,

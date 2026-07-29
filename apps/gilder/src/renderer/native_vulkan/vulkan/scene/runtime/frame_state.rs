@@ -390,12 +390,13 @@ pub(super) fn write_scene_frame_buffers(
         let material_buffer = material_buffer.ok_or_else(|| {
             "scene has dynamic effect uniforms but no material uniform buffer".to_owned()
         })?;
+        let average_spectrum32 = events.audio_spectrum().map(|spectrum| spectrum.average32());
         let material_payload = pack_scene_material_uniforms_with_frame_inputs(
             storage,
             &graph.mesh_draws,
             scene_time_seconds,
             output_extent,
-            events.audio_spectrum(),
+            average_spectrum32.as_ref(),
             &semantic_frame.audio_band_material_values,
             &semantic_frame.material_scalar_values,
         );

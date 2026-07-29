@@ -3,9 +3,12 @@
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use super::clock::{
-    native_vulkan_audio_clear_spectrum32, native_vulkan_audio_publish_spectrum32_packed,
-};
+use super::clock::{native_vulkan_audio_clear_spectrum64, native_vulkan_audio_publish_spectrum64};
+use super::spectrum::{DEFAULT_INPUT_VOLUME, PcmSpectrumProducer};
+
+const MONITOR_SAMPLE_RATE: u32 = 48_000;
+const MONITOR_CHANNELS: u32 = 2;
+const MONITOR_PCM_CAPACITY_SAMPLES: usize = 4_096 * MONITOR_CHANNELS as usize;
 
 const MONITOR_NOT_REQUESTED: u8 = 0;
 const MONITOR_STARTING: u8 = 1;
@@ -23,8 +26,10 @@ unsafe extern "C" {
     fn gilder_system_audio_monitor_alloc() -> *mut GilderSystemAudioMonitor;
     fn gilder_system_audio_monitor_free(handle: *mut *mut GilderSystemAudioMonitor);
     fn gilder_system_audio_monitor_snapshot(
-        monitor: *const GilderSystemAudioMonitor,
-        spectrum32_packed: *mut u32,
+        monitor: *mut GilderSystemAudioMonitor,
+        pcm: *mut f32,
+        pcm_capacity: u32,
+        sample_count: *mut u32,
         stream_state: *mut i32,
         process_callbacks: *mut u64,
     ) -> i32;
@@ -32,6 +37,8 @@ unsafe extern "C" {
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSystemAudioMonitor {
     handle: Option<NonNull<GilderSystemAudioMonitor>>,
+    producer: Option<PcmSpectrumProducer>,
+    pcm: Vec<f32>,
     published_spectrum: bool,
 }
 
@@ -41,13 +48,19 @@ impl NativeVulkanSystemAudioMonitor {
             SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_NOT_REQUESTED, Ordering::Release);
             return Self {
                 handle: None,
+                producer: None,
+                pcm: Vec::new(),
                 published_spectrum: false,
             };
         }
-        if system_audio_monitor_disabled() || std::env::var_os("GILDER_SCENE_AUDIO_SPECTRUM32").is_some() {
+        if system_audio_monitor_disabled()
+            || std::env::var_os("GILDER_SCENE_AUDIO_SPECTRUM64").is_some()
+        {
             SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_DISABLED, Ordering::Release);
             return Self {
                 handle: None,
+                producer: None,
+                pcm: Vec::new(),
                 published_spectrum: false,
             };
         }
@@ -62,6 +75,18 @@ impl NativeVulkanSystemAudioMonitor {
         );
         Self {
             handle,
+            producer: handle.map(|_| {
+                PcmSpectrumProducer::new(
+                    MONITOR_SAMPLE_RATE,
+                    MONITOR_CHANNELS,
+                    DEFAULT_INPUT_VOLUME,
+                    0.0,
+                )
+                .expect("fixed PipeWire spectrum configuration is valid")
+            }),
+            pcm: handle
+                .map(|_| vec![0.0; MONITOR_PCM_CAPACITY_SAMPLES])
+                .unwrap_or_default(),
             published_spectrum: false,
         }
     }
@@ -70,21 +95,29 @@ impl NativeVulkanSystemAudioMonitor {
         let Some(handle) = self.handle else {
             return;
         };
-        let mut spectrum = [0u32; 16];
+        let mut sample_count = 0u32;
         let mut stream_state = 0;
         let mut process_callbacks = 0;
         let ready = unsafe {
             gilder_system_audio_monitor_snapshot(
                 handle.as_ptr(),
-                spectrum.as_mut_ptr(),
+                self.pcm.as_mut_ptr(),
+                self.pcm.len() as u32,
+                &mut sample_count,
                 &mut stream_state,
                 &mut process_callbacks,
             )
         };
         if ready > 0 {
-            native_vulkan_audio_publish_spectrum32_packed(spectrum);
-            self.published_spectrum = true;
-            SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_READY, Ordering::Release);
+            if let Some(spectrum) = self
+                .producer
+                .as_mut()
+                .and_then(|producer| producer.push_interleaved(&self.pcm[..sample_count as usize]))
+            {
+                native_vulkan_audio_publish_spectrum64(spectrum);
+                self.published_spectrum = true;
+                SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_READY, Ordering::Release);
+            }
         } else if ready < 0 {
             SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_UNAVAILABLE, Ordering::Release);
         }
@@ -98,17 +131,17 @@ impl Drop for NativeVulkanSystemAudioMonitor {
             unsafe { gilder_system_audio_monitor_free(&mut raw) };
         }
         if self.published_spectrum {
-            native_vulkan_audio_clear_spectrum32();
+            native_vulkan_audio_clear_spectrum64();
         }
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_NOT_REQUESTED, Ordering::Release);
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn system_audio_monitor_spectrum_status(
-) -> Option<(&'static str, bool)> {
+pub(in crate::renderer::native_vulkan) fn system_audio_monitor_spectrum_status()
+-> Option<(&'static str, bool)> {
     match SYSTEM_AUDIO_MONITOR_STATE.load(Ordering::Acquire) {
         MONITOR_STARTING => Some(("pipewire-system-output-monitor-starting", false)),
-        MONITOR_READY => Some(("pipewire-system-output-monitor-we-log-goertzel32-mono", true)),
+        MONITOR_READY => Some(("pipewire-system-output-canonical-stereo64", true)),
         MONITOR_UNAVAILABLE => Some(("zero-spectrum-pipewire-monitor-unavailable", false)),
         MONITOR_DISABLED => Some(("zero-spectrum-pipewire-monitor-disabled", false)),
         _ => None,
@@ -135,7 +168,7 @@ mod tests {
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_READY, Ordering::Release);
         assert_eq!(
             system_audio_monitor_spectrum_status(),
-            Some(("pipewire-system-output-monitor-we-log-goertzel32-mono", true))
+            Some(("pipewire-system-output-canonical-stereo64", true))
         );
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_NOT_REQUESTED, Ordering::Release);
     }

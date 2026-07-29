@@ -276,7 +276,7 @@ impl SemanticFrameResolver {
             .pointer
             .normalized_position_top_left()
             .unwrap_or([0.5; 2]);
-        let zero_spectrum = [0.0; 32];
+        let zero_spectrum = crate::engine::scene::StereoSpectrum64::ZERO;
         let spectrum = events.coherent_audio_spectrum().unwrap_or(&zero_spectrum);
         let frame_time_seconds = self
             .last_scene_time_seconds
@@ -291,7 +291,7 @@ impl SemanticFrameResolver {
                     dirty_events: dirty,
                     pointer,
                     pointer_clicks: &self.pointer_clicks,
-                    audio_spectrum32: spectrum,
+                    audio_spectrum: spectrum,
                     media: events.media,
                 },
                 &mut self.script_delta_updates,

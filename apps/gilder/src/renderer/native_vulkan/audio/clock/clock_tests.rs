@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,7 +131,6 @@ mod tests {
                 decoded_frames: 1,
                 decoded_samples: 1008,
                 audio_signal_level_micros: 0,
-                audio_spectrum32_packed: [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 ..NativeVulkanAudioClockPacket::default()
@@ -208,12 +206,15 @@ mod tests {
                 decoded_frames: 1,
                 decoded_samples: 1008,
                 audio_signal_level_micros: 123_456,
-                audio_spectrum32_packed: [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+                audio_spectrum: Some(StereoSpectrum64 {
+                    left: [0.25; 64],
+                    right: [0.75; 64],
+                }),
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 output_frames: 1,
                 output_samples: 1008,
-                output_bytes: 4032,
+                output_bytes: 8064,
                 output_sample_rate_hz: Some(48_000),
                 output_channel_count: Some(2),
                 output_write_calls: 1,
@@ -233,11 +234,11 @@ mod tests {
 
         assert_eq!(snapshot.output_mode, "auto");
         assert!(snapshot.audible_output_started);
-        assert_eq!(snapshot.audio_output_backend, "pipewire-s16le");
-        assert_eq!(snapshot.audio_output_sample_format, "s16le-interleaved");
+        assert_eq!(snapshot.audio_output_backend, "pipewire-f32le");
+        assert_eq!(snapshot.audio_output_sample_format, "f32le-interleaved");
         assert_eq!(snapshot.audio_output_frames, 1);
         assert_eq!(snapshot.audio_output_samples, 1008);
-        assert_eq!(snapshot.audio_output_bytes, 4032);
+        assert_eq!(snapshot.audio_output_bytes, 8064);
         assert_eq!(snapshot.audio_output_sample_rate_hz, Some(48_000));
         assert_eq!(snapshot.audio_output_channel_count, Some(2));
         assert_eq!(snapshot.audio_output_write_calls, 1);
@@ -251,14 +252,17 @@ mod tests {
         assert_eq!(snapshot.audio_output_stream_state, "streaming");
         assert!(snapshot.audio_output_stream_ready);
         assert_eq!(snapshot.audio_signal_level_micros, 123_456);
-        assert_eq!(snapshot.audio_signal_model, "decoded-s16le-frame-rms");
+        assert_eq!(snapshot.audio_signal_model, "decoded-f32le-frame-rms");
         assert_eq!(
-            snapshot.audio_spectrum32_packed,
-            [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]
+            snapshot.audio_spectrum,
+            StereoSpectrum64 {
+                left: [0.25; 64],
+                right: [0.75; 64],
+            }
         );
         assert_eq!(
             snapshot.audio_spectrum_model,
-            "decoded-s16le-we-log-goertzel-spectrum32-average"
+            "decoded-f32-canonical-stereo64"
         );
         assert_eq!(
             snapshot.audio_output_lifecycle_model,
@@ -271,7 +275,8 @@ mod tests {
         let audio_event = event_channel.capture(0, 0);
         assert!(audio_event.ready);
         assert_eq!(audio_event.sample_time_ns, 42_000_000);
-        assert!(audio_event.spectrum32[0] > 0.0);
+        assert!(audio_event.spectrum.left[0] > 0.0);
+        assert!(audio_event.spectrum.right[0] > audio_event.spectrum.left[0]);
     }
 
     #[test]

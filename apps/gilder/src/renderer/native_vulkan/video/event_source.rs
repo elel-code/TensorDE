@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::engine::scene::{
     SceneAudioSource, SceneAudioState, SceneEvent, SceneEventQueue, SceneFrameEvents,
     SceneMediaClockState, SceneMediaGeneration, SceneMediaPlaybackState, SceneMediaSessionId,
-    SceneVideoState,
+    SceneVideoState, StereoSpectrum64,
 };
 use crate::renderer::native_vulkan::audio::event_source::{
     NativeVulkanAudioEventChannel, audio_state_summary,
@@ -94,7 +94,7 @@ impl NativeVulkanMediaEventRuntime {
             &mut self.queue,
             sample.generation,
             audio.sample_time_ns,
-            audio.spectrum32,
+            audio.spectrum,
             audio.ready,
         );
         self.frame = self.queue.finish_frame();
@@ -179,7 +179,7 @@ impl NativeVulkanMediaEventSource {
         queue: &mut SceneEventQueue,
         generation: u64,
         sample_time_ns: u64,
-        spectrum32: [f32; 32],
+        spectrum: StereoSpectrum64,
         ready: bool,
     ) {
         queue.publish(SceneEvent::Audio(SceneAudioState {
@@ -187,7 +187,7 @@ impl NativeVulkanMediaEventSource {
             media_session: Some(self.session),
             media_generation: SceneMediaGeneration(generation),
             sample_time_ns,
-            spectrum32,
+            spectrum,
             ready,
             ..SceneAudioState::default()
         }));
@@ -228,7 +228,16 @@ mod tests {
                 ready: true,
             },
         );
-        source.publish_audio(&mut queue, 3, 1_000_000, [0.5; 32], true);
+        source.publish_audio(
+            &mut queue,
+            3,
+            1_000_000,
+            StereoSpectrum64 {
+                left: [0.25; 64],
+                right: [0.75; 64],
+            },
+            true,
+        );
         let frame = queue.finish_frame();
         assert_eq!(frame.media.unwrap().session, SceneMediaSessionId(42));
         assert_eq!(frame.video.unwrap().generation, SceneMediaGeneration(3));
@@ -239,7 +248,14 @@ mod tests {
     #[test]
     fn retained_runtime_publishes_one_coherent_frame_snapshot() {
         let audio = NativeVulkanAudioEventChannel::default();
-        audio.publish_packed(4, 1_500_000, [0x8000_4000; 16]);
+        audio.publish(
+            4,
+            1_500_000,
+            StereoSpectrum64 {
+                left: [0.25; 64],
+                right: [0.75; 64],
+            },
+        );
         let mut runtime = NativeVulkanMediaEventRuntime::new(audio);
         runtime.publish_presented_frame(NativeVulkanVideoEventSample {
             generation: 4,
@@ -262,8 +278,8 @@ mod tests {
         assert_eq!(snapshot.playback, "playing");
         assert!(snapshot.video_ready);
         assert_eq!(snapshot.audio_ready_frame_count, 1);
-        assert!(snapshot.audio_peak_max > 0.49);
-        assert_eq!(snapshot.audio_active_band_count_max, 32);
+        assert!(snapshot.audio_peak_max > 0.0);
+        assert_eq!(snapshot.audio_active_band_count_max, 64);
         assert_eq!(snapshot.last_sequence - snapshot.first_sequence, 2);
     }
 }

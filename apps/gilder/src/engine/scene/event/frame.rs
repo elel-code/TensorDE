@@ -2,7 +2,7 @@
 
 use super::{
     SceneAudioState, SceneEvent, SceneEventSequence, SceneLocalTime, SceneMediaClockState,
-    ScenePointerState, SceneVideoState,
+    ScenePointerState, SceneVideoState, StereoSpectrum64,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,11 +24,11 @@ pub struct SceneFrameEvents {
 }
 
 impl SceneFrameEvents {
-    pub fn audio_spectrum(&self) -> Option<&[f32; 32]> {
+    pub fn audio_spectrum(&self) -> Option<&StereoSpectrum64> {
         self.audio.spectrum()
     }
 
-    pub fn coherent_audio_spectrum(&self) -> Option<&[f32; 32]> {
+    pub fn coherent_audio_spectrum(&self) -> Option<&StereoSpectrum64> {
         let spectrum = self.audio.spectrum()?;
         let Some(session) = self.audio.media_session else {
             return Some(spectrum);
@@ -55,7 +55,10 @@ mod tests {
                 source: SceneAudioSource::MediaSession,
                 media_session: Some(SceneMediaSessionId(7)),
                 media_generation: SceneMediaGeneration(2),
-                spectrum32: [0.5; 32],
+                spectrum: StereoSpectrum64 {
+                    left: [0.25; 64],
+                    right: [0.75; 64],
+                },
                 ready: true,
                 ..SceneAudioState::default()
             },
@@ -70,6 +73,12 @@ mod tests {
         assert!(frame.audio_spectrum().is_some());
         assert!(frame.coherent_audio_spectrum().is_none());
         frame.media.as_mut().unwrap().generation = SceneMediaGeneration(2);
-        assert_eq!(frame.coherent_audio_spectrum(), Some(&[0.5; 32]));
+        assert_eq!(
+            frame.coherent_audio_spectrum(),
+            Some(&StereoSpectrum64 {
+                left: [0.25; 64],
+                right: [0.75; 64],
+            })
+        );
     }
 }

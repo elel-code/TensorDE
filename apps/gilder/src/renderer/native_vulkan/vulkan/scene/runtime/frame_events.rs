@@ -43,7 +43,7 @@ impl SceneRuntimeEventSources {
             audio_monitor: NativeVulkanSystemAudioMonitor::start_if_needed(
                 audio_spectrum_required,
             ),
-            audio: NativeVulkanAudioEventSource,
+            audio: NativeVulkanAudioEventSource::default(),
             local_time: SceneLocalTimeEventSource::new(local_time_precision(storage)),
             queue: SceneEventQueue::default(),
             frame: SceneFrameEvents::default(),

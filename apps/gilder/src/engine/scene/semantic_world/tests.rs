@@ -538,7 +538,10 @@ fn rquickjs_audio_module_applies_uniform_object_scale_before_transform_propagati
     let events = crate::engine::scene::SceneFrameEvents {
         audio: crate::engine::scene::SceneAudioState {
             source: crate::engine::scene::SceneAudioSource::Replay,
-            spectrum32: [1.0; 32],
+            spectrum: crate::engine::scene::StereoSpectrum64 {
+                left: [1.0; 64],
+                right: [1.0; 64],
+            },
             ready: true,
             ..crate::engine::scene::SceneAudioState::default()
         },
@@ -601,7 +604,10 @@ fn audio_script_publishes_a_typed_material_scalar_selector() {
         audio: crate::engine::scene::SceneAudioState {
             sequence: crate::engine::scene::SceneEventSequence(1),
             source: crate::engine::scene::SceneAudioSource::Replay,
-            spectrum32: [1.0; 32],
+            spectrum: crate::engine::scene::StereoSpectrum64 {
+                left: [1.0; 64],
+                right: [1.0; 64],
+            },
             ready: true,
             ..crate::engine::scene::SceneAudioState::default()
         },

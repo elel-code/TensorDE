@@ -26,7 +26,7 @@ pub use event::{
     SceneAudioSource, SceneAudioState, SceneEvent, SceneEventQueue, SceneEventSequence,
     SceneFrameEvents, SceneLocalTime, SceneMediaClockState, SceneMediaGeneration,
     SceneMediaPlaybackState, SceneMediaSessionId, ScenePointerEvent, ScenePointerEventKind,
-    ScenePointerSource, ScenePointerState, SceneSequencedEvent, SceneVideoState,
+    ScenePointerSource, ScenePointerState, SceneSequencedEvent, SceneVideoState, StereoSpectrum64,
 };
 pub use rendering_device_graph::{
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceEffectBatch,
