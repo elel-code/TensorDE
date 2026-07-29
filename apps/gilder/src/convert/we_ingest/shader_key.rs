@@ -19,12 +19,6 @@ fn canonical_scene_shader_program(authored: &str) -> String {
     if authored.starts_with("we/") || authored.starts_with("effects/") {
         return authored.to_owned();
     }
-    let mut components = authored.rsplit('/');
-    let basename = components.next().unwrap_or(authored);
-    let parent = components.next().unwrap_or_default();
-    if parent.eq_ignore_ascii_case("effects") {
-        return format!("effects/{}", basename.to_ascii_lowercase());
-    }
     match authored {
         "genericimage2" | "genericimage4" | "genericparticle" | "clippingmaskimage4" | "color"
         | "text" | "composelayer" | "flat" | "minimalalpha" | "passthrough"
@@ -50,12 +44,12 @@ mod tests {
     }
 
     #[test]
-    fn effect_program_identity_does_not_include_the_authored_package_path() {
+    fn authored_effect_program_identity_keeps_the_package_path() {
         assert_eq!(
             canonical_scene_shader_key(
                 "workshop/current/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
             ),
-            "effects/simple_audio_bars__SLOTS_1__SHAPE_7"
+            "workshop/current/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
         );
     }
 

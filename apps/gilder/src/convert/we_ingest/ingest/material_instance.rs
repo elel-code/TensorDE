@@ -143,13 +143,13 @@ pub(super) fn effect_shader_variant_key(
 }
 
 fn canonical_effect_shader_program(shader: &str) -> String {
-    let mut components = shader.rsplit('/');
-    let basename = components.next().unwrap_or(shader);
-    let parent = components.next().unwrap_or_default();
-    if !parent.eq_ignore_ascii_case("effects") {
-        return shader.to_owned();
+    if let Some(program) = shader.strip_prefix("shaders/effects/") {
+        return format!("effects/{}", program.to_ascii_lowercase());
     }
-    format!("effects/{}", basename.to_ascii_lowercase())
+    if let Some(program) = shader.strip_prefix("effects/") {
+        return format!("effects/{}", program.to_ascii_lowercase());
+    }
+    shader.to_owned()
 }
 
 fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
@@ -203,6 +203,22 @@ mod tests {
     }
 
     #[test]
+    fn authored_effect_variant_key_preserves_package_program_identity() {
+        let bindings = [(0, "previous".to_owned())].into_iter().collect();
+        let combos = [("SHAPE".to_owned(), 7)].into_iter().collect();
+
+        assert_eq!(
+            effect_shader_variant_key(
+                "workshop/test/effects/Simple_Audio_Bars",
+                &bindings,
+                &combos,
+                &BTreeMap::new(),
+            ),
+            "workshop/test/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
+        );
+    }
+
+    #[test]
     fn iris_mask_texture_selects_the_mask_shader_combo() {
         let bindings = [(0, "previous".to_owned()), (1, "masks/iris".to_owned())]
             .into_iter()
@@ -244,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_program_contract_canonicalizes_authored_package_paths() {
+    fn effect_program_contract_preserves_authored_package_paths() {
         let bindings = [(0, "previous".to_owned())].into_iter().collect();
         let combos = [
             ("AA_CATEGORY".to_owned(), 1),
@@ -261,7 +277,7 @@ mod tests {
                 &combos,
                 &BTreeMap::new(),
             ),
-            "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1"
+            "workshop/current/effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1"
         );
         assert_eq!(
             effect_shader_variant_key(
@@ -270,7 +286,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
             ),
-            "effects/opacity__SLOTS_1"
+            "workshop/current/effects/opacity__SLOTS_1"
         );
     }
 
@@ -469,14 +485,14 @@ uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,
         assert_eq!(terminal.role, RenderPassRole::SceneComposite);
         assert_eq!(
             terminal.shader.as_deref(),
-            Some("effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16")
+            Some("workshop/test/effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16")
         );
         let contract = ir
             .shader_contracts
             .iter()
             .find(|contract| {
                 contract.shader_key
-                    == "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16"
+                    == "workshop/test/effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16"
             })
             .expect("workshop shader contract");
         assert_eq!(contract.origin, WeIrShaderOrigin::AuthoredPackage);

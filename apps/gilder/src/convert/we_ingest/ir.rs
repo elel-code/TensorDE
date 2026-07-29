@@ -70,6 +70,7 @@ pub struct WeSceneIr {
     pub render_graphs: Vec<RenderGraph>,
     pub image_targets: Vec<WeIrImageTarget>,
     pub shader_contracts: Vec<WeIrShaderContract>,
+    pub shader_programs: Vec<WeIrShaderProgram>,
     pub unsupported: Vec<WeIrUnsupported>,
 }
 
@@ -563,6 +564,42 @@ pub struct WeIrShaderContract {
     pub constants: Vec<String>,
     pub resource_heap_count: u32,
     pub sampler_heap_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderProgram {
+    pub program_key: String,
+    pub stage: WeIrShaderStage,
+    pub entry_point: String,
+    pub push_constant_bytes: u32,
+    pub bindings: Vec<WeIrShaderBinding>,
+    pub spirv: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrShaderStage {
+    Vertex,
+    Fragment,
+    Compute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderBinding {
+    pub kind: WeIrShaderBindingKind,
+    pub register: u32,
+    pub descriptor_count: u32,
+    pub push_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrShaderBindingKind {
+    SampledImage,
+    StorageImage,
+    Sampler,
+    UniformBuffer,
+    StorageBuffer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

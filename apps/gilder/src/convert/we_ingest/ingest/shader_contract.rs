@@ -44,7 +44,7 @@ pub(super) fn build_shader_contract_records(
             .map(|constant| constant.name.clone())
             .collect::<Vec<_>>();
         let origin = pass.shader_origin;
-        let shader_key = canonical_scene_shader_key(&pass.shader_key);
+        let shader_key = material_shader_program_key(pass);
         let texture_slot_mask = declared_texture_slot_mask(&shader_key, &textures);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
@@ -106,6 +106,25 @@ pub(super) fn build_shader_contract_records(
         ));
     }
     contracts
+}
+
+fn material_shader_program_key(pass: &WeIrMaterialPass) -> String {
+    if pass.shader_origin == WeIrShaderOrigin::EngineBuiltIn {
+        return canonical_scene_shader_key(&pass.shader_key);
+    }
+    let variant = pass
+        .shader_key
+        .split_once("__")
+        .map_or("", |(_, variant)| variant);
+    let source = pass
+        .shader_source_key
+        .strip_prefix("shaders/")
+        .unwrap_or(&pass.shader_source_key);
+    if variant.is_empty() {
+        source.to_owned()
+    } else {
+        format!("{source}__{variant}")
+    }
 }
 
 fn shader_contract(
@@ -393,6 +412,32 @@ mod tests {
         RenderPassRole, RenderTargetRole,
     };
     use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
+
+    #[test]
+    fn authored_contract_key_uses_source_identity_and_specialization() {
+        let pass = WeIrMaterialPass {
+            material: 0,
+            shader_key: "effects/simple_audio_bars__SLOTS_1__SHAPE_7".to_owned(),
+            shader_source_key: "workshop/test/effects/Simple_Audio_Bars".to_owned(),
+            shader_origin: WeIrShaderOrigin::AuthoredPackage,
+            target: String::new(),
+            texture_start: 0,
+            texture_count: 0,
+            constant_start: 0,
+            constant_count: 0,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            alpha_writing: String::new(),
+            clear_target: false,
+        };
+
+        assert_eq!(
+            material_shader_program_key(&pass),
+            "workshop/test/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
+        );
+    }
 
     #[test]
     fn sparse_effect_slots_are_a_hex_mask_not_a_slot_count() {

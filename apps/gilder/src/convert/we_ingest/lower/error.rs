@@ -13,6 +13,7 @@ pub enum WeLowerError {
         role: SceneRenderTargetKind,
         name: String,
     },
+    SizeOverflow(&'static str),
 }
 
 impl std::fmt::Display for WeLowerError {
@@ -39,6 +40,7 @@ impl std::fmt::Display for WeLowerError {
                 f,
                 "IR image target {role:?}:{name} has conflicting format or scale declarations"
             ),
+            Self::SizeOverflow(field) => write!(f, "IR {field} exceeds the scene ABI"),
         }
     }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::SceneBlendMode;
+use crate::engine::render_graph::{RenderTargetRole, TextureBindingRole};
 use crate::engine::scene::SceneResourceKind;
 
 #[test]
@@ -246,6 +247,27 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
         render_graphs: Vec::new(),
         image_targets: Vec::new(),
         shader_contracts: Vec::new(),
+        shader_programs: vec![WeIrShaderProgram {
+            program_key: "workshop/test/effects/example__SLOTS_1".to_owned(),
+            stage: WeIrShaderStage::Fragment,
+            entry_point: "main".to_owned(),
+            push_constant_bytes: 8,
+            bindings: vec![
+                WeIrShaderBinding {
+                    kind: WeIrShaderBindingKind::SampledImage,
+                    register: 0,
+                    descriptor_count: 1,
+                    push_offset: 0,
+                },
+                WeIrShaderBinding {
+                    kind: WeIrShaderBindingKind::Sampler,
+                    register: 0,
+                    descriptor_count: 1,
+                    push_offset: 4,
+                },
+            ],
+            spirv: vec![0x0723_0203, 0x0001_0600, 0, 2, 0],
+        }],
         unsupported: Vec::new(),
     };
 
@@ -257,6 +279,29 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
     assert_eq!(binary.mesh_vertices.len(), 4);
     assert_eq!(binary.mesh_indices, [0, 1, 2, 0, 2, 3]);
     assert_eq!(binary.meshes[0].width, 64.0);
+    assert_eq!(binary.shader_programs.len(), 1);
+    assert_eq!(binary.shader_programs[0].stage, SceneShaderStage::Fragment);
+    assert_eq!(binary.shader_programs[0].binding_start, 0);
+    assert_eq!(binary.shader_programs[0].binding_count, 2);
+    assert_eq!(binary.shader_programs[0].spirv_start, 0);
+    assert_eq!(binary.shader_programs[0].spirv_count, 5);
+    assert_eq!(binary.shader_programs[0].push_constant_bytes, 8);
+    assert_eq!(binary.shader_bindings.len(), 2);
+    assert_eq!(
+        binary.shader_bindings[0].kind,
+        SceneShaderBindingKind::SampledImage
+    );
+    assert_eq!(
+        binary.shader_bindings[1].kind,
+        SceneShaderBindingKind::Sampler
+    );
+    assert_eq!(binary.shader_spirv, [0x0723_0203, 0x0001_0600, 0, 2, 0]);
+    assert!(
+        binary
+            .strings
+            .iter()
+            .any(|value| value == "workshop/test/effects/example__SLOTS_1")
+    );
     assert_eq!(
         binary.camera_parallax,
         SceneCameraParallaxRecord {
