@@ -18,6 +18,7 @@ use super::composite_scissor::update_scene_composite_scissors;
 use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
+use super::dynamic_text::SceneDynamicTextRuntime;
 use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
 
@@ -34,6 +35,7 @@ pub(super) struct SceneFrameBufferUpdate {
     pub transform_uniform_updated: bool,
     pub material_uniform_updated: bool,
     pub skinning_storage_updated: bool,
+    pub dynamic_text_instance_updated: bool,
     pub scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
     pub cpu_timing: SceneFrameCpuTiming,
 }
@@ -330,6 +332,7 @@ pub(super) fn write_scene_frame_buffers(
     scene_time_seconds: f32,
     frame_delta_seconds: f32,
     output_extent: [u32; 2],
+    dynamic_text: &mut SceneDynamicTextRuntime,
 ) -> Result<SceneFrameBufferUpdate, String> {
     let semantic_started = cpu_timing_enabled.then(Instant::now);
     let semantic_frame = semantic_resolver
@@ -352,12 +355,31 @@ pub(super) fn write_scene_frame_buffers(
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
     let transform_started = cpu_timing_enabled.then(Instant::now);
-    let transform_payload = pack_scene_draw_uniforms(
+    let mut transform_payload = pack_scene_draw_uniforms(
         storage,
         &graph.mesh_draws,
         scene_time_seconds,
         output_extent,
     );
+    let mut dynamic_text_instance_updated = false;
+    if !dynamic_text.is_empty() {
+        let (changed, instances, states) = dynamic_text.update(semantic_frame)?;
+        dynamic_text_instance_updated = changed;
+        for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
+            if !command.dynamic_text {
+                continue;
+            }
+            let state = states
+                .iter()
+                .find(|state| state.object == draw.object)
+                .ok_or_else(|| {
+                    format!("dynamic text draw object {} has no retained layout", draw.object.0)
+                })?;
+            command.first_instance = state.first_instance;
+            command.instance_count = state.instance_count;
+        }
+        transform_payload.extend_from_slice(instances);
+    }
     write_exact_frame_payload(device, transform_buffer, &transform_payload)?;
     let transform_update_micros = elapsed_optional_micros(transform_started);
 
@@ -413,6 +435,7 @@ pub(super) fn write_scene_frame_buffers(
         transform_uniform_updated: true,
         material_uniform_updated,
         skinning_storage_updated,
+        dynamic_text_instance_updated,
         scene_color_attachment_clear,
         cpu_timing: SceneFrameCpuTiming {
             semantic_resolve_micros,
@@ -950,6 +973,8 @@ mod tests {
             vertex_count: 3,
             instance_count: 1,
             instance_capacity: 1,
+            first_instance: 0,
+            dynamic_text: false,
             particle_indirect_index: None,
             resource_descriptor_base: 0,
             material_resource_descriptor: None,

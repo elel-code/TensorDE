@@ -538,6 +538,32 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         lower_render_graphs(ir, &mut strings)?;
     let (shader_contracts, shader_constant_names) = lower_shader_contracts(ir, &mut strings);
     let event_bindings = event_binding::lower_event_bindings(ir, &mut strings);
+    let dynamic_texts = ir
+        .dynamic_texts
+        .iter()
+        .map(|text| SceneDynamicTextRecord {
+            object: SceneObjectHandle(text.object),
+            font_resource: SceneResourceId(text.font_resource),
+            atlas_resource: SceneResourceId(text.atlas_resource),
+            glyph_start: text.glyph_start,
+            glyph_count: text.glyph_count,
+            max_glyph_count: text.max_glyph_count,
+            pixels_per_em: text.pixels_per_em,
+            spacing: text.spacing,
+            padding: text.padding,
+            horizontal_align: text.horizontal_align,
+            vertical_align: text.vertical_align,
+        })
+        .collect();
+    let dynamic_text_glyphs = ir
+        .dynamic_text_glyphs
+        .iter()
+        .map(|glyph| SceneDynamicTextGlyphRecord {
+            codepoint: glyph.codepoint,
+            atlas_uv: glyph.atlas_uv,
+            plane_bounds: glyph.plane_bounds,
+        })
+        .collect();
     let user_property_bindings = ir
         .user_property_bindings
         .iter()
@@ -600,6 +626,8 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         shader_contracts,
         shader_constant_names,
         script_programs: event_bindings.scripts,
+        dynamic_texts,
+        dynamic_text_glyphs,
         user_property_bindings,
         camera_parallax: event_bindings.camera_parallax,
         object_parallax_depths: event_bindings.object_parallax_depths,

@@ -114,11 +114,18 @@ pub(super) fn create_scene_gpu_resources(
         graph_uses_fullscreen_utility_primitive(&backend_plan.rendering_device_graph);
     let vertex_payload = pack_scene_vertices(storage, include_fullscreen_utility);
     let index_payload = pack_scene_indices(storage, include_fullscreen_utility);
-    let transform_payload = pack_scene_draw_uniforms(
+    let dynamic_text = dynamic_text::SceneDynamicTextRuntime::from_storage(storage)?;
+    let mut transform_payload = pack_scene_draw_uniforms(
         storage,
         &backend_plan.rendering_device_graph.mesh_draws,
         0.0,
         [extent.width, extent.height],
+    );
+    transform_payload.resize(
+        transform_payload
+            .len()
+            .saturating_add(dynamic_text.byte_capacity()),
+        0,
     );
     let material_payload = descriptor_layout.material_uniform_enabled.then(|| {
         pack_scene_material_uniforms(
@@ -156,7 +163,9 @@ pub(super) fn create_scene_gpu_resources(
         memory_properties,
         "scene-draw-transform-uniform-buffer",
         transform_payload.len() as u64,
-        vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        vk::BufferUsageFlags::UNIFORM_BUFFER
+            | vk::BufferUsageFlags::VERTEX_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
         Some(&transform_payload),
     ) {
@@ -228,6 +237,7 @@ pub(super) fn create_scene_gpu_resources(
     };
 
     let (mut resource_descriptors, draw_commands) = scene_descriptor_plan_inputs(
+        storage,
         &backend_plan.rendering_device_graph.mesh_draws,
         &backend_plan.rendering_device_graph.particle_gpu_emitters,
         &descriptor_layout,
@@ -607,6 +617,7 @@ pub(super) fn create_scene_gpu_resources(
         )
         .is_none(),
         frame_topology,
+        dynamic_text,
         dynamic_effect_uniforms,
         scene_color_msaa_enabled,
         multisampled_render_to_single_sampled_enabled,
@@ -639,7 +650,9 @@ fn create_additional_scene_frame_resources(
         memory_properties,
         "scene-draw-transform-uniform-buffer",
         transform_payload.len() as u64,
-        vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        vk::BufferUsageFlags::UNIFORM_BUFFER
+            | vk::BufferUsageFlags::VERTEX_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
         Some(transform_payload),
     )?;

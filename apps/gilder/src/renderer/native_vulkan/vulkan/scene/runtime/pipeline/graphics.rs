@@ -20,6 +20,7 @@ pub(super) fn create_graphics_pipeline(
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
     topology: vk::PrimitiveTopology,
+    dynamic_text: bool,
     local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
 ) -> Result<vk::Pipeline, String> {
     if local_read_metadata.is_some() && blend.requires_advanced_operation() {
@@ -35,19 +36,38 @@ pub(super) fn create_graphics_pipeline(
         );
     }
 
-    let binding = vk::VertexInputBindingDescription::builder()
-        .binding(0)
-        .stride(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
-        .input_rate(vk::VertexInputRate::VERTEX)
-        .build();
-    let attributes = [
-        vertex_attribute(0, vk::Format::R32G32_SFLOAT, 0),
-        vertex_attribute(1, vk::Format::R32G32_SFLOAT, 8),
-        vertex_attribute(2, vk::Format::R32_SFLOAT, 16),
-        vertex_attribute(3, vk::Format::R32G32B32A32_UINT, 20),
-        vertex_attribute(4, vk::Format::R32G32B32A32_SFLOAT, 36),
-    ];
-    let bindings = [binding];
+    let (bindings, attributes) = if dynamic_text {
+        (
+            vec![
+                vk::VertexInputBindingDescription::builder()
+                    .binding(1)
+                    .stride(super::super::dynamic_text::DYNAMIC_TEXT_INSTANCE_STRIDE as u32)
+                    .input_rate(vk::VertexInputRate::INSTANCE)
+                    .build(),
+            ],
+            vec![
+                vertex_attribute_for_binding(5, 1, vk::Format::R32G32B32A32_SFLOAT, 0),
+                vertex_attribute_for_binding(6, 1, vk::Format::R32G32B32A32_SFLOAT, 16),
+            ],
+        )
+    } else {
+        (
+            vec![
+                vk::VertexInputBindingDescription::builder()
+                    .binding(0)
+                    .stride(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
+                    .input_rate(vk::VertexInputRate::VERTEX)
+                    .build(),
+            ],
+            vec![
+                vertex_attribute(0, vk::Format::R32G32_SFLOAT, 0),
+                vertex_attribute(1, vk::Format::R32G32_SFLOAT, 8),
+                vertex_attribute(2, vk::Format::R32_SFLOAT, 16),
+                vertex_attribute(3, vk::Format::R32G32B32A32_UINT, 20),
+                vertex_attribute(4, vk::Format::R32G32B32A32_SFLOAT, 36),
+            ],
+        )
+    };
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(&bindings)
         .vertex_attribute_descriptions(&attributes)
@@ -143,6 +163,20 @@ fn vertex_attribute(
     vk::VertexInputAttributeDescription::builder()
         .location(location)
         .binding(0)
+        .format(format)
+        .offset(offset)
+        .build()
+}
+
+fn vertex_attribute_for_binding(
+    location: u32,
+    binding: u32,
+    format: vk::Format,
+    offset: u32,
+) -> vk::VertexInputAttributeDescription {
+    vk::VertexInputAttributeDescription::builder()
+        .location(location)
+        .binding(binding)
         .format(format)
         .offset(offset)
         .build()

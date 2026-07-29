@@ -272,6 +272,32 @@ impl SceneStorage {
         &self.document.script_programs
     }
 
+    pub fn dynamic_texts(&self) -> &[SceneDynamicTextRecord] {
+        &self.document.dynamic_texts
+    }
+
+    pub fn dynamic_text_for_object(
+        &self,
+        object: SceneObjectHandle,
+    ) -> Option<&SceneDynamicTextRecord> {
+        self.document
+            .dynamic_texts
+            .iter()
+            .find(|text| text.object == object)
+    }
+
+    pub fn dynamic_text_glyphs(
+        &self,
+        text: &SceneDynamicTextRecord,
+    ) -> &[SceneDynamicTextGlyphRecord] {
+        let start = text.glyph_start as usize;
+        let end = start.saturating_add(text.glyph_count as usize);
+        self.document
+            .dynamic_text_glyphs
+            .get(start..end)
+            .expect("scene storage validates dynamic text glyph ranges")
+    }
+
     pub fn user_property_bindings(&self) -> &[SceneUserPropertyBindingRecord] {
         &self.document.user_property_bindings
     }

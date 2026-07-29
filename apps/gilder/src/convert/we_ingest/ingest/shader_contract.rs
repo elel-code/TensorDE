@@ -214,6 +214,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
             | "we/passthrough"
             | "we/composelayer"
     ) || key == "we/objectcomposite"
+        || key == "gilder/dynamic-text"
         || key == "we/objectcomposite-screen-group"
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"

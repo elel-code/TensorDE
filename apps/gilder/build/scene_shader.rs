@@ -68,6 +68,38 @@ pub(super) fn generic_image_fragment_source() -> String {
     generic_image_fragment(false)
 }
 
+pub(super) fn dynamic_text_vertex_source() -> String {
+    r#"#version 450
+layout(location = 5) in vec4 a_GlyphPosition;
+layout(location = 6) in vec4 a_GlyphAtlasUv;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out float v_VertexAlpha;
+layout(set = 0, binding = 2) uniform SceneDrawTransform {
+    vec4 g_ModelViewProjectionMatrix[4];
+} g_Draw;
+void main() {
+    vec2 corners[6] = vec2[](
+        vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
+        vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0));
+    vec2 corner = corners[gl_VertexIndex];
+    vec2 local_position = vec2(
+        mix(a_GlyphPosition.x, a_GlyphPosition.z, corner.x),
+        mix(a_GlyphPosition.w, a_GlyphPosition.y, corner.y));
+    v_TexCoord = vec2(
+        mix(a_GlyphAtlasUv.x, a_GlyphAtlasUv.z, corner.x),
+        mix(a_GlyphAtlasUv.y, a_GlyphAtlasUv.w, corner.y));
+    v_VertexAlpha = 1.0;
+    vec4 local = vec4(local_position, 0.0, 1.0);
+    gl_Position = vec4(
+        dot(g_Draw.g_ModelViewProjectionMatrix[0], local),
+        dot(g_Draw.g_ModelViewProjectionMatrix[1], local),
+        dot(g_Draw.g_ModelViewProjectionMatrix[2], local),
+        dot(g_Draw.g_ModelViewProjectionMatrix[3], local));
+}
+"#
+    .to_owned()
+}
+
 pub(super) fn generic_image_multiply_fragment_source() -> String {
     generic_image_fragment(true)
 }

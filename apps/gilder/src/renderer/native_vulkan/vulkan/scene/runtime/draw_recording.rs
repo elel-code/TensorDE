@@ -48,6 +48,8 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub vertex_count: u32,
     pub instance_count: u32,
     pub instance_capacity: u32,
+    pub first_instance: u32,
+    pub dynamic_text: bool,
     pub particle_indirect_index: Option<u32>,
     pub resource_descriptor_base: usize,
     pub material_resource_descriptor: Option<usize>,
@@ -185,6 +187,17 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                 })?
                 .pipeline;
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            if draw.dynamic_text {
+                let instance_buffer = [frame.transform_buffer.buffer];
+                let instance_offset =
+                    [scene.draw_commands.len() as u64 * super::SCENE_DRAW_UNIFORM_BYTES];
+                device.cmd_bind_vertex_buffers(
+                    command_buffer,
+                    1,
+                    &instance_buffer,
+                    &instance_offset,
+                );
+            }
         }
         let scissor = scene_vk_scissor(draw.scissor, extent);
         unsafe {
@@ -201,6 +214,18 @@ unsafe fn record_bound_scene_draw(
     scene: &SceneGpuResources,
     draw: &SceneGpuDrawCommand,
 ) {
+    if draw.dynamic_text {
+        unsafe {
+            device.cmd_draw(
+                command_buffer,
+                6,
+                draw.instance_count,
+                0,
+                draw.first_instance,
+            );
+        }
+        return;
+    }
     match draw.primitive {
         SceneRenderingDeviceDrawPrimitive::ObjectMesh => unsafe {
             device.cmd_draw_indexed(

@@ -4,6 +4,10 @@
 //! text mutation will replace this retained fallback with a dirty atlas update, without adding a
 //! text-specific branch to the Vulkan command path.
 
+mod dynamic_atlas;
+
+pub(super) use dynamic_atlas::{DynamicTextAtlasEntry, DynamicTextAtlasKey};
+
 use ab_glyph::{Font, FontArc, FontRef, PxScale, ScaleFont, point};
 use serde_json::Value;
 
@@ -13,8 +17,8 @@ use crate::engine::scene::{
 };
 
 use super::super::ir::{
-    WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture, WeIrResourceSource, WeIrTexture,
-    WeIrTextureMip, WeIrUnsupported,
+    WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture, WeIrResourceSource, WeIrScriptProgram,
+    WeIrTexture, WeIrTextureMip, WeIrUnsupported,
 };
 use super::super::tex::{
     TexMetadata, TexParseError, TexUpload, TexUploadMip,
@@ -85,6 +89,7 @@ pub(super) fn ingest_text_layer(
     value: &Value,
     text: &str,
     selected_font: Option<&str>,
+    dynamic_programs: &[WeIrScriptProgram],
 ) -> Result<Option<(u32, u32)>, WeIngestError> {
     let font_path = selected_font
         .map(str::to_owned)
@@ -109,6 +114,19 @@ pub(super) fn ingest_text_layer(
     {
         font_resource = fallback_resource;
         font_bytes = builder.resources[font_resource as usize].payload.clone();
+    }
+    if !dynamic_programs.is_empty() {
+        return dynamic_atlas::ingest_dynamic_text_layer(
+            builder,
+            object,
+            value,
+            text,
+            font_resource,
+            font_bytes,
+            dynamic_programs,
+        )
+        .map(Some)
+        .map_err(|message| WeIngestError::Script { object, message });
     }
     let raster = match rasterize_text_layer(value, text, font_bytes) {
         Ok(raster) => raster,

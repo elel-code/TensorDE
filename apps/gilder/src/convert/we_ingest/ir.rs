@@ -39,6 +39,8 @@ pub struct WeSceneIr {
     pub object_transform_channels: Vec<WeIrObjectTransformChannel>,
     pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     pub script_programs: Vec<WeIrScriptProgram>,
+    pub dynamic_texts: Vec<WeIrDynamicText>,
+    pub dynamic_text_glyphs: Vec<WeIrDynamicTextGlyph>,
     pub user_property_bindings: Vec<WeIrUserPropertyBinding>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
@@ -89,11 +91,34 @@ pub enum WeIrUserPropertyPredicate {
 pub struct WeIrScriptProgram {
     pub object: u32,
     pub target: SceneScriptTarget,
+    pub updates_target_value: bool,
     pub source: String,
     pub properties_json: String,
     pub initial_text: String,
     pub subscriptions: SceneScriptSubscriptions,
     pub initial_numeric: [f32; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrDynamicText {
+    pub object: u32,
+    pub font_resource: u32,
+    pub atlas_resource: u32,
+    pub glyph_start: u32,
+    pub glyph_count: u32,
+    pub max_glyph_count: u32,
+    pub pixels_per_em: f32,
+    pub spacing: [f32; 2],
+    pub padding: [f32; 2],
+    pub horizontal_align: crate::engine::scene::SceneTextHorizontalAlign,
+    pub vertical_align: crate::engine::scene::SceneTextVerticalAlign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WeIrDynamicTextGlyph {
+    pub codepoint: u32,
+    pub atlas_uv: [f32; 4],
+    pub plane_bounds: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

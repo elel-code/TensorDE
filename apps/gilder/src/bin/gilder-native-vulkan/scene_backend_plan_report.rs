@@ -1,5 +1,6 @@
 use gilder::engine::scene::{
-    INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneCameraParallaxRecord, SceneObjectHandle,
+    INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneCameraParallaxRecord,
+    SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneObjectHandle,
     SceneObjectParallaxDepthRecord, SceneObjectRecord, SceneRenderPassRecord, SceneResourceRecord,
     SceneScriptProgramRecord, SceneStorage, SceneTextureRecord,
 };
@@ -8,7 +9,7 @@ use gilder::renderer::native_vulkan::{
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 6;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 7;
 
 #[derive(Debug, Serialize)]
 pub(super) struct SceneBackendPlanReport<'a> {
@@ -20,6 +21,8 @@ pub(super) struct SceneBackendPlanReport<'a> {
     pub scene_textures: &'a [SceneTextureRecord],
     pub scene_render_passes: &'a [SceneRenderPassRecord],
     pub scene_script_programs: &'a [SceneScriptProgramRecord],
+    pub scene_dynamic_texts: &'a [SceneDynamicTextRecord],
+    pub scene_dynamic_text_glyphs: &'a [SceneDynamicTextGlyphRecord],
     pub scene_camera_parallax: SceneCameraParallaxRecord,
     pub scene_object_parallax_depths: &'a [SceneObjectParallaxDepthRecord],
     pub scene_strings: &'a [String],
@@ -84,6 +87,8 @@ pub(super) fn scene_backend_plan_report<'a>(
         scene_textures: storage.textures(),
         scene_render_passes: &storage.document().render_passes,
         scene_script_programs: storage.script_programs(),
+        scene_dynamic_texts: storage.dynamic_texts(),
+        scene_dynamic_text_glyphs: &storage.document().dynamic_text_glyphs,
         scene_camera_parallax: storage.camera_parallax(),
         scene_object_parallax_depths: storage.object_parallax_depths(),
         scene_strings: storage.strings(),

@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 mod binary_contract;
+mod dynamic_text_contract;
 mod event_contract;
 mod particle_contract;
 mod render_contract;
@@ -20,8 +21,8 @@ mod render_state;
 mod script_contract;
 mod user_property_contract;
 pub use {
-    binary_contract::*, event_contract::*, particle_contract::*, render_contract::*,
-    render_state::*, script_contract::*, user_property_contract::*,
+    binary_contract::*, dynamic_text_contract::*, event_contract::*, particle_contract::*,
+    render_contract::*, render_state::*, script_contract::*, user_property_contract::*,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

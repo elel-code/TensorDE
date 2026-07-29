@@ -59,7 +59,12 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         skinning_storage_enabled: true,
     };
 
+    let storage = crate::engine::scene::SceneStorage::from_document(
+        crate::engine::scene::binary::SceneBinaryDocument::default(),
+    )
+    .expect("empty storage");
     let (descriptors, commands) = scene_descriptor_plan_inputs(
+        &storage,
         &[draw],
         &[],
         &layout,

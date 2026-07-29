@@ -147,6 +147,8 @@ fn draw_command(pipeline_index: u32) -> SceneGpuDrawCommand {
         vertex_count: 3,
         instance_count: 1,
         instance_capacity: 1,
+        first_instance: 0,
+        dynamic_text: false,
         particle_indirect_index: None,
         resource_descriptor_base: 0,
         material_resource_descriptor: None,

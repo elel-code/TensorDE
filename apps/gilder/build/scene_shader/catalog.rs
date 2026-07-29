@@ -16,6 +16,7 @@ pub(crate) struct SceneShaderSpec {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SceneShaderFamily {
     MeshGenericImage4,
+    MeshDynamicText,
     MeshGenericImage4PuppetSkinning,
     MeshColor,
     MeshColorPuppetSkinning,
@@ -176,6 +177,7 @@ pub(crate) fn build_scene_shader_catalog() {
 fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
     match spec.family {
         SceneShaderFamily::MeshGenericImage4
+        | SceneShaderFamily::MeshDynamicText
         | SceneShaderFamily::MeshGenericImage4PuppetSkinning
         | SceneShaderFamily::MeshColor
         | SceneShaderFamily::MeshColorPuppetSkinning
@@ -240,6 +242,10 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             };
             (scene_mesh_vertex_source(), fragment)
         }
+        SceneShaderFamily::MeshDynamicText => (
+            super::dynamic_text_vertex_source(),
+            super::generic_image_fragment_source(),
+        ),
         SceneShaderFamily::MeshGenericImage4PuppetSkinning => (
             scene_puppet_skinning_vertex_source(),
             super::generic_image_fragment_source(),

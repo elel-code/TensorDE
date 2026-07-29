@@ -18,6 +18,7 @@ use super::abi::*;
 
 mod codec;
 mod document;
+mod dynamic_text;
 mod mesh_clipping;
 mod particle;
 mod pointer_binding;
@@ -28,6 +29,7 @@ mod timeline;
 mod user_property_binding;
 
 use codec::*;
+use dynamic_text::{decode_dynamic_text, encode_dynamic_text};
 use particle::{decode_particles, encode_particles};
 use pointer_binding::{decode_pointer_bindings, encode_pointer_bindings};
 use scene_chunks::*;
@@ -249,6 +251,14 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "script binding",
         script_programs.len(),
     )?;
+    let (dynamic_texts, dynamic_text_glyphs) =
+        decode_dynamic_text(chunk_payload(&chunks, CHUNK_DYNAMIC_TEXT)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_DYNAMIC_TEXT,
+        "dynamic text",
+        dynamic_texts.len(),
+    )?;
     let user_property_bindings =
         decode_user_property_bindings(chunk_payload(&chunks, CHUNK_USER_PROPERTY_BINDING)?)?;
     ensure_chunk_count(
@@ -314,6 +324,8 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts,
         shader_constant_names,
         script_programs,
+        dynamic_texts,
+        dynamic_text_glyphs,
         user_property_bindings,
         camera_parallax,
         object_parallax_depths,
@@ -503,6 +515,11 @@ fn encode_chunks(
             kind: CHUNK_SCRIPT_BINDING,
             item_count: checked_u32(document.script_programs.len(), "script binding count")?,
             data: encode_script_bindings(&document.script_programs)?,
+        },
+        SceneEncodedChunk {
+            kind: CHUNK_DYNAMIC_TEXT,
+            item_count: checked_u32(document.dynamic_texts.len(), "dynamic text count")?,
+            data: encode_dynamic_text(&document.dynamic_texts, &document.dynamic_text_glyphs)?,
         },
         SceneEncodedChunk {
             kind: CHUNK_POINTER_BINDING,

@@ -65,6 +65,7 @@ mod composite_scissor;
 mod descriptor_layout;
 mod draw_recording;
 mod draw_uniform;
+mod dynamic_text;
 mod effect_target;
 mod flat_rounded_mask_coverage;
 mod frame_context;
@@ -389,6 +390,7 @@ struct SceneGpuResources {
     local_read_limits: SceneLocalReadDeviceLimits,
     sampled_descriptor_dirty_update_enabled: bool,
     frame_topology: SceneFrameTopology,
+    dynamic_text: dynamic_text::SceneDynamicTextRuntime,
     dynamic_effect_uniforms: bool,
     scene_color_msaa_enabled: bool,
     multisampled_render_to_single_sampled_enabled: bool,
@@ -666,6 +668,7 @@ fn end_one_time_commands(
 }
 
 fn scene_descriptor_plan_inputs(
+    storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     particle_emitters: &[SceneParticleGpuEmitterPlan],
     layout: &ScenePipelineDescriptorLayout,
@@ -713,6 +716,16 @@ fn scene_descriptor_plan_inputs(
             vertex_count: draw.vertex_count,
             instance_count: draw.instance_count,
             instance_capacity: draw.instance_count,
+            first_instance: storage
+                .dynamic_texts()
+                .iter()
+                .take_while(|text| text.object != draw.object)
+                .map(|text| text.max_glyph_count)
+                .sum(),
+            dynamic_text: storage.dynamic_text_for_object(draw.object).is_some()
+                && storage
+                    .string(draw.shader_key)
+                    .is_some_and(|key| key == "gilder/dynamic-text"),
             particle_indirect_index: particle_emitters
                 .iter()
                 .find(|emitter| {

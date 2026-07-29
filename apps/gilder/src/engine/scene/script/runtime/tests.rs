@@ -114,6 +114,25 @@ fn script_properties_and_text_results_survive_module_boundary() {
 }
 
 #[test]
+fn runtime_clock_text_produces_distinct_retained_values() {
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Text,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return Math.floor(engine.runtime).toString().padStart(2, '0'); }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect("runtime");
+    let first = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("first clock");
+    let mut next = input(SceneScriptSubscriptions::FRAME);
+    next.scene_time_seconds = 3.0;
+    let second = dispatch(&runtime, next).expect("second clock");
+    assert_eq!(first[0].text.as_deref(), Some("02"));
+    assert_eq!(second[0].text.as_deref(), Some("03"));
+}
+
+#[test]
 fn user_property_resolution_is_exact_and_type_strict() {
     let authored = r#"{"jia":{"value":true},"speed":{"value":1}}"#;
     let overrides = [("jia".to_owned(), Value::Bool(false))]

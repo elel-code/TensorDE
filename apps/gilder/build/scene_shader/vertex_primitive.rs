@@ -21,6 +21,7 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
             "FullscreenTriangle"
         }
         MeshGenericImage4
+        | MeshDynamicText
         | MeshGenericImage4PuppetSkinning
         | MeshColor
         | MeshColorPuppetSkinning

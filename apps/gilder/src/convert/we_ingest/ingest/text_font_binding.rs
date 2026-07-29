@@ -15,6 +15,13 @@ globalThis.shared = Object.create(null);
 globalThis.engine = {
     registerAsset(path) { return path; },
 };
+globalThis.Vec3 = class Vec3 {
+    constructor(x = 0, y = 0, z = 0) {
+        this.x = Number(x);
+        this.y = Number(y);
+        this.z = Number(z);
+    }
+};
 globalThis.thisScene = {
     getLayer(name) {
         return __gilderLayers[name] ||= { font: null };
@@ -274,6 +281,28 @@ mod tests {
         assert_eq!(
             text_font_overrides(&scene, &project).expect("font overrides"),
             BTreeMap::from([("日期".to_owned(), "fonts/date.ttf".to_owned())])
+        );
+    }
+
+    #[test]
+    fn font_property_module_can_initialize_authored_vec3_state() {
+        let scene = serde_json::json!({
+            "objects": [{
+                "name": "字体控制器",
+                "visible": {"script": r#"
+                    const retained = new Vec3(1, 2, 3);
+                    const font = engine.registerAsset('fonts/retained.ttf');
+                    export function applyUserProperties() {
+                        if (retained.x === 1 && retained.y === 2 && retained.z === 3) {
+                            thisScene.getLayer('时间').font = font;
+                        }
+                    }
+                "#}
+            }]
+        });
+        assert_eq!(
+            text_font_overrides(&scene, &serde_json::json!({})).expect("font overrides"),
+            BTreeMap::from([("时间".to_owned(), "fonts/retained.ttf".to_owned())])
         );
     }
 }

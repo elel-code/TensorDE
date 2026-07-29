@@ -52,7 +52,7 @@ use crate::engine::render_graph::{
 };
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, SceneResourceKind,
-    SceneVec3,
+    SceneScriptTarget, SceneVec3,
 };
 
 use super::ir::*;
@@ -92,8 +92,9 @@ use shader_texture_default::{
 };
 use text_font_binding::text_font_overrides;
 use text_layer::{
-    ingest_text_layer, retained_text_effect_is_supported,
-    retained_text_effect_requires_dependency_composite, text_layer_value,
+    DynamicTextAtlasEntry, DynamicTextAtlasKey, ingest_text_layer,
+    retained_text_effect_is_supported, retained_text_effect_requires_dependency_composite,
+    text_layer_value,
 };
 use texture_resolver::texture_candidates;
 use transform_animation::ingest_object_transform_tracks;
@@ -233,6 +234,9 @@ struct WeIrBuilder {
     object_transform_channels: Vec<WeIrObjectTransformChannel>,
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     script_programs: Vec<WeIrScriptProgram>,
+    dynamic_texts: Vec<WeIrDynamicText>,
+    dynamic_text_glyphs: Vec<WeIrDynamicTextGlyph>,
+    dynamic_text_atlases: BTreeMap<DynamicTextAtlasKey, DynamicTextAtlasEntry>,
     user_property_bindings: Vec<WeIrUserPropertyBinding>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
@@ -299,6 +303,9 @@ impl WeIrBuilder {
             object_transform_channels: Vec::new(),
             object_transform_keyframes: Vec::new(),
             script_programs: Vec::new(),
+            dynamic_texts: Vec::new(),
+            dynamic_text_glyphs: Vec::new(),
+            dynamic_text_atlases: BTreeMap::new(),
             user_property_bindings: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
@@ -355,6 +362,8 @@ impl WeIrBuilder {
             object_transform_channels: self.object_transform_channels,
             object_transform_keyframes: self.object_transform_keyframes,
             script_programs: self.script_programs,
+            dynamic_texts: self.dynamic_texts,
+            dynamic_text_glyphs: self.dynamic_text_glyphs,
             user_property_bindings: self.user_property_bindings,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
@@ -453,18 +462,24 @@ impl WeIrBuilder {
             .unwrap_or_default();
         let particle_path = bound_string(value.get("particle")).unwrap_or_default();
         let text_value = text_layer_value(value);
-        self.script_programs.extend(
-            object_script_programs(
-                handle,
-                value,
-                text_value.as_deref(),
-                &self.project_property_defaults,
-            )
-            .map_err(|source| WeIngestError::Script {
-                object: handle,
-                message: source.to_string(),
-            })?,
-        );
+        let object_programs = object_script_programs(
+            handle,
+            value,
+            text_value.as_deref(),
+            &self.project_property_defaults,
+        )
+        .map_err(|source| WeIngestError::Script {
+            object: handle,
+            message: source.to_string(),
+        })?;
+        let dynamic_text_programs = object_programs
+            .iter()
+            .filter(|program| {
+                program.target == SceneScriptTarget::Text && program.updates_target_value
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.script_programs.extend(object_programs);
         self.script_programs.extend(
             effect_script_programs(handle, value, &self.project_property_defaults).map_err(
                 |source| WeIngestError::Script {
@@ -487,7 +502,14 @@ impl WeIrBuilder {
         } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
             let selected_font = self.text_font_overrides.get(&name).cloned();
-            match ingest_text_layer(self, handle, value, text, selected_font.as_deref())? {
+            match ingest_text_layer(
+                self,
+                handle,
+                value,
+                text,
+                selected_font.as_deref(),
+                &dynamic_text_programs,
+            )? {
                 Some((font_resource, text_material)) => {
                     resource = Some(font_resource);
                     material = Some(text_material);

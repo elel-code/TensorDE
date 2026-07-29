@@ -390,6 +390,8 @@ mod tests {
             vertex_count: 6,
             instance_count: 1,
             instance_capacity: 1,
+            first_instance: 0,
+            dynamic_text: false,
             particle_indirect_index: None,
             resource_descriptor_base: 0,
             material_resource_descriptor: None,

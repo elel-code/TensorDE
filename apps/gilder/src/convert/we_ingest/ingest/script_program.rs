@@ -40,6 +40,7 @@ pub(super) fn object_script_programs(
         programs.push(WeIrScriptProgram {
             object,
             target,
+            updates_target_value: analysis.exports_update,
             source: source.to_owned(),
             properties_json,
             initial_text: initial_text.unwrap_or_default().to_owned(),
@@ -120,6 +121,7 @@ pub(super) fn effect_script_programs(
         programs.push(WeIrScriptProgram {
             object,
             target: SceneScriptTarget::TechCircleSectorWidth,
+            updates_target_value: analysis.exports_update,
             source: source.to_owned(),
             properties_json: binding
                 .as_object()
@@ -337,6 +339,33 @@ mod tests {
                 .expect("programs")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn only_update_exports_can_replace_the_target_value() {
+        let font_property = json!({
+            "text": {
+                "value": "DREAMLIKE",
+                "script": "export function applyUserProperties() { thisLayer.font = 'font.ttf'; }"
+            }
+        });
+        let clock = json!({
+            "text": {
+                "value": "23",
+                "script": "export function update() { return new Date().getSeconds().toString(); }"
+            }
+        });
+
+        let font_programs =
+            object_script_programs(0, &font_property, Some("DREAMLIKE"), &Map::new())
+                .expect("font program");
+        let clock_programs =
+            object_script_programs(1, &clock, Some("23"), &Map::new()).expect("clock program");
+
+        assert_eq!(font_programs.len(), 1);
+        assert!(!font_programs[0].updates_target_value);
+        assert_eq!(clock_programs.len(), 1);
+        assert!(clock_programs[0].updates_target_value);
     }
 
     #[test]

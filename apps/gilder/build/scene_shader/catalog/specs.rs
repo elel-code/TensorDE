@@ -2,6 +2,10 @@ use super::{SceneShaderFamily, SceneShaderSpec};
 
 pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     SceneShaderSpec {
+        key: "gilder/dynamic-text",
+        family: SceneShaderFamily::MeshDynamicText,
+    },
+    SceneShaderSpec {
         key: "effects/111__SLOTS_1__BLENDMODE_7",
         family: SceneShaderFamily::Effect,
     },

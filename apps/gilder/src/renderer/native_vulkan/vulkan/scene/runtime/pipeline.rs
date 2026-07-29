@@ -425,6 +425,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             } else {
                 vk::PrimitiveTopology::TRIANGLE_LIST
             },
+            vertex_shader_key == "gilder/dynamic-text",
         ) {
             Ok(pipeline) => {
                 if pipeline_debug {
@@ -790,6 +791,7 @@ fn create_scene_pipeline(
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
     topology: vk::PrimitiveTopology,
+    dynamic_text: bool,
 ) -> Result<vk::Pipeline, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene pipeline requires non-zero extent".to_owned());
@@ -816,6 +818,7 @@ fn create_scene_pipeline(
             advanced_blend_overlap,
             samples,
             topology,
+            dynamic_text,
         );
         unsafe {
             device.destroy_shader_module(fragment_module, None);
@@ -844,6 +847,7 @@ fn create_scene_pipeline_with_modules(
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
     topology: vk::PrimitiveTopology,
+    dynamic_text: bool,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
     let mut vertex_mappings = vec![
@@ -960,6 +964,7 @@ fn create_scene_pipeline_with_modules(
         advanced_blend_overlap,
         samples,
         topology,
+        dynamic_text,
         local_read_metadata,
     )
 }

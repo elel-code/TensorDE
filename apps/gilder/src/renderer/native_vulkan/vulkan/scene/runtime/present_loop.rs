@@ -466,6 +466,7 @@ pub(super) fn with_scene_present(
             scene_time_seconds,
             frame_delta_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
+            &mut scene_resources.dynamic_text,
         )?;
         if frames_presented == 0
             && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
