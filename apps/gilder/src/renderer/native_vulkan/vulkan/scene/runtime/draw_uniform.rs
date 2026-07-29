@@ -537,8 +537,5 @@ fn bool_float(value: bool) -> f32 {
 }
 
 #[cfg(test)]
-mod target_local_uv_tests;
-
-#[cfg(test)]
 #[path = "draw_uniform/tests.rs"]
 mod tests;

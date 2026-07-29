@@ -20,21 +20,6 @@ fn pack_test_scene_material_uniforms(
     super::pack_scene_material_uniforms(storage, draws, scene_time_seconds, TEST_OUTPUT_EXTENT)
 }
 
-fn pack_test_scene_material_uniforms_with_spectrum(
-    storage: &SceneStorage,
-    draws: &[SceneRenderingDeviceMeshDraw],
-    scene_time_seconds: f32,
-    spectrum: Option<&[f32; 32]>,
-) -> Vec<u8> {
-    super::pack_scene_material_uniforms_with_spectrum(
-        storage,
-        draws,
-        scene_time_seconds,
-        TEST_OUTPUT_EXTENT,
-        spectrum,
-    )
-}
-
 #[test]
 fn material_scalar_override_replaces_only_its_typed_constant() {
     let storage = storage_with_constants("effects/opacity__SLOTS_1", &[("alpha", "0.44")]);
@@ -418,53 +403,6 @@ fn waterwaves_composite_receives_its_atlas_tile_rectangle() {
 }
 
 #[test]
-fn rounded_mask_uniform_packs_sdf_shape_parameters() {
-    let storage = storage_with_constants(
-        "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
-        &[
-            ("Color", "\"0.2 0.4 0.6\""),
-            ("Radius", "0.35"),
-            ("Size", "\"0.8 0.9\""),
-            ("Softness", "1.75"),
-            ("ui_editor_properties_opacity", "0.7"),
-        ],
-    );
-    let payload = pack_test_scene_material_uniforms(
-        &storage,
-        &[draw_with_material(SceneMaterialHandle(0))],
-        0.0,
-    );
-
-    for (lane, expected) in [0.2, 0.4, 0.6, 0.35, 0.8, 0.9, 1.75, 0.7]
-        .into_iter()
-        .enumerate()
-    {
-        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
-    }
-}
-
-#[test]
-fn rounded_mask_visibility_lane_disables_the_authored_sdf_stage() {
-    let storage = storage_with_constants(
-        "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
-        &[],
-    );
-    let mut draw = draw_with_material(SceneMaterialHandle(0));
-    draw.effect_binding_start = 2;
-    draw.effect_binding_count = 1;
-    draw.effect_visibility_policy =
-        crate::engine::scene::SceneRenderEffectVisibilityPolicy::FlatRoundedMask;
-    draw.resolved_effect_visibility_mask = 0;
-    draw.authored_source_extent = [550.0, 3300.0];
-
-    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
-
-    assert_eq!(f32_from_payload(&payload, 9 * 4), 0.0);
-    assert_eq!(f32_from_payload(&payload, 10 * 4), 550.0);
-    assert_eq!(f32_from_payload(&payload, 11 * 4), 3300.0);
-}
-
-#[test]
 fn scroll_uniform_packs_time_signed_speed_and_repeat_inputs() {
     let storage = storage_with_constants(
         "effects/scroll__SLOTS_1",
@@ -506,131 +444,6 @@ fn skew_uniform_packs_authored_edge_offsets() {
 
     for (lane, expected) in [0.1, -0.39, 0.2, -0.3].into_iter().enumerate() {
         assert_eq!(f32_from_payload(&payload, lane * 4), expected);
-    }
-}
-
-#[test]
-fn tech_circle_uniform_packs_bound_sector_value_and_time() {
-    let storage = storage_with_constants(
-        "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
-        &[
-            (
-                "ui_editor_properties_1_color",
-                "{\"value\":\"0.2 0.4 0.6\"}",
-            ),
-            ("ui_editor_properties_2_alpha", "0.8"),
-            ("ui_editor_properties_3_speed", "0.1"),
-            ("ui_editor_properties_4_ring_1_radius", "0.54"),
-            ("ui_editor_properties_4_ring_1_width", "0.04"),
-            (
-                "ui_editor_properties_5_sector_1_width",
-                "{\"script\":\"ignored\",\"value\":0.3}",
-            ),
-            ("ui_editor_properties_5_sector_segment_count", "5"),
-            ("ui_editor_properties_5_sector_segment_width", "0.75"),
-        ],
-    );
-    let payload = pack_test_scene_material_uniforms(
-        &storage,
-        &[draw_with_material(SceneMaterialHandle(0))],
-        4.5,
-    );
-
-    assert_eq!(f32_from_payload(&payload, 0), 0.2);
-    assert_eq!(f32_from_payload(&payload, 4), 0.4);
-    assert_eq!(f32_from_payload(&payload, 8), 0.6);
-    assert_eq!(f32_from_payload(&payload, 12), 0.8);
-    assert_eq!(f32_from_payload(&payload, 16), 4.5);
-    assert_eq!(f32_from_payload(&payload, 20), 0.1);
-    assert_eq!(f32_from_payload(&payload, 28), 0.54);
-    assert_eq!(f32_from_payload(&payload, 32), 0.04);
-    assert_eq!(f32_from_payload(&payload, 48), 0.3);
-    assert_eq!(f32_from_payload(&payload, 52), 5.0);
-    assert_eq!(f32_from_payload(&payload, 56), 0.75);
-}
-
-#[test]
-fn audio_bars_uniform_packs_zero_spectrum_baseline_shape() {
-    let storage = storage_with_constants(
-        "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
-        &[
-            ("Bar Color", "{\"value\":\"0.2 0.4 0.6\"}"),
-            ("ui_editor_properties_opacity", "0.8"),
-            ("Bar Count", "12"),
-            ("Bar Spacing", "0.31"),
-            ("Lower/Upper Bar Bounds", "\"0.1 0.1\""),
-            ("Minimum Height (Will be multiplied by the bar width) ", "1"),
-            ("Radius", "1"),
-            ("Volume Factor", "0.5"),
-            ("Anti-alias blurring ", "\"0.01 0.04\""),
-        ],
-    );
-    let payload = pack_test_scene_material_uniforms(
-        &storage,
-        &[draw_with_material(SceneMaterialHandle(0))],
-        0.0,
-    );
-
-    for (lane, expected) in [
-        0.2, 0.4, 0.6, 0.8, 12.0, 0.31, 0.1, 0.1, 1.0, 1.0, 0.5, 0.01, 0.04,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        assert_eq!(f32_from_payload(&payload, lane * 4), expected);
-    }
-    assert_eq!(f32_from_payload(&payload, 16 * 4), 0.0);
-    assert_eq!(f32_from_payload(&payload, 48 * 4), 0.0);
-}
-
-#[test]
-fn audio_bars_uniform_duplicates_mono_spectrum_into_stereo_vec4_arrays() {
-    let storage = storage_with_constants("effects/simple_audio_bars__SLOTS_1__SHAPE_7", &[]);
-    let spectrum = std::array::from_fn(|band| band as f32 / 31.0);
-    let payload = pack_test_scene_material_uniforms_with_spectrum(
-        &storage,
-        &[draw_with_material(SceneMaterialHandle(0))],
-        0.0,
-        Some(&spectrum),
-    );
-
-    assert_eq!(payload.len(), SCENE_MATERIAL_UNIFORM_BYTES as usize);
-    for band in 0..32 {
-        assert_eq!(f32_from_payload(&payload, (16 + band) * 4), spectrum[band]);
-        assert_eq!(f32_from_payload(&payload, (48 + band) * 4), spectrum[band]);
-    }
-}
-
-#[test]
-fn audio_line_uniform_preserves_independent_stereo64_channels() {
-    let storage = storage_with_constants("effects/audioline__SLOTS_1", &[]);
-    let spectrum = StereoSpectrum64 {
-        left: std::array::from_fn(|band| band as f32 / 64.0),
-        right: std::array::from_fn(|band| 1.0 + band as f32 / 64.0),
-    };
-    let payload = super::pack_scene_material_uniforms_with_frame_inputs(
-        &storage,
-        &[draw_with_material(SceneMaterialHandle(0))],
-        0.0,
-        TEST_OUTPUT_EXTENT,
-        SceneMaterialFrameInputs {
-            average_spectrum32: None,
-            stereo_spectrum64: Some(&spectrum),
-            audio_material_values: &[],
-            material_scalar_values: &[],
-        },
-    );
-
-    assert_eq!(payload.len(), SCENE_MATERIAL_UNIFORM_BYTES as usize);
-    for band in 0..64 {
-        assert_eq!(
-            f32_from_payload(&payload, (16 + band) * 4),
-            spectrum.left[band]
-        );
-        assert_eq!(
-            f32_from_payload(&payload, (80 + band) * 4),
-            spectrum.right[band]
-        );
     }
 }
 

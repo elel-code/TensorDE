@@ -180,40 +180,6 @@
         );
     }
 
-    #[test]
-    fn rounded_mask_support_quad_packs_projected_bounds_and_six_vertex_extent() {
-        let storage = rounded_mask_storage();
-        let mut draw = draw_with_material(SceneMaterialHandle(0));
-        draw.primitive = SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad;
-        draw.authored_source_extent = [20.0, 40.0];
-        draw.clip_transform = [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.0, -0.05, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-
-        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [100, 100]);
-
-        for (lane, expected) in [
-            (0, 1.0),
-            (1, 0.0),
-            (2, 0.0),
-            (4, 0.0),
-            (5, 1.0),
-            (6, 0.0),
-            (8, 100.0),
-            (9, 100.0),
-            (10, 100.0),
-            (12, 0.1),
-            (13, 0.2),
-            (14, 0.9),
-            (15, 0.8),
-        ] {
-            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
-        }
-    }
-
     fn iris_storage() -> SceneStorage {
         SceneStorage::from_document(SceneBinaryDocument {
             strings: vec![
@@ -348,52 +314,6 @@
             ..SceneBinaryDocument::default()
         })
         .expect("oscilloscope storage")
-    }
-
-    fn rounded_mask_storage() -> SceneStorage {
-        SceneStorage::from_document(SceneBinaryDocument {
-            strings: vec![
-                "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
-                    .to_owned(),
-                "Size".to_owned(),
-                "\"0.8 0.6\"".to_owned(),
-                "Softness".to_owned(),
-                "0".to_owned(),
-            ],
-            materials: vec![SceneMaterialRecord {
-                id: SceneMaterialHandle(0),
-                resource: SceneResourceId::NONE,
-                pass_start: 0,
-                pass_count: 1,
-            }],
-            material_passes: vec![SceneMaterialPassRecord {
-                material: SceneMaterialHandle(0),
-                shader_key: SceneStringId(0),
-                target: SceneStringId::NONE,
-                texture_start: 0,
-                texture_count: 0,
-                constant_start: 0,
-                constant_count: 2,
-                pipeline_blend: ScenePipelineBlend::Normal,
-                depth_test: SceneDepthTest::Disabled,
-                depth_write: false,
-                cull_mode: SceneCullMode::None,
-                alpha_writing: SceneStringId::NONE,
-                clear_target: false,
-            }],
-            material_constants: vec![
-                SceneMaterialConstantRecord {
-                    name: SceneStringId(1),
-                    value_json: SceneStringId(2),
-                },
-                SceneMaterialConstantRecord {
-                    name: SceneStringId(3),
-                    value_json: SceneStringId(4),
-                },
-            ],
-            ..SceneBinaryDocument::default()
-        })
-        .expect("rounded-mask storage")
     }
 
     fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {

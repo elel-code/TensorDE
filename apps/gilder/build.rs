@@ -29,6 +29,8 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 
+    scene_shader::build_scene_shader_origin_catalog();
+
     if env::var_os("CARGO_FEATURE_NATIVE_VULKAN_RENDERER").is_some() {
         scene_shader::build_scene_shader_catalog();
         system_audio_monitor::build_system_audio_monitor();

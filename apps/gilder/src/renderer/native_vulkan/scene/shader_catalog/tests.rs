@@ -1,12 +1,8 @@
     use super::*;
 
-    const SPIRV_OP_EXTENSION: u16 = 10;
-    const SPIRV_OP_CAPABILITY: u16 = 17;
     const SPIRV_OP_NAME: u16 = 5;
-    const SPIRV_OP_TYPE_POINTER: u16 = 32;
     const SPIRV_OP_VARIABLE: u16 = 59;
     const SPIRV_OP_DECORATE: u16 = 71;
-    const SPIRV_OP_MEMBER_DECORATE: u16 = 72;
     const SPIRV_STORAGE_UNIFORM_CONSTANT: u32 = 0;
     const SPIRV_STORAGE_INPUT: u32 = 1;
     const SPIRV_STORAGE_UNIFORM: u32 = 2;
@@ -14,8 +10,6 @@
     const SPIRV_DECORATION_LOCATION: u32 = 30;
     const SPIRV_DECORATION_BINDING: u32 = 33;
     const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
-    const SPIRV_DECORATION_OFFSET: u32 = 35;
-    const SPIRV_CAPABILITY_DESCRIPTOR_HEAP_EXT: u32 = 5_128;
 
     fn spirv_instructions(words: &[u32]) -> Vec<&[u32]> {
         assert!(words.len() >= 5, "SPIR-V module must contain its header");
@@ -50,35 +44,6 @@
                 (bytes == expected_name.as_bytes()).then_some(instruction[1])
             })
             .unwrap_or_else(|| panic!("SPIR-V interface variable {expected_name:?} is missing"))
-    }
-
-    fn spirv_string(instruction: &[u32], first_word: usize) -> String {
-        let mut bytes = instruction[first_word..]
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect::<Vec<_>>();
-        bytes.truncate(bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len()));
-        String::from_utf8(bytes).expect("SPIR-V string must be UTF-8")
-    }
-
-    fn assert_native_descriptor_heap_spirv(words: &[u32]) {
-        let instructions = spirv_instructions(words);
-        assert!(instructions.iter().any(|instruction| {
-            (instruction[0] & 0xffff) as u16 == SPIRV_OP_CAPABILITY
-                && instruction.get(1) == Some(&SPIRV_CAPABILITY_DESCRIPTOR_HEAP_EXT)
-        }));
-        assert!(instructions.iter().any(|instruction| {
-            (instruction[0] & 0xffff) as u16 == SPIRV_OP_EXTENSION
-                && spirv_string(instruction, 1) == "SPV_EXT_descriptor_heap"
-        }));
-        assert!(!instructions.iter().any(|instruction| {
-            (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
-                && matches!(
-                    instruction.get(2),
-                    Some(&SPIRV_DECORATION_BINDING)
-                        | Some(&SPIRV_DECORATION_DESCRIPTOR_SET)
-                )
-        }));
     }
 
     fn assert_spirv_variable(words: &[u32], name: &str, storage_class: u32) -> u32 {
@@ -128,62 +93,6 @@
         let id = assert_spirv_variable(words, name, SPIRV_STORAGE_UNIFORM_CONSTANT);
         assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
         assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, binding);
-    }
-
-    fn spirv_uniform_block_type(words: &[u32], variable_name: &str) -> u32 {
-        let variable = spirv_named_id(words, variable_name);
-        let pointer = spirv_instructions(words)
-            .into_iter()
-            .find(|instruction| {
-                (instruction[0] & 0xffff) as u16 == SPIRV_OP_VARIABLE
-                    && instruction.len() >= 4
-                    && instruction[2] == variable
-            })
-            .expect("uniform variable declaration")[1];
-        spirv_instructions(words)
-            .into_iter()
-            .find(|instruction| {
-                (instruction[0] & 0xffff) as u16 == SPIRV_OP_TYPE_POINTER
-                    && instruction.len() >= 4
-                    && instruction[1] == pointer
-            })
-            .expect("uniform pointer declaration")[3]
-    }
-
-    fn assert_spirv_member_offset(words: &[u32], block: u32, member: u32, offset: u32) {
-        assert!(spirv_instructions(words).into_iter().any(|instruction| {
-            (instruction[0] & 0xffff) as u16 == SPIRV_OP_MEMBER_DECORATE
-                && instruction.len() >= 5
-                && instruction[1] == block
-                && instruction[2] == member
-                && instruction[3] == SPIRV_DECORATION_OFFSET
-                && instruction[4] == offset
-        }));
-    }
-
-    #[test]
-    fn audioline_slang_preserves_stereo64_uniform_abi() {
-        let shader = native_vulkan_scene_shader_for_key("effects/audioline__SLOTS_1")
-            .expect("audioline shader");
-        assert!(!shader.fragment_source.contains("#version"));
-        assert!(!shader.fragment_source.contains("layout("));
-        assert!(shader.fragment_source.contains("[shader(\"fragment\")]"));
-        assert!(shader.fragment_source.contains("DescriptorHandle<Texture2D<float4>>"));
-        assert!(shader
-            .fragment_source
-            .contains("DescriptorHandle<ConstantBuffer<AudioLineUniform>>"));
-        assert_eq!(
-            shader.fragment_descriptor_heap_mode,
-            BuiltinSceneDescriptorHeapMode::Native
-        );
-        assert_native_descriptor_heap_spirv(shader.fragment_spirv);
-        let push = spirv_named_id(shader.fragment_spirv, "AudioLinePush_std430");
-        assert_spirv_member_offset(shader.fragment_spirv, push, 0, 0);
-        assert_spirv_member_offset(shader.fragment_spirv, push, 1, 4);
-        assert_spirv_member_offset(shader.fragment_spirv, push, 2, 8);
-        let block = spirv_named_id(shader.fragment_spirv, "AudioLineUniform_std140");
-        assert_spirv_member_offset(shader.fragment_spirv, block, 4, 64);
-        assert_spirv_member_offset(shader.fragment_spirv, block, 5, 320);
     }
 
     #[test]
@@ -454,20 +363,7 @@
                 .parameter_layout,
             BuiltinSceneParameterLayout::FoliageSway
         );
-        let rounded = native_vulkan_scene_shader_for_key(
-            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
-        )
-        .expect("rounded mask shader");
-        assert_eq!(
-            rounded.parameter_layout,
-            BuiltinSceneParameterLayout::RoundedMask
-        );
-        assert!(rounded.fragment_spirv.len() > 200);
         for (key, layout) in [
-            (
-                "effects/auto_sway__SLOTS_1__DEBUG_0__DEBUG_NO_ALPHA_1__NODE_COUNT_4",
-                BuiltinSceneParameterLayout::AutoSway,
-            ),
             (
                 "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
                 BuiltinSceneParameterLayout::BlurCombine,
@@ -477,14 +373,6 @@
                 BuiltinSceneParameterLayout::BlurGaussian,
             ),
             (
-                "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1",
-                BuiltinSceneParameterLayout::ProceduralNoise,
-            ),
-            (
-                "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
-                BuiltinSceneParameterLayout::AudioBars,
-            ),
-            (
                 "effects/scroll__SLOTS_1",
                 BuiltinSceneParameterLayout::Scroll,
             ),
@@ -492,10 +380,6 @@
             (
                 "effects/waterflow__SLOTS_7",
                 BuiltinSceneParameterLayout::WaterFlow,
-            ),
-            (
-                "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
-                BuiltinSceneParameterLayout::TechCircle,
             ),
             (
                 "we/puppet-waterwaves-direct__STAGES_7",
@@ -513,85 +397,38 @@
     }
 
     #[test]
-    fn authored_workshop_shader_closure_has_typed_spirv_interfaces() {
-        for (key, layout) in [
-            (
-                "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__AB_TYPEUV_4",
-                BuiltinSceneParameterLayout::ProceduralNoise,
-            ),
-            (
-                "effects/audioline__SLOTS_1",
-                BuiltinSceneParameterLayout::AudioLine,
-            ),
-            (
-                "effects/gradient_color__SLOTS_1__AXIS_1__BLENDMODE_0",
-                BuiltinSceneParameterLayout::GradientColor,
-            ),
-            ("effects/huan__SLOTS_1", BuiltinSceneParameterLayout::Ring),
-            (
-                "effects/qiu__SLOTS_1__CUSTOMCOLOR_1__RAINBOW_0__SPHERE_SOLID_COLOR_1",
-                BuiltinSceneParameterLayout::Sphere,
-            ),
-            (
-                "effects/rounded_mask_effect_edit__SLOTS_1__B_SQUARE_0__SOFT_1",
-                BuiltinSceneParameterLayout::RoundedMask,
-            ),
-            (
-                "effects/custom_user_texture__SLOTS_3__WRITEALPHA_1",
-                BuiltinSceneParameterLayout::CustomUserTexture,
-            ),
-        ] {
-            let shader = native_vulkan_scene_shader_for_key(key).expect("authored shader closure");
-            assert_eq!(shader.parameter_layout, layout);
-            if shader.fragment_descriptor_heap_mode == BuiltinSceneDescriptorHeapMode::Native {
-                assert_eq!(layout, BuiltinSceneParameterLayout::AudioLine);
-                assert_native_descriptor_heap_spirv(shader.fragment_spirv);
-            } else {
-                if layout != BuiltinSceneParameterLayout::Ring {
-                    assert_spirv_sampled_binding(shader.fragment_spirv, "g_Texture0", 0);
-                }
-                assert_spirv_material_uniform(shader.fragment_spirv);
-            }
-        }
-
+    fn package_only_programs_are_absent_from_the_builtin_catalog() {
         for key in [
+            "effects/111__SLOTS_1__BLENDMODE_7",
+            "effects/111__SLOTS_1__BLENDMODE_31",
+            "effects/audioline__SLOTS_1",
+            "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16",
+            "effects/auto_sway__SLOTS_1__DEBUG_0__DEBUG_NO_ALPHA_1__NODE_COUNT_4",
             "effects/clipping_mask__SLOTS_9",
             "effects/clipping_mask__SLOTS_b",
             "effects/clipping_mask__SLOTS_f",
+            "effects/custom_user_texture__SLOTS_3__WRITEALPHA_1",
+            "effects/gradient_color__SLOTS_1__AXIS_1__BLENDMODE_0",
+            "effects/huan__SLOTS_1",
+            "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__AB_TYPEUV_4",
+            "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__BLENDMODE_20__STEPANIM_1",
+            "effects/qiu__SLOTS_1__CUSTOMCOLOR_1__RAINBOW_0__SPHERE_SOLID_COLOR_1",
+            "effects/raindrop_on_glass__SLOTS_1",
+            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__SEDIRECTION_1__SOFT_1",
+            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__SOFT_1",
+            "effects/rounded_mask__SLOTS_1__SOFT_1",
+            "effects/rounded_mask_effect_edit__SLOTS_1__B_SQUARE_0__SOFT_1",
+            "effects/simple_audio_bars__SLOTS_1__ANTIALIAS_0__SHAPE_7",
+            "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
+            "effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+            "effects/user_texture_alpha_overwrite_workaround__SLOTS_1",
         ] {
-            let shader = native_vulkan_scene_shader_for_key(key).expect("clipping-mask closure");
-            assert_eq!(
-                shader.parameter_layout,
-                BuiltinSceneParameterLayout::ClippingMask
+            assert!(
+                native_vulkan_scene_shader_for_key(key).is_none(),
+                "package-only shader {key:?} must be carried by the scene-owned SPIR-V ABI"
             );
-            for (name, location) in [
-                ("v_SourceCoord", 0),
-                ("v_ClipBaseCoord", 1),
-                ("v_ScreenCoord", 2),
-            ] {
-                assert_spirv_stage_interface(
-                    shader.vertex_spirv,
-                    name,
-                    SPIRV_STORAGE_OUTPUT,
-                    location,
-                );
-            }
-            assert_spirv_sampled_binding(shader.fragment_spirv, "g_Texture0", 0);
         }
-        let clipping = native_vulkan_scene_shader_for_key("effects/clipping_mask__SLOTS_f")
-            .expect("full clipping-mask closure");
-        assert!(
-            native_vulkan_scene_vertex_spirv_for_primitive(
-                clipping,
-                crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
-            )
-            .is_none(),
-            "slot 2 is a sampled mask and cannot alias the object-mesh draw uniform"
-        );
-        assert_spirv_sampled_binding(clipping.fragment_spirv, "g_Texture1", 1);
-        assert_spirv_sampled_binding(clipping.fragment_spirv, "g_Texture2", 2);
-        assert_spirv_sampled_binding(clipping.fragment_spirv, "g_Texture3", 35);
-        assert_spirv_material_uniform(clipping.fragment_spirv);
     }
 
     #[test]

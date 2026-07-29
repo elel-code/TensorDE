@@ -108,20 +108,30 @@ pub(super) fn build_shader_contract_records(
     contracts
 }
 
-fn material_shader_program_key(pass: &WeIrMaterialPass) -> String {
-    if pass.shader_origin == WeIrShaderOrigin::EngineBuiltIn {
-        return canonical_scene_shader_key(&pass.shader_key);
-    }
-    let variant = pass
-        .shader_key
-        .split_once("__")
-        .map_or("", |(_, variant)| variant);
+pub(super) fn material_shader_program_base(pass: &WeIrMaterialPass) -> String {
     let source = pass
         .shader_source_key
         .strip_prefix("shaders/")
         .unwrap_or(&pass.shader_source_key);
-    if variant.is_empty() {
+    let source = source.split_once("__").map_or(source, |(source, _)| source);
+    if pass.shader_origin == WeIrShaderOrigin::EngineBuiltIn {
+        return canonical_scene_shader_key(source);
+    }
+    if source.starts_with("workshop/") || source.starts_with("package/") {
         source.to_owned()
+    } else {
+        format!("package/{source}")
+    }
+}
+
+fn material_shader_program_key(pass: &WeIrMaterialPass) -> String {
+    let source = material_shader_program_base(pass);
+    let variant = pass
+        .shader_key
+        .split_once("__")
+        .map_or("", |(_, variant)| variant);
+    if variant.is_empty() {
+        source
     } else {
         format!("{source}__{variant}")
     }
@@ -436,6 +446,32 @@ mod tests {
         assert_eq!(
             material_shader_program_key(&pass),
             "workshop/test/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
+        );
+    }
+
+    #[test]
+    fn direct_authored_effect_gets_a_package_program_identity() {
+        let pass = WeIrMaterialPass {
+            material: 0,
+            shader_key: "effects/huan__SLOTS_1".to_owned(),
+            shader_source_key: "effects/huan".to_owned(),
+            shader_origin: WeIrShaderOrigin::AuthoredPackage,
+            target: String::new(),
+            texture_start: 0,
+            texture_count: 0,
+            constant_start: 0,
+            constant_count: 0,
+            pipeline_blend: ScenePipelineBlend::Normal,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            alpha_writing: String::new(),
+            clear_target: false,
+        };
+
+        assert_eq!(
+            material_shader_program_key(&pass),
+            "package/effects/huan__SLOTS_1"
         );
     }
 

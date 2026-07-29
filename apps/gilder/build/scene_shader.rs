@@ -59,6 +59,7 @@ mod waterwaves_composite;
 #[path = "scene_shader/waterwaves_direct.rs"]
 mod waterwaves_direct;
 
+pub(crate) use catalog::build_scene_shader_origin_catalog;
 pub(super) use core_material::{
     color_fragment_source, generic_particle_fragment_source, minimal_alpha_fragment_source,
     passthrough_fragment_source, text_fragment_source,

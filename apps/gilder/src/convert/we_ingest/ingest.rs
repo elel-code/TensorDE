@@ -87,7 +87,7 @@ use script_program::{
     project_property_defaults, scene_scripts_may_mutate_effect_visibility,
 };
 use shader_combo::parse_shader_combo_definitions;
-use shader_contract::build_shader_contract_records;
+use shader_contract::{build_shader_contract_records, material_shader_program_base};
 use shader_texture_default::{
     ShaderRuntimeTextureDefault, apply_shader_runtime_texture_defaults,
     parse_shader_runtime_texture_defaults,

@@ -1,4 +1,5 @@
 use super::super::*;
+use std::collections::BTreeSet;
 
 #[path = "catalog/key.rs"]
 mod key;
@@ -51,6 +52,26 @@ pub(crate) enum SceneShaderFamily {
 }
 
 use specs::BUILTIN_SCENE_SHADER_SPECS;
+
+pub(crate) fn build_scene_shader_origin_catalog() {
+    let programs = BUILTIN_SCENE_SHADER_SPECS
+        .iter()
+        .chain(super::FINAL_EFFECT_SHADER_SPECS)
+        .map(|spec| spec.key.split_once("__").map_or(spec.key, |(key, _)| key))
+        .filter(|key| key.starts_with("effects/"))
+        .collect::<BTreeSet<_>>();
+    let patterns = programs
+        .into_iter()
+        .map(|program| format!("        {program:?}"))
+        .collect::<Vec<_>>()
+        .join(" |\n");
+    let generated = format!(
+        "pub(super) fn is_engine_builtin_effect_program(program: &str) -> bool {{\n    matches!(program,\n{patterns}\n    )\n}}\n"
+    );
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    fs::write(out_dir.join("gilder_scene_shader_origins.rs"), generated)
+        .expect("write built-in scene shader origin catalog");
+}
 
 pub(crate) fn build_scene_shader_catalog() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));

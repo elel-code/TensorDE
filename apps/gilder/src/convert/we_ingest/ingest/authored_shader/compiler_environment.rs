@@ -283,8 +283,11 @@ fn sampler_combo_slots(source: &str, program: &str) -> Result<Vec<(String, u32)>
 }
 
 fn variant_overrides(spec: &AuthoredProgramSpec) -> Result<Vec<(String, i64)>, WeIngestError> {
-    let suffix = spec
+    let program_identity = spec
         .program_key
+        .strip_prefix("package/")
+        .unwrap_or(&spec.program_key);
+    let suffix = program_identity
         .strip_prefix(&spec.source_key)
         .and_then(|suffix| suffix.strip_prefix("__"))
         .ok_or_else(|| {
@@ -368,6 +371,20 @@ mod tests {
         assert_eq!(definitions.get("SLOTS").map(String::as_str), Some("1"));
         assert_eq!(definitions.get("HLSL").map(String::as_str), Some("1"));
         assert!(!definitions.keys().any(|name| name.contains('(')));
+    }
+
+    #[test]
+    fn direct_package_identity_extends_its_unprefixed_source_key() {
+        let spec = AuthoredProgramSpec {
+            program_key: "package/effects/huan__SLOTS_1".to_owned(),
+            source_key: "effects/huan".to_owned(),
+            texture_slot_mask: 1,
+        };
+
+        assert_eq!(
+            variant_overrides(&spec).expect("package specialization"),
+            vec![("SLOTS".to_owned(), 1)]
+        );
     }
 
     #[test]
