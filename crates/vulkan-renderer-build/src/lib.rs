@@ -7,6 +7,7 @@ mod compiler;
 mod contract;
 mod error;
 mod heap_lowering;
+mod reflection;
 mod stage;
 mod transpile;
 
@@ -16,6 +17,10 @@ pub use error::{Error, Result};
 pub use heap_lowering::{
     DescriptorHeapBinding, DescriptorHeapBindingKind, DescriptorHeapSlang,
     lower_slang_bindings_to_descriptor_heap,
+};
+pub use reflection::{
+    ShaderInterface, ShaderIoDirection, ShaderScalarType, ShaderStageIo, ShaderUniformBuffer,
+    ShaderUniformMember, reflect_shader_interface,
 };
 pub use stage::ShaderStage;
 pub use transpile::{GlslToSlangRequest, SlangSourceReport};
