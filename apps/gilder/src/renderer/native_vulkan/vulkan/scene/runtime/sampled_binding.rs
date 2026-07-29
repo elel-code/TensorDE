@@ -278,8 +278,8 @@ fn lower_pass_sampled_bindings(
         let physical_slot = reference_physical_slot(references, graph_index, target, target_name)
             .ok_or_else(|| {
             format!(
-                "scene graph target binding {:?}:{:?} has no physical allocation",
-                target, target_name
+                "scene graph {graph_index} pass {} target binding {:?}:{:?} at sampled slot {} has no physical allocation",
+                binding.pass_node_index, target, target_name, binding.slot
             )
         })?;
         for draw_index in draw_start..draw_start.saturating_add(draw_count) {

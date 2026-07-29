@@ -82,13 +82,18 @@ fn rejects_incompatible_fragment_input() {
         ..SceneBinaryDocument::default()
     };
 
+    let error = SceneStorage::from_document(document).expect_err("stage linkage must be strict");
     assert!(matches!(
-        SceneStorage::from_document(document),
-        Err(SceneStorageError::InvalidShaderProgram {
+        &error,
+        SceneStorageError::InvalidShaderProgram {
             reason: "fragment input has no compatible vertex output",
             ..
-        })
+        }
     ));
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains("scene shader program 0 (program)"));
+    assert!(diagnostic.contains("fragment input uv at location 0 (F32, rows=3"));
+    assert!(diagnostic.contains("available vertex outputs: [uv at location 0 (F32, rows=2"));
 }
 
 #[test]

@@ -122,7 +122,9 @@ fn normalize_stage_io(
 }
 
 fn legacy_declaration(line: &str, keyword: &str) -> Option<String> {
-    line.trim()
+    line.split_once("//")
+        .map_or(line, |(declaration, _)| declaration)
+        .trim()
         .strip_prefix(keyword)
         .and_then(|line| {
             let trimmed = line.trim_start();
@@ -215,8 +217,8 @@ mod tests {
     #[test]
     fn normalizes_legacy_stage_io_with_shared_locations() {
         let [vertex, fragment] = normalize_stage_io_pair(
-            "attribute vec3 a_Position;\nattribute vec2 a_TexCoord;\nvarying vec2 v_TexCoord;\nvarying float v_Mask;\nvoid main() { gl_Position = vec4(a_Position, 1); }",
-            "varying vec2 v_TexCoord;\nvarying float v_Mask;\nvoid main() { gl_FragColor = vec4(v_TexCoord, v_Mask, 1); }",
+            "attribute vec3 a_Position;\nattribute vec2 a_TexCoord;\nvarying vec2 v_TexCoord; // authored UV\nvarying float v_Mask;\nvoid main() { gl_Position = vec4(a_Position, 1); }",
+            "varying vec2 v_TexCoord; // authored UV\nvarying float v_Mask;\nvoid main() { gl_FragColor = vec4(v_TexCoord, v_Mask, 1); }",
             "workshop/test/effects/example__SLOTS_1",
         )
         .expect("stage normalization");

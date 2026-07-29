@@ -23,7 +23,9 @@ use super::material_uniform::{
     SceneMaterialFrameInputs, pack_scene_material_uniforms_with_frame_inputs,
 };
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
-use super::scene_owned_uniform::SceneOwnedUniformArenaPlan;
+use super::scene_owned_uniform::{
+    SceneOwnedUniformArenaPlan, SceneOwnedUniformFrameInputs,
+};
 
 mod topology;
 
@@ -429,8 +431,15 @@ pub(super) fn write_scene_frame_buffers(
             .ok_or_else(|| "scene-owned uniform plan has no active frame buffer".to_owned())?;
         scene_owned_uniform_plan.write_payload(
             &graph.mesh_draws,
-            &semantic_frame.material_scalar_values,
-            sampled_binding_phase,
+            SceneOwnedUniformFrameInputs {
+                scalar_overrides: &semantic_frame.material_scalar_values,
+                scene_time_seconds,
+                frame_delta_seconds,
+                audio_spectrum: events
+                    .audio_spectrum()
+                    .unwrap_or(&crate::engine::scene::StereoSpectrum64::ZERO),
+                sampled_binding_phase,
+            },
             scene_owned_uniform_scratch,
         )?;
         write_exact_frame_payload(device, buffer, scene_owned_uniform_scratch)?;

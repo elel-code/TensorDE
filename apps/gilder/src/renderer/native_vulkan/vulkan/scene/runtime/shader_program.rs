@@ -7,6 +7,9 @@
 
 #[cfg(test)]
 mod uniform_alias_tests;
+mod uniform_source;
+
+use uniform_source::scene_owned_uniform_source;
 
 use vulkanalia::vk;
 
@@ -162,6 +165,10 @@ pub(super) struct SceneOwnedUniformMemberPlan<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SceneOwnedUniformSource<'a> {
+    SceneTime,
+    FrameDelta,
+    AudioSpectrum64Left,
+    AudioSpectrum64Right,
     ModelViewProjectionMatrix,
     LayerModelMatrix,
     SampledTextureResolution { slot: u32 },
@@ -232,63 +239,6 @@ pub(super) fn scene_owned_stage_resource_plan<'a>(
         bindings,
         uniform_buffers,
     })
-}
-
-fn scene_owned_uniform_source<'a>(
-    key: &str,
-    name: &'a str,
-    material_parameter: Option<&'a str>,
-    member: &crate::engine::scene::SceneShaderUniformMemberRecord,
-) -> Result<SceneOwnedUniformSource<'a>, String> {
-    if let Some(authored_name) = material_parameter {
-        return Ok(SceneOwnedUniformSource::MaterialParameter { authored_name });
-    }
-    match name {
-        "g_ModelViewProjectionMatrix" => {
-            require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
-            Ok(SceneOwnedUniformSource::ModelViewProjectionMatrix)
-        }
-        "g_LayerModelMatrix" => {
-            require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
-            Ok(SceneOwnedUniformSource::LayerModelMatrix)
-        }
-        _ if name.starts_with("g_Texture") && name.ends_with("Resolution") => {
-            require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 1, 16)?;
-            let slot = name["g_Texture".len()..name.len() - "Resolution".len()]
-                .parse::<u32>()
-                .map_err(|_| {
-                    format!(
-                        "scene-owned uniform {name:?} in {key:?} has an invalid texture slot"
-                    )
-                })?;
-            Ok(SceneOwnedUniformSource::SampledTextureResolution { slot })
-        }
-        _ => Err(format!(
-            "scene-owned uniform {name:?} in {key:?} has no typed runtime source"
-        )),
-    }
-}
-
-fn require_uniform_shape(
-    key: &str,
-    name: &str,
-    member: &crate::engine::scene::SceneShaderUniformMemberRecord,
-    scalar_type: SceneShaderScalarType,
-    rows: u32,
-    columns: u32,
-    byte_size: u32,
-) -> Result<(), String> {
-    if member.scalar_type != scalar_type
-        || member.rows != rows
-        || member.columns != columns
-        || member.byte_size != byte_size
-        || member.array_count != 1
-    {
-        return Err(format!(
-            "scene-owned uniform {name:?} in {key:?} has an incompatible runtime shape"
-        ));
-    }
-    Ok(())
 }
 
 pub(super) fn scene_owned_vertex_attributes(
@@ -576,6 +526,35 @@ mod tests {
                 ("u_Softness", 40),
                 ("u_Alpha", 44),
             ]
+        );
+    }
+
+    #[test]
+    fn system_time_uniforms_have_strict_typed_sources() {
+        let scalar = uniform_member(0, u32::MAX, 0, 4, 1, 1, 0);
+
+        assert_eq!(
+            scene_owned_uniform_source("test", "g_Time", None, &scalar).unwrap(),
+            SceneOwnedUniformSource::SceneTime
+        );
+        assert_eq!(
+            scene_owned_uniform_source("test", "g_FrameTime", None, &scalar).unwrap(),
+            SceneOwnedUniformSource::FrameDelta
+        );
+
+        let vector = uniform_member(0, u32::MAX, 0, 16, 4, 1, 0);
+        assert!(
+            scene_owned_uniform_source("test", "g_Time", None, &vector)
+                .unwrap_err()
+                .contains("incompatible runtime shape")
+        );
+
+        let mut audio = uniform_member(0, u32::MAX, 0, 1012, 1, 1, 0);
+        audio.array_count = 64;
+        audio.array_stride = 16;
+        assert_eq!(
+            scene_owned_uniform_source("test", "g_AudioSpectrum64Left", None, &audio).unwrap(),
+            SceneOwnedUniformSource::AudioSpectrum64Left
         );
     }
 

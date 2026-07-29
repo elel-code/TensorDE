@@ -8,7 +8,7 @@ mod compiler_environment;
 mod stage_io;
 mod uniform_metadata;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,14 +20,16 @@ use vulkan_renderer_build::{
 };
 
 use crate::convert::we_ingest::ir::{
-    WeIrShaderBinding, WeIrShaderBindingKind, WeIrShaderIoDirection, WeIrShaderOrigin,
-    WeIrShaderProgram, WeIrShaderScalarType, WeIrShaderStage, WeIrShaderStageIo,
+    WeIrMaterialConstant, WeIrShaderBinding, WeIrShaderBindingKind, WeIrShaderIoDirection,
+    WeIrShaderOrigin, WeIrShaderProgram, WeIrShaderScalarType, WeIrShaderStage, WeIrShaderStageIo,
     WeIrShaderUniformBuffer, WeIrShaderUniformMember, WeSceneIr,
 };
 
 use super::WeIngestError;
 use super::asset_source::WeAssetSource;
-use compiler_environment::{compiler_definitions, inject_we_compiler_preamble};
+use compiler_environment::{
+    compiler_definitions, inject_we_compiler_preamble, remove_unreferenced_frontend_declarations,
+};
 use stage_io::normalize_stage_io_pair;
 use uniform_metadata::{ShaderUniformMetadata, parse_shader_uniform_metadata};
 
@@ -54,7 +56,135 @@ pub(in crate::convert::we_ingest) fn compile_authored_shader_programs(
             spec,
         )?);
     }
+    materialize_shader_uniform_defaults(ir, &programs)?;
     ir.shader_programs = programs;
+    Ok(())
+}
+
+fn materialize_shader_uniform_defaults(
+    ir: &mut WeSceneIr,
+    programs: &[WeIrShaderProgram],
+) -> Result<(), WeIngestError> {
+    let mut defaults_by_program = BTreeMap::<String, BTreeMap<String, String>>::new();
+    for program in programs {
+        let defaults = defaults_by_program
+            .entry(program.program_key.clone())
+            .or_default();
+        for member in program
+            .uniform_buffers
+            .iter()
+            .flat_map(|buffer| &buffer.members)
+        {
+            let (Some(parameter), Some(default)) = (
+                member.material_parameter.as_ref(),
+                member.material_default_value_json.as_ref(),
+            ) else {
+                continue;
+            };
+            if let Some(existing) = defaults.insert(parameter.clone(), default.clone())
+                && existing != *default
+            {
+                return Err(shader_error(
+                    &program.program_key,
+                    "uniform-defaults",
+                    format!("material parameter {parameter:?} has conflicting defaults"),
+                ));
+            }
+        }
+    }
+
+    let old_constants = std::mem::take(&mut ir.material_constants);
+    let mut old_to_new = vec![u32::MAX; old_constants.len()];
+    let mut material_constants = Vec::with_capacity(old_constants.len());
+    for pass in &mut ir.material_passes {
+        let start = pass.constant_start as usize;
+        let end = start
+            .checked_add(pass.constant_count as usize)
+            .filter(|end| *end <= old_constants.len())
+            .ok_or_else(|| {
+                shader_error(
+                    &pass.shader_key,
+                    "uniform-defaults",
+                    "material constant range is invalid",
+                )
+            })?;
+        pass.constant_start = u32::try_from(material_constants.len()).map_err(|_| {
+            shader_error(
+                &pass.shader_key,
+                "uniform-defaults",
+                "material constant count exceeds u32",
+            )
+        })?;
+        let mut names = BTreeSet::new();
+        for (old_index, constant) in old_constants.iter().enumerate().take(end).skip(start) {
+            if !names.insert(constant.name.clone()) {
+                return Err(shader_error(
+                    &pass.shader_key,
+                    "uniform-defaults",
+                    format!("material parameter {:?} is duplicated", constant.name),
+                ));
+            }
+            let new_index = u32::try_from(material_constants.len()).map_err(|_| {
+                shader_error(
+                    &pass.shader_key,
+                    "uniform-defaults",
+                    "material constant count exceeds u32",
+                )
+            })?;
+            if old_to_new[old_index] != u32::MAX {
+                return Err(shader_error(
+                    &pass.shader_key,
+                    "uniform-defaults",
+                    "material constant ranges overlap",
+                ));
+            }
+            old_to_new[old_index] = new_index;
+            material_constants.push(constant.clone());
+        }
+        if let Some(defaults) = defaults_by_program.get(&pass.shader_key) {
+            for (name, value_json) in defaults {
+                if names.insert(name.clone()) {
+                    material_constants.push(WeIrMaterialConstant {
+                        name: name.clone(),
+                        value_json: value_json.clone(),
+                    });
+                }
+            }
+        }
+        pass.constant_count = u32::try_from(material_constants.len())
+            .ok()
+            .and_then(|end| end.checked_sub(pass.constant_start))
+            .ok_or_else(|| {
+                shader_error(
+                    &pass.shader_key,
+                    "uniform-defaults",
+                    "material constant count exceeds u32",
+                )
+            })?;
+    }
+    if old_to_new.contains(&u32::MAX) {
+        return Err(shader_error(
+            "material",
+            "uniform-defaults",
+            "material constant is not owned by exactly one pass",
+        ));
+    }
+    for program in &mut ir.script_programs {
+        if program.target == crate::engine::scene::SceneScriptTarget::MaterialScalar {
+            program.selector = old_to_new
+                .get(program.selector as usize)
+                .copied()
+                .filter(|selector| *selector != u32::MAX)
+                .ok_or_else(|| {
+                    shader_error(
+                        "material",
+                        "uniform-defaults",
+                        "script material selector is invalid",
+                    )
+                })?;
+        }
+    }
+    ir.material_constants = material_constants;
     Ok(())
 }
 
@@ -187,17 +317,33 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
             format!("failed to stage GLSL source: {error}"),
         )
     })?;
+    let frontend_request = GlslToSlangRequest {
+        source: glsl_path.clone(),
+        entry_point: "main".to_owned(),
+        stage: input.stage,
+        output: normalized_path.clone(),
+        include_directories: input.include_directories.to_vec(),
+        definitions: input.definitions.to_vec(),
+        // WE follows the C preprocessor for undeclared #if identifiers (zero) and reuses helper
+        // macro names across conditional functions. Preserve those expansion rules without
+        // promoting Slang's diagnostics to hard failures; all later validation remains strict.
+        disabled_warnings: vec![15205, 15400, 30081],
+    };
+    let preprocessed = input
+        .compiler
+        .preprocess_glsl(&frontend_request)
+        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    let specialized = remove_unreferenced_frontend_declarations(input.source, &preprocessed);
+    fs::write(&glsl_path, specialized).map_err(|error| {
+        shader_error(
+            &input.spec.program_key,
+            stage_name,
+            format!("failed to stage specialized GLSL source: {error}"),
+        )
+    })?;
     let frontend = input
         .compiler
-        .transpile_glsl(&GlslToSlangRequest {
-            source: glsl_path,
-            entry_point: "main".to_owned(),
-            stage: input.stage,
-            output: normalized_path.clone(),
-            include_directories: input.include_directories.to_vec(),
-            definitions: input.definitions.to_vec(),
-            disabled_warnings: vec![30081],
-        })
+        .transpile_glsl(&frontend_request)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
     let interface = reflect_shader_interface(&frontend.reflection, "main", input.stage)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
@@ -277,6 +423,10 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
                     .members
                     .into_iter()
                     .map(|member| WeIrShaderUniformMember {
+                        material_default_value_json: input
+                            .uniform_metadata
+                            .material_default(&member.name)
+                            .map(str::to_owned),
                         material_parameter: input
                             .uniform_metadata
                             .material_parameter(&member.name)
@@ -390,7 +540,98 @@ mod tests {
 
     #[test]
     fn deduplicates_pipeline_contracts_by_owned_program_identity() {
-        let mut ir = WeSceneIr {
+        let mut ir = empty_ir();
+        let contract = crate::convert::we_ingest::ir::WeIrShaderContract {
+            shader_key: "workshop/test/effects/example__SLOTS_1".to_owned(),
+            shader_source_key: "workshop/test/effects/example".to_owned(),
+            origin: WeIrShaderOrigin::AuthoredPackage,
+            pipeline_key: "first".to_owned(),
+            texture_slot_mask: 1,
+            input_attachment_slot_mask: 0,
+            constants: Vec::new(),
+            resource_heap_count: 1,
+            sampler_heap_count: 1,
+        };
+        ir.shader_contracts.push(contract.clone());
+        ir.shader_contracts
+            .push(crate::convert::we_ingest::ir::WeIrShaderContract {
+                pipeline_key: "second".to_owned(),
+                ..contract
+            });
+
+        assert_eq!(authored_program_specs(&ir).expect("program specs").len(), 1);
+    }
+
+    #[test]
+    fn materializes_missing_shader_defaults_without_replacing_instance_values() {
+        let key = "workshop/test/effects/noise__SLOTS_1";
+        let mut ir = empty_ir();
+        ir.material_constants.push(WeIrMaterialConstant {
+            name: "Offset".to_owned(),
+            value_json: "\"4 5\"".to_owned(),
+        });
+        ir.material_passes
+            .push(crate::convert::we_ingest::ir::WeIrMaterialPass {
+                material: 0,
+                shader_key: key.to_owned(),
+                shader_source_key: key.to_owned(),
+                shader_origin: WeIrShaderOrigin::AuthoredPackage,
+                target: String::new(),
+                texture_start: 0,
+                texture_count: 0,
+                constant_start: 0,
+                constant_count: 1,
+                pipeline_blend: crate::engine::scene::ScenePipelineBlend::Normal,
+                depth_test: crate::engine::scene::SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: crate::engine::scene::SceneCullMode::None,
+                alpha_writing: String::new(),
+                clear_target: false,
+            });
+        let uniform =
+            |name: &str, parameter: &str, default: &str, byte_offset| WeIrShaderUniformMember {
+                name: name.to_owned(),
+                material_parameter: Some(parameter.to_owned()),
+                material_default_value_json: Some(default.to_owned()),
+                byte_offset,
+                byte_size: if name == "u_Offset" { 8 } else { 4 },
+                scalar_type: WeIrShaderScalarType::F32,
+                rows: if name == "u_Offset" { 2 } else { 1 },
+                columns: 1,
+                array_count: 1,
+                array_stride: 0,
+                matrix_stride: 0,
+            };
+        let program = WeIrShaderProgram {
+            program_key: key.to_owned(),
+            stage: WeIrShaderStage::Vertex,
+            entry_point: "main".to_owned(),
+            push_constant_bytes: 4,
+            bindings: Vec::new(),
+            stage_io: Vec::new(),
+            uniform_buffers: vec![WeIrShaderUniformBuffer {
+                name: "GlobalParams".to_owned(),
+                register: 0,
+                byte_size: 12,
+                members: vec![
+                    uniform("u_Offset", "Offset", "\"0 0\"", 0),
+                    uniform("u_Shift", "Sample shift amount", "1", 8),
+                ],
+            }],
+            spirv: Vec::new(),
+        };
+
+        materialize_shader_uniform_defaults(&mut ir, &[program]).expect("material defaults");
+
+        assert_eq!(ir.material_passes[0].constant_count, 2);
+        assert_eq!(ir.material_constants[0].name, "Offset");
+        assert_eq!(ir.material_constants[0].value_json, "\"4 5\"");
+        assert_eq!(ir.material_constants[1].name, "Sample shift amount");
+        assert_eq!(ir.material_constants[1].value_json, "1");
+    }
+
+    fn empty_ir() -> WeSceneIr {
+        WeSceneIr {
             project_root: PathBuf::new(),
             project: crate::convert::we_ingest::ir::WeProjectIr {
                 title: String::new(),
@@ -455,25 +696,6 @@ mod tests {
             shader_contracts: Vec::new(),
             shader_programs: Vec::new(),
             unsupported: Vec::new(),
-        };
-        let contract = crate::convert::we_ingest::ir::WeIrShaderContract {
-            shader_key: "workshop/test/effects/example__SLOTS_1".to_owned(),
-            shader_source_key: "workshop/test/effects/example".to_owned(),
-            origin: WeIrShaderOrigin::AuthoredPackage,
-            pipeline_key: "first".to_owned(),
-            texture_slot_mask: 1,
-            input_attachment_slot_mask: 0,
-            constants: Vec::new(),
-            resource_heap_count: 1,
-            sampler_heap_count: 1,
-        };
-        ir.shader_contracts.push(contract.clone());
-        ir.shader_contracts
-            .push(crate::convert::we_ingest::ir::WeIrShaderContract {
-                pipeline_key: "second".to_owned(),
-                ..contract
-            });
-
-        assert_eq!(authored_program_specs(&ir).expect("program specs").len(), 1);
+        }
     }
 }

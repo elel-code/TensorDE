@@ -259,7 +259,21 @@ fn validate_stage_links(document: &SceneBinaryDocument) -> Result<(), SceneStora
                     && output.location_count == input.location_count
             });
             if !compatible {
-                return invalid(fragment, "fragment input has no compatible vertex output");
+                return invalid_with_detail(
+                    document,
+                    fragment,
+                    "fragment input has no compatible vertex output",
+                    format!(
+                        "fragment input {}; available vertex outputs: [{}]",
+                        stage_io_diagnostic(document, input),
+                        vertex_io
+                            .iter()
+                            .filter(|item| item.direction == SceneShaderIoDirection::Output)
+                            .map(|output| stage_io_diagnostic(document, output))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
             }
         }
     }
@@ -371,6 +385,36 @@ fn invalid<T>(
 ) -> Result<T, SceneStorageError> {
     Err(SceneStorageError::InvalidShaderProgram {
         program: program.program_key,
+        program_key: None,
         reason,
+        detail: None,
     })
+}
+
+fn invalid_with_detail<T>(
+    document: &SceneBinaryDocument,
+    program: &SceneShaderProgramRecord,
+    reason: &'static str,
+    detail: String,
+) -> Result<T, SceneStorageError> {
+    Err(SceneStorageError::InvalidShaderProgram {
+        program: program.program_key,
+        program_key: document
+            .strings
+            .get(program.program_key.0 as usize)
+            .cloned(),
+        reason,
+        detail: Some(detail),
+    })
+}
+
+fn stage_io_diagnostic(document: &SceneBinaryDocument, item: &SceneShaderStageIoRecord) -> String {
+    let name = document
+        .strings
+        .get(item.name.0 as usize)
+        .map_or("<invalid-name>", String::as_str);
+    format!(
+        "{name} at location {} ({:?}, rows={}, columns={}, locations={})",
+        item.location, item.scalar_type, item.rows, item.columns, item.location_count
+    )
 }

@@ -12,8 +12,12 @@ pub(super) fn compiler_definitions(
     sources: [&str; 2],
 ) -> Result<Vec<(String, String)>, WeIngestError> {
     let mut values = BTreeMap::<String, i64>::new();
+    let mut authored_defaults = BTreeMap::<String, i64>::new();
+    let mut invalid_declarations = Vec::new();
     for source in sources {
-        for (name, default) in strict_combo_defaults(source, &spec.program_key)? {
+        let declarations = combo_default_declarations(source);
+        invalid_declarations.extend(declarations.invalid);
+        for (name, default) in declarations.valid {
             if let Some(previous) = values.insert(name.clone(), default)
                 && previous != default
             {
@@ -23,9 +27,24 @@ pub(super) fn compiler_definitions(
                     format!("combo {name} has conflicting defaults {previous} and {default}"),
                 ));
             }
+            authored_defaults.insert(name, default);
         }
         for (name, slot) in sampler_combo_slots(source, &spec.program_key)? {
             values.insert(name, i64::from(spec.texture_slot_mask & (1 << slot) != 0));
+        }
+    }
+    for invalid in invalid_declarations {
+        let duplicate = combo_default_hint(&invalid.declaration)
+            .is_some_and(|(name, default)| authored_defaults.get(name) == Some(&default));
+        if !duplicate {
+            return Err(shader_error(
+                &spec.program_key,
+                "program",
+                format!(
+                    "invalid combo declaration on line {}: {}",
+                    invalid.line_number, invalid.error
+                ),
+            ));
         }
     }
     for (name, value) in variant_overrides(spec)? {
@@ -38,11 +57,69 @@ pub(super) fn compiler_definitions(
         }
         values.insert(name, value);
     }
+    values.insert("HLSL".to_owned(), 1);
     values.insert("SLOTS".to_owned(), i64::from(spec.texture_slot_mask));
     Ok(values
         .into_iter()
         .map(|(name, value)| (name, value.to_string()))
         .collect())
+}
+
+pub(super) fn remove_unreferenced_frontend_declarations(
+    source: &str,
+    preprocessed: &str,
+) -> String {
+    source
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            let uniform = trimmed.strip_prefix("uniform ").and_then(|declaration| {
+                declaration
+                    .split(';')
+                    .next()
+                    .and_then(|declaration| declaration.split_ascii_whitespace().next_back())
+                    .filter(|name| !name.contains(['[', ']']))
+            });
+            let stage_io = (trimmed.starts_with("layout(")
+                && (trimmed.contains(") in ") || trimmed.contains(") out ")))
+            .then(|| {
+                trimmed
+                    .strip_suffix(';')
+                    .and_then(|declaration| declaration.split_whitespace().next_back())
+            })
+            .flatten();
+            let Some(name) = uniform
+                .or(stage_io)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            else {
+                return line;
+            };
+            if identifier_occurrence_count(preprocessed, name) <= 1 {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn identifier_occurrence_count(source: &str, identifier: &str) -> usize {
+    source
+        .match_indices(identifier)
+        .filter(|(start, _)| {
+            let end = start + identifier.len();
+            let before = source[..*start].bytes().next_back();
+            let after = source[end..].bytes().next();
+            before.is_none_or(|byte| !is_identifier_byte(byte))
+                && after.is_none_or(|byte| !is_identifier_byte(byte))
+        })
+        .count()
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 pub(super) fn inject_we_compiler_preamble(source: &str) -> String {
@@ -72,60 +149,96 @@ pub(super) fn inject_we_compiler_preamble(source: &str) -> String {
     }
 }
 
-fn strict_combo_defaults(source: &str, program: &str) -> Result<Vec<(String, i64)>, WeIngestError> {
-    let mut defaults = Vec::new();
+struct ComboDefaultDeclarations {
+    valid: Vec<(String, i64)>,
+    invalid: Vec<InvalidComboDeclaration>,
+}
+
+struct InvalidComboDeclaration {
+    line_number: usize,
+    declaration: String,
+    error: String,
+}
+
+fn combo_default_declarations(source: &str) -> ComboDefaultDeclarations {
+    let mut valid = Vec::new();
+    let mut invalid = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
         let Some((_, declaration)) = line.split_once("[COMBO]") else {
             continue;
         };
-        let start = declaration.find('{').ok_or_else(|| {
-            shader_error(
-                program,
-                "program",
-                format!(
-                    "combo declaration on line {} has no JSON object",
-                    line_index + 1
-                ),
-            )
-        })?;
-        let value: Value = serde_json::from_str(&declaration[start..]).map_err(|error| {
-            shader_error(
-                program,
-                "program",
-                format!(
-                    "invalid combo declaration on line {}: {error}",
-                    line_index + 1
-                ),
-            )
-        })?;
-        let name = value
+        let Some(start) = declaration.find('{') else {
+            invalid.push(InvalidComboDeclaration {
+                line_number: line_index + 1,
+                declaration: declaration.to_owned(),
+                error: "has no JSON object".to_owned(),
+            });
+            continue;
+        };
+        let declaration = &declaration[start..];
+        let value: Value = match serde_json::from_str(declaration) {
+            Ok(value) => value,
+            Err(error) => {
+                invalid.push(InvalidComboDeclaration {
+                    line_number: line_index + 1,
+                    declaration: declaration.to_owned(),
+                    error: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let Some(name) = value
             .get("combo")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                shader_error(
-                    program,
-                    "program",
-                    format!("combo declaration on line {} has no name", line_index + 1),
-                )
-            })?;
-        let default = value
-            .get("default")
-            .and_then(integer_value)
-            .ok_or_else(|| {
-                shader_error(
-                    program,
-                    "program",
-                    format!(
-                        "combo {name} on line {} has no integer default",
-                        line_index + 1
-                    ),
-                )
-            })?;
-        defaults.push((name.to_owned(), default));
+        else {
+            invalid.push(InvalidComboDeclaration {
+                line_number: line_index + 1,
+                declaration: declaration.to_owned(),
+                error: "has no combo name".to_owned(),
+            });
+            continue;
+        };
+        let Some(default) = value.get("default").and_then(integer_value) else {
+            invalid.push(InvalidComboDeclaration {
+                line_number: line_index + 1,
+                declaration: declaration.to_owned(),
+                error: format!("combo {name} has no integer default"),
+            });
+            continue;
+        };
+        valid.push((name.to_owned(), default));
     }
-    Ok(defaults)
+    ComboDefaultDeclarations { valid, invalid }
+}
+
+fn combo_default_hint(declaration: &str) -> Option<(&str, i64)> {
+    let name = declaration
+        .split_once("\"combo\"")?
+        .1
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
+    let name = name.split_once('"')?.0;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    let default = declaration
+        .split_once("\"default\"")?
+        .1
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
+    let end = default
+        .find(|character: char| !character.is_ascii_digit() && character != '-')
+        .unwrap_or(default.len());
+    Some((name, default[..end].parse().ok()?))
 }
 
 fn sampler_combo_slots(source: &str, program: &str) -> Result<Vec<(String, u32)>, WeIngestError> {
@@ -253,7 +366,37 @@ mod tests {
             Some("0")
         );
         assert_eq!(definitions.get("SLOTS").map(String::as_str), Some("1"));
+        assert_eq!(definitions.get("HLSL").map(String::as_str), Some("1"));
         assert!(!definitions.keys().any(|name| name.contains('(')));
+    }
+
+    #[test]
+    fn removes_only_declarations_proven_unreferenced_after_preprocessing() {
+        let source = "uniform sampler2D g_Texture1; // {\"combo\":\"TEX\"}\n\
+uniform sampler2D g_Texture2; // {\"combo\":\"MASK\"}\n\
+uniform sampler2D g_Texture3; // {\"material\":\"background\"}\n\
+uniform float u_Used; // {\"material\":\"used\",\"default\":1}\n\
+uniform vec2 u_Unused; // {\"material\":\"unused\",\"default\":\"0 0\"}\n\
+layout(location = 0) out vec2 v_Used;\n\
+layout(location = 1) out vec3 v_Unused;";
+        let specialized = remove_unreferenced_frontend_declarations(
+            source,
+            "uniform sampler2D g_Texture1; uniform sampler2D g_Texture2; \
+             uniform sampler2D g_Texture3; \
+             vec4 main() { return texture2D(g_Texture2, vec2(0.0)) + \
+             texture2D(g_Texture3, vec2(0.0)) + vec4(v_Used, 0.0, u_Used); } \
+             uniform float u_Used; uniform vec2 u_Unused; \
+             out vec2 v_Used; out vec3 v_Unused;",
+        );
+
+        assert!(!specialized.contains("g_Texture1"));
+        assert!(specialized.contains("g_Texture2"));
+        assert!(specialized.contains("g_Texture3"));
+        assert!(specialized.contains("u_Used"));
+        assert!(!specialized.contains("u_Unused"));
+        assert!(specialized.contains("v_Used"));
+        assert!(!specialized.contains("v_Unused"));
+        assert_eq!(specialized.lines().count(), 6);
     }
 
     #[test]
@@ -275,5 +418,25 @@ mod tests {
         let error =
             compiler_definitions(&spec, ["", ""]).expect_err("unknown specialization must fail");
         assert!(error.to_string().contains("has no authored declaration"));
+    }
+
+    #[test]
+    fn invalid_optional_metadata_is_redundant_only_with_an_exact_valid_stage_declaration() {
+        let spec = AuthoredProgramSpec {
+            program_key: "workshop/test/effects/noise__SLOTS_1__CATEGORY_1".to_owned(),
+            source_key: "workshop/test/effects/noise".to_owned(),
+            texture_slot_mask: 1,
+        };
+        let valid = "// [COMBO] {\"combo\":\"CATEGORY\",\"default\":0,\"options\":{\"Color\":0}}";
+        let invalid_duplicate =
+            "// [COMBO] {\"combo\":\"CATEGORY\",\"default\":0,\"options\":{Color:0}}";
+
+        let definitions = compiler_definitions(&spec, [valid, invalid_duplicate])
+            .expect("valid stage owns the exact default");
+        assert!(definitions.contains(&("CATEGORY".to_owned(), "1".to_owned())));
+
+        let error = compiler_definitions(&spec, [invalid_duplicate, ""])
+            .expect_err("malformed metadata cannot become the authority");
+        assert!(error.to_string().contains("invalid combo declaration"));
     }
 }

@@ -3,7 +3,7 @@
 use super::shader_program::{
     SceneOwnedUniformBufferPlan, SceneOwnedUniformMemberPlan, SceneOwnedUniformSource,
 };
-use crate::engine::scene::SceneRenderingDeviceMeshDraw;
+use crate::engine::scene::{SceneRenderingDeviceMeshDraw, StereoSpectrum64};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SceneOwnedMaterialParameterValue<'a> {
@@ -13,6 +13,9 @@ pub(super) struct SceneOwnedMaterialParameterValue<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SceneOwnedUniformPayloadInputs<'a> {
+    pub scene_time_seconds: f32,
+    pub frame_delta_seconds: f32,
+    pub audio_spectrum: &'a StereoSpectrum64,
     pub model_view_projection_matrix: &'a [[f32; 4]; 4],
     pub layer_model_matrix: &'a [[f32; 4]; 4],
     pub sampled_texture_resolutions: &'a [(u32, [f32; 4])],
@@ -26,6 +29,9 @@ impl<'a> SceneOwnedUniformPayloadInputs<'a> {
         material_parameters: &'a [SceneOwnedMaterialParameterValue<'a>],
     ) -> Self {
         Self {
+            scene_time_seconds: 0.0,
+            frame_delta_seconds: 0.0,
+            audio_spectrum: &StereoSpectrum64::ZERO,
             model_view_projection_matrix: &draw.clip_transform,
             layer_model_matrix: &draw.render_world_matrix,
             sampled_texture_resolutions,
@@ -51,6 +57,26 @@ pub(super) fn write_scene_owned_uniform_payload(
     for member in &plan.members {
         let destination = member_bytes(output, plan, member)?;
         match member.source {
+            SceneOwnedUniformSource::SceneTime => {
+                write_f32_values(destination, &[inputs.scene_time_seconds])?;
+            }
+            SceneOwnedUniformSource::FrameDelta => {
+                write_f32_values(destination, &[inputs.frame_delta_seconds])?;
+            }
+            SceneOwnedUniformSource::AudioSpectrum64Left => {
+                write_strided_f32_values(
+                    destination,
+                    &inputs.audio_spectrum.left,
+                    member.array_stride,
+                )?;
+            }
+            SceneOwnedUniformSource::AudioSpectrum64Right => {
+                write_strided_f32_values(
+                    destination,
+                    &inputs.audio_spectrum.right,
+                    member.array_stride,
+                )?;
+            }
             SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                 write_matrix(destination, inputs.model_view_projection_matrix)?;
             }
@@ -74,7 +100,7 @@ pub(super) fn write_scene_owned_uniform_payload(
                 let values = inputs
                     .material_parameters
                     .iter()
-                    .find(|parameter| parameter.authored_name.eq_ignore_ascii_case(authored_name))
+                    .find(|parameter| parameter.authored_name == authored_name)
                     .map(|parameter| parameter.values)
                     .ok_or_else(|| {
                         format!(
@@ -137,6 +163,31 @@ fn write_f32_values(destination: &mut [u8], values: &[f32]) -> Result<(), String
     Ok(())
 }
 
+fn write_strided_f32_values(
+    destination: &mut [u8],
+    values: &[f32],
+    array_stride: u32,
+) -> Result<(), String> {
+    let stride = array_stride as usize;
+    let expected = values
+        .len()
+        .checked_sub(1)
+        .and_then(|count| count.checked_mul(stride))
+        .and_then(|offset| offset.checked_add(size_of::<f32>()))
+        .ok_or_else(|| "scene-owned uniform array byte count overflows".to_owned())?;
+    if stride < size_of::<f32>() || destination.len() != expected {
+        return Err(format!(
+            "scene-owned uniform array requires {expected} bytes at stride {stride}, received {}",
+            destination.len()
+        ));
+    }
+    for (index, value) in values.iter().enumerate() {
+        let offset = index * stride;
+        destination[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +208,13 @@ mod tests {
                 64,
                 64,
             ),
+            member("g_Time", SceneOwnedUniformSource::SceneTime, 128, 4),
+            member(
+                "g_FrameTime",
+                SceneOwnedUniformSource::FrameDelta,
+                132,
+                4,
+            ),
         ];
         let plan = SceneOwnedUniformBufferPlan {
             name: "GlobalParams",
@@ -171,6 +229,9 @@ mod tests {
         write_scene_owned_uniform_payload(
             &plan,
             SceneOwnedUniformPayloadInputs {
+                scene_time_seconds: 1.25,
+                frame_delta_seconds: 0.5,
+                audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &projection,
                 layer_model_matrix: &layer,
                 sampled_texture_resolutions: &[],
@@ -184,7 +245,9 @@ mod tests {
         assert_eq!(read_f32(&payload, 60), 16.0);
         assert_eq!(read_f32(&payload, 64), 17.0);
         assert_eq!(read_f32(&payload, 124), 32.0);
-        assert!(payload[128..].iter().all(|byte| *byte == 0));
+        assert_eq!(read_f32(&payload, 128), 1.25);
+        assert_eq!(read_f32(&payload, 132), 0.5);
+        assert!(payload[136..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -261,6 +324,9 @@ mod tests {
         write_scene_owned_uniform_payload(
             &plan,
             SceneOwnedUniformPayloadInputs {
+                scene_time_seconds: 0.0,
+                frame_delta_seconds: 0.0,
+                audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &identity,
                 layer_model_matrix: &identity,
                 sampled_texture_resolutions: &[(0, [1920.0, 1080.0, 1920.0, 1080.0])],
@@ -302,6 +368,9 @@ mod tests {
         let error = write_scene_owned_uniform_payload(
             &plan,
             SceneOwnedUniformPayloadInputs {
+                scene_time_seconds: 0.0,
+                frame_delta_seconds: 0.0,
+                audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &identity,
                 layer_model_matrix: &identity,
                 sampled_texture_resolutions: &[],

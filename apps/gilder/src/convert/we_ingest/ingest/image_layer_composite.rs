@@ -3,7 +3,10 @@
 use std::collections::BTreeSet;
 
 use crate::convert::we_ingest::ir::{WeIrImageTarget, WeIrImageTargetRole};
-use crate::engine::render_graph::{RenderPassRole, RenderTargetRole, TextureBindingRole};
+use crate::engine::render_graph::{
+    PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
+    RenderPassRole, RenderTargetRole, TextureBindingRole,
+};
 
 use super::WeIrBuilder;
 
@@ -30,32 +33,23 @@ impl WeIrBuilder {
             let Some(we_id) = image_layer_composite_we_id(&target_name) else {
                 continue;
             };
-            let Some(graph_index) = self
+            let Some((object_index, graph_index)) = self
                 .objects
                 .iter()
-                .find(|object| object.we_id == we_id)
-                .and_then(|object| object.render_graph)
-                .map(|graph| graph as usize)
+                .enumerate()
+                .find(|(_, object)| object.we_id == we_id)
+                .and_then(|(object_index, object)| {
+                    object
+                        .render_graph
+                        .map(|graph_index| (object_index, graph_index as usize))
+                })
             else {
                 continue;
             };
             let Some(graph) = self.render_graphs.get_mut(graph_index) else {
                 continue;
             };
-            let producer = graph.passes.iter().rposition(|pass| {
-                pass.role != RenderPassRole::SceneComposite
-                    && matches!(
-                        pass.target,
-                        RenderTargetRole::SceneColor
-                            | RenderTargetRole::ImageLocalMain
-                            | RenderTargetRole::ImageLocalSub
-                    )
-            });
-            let Some(producer) = producer else {
-                continue;
-            };
-            graph.passes[producer].target = RenderTargetRole::FirstClassEffectTarget;
-            graph.passes[producer].target_name = Some(target_name.clone());
+            materialize_graph_target(graph, object_index, &target_name);
             if !self.image_targets.iter().any(|target| {
                 target.name == target_name
                     && target.role == WeIrImageTargetRole::FirstClassEffectTarget
@@ -70,6 +64,49 @@ impl WeIrBuilder {
             }
         }
     }
+}
+
+fn materialize_graph_target(graph: &mut RenderGraph, object_index: usize, target_name: &str) {
+    let producer = graph.passes.iter().rposition(|pass| {
+        pass.role != RenderPassRole::SceneComposite
+            && matches!(
+                pass.target,
+                RenderTargetRole::SceneColor
+                    | RenderTargetRole::ImageLocalMain
+                    | RenderTargetRole::ImageLocalSub
+            )
+    });
+    if let Some(producer) = producer {
+        graph.passes[producer].target = RenderTargetRole::FirstClassEffectTarget;
+        graph.passes[producer].target_name = Some(target_name.to_owned());
+        return;
+    }
+    for pass in &mut graph.passes {
+        pass.id = pass.id.saturating_add(1);
+    }
+    graph.passes.insert(
+        0,
+        RenderPassNode {
+            id: 0,
+            role: RenderPassRole::CopyTarget,
+            draw_primitive: RenderPassDrawPrimitive::None,
+            object_index: Some(object_index),
+            material_index: None,
+            pass_index: 0,
+            shader: None,
+            target: RenderTargetRole::FirstClassEffectTarget,
+            target_name: Some(target_name.to_owned()),
+            target_extent: None,
+            target_format: Some("rgba_backbuffer".to_owned()),
+            bindings: vec![TextureBindingRole::GraphTarget {
+                slot: 0,
+                role: RenderTargetRole::SceneColor,
+                name: None,
+            }],
+            effect_visibility: RenderPassEffectVisibility::NONE,
+            state: PassState::default(),
+        },
+    );
 }
 
 fn image_layer_composite_we_id(name: &str) -> Option<u32> {
@@ -91,5 +128,30 @@ mod tests {
             Some(398)
         );
         assert_eq!(image_layer_composite_we_id("_rt_FullFrameBuffer"), None);
+    }
+
+    #[test]
+    fn empty_dependency_graph_snapshots_scene_color_into_its_first_class_target() {
+        let mut graph = RenderGraph::default();
+
+        materialize_graph_target(&mut graph, 7, "_rt_imageLayerComposite_461_a");
+
+        assert_eq!(graph.passes.len(), 1);
+        let pass = &graph.passes[0];
+        assert_eq!(pass.role, RenderPassRole::CopyTarget);
+        assert_eq!(pass.object_index, Some(7));
+        assert_eq!(pass.target, RenderTargetRole::FirstClassEffectTarget);
+        assert_eq!(
+            pass.target_name.as_deref(),
+            Some("_rt_imageLayerComposite_461_a")
+        );
+        assert_eq!(
+            pass.bindings,
+            [TextureBindingRole::GraphTarget {
+                slot: 0,
+                role: RenderTargetRole::SceneColor,
+                name: None,
+            }]
+        );
     }
 }

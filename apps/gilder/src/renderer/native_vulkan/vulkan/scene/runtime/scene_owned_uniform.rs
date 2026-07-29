@@ -3,6 +3,7 @@
 use crate::engine::scene::semantic_world::ResolvedMaterialScalarValue;
 use crate::engine::scene::{
     SceneMaterialHandle, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneStorage,
+    StereoSpectrum64,
 };
 use serde::Serialize;
 use vulkanalia::vk;
@@ -16,12 +17,35 @@ use super::shader_program::{
     scene_owned_stage_resource_plan,
 };
 
+mod payload;
+
+use payload::{write_matrix, write_strided_values, write_values};
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SceneOwnedUniformArenaPlan {
     pub(super) byte_count: u64,
     slices: Vec<SceneOwnedUniformSlicePlan>,
     sampled_slots: Vec<u32>,
     phase_resolutions: Vec<Vec<[f32; 4]>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SceneOwnedUniformFrameInputs<'a> {
+    pub scalar_overrides: &'a [ResolvedMaterialScalarValue],
+    pub scene_time_seconds: f32,
+    pub frame_delta_seconds: f32,
+    pub audio_spectrum: &'a StereoSpectrum64,
+    pub sampled_binding_phase: usize,
+}
+
+impl SceneOwnedUniformFrameInputs<'static> {
+    pub(super) const INITIAL: Self = Self {
+        scalar_overrides: &[],
+        scene_time_seconds: 0.0,
+        frame_delta_seconds: 0.0,
+        audio_spectrum: &StereoSpectrum64::ZERO,
+        sampled_binding_phase: 0,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,11 +61,16 @@ struct SceneOwnedUniformSlicePlan {
 struct SceneOwnedUniformMemberSource {
     byte_offset: u32,
     byte_size: u32,
+    array_stride: u32,
     source: SceneOwnedRetainedSource,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum SceneOwnedRetainedSource {
+    SceneTime,
+    FrameDelta,
+    AudioSpectrum64Left,
+    AudioSpectrum64Right,
     ModelViewProjectionMatrix,
     LayerModelMatrix,
     SampledTextureResolution {
@@ -109,7 +138,11 @@ pub fn native_vulkan_scene_owned_uniform_arena_plan(
         .map_err(|_| "scene-owned uniform plan exceeds host address space".to_owned())?;
     let mut initial_payload = vec![0; payload_byte_count];
     if !plan.is_empty() {
-        plan.write_payload(&graph.mesh_draws, &[], 0, &mut initial_payload)?;
+        plan.write_payload(
+            &graph.mesh_draws,
+            SceneOwnedUniformFrameInputs::INITIAL,
+            &mut initial_payload,
+        )?;
     }
     let descriptor_slices = plan
         .descriptor_slices()
@@ -176,6 +209,18 @@ impl SceneOwnedUniformArenaPlan {
                         .iter()
                         .map(|member| {
                             let source = match member.source {
+                                SceneOwnedUniformSource::SceneTime => {
+                                    SceneOwnedRetainedSource::SceneTime
+                                }
+                                SceneOwnedUniformSource::FrameDelta => {
+                                    SceneOwnedRetainedSource::FrameDelta
+                                }
+                                SceneOwnedUniformSource::AudioSpectrum64Left => {
+                                    SceneOwnedRetainedSource::AudioSpectrum64Left
+                                }
+                                SceneOwnedUniformSource::AudioSpectrum64Right => {
+                                    SceneOwnedRetainedSource::AudioSpectrum64Right
+                                }
                                 SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                                     SceneOwnedRetainedSource::ModelViewProjectionMatrix
                                 }
@@ -224,6 +269,7 @@ impl SceneOwnedUniformArenaPlan {
                             Ok(SceneOwnedUniformMemberSource {
                                 byte_offset: member.byte_offset,
                                 byte_size: member.byte_size,
+                                array_stride: member.array_stride,
                                 source,
                             })
                         })
@@ -292,8 +338,7 @@ impl SceneOwnedUniformArenaPlan {
     pub(super) fn write_payload(
         &self,
         draws: &[SceneRenderingDeviceMeshDraw],
-        scalar_overrides: &[ResolvedMaterialScalarValue],
-        sampled_binding_phase: usize,
+        inputs: SceneOwnedUniformFrameInputs<'_>,
         output: &mut [u8],
     ) -> Result<(), String> {
         if output.len() as u64 != self.byte_count {
@@ -305,9 +350,12 @@ impl SceneOwnedUniformArenaPlan {
         }
         let phase = self
             .phase_resolutions
-            .get(sampled_binding_phase)
+            .get(inputs.sampled_binding_phase)
             .ok_or_else(|| {
-                format!("scene-owned sampled binding phase {sampled_binding_phase} is missing")
+                format!(
+                    "scene-owned sampled binding phase {} is missing",
+                    inputs.sampled_binding_phase
+                )
             })?;
         for slice in &self.slices {
             let draw = draws.get(slice.draw_index).ok_or_else(|| {
@@ -336,8 +384,28 @@ impl SceneOwnedUniformArenaPlan {
                             "scene-owned uniform draw {} member exceeds its slice",
                             slice.draw_index
                         )
-                    })?;
+                })?;
                 match &member.source {
+                    SceneOwnedRetainedSource::SceneTime => {
+                        write_values(destination, &[inputs.scene_time_seconds])?;
+                    }
+                    SceneOwnedRetainedSource::FrameDelta => {
+                        write_values(destination, &[inputs.frame_delta_seconds])?;
+                    }
+                    SceneOwnedRetainedSource::AudioSpectrum64Left => {
+                        write_strided_values(
+                            destination,
+                            &inputs.audio_spectrum.left,
+                            member.array_stride,
+                        )?;
+                    }
+                    SceneOwnedRetainedSource::AudioSpectrum64Right => {
+                        write_strided_values(
+                            destination,
+                            &inputs.audio_spectrum.right,
+                            member.array_stride,
+                        )?;
+                    }
                     SceneOwnedRetainedSource::ModelViewProjectionMatrix => {
                         write_matrix(destination, &draw.clip_transform)?;
                     }
@@ -364,7 +432,7 @@ impl SceneOwnedUniformArenaPlan {
                         constant_index,
                         default_values,
                     } => {
-                        if let Some(value) = scalar_overrides.iter().find(|value| {
+                        if let Some(value) = inputs.scalar_overrides.iter().find(|value| {
                             value.object == draw.object && value.constant_index == *constant_index
                         }) {
                             write_values(destination, &[value.value])?;
@@ -512,33 +580,6 @@ fn align_up(value: u64, alignment: u64, role: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{role} alignment overflows"))
 }
 
-fn write_matrix(destination: &mut [u8], matrix: &[[f32; 4]; 4]) -> Result<(), String> {
-    if destination.len() != 64 {
-        return Err(format!(
-            "scene-owned matrix destination has {} bytes, expected 64",
-            destination.len()
-        ));
-    }
-    for (bytes, value) in destination.chunks_exact_mut(4).zip(matrix.iter().flatten()) {
-        bytes.copy_from_slice(&value.to_le_bytes());
-    }
-    Ok(())
-}
-
-fn write_values(destination: &mut [u8], values: &[f32]) -> Result<(), String> {
-    if destination.len() != values.len().saturating_mul(size_of::<f32>()) {
-        return Err(format!(
-            "scene-owned uniform destination has {} bytes for {} values",
-            destination.len(),
-            values.len()
-        ));
-    }
-    for (bytes, value) in destination.chunks_exact_mut(4).zip(values) {
-        bytes.copy_from_slice(&value.to_le_bytes());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,7 +602,7 @@ mod tests {
                 draw_index: 0,
                 descriptor_lane: 0,
                 byte_offset: 0,
-                byte_size: 148,
+                byte_size: 156,
                 members: vec![
                     member(0, 64, SceneOwnedRetainedSource::ModelViewProjectionMatrix),
                     member(64, 64, SceneOwnedRetainedSource::LayerModelMatrix),
@@ -580,6 +621,8 @@ mod tests {
                             default_values: vec![0.25],
                         },
                     ),
+                    member(148, 4, SceneOwnedRetainedSource::SceneTime),
+                    member(152, 4, SceneOwnedRetainedSource::FrameDelta),
                 ],
             }],
             sampled_slots: vec![0],
@@ -595,15 +638,77 @@ mod tests {
         };
         let mut payload = vec![0xcc; 256];
 
-        plan.write_payload(&[draw], &[override_value], 0, &mut payload)
-            .expect("retained payload");
+        plan.write_payload(
+            &[draw],
+            SceneOwnedUniformFrameInputs {
+                scalar_overrides: &[override_value],
+                scene_time_seconds: 1.25,
+                frame_delta_seconds: 0.5,
+                audio_spectrum: &StereoSpectrum64::ZERO,
+                sampled_binding_phase: 0,
+            },
+            &mut payload,
+        )
+        .expect("retained payload");
 
         assert_eq!(read_f32(&payload, 0), 2.0);
         assert_eq!(read_f32(&payload, 112), 17.0);
         assert_eq!(read_f32(&payload, 128), 128.0);
         assert_eq!(read_f32(&payload, 140), 50.0);
         assert_eq!(read_f32(&payload, 144), 0.75);
-        assert!(payload[148..].iter().all(|byte| *byte == 0xcc));
+        assert_eq!(read_f32(&payload, 148), 1.25);
+        assert_eq!(read_f32(&payload, 152), 0.5);
+        assert!(payload[156..].iter().all(|byte| *byte == 0xcc));
+    }
+
+    #[test]
+    fn retained_payload_preserves_strided_stereo64_channels() {
+        let array = |byte_offset, source| SceneOwnedUniformMemberSource {
+            byte_offset,
+            byte_size: 1012,
+            array_stride: 16,
+            source,
+        };
+        let plan = SceneOwnedUniformArenaPlan {
+            byte_count: 2048,
+            slices: vec![SceneOwnedUniformSlicePlan {
+                draw_index: 0,
+                descriptor_lane: 0,
+                byte_offset: 0,
+                byte_size: 2036,
+                members: vec![
+                    array(0, SceneOwnedRetainedSource::AudioSpectrum64Left),
+                    array(1024, SceneOwnedRetainedSource::AudioSpectrum64Right),
+                ],
+            }],
+            sampled_slots: Vec::new(),
+            phase_resolutions: vec![Vec::new()],
+        };
+        let spectrum = StereoSpectrum64 {
+            left: std::array::from_fn(|index| index as f32),
+            right: std::array::from_fn(|index| 100.0 + index as f32),
+        };
+        let mut payload = vec![0xcc; 2048];
+
+        plan.write_payload(
+            &[draw()],
+            SceneOwnedUniformFrameInputs {
+                scalar_overrides: &[],
+                scene_time_seconds: 0.0,
+                frame_delta_seconds: 0.0,
+                audio_spectrum: &spectrum,
+                sampled_binding_phase: 0,
+            },
+            &mut payload,
+        )
+        .expect("stereo64 payload");
+
+        assert_eq!(read_f32(&payload, 16), 1.0);
+        assert_eq!(read_f32(&payload, 1008), 63.0);
+        assert_eq!(read_f32(&payload, 1024), 100.0);
+        assert_eq!(read_f32(&payload, 2032), 163.0);
+        assert!(payload[4..16].iter().all(|byte| *byte == 0));
+        assert!(payload[2036..].iter().all(|byte| *byte == 0xcc));
     }
 
     fn member(
@@ -614,6 +719,7 @@ mod tests {
         SceneOwnedUniformMemberSource {
             byte_offset,
             byte_size,
+            array_stride: 0,
             source,
         }
     }

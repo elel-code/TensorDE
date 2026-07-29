@@ -90,8 +90,7 @@ pub(super) fn create_scene_gpu_resources(
     if !scene_owned_uniform_plan.is_empty() {
         scene_owned_uniform_plan.write_payload(
             &backend_plan.rendering_device_graph.mesh_draws,
-            &[],
-            0,
+            scene_owned_uniform::SceneOwnedUniformFrameInputs::INITIAL,
             &mut scene_owned_uniform_payload,
         )?;
     }

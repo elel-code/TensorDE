@@ -7,16 +7,22 @@ use serde_json::Value;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct ShaderUniformMetadata {
     material_parameters: BTreeMap<String, String>,
+    material_defaults: BTreeMap<String, String>,
 }
 
 impl ShaderUniformMetadata {
     pub(super) fn material_parameter(&self, uniform: &str) -> Option<&str> {
         self.material_parameters.get(uniform).map(String::as_str)
     }
+
+    pub(super) fn material_default(&self, uniform: &str) -> Option<&str> {
+        self.material_defaults.get(uniform).map(String::as_str)
+    }
 }
 
 pub(super) fn parse_shader_uniform_metadata(source: &str) -> Result<ShaderUniformMetadata, String> {
     let mut material_parameters = BTreeMap::new();
+    let mut material_defaults = BTreeMap::new();
     for (line_index, line) in source.lines().enumerate() {
         let Some((declaration, annotation)) = line.split_once("//") else {
             continue;
@@ -69,9 +75,13 @@ pub(super) fn parse_shader_uniform_metadata(source: &str) -> Result<ShaderUnifor
                 "shader uniform {name:?} repeats authored material metadata"
             ));
         }
+        if let Some(default) = metadata.get("default") {
+            material_defaults.insert(name.to_owned(), default.to_string());
+        }
     }
     Ok(ShaderUniformMetadata {
         material_parameters,
+        material_defaults,
     })
 }
 
@@ -101,7 +111,9 @@ uniform vec4 g_Texture0Resolution;
         .expect("uniform metadata");
 
         assert_eq!(metadata.material_parameter("u_Size"), Some("Size"));
+        assert_eq!(metadata.material_default("u_Size"), Some("\"1 1\""));
         assert_eq!(metadata.material_parameter("g_Offset"), Some("offset"));
+        assert_eq!(metadata.material_default("g_Offset"), None);
         assert_eq!(metadata.material_parameter("g_Direction"), Some("angle"));
         assert_eq!(
             metadata.material_parameter("g_ModelViewProjectionMatrix"),

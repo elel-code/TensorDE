@@ -35,7 +35,7 @@ impl SceneStorage {
     }
 
     pub fn from_document(document: SceneBinaryDocument) -> Result<Self, SceneStorageError> {
-        validate_document(&document)?;
+        validate_document(&document).map_err(|error| error.with_document_context(&document))?;
         Ok(Self { document })
     }
 
@@ -616,8 +616,24 @@ pub enum SceneStorageError {
     },
     InvalidShaderProgram {
         program: SceneStringId,
+        program_key: Option<String>,
         reason: &'static str,
+        detail: Option<String>,
     },
+}
+
+impl SceneStorageError {
+    fn with_document_context(mut self, document: &SceneBinaryDocument) -> Self {
+        if let Self::InvalidShaderProgram {
+            program,
+            program_key,
+            ..
+        } = &mut self
+        {
+            *program_key = document.strings.get(program.0 as usize).cloned();
+        }
+        self
+    }
 }
 
 impl fmt::Display for SceneStorageError {
@@ -720,8 +736,21 @@ impl fmt::Display for SceneStorageError {
                 "scene shader {} declares overlapping sampled/input-attachment slots: {overlap:#x}",
                 shader.0
             ),
-            Self::InvalidShaderProgram { program, reason } => {
-                write!(f, "scene shader program {} is invalid: {reason}", program.0)
+            Self::InvalidShaderProgram {
+                program,
+                program_key,
+                reason,
+                detail,
+            } => {
+                write!(f, "scene shader program {}", program.0)?;
+                if let Some(program_key) = program_key {
+                    write!(f, " ({program_key})")?;
+                }
+                write!(f, " is invalid: {reason}")?;
+                if let Some(detail) = detail {
+                    write!(f, ": {detail}")?;
+                }
+                Ok(())
             }
         }
     }
