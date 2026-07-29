@@ -40,6 +40,7 @@ pub(super) fn material_uses_audio_spectrum(
 fn shader_uses_audio_spectrum(shader_key: &str) -> bool {
     native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
         shader.parameter_layout == BuiltinSceneParameterLayout::AudioBars
+            || shader.parameter_layout == BuiltinSceneParameterLayout::AudioLine
             || shader.parameter_layout == BuiltinSceneParameterLayout::Oscilloscope
             || (shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
                 && shader_key.eq_ignore_ascii_case("we/audio-bars-final"))

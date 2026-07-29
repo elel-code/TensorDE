@@ -1,3 +1,5 @@
+#[path = "scene_shader/audio_line.rs"]
+mod audio_line;
 #[path = "scene_shader/auto_sway.rs"]
 mod auto_sway;
 #[path = "scene_shader/blend.rs"]

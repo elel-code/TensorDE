@@ -19,7 +19,9 @@ use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms_into;
 use super::dynamic_text::SceneDynamicTextRuntime;
-use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
+use super::material_uniform::{
+    SceneMaterialFrameInputs, pack_scene_material_uniforms_with_frame_inputs,
+};
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
 
 mod topology;
@@ -390,15 +392,19 @@ pub(super) fn write_scene_frame_buffers(
         let material_buffer = material_buffer.ok_or_else(|| {
             "scene has dynamic effect uniforms but no material uniform buffer".to_owned()
         })?;
-        let average_spectrum32 = events.audio_spectrum().map(|spectrum| spectrum.average32());
+        let stereo_spectrum64 = events.audio_spectrum();
+        let average_spectrum32 = stereo_spectrum64.map(|spectrum| spectrum.average32());
         let material_payload = pack_scene_material_uniforms_with_frame_inputs(
             storage,
             &graph.mesh_draws,
             scene_time_seconds,
             output_extent,
-            average_spectrum32.as_ref(),
-            &semantic_frame.audio_band_material_values,
-            &semantic_frame.material_scalar_values,
+            SceneMaterialFrameInputs {
+                average_spectrum32: average_spectrum32.as_ref(),
+                stereo_spectrum64,
+                audio_material_values: &semantic_frame.audio_band_material_values,
+                material_scalar_values: &semantic_frame.material_scalar_values,
+            },
         );
         write_exact_frame_payload(device, material_buffer, &material_payload)?;
         true

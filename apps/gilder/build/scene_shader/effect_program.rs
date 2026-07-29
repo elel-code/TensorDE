@@ -425,6 +425,9 @@ void main() {
 }
 
 pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
+    if shader == "effects/audioline" {
+        return super::audio_line::audio_line_fragment_source(texture_slot_mask);
+    }
     if shader == "effects/auto_sway" {
         return super::auto_sway::auto_sway_fragment_source(key, texture_slot_mask);
     }

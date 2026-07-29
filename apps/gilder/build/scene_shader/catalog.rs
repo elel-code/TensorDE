@@ -199,6 +199,7 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
             "effects/111" => "Lightning",
+            "effects/audioline" => "AudioLine",
             "effects/auto_sway" => "AutoSway",
             "effects/blend" => "Blend",
             "effects/blendgradient" => "BlendGradient",

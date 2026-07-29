@@ -55,9 +55,12 @@ fn material_scalar_override_replaces_only_its_typed_constant() {
         &[draw],
         0.0,
         TEST_OUTPUT_EXTENT,
-        None,
-        &[],
-        &[override_value],
+        SceneMaterialFrameInputs {
+            average_spectrum32: None,
+            stereo_spectrum64: None,
+            audio_material_values: &[],
+            material_scalar_values: &[override_value],
+        },
     );
     assert_eq!(f32_from_payload(&payload, 0), 0.75);
 }
@@ -599,6 +602,39 @@ fn audio_bars_uniform_duplicates_mono_spectrum_into_stereo_vec4_arrays() {
     for band in 0..32 {
         assert_eq!(f32_from_payload(&payload, (16 + band) * 4), spectrum[band]);
         assert_eq!(f32_from_payload(&payload, (48 + band) * 4), spectrum[band]);
+    }
+}
+
+#[test]
+fn audio_line_uniform_preserves_independent_stereo64_channels() {
+    let storage = storage_with_constants("effects/audioline__SLOTS_1", &[]);
+    let spectrum = StereoSpectrum64 {
+        left: std::array::from_fn(|band| band as f32 / 64.0),
+        right: std::array::from_fn(|band| 1.0 + band as f32 / 64.0),
+    };
+    let payload = super::pack_scene_material_uniforms_with_frame_inputs(
+        &storage,
+        &[draw_with_material(SceneMaterialHandle(0))],
+        0.0,
+        TEST_OUTPUT_EXTENT,
+        SceneMaterialFrameInputs {
+            average_spectrum32: None,
+            stereo_spectrum64: Some(&spectrum),
+            audio_material_values: &[],
+            material_scalar_values: &[],
+        },
+    );
+
+    assert_eq!(payload.len(), SCENE_MATERIAL_UNIFORM_BYTES as usize);
+    for band in 0..64 {
+        assert_eq!(
+            f32_from_payload(&payload, (16 + band) * 4),
+            spectrum.left[band]
+        );
+        assert_eq!(
+            f32_from_payload(&payload, (80 + band) * 4),
+            spectrum.right[band]
+        );
     }
 }
 

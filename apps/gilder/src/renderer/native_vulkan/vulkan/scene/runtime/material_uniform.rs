@@ -9,6 +9,7 @@
 use std::mem::size_of;
 
 mod audio_usage;
+mod audio_line;
 mod color_effect;
 mod final_effect;
 mod oscilloscope;
@@ -33,11 +34,13 @@ use final_effect::{
     material_texture_resolution, object_source_texture_resolution, ripple_flow_composite_values,
 };
 
-use crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue;
+use crate::engine::scene::semantic_world::{
+    ResolvedAudioBandMaterialValue, ResolvedMaterialScalarValue,
+};
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneAudioBandMaterialTarget, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage,
-    SceneTextureRecord,
+    SceneTextureRecord, StereoSpectrum64,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -46,6 +49,14 @@ use crate::renderer::native_vulkan::scene::{
 pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 768;
 const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
     SCENE_MATERIAL_UNIFORM_BYTES as usize / size_of::<f32>();
+
+#[derive(Clone, Copy)]
+pub(super) struct SceneMaterialFrameInputs<'a> {
+    pub average_spectrum32: Option<&'a [f32; 32]>,
+    pub stereo_spectrum64: Option<&'a StereoSpectrum64>,
+    pub audio_material_values: &'a [ResolvedAudioBandMaterialValue],
+    pub material_scalar_values: &'a [ResolvedMaterialScalarValue],
+}
 
 pub(super) fn pack_scene_material_uniforms(
     storage: &SceneStorage,
@@ -67,16 +78,19 @@ fn pack_scene_material_uniforms_with_spectrum(
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
     output_extent: [u32; 2],
-    spectrum: Option<&[f32; 32]>,
+    average_spectrum32: Option<&[f32; 32]>,
 ) -> Vec<u8> {
     pack_scene_material_uniforms_with_frame_inputs(
         storage,
         draws,
         scene_time_seconds,
         output_extent,
-        spectrum,
-        &[],
-        &[],
+        SceneMaterialFrameInputs {
+            average_spectrum32,
+            stereo_spectrum64: None,
+            audio_material_values: &[],
+            material_scalar_values: &[],
+        },
     )
 }
 
@@ -85,9 +99,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
     output_extent: [u32; 2],
-    spectrum: Option<&[f32; 32]>,
-    audio_material_values: &[ResolvedAudioBandMaterialValue],
-    material_scalar_values: &[crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
+    frame_inputs: SceneMaterialFrameInputs<'_>,
 ) -> Vec<u8> {
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
@@ -97,9 +109,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
             draw,
             scene_time_seconds,
             output_extent,
-            spectrum,
-            audio_material_values,
-            material_scalar_values,
+            frame_inputs,
         ) {
             payload.extend_from_slice(&value.to_le_bytes());
         }
@@ -112,9 +122,7 @@ fn material_uniform_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
     output_extent: [u32; 2],
-    spectrum: Option<&[f32; 32]>,
-    audio_material_values: &[ResolvedAudioBandMaterialValue],
-    material_scalar_values: &[crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
+    frame_inputs: SceneMaterialFrameInputs<'_>,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let Some(pass) = first_material_pass(storage, draw.material) else {
         return [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
@@ -129,17 +137,20 @@ fn material_uniform_values(
     let parameters = MaterialParameters {
         storage,
         pass,
-        scalar_overrides: material_scalar_values,
+        scalar_overrides: frame_inputs.material_scalar_values,
     };
     let mut values = match layout {
         BuiltinSceneParameterLayout::None => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
         BuiltinSceneParameterLayout::Particle => {
             particle::particle_values(storage, draw, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::AudioBars => audio_bars_values(&parameters, spectrum),
-        BuiltinSceneParameterLayout::AutoSway => {
-            auto_sway_values(&parameters, scene_time_seconds)
+        BuiltinSceneParameterLayout::AudioBars => {
+            audio_bars_values(&parameters, frame_inputs.average_spectrum32)
         }
+        BuiltinSceneParameterLayout::AudioLine => {
+            audio_line::audio_line_values(&parameters, frame_inputs.stereo_spectrum64)
+        }
+        BuiltinSceneParameterLayout::AutoSway => auto_sway_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Blend => blend_values(&parameters, storage, shader_key),
         BuiltinSceneParameterLayout::BlendGradient => {
             blend_gradient_values(&parameters, storage, shader_key)
@@ -183,7 +194,7 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::Oscilloscope => {
             oscilloscope::oscilloscope_values(
                 &parameters,
-                spectrum,
+                frame_inputs.average_spectrum32,
                 draw.authored_source_extent,
             )
         }
@@ -207,7 +218,7 @@ fn material_uniform_values(
             &parameters,
             scene_time_seconds,
             audio_material_value(
-                audio_material_values,
+                frame_inputs.audio_material_values,
                 draw,
                 SceneAudioBandMaterialTarget::TechCircleSectorWidth,
             ),
@@ -224,8 +235,8 @@ fn material_uniform_values(
             draw,
             shader_key,
             scene_time_seconds,
-            spectrum,
-            audio_material_values,
+            frame_inputs.average_spectrum32,
+            frame_inputs.audio_material_values,
         ),
         BuiltinSceneParameterLayout::FinalWaterRipple => {
             final_waterripple_values(&parameters, storage, draw, scene_time_seconds)

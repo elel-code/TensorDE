@@ -10,6 +10,7 @@
 pub enum BuiltinSceneParameterLayout {
     None,
     AudioBars,
+    AudioLine,
     AutoSway,
     Blend,
     BlendGradient,
@@ -77,6 +78,7 @@ impl BuiltinSceneParameterLayout {
         matches!(
             self,
             Self::AudioBars
+                | Self::AudioLine
                 | Self::AutoSway
                 | Self::Blend
                 | Self::BlendGradient

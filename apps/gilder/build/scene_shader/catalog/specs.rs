@@ -6,6 +6,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshDynamicText,
     },
     SceneShaderSpec {
+        key: "effects/audioline__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/111__SLOTS_1__BLENDMODE_7",
         family: SceneShaderFamily::Effect,
     },
