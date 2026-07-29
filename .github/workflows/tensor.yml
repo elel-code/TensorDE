@@ -6,7 +6,9 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04 ships libinput 1.25; Tensor's tty path needs >= 1.26
+    # (pad dials, device bustype) via the `input` crate's libinput_1_26 feature.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

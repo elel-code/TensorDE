@@ -28,7 +28,9 @@ shader tools before running the renderer-enabled checks. The generated SPIR-V is
 does not bypass the 800-line gate.
 
 Default features also link system `libudev`, `libinput`, `libseat`, `libdrm`, `libgbm`,
-`libwayland-server`, and `libxkbcommon`. On Debian/Ubuntu install at least:
+`libwayland-server`, and `libxkbcommon`. TTY builds require **libinput ≥ 1.26** (tablet-pad
+dials and device bus type). Ubuntu 24.04 only provides 1.25, so use a newer distro or
+build libinput yourself. On Debian/Ubuntu install at least:
 
 ```sh
 sudo apt-get install -y \
@@ -43,4 +45,5 @@ sudo apt-get install -y \
   glslang-tools
 ```
 
-The Tensor GitHub Actions workflow installs the same set before `cargo test`.
+The Tensor GitHub Actions workflow runs on `ubuntu-26.04` and installs the same set before
+`cargo test`.
