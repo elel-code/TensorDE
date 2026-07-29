@@ -18,6 +18,11 @@ use gilder::renderer::StaticRenderSyncPlan;
 use gilder::state::{AppState, WallpaperAssignment};
 use serde_json::{Map, Value, json};
 
+#[path = "daemon/render_sync_telemetry.rs"]
+mod render_sync_telemetry;
+
+use render_sync_telemetry::render_sync_telemetry_report;
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("gilderd: {err}");
