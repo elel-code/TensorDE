@@ -25,6 +25,7 @@ mod mdl;
 mod pkg;
 mod script_analysis;
 mod shader_key;
+mod shader_origin;
 mod tex;
 
 pub use ingest::{WeIngestError, ingest_wallpaper_engine_project};

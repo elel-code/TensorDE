@@ -167,9 +167,14 @@ impl WeIrBuilder {
         }
         let constant_count = self.material_constants.len() as u32 - constant_start;
 
+        let shader_key = bound_string(pass.get("shader")).unwrap_or_default();
+        let shader_origin =
+            crate::convert::we_ingest::shader_origin::scene_shader_origin(&shader_key);
         self.material_passes.push(WeIrMaterialPass {
             material,
-            shader_key: bound_string(pass.get("shader")).unwrap_or_default(),
+            shader_key: shader_key.clone(),
+            shader_source_key: shader_key,
+            shader_origin,
             target: bound_string(pass.get("target")).unwrap_or_default(),
             texture_start,
             texture_count,

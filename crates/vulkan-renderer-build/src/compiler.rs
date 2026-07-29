@@ -33,7 +33,7 @@ pub struct CompileReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlangCompiler {
-    slangc: PathBuf,
+    pub(crate) slangc: PathBuf,
     spirv_val: PathBuf,
 }
 
@@ -102,7 +102,7 @@ impl SlangCompiler {
         })
     }
 
-    fn check_tools(&self) -> Result<()> {
+    pub(crate) fn check_slang(&self) -> Result<()> {
         let version = run(&self.slangc, [OsString::from("-version")])?;
         let version_bytes = if version.stdout.is_empty() {
             &version.stderr
@@ -116,6 +116,11 @@ impl SlangCompiler {
                 found,
             });
         }
+        Ok(())
+    }
+
+    fn check_tools(&self) -> Result<()> {
+        self.check_slang()?;
         run(&self.spirv_val, [OsString::from("--version")])?;
         Ok(())
     }
@@ -180,7 +185,7 @@ fn environment_tool(variable: &str, fallback: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(fallback))
 }
 
-fn run(tool: &Path, arguments: impl IntoIterator<Item = OsString>) -> Result<Output> {
+pub(crate) fn run(tool: &Path, arguments: impl IntoIterator<Item = OsString>) -> Result<Output> {
     let output = Command::new(tool)
         .args(arguments)
         .output()

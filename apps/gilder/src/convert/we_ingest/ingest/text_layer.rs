@@ -18,7 +18,7 @@ use crate::engine::scene::{
 
 use super::super::ir::{
     WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture, WeIrResourceSource, WeIrScriptProgram,
-    WeIrTexture, WeIrTextureMip, WeIrUnsupported,
+    WeIrShaderOrigin, WeIrTexture, WeIrTextureMip, WeIrUnsupported,
 };
 use super::super::tex::{
     TexMetadata, TexParseError, TexUpload, TexUploadMip,
@@ -208,6 +208,8 @@ pub(super) fn ingest_text_layer(
     builder.material_passes.push(WeIrMaterialPass {
         material,
         shader_key: "we/genericimage4".to_owned(),
+        shader_source_key: "genericimage4".to_owned(),
+        shader_origin: WeIrShaderOrigin::EngineBuiltIn,
         target: String::new(),
         texture_start,
         texture_count: 1,

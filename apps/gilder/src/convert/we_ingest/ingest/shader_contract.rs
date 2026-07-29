@@ -9,10 +9,12 @@ use std::collections::BTreeSet;
 
 use crate::convert::we_ingest::ir::{
     WeIrMaterialConstant, WeIrMaterialPass, WeIrMaterialTexture, WeIrShaderContract,
+    WeIrShaderOrigin,
 };
 use crate::engine::render_graph::{RenderGraph, TextureBindingRole};
 
 use super::super::shader_key::canonical_scene_shader_key;
+use super::super::shader_origin::scene_shader_origin;
 
 pub(super) fn build_shader_contract_records(
     render_graphs: &[RenderGraph],
@@ -41,6 +43,7 @@ pub(super) fn build_shader_contract_records(
             .take(pass.constant_count as usize)
             .map(|constant| constant.name.clone())
             .collect::<Vec<_>>();
+        let origin = pass.shader_origin;
         let shader_key = canonical_scene_shader_key(&pass.shader_key);
         let texture_slot_mask = declared_texture_slot_mask(&shader_key, &textures);
         let pipeline_key = format!(
@@ -50,6 +53,8 @@ pub(super) fn build_shader_contract_records(
         if seen_pipeline_keys.insert(pipeline_key.clone()) {
             contracts.push(shader_contract(
                 shader_key,
+                pass.shader_source_key.clone(),
+                origin,
                 pipeline_key,
                 texture_slot_mask,
                 constants,
@@ -65,6 +70,7 @@ pub(super) fn build_shader_contract_records(
         let Some(shader_key) = pass.shader.as_ref().filter(|shader| !shader.is_empty()) else {
             continue;
         };
+        let origin = scene_shader_origin(shader_key);
         let shader_key = canonical_scene_shader_key(shader_key);
         if !represented_shaders.insert(shader_key.clone()) {
             continue;
@@ -92,6 +98,8 @@ pub(super) fn build_shader_contract_records(
         );
         contracts.push(shader_contract(
             shader_key.clone(),
+            shader_key.clone(),
+            origin,
             pipeline_key,
             texture_slot_mask,
             constants,
@@ -102,6 +110,8 @@ pub(super) fn build_shader_contract_records(
 
 fn shader_contract(
     shader_key: String,
+    shader_source_key: String,
+    origin: WeIrShaderOrigin,
     pipeline_key: String,
     texture_slot_mask: u32,
     constants: Vec<String>,
@@ -110,6 +120,8 @@ fn shader_contract(
     let uniform_count = shader_uniform_buffer_count(&shader_key, !constants.is_empty());
     WeIrShaderContract {
         shader_key,
+        shader_source_key,
+        origin,
         pipeline_key,
         texture_slot_mask,
         // No input attachment is inferred from a shader name or a sampler
@@ -483,6 +495,11 @@ mod tests {
             |material, shader_key: &str, texture_start, texture_count| WeIrMaterialPass {
                 material,
                 shader_key: shader_key.to_owned(),
+                shader_source_key: shader_key
+                    .split_once("__")
+                    .map_or(shader_key, |(program, _)| program)
+                    .to_owned(),
+                shader_origin: scene_shader_origin(shader_key),
                 target: String::new(),
                 texture_start,
                 texture_count,

@@ -25,6 +25,7 @@ pub enum Error {
         found: String,
     },
     Reflection(String),
+    SourceLowering(String),
     SpirvContract(String),
     ArtifactMismatch {
         path: PathBuf,
@@ -78,6 +79,9 @@ impl fmt::Display for Error {
                 "Slang compiler version mismatch: expected {expected}, found {found}"
             ),
             Self::Reflection(message) => write!(formatter, "shader reflection mismatch: {message}"),
+            Self::SourceLowering(message) => {
+                write!(formatter, "shader source lowering failed: {message}")
+            }
             Self::SpirvContract(message) => {
                 write!(formatter, "SPIR-V contract mismatch: {message}")
             }

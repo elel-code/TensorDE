@@ -163,7 +163,7 @@ fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::convert::we_ingest::ingest_wallpaper_engine_project;
-    use crate::convert::we_ingest::ir::WeIrImageTargetRole;
+    use crate::convert::we_ingest::ir::{WeIrImageTargetRole, WeIrShaderOrigin};
     use crate::engine::render_graph::RenderPassRole;
     use std::fs;
 
@@ -402,6 +402,8 @@ mod tests {
         let constant = &ir.material_constants[pass.constant_start as usize];
 
         assert_eq!(pass.shader_key, "effects/opacity__SLOTS_1");
+        assert_eq!(pass.shader_source_key, "effects/opacity");
+        assert_eq!(pass.shader_origin, WeIrShaderOrigin::EngineBuiltIn);
         assert_eq!(constant.name, "alpha");
         assert_eq!(constant.value_json, "0.37");
         assert!(
@@ -468,6 +470,19 @@ uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,
         assert_eq!(
             terminal.shader.as_deref(),
             Some("effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16")
+        );
+        let contract = ir
+            .shader_contracts
+            .iter()
+            .find(|contract| {
+                contract.shader_key
+                    == "effects/audio_responsive_oscilloscope__SLOTS_5__RESOLUTION_16"
+            })
+            .expect("workshop shader contract");
+        assert_eq!(contract.origin, WeIrShaderOrigin::AuthoredPackage);
+        assert_eq!(
+            contract.shader_source_key,
+            "workshop/test/effects/audio_responsive_oscilloscope"
         );
         assert!(terminal.bindings.contains(
             &crate::engine::render_graph::TextureBindingRole::PreviousGraphTarget { slot: 0 }

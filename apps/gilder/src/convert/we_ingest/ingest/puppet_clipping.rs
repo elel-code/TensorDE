@@ -1,7 +1,9 @@
 //! MDLV0023 token-one clipping graph lowering.
 
 use super::WeIrBuilder;
-use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture};
+use crate::convert::we_ingest::ir::{
+    WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture, WeIrShaderOrigin,
+};
 use crate::convert::we_ingest::shader_key::canonical_scene_shader_key;
 use crate::engine::render_graph::{
     ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph,
@@ -243,6 +245,8 @@ fn clipping_mask_material(
     builder.material_passes.push(WeIrMaterialPass {
         material: handle,
         shader_key: "we/clippingmaskimage4__PUPPETSKINNING_1".to_owned(),
+        shader_source_key: "clippingmaskimage4".to_owned(),
+        shader_origin: WeIrShaderOrigin::EngineBuiltIn,
         target: FULL_ALPHA_MASK.to_owned(),
         texture_start,
         texture_count: 2,

@@ -363,6 +363,8 @@ pub struct WeIrMaterial {
 pub struct WeIrMaterialPass {
     pub material: u32,
     pub shader_key: String,
+    pub shader_source_key: String,
+    pub shader_origin: WeIrShaderOrigin,
     pub target: String,
     pub texture_start: u32,
     pub texture_count: u32,
@@ -553,12 +555,21 @@ pub enum WeIrImageTargetRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeIrShaderContract {
     pub shader_key: String,
+    pub shader_source_key: String,
+    pub origin: WeIrShaderOrigin,
     pub pipeline_key: String,
     pub texture_slot_mask: u32,
     pub input_attachment_slot_mask: u32,
     pub constants: Vec<String>,
     pub resource_heap_count: u32,
     pub sampler_heap_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrShaderOrigin {
+    EngineBuiltIn,
+    AuthoredPackage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

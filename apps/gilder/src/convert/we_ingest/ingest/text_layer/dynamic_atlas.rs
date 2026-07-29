@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::convert::we_ingest::ir::{
     WeIrDynamicText, WeIrDynamicTextGlyph, WeIrMaterial, WeIrMaterialPass, WeIrMaterialTexture,
-    WeIrResourceSource, WeIrScriptProgram, WeIrTexture, WeIrTextureMip,
+    WeIrResourceSource, WeIrScriptProgram, WeIrShaderOrigin, WeIrTexture, WeIrTextureMip,
 };
 use crate::engine::scene::{
     SCENE_DYNAMIC_TEXT_MAX_GLYPHS, SceneCullMode, SceneDepthTest, ScenePipelineBlend,
@@ -397,6 +397,8 @@ fn add_dynamic_text_material(
     builder.material_passes.push(WeIrMaterialPass {
         material,
         shader_key: "gilder/dynamic-text".to_owned(),
+        shader_source_key: "gilder/dynamic-text".to_owned(),
+        shader_origin: WeIrShaderOrigin::EngineBuiltIn,
         target: String::new(),
         texture_start,
         texture_count: 1,
