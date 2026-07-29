@@ -432,6 +432,17 @@ impl SceneStorage {
         &self.document.shader_programs
     }
 
+    pub fn shader_program(
+        &self,
+        program_key: SceneStringId,
+        stage: SceneShaderStage,
+    ) -> Option<&SceneShaderProgramRecord> {
+        self.document
+            .shader_programs
+            .iter()
+            .find(|program| program.program_key == program_key && program.stage == stage)
+    }
+
     pub fn shader_program_bindings(
         &self,
         program: &SceneShaderProgramRecord,

@@ -88,6 +88,13 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
         script_program_count: storage.script_programs().len(),
         render_graph_count: render_plan.render_graph_count,
         shader_contract_count: render_plan.shader_contract_count,
+        shader_program_count: storage.shader_programs().len(),
+        shader_spirv_bytes: storage
+            .document()
+            .shader_spirv
+            .len()
+            .checked_mul(std::mem::size_of::<u32>())
+            .expect("validated scene SPIR-V byte count"),
         descriptor_heap_resource_count: render_plan.descriptor_heap_resource_count,
         descriptor_heap_sampler_count: render_plan.descriptor_heap_sampler_count,
         fifo_latest_ready_present_required: render_plan.fifo_latest_ready_present_required,
@@ -120,6 +127,8 @@ pub struct WeConvertSummary {
     pub script_program_count: usize,
     pub render_graph_count: usize,
     pub shader_contract_count: usize,
+    pub shader_program_count: usize,
+    pub shader_spirv_bytes: usize,
     pub descriptor_heap_resource_count: u32,
     pub descriptor_heap_sampler_count: u32,
     pub fifo_latest_ready_present_required: bool,
@@ -237,6 +246,8 @@ mod tests {
         assert_eq!(summary.puppet_count, 0);
         assert_eq!(summary.puppet_animation_clip_count, 0);
         assert_eq!(summary.shader_contract_count, 1);
+        assert_eq!(summary.shader_program_count, 0);
+        assert_eq!(summary.shader_spirv_bytes, 0);
         assert_eq!(summary.descriptor_heap_resource_count, 3);
         assert_eq!(summary.descriptor_heap_sampler_count, 1);
         assert!(summary.fifo_latest_ready_present_required);

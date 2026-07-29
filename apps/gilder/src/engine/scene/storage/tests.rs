@@ -56,6 +56,14 @@ fn storage_accepts_native_heap_spirv_and_exposes_borrowed_program_slices() {
 
     let storage = SceneStorage::from_document(document).expect("native heap SPIR-V storage");
     let program = &storage.shader_programs()[0];
+    assert_eq!(
+        storage.shader_program(SceneStringId(0), SceneShaderStage::Fragment),
+        Some(program)
+    );
+    assert_eq!(
+        storage.shader_program(SceneStringId(0), SceneShaderStage::Vertex),
+        None
+    );
     assert_eq!(storage.shader_program_spirv(program), spirv);
     assert_eq!(storage.shader_program_bindings(program).len(), 1);
 }
