@@ -204,7 +204,6 @@ fn select_scene_pipeline_program(
     match key.shader {
         ScenePipelineShader::Authored(_) => match authored {
             SceneResolvedGraphicsProgram::SceneOwned { fragment, .. } => {
-                require_scene_owned_stage_resources_connected(storage, fragment)?;
                 Ok(ScenePipelineProgramSelection {
                     vertex_key: vertex.key,
                     fragment_key: authored.key(),
@@ -264,7 +263,6 @@ fn select_scene_pipeline_vertex<'a>(
     match program {
         SceneResolvedGraphicsProgram::SceneOwned { vertex, .. } => {
             let attributes = scene_owned_vertex_attributes(storage, vertex)?;
-            require_scene_owned_stage_resources_connected(storage, vertex)?;
             let key = program.key();
             let entry_point = storage.string(vertex.entry_point).ok_or_else(|| {
                 format!("scene-owned vertex program {key:?} has no entry point")
@@ -287,26 +285,6 @@ fn select_scene_pipeline_vertex<'a>(
             })
         }
     }
-}
-
-fn require_scene_owned_stage_resources_connected(
-    storage: &SceneStorage,
-    stage: &crate::engine::scene::SceneShaderProgramRecord,
-) -> Result<(), String> {
-    let plan = scene_owned_stage_resource_plan(storage, stage)?;
-    if plan.push_constant_bytes == 0
-        && plan.bindings.is_empty()
-        && plan.uniform_buffers.is_empty()
-    {
-        return Ok(());
-    }
-    let key = storage
-        .string(stage.program_key)
-        .ok_or_else(|| "scene-owned resource stage has no program key".to_owned())?;
-    Err(format!(
-        "scene-owned {:?} stage for {key:?} requires retained typed descriptor resources; the runtime refuses the legacy fixed uniform buffers",
-        stage.stage
-    ))
 }
 
 pub(in crate::renderer::native_vulkan) fn destroy_scene_pipelines(
@@ -553,16 +531,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_owned_descriptor_abi_before_legacy_fixed_uniform_reuse() {
+    fn accepts_owned_descriptor_abi_after_retained_arena_connection() {
         let storage = scene_owned_storage(true);
 
-        let error = select_scene_pipeline_program(&storage, authored_key())
-            .err()
-            .expect("unconnected retained resources must fail");
+        let selection = select_scene_pipeline_program(&storage, authored_key())
+            .expect("connected retained resources");
 
-        assert!(error.contains("scene-owned Vertex stage"));
-        assert!(error.contains("retained typed descriptor resources"));
-        assert!(error.contains("refuses the legacy fixed uniform buffers"));
+        assert!(selection.vertex_uses_native_descriptor_heap);
+        assert_eq!(selection.vertex_entry_point, "vertexMain");
+        assert_eq!(selection.fragment_entry_point, "fragmentMain");
     }
 
     fn authored_key() -> ScenePipelineKey {

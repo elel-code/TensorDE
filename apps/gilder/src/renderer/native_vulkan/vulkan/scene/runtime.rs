@@ -19,25 +19,20 @@ use vulkanalia::vk::{
 
 use crate::renderer::native_vulkan::vulkan::core::roadmap_2026::ROADMAP_2026_API_VERSION;
 
-use crate::engine::scene::{
-    RenderingServer, SceneParticleGpuEmitterPlan, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceMeshDraw, SceneScriptTarget, SceneStorage,
-};
 use crate::engine::scene::semantic_world::SemanticFrameResolver;
+use crate::engine::scene::{RenderingServer, SceneScriptTarget, SceneStorage};
 use crate::renderer::native_vulkan::{
-    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanClearColor,
-    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
-    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+    NativeVulkanClearColor, NativeVulkanVulkanaliaBuffer,
+    NativeVulkanVulkanaliaBufferMemoryPreference,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot, NativeVulkanVulkanaliaImage,
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaRecordedBufferUpload,
     NativeVulkanVulkanaliaRecordedImageUpload, NativeVulkanVulkanaliaSwapchainSnapshot,
     VulkanaliaDescriptorHeapResourceResources,
-    native_vulkan_scene_backend_plan_from_semantic_frame,
-    native_vulkan_vulkanalia_create_buffer,
-    native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
+    native_vulkan_scene_backend_plan_from_semantic_frame, native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_descriptor_heap_resource_resources,
+    native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_descriptor_heap_resource_plan,
     native_vulkan_vulkanalia_destroy_buffer,
     native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources,
@@ -63,6 +58,7 @@ use super::super::present::swapchain::{
 mod command_order;
 mod composite_scissor;
 mod descriptor_layout;
+mod descriptor_plan;
 mod draw_recording;
 mod draw_uniform;
 mod dynamic_text;
@@ -76,10 +72,10 @@ mod gpu_resource_lifecycle;
 mod gpu_timing;
 mod graph_execution;
 mod input_attachment_binding;
+mod local_read;
 mod material_uniform;
 mod mesh_payload;
 mod native_descriptor_push;
-mod local_read;
 mod particle_compute_dispatch;
 mod particle_resources;
 mod pipeline;
@@ -90,6 +86,7 @@ mod resource_setup;
 mod sampled_binding;
 mod scene_color_clear;
 mod scene_color_msaa;
+mod scene_owned_uniform;
 mod scene_texture;
 mod scene_viewport;
 mod shader_descriptor_push;
@@ -100,6 +97,8 @@ use present_loop::with_scene_present;
 use resource_setup::*;
 
 use command_order::scene_command_order;
+use descriptor_layout::{ScenePipelineDescriptorLayout, scene_pipeline_descriptor_layout};
+use descriptor_plan::scene_descriptor_plan_inputs;
 use draw_recording::{
     SceneGpuDrawCommand, SceneGpuGraphDrawRange, draw_range_count, scene_color_draw_ranges,
 };
@@ -119,31 +118,33 @@ use gpu_resource_lifecycle::{
 };
 pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
-use material_uniform::{
-    SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
-};
-use native_descriptor_push::resolve_scene_native_fragment_pushes;
-use mesh_payload::{pack_scene_indices, pack_scene_vertices};
-use pipeline::{
-    ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
-    scene_disabled_pipeline_indices_for_draws_with_local_read,
-    scene_pipeline_indices_for_draws_with_local_read,
+use input_attachment_binding::{
+    SceneInputAttachmentBindingPlan, scene_input_attachment_binding_cycle,
 };
 use local_read::{
     SceneLocalReadDeviceLimits, SceneLocalReadScopePlan, scene_local_read_scope_plans,
 };
-use descriptor_layout::{
-    ScenePipelineDescriptorLayout, scene_pipeline_descriptor_layout,
+use material_uniform::{
+    SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
+};
+use mesh_payload::{pack_scene_indices, pack_scene_vertices};
+use native_descriptor_push::resolve_scene_native_descriptor_pushes;
+use pipeline::{
+    ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
+    scene_disabled_pipeline_indices_for_draws_with_local_read,
+    scene_pipeline_indices_for_draws_with_local_read,
 };
 use resource_cleanup::destroy_scene_present_runtime_resources;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,
 };
-use input_attachment_binding::{
-    SceneInputAttachmentBindingPlan, scene_input_attachment_binding_cycle,
-};
 use scene_color_clear::SceneGpuSceneColorClear;
+use scene_owned_uniform::SceneOwnedUniformArenaPlan;
+pub use scene_owned_uniform::{
+    NativeVulkanSceneOwnedUniformArenaPlanSnapshot, NativeVulkanSceneOwnedUniformSliceSnapshot,
+    native_vulkan_scene_owned_uniform_arena_plan,
+};
 
 const SCENE_MESH_VERTEX_STRIDE_BYTES: u32 = 52;
 const SCENE_WHITE_TEXTURE_BYTES: &[u8] = &[255, 255, 255, 255];
@@ -224,6 +225,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub index_buffer_bytes: u64,
     pub transform_uniform_bytes: u64,
     pub material_uniform_bytes: u64,
+    pub scene_owned_uniform_bytes: u64,
     pub audio_spectrum_model: &'static str,
     pub audio_spectrum_ready: bool,
     pub audio_spectrum_peak: f32,
@@ -245,6 +247,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub transform_uniform_update_count: u64,
     pub effect_uniform_update_count: u64,
     pub skinning_storage_update_count: u64,
+    pub scene_owned_uniform_update_count: u64,
     pub frame_state_update_total_micros: u64,
     pub semantic_incremental_resolve_enabled: bool,
     pub semantic_retained_puppet_resolve_enabled: bool,
@@ -256,6 +259,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub transform_update_total_micros: u64,
     pub material_update_total_micros: u64,
     pub skinning_update_total_micros: u64,
+    pub scene_owned_uniform_update_total_micros: u64,
     pub draw_policy_update_total_micros: u64,
     pub sampled_descriptor_update_count: u64,
     pub sampled_descriptor_update_total_micros: u64,
@@ -396,6 +400,8 @@ struct SceneGpuResources {
     sampled_descriptor_dirty_update_enabled: bool,
     frame_topology: SceneFrameTopology,
     transform_scratch: Vec<u8>,
+    scene_owned_uniform_plan: SceneOwnedUniformArenaPlan,
+    scene_owned_uniform_scratch: Vec<u8>,
     dynamic_text: dynamic_text::SceneDynamicTextRuntime,
     dynamic_effect_uniforms: bool,
     scene_color_msaa_enabled: bool,
@@ -425,8 +431,7 @@ impl SceneMeshGpuUploads {
                 command_buffer,
                 "scene-mesh-vertex-buffer",
                 vertex_payload.len() as u64,
-                vk::BufferUsageFlags::VERTEX_BUFFER
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 vertex_payload,
             )?;
         let index =
@@ -436,8 +441,7 @@ impl SceneMeshGpuUploads {
                 command_buffer,
                 "scene-mesh-index-buffer",
                 index_payload.len() as u64,
-                vk::BufferUsageFlags::INDEX_BUFFER
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 index_payload,
             ) {
                 Ok(upload) => upload,
@@ -477,6 +481,7 @@ struct SceneGpuFrameResources {
     transform_buffer: NativeVulkanVulkanaliaBuffer,
     material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<NativeVulkanVulkanaliaBuffer>,
+    scene_owned_uniform_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     descriptor_heap: VulkanaliaDescriptorHeapResourceResources,
     image_binding_phase: usize,
 }
@@ -671,107 +676,6 @@ fn end_one_time_commands(
             .map_err(|err| format!("vkEndCommandBuffer(vulkanalia {label}): {err:?}"))?;
     }
     Ok(())
-}
-
-fn scene_descriptor_plan_inputs(
-    storage: &SceneStorage,
-    draws: &[SceneRenderingDeviceMeshDraw],
-    particle_emitters: &[SceneParticleGpuEmitterPlan],
-    layout: &ScenePipelineDescriptorLayout,
-    pipeline_indices: &[u32],
-    disabled_pipeline_indices: &[Option<u32>],
-) -> (
-    Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
-    Vec<SceneGpuDrawCommand>,
-) {
-    let per_draw_resource_count = layout.per_draw_resource_count();
-    let mut resources = Vec::with_capacity(draws.len().saturating_mul(per_draw_resource_count));
-    let mut commands = Vec::with_capacity(draws.len());
-    for (index, draw) in draws.iter().enumerate() {
-        let base = index * per_draw_resource_count;
-        resources.push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
-        if layout.material_uniform_enabled {
-            resources
-                .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
-        }
-        let (skinning_byte_offset, skinning_byte_count) = if layout.skinning_storage_enabled {
-            resources
-                .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer);
-            scene_draw_skinning_range(draw)
-        } else {
-            (0, 0)
-        };
-        resources.extend(
-            layout
-                .sampled_slots
-                .iter()
-                .map(|_| NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage),
-        );
-        resources.extend(layout.input_attachment_slots.iter().map(|_| {
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment
-        }));
-        commands.push(SceneGpuDrawCommand {
-            enabled: true,
-            primitive: draw.primitive,
-            pipeline_index: pipeline_indices.get(index).copied().unwrap_or(0),
-            authored_pipeline_index: pipeline_indices.get(index).copied().unwrap_or(0),
-            disabled_pipeline_index: disabled_pipeline_indices.get(index).copied().flatten(),
-            first_index: draw.index_start,
-            index_count: draw.index_count,
-            vertex_offset: draw.vertex_start as i32,
-            vertex_count: draw.vertex_count,
-            instance_count: draw.instance_count,
-            instance_capacity: draw.instance_count,
-            first_instance: storage
-                .dynamic_texts()
-                .iter()
-                .take_while(|text| text.object != draw.object)
-                .map(|text| text.max_glyph_count)
-                .sum(),
-            dynamic_text: storage.dynamic_text_for_object(draw.object).is_some()
-                && storage
-                    .string(draw.shader_key)
-                    .is_some_and(|key| key == "gilder/dynamic-text"),
-            particle_indirect_index: particle_emitters
-                .iter()
-                .find(|emitter| {
-                    draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard
-                        && emitter.object == draw.object
-            })
-                .map(|emitter| emitter.indirect_draw_index),
-            resource_descriptor_base: base,
-            material_resource_descriptor: layout
-                .material_resource_offset()
-                .map(|offset| base + offset),
-            skinning_resource_descriptor: layout
-                .skinning_resource_offset()
-                .map(|offset| base + offset),
-            sampled_resource_descriptor_base: base + layout.sampled_resource_offset(),
-            input_attachment_resource_descriptor_base:
-                base + layout.input_attachment_resource_offset(),
-            sampler_descriptor_base: index * layout.sampler_count_per_draw(),
-            native_fragment_push: None,
-            skinning_byte_offset,
-            skinning_byte_count,
-            scissor: None,
-        });
-    }
-    (resources, commands)
-}
-
-fn scene_draw_skinning_range(draw: &SceneRenderingDeviceMeshDraw) -> (u64, u64) {
-    if draw.skinning_palette_count == 0 {
-        return (
-            0,
-            NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
-        );
-    }
-    (
-        draw.skinning_palette_start.saturating_add(1) as u64
-            * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
-        draw.skinning_palette_count as u64
-            * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
-    )
 }
 
 #[cfg(test)]

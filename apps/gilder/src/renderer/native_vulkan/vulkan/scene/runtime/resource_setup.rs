@@ -1,5 +1,8 @@
 use super::*;
 mod descriptor_writes;
+mod frame_resources;
+
+use frame_resources::{create_additional_scene_frame_resources, write_scene_descriptors};
 
 pub(super) fn create_scene_gpu_resources(
     device: &Device,
@@ -17,6 +20,7 @@ pub(super) fn create_scene_gpu_resources(
     scene_color_msaa_enabled: bool,
     multisampled_render_to_single_sampled_enabled: bool,
     local_read_limits: SceneLocalReadDeviceLimits,
+    min_uniform_buffer_offset_alignment: u64,
     frame_slot_count: usize,
 ) -> Result<SceneGpuResources, String> {
     if frame_slot_count == 0 {
@@ -25,8 +29,7 @@ pub(super) fn create_scene_gpu_resources(
     if backend_plan.rendering_device_graph.mesh_draws.is_empty() {
         return Err("scene present requires at least one render graph mesh draw".to_owned());
     }
-    let mesh_coverage =
-        composite_scissor::SceneMeshCoveragePlans::from_storage(storage);
+    let mesh_coverage = composite_scissor::SceneMeshCoveragePlans::from_storage(storage);
     let descriptor_layout =
         scene_pipeline_descriptor_layout(storage, &backend_plan.rendering_device_graph)?;
     let sampled_binding_cycle = scene_sampled_image_binding_cycle(
@@ -72,6 +75,26 @@ pub(super) fn create_scene_gpu_resources(
         &local_read_scopes,
         &sampled_binding_cycle,
     )?;
+    let scene_owned_uniform_plan = SceneOwnedUniformArenaPlan::build(
+        storage,
+        &backend_plan.rendering_device_graph.mesh_draws,
+        &descriptor_layout,
+        &sampled_binding_cycle,
+        &effect_target_plans,
+        [extent.width, extent.height],
+        min_uniform_buffer_offset_alignment,
+    )?;
+    let scene_owned_uniform_byte_count = usize::try_from(scene_owned_uniform_plan.byte_count)
+        .map_err(|_| "scene-owned uniform arena exceeds host address space".to_owned())?;
+    let mut scene_owned_uniform_payload = vec![0; scene_owned_uniform_byte_count];
+    if !scene_owned_uniform_plan.is_empty() {
+        scene_owned_uniform_plan.write_payload(
+            &backend_plan.rendering_device_graph.mesh_draws,
+            &[],
+            0,
+            &mut scene_owned_uniform_payload,
+        )?;
+    }
     let effect_target_commands =
         effect_target::scene_effect_target_commands(storage, &backend_plan.rendering_device_graph);
     let effect_target_command_plan = effect_target::scene_effect_target_command_plan(
@@ -135,21 +158,22 @@ pub(super) fn create_scene_gpu_resources(
             [extent.width, extent.height],
         )
     });
-    let dynamic_effect_uniforms = storage.script_programs().iter().any(|program| {
-        program.target == crate::engine::scene::SceneScriptTarget::MaterialScalar
-    }) || backend_plan
-        .rendering_device_graph
-        .mesh_draws
-        .iter()
-        .any(|draw| {
-            draw_parameter_layout(storage, draw).uses_dynamic_material_input()
-                || matches!(
+    let dynamic_effect_uniforms =
+        storage.script_programs().iter().any(|program| {
+            program.target == crate::engine::scene::SceneScriptTarget::MaterialScalar
+        }) || backend_plan
+            .rendering_device_graph
+            .mesh_draws
+            .iter()
+            .any(|draw| {
+                draw_parameter_layout(storage, draw).uses_dynamic_material_input()
+                    || matches!(
                     draw.effect_visibility_policy,
                     crate::engine::scene::SceneRenderEffectVisibilityPolicy::WaterWavesStages
                         | crate::engine::scene::SceneRenderEffectVisibilityPolicy::FlatRoundedMask
                         | crate::engine::scene::SceneRenderEffectVisibilityPolicy::MaterialStages
                 )
-        });
+            });
     let skinning_payload = descriptor_layout
         .skinning_storage_enabled
         .then(|| pack_scene_skinning_palette(&backend_plan.rendering_device_graph));
@@ -218,6 +242,32 @@ pub(super) fn create_scene_gpu_resources(
         },
         None => None,
     };
+    let scene_owned_uniform_buffer = if scene_owned_uniform_plan.is_empty() {
+        None
+    } else {
+        match native_vulkan_vulkanalia_create_buffer(
+            device,
+            memory_properties,
+            "scene-owned-uniform-arena",
+            scene_owned_uniform_plan.byte_count,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+            Some(&scene_owned_uniform_payload),
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                if let Some(buffer) = skinning_buffer {
+                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+                }
+                if let Some(buffer) = material_buffer {
+                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+                }
+                native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+                mesh_uploads.destroy(device);
+                return Err(err);
+            }
+        }
+    };
 
     let white_upload = if sampled_binding_plan.fallback_descriptor_count == 0 {
         None
@@ -225,6 +275,9 @@ pub(super) fn create_scene_gpu_resources(
         match create_white_texture_upload(device, memory_properties, setup_command_buffer) {
             Ok(upload) => Some(upload),
             Err(err) => {
+                if let Some(buffer) = scene_owned_uniform_buffer {
+                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+                }
                 if let Some(buffer) = skinning_buffer {
                     native_vulkan_vulkanalia_destroy_buffer(device, buffer);
                 }
@@ -270,6 +323,9 @@ pub(super) fn create_scene_gpu_resources(
         if let Some(upload) = white_upload {
             destroy_recorded_image_upload(device, upload);
         }
+        if let Some(buffer) = scene_owned_uniform_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
         if let Some(buffer) = material_buffer {
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
@@ -280,7 +336,7 @@ pub(super) fn create_scene_gpu_resources(
         mesh_uploads.destroy(device);
         return Err(err);
     }
-    if let Err(err) = resolve_scene_native_fragment_pushes(
+    if let Err(err) = resolve_scene_native_descriptor_pushes(
         storage,
         &backend_plan.rendering_device_graph.mesh_draws,
         &descriptor_layout,
@@ -289,6 +345,9 @@ pub(super) fn create_scene_gpu_resources(
     ) {
         if let Some(upload) = white_upload {
             destroy_recorded_image_upload(device, upload);
+        }
+        if let Some(buffer) = scene_owned_uniform_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         if let Some(buffer) = material_buffer {
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
@@ -310,6 +369,9 @@ pub(super) fn create_scene_gpu_resources(
             Err(err) => {
                 if let Some(upload) = white_upload {
                     destroy_recorded_image_upload(device, upload);
+                }
+                if let Some(buffer) = scene_owned_uniform_buffer {
+                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
                 }
                 if let Some(buffer) = material_buffer {
                     native_vulkan_vulkanalia_destroy_buffer(device, buffer);
@@ -336,6 +398,9 @@ pub(super) fn create_scene_gpu_resources(
             );
             if let Some(upload) = white_upload {
                 destroy_recorded_image_upload(device, upload);
+            }
+            if let Some(buffer) = scene_owned_uniform_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             if let Some(buffer) = material_buffer {
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
@@ -371,6 +436,9 @@ pub(super) fn create_scene_gpu_resources(
             if let Some(upload) = white_upload {
                 destroy_recorded_image_upload(device, upload);
             }
+            if let Some(buffer) = scene_owned_uniform_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
             if let Some(buffer) = material_buffer {
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
@@ -390,6 +458,8 @@ pub(super) fn create_scene_gpu_resources(
         &transform_buffer,
         material_buffer.as_ref(),
         skinning_buffer.as_ref(),
+        scene_owned_uniform_buffer.as_ref(),
+        &scene_owned_uniform_plan,
         white_upload.as_ref().map(|upload| &upload.image),
         &scene_textures,
         &effect_targets,
@@ -405,6 +475,9 @@ pub(super) fn create_scene_gpu_resources(
         );
         if let Some(upload) = white_upload {
             destroy_recorded_image_upload(device, upload);
+        }
+        if let Some(buffer) = scene_owned_uniform_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         if let Some(buffer) = material_buffer {
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
@@ -442,6 +515,9 @@ pub(super) fn create_scene_gpu_resources(
             if let Some(upload) = white_upload {
                 destroy_recorded_image_upload(device, upload);
             }
+            if let Some(buffer) = scene_owned_uniform_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
             if let Some(buffer) = material_buffer {
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
@@ -474,6 +550,9 @@ pub(super) fn create_scene_gpu_resources(
             if let Some(upload) = white_upload {
                 destroy_recorded_image_upload(device, upload);
             }
+            if let Some(buffer) = scene_owned_uniform_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
             if let Some(buffer) = material_buffer {
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
@@ -505,6 +584,9 @@ pub(super) fn create_scene_gpu_resources(
             );
             if let Some(upload) = white_upload {
                 destroy_recorded_image_upload(device, upload);
+            }
+            if let Some(buffer) = scene_owned_uniform_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
             }
             if let Some(buffer) = material_buffer {
                 native_vulkan_vulkanalia_destroy_buffer(device, buffer);
@@ -544,6 +626,9 @@ pub(super) fn create_scene_gpu_resources(
         if let Some(upload) = white_upload {
             destroy_recorded_image_upload(device, upload);
         }
+        if let Some(buffer) = scene_owned_uniform_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
         if let Some(buffer) = material_buffer {
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
@@ -559,6 +644,7 @@ pub(super) fn create_scene_gpu_resources(
         transform_buffer,
         material_buffer,
         skinning_buffer,
+        scene_owned_uniform_buffer,
         descriptor_heap,
         image_binding_phase: 0,
     }];
@@ -569,6 +655,9 @@ pub(super) fn create_scene_gpu_resources(
             &transform_payload,
             material_payload.as_deref(),
             skinning_payload.as_deref(),
+            (!scene_owned_uniform_plan.is_empty())
+                .then_some(scene_owned_uniform_payload.as_slice()),
+            &scene_owned_uniform_plan,
             &descriptor_heap_plan,
             &draw_commands,
             white_upload.as_ref().map(|upload| &upload.image),
@@ -604,8 +693,7 @@ pub(super) fn create_scene_gpu_resources(
     }
 
     let pass_nodes = backend_plan.rendering_device_graph.pass_nodes.clone();
-    let frame_topology =
-        SceneFrameTopology::from_owned_graph(backend_plan.rendering_device_graph);
+    let frame_topology = SceneFrameTopology::from_owned_graph(backend_plan.rendering_device_graph);
     Ok(SceneGpuResources {
         mesh_uploads,
         mesh_coverage,
@@ -640,6 +728,8 @@ pub(super) fn create_scene_gpu_resources(
         .is_none(),
         frame_topology,
         transform_scratch: transform_payload,
+        scene_owned_uniform_plan,
+        scene_owned_uniform_scratch: scene_owned_uniform_payload,
         dynamic_text,
         dynamic_effect_uniforms,
         scene_color_msaa_enabled,
@@ -648,222 +738,6 @@ pub(super) fn create_scene_gpu_resources(
         particle_resources,
         particle_scene_time_seconds: 0.0,
     })
-}
-
-fn create_additional_scene_frame_resources(
-    device: &Device,
-    memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    transform_payload: &[u8],
-    material_payload: Option<&[u8]>,
-    skinning_payload: Option<&[u8]>,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    draw_commands: &[SceneGpuDrawCommand],
-    white_image: Option<&NativeVulkanVulkanaliaImage>,
-    scene_textures: &[scene_texture::SceneTextureImageResource],
-    effect_targets: &[effect_target::SceneEffectTargetImageResource],
-    sampled_binding_plan: &SceneSampledImageBindingPlan,
-    input_attachment_binding_plan: &SceneInputAttachmentBindingPlan,
-    initial_scene_color_image: vk::Image,
-    target_format: vk::Format,
-    particle_resources: Option<&particle_resources::SceneParticleGpuResources>,
-    particle_global_descriptor_base: Option<usize>,
-) -> Result<SceneGpuFrameResources, String> {
-    let transform_buffer = native_vulkan_vulkanalia_create_buffer(
-        device,
-        memory_properties,
-        "scene-draw-transform-uniform-buffer",
-        transform_payload.len() as u64,
-        vk::BufferUsageFlags::UNIFORM_BUFFER
-            | vk::BufferUsageFlags::VERTEX_BUFFER
-            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-        Some(transform_payload),
-    )?;
-    let material_buffer = match material_payload {
-        Some(payload) => match native_vulkan_vulkanalia_create_buffer(
-            device,
-            memory_properties,
-            "scene-material-uniform-buffer",
-            payload.len() as u64,
-            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-            Some(payload),
-        ) {
-            Ok(buffer) => Some(buffer),
-            Err(err) => {
-                native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                return Err(err);
-            }
-        },
-        None => None,
-    };
-    let skinning_buffer = match skinning_payload {
-        Some(payload) => match native_vulkan_vulkanalia_create_buffer(
-            device,
-            memory_properties,
-            "scene-puppet-bone-storage-buffer",
-            payload.len() as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-            Some(payload),
-        ) {
-            Ok(buffer) => Some(buffer),
-            Err(err) => {
-                if let Some(buffer) = material_buffer {
-                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-                }
-                native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-                return Err(err);
-            }
-        },
-        None => None,
-    };
-    let descriptor_heap = native_vulkan_vulkanalia_create_descriptor_heap_resource_resources(
-        device,
-        memory_properties,
-        descriptor_heap_plan,
-    );
-    let mut descriptor_heap = match descriptor_heap {
-        Ok(resources) => resources,
-        Err(err) => {
-            if let Some(buffer) = material_buffer {
-                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-            }
-            if let Some(buffer) = skinning_buffer {
-                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-            }
-            native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-            return Err(err);
-        }
-    };
-    if let Err(err) = write_scene_descriptors(
-        device,
-        &mut descriptor_heap,
-        draw_commands,
-        &transform_buffer,
-        material_buffer.as_ref(),
-        skinning_buffer.as_ref(),
-        white_image,
-        scene_textures,
-        effect_targets,
-        sampled_binding_plan,
-        input_attachment_binding_plan,
-        Some((initial_scene_color_image, target_format)),
-    ) {
-        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
-            device,
-            descriptor_heap,
-        );
-        if let Some(buffer) = material_buffer {
-            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-        }
-        if let Some(buffer) = skinning_buffer {
-            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-        }
-        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-        return Err(err);
-    }
-    if let (Some(resources), Some(descriptor_base)) =
-        (particle_resources, particle_global_descriptor_base)
-        && let Err(err) = particle_resources::write_scene_particle_descriptors(
-            device,
-            &mut descriptor_heap,
-            descriptor_base,
-            resources,
-        )
-    {
-        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
-            device,
-            descriptor_heap,
-        );
-        if let Some(buffer) = material_buffer {
-            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-        }
-        if let Some(buffer) = skinning_buffer {
-            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-        }
-        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
-        return Err(err);
-    }
-    Ok(SceneGpuFrameResources {
-        transform_buffer,
-        material_buffer,
-        skinning_buffer,
-        descriptor_heap,
-        image_binding_phase: 0,
-    })
-}
-
-pub(super) fn write_scene_descriptors(
-    device: &Device,
-    descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
-    draw_commands: &[SceneGpuDrawCommand],
-    transform_buffer: &NativeVulkanVulkanaliaBuffer,
-    material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
-    skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
-    white_image: Option<&NativeVulkanVulkanaliaImage>,
-    scene_textures: &[scene_texture::SceneTextureImageResource],
-    effect_targets: &[effect_target::SceneEffectTargetImageResource],
-    sampled_binding_plan: &SceneSampledImageBindingPlan,
-    input_attachment_binding_plan: &SceneInputAttachmentBindingPlan,
-    scene_color: Option<(vk::Image, vk::Format)>,
-) -> Result<(), String> {
-    for (draw_index, draw) in draw_commands.iter().enumerate() {
-        native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer(
-            device,
-            descriptor_heap,
-            draw.resource_descriptor_base,
-            transform_buffer
-                .device_address
-                .saturating_add(draw_index as u64 * SCENE_DRAW_UNIFORM_BYTES),
-            SCENE_DRAW_UNIFORM_BYTES,
-        )?;
-        if let Some(resource_descriptor_index) = draw.material_resource_descriptor {
-            let material_buffer = material_buffer.ok_or_else(|| {
-                format!("scene draw {draw_index} has a material descriptor without a material buffer")
-            })?;
-            native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer(
-                device,
-                descriptor_heap,
-                resource_descriptor_index,
-                material_buffer
-                    .device_address
-                    .saturating_add(draw_index as u64 * SCENE_MATERIAL_UNIFORM_BYTES),
-                SCENE_MATERIAL_UNIFORM_BYTES,
-            )?;
-        }
-        if let Some(resource_descriptor_index) = draw.skinning_resource_descriptor {
-            let skinning_buffer = skinning_buffer.ok_or_else(|| {
-                format!("scene draw {draw_index} has a skinning descriptor without a skinning buffer")
-            })?;
-            native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
-                device,
-                descriptor_heap,
-                resource_descriptor_index,
-                skinning_buffer
-                    .device_address
-                    .saturating_add(draw.skinning_byte_offset),
-                draw.skinning_byte_count,
-            )?;
-        }
-    }
-    descriptor_writes::write_scene_sampled_descriptors(
-        device,
-        descriptor_heap,
-        draw_commands,
-        white_image,
-        scene_textures,
-        effect_targets,
-        sampled_binding_plan,
-        scene_color,
-    )?;
-    descriptor_writes::write_scene_input_attachment_descriptors(
-        device,
-        descriptor_heap,
-        draw_commands,
-        effect_targets,
-        input_attachment_binding_plan,
-    )
 }
 
 pub(super) fn write_scene_frame_image_descriptors(
@@ -882,8 +756,8 @@ pub(super) fn write_scene_frame_image_descriptors(
         .input_attachment_binding_cycle
         .get(reference_phase)
         .ok_or_else(|| {
-            format!("scene input-attachment binding phase {reference_phase} is missing")
-        })?;
+        format!("scene input-attachment binding phase {reference_phase} is missing")
+    })?;
     let frame = scene
         .frame_resources
         .get_mut(frame_slot)

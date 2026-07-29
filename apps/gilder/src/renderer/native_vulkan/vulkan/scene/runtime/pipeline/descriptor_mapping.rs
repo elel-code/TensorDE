@@ -107,6 +107,7 @@ mod tests {
             input_attachment_slots: Vec::new(),
             material_uniform_enabled: true,
             skinning_storage_enabled: false,
+            scene_owned_uniform_count: 0,
         };
         let access = ScenePipelineShaderDescriptorAccess {
             sampled_slots: vec![0],

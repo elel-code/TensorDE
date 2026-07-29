@@ -9,6 +9,10 @@
 
 mod runtime;
 
+pub use runtime::{
+    NativeVulkanSceneOwnedUniformArenaPlanSnapshot, NativeVulkanSceneOwnedUniformSliceSnapshot,
+    native_vulkan_scene_owned_uniform_arena_plan,
+};
 pub(in crate::renderer::native_vulkan) use runtime::{
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,

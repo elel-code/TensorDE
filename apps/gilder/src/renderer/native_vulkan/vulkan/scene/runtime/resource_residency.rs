@@ -93,6 +93,13 @@ pub(super) fn scene_resource_residency_snapshot(
                 &buffer.snapshot,
             );
         }
+        if let Some(buffer) = &frame.scene_owned_uniform_buffer {
+            add_buffer_class(
+                &mut buffer_memory_classes,
+                "scene-owned-uniform-buffer",
+                &buffer.snapshot,
+            );
+        }
         add_descriptor_heap_class(
             &mut buffer_memory_classes,
             "descriptor-resource-heap",

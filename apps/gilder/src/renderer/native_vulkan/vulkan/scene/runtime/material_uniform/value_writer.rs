@@ -8,7 +8,9 @@ pub(super) fn set_vector(values: &mut [f32], start: usize, parameter: &[f32], co
     }
 }
 
-pub(super) fn parse_constant_values(value_json: &str) -> Vec<f32> {
+pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn parse_constant_values(
+    value_json: &str,
+) -> Vec<f32> {
     let Ok(value) = serde_json::from_str::<Value>(value_json) else {
         return Vec::new();
     };

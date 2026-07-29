@@ -1,4 +1,6 @@
 use super::*;
+mod resource_metrics;
+use resource_metrics::scene_present_resource_metrics;
 
 pub(super) fn with_scene_present(
     instance: &Instance,
@@ -215,6 +217,9 @@ pub(super) fn with_scene_present(
             .feature_selection
             .multisampled_render_to_single_sampled_enabled,
         local_read_limits,
+        physical_device_properties
+            .limits
+            .min_uniform_buffer_offset_alignment,
         frame_slot_count,
     ) {
         Ok(resources) => resources,
@@ -376,12 +381,14 @@ pub(super) fn with_scene_present(
     let mut transform_uniform_update_count = 0u64;
     let mut effect_uniform_update_count = 0u64;
     let mut skinning_storage_update_count = 0u64;
+    let mut scene_owned_uniform_update_count = 0u64;
     let mut frame_state_update_total_micros = 0u64;
     let mut semantic_resolve_total_micros = 0u64;
     let mut graph_update_total_micros = 0u64;
     let mut transform_update_total_micros = 0u64;
     let mut material_update_total_micros = 0u64;
     let mut skinning_update_total_micros = 0u64;
+    let mut scene_owned_uniform_update_total_micros = 0u64;
     let mut draw_policy_update_total_micros = 0u64;
     let mut sampled_descriptor_update_count = 0u64;
     let mut sampled_descriptor_update_total_micros = 0u64;
@@ -446,6 +453,8 @@ pub(super) fn with_scene_present(
         let frame_events = event_sources.sample_frame_events(sample_time_ns, host.logical_size());
         scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
+        let reference_phase =
+            frames_presented as usize % scene_resources.sampled_binding_cycle.len();
         let frame_resources = &scene_resources.frame_resources[frame_slot];
         let frame_update = write_scene_frame_buffers(
             device,
@@ -459,6 +468,10 @@ pub(super) fn with_scene_present(
             &frame_resources.transform_buffer,
             frame_resources.material_buffer.as_ref(),
             frame_resources.skinning_buffer.as_ref(),
+            &scene_resources.scene_owned_uniform_plan,
+            &mut scene_resources.scene_owned_uniform_scratch,
+            frame_resources.scene_owned_uniform_buffer.as_ref(),
+            reference_phase,
             scene_resources.dynamic_effect_uniforms,
             options.gpu_timing,
             &scene_resources.graph_execution_order,
@@ -491,6 +504,8 @@ pub(super) fn with_scene_present(
             .saturating_add(frame_update.cpu_timing.material_update_micros);
         skinning_update_total_micros = skinning_update_total_micros
             .saturating_add(frame_update.cpu_timing.skinning_update_micros);
+        scene_owned_uniform_update_total_micros = scene_owned_uniform_update_total_micros
+            .saturating_add(frame_update.cpu_timing.scene_owned_uniform_update_micros);
         draw_policy_update_total_micros = draw_policy_update_total_micros
             .saturating_add(frame_update.cpu_timing.draw_policy_update_micros);
         composite_scissor_draw_count = scene_resources
@@ -515,8 +530,8 @@ pub(super) fn with_scene_present(
             .saturating_add(u64::from(frame_update.material_uniform_updated));
         skinning_storage_update_count = skinning_storage_update_count
             .saturating_add(u64::from(frame_update.skinning_storage_updated));
-        let reference_phase =
-            frames_presented as usize % scene_resources.sampled_binding_cycle.len();
+        scene_owned_uniform_update_count = scene_owned_uniform_update_count
+            .saturating_add(u64::from(frame_update.scene_owned_uniform_updated));
         let acquire_wait_started = Instant::now();
         let (image_index, _) = unsafe {
             device.acquire_next_image_khr(
@@ -680,165 +695,27 @@ pub(super) fn with_scene_present(
         };
     let elapsed = started_at.elapsed();
     let gpu_timing_snapshot = gpu_timing.as_ref().map(SceneGpuTiming::snapshot);
-    let vertex_buffer_bytes = scene_resources
-        .mesh_uploads
-        .vertex
-        .target
-        .snapshot
-        .requested_bytes;
-    let index_buffer_bytes = scene_resources
-        .mesh_uploads
-        .index
-        .target
-        .snapshot
-        .requested_bytes;
-    let transform_uniform_bytes = scene_resources
-        .frame_resources
-        .iter()
-        .map(|frame| frame.transform_buffer.snapshot.requested_bytes)
-        .sum();
-    let material_uniform_bytes = scene_resources
-        .frame_resources
-        .iter()
-        .filter_map(|frame| frame.material_buffer.as_ref())
-        .map(|buffer| buffer.snapshot.requested_bytes)
-        .sum();
-    let skinning_storage_bytes = scene_resources
-        .frame_resources
-        .iter()
-        .filter_map(|frame| frame.skinning_buffer.as_ref())
-        .map(|buffer| buffer.snapshot.requested_bytes)
-        .sum();
-    let resource_residency =
-        resource_residency::scene_resource_residency_snapshot(&scene_resources);
-    let sampled_fallback_texture_count = usize::from(scene_resources.white_upload.is_some());
-    let sampled_fallback_descriptor_count = scene_resources
-        .sampled_binding_cycle
-        .first()
-        .map_or(0, |plan| plan.fallback_descriptor_count);
-    let sampled_scene_texture_descriptor_count = scene_resources
-        .sampled_binding_cycle
-        .first()
-        .map_or(0, |plan| plan.scene_texture_descriptor_count);
-    let sampled_scene_color_snapshot_descriptor_count = scene_resources
-        .sampled_binding_cycle
-        .first()
-        .map_or(0, |plan| plan.scene_color_snapshot_descriptor_count);
-    let sampled_effect_target_descriptor_count = scene_resources
-        .sampled_binding_cycle
-        .first()
-        .map_or(0, |plan| plan.effect_target_descriptor_count);
-    let effect_target_reference_cycle_length = scene_resources.sampled_binding_cycle.len();
-    let descriptor_heap_resource_count = scene_resources
-        .descriptor_heap_plan
-        .resource_descriptor_count;
-    let descriptor_heap_sampler_count = scene_resources.descriptor_heap_plan.sampler_count;
-    let scene_texture_image_count = scene_resources.scene_textures.len();
-    let scene_texture_memory_bytes =
-        scene_texture::scene_texture_memory_bytes(&scene_resources.scene_textures);
-    let effect_target_physical_image_count = scene_resources.effect_targets.len();
-    let effect_target_memory_bytes =
-        effect_target::effect_target_memory_bytes(&scene_resources.effect_targets);
-    let effect_target_dynamic_rendering_recorded = effect_target_physical_image_count > 0;
-    let effect_target_dynamic_rendering_pass_count = scene_resources
-        .effect_target_command_plan
-        .dynamic_rendering_pass_count;
-    let effect_batch_count = scene_resources
-        .effect_targets
-        .iter()
-        .filter(|target| target.plan.batch_field_count > 1)
-        .count();
-    let effect_batch_instance_count =
-        effect_target::effect_batch_instance_count(&scene_resources.effect_target_commands);
-    let effect_batch_field_count = scene_resources
-        .effect_targets
-        .iter()
-        .filter(|target| target.plan.batch_field_count > 1)
-        .map(|target| target.plan.batch_field_count as usize)
-        .sum();
-    let effect_target_copy_command_count = scene_resources
-        .effect_target_command_plan
-        .copy_command_count;
-    let effect_target_swap_reference_count = scene_resources
-        .effect_target_command_plan
-        .swap_reference_command_count;
-    let effect_target_mesh_draw_count = scene_resources.effect_target_command_plan.mesh_draw_count;
-    let effect_target_discard_load_count = scene_resources
-        .effect_target_command_plan
-        .discard_load_count;
-    let effect_target_fullscreen_draw_count = scene_resources
-        .effect_target_command_plan
-        .fullscreen_triangle_draw_count;
-    let scene_color_mesh_draw_count = draw_range_count(&scene_resources.scene_color_draw_ranges);
-    let scene_color_attachment_clear_draw_count =
-        usize::from(scene_resources.scene_color_attachment_clear.is_some());
-    let scene_color_recorded_mesh_draw_count =
-        scene_color_mesh_draw_count.saturating_sub(scene_color_attachment_clear_draw_count);
-    let scene_pipeline_count = scene_resources.pipelines.entries.len();
-    let scene_color_msaa_enabled = scene_resources.scene_color_msaa_enabled;
-    let multisampled_render_to_single_sampled_enabled =
-        scene_resources.multisampled_render_to_single_sampled_enabled;
-    let scene_color_msaa_memory_bytes =
-        scene_color_msaa::scene_color_msaa_memory_bytes(&scene_resources.scene_color_msaa_targets);
-    let mesh_draw_count = scene_resources.draw_commands.len();
-    let particle_compute_pipeline_created = scene_resources.pipelines.particle_compute.is_some();
-    let particle_instance_capacity = scene_resources
-        .draw_commands
-        .iter()
-        .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard)
-        .map(|draw| u64::from(draw.instance_capacity))
-        .sum();
-    let (
-        particle_gpu_emitter_count,
-        particle_gpu_total_capacity,
-        particle_gpu_state_bytes,
-        particle_gpu_indirect_bytes,
-        particle_gpu_frame_time_bytes,
-        particle_gpu_device_local,
-    ) = scene_resources
-        .particle_resources
-        .as_ref()
-        .map_or((0, 0, 0, 0, 0, false), |resources| {
-            let state = &resources.state_upload.target.snapshot;
-            let indirect = &resources.indirect_upload.target.snapshot;
-            let frame_time = &resources.frame_time.target.snapshot;
-            (
-                resources.emitter_count,
-                resources.total_capacity,
-                state.requested_bytes,
-                indirect.requested_bytes,
-                frame_time.requested_bytes,
-                state
-                    .selected_memory_property_flags
-                    .contains(&"device-local")
-                    && indirect
-                        .selected_memory_property_flags
-                        .contains(&"device-local")
-                    && frame_time
-                        .selected_memory_property_flags
-                        .contains(&"device-local"),
-            )
-        });
-    let mesh_draw_recorded = mesh_draw_count > 0;
+    let metrics = scene_present_resource_metrics(&scene_resources);
+    let mesh_draw_recorded = metrics.mesh_draw_count > 0;
     let command_order = scene_command_order(
         scene_resources.descriptor_layout.sampled_slots.is_empty(),
         !scene_resources
             .descriptor_layout
             .input_attachment_slots
             .is_empty(),
-        sampled_fallback_texture_count != 0,
-        scene_texture_image_count != 0,
+        metrics.sampled_fallback_texture_count != 0,
+        metrics.scene_texture_image_count != 0,
         scene_resources
             .frame_resources
             .first()
             .is_some_and(|frame| frame.skinning_buffer.is_some()),
-        scene_pipeline_count > 1,
+        metrics.scene_pipeline_count > 1,
         scene_resources.dynamic_effect_uniforms,
-        effect_target_dynamic_rendering_recorded,
-        effect_target_copy_command_count > 0,
-        effect_target_swap_reference_count > 0,
-        effect_target_mesh_draw_count > 0,
-        effect_target_fullscreen_draw_count > 0,
+        metrics.effect_target_dynamic_rendering_recorded,
+        metrics.effect_target_copy_command_count > 0,
+        metrics.effect_target_swap_reference_count > 0,
+        metrics.effect_target_mesh_draw_count > 0,
+        metrics.effect_target_fullscreen_draw_count > 0,
     );
 
     destroy_scene_present_runtime_resources(

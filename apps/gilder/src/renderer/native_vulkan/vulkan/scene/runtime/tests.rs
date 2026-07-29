@@ -1,6 +1,11 @@
 use super::*;
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
+    SceneRenderingDeviceMeshDraw,
+};
+use crate::renderer::native_vulkan::{
+    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES,
+    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
 };
 
 #[test]
@@ -42,8 +47,7 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         effect_batch_atlas_grid: [0; 2],
         effect_binding_start: u32::MAX,
         effect_binding_count: 0,
-        effect_visibility_policy:
-            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         resolved_effect_visibility_mask: 0,
         object: SceneObjectHandle(0),
         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
@@ -58,20 +62,15 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         input_attachment_slots: vec![7],
         material_uniform_enabled: true,
         skinning_storage_enabled: true,
+        scene_owned_uniform_count: 0,
     };
 
     let storage = crate::engine::scene::SceneStorage::from_document(
         crate::engine::scene::binary::SceneBinaryDocument::default(),
     )
     .expect("empty storage");
-    let (descriptors, commands) = scene_descriptor_plan_inputs(
-        &storage,
-        &[draw],
-        &[],
-        &layout,
-        &[2],
-        &[None],
-    );
+    let (descriptors, commands) =
+        scene_descriptor_plan_inputs(&storage, &[draw], &[], &layout, &[2], &[None]);
 
     assert_eq!(
         descriptors,

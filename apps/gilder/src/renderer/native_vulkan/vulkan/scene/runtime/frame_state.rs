@@ -23,6 +23,7 @@ use super::material_uniform::{
     SceneMaterialFrameInputs, pack_scene_material_uniforms_with_frame_inputs,
 };
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
+use super::scene_owned_uniform::SceneOwnedUniformArenaPlan;
 
 mod topology;
 
@@ -37,6 +38,7 @@ pub(super) struct SceneFrameBufferUpdate {
     pub transform_uniform_updated: bool,
     pub material_uniform_updated: bool,
     pub skinning_storage_updated: bool,
+    pub scene_owned_uniform_updated: bool,
     pub dynamic_text_instance_updated: bool,
     pub scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
     pub cpu_timing: SceneFrameCpuTiming,
@@ -49,6 +51,7 @@ pub(super) struct SceneFrameCpuTiming {
     pub transform_update_micros: u64,
     pub material_update_micros: u64,
     pub skinning_update_micros: u64,
+    pub scene_owned_uniform_update_micros: u64,
     pub draw_policy_update_micros: u64,
 }
 
@@ -145,6 +148,7 @@ impl SceneFrameTopology {
                 )
             })?;
             draw.resolved_object_index = object.object_index;
+            draw.render_world_matrix = rows_from_column_major(object.render_world_matrix);
             draw.clip_transform =
                 scene_clip_transform(storage.project(), object.render_world_matrix);
             draw.resolved_color = object.resolved_color;
@@ -324,6 +328,10 @@ pub(super) fn write_scene_frame_buffers(
     transform_buffer: &NativeVulkanVulkanaliaBuffer,
     material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
+    scene_owned_uniform_plan: &SceneOwnedUniformArenaPlan,
+    scene_owned_uniform_scratch: &mut [u8],
+    scene_owned_uniform_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
+    sampled_binding_phase: usize,
     dynamic_effect_uniforms: bool,
     cpu_timing_enabled: bool,
     graph_execution_order: &[u32],
@@ -413,6 +421,23 @@ pub(super) fn write_scene_frame_buffers(
     };
     let material_update_micros = elapsed_optional_micros(material_started);
 
+    let scene_owned_uniform_started = cpu_timing_enabled.then(Instant::now);
+    let scene_owned_uniform_updated = if scene_owned_uniform_plan.is_empty() {
+        false
+    } else {
+        let buffer = scene_owned_uniform_buffer
+            .ok_or_else(|| "scene-owned uniform plan has no active frame buffer".to_owned())?;
+        scene_owned_uniform_plan.write_payload(
+            &graph.mesh_draws,
+            &semantic_frame.material_scalar_values,
+            sampled_binding_phase,
+            scene_owned_uniform_scratch,
+        )?;
+        write_exact_frame_payload(device, buffer, scene_owned_uniform_scratch)?;
+        true
+    };
+    let scene_owned_uniform_update_micros = elapsed_optional_micros(scene_owned_uniform_started);
+
     let skinning_started = cpu_timing_enabled.then(Instant::now);
     let skinning_storage_updated = if let Some(skinning_buffer) = skinning_buffer {
         let skinning_payload = pack_scene_skinning_palette(&graph);
@@ -439,6 +464,7 @@ pub(super) fn write_scene_frame_buffers(
         transform_uniform_updated: true,
         material_uniform_updated,
         skinning_storage_updated,
+        scene_owned_uniform_updated,
         dynamic_text_instance_updated,
         scene_color_attachment_clear,
         cpu_timing: SceneFrameCpuTiming {
@@ -447,6 +473,7 @@ pub(super) fn write_scene_frame_buffers(
             transform_update_micros,
             material_update_micros,
             skinning_update_micros,
+            scene_owned_uniform_update_micros,
             draw_policy_update_micros,
         },
     })

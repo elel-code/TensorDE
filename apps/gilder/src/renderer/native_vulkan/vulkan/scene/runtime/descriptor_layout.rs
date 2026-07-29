@@ -4,10 +4,14 @@
 //! resource lanes.  They may share a logical Wallpaper Engine slot number,
 //! but they never share a descriptor or sampler offset.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeSet;
 
 use crate::engine::scene::{
-    SceneRenderEffectVisibilityPolicy, SceneRenderingDeviceGraphPlan, SceneStorage, SceneStringId,
+    SceneRenderEffectVisibilityPolicy, SceneRenderingDeviceGraphPlan, SceneShaderStage,
+    SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 
@@ -17,6 +21,7 @@ pub(in crate::renderer::native_vulkan) struct ScenePipelineDescriptorLayout {
     pub input_attachment_slots: Vec<u32>,
     pub material_uniform_enabled: bool,
     pub skinning_storage_enabled: bool,
+    pub scene_owned_uniform_count: usize,
 }
 
 impl ScenePipelineDescriptorLayout {
@@ -24,9 +29,7 @@ impl ScenePipelineDescriptorLayout {
         0
     }
 
-    pub(in crate::renderer::native_vulkan) fn material_resource_offset(
-        &self,
-    ) -> Option<usize> {
+    pub(in crate::renderer::native_vulkan) fn material_resource_offset(&self) -> Option<usize> {
         self.material_uniform_enabled.then_some(1)
     }
 
@@ -36,13 +39,14 @@ impl ScenePipelineDescriptorLayout {
     }
 
     pub(in crate::renderer::native_vulkan) fn sampled_resource_offset(&self) -> usize {
-        1 + usize::from(self.material_uniform_enabled)
-            + usize::from(self.skinning_storage_enabled)
+        self.scene_owned_uniform_resource_offset() + self.scene_owned_uniform_count
     }
 
-    pub(in crate::renderer::native_vulkan) fn input_attachment_resource_offset(
-        &self,
-    ) -> usize {
+    pub(in crate::renderer::native_vulkan) fn scene_owned_uniform_resource_offset(&self) -> usize {
+        1 + usize::from(self.material_uniform_enabled) + usize::from(self.skinning_storage_enabled)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn input_attachment_resource_offset(&self) -> usize {
         self.sampled_resource_offset() + self.sampled_slots.len()
     }
 
@@ -105,6 +109,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_descriptor_layout(
     let mut texture_slot_mask = 0u32;
     let mut input_attachment_slot_mask = 0u32;
     let mut material_uniform_enabled = false;
+    let mut scene_owned_uniform_count = 0usize;
     for shader_id in shader_ids {
         let shader_key = storage
             .string(shader_id)
@@ -114,15 +119,36 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_descriptor_layout(
             .iter()
             .find(|contract| contract.shader_key == shader_id)
             .ok_or_else(|| format!("scene shader {shader_key:?} has no shader contract"))?;
-        let shader = native_vulkan_scene_shader_for_key(shader_key)
-            .ok_or_else(|| format!("scene shader {shader_key:?} is not built into the catalog"))?;
         texture_slot_mask |= contract.texture_slot_mask;
         input_attachment_slot_mask |= contract.input_attachment_slot_mask;
-        material_uniform_enabled |= shader.parameter_layout.uses_material_uniform();
+        let vertex = storage.shader_program(shader_id, SceneShaderStage::Vertex);
+        let fragment = storage.shader_program(shader_id, SceneShaderStage::Fragment);
+        match (vertex, fragment) {
+            (Some(vertex), Some(fragment)) => {
+                scene_owned_uniform_count = scene_owned_uniform_count.max(
+                    vertex.uniform_buffer_count as usize + fragment.uniform_buffer_count as usize,
+                );
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(format!(
+                    "scene-owned graphics program {shader_key:?} has an incomplete stage pair"
+                ));
+            }
+            (None, None) => {
+                let shader = native_vulkan_scene_shader_for_key(shader_key).ok_or_else(|| {
+                    format!(
+                        "engine-owned scene shader {shader_key:?} is not built into the catalog"
+                    )
+                })?;
+                material_uniform_enabled |= shader.parameter_layout.uses_material_uniform();
+            }
+        }
     }
-    if graph.pass_nodes.iter().any(|pass| {
-        pass.effect_visibility_policy == SceneRenderEffectVisibilityPolicy::Passthrough
-    }) {
+    if graph
+        .pass_nodes
+        .iter()
+        .any(|pass| pass.effect_visibility_policy == SceneRenderEffectVisibilityPolicy::Passthrough)
+    {
         texture_slot_mask |= 1;
     }
     Ok(ScenePipelineDescriptorLayout {
@@ -130,6 +156,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_descriptor_layout(
         input_attachment_slots: slots_from_mask(input_attachment_slot_mask),
         material_uniform_enabled,
         skinning_storage_enabled: !graph.puppet_bone_matrices.is_empty(),
+        scene_owned_uniform_count,
     })
 }
 
@@ -151,8 +178,8 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_shader_descriptor_acces
     })
 }
 
-pub(in crate::renderer::native_vulkan) fn scene_passthrough_descriptor_access(
-) -> ScenePipelineShaderDescriptorAccess {
+pub(in crate::renderer::native_vulkan) fn scene_passthrough_descriptor_access()
+-> ScenePipelineShaderDescriptorAccess {
     ScenePipelineShaderDescriptorAccess {
         sampled_slots: vec![0],
         input_attachment_slots: Vec::new(),

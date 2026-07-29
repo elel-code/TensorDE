@@ -113,6 +113,9 @@ pub(super) fn destroy_scene_gpu_frame_resources(
         if let Some(buffer) = resources.skinning_buffer {
             native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
+        if let Some(buffer) = resources.scene_owned_uniform_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
         native_vulkan_vulkanalia_destroy_buffer(device, resources.transform_buffer);
     }
 }

@@ -40,7 +40,7 @@ use super::local_read::{
 };
 use super::shader_program::{
     SceneResolvedGraphicsProgram, SceneVertexAttributePlan, resolve_scene_graphics_program,
-    scene_owned_stage_resource_plan, scene_owned_vertex_attributes,
+    scene_owned_vertex_attributes,
 };
 
 mod blend;

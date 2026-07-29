@@ -158,6 +158,10 @@ pub use video_present_runtime::{
     run_native_vulkan_ffmpeg_vulkan_hw_video_present,
 };
 pub use video_surface_host::NativeVulkanVideoSurfaceHostSnapshot;
+pub use vulkan_scene::{
+    NativeVulkanSceneOwnedUniformArenaPlanSnapshot, NativeVulkanSceneOwnedUniformSliceSnapshot,
+    native_vulkan_scene_owned_uniform_arena_plan,
+};
 pub(in crate::renderer::native_vulkan) use vulkan_scene::{
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,

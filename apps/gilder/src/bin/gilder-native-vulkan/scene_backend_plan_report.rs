@@ -6,11 +6,14 @@ use gilder::engine::scene::{
     SceneScriptProgramRecord, SceneStorage, SceneTextureRecord,
 };
 use gilder::renderer::native_vulkan::{
-    NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan_from_semantic_frame,
+    NativeVulkanSceneBackendPlan, NativeVulkanSceneOwnedUniformArenaPlanSnapshot,
+    native_vulkan_scene_backend_plan_from_semantic_frame,
+    native_vulkan_scene_owned_uniform_arena_plan,
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 8;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 9;
+const SCENE_BACKEND_PLAN_UNIFORM_ALIGNMENT: u64 = 256;
 
 #[derive(Debug, Serialize)]
 pub(super) struct SceneBackendPlanReport<'a> {
@@ -32,6 +35,7 @@ pub(super) struct SceneBackendPlanReport<'a> {
     pub scene_strings: &'a [String],
     pub checkpoint_scene_time_seconds: f32,
     pub checkpoint_draw_visibility: Vec<SceneBackendPlanDrawVisibility>,
+    pub scene_owned_uniform_arena: NativeVulkanSceneOwnedUniformArenaPlanSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -49,6 +53,13 @@ pub(super) fn scene_backend_plan_report<'a>(
 ) -> Result<SceneBackendPlanReport<'a>, String> {
     let backend_plan =
         native_vulkan_scene_backend_plan_from_semantic_frame(storage, semantic_frame);
+    let project = storage.project();
+    let scene_owned_uniform_arena = native_vulkan_scene_owned_uniform_arena_plan(
+        storage,
+        &backend_plan.rendering_device_graph,
+        [project.logical_width.max(1), project.logical_height.max(1)],
+        SCENE_BACKEND_PLAN_UNIFORM_ALIGNMENT,
+    )?;
     let checkpoint_draw_visibility = backend_plan
         .rendering_device_graph
         .mesh_draws
@@ -101,5 +112,6 @@ pub(super) fn scene_backend_plan_report<'a>(
         scene_strings: storage.strings(),
         checkpoint_scene_time_seconds: 0.0,
         checkpoint_draw_visibility,
+        scene_owned_uniform_arena,
     })
 }

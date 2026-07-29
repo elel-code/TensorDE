@@ -196,7 +196,7 @@ mod tests {
                     authored_name: "Color",
                 },
                 0,
-                16,
+                12,
             ),
             member(
                 "g_Texture0Resolution",
@@ -215,7 +215,7 @@ mod tests {
             member(
                 "u_BorderWidth",
                 SceneOwnedUniformSource::MaterialParameter {
-                    authored_name: "BorderWidth",
+                    authored_name: "Border width",
                 },
                 36,
                 4,
@@ -231,7 +231,7 @@ mod tests {
             member(
                 "u_Alpha",
                 SceneOwnedUniformSource::MaterialParameter {
-                    authored_name: "Alpha",
+                    authored_name: "ui_editor_properties_opacity",
                 },
                 44,
                 4,
@@ -243,7 +243,7 @@ mod tests {
             byte_size: 48,
             members,
         };
-        let color = [0.1, 0.2, 0.3, 0.4];
+        let color = [0.1, 0.2, 0.3];
         let radius = [12.0];
         let border = [2.0];
         let softness = [0.5];
@@ -251,9 +251,9 @@ mod tests {
         let material_parameters = [
             parameter("Color", &color),
             parameter("Radius", &radius),
-            parameter("BorderWidth", &border),
+            parameter("Border width", &border),
             parameter("Softness", &softness),
-            parameter("Alpha", &alpha),
+            parameter("ui_editor_properties_opacity", &alpha),
         ];
         let identity = matrix(0.0);
         let mut payload = [0u8; 48];
@@ -271,7 +271,8 @@ mod tests {
         .expect("fragment payload");
 
         assert_eq!(read_f32(&payload, 0), 0.1);
-        assert_eq!(read_f32(&payload, 12), 0.4);
+        assert_eq!(read_f32(&payload, 8), 0.3);
+        assert_eq!(&payload[12..16], &[0; 4]);
         assert_eq!(read_f32(&payload, 16), 1920.0);
         assert_eq!(read_f32(&payload, 20), 1080.0);
         assert_eq!(read_f32(&payload, 32), 12.0);

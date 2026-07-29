@@ -16,9 +16,9 @@ pub(super) fn write_scene_owned_descriptor_push(
     indices: &[SceneOwnedDescriptorHeapIndex],
     output: &mut [u8],
 ) -> Result<(), String> {
-    if output.len() != plan.push_constant_bytes as usize {
+    if output.len() < plan.push_constant_bytes as usize {
         return Err(format!(
-            "scene-owned {:?} push ABI requires {} bytes, received {}",
+            "scene-owned {:?} push ABI requires at least {} bytes, received {}",
             plan.stage,
             plan.push_constant_bytes,
             output.len()
@@ -32,7 +32,6 @@ pub(super) fn write_scene_owned_descriptor_push(
             indices.len()
         ));
     }
-    output.fill(0);
     for binding in &plan.bindings {
         let mut matches = indices
             .iter()
@@ -80,13 +79,13 @@ mod tests {
             index(SceneShaderBindingKind::Sampler, 0, 3),
             index(SceneShaderBindingKind::UniformBuffer, 0, 11),
         ];
-        let mut bytes = [0u8; 12];
+        let mut bytes = [0u8; 16];
 
         write_scene_owned_descriptor_push(&plan, &indices, &mut bytes).expect("typed push");
 
-        assert_eq!(word(&bytes, 0), 7);
-        assert_eq!(word(&bytes, 4), 3);
-        assert_eq!(word(&bytes, 8), 11);
+        assert_eq!(word(&bytes, 4), 7);
+        assert_eq!(word(&bytes, 8), 3);
+        assert_eq!(word(&bytes, 12), 11);
     }
 
     #[test]
@@ -96,27 +95,23 @@ mod tests {
             index(SceneShaderBindingKind::SampledImage, 0, 7),
             index(SceneShaderBindingKind::Sampler, 0, 3),
         ];
-        assert!(
-            write_scene_owned_descriptor_push(&plan, &missing, &mut [0u8; 12]).is_err()
-        );
+        assert!(write_scene_owned_descriptor_push(&plan, &missing, &mut [0u8; 16]).is_err());
         let duplicate = [
             index(SceneShaderBindingKind::SampledImage, 0, 7),
             index(SceneShaderBindingKind::Sampler, 0, 3),
             index(SceneShaderBindingKind::Sampler, 0, 4),
         ];
-        assert!(
-            write_scene_owned_descriptor_push(&plan, &duplicate, &mut [0u8; 12]).is_err()
-        );
+        assert!(write_scene_owned_descriptor_push(&plan, &duplicate, &mut [0u8; 16]).is_err());
     }
 
     fn rounded_mask_fragment_plan() -> SceneOwnedStageResourcePlan<'static> {
         SceneOwnedStageResourcePlan {
             stage: SceneShaderStage::Fragment,
-            push_constant_bytes: 12,
+            push_constant_bytes: 16,
             bindings: vec![
-                binding(SceneShaderBindingKind::SampledImage, 0, 0),
-                binding(SceneShaderBindingKind::Sampler, 0, 4),
-                binding(SceneShaderBindingKind::UniformBuffer, 0, 8),
+                binding(SceneShaderBindingKind::SampledImage, 0, 4),
+                binding(SceneShaderBindingKind::Sampler, 0, 8),
+                binding(SceneShaderBindingKind::UniformBuffer, 0, 12),
             ],
             uniform_buffers: Vec::new(),
         }
