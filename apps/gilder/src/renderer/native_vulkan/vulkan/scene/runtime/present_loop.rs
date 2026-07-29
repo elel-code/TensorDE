@@ -71,16 +71,13 @@ pub(super) fn with_scene_present(
             selection.physical_device_name
         ));
     }
-    let project = options.storage.project();
-    let automatic_surface_extent = scene_viewport::automatic_scene_surface_extent(
-        (project.logical_width, project.logical_height),
-        handles.buffer_size,
-    );
+    let surface_extent =
+        scene_viewport::scene_surface_extent(options.surface_extent, handles.buffer_size);
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
         selection.physical_device,
         surface,
-        options.surface_extent.unwrap_or(automatic_surface_extent),
+        surface_extent,
         &present_device.feature_selection,
     ) {
         Ok(plan) => plan,

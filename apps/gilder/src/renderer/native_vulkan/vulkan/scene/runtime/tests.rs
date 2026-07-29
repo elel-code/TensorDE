@@ -4,14 +4,18 @@ use crate::engine::scene::{
 };
 
 #[test]
-fn automatic_surface_extent_prefers_authored_scene_pixels() {
+fn automatic_surface_extent_uses_live_wayland_buffer_pixels() {
     assert_eq!(
-        scene_viewport::automatic_scene_surface_extent((3840, 2160), (2561, 1440)),
-        (3840, 2160)
-    );
-    assert_eq!(
-        scene_viewport::automatic_scene_surface_extent((0, 0), (2561, 1440)),
+        scene_viewport::scene_surface_extent(None, (2561, 1440)),
         (2561, 1440)
+    );
+}
+
+#[test]
+fn explicit_surface_extent_remains_a_deterministic_capture_override() {
+    assert_eq!(
+        scene_viewport::scene_surface_extent(Some((3856, 2199)), (2561, 1440)),
+        (3856, 2199)
     );
 }
 

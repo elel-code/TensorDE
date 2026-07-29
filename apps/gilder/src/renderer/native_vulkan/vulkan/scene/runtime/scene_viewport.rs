@@ -2,15 +2,15 @@
 
 use crate::engine::scene::SceneProjectRecord;
 
-pub(super) fn automatic_scene_surface_extent(
-    authored_extent: (u32, u32),
+/// Selects the live surface extent independently from the authored scene canvas.
+///
+/// The authored extent remains an input to projection and intermediate render-target sizing; it
+/// must not replace the compositor-configured Wayland buffer extent of the final surface.
+pub(super) fn scene_surface_extent(
+    explicit_surface_extent: Option<(u32, u32)>,
     wayland_buffer_extent: (u32, u32),
 ) -> (u32, u32) {
-    if authored_extent.0 > 0 && authored_extent.1 > 0 {
-        authored_extent
-    } else {
-        wayland_buffer_extent
-    }
+    explicit_surface_extent.unwrap_or(wayland_buffer_extent)
 }
 
 /// Applies an aspect-preserving `cover` mapping to a logical-scene clip matrix.
