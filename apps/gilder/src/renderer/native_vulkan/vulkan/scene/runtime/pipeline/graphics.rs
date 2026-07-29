@@ -21,6 +21,7 @@ pub(super) fn create_graphics_pipeline(
     samples: ScenePipelineSamples,
     topology: vk::PrimitiveTopology,
     dynamic_text: bool,
+    scene_owned_attributes: Option<&[SceneVertexAttributePlan]>,
     local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
 ) -> Result<vk::Pipeline, String> {
     if local_read_metadata.is_some() && blend.requires_advanced_operation() {
@@ -36,6 +37,11 @@ pub(super) fn create_graphics_pipeline(
         );
     }
 
+    if dynamic_text && scene_owned_attributes.is_some() {
+        return Err(
+            "scene pipeline cannot combine dynamic-text and scene-owned vertex layouts".to_owned(),
+        );
+    }
     let (bindings, attributes) = if dynamic_text {
         (
             vec![
@@ -50,6 +56,24 @@ pub(super) fn create_graphics_pipeline(
                 vertex_attribute_for_binding(6, 1, vk::Format::R32G32B32A32_SFLOAT, 16),
             ],
         )
+    } else if let Some(scene_owned_attributes) = scene_owned_attributes {
+        let bindings = (!scene_owned_attributes.is_empty())
+            .then(|| {
+                vk::VertexInputBindingDescription::builder()
+                    .binding(0)
+                    .stride(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
+                    .input_rate(vk::VertexInputRate::VERTEX)
+                    .build()
+            })
+            .into_iter()
+            .collect();
+        let attributes = scene_owned_attributes
+            .iter()
+            .map(|attribute| {
+                vertex_attribute(attribute.location, attribute.format, attribute.offset)
+            })
+            .collect();
+        (bindings, attributes)
     } else {
         (
             vec![

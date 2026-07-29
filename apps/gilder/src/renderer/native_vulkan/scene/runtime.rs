@@ -177,11 +177,9 @@ pub(crate) fn validate_scene_runtime_plan(
             "scene runtime requires FIFO latest ready present".to_owned(),
         ));
     }
-    if backend_plan.pipeline_cache.shader_catalog_hit_count
-        != backend_plan.pipeline_cache.pipeline_count
-    {
+    if !backend_plan.pipeline_cache.missing_shader_keys.is_empty() {
         return Err(NativeVulkanError::Scene(format!(
-            "scene runtime missing built-in shader catalog entries: {}",
+            "scene runtime has unresolved shader programs: {}",
             backend_plan.pipeline_cache.missing_shader_keys.join(", ")
         )));
     }
@@ -228,7 +226,7 @@ mod tests {
 
         let err = validate_scene_runtime_plan(&plan).unwrap_err();
 
-        assert!(err.to_string().contains("missing built-in shader catalog"));
+        assert!(err.to_string().contains("unresolved shader programs"));
     }
 
     #[test]
@@ -355,6 +353,7 @@ mod tests {
                 shader_programs: Vec::new(),
                 shader_catalog_entry_count: 0,
                 shader_catalog_hit_count: 0,
+                scene_owned_shader_hit_count: 0,
                 missing_shader_keys: Vec::new(),
                 cache_model: "pipeline-key-hash-cache",
                 shader_catalog_source: "built-in-scene-shader-catalog",

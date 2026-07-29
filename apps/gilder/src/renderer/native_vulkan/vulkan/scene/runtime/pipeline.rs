@@ -16,8 +16,8 @@ use crate::engine::scene::{
     SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
-    BuiltinSceneDescriptorHeapMode, native_vulkan_scene_shader_for_key,
-    native_vulkan_scene_vertex_spirv_for_primitive,
+    BuiltinSceneDescriptorHeapMode, BuiltinSceneLocalReadShader,
+    native_vulkan_scene_shader_for_key,
 };
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -38,8 +38,13 @@ use super::local_read::{
     SceneLocalReadDeviceLimits, SceneLocalReadPipelineMetadata, SceneLocalReadScopePassRole,
     SceneLocalReadScopePlan,
 };
+use super::shader_program::{
+    SceneResolvedGraphicsProgram, SceneVertexAttributePlan, resolve_scene_graphics_program,
+    scene_owned_stage_resource_plan, scene_owned_vertex_attributes,
+};
 
 mod blend;
+mod creation;
 mod descriptor_mapping;
 mod diagnostics;
 mod graphics;
@@ -270,211 +275,9 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
 }
 
 
-pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    storage: &SceneStorage,
-    graph: &SceneRenderingDeviceGraphPlan,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
-    effect_target_plans: &[SceneEffectTargetImagePlan],
-    advanced_blend_enabled: bool,
-    advanced_blend_coherent: bool,
-    scene_color_msaa_enabled: bool,
-    local_read_scopes: &[SceneLocalReadScopePlan],
-    local_read_limits: SceneLocalReadDeviceLimits,
-) -> Result<ScenePipelineResources, String> {
-    let keys = drawn_pass_pipeline_keys(
-        storage,
-        graph,
-        target_format,
-        effect_target_plans,
-        local_read_scopes,
-        scene_color_msaa_enabled,
-    )?;
-    if keys.is_empty() {
-        return Err("scene present requires at least one drawable pass pipeline".to_owned());
-    }
-    if keys
-        .iter()
-        .any(|key| key.blend.requires_advanced_operation())
-        && (!advanced_blend_enabled || !advanced_blend_coherent)
-    {
-        return Err(
-            "scene composite blend requires coherent VK_EXT_blend_operation_advanced support"
-                .to_owned(),
-        );
-    }
-    let mut entries = Vec::with_capacity(keys.len());
-    for key in keys {
-        let (vertex_shader_key, fragment_shader_key) = match key.shader {
-            ScenePipelineShader::Authored(shader_id) => {
-                let shader_key = storage
-                    .string(shader_id)
-                    .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
-                (shader_key, shader_key)
-            }
-            ScenePipelineShader::EffectPassthrough(shader_id) => (
-                storage
-                    .string(shader_id)
-                    .ok_or_else(|| "scene passthrough pass has no authored shader key".to_owned())?,
-                "we/passthrough",
-            ),
-        };
-        let vertex_shader = native_vulkan_scene_shader_for_key(vertex_shader_key).ok_or_else(|| {
-            format!("scene vertex shader {vertex_shader_key:?} is not in the built-in catalog")
-        })?;
-        let fragment_shader = native_vulkan_scene_shader_for_key(fragment_shader_key)
-            .ok_or_else(|| {
-                format!(
-                    "scene fragment shader {fragment_shader_key:?} is not in the built-in catalog"
-            )
-        })?;
-        let descriptor_access = match key.shader {
-            ScenePipelineShader::Authored(shader_id) => {
-                scene_pipeline_shader_descriptor_access(storage, shader_id)?
-            }
-            ScenePipelineShader::EffectPassthrough(_) => match key.local_read_role {
-                Some(ScenePipelineLocalReadRole::Consumer(scope_index)) => {
-                    let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
-                        format!("scene pipeline references missing local-read scope {scope_index}")
-                    })?;
-                    ScenePipelineShaderDescriptorAccess {
-                        sampled_slots: Vec::new(),
-                        input_attachment_slots: vec![scope.input_slot()],
-                    }
-                }
-                _ => scene_passthrough_descriptor_access(),
-            },
-        };
-        let local_read_metadata = match key.local_read_role {
-            Some(ScenePipelineLocalReadRole::Producer(scope_index)) => {
-                let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
-                    format!("scene pipeline references missing local-read scope {scope_index}")
-                })?;
-                Some(scope.pipeline_metadata(
-                    SceneLocalReadScopePassRole::Producer,
-                    &descriptor_access,
-                    None,
-                    local_read_limits,
-                )?)
-            }
-            Some(ScenePipelineLocalReadRole::Consumer(scope_index)) => {
-                let scope = local_read_scopes.get(scope_index).ok_or_else(|| {
-                    format!("scene pipeline references missing local-read scope {scope_index}")
-                })?;
-                Some(scope.pipeline_metadata(
-                    SceneLocalReadScopePassRole::Consumer,
-                    &descriptor_access,
-                    fragment_shader.local_read_shader.as_ref(),
-                    local_read_limits,
-                )?)
-            }
-            None => {
-                if !descriptor_access.input_attachment_slots.is_empty() {
-                    destroy_scene_pipelines(
-                        device,
-                        ScenePipelineResources {
-                            entries,
-                            particle_compute: None,
-                        },
-                    );
-                    return Err(format!(
-                        "scene shader {fragment_shader_key:?} declares input attachments outside a planned local-read scope"
-                    ));
-                }
-                None
-            }
-        };
-        let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(
-            vertex_shader,
-            key.primitive,
-        )
-        .ok_or_else(|| {
-            format!(
-                "scene shader {vertex_shader_key:?} has no {:?} vertex program",
-                key.primitive
-            )
-        })?;
-        let pipeline_debug =
-            std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some();
-        if pipeline_debug {
-            eprintln!(
-                "gilder-scene-pipeline-create: begin vertex={vertex_shader_key:?} fragment={fragment_shader_key:?} primitive={:?}",
-                key.primitive
-            );
-        }
-        match create_scene_pipeline(
-            device,
-            key.target_format,
-            extent,
-            vertex_spirv,
-            fragment_shader.fragment_spirv,
-            fragment_shader.fragment_descriptor_heap_mode,
-            descriptor_heap_plan,
-            descriptor_layout,
-            &descriptor_access,
-            local_read_metadata.as_ref(),
-            key.blend,
-            key.cull_mode,
-            key.color_write_mask,
-            key.advanced_source_premultiplied,
-            key.advanced_blend_overlap,
-            key.samples,
-            if key.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
-                vk::PrimitiveTopology::TRIANGLE_STRIP
-            } else {
-                vk::PrimitiveTopology::TRIANGLE_LIST
-            },
-            vertex_shader_key == "gilder/dynamic-text",
-        ) {
-            Ok(pipeline) => {
-                if pipeline_debug {
-                    eprintln!(
-                        "gilder-scene-pipeline-create: complete vertex={vertex_shader_key:?} fragment={fragment_shader_key:?} primitive={:?}",
-                        key.primitive
-                    );
-                }
-                entries.push(ScenePipelineEntry { key, pipeline });
-            }
-            Err(err) => {
-                destroy_scene_pipelines(
-                    device,
-                    ScenePipelineResources {
-                        entries,
-                        particle_compute: None,
-                    },
-                );
-                return Err(err);
-            }
-        }
-    }
-    let particle_compute = particle_compute::create_optional_particle_compute_pipeline(
-        device,
-        graph,
-        descriptor_heap_plan,
-    )?;
-    Ok(ScenePipelineResources {
-        entries,
-        particle_compute,
-    })
-}
-
-pub(in crate::renderer::native_vulkan) fn destroy_scene_pipelines(
-    device: &Device,
-    resources: ScenePipelineResources,
-) {
-    particle_compute::destroy_optional_particle_compute_pipeline(
-        device,
-        resources.particle_compute,
-    );
-    unsafe {
-        for entry in resources.entries {
-            device.destroy_pipeline(entry.pipeline, None);
-        }
-    }
-}
+pub(in crate::renderer::native_vulkan) use creation::{
+    create_scene_pipelines, destroy_scene_pipelines,
+};
 
 fn drawn_pass_pipeline_keys(
     storage: &SceneStorage,
@@ -612,18 +415,7 @@ fn validate_authored_shader_primitive(
     shader_id: SceneStringId,
     primitive: SceneRenderingDeviceDrawPrimitive,
 ) -> Result<(), String> {
-    let shader_key = storage
-        .string(shader_id)
-        .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
-    let shader = native_vulkan_scene_shader_for_key(shader_key)
-        .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
-    native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive)
-        .map(|_| ())
-        .ok_or_else(|| {
-            format!(
-                "scene shader {shader_key:?} has no {primitive:?} vertex program"
-            )
-        })
+    resolve_scene_graphics_program(storage, shader_id, primitive).map(|_| ())
 }
 
 fn scene_gpu_blend(
@@ -774,165 +566,6 @@ fn pass_target_format(
                 allocation.physical_slot
             )
         })
-}
-
-fn create_scene_pipeline(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    vertex_spirv: &[u32],
-    fragment_spirv: &[u32],
-    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
-    descriptor_access: &ScenePipelineShaderDescriptorAccess,
-    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
-    blend: SceneGpuBlend,
-    cull_mode: SceneCullMode,
-    color_write_mask: SceneColorWriteMask,
-    advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
-    dynamic_text: bool,
-) -> Result<vk::Pipeline, String> {
-    if extent.width == 0 || extent.height == 0 {
-        return Err("scene pipeline requires non-zero extent".to_owned());
-    }
-    let vertex_module = create_shader_module(device, vertex_spirv, "scene vertex")?;
-    let result = (|| -> Result<vk::Pipeline, String> {
-        let local_read_fragment_spirv = local_read_metadata
-            .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv);
-        let (fragment_spirv, fragment_descriptor_heap_mode) =
-            if let Some(local_read_fragment_spirv) = local_read_fragment_spirv {
-                (
-                    local_read_fragment_spirv,
-                    BuiltinSceneDescriptorHeapMode::Mapped,
-                )
-            } else {
-                (fragment_spirv, fragment_descriptor_heap_mode)
-            };
-        let fragment_module = create_shader_module(device, fragment_spirv, "scene fragment")?;
-        let result = create_scene_pipeline_with_modules(
-            device,
-            target_format,
-            vertex_module,
-            fragment_module,
-            fragment_descriptor_heap_mode,
-            descriptor_heap_plan,
-            descriptor_layout,
-            descriptor_access,
-            local_read_metadata,
-            blend,
-            cull_mode,
-            color_write_mask,
-            advanced_source_premultiplied,
-            advanced_blend_overlap,
-            samples,
-            topology,
-            dynamic_text,
-        );
-        unsafe {
-            device.destroy_shader_module(fragment_module, None);
-        }
-        result
-    })();
-    unsafe {
-        device.destroy_shader_module(vertex_module, None);
-    }
-    result
-}
-
-fn create_scene_pipeline_with_modules(
-    device: &Device,
-    target_format: vk::Format,
-    vertex_module: vk::ShaderModule,
-    fragment_module: vk::ShaderModule,
-    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
-    descriptor_access: &ScenePipelineShaderDescriptorAccess,
-    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
-    blend: SceneGpuBlend,
-    cull_mode: SceneCullMode,
-    color_write_mask: SceneColorWriteMask,
-    advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
-    dynamic_text: bool,
-) -> Result<vk::Pipeline, String> {
-    let shader_entry = b"main\0";
-    let mut vertex_mappings = vec![
-        native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
-            descriptor_heap_plan,
-            2,
-            0,
-            0,
-        )?,
-    ];
-    if descriptor_layout.material_uniform_enabled {
-        vertex_mappings.push(
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
-                descriptor_heap_plan,
-                3,
-                0,
-                1,
-            )?,
-        );
-    }
-    let skinning_descriptor_index = 1 + usize::from(descriptor_layout.material_uniform_enabled);
-    if descriptor_layout.skinning_storage_enabled {
-        vertex_mappings.push(
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
-                descriptor_heap_plan,
-                4,
-                0,
-                skinning_descriptor_index,
-                false,
-            )?,
-        );
-    }
-    let mut vertex_mapping_info =
-        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(&vertex_mappings)?;
-    let mut vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::VERTEX)
-        .module(vertex_module)
-        .name(shader_entry)
-        .build();
-    vertex_stage.next = &mut vertex_mapping_info as *mut _ as *const std::ffi::c_void;
-
-    let fragment_mappings = scene_fragment_descriptor_mappings(
-        fragment_descriptor_heap_mode,
-        descriptor_heap_plan,
-        descriptor_layout,
-        descriptor_access,
-        local_read_metadata,
-    )?;
-    let mut fragment_mapping_info =
-        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(&fragment_mappings)?;
-    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(fragment_module)
-        .name(shader_entry)
-        .build();
-    if !fragment_mappings.is_empty() {
-        fragment_stage.next = &mut fragment_mapping_info as *mut _ as *const std::ffi::c_void;
-    }
-    create_graphics_pipeline(
-        device,
-        target_format,
-        [vertex_stage, fragment_stage],
-        blend,
-        cull_mode,
-        color_write_mask,
-        advanced_source_premultiplied,
-        advanced_blend_overlap,
-        samples,
-        topology,
-        dynamic_text,
-        local_read_metadata,
-    )
 }
 
 #[cfg(test)]

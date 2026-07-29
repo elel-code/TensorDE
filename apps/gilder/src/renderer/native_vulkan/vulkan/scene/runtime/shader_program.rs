@@ -27,6 +27,7 @@ pub(super) enum SceneResolvedGraphicsProgram<'a> {
     EngineBuiltIn {
         key: &'a str,
         shader: &'static BuiltinSceneShader,
+        vertex_spirv: &'static [u32],
     },
 }
 
@@ -44,7 +45,7 @@ impl<'a> SceneResolvedGraphicsProgram<'a> {
     pub(super) fn vertex_spirv(self, storage: &'a SceneStorage) -> &'a [u32] {
         match self {
             Self::SceneOwned { vertex, .. } => storage.shader_program_spirv(vertex),
-            Self::EngineBuiltIn { shader, .. } => shader.vertex_spirv,
+            Self::EngineBuiltIn { vertex_spirv, .. } => vertex_spirv,
         }
     }
 
@@ -101,10 +102,14 @@ pub(super) fn resolve_scene_graphics_program(
     }
     let shader = native_vulkan_scene_shader_for_key(key)
         .ok_or_else(|| format!("engine-owned scene shader {key:?} is not built in"))?;
-    native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive).ok_or_else(|| {
+    let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive).ok_or_else(|| {
         format!("engine-owned scene shader {key:?} has no {primitive:?} vertex program")
     })?;
-    Ok(SceneResolvedGraphicsProgram::EngineBuiltIn { key, shader })
+    Ok(SceneResolvedGraphicsProgram::EngineBuiltIn {
+        key,
+        shader,
+        vertex_spirv,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +397,31 @@ mod tests {
 
         assert!(error.contains("package-owned"));
         assert!(error.contains("no embedded native stages"));
+    }
+
+    #[test]
+    fn incomplete_scene_owned_program_fails_before_catalog_resolution() {
+        let spirv = minimal_spirv();
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec![
+                "workshop/example/effects/rounded_mask__SLOTS_1".to_owned(),
+                "main".to_owned(),
+            ],
+            shader_programs: vec![program(SceneShaderStage::Vertex, 0, spirv.len())],
+            shader_spirv: spirv,
+            ..SceneBinaryDocument::default()
+        })
+        .expect("incomplete scene-owned storage");
+
+        let error = resolve_scene_graphics_program(
+            &storage,
+            SceneStringId(0),
+            SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        )
+        .expect_err("incomplete scene-owned program must fail");
+
+        assert!(error.contains("scene-owned graphics program"));
+        assert!(error.contains("no fragment stage"));
     }
 
     #[test]

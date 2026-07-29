@@ -10,7 +10,8 @@
 use serde::Serialize;
 
 use crate::engine::scene::{
-    ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive, SceneStorage, SceneStringId,
+    ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive, SceneShaderStage, SceneStorage,
+    SceneStringId,
 };
 
 use super::resource_storage::{
@@ -29,6 +30,7 @@ pub struct NativeVulkanScenePipelineCachePlan {
     pub shader_programs: Vec<NativeVulkanSceneShaderProgramSet>,
     pub shader_catalog_entry_count: usize,
     pub shader_catalog_hit_count: usize,
+    pub scene_owned_shader_hit_count: usize,
     pub missing_shader_keys: Vec<String>,
     pub cache_model: &'static str,
     pub shader_catalog_source: &'static str,
@@ -47,6 +49,7 @@ pub struct NativeVulkanScenePipelineCacheEntry {
     pub render_pass_count: u32,
     pub primary_blend: ScenePipelineBlend,
     pub shader_catalog_available: bool,
+    pub scene_owned_program_available: bool,
     pub shader_catalog_key: Option<&'static str>,
 }
 
@@ -83,11 +86,19 @@ pub fn native_vulkan_scene_pipeline_cache_plan(
         .collect::<Vec<_>>();
     let shader_catalog_hit_count = entries
         .iter()
-        .filter(|entry| entry.shader_catalog_available)
+        .filter(|entry| {
+            entry.shader_catalog_available && !entry.scene_owned_program_available
+        })
+        .count();
+    let scene_owned_shader_hit_count = entries
+        .iter()
+        .filter(|entry| entry.scene_owned_program_available)
         .count();
     let missing_shader_keys = entries
         .iter()
-        .filter(|entry| !entry.shader_catalog_available)
+        .filter(|entry| {
+            !entry.shader_catalog_available && !entry.scene_owned_program_available
+        })
         .filter_map(|entry| storage.string(entry.shader_key))
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -101,6 +112,7 @@ pub fn native_vulkan_scene_pipeline_cache_plan(
         shader_catalog_entry_count: super::shader_catalog::native_vulkan_scene_shader_catalog()
             .len(),
         shader_catalog_hit_count,
+        scene_owned_shader_hit_count,
         missing_shader_keys,
         cache_model: "pipeline-key-hash-cache",
         shader_catalog_source: "built-in-scene-shader-catalog",
@@ -130,6 +142,12 @@ fn pipeline_entry_for_slice(
     let shader = storage
         .string(slice.shader_key)
         .and_then(native_vulkan_scene_shader_for_key);
+    let scene_owned_program_available = storage
+        .shader_program(slice.shader_key, SceneShaderStage::Vertex)
+        .is_some()
+        && storage
+            .shader_program(slice.shader_key, SceneShaderStage::Fragment)
+            .is_some();
 
     NativeVulkanScenePipelineCacheEntry {
         shader_key: slice.shader_key,
@@ -143,6 +161,7 @@ fn pipeline_entry_for_slice(
         render_pass_count,
         primary_blend,
         shader_catalog_available: shader.is_some(),
+        scene_owned_program_available,
         shader_catalog_key: shader.map(|shader| shader.key),
     }
 }
@@ -153,6 +172,9 @@ fn shader_programs_for_entries(
 ) -> Vec<NativeVulkanSceneShaderProgramSet> {
     let mut programs = Vec::new();
     for entry in entries {
+        if entry.scene_owned_program_available {
+            continue;
+        }
         if programs.iter().any(
             |program: &NativeVulkanSceneShaderProgramSet| {
                 program.shader_key == entry.shader_key
@@ -219,7 +241,7 @@ mod tests {
     use super::*;
     use crate::engine::scene::{
         RenderingServer, SceneBinaryDocument, SceneMaterialPassRecord, SceneShaderContractRecord,
-        SceneStorage, SceneStringId,
+        SceneShaderProgramRecord, SceneStorage, SceneStringId,
     };
 
     #[test]
@@ -327,5 +349,123 @@ mod tests {
                 .expect("local-read shader")
                 .fragment_spirv
         );
+    }
+
+    #[test]
+    fn complete_scene_owned_program_is_available_without_a_catalog_hit() {
+        let storage = scene_owned_pipeline_storage(
+            "workshop/example/effects/custom",
+            true,
+        );
+        let server = RenderingServer::new(&storage);
+        let render_plan = server.renderer_scene_render_plan();
+        let graph = server.rendering_device_graph_plan();
+        let resources = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
+
+        let cache = native_vulkan_scene_pipeline_cache_plan(&storage, &resources);
+
+        assert_eq!(cache.pipeline_count, 1);
+        assert_eq!(cache.shader_catalog_hit_count, 0);
+        assert_eq!(cache.scene_owned_shader_hit_count, 1);
+        assert!(cache.missing_shader_keys.is_empty());
+        assert!(cache.entries[0].scene_owned_program_available);
+        assert!(!cache.entries[0].shader_catalog_available);
+        assert_eq!(cache.entries[0].shader_catalog_key, None);
+    }
+
+    #[test]
+    fn incomplete_scene_owned_program_remains_unresolved() {
+        let storage = scene_owned_pipeline_storage(
+            "workshop/example/effects/custom",
+            false,
+        );
+        let server = RenderingServer::new(&storage);
+        let render_plan = server.renderer_scene_render_plan();
+        let graph = server.rendering_device_graph_plan();
+        let resources = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
+
+        let cache = native_vulkan_scene_pipeline_cache_plan(&storage, &resources);
+
+        assert_eq!(cache.shader_catalog_hit_count, 0);
+        assert_eq!(cache.scene_owned_shader_hit_count, 0);
+        assert_eq!(
+            cache.missing_shader_keys,
+            vec!["workshop/example/effects/custom".to_owned()]
+        );
+        assert!(!cache.entries[0].scene_owned_program_available);
+    }
+
+    #[test]
+    fn scene_owned_program_wins_without_counting_same_key_catalog_availability_as_a_hit() {
+        let storage = scene_owned_pipeline_storage("we/genericimage4", true);
+        let server = RenderingServer::new(&storage);
+        let render_plan = server.renderer_scene_render_plan();
+        let graph = server.rendering_device_graph_plan();
+        let resources = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
+
+        let cache = native_vulkan_scene_pipeline_cache_plan(&storage, &resources);
+
+        assert!(cache.entries[0].shader_catalog_available);
+        assert!(cache.entries[0].scene_owned_program_available);
+        assert_eq!(cache.shader_catalog_hit_count, 0);
+        assert_eq!(cache.scene_owned_shader_hit_count, 1);
+        assert_eq!(cache.shader_program_count, 0);
+        assert!(cache.shader_programs.is_empty());
+        assert!(cache.missing_shader_keys.is_empty());
+    }
+
+    fn scene_owned_pipeline_storage(key: &str, complete: bool) -> SceneStorage {
+        let spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+        let mut shader_programs = vec![scene_owned_program(
+            SceneShaderStage::Vertex,
+            spirv.len(),
+        )];
+        if complete {
+            shader_programs.push(scene_owned_program(
+                SceneShaderStage::Fragment,
+                spirv.len(),
+            ));
+        }
+        SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec![
+                key.to_owned(),
+                "pipeline".to_owned(),
+                "main".to_owned(),
+            ],
+            shader_contracts: vec![SceneShaderContractRecord {
+                shader_key: SceneStringId(0),
+                pipeline_key: SceneStringId(1),
+                texture_slot_mask: 0,
+                input_attachment_slot_mask: 0,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 0,
+                sampler_heap_count: 0,
+            }],
+            shader_programs,
+            shader_spirv: spirv,
+            ..SceneBinaryDocument::default()
+        })
+        .expect("scene-owned pipeline storage")
+    }
+
+    fn scene_owned_program(
+        stage: SceneShaderStage,
+        spirv_count: usize,
+    ) -> SceneShaderProgramRecord {
+        SceneShaderProgramRecord {
+            program_key: SceneStringId(0),
+            stage,
+            entry_point: SceneStringId(2),
+            spirv_start: 0,
+            spirv_count: spirv_count as u32,
+            binding_start: 0,
+            binding_count: 0,
+            stage_io_start: 0,
+            stage_io_count: 0,
+            uniform_buffer_start: 0,
+            uniform_buffer_count: 0,
+            push_constant_bytes: 0,
+        }
     }
 }
