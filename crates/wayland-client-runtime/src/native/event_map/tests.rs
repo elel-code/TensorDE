@@ -1,7 +1,9 @@
 //! Unit tests for `event_map`.
 
 use super::*;
-use crate::event::{Event, SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind};
+use crate::event::{
+    Event, PointerEvent, PointerEventKind, SurfaceEvent, ToplevelState, TouchEvent, TouchEventKind,
+};
 use crate::geometry::SuggestedSize;
 use crate::input::SeatEvent;
 use crate::native::shell::{NativeShellEvent, NativeSurfaceId};
@@ -49,6 +51,89 @@ fn maps_touch_down_with_serial_and_time() {
     };
     // Without seat, serial-bearing touch events are dropped.
     assert!(map_native_event_full(event.clone(), &mut map, None, &mut map_state).is_none());
+}
+
+#[test]
+fn maps_pointer_wire_time_without_fabricating_zero() {
+    let mut map = SurfaceIdMap::new();
+    let mut map_state = NativeEventMapState::default();
+    let native = NativeSurfaceId(8);
+
+    let motion = map_native_event_full(
+        NativeShellEvent::PointerMotion {
+            surface: native,
+            x: 11.0,
+            y: 23.0,
+            time: 1_337,
+            seat: Some(4),
+        },
+        &mut map,
+        None,
+        &mut map_state,
+    );
+    assert!(matches!(
+        motion,
+        Some(Event::Pointer(PointerEvent {
+            kind: PointerEventKind::Motion { time: 1_337 },
+            ..
+        }))
+    ));
+
+    let axis = map_native_event_full(
+        NativeShellEvent::PointerAxis {
+            surface: Some(native),
+            horizontal: Default::default(),
+            vertical: Default::default(),
+            source: None,
+            time: 1_901,
+            seat: Some(4),
+        },
+        &mut map,
+        None,
+        &mut map_state,
+    );
+    assert!(matches!(
+        axis,
+        Some(Event::Pointer(PointerEvent {
+            kind: PointerEventKind::Axis { time: 1_901, .. },
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn native_pointer_events_retain_wire_serial_and_time() {
+    let enter = NativeShellEvent::PointerEnter {
+        surface: NativeSurfaceId(9),
+        x: 1.0,
+        y: 2.0,
+        serial: 0x1020_3040,
+        seat: Some(3),
+    };
+    assert!(matches!(
+        enter,
+        NativeShellEvent::PointerEnter {
+            serial: 0x1020_3040,
+            ..
+        }
+    ));
+
+    let button = NativeShellEvent::PointerButton {
+        surface: Some(NativeSurfaceId(9)),
+        button: 0x110,
+        pressed: true,
+        serial: 0x5060_7080,
+        time: 4_242,
+        seat: Some(3),
+    };
+    assert!(matches!(
+        button,
+        NativeShellEvent::PointerButton {
+            serial: 0x5060_7080,
+            time: 4_242,
+            ..
+        }
+    ));
 }
 
 #[test]

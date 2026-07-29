@@ -121,9 +121,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     surface: id,
                     x,
                     y,
+                    serial,
                     seat,
                 } => {
-                    println!("pointer enter {id:?} @ ({x:.1},{y:.1}) seat={seat:?}");
+                    println!(
+                        "pointer enter {id:?} @ ({x:.1},{y:.1}) serial={serial} seat={seat:?}"
+                    );
                 }
                 NativeShellEvent::SeatAdded { seat, name, .. } => {
                     println!("seat added {seat} name={name:?}");

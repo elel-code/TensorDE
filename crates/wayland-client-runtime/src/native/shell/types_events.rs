@@ -25,23 +25,28 @@ pub enum NativeShellEvent {
         surface: NativeSurfaceId,
         x: f64,
         y: f64,
+        serial: u32,
         /// Registry global name of the seat that owns this pointer, if known.
         seat: Option<u32>,
     },
     PointerLeave {
         surface: NativeSurfaceId,
+        serial: u32,
         seat: Option<u32>,
     },
     PointerMotion {
         surface: NativeSurfaceId,
         x: f64,
         y: f64,
+        time: u32,
         seat: Option<u32>,
     },
     PointerButton {
         surface: Option<NativeSurfaceId>,
         button: u32,
         pressed: bool,
+        serial: u32,
+        time: u32,
         seat: Option<u32>,
     },
     PointerAxis {
@@ -49,6 +54,7 @@ pub enum NativeShellEvent {
         horizontal: crate::pointer_axis::PointerAxisValue,
         vertical: crate::pointer_axis::PointerAxisValue,
         source: Option<crate::pointer_axis::PointerAxisSource>,
+        time: u32,
         seat: Option<u32>,
     },
     SeatKeyboardEnter {
@@ -386,4 +392,3 @@ pub enum NativeShellEvent {
         id: crate::dmabuf::DmabufBufferId,
     },
 }
-

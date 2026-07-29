@@ -76,6 +76,7 @@ pub(crate) struct PointerAxisFrameAccum {
     pub horizontal: PointerAxisValue,
     pub vertical: PointerAxisValue,
     pub source: Option<PointerAxisSource>,
+    pub time: u32,
 }
 
 impl PointerAxisFrameAccum {
@@ -97,6 +98,10 @@ impl PointerAxisFrameAccum {
         } else {
             self.horizontal.continuous += value;
         }
+    }
+
+    pub fn note_time(&mut self, time: u32) {
+        self.time = time;
     }
 
     pub fn add_discrete(&mut self, vertical: bool, value: i32) {
@@ -166,8 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn sctk_axis_fields_and_direction_are_preserved() {
-        // Pure mapping without AxisScroll when sctk off.
+    fn wire_axis_fields_and_direction_are_preserved() {
         let value = PointerAxisValue {
             continuous: -3.0,
             discrete: 1,
@@ -185,6 +189,7 @@ mod tests {
     #[test]
     fn frame_accum_merges_axis_events_until_clear() {
         let mut frame = PointerAxisFrameAccum::default();
+        frame.note_time(713);
         frame.add_continuous(true, 12.0);
         frame.add_value120(true, 60);
         frame.add_discrete(false, 1);
@@ -202,8 +207,10 @@ mod tests {
             Some(PointerAxisDirection::Inverted)
         );
         assert_eq!(frame.source, Some(PointerAxisSource::Wheel));
+        assert_eq!(frame.time, 713);
 
         frame.clear();
         assert!(!frame.has_content());
+        assert_eq!(frame.time, 0);
     }
 }

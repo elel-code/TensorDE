@@ -89,6 +89,7 @@ pub(crate) fn map(
             surface,
             x,
             y,
+            serial,
             seat: event_seat,
         } => {
             map_state.pointer_focus = Some(surface);
@@ -98,11 +99,7 @@ pub(crate) fn map(
                 surface: surfaces.intern(surface),
                 position: (x, y),
                 kind: PointerEventKind::Enter {
-                    serial: InputSerial::new(
-                        seat.clone(),
-                        map_state.last_serial,
-                        InputSerialSource::PointerEnter,
-                    ),
+                    serial: InputSerial::new(seat.clone(), serial, InputSerialSource::PointerEnter),
                 },
                 seat: event_seat.map(SeatId::from_raw),
             }))
@@ -110,6 +107,7 @@ pub(crate) fn map(
         NativeShellEvent::PointerLeave {
             surface,
             seat: event_seat,
+            ..
         } => {
             map_state.pointer_focus = None;
             Some(Event::Pointer(PointerEvent {
@@ -123,6 +121,7 @@ pub(crate) fn map(
             surface,
             x,
             y,
+            time,
             seat: event_seat,
         } => {
             map_state.pointer_focus = Some(surface);
@@ -130,7 +129,7 @@ pub(crate) fn map(
             Some(Event::Pointer(PointerEvent {
                 surface: surfaces.intern(surface),
                 position: (x, y),
-                kind: PointerEventKind::Motion { time: 0 },
+                kind: PointerEventKind::Motion { time },
                 seat: event_seat.map(SeatId::from_raw),
             }))
         }
@@ -139,6 +138,7 @@ pub(crate) fn map(
             horizontal,
             vertical,
             source,
+            time,
             seat: event_seat,
         } => {
             let surface = surface
@@ -148,7 +148,7 @@ pub(crate) fn map(
                 surface,
                 position: map_state.pointer_pos,
                 kind: PointerEventKind::Axis {
-                    time: 0,
+                    time,
                     horizontal,
                     vertical,
                     source,
@@ -178,6 +178,8 @@ pub(crate) fn map(
             surface,
             button,
             pressed,
+            serial,
+            time,
             seat: event_seat,
         } => {
             let seat = seat?;
@@ -194,15 +196,15 @@ pub(crate) fn map(
                 position: map_state.pointer_pos,
                 kind: if pressed {
                     PointerEventKind::Press {
-                        time: 0,
+                        time,
                         button,
-                        serial: InputSerial::new(seat.clone(), map_state.last_serial, source),
+                        serial: InputSerial::new(seat.clone(), serial, source),
                     }
                 } else {
                     PointerEventKind::Release {
-                        time: 0,
+                        time,
                         button,
-                        serial: InputSerial::new(seat.clone(), map_state.last_serial, source),
+                        serial: InputSerial::new(seat.clone(), serial, source),
                     }
                 },
                 seat: event_seat.map(SeatId::from_raw),

@@ -487,6 +487,19 @@ impl NativeShell {
         Ok(n)
     }
 
+    /// Flush requests and perform one compositor synchronization roundtrip.
+    ///
+    /// This is intended for bounded startup handshakes such as waiting for the
+    /// first layer-surface configure. Frame loops should use the non-blocking
+    /// dispatch APIs instead.
+    pub fn roundtrip(&mut self) -> Result<usize, NativeError> {
+        self.connection.flush_if_needed()?;
+        let n = self.queue.roundtrip(&mut self.state)?;
+        self.after_dispatch()?;
+        self.connection.flush_if_needed()?;
+        Ok(n)
+    }
+
     /// Apply deferred CSD work that cannot run inside `Dispatch` handlers.
     fn after_dispatch(&mut self) -> Result<(), NativeError> {
         if self.state.pending_primary_seat_rebind {

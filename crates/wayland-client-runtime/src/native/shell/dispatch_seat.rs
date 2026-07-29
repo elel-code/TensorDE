@@ -263,11 +263,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         surface: id,
                         x: surface_x,
                         y: surface_y,
+                        serial,
                         seat: seat_global,
                     });
                 }
             }
-            wl_pointer::Event::Leave { surface, .. } => {
+            wl_pointer::Event::Leave { serial, surface } => {
+                state.note_seat_serial(seat_global, serial);
                 let id = state
                     .wl_surface_objects
                     .get(&surface.id().protocol_id())
@@ -291,14 +293,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                 if let Some(id) = id {
                     state.push(NativeShellEvent::PointerLeave {
                         surface: id,
+                        serial,
                         seat: seat_global,
                     });
                 }
             }
             wl_pointer::Event::Motion {
+                time,
                 surface_x,
                 surface_y,
-                ..
             } => {
                 if let Some((parent, kind)) = state.csd_pointer_part {
                     if let Some(frame) = state.csd_frames.get_mut(&parent) {
@@ -315,15 +318,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         surface: id,
                         x: surface_x,
                         y: surface_y,
+                        time,
                         seat: seat_global,
                     });
                 }
             }
             wl_pointer::Event::Button {
                 serial,
+                time,
                 button,
                 state: btn_state,
-                ..
             } => {
                 state.note_seat_serial(seat_global, serial);
                 let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
@@ -342,14 +346,18 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     surface: focus,
                     button,
                     pressed,
+                    serial,
+                    time,
                     seat: seat_global,
                 });
             }
-            wl_pointer::Event::Axis { axis, value, .. } => {
+            wl_pointer::Event::Axis { time, axis, value } => {
                 let Some(vertical) = axis_is_vertical(axis) else {
                     return;
                 };
-                axis_accum_mut(state, seat_global).add_continuous(vertical, value);
+                let frame = axis_accum_mut(state, seat_global);
+                frame.note_time(time);
+                frame.add_continuous(vertical, value);
             }
             wl_pointer::Event::AxisDiscrete { axis, discrete } => {
                 let Some(vertical) = axis_is_vertical(axis) else {
@@ -370,11 +378,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                     axis_accum_mut(state, seat_global).source = Some(mapped);
                 }
             }
-            wl_pointer::Event::AxisStop { axis, .. } => {
+            wl_pointer::Event::AxisStop { time, axis } => {
                 let Some(vertical) = axis_is_vertical(axis) else {
                     return;
                 };
-                axis_accum_mut(state, seat_global).set_stop(vertical);
+                let frame = axis_accum_mut(state, seat_global);
+                frame.note_time(time);
+                frame.set_stop(vertical);
             }
             wl_pointer::Event::AxisRelativeDirection { axis, direction } => {
                 let Some(vertical) = axis_is_vertical(axis) else {
@@ -404,6 +414,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for NativeShellState {
                         horizontal: frame.horizontal,
                         vertical: frame.vertical,
                         source: frame.source,
+                        time: frame.time,
                         seat: seat_global,
                     });
                 }
