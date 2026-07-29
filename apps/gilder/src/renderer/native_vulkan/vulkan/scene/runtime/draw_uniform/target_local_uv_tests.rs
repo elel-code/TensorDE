@@ -26,6 +26,7 @@ fn audio_image_local_pass_uses_target_local_uvs() {
             [0.0, 0.0, 0.6, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
+        effect_model_view_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [1000.0, 1000.0],
         skinning_palette_start: INVALID_OBJECT_ID,
         skinning_palette_count: 0,

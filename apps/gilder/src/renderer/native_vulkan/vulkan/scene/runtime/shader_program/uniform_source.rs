@@ -41,6 +41,10 @@ pub(super) fn scene_owned_uniform_source<'a>(
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
             Ok(SceneOwnedUniformSource::ModelViewProjectionMatrix)
         }
+        "g_EffectModelViewProjectionMatrix" => {
+            require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
+            Ok(SceneOwnedUniformSource::EffectModelViewProjectionMatrix)
+        }
         "g_LayerModelMatrix" => {
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
             Ok(SceneOwnedUniformSource::LayerModelMatrix)
@@ -113,4 +117,37 @@ fn require_uniform_array_shape(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::scene::SceneStringId;
+
+    #[test]
+    fn effect_mvp_resolves_to_an_independent_typed_source() {
+        let member = SceneShaderUniformMemberRecord {
+            name: SceneStringId::NONE,
+            material_parameter: SceneStringId::NONE,
+            byte_offset: 0,
+            byte_size: 64,
+            scalar_type: SceneShaderScalarType::F32,
+            rows: 4,
+            columns: 4,
+            array_count: 1,
+            array_stride: 0,
+            matrix_stride: 16,
+        };
+
+        assert_eq!(
+            scene_owned_uniform_source(
+                "workshop/example/effect",
+                "g_EffectModelViewProjectionMatrix",
+                None,
+                &member,
+            )
+            .expect("effect MVP source"),
+            SceneOwnedUniformSource::EffectModelViewProjectionMatrix,
+        );
+    }
 }

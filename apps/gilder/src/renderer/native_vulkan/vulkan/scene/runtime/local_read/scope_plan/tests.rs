@@ -356,6 +356,7 @@
             resolved_object_index: INVALID_OBJECT_ID,
             render_world_matrix: [[0.0; 4]; 4],
             clip_transform: [[0.0; 4]; 4],
+            effect_model_view_projection_matrix: [[0.0; 4]; 4],
             authored_source_extent: [64.0, 64.0],
             skinning_palette_start: 0,
             skinning_palette_count: 0,

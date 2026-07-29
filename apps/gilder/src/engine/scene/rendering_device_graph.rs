@@ -107,6 +107,10 @@ impl SceneRenderingDeviceGraphPlan {
                             else {
                                 continue;
                             };
+                            let clip_transform = scene_clip_transform(
+                                storage.project(),
+                                pass_object_state.render_world_matrix,
+                            );
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
                                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                                 shader_key: pass.shader_key,
@@ -115,10 +119,8 @@ impl SceneRenderingDeviceGraphPlan {
                                 render_world_matrix: rows_from_column_major(
                                     pass_object_state.render_world_matrix,
                                 ),
-                                clip_transform: scene_clip_transform(
-                                    storage.project(),
-                                    pass_object_state.render_world_matrix,
-                                ),
+                                clip_transform,
+                                effect_model_view_projection_matrix: clip_transform,
                                 authored_source_extent: authored_source_extent(
                                     storage,
                                     pass.object,
@@ -331,6 +333,9 @@ fn utility_primitive_draw(
         SceneRenderingDeviceDrawPrimitive::ObjectMesh
         | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
     };
+    let clip_transform = pass_object_state.map_or_else(identity_clip_transform, |object| {
+        scene_clip_transform(storage.project(), object.render_world_matrix)
+    });
     SceneRenderingDeviceMeshDraw {
         primitive,
         shader_key: pass.shader_key,
@@ -341,9 +346,8 @@ fn utility_primitive_draw(
         render_world_matrix: pass_object_state.map_or_else(identity_clip_transform, |object| {
             rows_from_column_major(object.render_world_matrix)
         }),
-        clip_transform: pass_object_state.map_or_else(identity_clip_transform, |object| {
-            scene_clip_transform(storage.project(), object.render_world_matrix)
-        }),
+        clip_transform,
+        effect_model_view_projection_matrix: clip_transform,
         authored_source_extent: authored_source_extent(storage, pass.object),
         skinning_palette_start: INVALID_OBJECT_ID,
         skinning_palette_count: 0,

@@ -170,6 +170,7 @@ pub(super) enum SceneOwnedUniformSource<'a> {
     AudioSpectrum64Left,
     AudioSpectrum64Right,
     ModelViewProjectionMatrix,
+    EffectModelViewProjectionMatrix,
     LayerModelMatrix,
     SampledTextureResolution { slot: u32 },
     MaterialParameter { authored_name: &'a str },

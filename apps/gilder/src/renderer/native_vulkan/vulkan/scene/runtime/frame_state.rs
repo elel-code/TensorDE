@@ -153,6 +153,7 @@ impl SceneFrameTopology {
             draw.render_world_matrix = rows_from_column_major(object.render_world_matrix);
             draw.clip_transform =
                 scene_clip_transform(storage.project(), object.render_world_matrix);
+            draw.effect_model_view_projection_matrix = draw.clip_transform;
             draw.resolved_color = object.resolved_color;
             draw.resolved_alpha = object.resolved_alpha;
             draw.resolved_effect_visibility_mask =

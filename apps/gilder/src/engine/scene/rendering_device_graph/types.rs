@@ -90,6 +90,8 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub render_world_matrix: [[f32; 4]; 4],
     /// Final object-to-clip transform for the current scene projection.
     pub clip_transform: [[f32; 4]; 4],
+    /// Effect-local MVP after adapting WE's unit quad to Gilder's pixel-local mesh.
+    pub effect_model_view_projection_matrix: [[f32; 4]; 4],
     pub authored_source_extent: [f32; 2],
     pub skinning_palette_start: u32,
     pub skinning_palette_count: u32,

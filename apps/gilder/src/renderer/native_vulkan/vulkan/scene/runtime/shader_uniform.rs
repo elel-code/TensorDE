@@ -17,6 +17,7 @@ pub(super) struct SceneOwnedUniformPayloadInputs<'a> {
     pub frame_delta_seconds: f32,
     pub audio_spectrum: &'a StereoSpectrum64,
     pub model_view_projection_matrix: &'a [[f32; 4]; 4],
+    pub effect_model_view_projection_matrix: &'a [[f32; 4]; 4],
     pub layer_model_matrix: &'a [[f32; 4]; 4],
     pub sampled_texture_resolutions: &'a [(u32, [f32; 4])],
     pub material_parameters: &'a [SceneOwnedMaterialParameterValue<'a>],
@@ -33,6 +34,7 @@ impl<'a> SceneOwnedUniformPayloadInputs<'a> {
             frame_delta_seconds: 0.0,
             audio_spectrum: &StereoSpectrum64::ZERO,
             model_view_projection_matrix: &draw.clip_transform,
+            effect_model_view_projection_matrix: &draw.effect_model_view_projection_matrix,
             layer_model_matrix: &draw.render_world_matrix,
             sampled_texture_resolutions,
             material_parameters,
@@ -79,6 +81,9 @@ pub(super) fn write_scene_owned_uniform_payload(
             }
             SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                 write_matrix(destination, inputs.model_view_projection_matrix)?;
+            }
+            SceneOwnedUniformSource::EffectModelViewProjectionMatrix => {
+                write_matrix(destination, inputs.effect_model_view_projection_matrix)?;
             }
             SceneOwnedUniformSource::LayerModelMatrix => {
                 write_matrix(destination, inputs.layer_model_matrix)?;
@@ -233,6 +238,7 @@ mod tests {
                 frame_delta_seconds: 0.5,
                 audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &projection,
+                effect_model_view_projection_matrix: &projection,
                 layer_model_matrix: &layer,
                 sampled_texture_resolutions: &[],
                 material_parameters: &[],
@@ -328,6 +334,7 @@ mod tests {
                 frame_delta_seconds: 0.0,
                 audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &identity,
+                effect_model_view_projection_matrix: &identity,
                 layer_model_matrix: &identity,
                 sampled_texture_resolutions: &[(0, [1920.0, 1080.0, 1920.0, 1080.0])],
                 material_parameters: &material_parameters,
@@ -372,6 +379,7 @@ mod tests {
                 frame_delta_seconds: 0.0,
                 audio_spectrum: &StereoSpectrum64::ZERO,
                 model_view_projection_matrix: &identity,
+                effect_model_view_projection_matrix: &identity,
                 layer_model_matrix: &identity,
                 sampled_texture_resolutions: &[],
                 material_parameters: &[],
@@ -381,6 +389,43 @@ mod tests {
         .expect_err("missing authored value must fail");
 
         assert!(error.contains("requires authored material parameter"));
+    }
+
+    #[test]
+    fn effect_mvp_uses_its_independent_typed_matrix() {
+        let plan = SceneOwnedUniformBufferPlan {
+            name: "GlobalParams",
+            register: 0,
+            byte_size: 64,
+            members: vec![member(
+                "g_EffectModelViewProjectionMatrix",
+                SceneOwnedUniformSource::EffectModelViewProjectionMatrix,
+                0,
+                64,
+            )],
+        };
+        let ordinary = matrix(1.0);
+        let effect = matrix(33.0);
+        let mut payload = [0u8; 64];
+
+        write_scene_owned_uniform_payload(
+            &plan,
+            SceneOwnedUniformPayloadInputs {
+                scene_time_seconds: 0.0,
+                frame_delta_seconds: 0.0,
+                audio_spectrum: &StereoSpectrum64::ZERO,
+                model_view_projection_matrix: &ordinary,
+                effect_model_view_projection_matrix: &effect,
+                layer_model_matrix: &ordinary,
+                sampled_texture_resolutions: &[],
+                material_parameters: &[],
+            },
+            &mut payload,
+        )
+        .expect("effect MVP payload");
+
+        assert_eq!(read_f32(&payload, 0), 33.0);
+        assert_eq!(read_f32(&payload, 60), 48.0);
     }
 
     fn member<'a>(

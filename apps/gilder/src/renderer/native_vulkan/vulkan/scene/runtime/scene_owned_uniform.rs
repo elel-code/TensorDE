@@ -72,6 +72,7 @@ enum SceneOwnedRetainedSource {
     AudioSpectrum64Left,
     AudioSpectrum64Right,
     ModelViewProjectionMatrix,
+    EffectModelViewProjectionMatrix,
     LayerModelMatrix,
     SampledTextureResolution {
         sampled_slot_index: usize,
@@ -223,6 +224,9 @@ impl SceneOwnedUniformArenaPlan {
                                 }
                                 SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                                     SceneOwnedRetainedSource::ModelViewProjectionMatrix
+                                }
+                                SceneOwnedUniformSource::EffectModelViewProjectionMatrix => {
+                                    SceneOwnedRetainedSource::EffectModelViewProjectionMatrix
                                 }
                                 SceneOwnedUniformSource::LayerModelMatrix => {
                                     SceneOwnedRetainedSource::LayerModelMatrix
@@ -408,6 +412,9 @@ impl SceneOwnedUniformArenaPlan {
                     }
                     SceneOwnedRetainedSource::ModelViewProjectionMatrix => {
                         write_matrix(destination, &draw.clip_transform)?;
+                    }
+                    SceneOwnedRetainedSource::EffectModelViewProjectionMatrix => {
+                        write_matrix(destination, &draw.effect_model_view_projection_matrix)?;
                     }
                     SceneOwnedRetainedSource::LayerModelMatrix => {
                         write_matrix(destination, &draw.render_world_matrix)?;
@@ -597,32 +604,37 @@ mod tests {
     #[test]
     fn retained_payload_updates_matrices_resolution_and_scalar_without_allocating_sources() {
         let plan = SceneOwnedUniformArenaPlan {
-            byte_count: 256,
+            byte_count: 320,
             slices: vec![SceneOwnedUniformSlicePlan {
                 draw_index: 0,
                 descriptor_lane: 0,
                 byte_offset: 0,
-                byte_size: 156,
+                byte_size: 220,
                 members: vec![
                     member(0, 64, SceneOwnedRetainedSource::ModelViewProjectionMatrix),
-                    member(64, 64, SceneOwnedRetainedSource::LayerModelMatrix),
                     member(
-                        128,
+                        64,
+                        64,
+                        SceneOwnedRetainedSource::EffectModelViewProjectionMatrix,
+                    ),
+                    member(128, 64, SceneOwnedRetainedSource::LayerModelMatrix),
+                    member(
+                        192,
                         16,
                         SceneOwnedRetainedSource::SampledTextureResolution {
                             sampled_slot_index: 0,
                         },
                     ),
                     member(
-                        144,
+                        208,
                         4,
                         SceneOwnedRetainedSource::MaterialConstant {
                             constant_index: 9,
                             default_values: vec![0.25],
                         },
                     ),
-                    member(148, 4, SceneOwnedRetainedSource::SceneTime),
-                    member(152, 4, SceneOwnedRetainedSource::FrameDelta),
+                    member(212, 4, SceneOwnedRetainedSource::SceneTime),
+                    member(216, 4, SceneOwnedRetainedSource::FrameDelta),
                 ],
             }],
             sampled_slots: vec![0],
@@ -630,13 +642,14 @@ mod tests {
         };
         let mut draw = draw();
         draw.clip_transform[0][0] = 2.0;
+        draw.effect_model_view_projection_matrix[0][0] = 9.0;
         draw.render_world_matrix[3][0] = 17.0;
         let override_value = ResolvedMaterialScalarValue {
             object: draw.object,
             constant_index: 9,
             value: 0.75,
         };
-        let mut payload = vec![0xcc; 256];
+        let mut payload = vec![0xcc; 320];
 
         plan.write_payload(
             &[draw],
@@ -652,13 +665,14 @@ mod tests {
         .expect("retained payload");
 
         assert_eq!(read_f32(&payload, 0), 2.0);
-        assert_eq!(read_f32(&payload, 112), 17.0);
-        assert_eq!(read_f32(&payload, 128), 128.0);
-        assert_eq!(read_f32(&payload, 140), 50.0);
-        assert_eq!(read_f32(&payload, 144), 0.75);
-        assert_eq!(read_f32(&payload, 148), 1.25);
-        assert_eq!(read_f32(&payload, 152), 0.5);
-        assert!(payload[156..].iter().all(|byte| *byte == 0xcc));
+        assert_eq!(read_f32(&payload, 64), 9.0);
+        assert_eq!(read_f32(&payload, 176), 17.0);
+        assert_eq!(read_f32(&payload, 192), 128.0);
+        assert_eq!(read_f32(&payload, 204), 50.0);
+        assert_eq!(read_f32(&payload, 208), 0.75);
+        assert_eq!(read_f32(&payload, 212), 1.25);
+        assert_eq!(read_f32(&payload, 216), 0.5);
+        assert!(payload[220..].iter().all(|byte| *byte == 0xcc));
     }
 
     #[test]
@@ -732,6 +746,7 @@ mod tests {
             resolved_object_index: 0,
             render_world_matrix: [[0.0; 4]; 4],
             clip_transform: [[0.0; 4]; 4],
+            effect_model_view_projection_matrix: [[0.0; 4]; 4],
             authored_source_extent: [1.0; 2],
             skinning_palette_start: 0,
             skinning_palette_count: 0,
