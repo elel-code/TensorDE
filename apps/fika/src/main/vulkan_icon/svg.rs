@@ -64,7 +64,39 @@ impl SvgIconRasterizer {
         };
         let width = slot.width.max(1);
         let height = slot.height.max(1);
-        let Some(geometry) = tessellate_svg(&bytes, width, height) else {
+        let Some((image, view)) = self.rasterize(allocator, uploads, &bytes, width, height)? else {
+            return Ok(None);
+        };
+        let binding =
+            SampledImageBinding::new(heap, &view, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .map_err(|error| format!("create Vulkan SVG icon descriptor: {error}"))?;
+        Ok(Some(VulkanIconTexture {
+            _image: image,
+            view,
+            binding,
+            width,
+            height,
+            content_width: slot.content_width,
+            content_height: slot.content_height,
+            content_hash: slot.content_hash,
+            rounding: slot.rounding,
+            last_used_frame: gpu_frame,
+        }))
+    }
+
+    /// Records commands rasterizing `bytes` into a fresh sampled RGBA image.
+    ///
+    /// The image ends in `SHADER_READ_ONLY_OPTIMAL`; geometry buffers are
+    /// retained by the encoder until the submission retires.
+    pub(super) fn rasterize(
+        &self,
+        allocator: &MemoryAllocator,
+        uploads: &mut UploadBatch<'_>,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Option<(vulkan_renderer::Image, vulkan_renderer::ImageView)>, String> {
+        let Some(geometry) = tessellate_svg(bytes, width, height) else {
             return Ok(None);
         };
         let vertex_bytes = bytemuck::cast_slice(&geometry.vertices);
@@ -126,21 +158,7 @@ impl SvgIconRasterizer {
             .barrier_batch_before(SVG_SAMPLE, &bindings)
             .map_err(|error| format!("resolve Vulkan SVG sample barrier: {error}"))?;
         unsafe { uploads.encoder_mut().pipeline_barrier(&before_sample) };
-        let binding =
-            SampledImageBinding::new(heap, &view, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .map_err(|error| format!("create Vulkan SVG icon descriptor: {error}"))?;
-        Ok(Some(VulkanIconTexture {
-            _image: image,
-            view,
-            binding,
-            width,
-            height,
-            content_width: slot.content_width,
-            content_height: slot.content_height,
-            content_hash: slot.content_hash,
-            rounding: slot.rounding,
-            last_used_frame: gpu_frame,
-        }))
+        Ok(Some((image, view)))
     }
 }
 

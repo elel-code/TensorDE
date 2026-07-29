@@ -18,11 +18,12 @@ mod shader_key;
 mod source_extent;
 mod value_writer;
 mod weather_effect;
+mod workshop_effect;
 
 #[cfg(test)]
 use audio_usage::material_uses_audio_spectrum;
 pub(super) use audio_usage::scene_uses_audio_spectrum;
-use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
+use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values, tint_values};
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
 use source_extent::draw_source_aspect_ratio;
 use value_writer::{parse_constant_values, set_vector};
@@ -186,6 +187,16 @@ fn material_uniform_values(
             cloudmotion_values(&parameters, draw, scene_time_seconds, output_extent)
         }
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
+        BuiltinSceneParameterLayout::ClippingMask => {
+            workshop_effect::clipping_mask_values(&parameters, storage, draw)
+        }
+        BuiltinSceneParameterLayout::CustomUserTexture => {
+            workshop_effect::custom_user_texture_values(&parameters)
+        }
+        BuiltinSceneParameterLayout::GradientColor => {
+            workshop_effect::gradient_color_values(&parameters, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::Ring => workshop_effect::ring_values(&parameters),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Lightning => {
             weather_effect::lightning_values(&parameters, scene_time_seconds)
@@ -210,6 +221,10 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
+        BuiltinSceneParameterLayout::Spin => spin_values(&parameters, scene_time_seconds),
+        BuiltinSceneParameterLayout::Sphere => {
+            workshop_effect::sphere_values(&parameters, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::Shimmer => shimmer_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Swing => {
             weather_effect::swing_values(&parameters, storage, scene_time_seconds)
@@ -223,6 +238,7 @@ fn material_uniform_values(
                 SceneAudioBandMaterialTarget::TechCircleSectorWidth,
             ),
         ),
+        BuiltinSceneParameterLayout::Tint => tint_values(&parameters),
         BuiltinSceneParameterLayout::FoliageSway => {
             foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
         }
@@ -345,6 +361,14 @@ fn procedural_noise_values(
     values[10] = parameters.scalar(&["Seed"], 0.0);
     values[11] = parameters.scalar(&["FPS"], 0.0);
     values[12] = parameters.scalar(&["Opacity"], 1.0);
+    values[13] = parameters.scalar(&["Fractals"], 1.0);
+    values[14] = parameters.scalar(&["Fractal scaling"], 2.0);
+    values[15] = parameters.scalar(&["Fractal influence"], 0.5);
+    values[16..18].copy_from_slice(&[0.0, 1.0]);
+    set_vector(&mut values, 16, &parameters.values(&["Thresholds"]), 2);
+    values[18] = parameters.scalar(&["Thresholds offset"], 0.0);
+    values[19] = parameters.scalar(&["Exponent"], 1.0);
+    values[20] = parameters.scalar(&["Gradient"], 1.0);
     values
 }
 
@@ -362,19 +386,9 @@ fn blur_combine_values(
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0] = parameters.scalar(&["compositealpha"], 1.0);
-    set_vector(
-        &mut values,
-        1,
-        &parameters.values(&["compositeoffset"]),
-        2,
-    );
+    set_vector(&mut values, 1, &parameters.values(&["compositeoffset"]), 2);
     values[4..8].copy_from_slice(&[1.0; 4]);
-    set_vector(
-        &mut values,
-        4,
-        &parameters.values(&["compositecolor"]),
-        3,
-    );
+    set_vector(&mut values, 4, &parameters.values(&["compositecolor"]), 3);
     values
 }
 
@@ -474,6 +488,23 @@ fn skew_values(parameters: &MaterialParameters<'_>) -> [f32; SCENE_MATERIAL_UNIF
     values[1] = parameters.scalar(&["bottom"], 0.0);
     values[2] = parameters.scalar(&["left"], 0.0);
     values[3] = parameters.scalar(&["right"], 0.0);
+    values
+}
+
+fn spin_values(
+    parameters: &MaterialParameters<'_>,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = scene_time_seconds;
+    values[1] = parameters.scalar(&["speed"], 1.0);
+    values[2] = parameters.scalar(&["ratio"], 1.0);
+    values[3] = parameters.scalar(&["angle"], 0.0);
+    values[4] = parameters.scalar(&["phase"], 0.0);
+    values[5..7].copy_from_slice(&[0.5, 0.5]);
+    set_vector(&mut values, 5, &parameters.values(&["center"]), 2);
+    values[8] = parameters.scalar(&["size"], 0.1);
+    values[9] = parameters.scalar(&["feather"], 0.002);
     values
 }
 
@@ -676,8 +707,7 @@ pub(super) fn draw_parameter_layout(
 struct MaterialParameters<'a> {
     storage: &'a SceneStorage,
     pass: &'a SceneMaterialPassRecord,
-    scalar_overrides:
-        &'a [crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
+    scalar_overrides: &'a [crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
 }
 
 impl MaterialParameters<'_> {
@@ -978,11 +1008,10 @@ fn waterwaves_displacement_values(
 }
 
 fn draw_effect_enabled(draw: &SceneRenderingDeviceMeshDraw, local_index: usize) -> bool {
-    draw.effect_visibility_policy
-        == crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
+    draw.effect_visibility_policy == crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
         || (local_index < draw.effect_binding_count as usize
-        && local_index < 32
-        && draw.resolved_effect_visibility_mask & (1 << local_index) != 0)
+            && local_index < 32
+            && draw.resolved_effect_visibility_mask & (1 << local_index) != 0)
 }
 
 fn waterwaves_stage_scalar(
@@ -1026,7 +1055,6 @@ fn waterripple_values(
 fn bool_float(value: bool) -> f32 {
     if value { 1.0 } else { 0.0 }
 }
-
 
 #[cfg(test)]
 #[path = "material_uniform/tests.rs"]

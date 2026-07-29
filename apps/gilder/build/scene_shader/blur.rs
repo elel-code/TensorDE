@@ -68,10 +68,29 @@ void main() {{
 
 pub(super) fn blur_combine_fragment_source(key: &str, texture_slot_mask: u32) -> String {
     assert_eq!(texture_slot_mask, 0x5);
-    assert_eq!(effect_combo_value_for_key(key, "COMPOSITE", 0), 1);
-    assert_eq!(effect_combo_value_for_key(key, "BLENDMODE", 0), 1);
+    let composite = effect_combo_value_for_key(key, "COMPOSITE", 0);
+    let blend_mode = effect_combo_value_for_key(key, "BLENDMODE", 0);
     assert_eq!(effect_combo_value_for_key(key, "COMPOSITEMONO", 0), 0);
     assert_eq!(effect_combo_value_for_key(key, "BLURALPHA", 1), 1);
+    let composite_expression = match (composite, blend_mode) {
+        (0, 0) => "    o_Color = effect;",
+        (1, 1) => {
+            r#"    float opacity = effect.a * u_Effect.g_CompositeAlphaOffset.x;
+    effect.rgb = mix(original.rgb, min(original.rgb, effect.rgb), opacity);
+    effect.a = max(
+        effect.a * clamp(u_Effect.g_CompositeAlphaOffset.x, 0.0, 1.0),
+        original.a);
+    o_Color = effect;"#
+        }
+        (1, 5) => {
+            r#"    effect.rgb = min(original.rgb, effect.rgb);
+    effect.a = max(
+        effect.a * clamp(u_Effect.g_CompositeAlphaOffset.x, 0.0, 1.0),
+        original.a);
+    o_Color = effect;"#
+        }
+        _ => panic!("blur combine shader {key:?} has no typed composite contract"),
+    };
     r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 0) out vec4 o_Color;
@@ -90,13 +109,8 @@ void main() {
     vec4 effect = vec4(
         blurred.rgb / divisor * u_Effect.g_CompositeColor.rgb,
         blurred.a);
-    float opacity = effect.a * u_Effect.g_CompositeAlphaOffset.x;
-    effect.rgb = mix(original.rgb, min(original.rgb, effect.rgb), opacity);
-    effect.a = max(
-        effect.a * clamp(u_Effect.g_CompositeAlphaOffset.x, 0.0, 1.0),
-        original.a);
-    o_Color = effect;
+__COMPOSITE_EXPRESSION__
 }
 "#
-    .to_owned()
+    .replace("__COMPOSITE_EXPRESSION__", composite_expression)
 }

@@ -1,0 +1,30 @@
+[package]
+name = "tensor-kdl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "High-performance KDL 2.0 parser and typed decode for TensorDE"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[features]
+default = ["std", "derive"]
+std = []
+derive = ["dep:tensor-kdl-macros"]
+diagnostics = ["dep:miette"]
+# Pretty-printer is always available; feature kept for API stability / future streaming write.
+write = []
+
+[dependencies]
+tensor-kdl-macros = { path = "../tensor-kdl-macros", optional = true }
+miette = { version = "7", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "parse"
+harness = false
+
+[lints]
+workspace = true

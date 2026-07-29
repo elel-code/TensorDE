@@ -86,6 +86,9 @@ fn assess_readiness_needs_vulkan_and_feedback() {
 
 #[test]
 fn import_udmabuf_into_wgpu_when_available() {
+    let _gpu = super::GPU_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let Some((fd, stride)) = try_allocate_udmabuf_argb8888(64, 64) else {
         eprintln!("skip: /dev/udmabuf unavailable or permission denied");
         return;

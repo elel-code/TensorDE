@@ -15,7 +15,7 @@ use crate::renderer::native_vulkan::{
     native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor,
 };
 
-use super::SceneGpuResources;
+use super::{SceneGpuResources, native_descriptor_push::SceneNativeFragmentPush};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawRange {
@@ -57,6 +57,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub sampled_resource_descriptor_base: usize,
     pub input_attachment_resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
+    pub native_fragment_push: Option<SceneNativeFragmentPush>,
     pub skinning_byte_offset: u64,
     pub skinning_byte_count: u64,
     pub scissor: Option<SceneGpuScissor>,
@@ -187,6 +188,12 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                 })?
                 .pipeline;
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            if let Some(push) = draw.native_fragment_push {
+                let bytes = push.bytes();
+                let range = vk::HostAddressRangeConstEXT::builder().address(&bytes);
+                let info = vk::PushDataInfoEXT::builder().offset(0).data(range);
+                device.cmd_push_data_ext(command_buffer, &info);
+            }
             if draw.dynamic_text {
                 let instance_buffer = [frame.transform_buffer.buffer];
                 let instance_offset =

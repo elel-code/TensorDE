@@ -1,0 +1,18 @@
+[package]
+name = "tensor-kdl-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Proc-macros for tensor-kdl typed KDL 2.0 decode"
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true

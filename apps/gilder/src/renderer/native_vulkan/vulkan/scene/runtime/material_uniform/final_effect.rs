@@ -44,12 +44,9 @@ pub(super) fn final_effect_program_values(
         "we/framebuffer-water-quantized-water-opacity" => {
             framebuffer_water_opacity_values(parameters, draw, scene_time_seconds)
         }
-        "we/framebuffer-water-quantized-shake-final" => framebuffer_water_shake_values(
-            parameters,
-            storage,
-            draw,
-            scene_time_seconds,
-        ),
+        "we/framebuffer-water-quantized-shake-final" => {
+            framebuffer_water_shake_values(parameters, storage, draw, scene_time_seconds)
+        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
 }
@@ -84,18 +81,8 @@ fn framebuffer_water_shake_values(
     values[2] = parameters.scalar(&["shake.strength"], 0.1);
     values[4..6].copy_from_slice(&[0.0, 1.0]);
     values[6..8].copy_from_slice(&[1.0, 1.0]);
-    set_vector(
-        &mut values,
-        4,
-        &parameters.values(&["shake.bounds"]),
-        2,
-    );
-    set_vector(
-        &mut values,
-        6,
-        &parameters.values(&["shake.friction"]),
-        2,
-    );
+    set_vector(&mut values, 4, &parameters.values(&["shake.bounds"]), 2);
+    set_vector(&mut values, 6, &parameters.values(&["shake.friction"]), 2);
     values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values[12] = bool_float(draw_effect_enabled(draw, 0));
     values

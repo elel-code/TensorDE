@@ -3,9 +3,7 @@
 use std::fmt::Debug;
 
 use crate::engine::scene::semantic_world::ResolvedSemanticFrame;
-use crate::engine::scene::{
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
-};
+use crate::engine::scene::{SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw};
 use crate::renderer::native_vulkan::NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES;
 
 pub(in super::super) fn pack_scene_skinning_palette(

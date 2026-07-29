@@ -31,8 +31,8 @@ use crate::{
 /// Native Vulkan host for analytic chrome, sampled resident icons, and R8 text.
 ///
 /// This deliberately creates no wgpu object. It is selected only by
-/// `FIKA_VULKAN_RENDERER=1`; unsupported SVG/composite source generation stays
-/// encoded until its corresponding Vulkan pipeline is available.
+/// `FIKA_VULKAN_RENDERER=1`. SVG sources rasterize through the native SVG
+/// pipeline and folder previews composite through the native preview pipeline.
 pub(crate) struct FikaNativeVulkanApp {
     scene: ShellScene,
     event_loop_proxy: EventLoopProxy,

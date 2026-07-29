@@ -83,8 +83,7 @@ mod tests {
 
     #[test]
     fn enabled_source_reuses_snapshot_until_second_boundary() {
-        let mut source =
-            SceneLocalTimeEventSource::new(Some(SceneLocalTimePrecision::Second));
+        let mut source = SceneLocalTimeEventSource::new(Some(SceneLocalTimePrecision::Second));
 
         let first = source.capture();
         let refresh_at = source.refresh_at;

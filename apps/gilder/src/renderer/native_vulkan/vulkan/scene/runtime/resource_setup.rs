@@ -238,7 +238,7 @@ pub(super) fn create_scene_gpu_resources(
         }
     };
 
-    let (mut resource_descriptors, draw_commands) = scene_descriptor_plan_inputs(
+    let (mut resource_descriptors, mut draw_commands) = scene_descriptor_plan_inputs(
         storage,
         &backend_plan.rendering_device_graph.mesh_draws,
         &backend_plan.rendering_device_graph.particle_gpu_emitters,
@@ -267,6 +267,26 @@ pub(super) fn create_scene_gpu_resources(
             "scene descriptor heap plan is not ready: {:?}",
             descriptor_heap_plan.blocking_reason
         );
+        if let Some(upload) = white_upload {
+            destroy_recorded_image_upload(device, upload);
+        }
+        if let Some(buffer) = material_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        if let Some(buffer) = skinning_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+        mesh_uploads.destroy(device);
+        return Err(err);
+    }
+    if let Err(err) = resolve_scene_native_fragment_pushes(
+        storage,
+        &backend_plan.rendering_device_graph.mesh_draws,
+        &descriptor_layout,
+        &descriptor_heap_plan,
+        &mut draw_commands,
+    ) {
         if let Some(upload) = white_upload {
             destroy_recorded_image_upload(device, upload);
         }

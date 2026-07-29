@@ -7,9 +7,9 @@ use vulkan_renderer::{
     ImageDataLayout, ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor, MemoryAllocator,
     MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
     RenderGraph, RenderPass, RenderingEncoder, ResourceBinding, ResourceId, ResourceKind,
-    ResourceState, ResourceUse, SampledTextureBinding, SampledTextureShaderBindings,
-    SamplerDescriptor, ShaderModuleDescriptor, TexelBlockLayout, UploadBatch, VertexAttribute,
-    VertexBufferLayout, VertexState, VertexStepMode, vk,
+    ResourceState, ResourceUse, SampledTextureBinding, SamplerDescriptor, ShaderModuleDescriptor,
+    TexelBlockLayout, UploadBatch, VertexAttribute, VertexBufferLayout, VertexState,
+    VertexStepMode, vk,
 };
 
 use crate::ui::render::texture::TextVertex;
@@ -20,8 +20,8 @@ use super::vulkan_text_spirv;
 const TEXT_IMAGE: ResourceId = ResourceId(1);
 const TEXT_UPLOAD: PassId = PassId(1);
 const TEXT_SAMPLE: PassId = PassId(2);
+/// Byte offset of the `[image_index, sampler_index]` pair in push data.
 const IMAGE_PUSH_OFFSET: u32 = 0;
-const SAMPLER_PUSH_OFFSET: u32 = 4;
 const INITIAL_VERTEX_CAPACITY: u64 = std::mem::size_of::<TextVertex>() as u64 * 6;
 const DESCRIPTOR_RING_SLOTS: u64 = 4;
 
@@ -217,10 +217,10 @@ impl VulkanTextRenderer {
         if !atlas.initialized {
             return Err("Vulkan text atlas was not initialized before draw".into());
         }
-        let offsets = atlas
+        let indices = atlas
             .binding
-            .push_index_heap_offsets()
-            .map_err(|error| format!("resolve Vulkan text descriptor offsets: {error}"))?;
+            .shader_heap_indices()
+            .map_err(|error| format!("resolve Vulkan text descriptor indices: {error}"))?;
         rendering
             .bind_pipeline(&self.pipeline)
             .map_err(|error| format!("bind Vulkan text pipeline: {error}"))?;
@@ -232,10 +232,10 @@ impl VulkanTextRenderer {
                 .bind_descriptor_heap(&self.sampler_heap)
                 .map_err(|error| format!("bind Vulkan text sampler heap: {error}"))?;
         }
-        let push = [offsets.image, offsets.sampler];
+        let push = [indices.image, indices.sampler];
         rendering
             .push_data(IMAGE_PUSH_OFFSET, bytemuck::cast_slice(&push))
-            .map_err(|error| format!("push Vulkan text descriptor offsets: {error}"))?;
+            .map_err(|error| format!("push Vulkan text descriptor indices: {error}"))?;
         rendering.retain_resource(&atlas.view);
         unsafe {
             rendering
@@ -369,9 +369,9 @@ fn create_pipeline(
         })
         .map_err(|error| format!("create Vulkan text fragment shader: {error}"))?;
     let vertex_bindings = vulkan_renderer::ShaderBindingMap::default();
-    let fragment_bindings = SampledTextureShaderBindings::new(0, 0, 1)
-        .push_index_shader_binding_map(IMAGE_PUSH_OFFSET, SAMPLER_PUSH_OFFSET)
-        .map_err(|error| format!("create Vulkan text shader mapping: {error}"))?;
+    // The Slang fragment shader selects its atlas and sampler through direct
+    // descriptor-heap indices in push data, so no binding map exists.
+    let fragment_bindings = vulkan_renderer::ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
             format: vk::Format::R32G32_SFLOAT,
@@ -521,7 +521,6 @@ mod tests {
     fn text_vertex_layout_matches_the_native_shader_contract() {
         assert_eq!(std::mem::size_of::<TextVertex>(), 32);
         assert_eq!(IMAGE_PUSH_OFFSET, 0);
-        assert_eq!(SAMPLER_PUSH_OFFSET, 4);
     }
 
     #[test]

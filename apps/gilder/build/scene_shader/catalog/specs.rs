@@ -6,7 +6,75 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshDynamicText,
     },
     SceneShaderSpec {
+        key: "effects/tint__SLOTS_1__BLENDMODE_0",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/tint__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_combine__SLOTS_5",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_combine__SLOTS_5__BLENDMODE_5__COMPOSITE_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/rounded_mask__SLOTS_1__B_SQUARE_0__SOFT_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/rounded_mask__SLOTS_1__B_SQUARE_0__SEDIRECTION_1__SOFT_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/user_texture_alpha_overwrite_workaround__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/spin__SLOTS_1__REPEAT_0",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/procedural_noise__SLOTS_1__AA_CATEGORY_1__AB_TYPEUV_4",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/audioline__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/clipping_mask__SLOTS_9",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/gradient_color__SLOTS_1__AXIS_1__BLENDMODE_0",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/clipping_mask__SLOTS_b",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/clipping_mask__SLOTS_f",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/huan__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/qiu__SLOTS_1__CUSTOMCOLOR_1__RAINBOW_0__SPHERE_SOLID_COLOR_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/rounded_mask_effect_edit__SLOTS_1__B_SQUARE_0__SOFT_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/custom_user_texture__SLOTS_3__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {

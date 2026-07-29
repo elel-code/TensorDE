@@ -11,13 +11,15 @@ use crate::{
     MemoryLocation, MemoryTypeSelector, Result as BackendResult,
 };
 
+mod index;
 mod texture;
 mod write;
 
+pub use index::descriptor_heap_element_index;
 pub use texture::{
-    SampledImageBinding, SampledTextureBinding, SampledTextureHeapOffsets,
-    SampledTextureShaderBindings, SamplerAddressMode, SamplerBinding, SamplerBorderColor,
-    SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
+    SampledImageBinding, SampledTextureBinding, SampledTextureHeapIndices,
+    SampledTextureHeapOffsets, SampledTextureShaderBindings, SamplerAddressMode, SamplerBinding,
+    SamplerBorderColor, SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
 };
 
 /// Byte range inside a descriptor heap buffer.

@@ -68,10 +68,8 @@ fn fused_colorkey_scroll_visibility_preserves_each_stage_identity() {
 
 #[test]
 fn fused_rounded_opacity_visibility_falls_back_to_the_flat_base() {
-    let storage = storage_with_constants(
-        "we/flat-rounded-opacity-final",
-        &[("opacity.alpha", "0.3")],
-    );
+    let storage =
+        storage_with_constants("we/flat-rounded-opacity-final", &[("opacity.alpha", "0.3")]);
     let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
 
     let rounded_only = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
@@ -154,10 +152,12 @@ fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
         document.strings.push(name_text.to_owned());
         let value_id = SceneStringId(document.strings.len() as u32);
         document.strings.push(value.to_owned());
-        document.material_constants.push(SceneMaterialConstantRecord {
-            name,
-            value_json: value_id,
-        });
+        document
+            .material_constants
+            .push(SceneMaterialConstantRecord {
+                name,
+                value_json: value_id,
+            });
     }
     document.material_passes[0].constant_count = document.material_constants.len() as u32;
     let storage = SceneStorage::from_document(document).expect("framebuffer water storage");
@@ -201,17 +201,10 @@ fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
 
 #[test]
 fn framebuffer_water_stage_partition_preserves_all_sixteen_visibility_masks() {
-    let intermediate_storage = storage_with_constants(
-        "we/framebuffer-water-quantized-water-opacity",
-        &[],
-    );
-    let final_storage = storage_with_padded_mask(
-        "we/framebuffer-water-quantized-shake-final",
-        1,
-        1,
-        1,
-        1,
-    );
+    let intermediate_storage =
+        storage_with_constants("we/framebuffer-water-quantized-water-opacity", &[]);
+    let final_storage =
+        storage_with_padded_mask("we/framebuffer-water-quantized-shake-final", 1, 1, 1, 1);
     let mut intermediate = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0);
     let mut final_draw = draw_with_material_visibility(SceneMaterialHandle(0), 1, 0);
 

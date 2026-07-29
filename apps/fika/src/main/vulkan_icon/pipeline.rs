@@ -18,9 +18,9 @@ pub(super) fn create_pipeline(
         })
         .map_err(|error| format!("create Vulkan icon fragment shader: {error}"))?;
     let vertex_bindings = ShaderBindingMap::default();
-    let fragment_bindings = SampledTextureShaderBindings::new(0, 0, 1)
-        .push_index_shader_binding_map(IMAGE_PUSH_OFFSET, SAMPLER_PUSH_OFFSET)
-        .map_err(|error| format!("create Vulkan icon shader mapping: {error}"))?;
+    // The Slang fragment shader selects its texture and sampler through
+    // direct descriptor-heap indices in push data, so no binding map exists.
+    let fragment_bindings = ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
             format: vk::Format::R32G32_SFLOAT,
@@ -91,7 +91,6 @@ mod tests {
     fn icon_vertex_layout_matches_native_shader_contract() {
         assert_eq!(std::mem::size_of::<IconVertex>(), 40);
         assert_eq!(IMAGE_PUSH_OFFSET, 0);
-        assert_eq!(SAMPLER_PUSH_OFFSET, 4);
     }
 
     #[test]

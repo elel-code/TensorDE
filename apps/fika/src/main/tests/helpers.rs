@@ -1,3 +1,5 @@
+    use crate::ui::render::dmabuf::GPU_TEST_LOCK;
+
     fn test_entry(name: &str, is_dir: bool) -> Entry {
         test_entry_with_mime(
             name,

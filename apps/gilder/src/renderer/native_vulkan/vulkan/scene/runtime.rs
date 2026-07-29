@@ -78,6 +78,7 @@ mod graph_execution;
 mod input_attachment_binding;
 mod material_uniform;
 mod mesh_payload;
+mod native_descriptor_push;
 mod local_read;
 mod particle_compute_dispatch;
 mod particle_resources;
@@ -118,6 +119,7 @@ use gpu_timing::SceneGpuTiming;
 use material_uniform::{
     SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
 };
+use native_descriptor_push::resolve_scene_native_fragment_pushes;
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
@@ -745,6 +747,7 @@ fn scene_descriptor_plan_inputs(
             input_attachment_resource_descriptor_base:
                 base + layout.input_attachment_resource_offset(),
             sampler_descriptor_base: index * layout.sampler_count_per_draw(),
+            native_fragment_push: None,
             skinning_byte_offset,
             skinning_byte_count,
             scissor: None,

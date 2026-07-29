@@ -11,6 +11,8 @@ members = [
     "crates/tensor-protocol",
     "crates/tensor-runtime",
     "crates/tensor-util",
+    "crates/tensor-kdl",
+    "crates/tensor-kdl-macros",
     "crates/vulkan-renderer",
     "crates/vulkan-renderer-build",
     "crates/wayland-client-runtime",

@@ -8,6 +8,10 @@ pub(crate) const SVG_VERTEX: &[u32] =
     vulkan_renderer::include_spirv!("shaders/fika_svg_icon.vert.spv");
 pub(crate) const SVG_FRAGMENT: &[u32] =
     vulkan_renderer::include_spirv!("shaders/fika_svg_icon.frag.spv");
+pub(crate) const PREVIEW_COMPOSITE_VERTEX: &[u32] =
+    vulkan_renderer::include_spirv!("shaders/fika_preview_composite.vert.spv");
+pub(crate) const PREVIEW_COMPOSITE_FRAGMENT: &[u32] =
+    vulkan_renderer::include_spirv!("shaders/fika_preview_composite.frag.spv");
 
 #[cfg(test)]
 mod tests {
@@ -20,6 +24,11 @@ mod tests {
             ("fragment", super::FRAGMENT),
             ("svg-vertex", super::SVG_VERTEX),
             ("svg-fragment", super::SVG_FRAGMENT),
+            ("preview-composite-vertex", super::PREVIEW_COMPOSITE_VERTEX),
+            (
+                "preview-composite-fragment",
+                super::PREVIEW_COMPOSITE_FRAGMENT,
+            ),
         ] {
             ShaderModuleDescriptor {
                 label: Some(format!("fika-icon-{label}")),

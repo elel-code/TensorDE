@@ -6,8 +6,8 @@ use crate::engine::scene::semantic_world::{
 use crate::engine::scene::{
     SceneMaterialHandle, SceneObjectHandle, SceneRenderEffectVisibilityPolicy,
     SceneRenderGraphActivationPolicy, SceneRenderPassKind, SceneRenderTargetKind,
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
-    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneStringId,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+    SceneRenderingDevicePassNode, SceneStringId,
 };
 
 #[test]
@@ -71,7 +71,11 @@ fn hidden_object_disables_draws_without_removing_pass_topology() {
     update_draw_visibility(&graph, &hidden_object_frame(), &mut commands);
 
     assert!(commands.iter().all(|command| !command.enabled));
-    assert_eq!(graph.pass_nodes.len(), 2, "retained pass topology stays intact");
+    assert_eq!(
+        graph.pass_nodes.len(),
+        2,
+        "retained pass topology stays intact"
+    );
 }
 
 fn hidden_object_frame() -> ResolvedSemanticFrame {
@@ -156,6 +160,7 @@ fn draw_command(pipeline_index: u32) -> SceneGpuDrawCommand {
         sampled_resource_descriptor_base: 0,
         input_attachment_resource_descriptor_base: 0,
         sampler_descriptor_base: 0,
+        native_fragment_push: None,
         skinning_byte_offset: 0,
         skinning_byte_count: 0,
         scissor: None,

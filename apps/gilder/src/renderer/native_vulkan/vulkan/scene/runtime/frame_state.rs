@@ -14,8 +14,8 @@ use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaBuffer, native_vulkan_vulkanalia_write_host_buffer,
 };
 
-use super::composite_scissor::update_scene_composite_scissors;
 use super::composite_scissor::SceneMeshCoveragePlans;
+use super::composite_scissor::update_scene_composite_scissors;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms_into;
 use super::dynamic_text::SceneDynamicTextRuntime;
@@ -236,10 +236,7 @@ fn validate_dynamic_counts(
         graph.resolved_object_count,
         graph.resolved_attachment_link_count,
     ];
-    let actual = [
-        frame.objects.len(),
-        frame.attachment_links.len(),
-    ];
+    let actual = [frame.objects.len(), frame.attachment_links.len()];
     if expected != actual {
         return Err(format!(
             "scene semantic topology changed at {scene_time_seconds:.6}s: setup {expected:?}, frame {actual:?}; live topology mutation is not supported"
@@ -377,7 +374,10 @@ pub(super) fn write_scene_frame_buffers(
                 .iter()
                 .find(|state| state.object == draw.object)
                 .ok_or_else(|| {
-                    format!("dynamic text draw object {} has no retained layout", draw.object.0)
+                    format!(
+                        "dynamic text draw object {} has no retained layout",
+                        draw.object.0
+                    )
                 })?;
             command.first_instance = state.first_instance;
             command.instance_count = state.instance_count;
@@ -424,13 +424,7 @@ pub(super) fn write_scene_frame_buffers(
     let skinning_update_micros = elapsed_optional_micros(skinning_started);
 
     let draw_policy_started = cpu_timing_enabled.then(Instant::now);
-    update_scene_composite_scissors(
-        storage,
-        mesh_coverage,
-        graph,
-        output_extent,
-        draw_commands,
-    )?;
+    update_scene_composite_scissors(storage, mesh_coverage, graph, output_extent, draw_commands)?;
     let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
         storage,
         mesh_coverage,
@@ -463,11 +457,7 @@ fn update_draw_visibility(
     frame: &ResolvedSemanticFrame,
     draw_commands: &mut [SceneGpuDrawCommand],
 ) {
-    for (draw, command) in graph
-        .mesh_draws
-        .iter()
-        .zip(draw_commands.iter_mut())
-    {
+    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
         command.enabled = draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID
             || frame
                 .object(draw.object)
@@ -508,7 +498,9 @@ fn disable_inactive_effect_gated_graph_draws(
                     let draw_start = pass.mesh_draw_start as usize;
                     let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
                     if let Some(commands) = draw_commands.get_mut(draw_start..draw_end) {
-                        commands.iter_mut().for_each(|command| command.enabled = false);
+                        commands
+                            .iter_mut()
+                            .for_each(|command| command.enabled = false);
                     }
                 }
             }
@@ -994,6 +986,7 @@ mod tests {
             sampled_resource_descriptor_base: 0,
             input_attachment_resource_descriptor_base: 0,
             sampler_descriptor_base: 0,
+            native_fragment_push: None,
             skinning_byte_offset: 0,
             skinning_byte_count: 0,
             scissor: None,

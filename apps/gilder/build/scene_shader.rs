@@ -8,14 +8,20 @@ mod blend;
 mod blur;
 #[path = "scene_shader/catalog.rs"]
 mod catalog;
+#[path = "scene_shader/clipping_mask.rs"]
+mod clipping_mask;
 #[path = "scene_shader/core_material.rs"]
 mod core_material;
+#[path = "scene_shader/custom_user_texture.rs"]
+mod custom_user_texture;
 #[path = "scene_shader/effect_program.rs"]
 mod effect_program;
 #[path = "scene_shader/final_effect.rs"]
 mod final_effect;
 #[path = "scene_shader/flat_rounded_hsl.rs"]
 mod flat_rounded_hsl;
+#[path = "scene_shader/gradient_color.rs"]
+mod gradient_color;
 #[path = "scene_shader/lightning.rs"]
 mod lightning;
 #[path = "scene_shader/local_read.rs"]
@@ -32,10 +38,20 @@ mod particle_compute;
 mod procedural_noise;
 #[path = "scene_shader/raindrop.rs"]
 mod raindrop;
+#[path = "scene_shader/ring.rs"]
+mod ring;
+#[path = "scene_shader/rounded_mask.rs"]
+mod rounded_mask;
 #[path = "scene_shader/shimmer.rs"]
 mod shimmer;
+#[path = "scene_shader/sphere.rs"]
+mod sphere;
+#[path = "scene_shader/spin.rs"]
+mod spin;
 #[path = "scene_shader/swing.rs"]
 mod swing;
+#[path = "scene_shader/tint.rs"]
+mod tint;
 #[path = "scene_shader/vertex_primitive.rs"]
 mod vertex_primitive;
 #[path = "scene_shader/waterwaves_composite.rs"]
@@ -59,6 +75,8 @@ pub(crate) use local_read::{
 };
 pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
+pub(super) use spin::spin_fragment_source;
+pub(super) use tint::tint_fragment_source;
 pub(crate) use vertex_primitive::scene_shader_vertex_primitive;
 pub(super) use waterwaves_composite::{
     image_waterwaves_composite_sources, image_waterwaves_multiply_composite_sources,

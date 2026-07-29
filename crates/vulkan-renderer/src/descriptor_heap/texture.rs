@@ -294,6 +294,52 @@ impl SampledTextureHeapOffsets {
     }
 }
 
+/// Descriptor element indices for direct descriptor-heap shader access.
+///
+/// `SPV_EXT_descriptor_heap` shaders (e.g. Slang `DescriptorHandle<T>`) index
+/// the heap builtins as runtime arrays strided by the driver's descriptor
+/// size, so these are element indices, not the byte offsets of
+/// [`SampledTextureHeapOffsets`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SampledTextureHeapIndices {
+    pub image: u32,
+    pub sampler: u32,
+}
+
+impl SampledTextureHeapIndices {
+    /// Resolves one independently allocated sampled image and sampler into
+    /// the element-index pair consumed by a direct descriptor-heap shader.
+    pub fn from_bindings(image: &SampledImageBinding, sampler: &SamplerBinding) -> Result<Self> {
+        Ok(Self {
+            image: image.shader_heap_index()?,
+            sampler: sampler.shader_heap_index()?,
+        })
+    }
+}
+
+/// Converts a descriptor byte offset into the element index used by direct
+/// descriptor-heap shader access.
+///
+/// Heap builtins are runtime arrays strided by the driver-reported descriptor
+/// size, so an offset is addressable only when it is size-strided. Descriptor
+/// sizes and alignments are powers of two in practice, which keeps every
+/// same-type allocation on a size boundary.
+fn shader_heap_element_index(offset: u64, size: u64, label: &str) -> Result<u32> {
+    if size == 0 {
+        return Err(Error::Validation(format!(
+            "{label} descriptor size is zero"
+        )));
+    }
+    if !offset.is_multiple_of(size) {
+        return Err(Error::Validation(format!(
+            "{label} descriptor offset {offset} is not a multiple of its descriptor size {size}; \
+             direct descriptor-heap indexing requires size-strided allocations"
+        )));
+    }
+    u32::try_from(offset / size)
+        .map_err(|_| Error::Validation(format!("{label} descriptor heap index exceeds u32")))
+}
+
 /// One sampled-image descriptor allocation in a resource heap.
 ///
 /// This is the reusable image half of [`SampledTextureBinding`]. It allows a
@@ -342,6 +388,17 @@ impl SampledImageBinding {
     pub fn push_index_heap_offset(&self) -> Result<u32> {
         u32::try_from(self.offset())
             .map_err(|_| Error::Validation("sampled-image descriptor offset exceeds u32".into()))
+    }
+
+    /// Element index of this descriptor for direct descriptor-heap shader
+    /// access.
+    ///
+    /// `SPV_EXT_descriptor_heap` shaders (e.g. Slang `DescriptorHandle<T>`)
+    /// index the heap builtins as runtime arrays whose stride is the driver's
+    /// descriptor size, so the pushed value is an element index rather than
+    /// the byte offset used by [`Self::push_index_heap_offset`].
+    pub fn shader_heap_index(&self) -> Result<u32> {
+        shader_heap_element_index(self.image.offset(), self.image.size(), "sampled-image")
     }
 
     /// Retires this descriptor after its final submitted use.
@@ -424,6 +481,12 @@ impl SamplerBinding {
     pub fn push_index_heap_offset(&self) -> Result<u32> {
         u32::try_from(self.offset())
             .map_err(|_| Error::Validation("sampler descriptor offset exceeds u32".into()))
+    }
+
+    /// Element index of this descriptor for direct descriptor-heap shader
+    /// access; see [`SampledImageBinding::shader_heap_index`].
+    pub fn shader_heap_index(&self) -> Result<u32> {
+        shader_heap_element_index(self.sampler.offset(), self.sampler.size(), "sampler")
     }
 
     /// Retires this descriptor after its final submitted use.
@@ -534,6 +597,12 @@ impl SampledTextureBinding {
     /// explicitly instead of truncating.
     pub fn push_index_heap_offsets(&self) -> Result<SampledTextureHeapOffsets> {
         SampledTextureHeapOffsets::from_bindings(&self.image, &self.sampler)
+    }
+
+    /// Returns descriptor element indices for direct descriptor-heap shader
+    /// access; see [`SampledImageBinding::shader_heap_index`].
+    pub fn shader_heap_indices(&self) -> Result<SampledTextureHeapIndices> {
+        SampledTextureHeapIndices::from_bindings(&self.image, &self.sampler)
     }
 
     /// Produces the descriptor-heap SPIR-V mapping for this binding.

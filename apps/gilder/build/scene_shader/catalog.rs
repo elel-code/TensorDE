@@ -68,6 +68,9 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
     generated.push_str("    #[cfg(test)]\n    pub fragment_source: &'static str,\n");
+    generated.push_str(
+        "    pub fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,\n",
+    );
     generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n    pub fragment_coordinate_fetch_slot_mask: u32,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
@@ -140,10 +143,11 @@ pub(crate) fn build_scene_shader_catalog() {
         );
         let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
+        let fragment_descriptor_heap_mode = scene_fragment_descriptor_heap_mode(spec.key);
         let fragment_coordinate_fetch_slot_mask =
             u32::from(spec.key == "we/flat-rounded-hsl-source");
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkan_renderer::include_spirv!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkan_renderer::include_spirv!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkan_renderer::include_spirv!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkan_renderer::include_spirv!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode::{fragment_descriptor_heap_mode}, local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key,
             vertex_path,
             fragment_path,
@@ -213,13 +217,22 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
             "effects/audio_responsive_oscilloscope" => "Oscilloscope",
             "effects/caustics" => "Caustics",
             "effects/cloudmotion" => "CloudMotion",
+            "effects/clipping_mask" => "ClippingMask",
             "effects/colorkey" => "ColorKey",
+            "effects/custom_user_texture" => "CustomUserTexture",
+            "effects/gradient_color" => "GradientColor",
+            "effects/huan" => "Ring",
             "effects/iris" => "Iris",
             "effects/opacity" => "Opacity",
+            "effects/user_texture_alpha_overwrite_workaround" => "Opacity",
             "effects/procedural_noise" => "ProceduralNoise",
             "effects/scroll" => "Scroll",
             "effects/skew" => "Skew",
             "effects/rounded_mask" => "RoundedMask",
+            "effects/rounded_mask_effect_edit" => "RoundedMask",
+            "effects/qiu" => "Sphere",
+            "effects/tint" => "Tint",
+            "effects/spin" => "Spin",
             "effects/shake" => "Shake",
             "effects/shimmer" => "Shimmer",
             "effects/swing" => "Swing",
@@ -232,6 +245,14 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
             _ => "None",
         },
         _ => "None",
+    }
+}
+
+fn scene_fragment_descriptor_heap_mode(key: &str) -> &'static str {
+    if key == "effects/audioline__SLOTS_1" {
+        "Native"
+    } else {
+        "Mapped"
     }
 }
 
@@ -390,13 +411,18 @@ fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source:
             ShaderStage::Fragment => "fragmentMain",
             ShaderStage::Compute => "computeMain",
         };
+        let contract = if key == "effects/audioline__SLOTS_1" && stage == "frag" {
+            ShaderContract::descriptor_heap(12)
+        } else {
+            ShaderContract::mapped_descriptor_heap(0)
+        };
         SlangCompiler::from_environment()
             .compile(&ShaderCompileRequest {
                 source: source_path,
                 entry_point: entry_point.to_owned(),
                 stage: shader_stage,
                 output: spirv_path.clone(),
-                contract: ShaderContract::mapped_descriptor_heap(0),
+                contract,
             })
             .unwrap_or_else(|error| panic!("compile built-in scene shader {key} {stage}: {error}"));
         return spirv_path;

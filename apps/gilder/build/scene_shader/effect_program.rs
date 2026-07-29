@@ -9,6 +9,7 @@ use super::oscilloscope::{
     oscilloscope_vertex_source,
 };
 use super::raindrop::raindrop_fragment_source;
+use super::rounded_mask::rounded_mask_fragment_source;
 use super::shimmer::shimmer_fragment_source;
 use super::swing::swing_fragment_source;
 
@@ -57,6 +58,12 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/rounded_mask" {
         return object_local_effect_vertex_source();
     }
+    if shader == "effects/rounded_mask_effect_edit" {
+        return object_local_effect_vertex_source();
+    }
+    if shader == "effects/clipping_mask" {
+        return super::clipping_mask::clipping_mask_vertex_source();
+    }
     r#"#version 450
 layout(location = 0) out vec2 v_TexCoord;
 void main() {
@@ -77,7 +84,7 @@ void main() {
 pub(crate) fn effect_object_mesh_vertex_source(
     key: &str,
     shader: &str,
-    _texture_slot_mask: u32,
+    texture_slot_mask: u32,
 ) -> Option<String> {
     if key.contains("__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1") {
         return None;
@@ -111,6 +118,15 @@ pub(crate) fn effect_object_mesh_vertex_source(
     }
     if shader == "effects/rounded_mask" {
         return Some(object_local_effect_object_mesh_vertex_source());
+    }
+    if shader == "effects/rounded_mask_effect_edit" {
+        return Some(object_local_effect_object_mesh_vertex_source());
+    }
+    if shader == "effects/clipping_mask" {
+        if texture_slot_mask & (1 << 2) != 0 {
+            return None;
+        }
+        return Some(super::clipping_mask::clipping_mask_object_mesh_vertex_source());
     }
     Some(super::super::scene_mesh_vertex_source())
 }
@@ -428,6 +444,30 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/audioline" {
         return super::audio_line::audio_line_fragment_source(texture_slot_mask);
     }
+    if shader == "effects/clipping_mask" {
+        return super::clipping_mask::clipping_mask_fragment_source(texture_slot_mask);
+    }
+    if shader == "effects/custom_user_texture" {
+        return super::custom_user_texture::custom_user_texture_fragment_source(
+            key,
+            texture_slot_mask,
+        );
+    }
+    if shader == "effects/gradient_color" {
+        return super::gradient_color::gradient_color_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/huan" {
+        return super::ring::ring_fragment_source(texture_slot_mask);
+    }
+    if shader == "effects/qiu" {
+        return super::sphere::sphere_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/tint" {
+        return super::tint_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/spin" {
+        return super::spin_fragment_source(key, texture_slot_mask);
+    }
     if shader == "effects/auto_sway" {
         return super::auto_sway::auto_sway_fragment_source(key, texture_slot_mask);
     }
@@ -497,6 +537,9 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/opacity" {
         return opacity_effect_fragment_source(texture_slot_mask);
     }
+    if shader == "effects/user_texture_alpha_overwrite_workaround" {
+        return opacity_effect_fragment_source(texture_slot_mask);
+    }
     if shader == "effects/procedural_noise" {
         return super::procedural_noise::procedural_noise_fragment_source(key, texture_slot_mask);
     }
@@ -520,6 +563,9 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     }
     if shader == "effects/rounded_mask" {
         return rounded_mask_fragment_source(key);
+    }
+    if shader == "effects/rounded_mask_effect_edit" {
+        return super::rounded_mask::rounded_mask_edit_fragment_source(key, texture_slot_mask);
     }
     panic!("scene shader {key:?} has no typed fragment contract")
 }
@@ -719,65 +765,6 @@ void main() {{
     vec2 sample_screen_uv = v_TexCoord
         + objectDeltaToScreen(sample_object_uv - v_ObjectTexCoord);
     o_Color = texture(g_Texture0, sample_screen_uv);
-}}
-"#
-    )
-}
-
-fn rounded_mask_fragment_source(key: &str) -> String {
-    let square = effect_combo_value_for_key(key, "B_SQUARE", 1) != 0;
-    let alpha_only = effect_combo_value_for_key(key, "C_ALPHA_ONLY", 1) != 0;
-    let soft = effect_combo_value_for_key(key, "SOFT", 0) != 0;
-    let size_expression = if square {
-        "u_Effect.g_SizeSoftnessAlpha.xy"
-    } else {
-        "u_Effect.g_SizeSoftnessAlpha.xy * aspect_scale"
-    };
-    let edge_expression = if soft {
-        "float edge_softness = u_Effect.g_SizeSoftnessAlpha.z\n        / max(v_ObjectPixelExtent.z, 1.0) * 2.0;\n    float mask_alpha = smoothstep(edge_softness, 0.0, distance);"
-    } else {
-        "float mask_alpha = 1.0 - step(0.0, distance);"
-    };
-    let output_expression = if alpha_only {
-        "o_Color = vec4(source.rgb, source.a * mask_alpha * u_Effect.g_SizeSoftnessAlpha.w);"
-    } else {
-        "float alpha = source.a * mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;\n    vec3 tint = u_Effect.g_ColorRadius.rgb;\n    vec3 blended = mix(tint, source.rgb, source.a);\n    o_Color = vec4(mix(tint, blended, alpha), mask_alpha);"
-    };
-    format!(
-        r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 1) in vec2 v_ObjectTexCoord;
-layout(location = 2) flat in vec3 v_ObjectPixelExtent;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-layout(set = 0, binding = 3) uniform RoundedMaskUniform {{
-    vec4 g_ColorRadius;
-    vec4 g_SizeSoftnessAlpha;
-    vec4 g_BorderWidth;
-    vec4 g_Unused;
-}} u_Effect;
-float roundedBoxSdf(vec2 point, vec2 size, float radius) {{
-    vec2 half_size = size * 0.5;
-    float half_min = min(half_size.x, half_size.y);
-    float r = clamp(radius * half_min, 0.001, half_min);
-    vec2 delta = abs(point) - (half_size - r);
-    return length(max(delta, 0.0)) - r;
-}}
-void main() {{
-    vec4 source = texture(g_Texture0, v_TexCoord);
-    float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
-    float height_pixels = max(v_ObjectPixelExtent.y, 1.0);
-    vec2 aspect_scale = vec2(
-        max(1.0, width_pixels / height_pixels),
-        max(1.0, height_pixels / width_pixels));
-    vec2 mask_uv = (v_ObjectTexCoord - 0.5) * aspect_scale + 0.5;
-    vec2 mask_size = {size_expression};
-    float distance = roundedBoxSdf(
-        mask_uv - vec2(0.5),
-        mask_size,
-        u_Effect.g_ColorRadius.w);
-    {edge_expression}
-    {output_expression}
 }}
 "#
     )

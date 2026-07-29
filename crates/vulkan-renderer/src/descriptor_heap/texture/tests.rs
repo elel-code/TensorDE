@@ -135,3 +135,12 @@ fn standard_sampler_rejects_invalid_lod_ranges() {
         .is_err()
     );
 }
+
+#[test]
+fn shader_heap_element_index_requires_size_strided_offsets() {
+    assert_eq!(shader_heap_element_index(0, 32, "test").unwrap(), 0);
+    assert_eq!(shader_heap_element_index(96, 32, "test").unwrap(), 3);
+    assert!(shader_heap_element_index(48, 32, "test").is_err());
+    assert!(shader_heap_element_index(32, 0, "test").is_err());
+    assert!(shader_heap_element_index(u64::from(u32::MAX) * 8 + 8, 8, "test").is_err());
+}

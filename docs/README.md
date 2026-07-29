@@ -8,6 +8,8 @@ Product documentation has one canonical location:
   conclusions, and performance evidence policy.
 - [Tensor](tensor/README.md) — compositor architecture, protocols, rendering,
   startup, configuration, and testing.
+- [KDL](kdl/README.md) — shared KDL 2.0 crate design (Glaze-style performance,
+  knus-inspired process macros). Not Tensor’s shipped config format (TOML).
 
 Third-party source trees belong under `references/<product>/`; generated or
 machine-local evidence belongs under `artifacts/<product>/`; Gilder's durable

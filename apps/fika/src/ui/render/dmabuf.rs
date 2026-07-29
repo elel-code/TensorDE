@@ -661,3 +661,9 @@ fn gbm_device_candidates(main_device: u64) -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests;
+
+/// Serializes tests that create real Vulkan instances or devices. Concurrent
+/// instance creation from multiple test threads (wgpu and vulkanalia loaders
+/// racing) can crash the system Vulkan loader.
+#[cfg(test)]
+pub(crate) static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

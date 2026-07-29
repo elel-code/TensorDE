@@ -65,3 +65,13 @@ pub(super) fn shimmer_values(
     );
     values
 }
+
+pub(super) fn tint_values(
+    parameters: &MaterialParameters<'_>,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = parameters.scalar(&["alpha"], 1.0);
+    values[1..4].copy_from_slice(&[1.0, 0.0, 0.0]);
+    set_vector(&mut values, 1, &parameters.values(&["color"]), 3);
+    values
+}

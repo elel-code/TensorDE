@@ -8,6 +8,7 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
     const W: u32 = 16;
     const H: u32 = 16;
 
+    let _gpu = GPU_TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let Some((fd, stride)) = try_allocate_udmabuf_argb8888(W, H) else {
         eprintln!("skip: /dev/udmabuf unavailable or permission denied");
         return;
@@ -127,6 +128,9 @@ fn icon_slot_with_udmabuf_plane_prefers_import_when_plan_ready() {
 
 #[test]
 fn gpu_icon_sources_and_preview_composite_without_readback() {
+    let _gpu = GPU_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         flags: wgpu::InstanceFlags::default(),

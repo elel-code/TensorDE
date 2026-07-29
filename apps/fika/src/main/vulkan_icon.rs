@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 
 use vulkan_renderer::{
-    AccessKind, BlendState, Buffer, ColorTargetState, CompiledGraph, DescriptorHeap,
-    DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer, DynamicBufferDescriptor,
-    FragmentState, FrameToken, GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageBlit,
-    ImageBlitFilter, ImageDataLayout, ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor,
-    MemoryAllocator, MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState,
-    ProgrammableStage, RenderGraph, RenderPass, RenderingEncoder, ResourceBinding, ResourceId,
-    ResourceKind, ResourceState, ResourceUse, SampledImageBinding, SampledTextureHeapOffsets,
-    SampledTextureShaderBindings, SamplerBinding, SamplerDescriptor, ShaderBindingMap,
-    ShaderModuleDescriptor, TexelBlockLayout, UploadBatch, VertexAttribute, VertexBufferLayout,
-    VertexState, VertexStepMode, vk,
+    AccessKind, BlendState, Buffer, ColorAttachment, ColorTargetState, CompiledGraph,
+    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer,
+    DynamicBufferDescriptor, FragmentState, FrameToken, GraphicsPipeline,
+    GraphicsPipelineDescriptor, Image, ImageBlit, ImageBlitFilter, ImageDataLayout,
+    ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor, LoadOp, MemoryAllocator,
+    MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
+    RenderGraph, RenderPass, RenderingDescriptor, RenderingEncoder, ResourceBinding, ResourceId,
+    ResourceKind, ResourceState, ResourceUse, SampledImageBinding, SamplerBinding,
+    SamplerDescriptor, ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TexelBlockLayout,
+    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, vk,
 };
 
 use crate::{
@@ -22,6 +22,8 @@ use super::vulkan_icon_spirv;
 
 #[path = "vulkan_icon/bitmap.rs"]
 mod bitmap;
+#[path = "vulkan_icon/folder_preview.rs"]
+mod folder_preview;
 #[path = "vulkan_icon/pipeline.rs"]
 mod pipeline;
 #[path = "vulkan_icon/svg.rs"]
@@ -32,8 +34,8 @@ use bitmap::{
 };
 use pipeline::create_pipeline;
 
+/// Byte offset of the `[image_index, sampler_index]` pair in push data.
 const IMAGE_PUSH_OFFSET: u32 = 0;
-const SAMPLER_PUSH_OFFSET: u32 = 4;
 const MAX_RESIDENT_TEXTURES: usize = 512;
 const MAX_RETIRED_GENERATIONS: u64 = 4;
 const INITIAL_VERTEX_CAPACITY: u64 = std::mem::size_of::<IconVertex>() as u64 * 6;
@@ -67,8 +69,12 @@ pub(crate) struct VulkanIconRenderer {
     upload_graph: CompiledGraph,
     scale_graph: CompiledGraph,
     svg: svg::SvgIconRasterizer,
+    preview: folder_preview::FolderPreviewCompositor,
     textures: HashMap<IconGpuUploadKey, VulkanIconTexture>,
     unsupported_sources: HashMap<IconGpuUploadKey, (u64, u32, u32)>,
+    /// Child-thumbnail descriptors consumed by the frame being recorded;
+    /// retired against that frame's token at the next upload.
+    transient_bindings: Vec<SampledImageBinding>,
     frame_slot_keys: Vec<IconGpuUploadKey>,
     content_batches: Vec<IconSlotBatch>,
     overlay_batches: Vec<IconSlotBatch>,
@@ -131,8 +137,14 @@ impl VulkanIconRenderer {
             upload_graph: compile_upload_graph(queue_family)?,
             scale_graph: compile_scale_graph(queue_family)?,
             svg: svg::SvgIconRasterizer::new(device, pipeline_cache, queue_family)?,
+            preview: folder_preview::FolderPreviewCompositor::new(
+                device,
+                pipeline_cache,
+                queue_family,
+            )?,
             textures: HashMap::new(),
             unsupported_sources: HashMap::new(),
+            transient_bindings: Vec::new(),
             frame_slot_keys: Vec::new(),
             content_batches: Vec::new(),
             overlay_batches: Vec::new(),
@@ -188,6 +200,13 @@ impl VulkanIconRenderer {
         last_submission: Option<FrameToken>,
     ) -> Result<bool, String> {
         self.gpu_frame = self.gpu_frame.wrapping_add(1);
+        for binding in std::mem::take(&mut self.transient_bindings) {
+            match last_submission {
+                Some(frame) => binding.retire(&self.resource_heap, frame),
+                None => binding.release(&self.resource_heap),
+            }
+            .map_err(|error| format!("retire Vulkan preview child descriptor: {error}"))?;
+        }
         self.frame_slot_keys.clear();
         self.frame_slot_keys.reserve(frame.slots.len());
         let mut uploaded_textures = 0usize;
@@ -208,7 +227,9 @@ impl VulkanIconRenderer {
             {
                 continue;
             }
-            let texture = if svg::is_svg_source(slot) {
+            let texture = if folder_preview::is_folder_preview_source(slot) {
+                self.create_folder_preview_texture(allocator, uploads, slot)?
+            } else if svg::is_svg_source(slot) {
                 self.svg.create_texture(
                     &self.resource_heap,
                     allocator,
@@ -291,6 +312,219 @@ impl VulkanIconRenderer {
             slot.content_height = texture.content_height;
             slot.rounding = texture.rounding;
         }
+    }
+
+    /// Composites a `FolderPreview` source into one resident texture.
+    ///
+    /// Mirrors the wgpu `render_folder_preview_gpu` path: each child icon is
+    /// rendered at its destination size, then drawn three times (soft shadow,
+    /// white frame, content) with a per-child rotation.
+    fn create_folder_preview_texture(
+        &mut self,
+        allocator: &MemoryAllocator,
+        uploads: &mut UploadBatch<'_>,
+        slot: &IconGpuSlot,
+    ) -> Result<Option<VulkanIconTexture>, String> {
+        use crate::ui::folder_preview::{
+            FileManagerDirectoryPreviewLayout, folder_preview_thumbnail_angle,
+            folder_preview_thumbnail_slots,
+        };
+        let Some(IconGpuSource::FolderPreview { children, seed, .. }) = slot.source.as_ref() else {
+            return Ok(None);
+        };
+        let side = slot.width.max(1);
+        let Some(layout) = FileManagerDirectoryPreviewLayout::new(side) else {
+            return Ok(None);
+        };
+        let seed = *seed;
+        let sampler_index = self
+            .sampler
+            .shader_heap_index()
+            .map_err(|error| format!("resolve shared Vulkan icon sampler: {error}"))?;
+        let tiles = folder_preview_thumbnail_slots(children.len(), layout);
+        let canvas = [side as f32, side as f32];
+        let mut draws = Vec::with_capacity(children.len().saturating_mul(3));
+        let mut child_views = Vec::new();
+        let mut child_bindings = Vec::new();
+        for (index, (path, tile)) in children.iter().zip(tiles).enumerate() {
+            let Some(child) = LoadedIconSource::load(path) else {
+                continue;
+            };
+            let intrinsic = child.intrinsic_size();
+            let border = layout.border_stroke_width.max(1) as f32;
+            let available_width = (tile.width as f32 - border * 2.0).max(1.0);
+            let available_height = (tile.height as f32 - border * 2.0).max(1.0);
+            let scale = (available_width / intrinsic.width)
+                .min(available_height / intrinsic.height)
+                .min(1.0);
+            let width = (intrinsic.width * scale).max(1.0);
+            let height = (intrinsic.height * scale).max(1.0);
+            let center_x = tile.x as f32 + tile.width as f32 * 0.5;
+            let center_y = tile.y as f32 + tile.height as f32 * 0.5;
+            let destination = [
+                center_x - width * 0.5,
+                center_y - height * 0.5,
+                width,
+                height,
+            ];
+            let source_width = width.ceil().max(1.0) as u32;
+            let source_height = height.ceil().max(1.0) as u32;
+            let rendered = match child {
+                LoadedIconSource::Svg { bytes, .. } => {
+                    self.svg
+                        .rasterize(allocator, uploads, &bytes, source_width, source_height)?
+                }
+                LoadedIconSource::Bitmap {
+                    width,
+                    height,
+                    pixels,
+                } => Some(self.render_bitmap_child(
+                    allocator,
+                    uploads,
+                    DecodedBitmap {
+                        width,
+                        height,
+                        pixels,
+                    },
+                    source_width,
+                    source_height,
+                )?),
+            };
+            // The child image handle can drop here: the encoder retains the
+            // view (and through it the image) until the submission retires.
+            let Some((_image, view)) = rendered else {
+                continue;
+            };
+            let binding = SampledImageBinding::new(
+                &self.resource_heap,
+                &view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            )
+            .map_err(|error| format!("create Vulkan preview child descriptor: {error}"))?;
+            let image_index = binding
+                .shader_heap_index()
+                .map_err(|error| format!("resolve Vulkan preview child descriptor: {error}"))?;
+            let angle = (folder_preview_thumbnail_angle(seed, index) as f32).to_radians();
+            let shadow_inset = border * 2.0;
+            let content = folder_preview::PreviewCompositeParams {
+                image_index,
+                sampler_index,
+                radius: 0.0,
+                mode: 0.0,
+                rect: destination,
+                color: [1.0; 4],
+                canvas,
+                angle,
+                inset: 0.0,
+                blur: 0.0,
+                opacity: 0.0,
+                _pad: [0.0; 2],
+            };
+            draws.push(folder_preview::PreviewCompositeParams {
+                mode: 2.0,
+                rect: [
+                    destination[0] - shadow_inset + border * 0.5,
+                    destination[1] - shadow_inset + border * 0.5,
+                    destination[2] + shadow_inset * 2.0,
+                    destination[3] + shadow_inset * 2.0,
+                ],
+                color: [0.0, 0.0, 0.0, 1.0],
+                inset: shadow_inset,
+                blur: border.max(1.0),
+                opacity: 0.45,
+                ..content
+            });
+            draws.push(folder_preview::PreviewCompositeParams {
+                mode: 1.0,
+                rect: [
+                    destination[0] - border,
+                    destination[1] - border,
+                    destination[2] + border * 2.0,
+                    destination[3] + border * 2.0,
+                ],
+                ..content
+            });
+            draws.push(content);
+            child_views.push(view);
+            child_bindings.push(binding);
+        }
+        let image = create_rgba_image(
+            allocator,
+            "fika-vulkan-folder-preview",
+            side,
+            side,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+        )?;
+        let view = image
+            .create_view(&ImageViewDescriptor {
+                label: Some("fika-vulkan-folder-preview-view".into()),
+                view_type: vk::ImageViewType::_2D,
+                format: image.format(),
+                components: vk::ComponentMapping::default(),
+                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            })
+            .map_err(|error| format!("create Vulkan folder-preview view: {error}"))?;
+        self.preview.composite(
+            uploads,
+            &self.resource_heap,
+            &self.sampler_heap,
+            &image,
+            &view,
+            side,
+            &draws,
+            &child_views,
+        )?;
+        self.transient_bindings.extend(child_bindings);
+        let binding = SampledImageBinding::new(
+            &self.resource_heap,
+            &view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )
+        .map_err(|error| format!("create Vulkan folder-preview descriptor: {error}"))?;
+        Ok(Some(VulkanIconTexture {
+            _image: image,
+            view,
+            binding,
+            width: side,
+            height: side,
+            content_width: slot.content_width,
+            content_height: slot.content_height,
+            content_hash: slot.content_hash,
+            rounding: slot.rounding,
+            last_used_frame: self.gpu_frame,
+        }))
+    }
+
+    fn render_bitmap_child(
+        &self,
+        allocator: &MemoryAllocator,
+        uploads: &mut UploadBatch<'_>,
+        bitmap: DecodedBitmap,
+        width: u32,
+        height: u32,
+    ) -> Result<(Image, ImageView), String> {
+        let image = create_rgba_image(
+            allocator,
+            "fika-vulkan-preview-child",
+            width,
+            height,
+            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+        )?;
+        let view = image
+            .create_view(&ImageViewDescriptor {
+                label: Some("fika-vulkan-preview-child-view".into()),
+                view_type: vk::ImageViewType::_2D,
+                format: image.format(),
+                components: vk::ComponentMapping::default(),
+                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            })
+            .map_err(|error| format!("create Vulkan preview child view: {error}"))?;
+        if bitmap.width == width && bitmap.height == height {
+            self.upload_exact_bitmap(uploads, &image, &bitmap.pixels)?;
+        } else {
+            self.scale_bitmap(allocator, uploads, &image, &bitmap)?;
+        }
+        Ok((image, view))
     }
 
     fn create_texture(
@@ -473,9 +707,9 @@ impl VulkanIconRenderer {
                 .set_vertex_buffer(0, self.vertices.buffer(), 0)
                 .map_err(|error| format!("bind Vulkan icon vertex buffer: {error}"))?;
         }
-        let sampler_offset = self
+        let sampler_index = self
             .sampler
-            .push_index_heap_offset()
+            .shader_heap_index()
             .map_err(|error| format!("resolve shared Vulkan icon sampler: {error}"))?;
         for batch in batches {
             let Some(key) = self.frame_slot_keys.get(batch.slot as usize) else {
@@ -484,17 +718,14 @@ impl VulkanIconRenderer {
             let Some(texture) = self.textures.get(key) else {
                 continue;
             };
-            let offsets = SampledTextureHeapOffsets {
-                image: texture
-                    .binding
-                    .push_index_heap_offset()
-                    .map_err(|error| format!("resolve Vulkan icon descriptor: {error}"))?,
-                sampler: sampler_offset,
-            };
-            let push = [offsets.image, offsets.sampler];
+            let image_index = texture
+                .binding
+                .shader_heap_index()
+                .map_err(|error| format!("resolve Vulkan icon descriptor: {error}"))?;
+            let push = [image_index, sampler_index];
             rendering
                 .push_data(IMAGE_PUSH_OFFSET, bytemuck::cast_slice(&push))
-                .map_err(|error| format!("push Vulkan icon descriptor offsets: {error}"))?;
+                .map_err(|error| format!("push Vulkan icon descriptor indices: {error}"))?;
             rendering.retain_resource(&texture.view);
             let start = vertex_base.saturating_add(batch.vertex_start);
             let end = start.saturating_add(batch.vertex_count);
