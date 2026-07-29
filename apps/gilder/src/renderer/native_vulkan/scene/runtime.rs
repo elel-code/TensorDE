@@ -69,7 +69,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
 
 pub fn run_scene(
     options: NativeVulkanOptions,
-    duration: Duration,
+    duration: Option<Duration>,
     source: PathBuf,
 ) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
     run_scene_with_options(
@@ -82,7 +82,7 @@ pub fn run_scene(
 
 pub fn run_scene_with_options(
     options: NativeVulkanOptions,
-    duration: Duration,
+    duration: Option<Duration>,
     source: PathBuf,
     scene_options: NativeVulkanSceneRunOptions,
 ) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {

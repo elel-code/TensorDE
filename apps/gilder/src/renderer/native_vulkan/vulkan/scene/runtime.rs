@@ -146,7 +146,7 @@ const SCENE_WHITE_TEXTURE_BYTES: &[u8] = &[255, 255, 255, 255];
 pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresentOptions {
     pub host: NativeWaylandHostOptions,
     pub wait_configure_roundtrips: usize,
-    pub duration: Duration,
+    pub duration: Option<Duration>,
     pub target_max_fps: Option<u32>,
     pub clear_color: NativeVulkanClearColor,
     pub storage: SceneStorage,

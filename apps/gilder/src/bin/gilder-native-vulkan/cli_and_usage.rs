@@ -171,7 +171,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --playback-frames N sets the FFmpeg Vulkan HW present frame budget.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
---run-scene reads --source file.gscene and runs the selected Vulkan scene present policy.\n\
+--run-scene reads --source file.gscene and runs until the surface closes; --duration sets an explicit second limit.\n\
 --scene-pointer-position X,Y replays a normalized wallpaper-surface pointer position for deterministic scene diagnostics.\n\
 --scene-property NAME=JSON overrides one exact, case-sensitive authored scene user property for --run-scene or --scene-backend-plan; repeat for distinct names.\n\
 --surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
@@ -194,13 +194,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_scene_defaults_to_background_and_uncapped_present() {
+    fn native_scene_defaults_to_background_uncapped_and_surface_lifetime() {
         use gilder::renderer::native_vulkan::NativeVulkanOptions;
         use gilder::renderer::native_wayland::NativeWaylandLayer;
 
         let options = NativeVulkanOptions::default();
         assert_eq!(options.host.layer, NativeWaylandLayer::Background);
         assert_eq!(options.target_max_fps, None);
+        assert_eq!(DEFAULT_SCENE_RUN_DURATION, None);
+        assert_eq!(DEFAULT_BOUNDED_RUN_DURATION, Duration::from_secs(5));
     }
 
     #[test]

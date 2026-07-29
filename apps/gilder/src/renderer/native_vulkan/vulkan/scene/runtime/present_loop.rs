@@ -364,7 +364,7 @@ pub(super) fn with_scene_present(
         eprintln!("gilder-scene-startup: frame-loop-ready");
     }
     let started_at = Instant::now();
-    let deadline = started_at + options.duration;
+    let deadline = options.duration.map(|duration| started_at + duration);
     let frame_interval = options
         .target_max_fps
         .filter(|fps| *fps > 0)
@@ -408,7 +408,7 @@ pub(super) fn with_scene_present(
             .filter(|value| value.is_finite() && *value >= 0.0);
     let mut previous_frame_sampled_at = None::<Instant>;
     let frame_loop_result = (|| -> Result<(), String> {
-        while Instant::now() < deadline {
+        while deadline.is_none_or(|deadline| Instant::now() < deadline) {
         if !event_sources.pump_platform(host)? {
             break;
         }

@@ -4,6 +4,13 @@ use gilder::core::FitMode;
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "native-vulkan-renderer")]
+use std::time::Duration;
+
+#[cfg(feature = "native-vulkan-renderer")]
+const DEFAULT_BOUNDED_RUN_DURATION: Duration = Duration::from_secs(5);
+#[cfg(feature = "native-vulkan-renderer")]
+const DEFAULT_SCENE_RUN_DURATION: Option<Duration> = None;
 
 #[cfg(feature = "native-vulkan-renderer")]
 #[path = "gilder-native-vulkan/scene_backend_plan_report.rs"]
@@ -149,12 +156,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use scene_backend_plan_report::scene_backend_plan_report;
     use serde_json::{Map, json};
-    use std::time::Duration;
-
     let mut mode = NativeVulkanCliMode::All;
     let mut options = NativeVulkanOptions::default();
-    let mut duration = Duration::from_secs(5);
-    let mut duration_set = false;
+    let mut duration = DEFAULT_SCENE_RUN_DURATION;
     let mut source = None::<PathBuf>;
     let mut vulkan_device = None::<String>;
     let mut vulkan_device_preference = None::<String>;
@@ -218,13 +222,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--wait-roundtrips requires a value")?;
             }
             "--duration" => {
-                duration = args
-                    .next()
-                    .map(|value| value.parse::<u64>())
-                    .transpose()?
-                    .map(Duration::from_secs)
-                    .ok_or("--duration requires seconds")?;
-                duration_set = true;
+                duration = Some(
+                    args.next()
+                        .map(|value| value.parse::<u64>())
+                        .transpose()?
+                        .map(Duration::from_secs)
+                        .ok_or("--duration requires seconds")?,
+                );
             }
             "--target-fps" => {
                 options.target_max_fps =
@@ -371,11 +375,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let scene_surface_extent =
         parse_scene_surface_extent(scene_surface_width, scene_surface_height)?;
 
-    let duration_playback_frames = if duration_set {
+    let duration_playback_frames = duration.and_then(|duration| {
         native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
-    } else {
-        None
-    };
+    });
     apply_vulkan_device_cli_environment(
         vulkan_device.as_deref(),
         vulkan_device_preference.as_deref(),
@@ -424,7 +426,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .resolve_frame_with_user_properties_at(0.0, &scene_user_property_overrides)?;
             json!(scene_backend_plan_report(&storage, &semantic_frame)?)
         }
-        NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
+        NativeVulkanCliMode::RunClear => json!(run_clear(
+            options,
+            duration.unwrap_or(DEFAULT_BOUNDED_RUN_DURATION),
+        )?),
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
             if !source.is_file() {
@@ -444,7 +449,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| "native-vulkan".to_owned());
             json!(run_static_image(
                 options,
-                duration,
+                duration.unwrap_or(DEFAULT_BOUNDED_RUN_DURATION),
                 StaticWallpaperPlan {
                     output_name,
                     source,
