@@ -26,3 +26,21 @@ disabled.
 TTY builds compile the descriptor-heap client shaders with `glslangValidator`; install the Vulkan
 shader tools before running the renderer-enabled checks. The generated SPIR-V is build output and
 does not bypass the 800-line gate.
+
+Default features also link system `libudev`, `libinput`, `libseat`, `libdrm`, `libgbm`,
+`libwayland-server`, and `libxkbcommon`. On Debian/Ubuntu install at least:
+
+```sh
+sudo apt-get install -y \
+  pkg-config \
+  libudev-dev \
+  libinput-dev \
+  libseat-dev \
+  libdrm-dev \
+  libgbm-dev \
+  libwayland-dev \
+  libxkbcommon-dev \
+  glslang-tools
+```
+
+The Tensor GitHub Actions workflow installs the same set before `cargo test`.
