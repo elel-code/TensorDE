@@ -91,6 +91,7 @@ pub enum WeIrUserPropertyPredicate {
 pub struct WeIrScriptProgram {
     pub object: u32,
     pub target: SceneScriptTarget,
+    pub selector: u32,
     pub updates_target_value: bool,
     pub source: String,
     pub properties_json: String,

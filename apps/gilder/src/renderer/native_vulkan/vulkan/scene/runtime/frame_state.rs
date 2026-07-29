@@ -397,6 +397,7 @@ pub(super) fn write_scene_frame_buffers(
             output_extent,
             events.audio_spectrum(),
             &semantic_frame.audio_band_material_values,
+            &semantic_frame.material_scalar_values,
         );
         write_exact_frame_payload(device, material_buffer, &material_payload)?;
         true
@@ -822,6 +823,7 @@ mod tests {
                 alpha: 0.25,
             }],
             audio_band_material_values: Vec::new(),
+            material_scalar_values: Vec::new(),
             script_text_values: Vec::new(),
             media_clock: None,
             video_frame: None,
@@ -909,6 +911,7 @@ mod tests {
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),
             audio_band_material_values: Vec::new(),
+            material_scalar_values: Vec::new(),
             script_text_values: Vec::new(),
             media_clock: None,
             video_frame: None,

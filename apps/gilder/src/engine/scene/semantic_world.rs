@@ -41,9 +41,9 @@ use indexes::SemanticIndexTable;
 use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
 pub use resolved_frame::{
-    ResolvedAttachmentLink, ResolvedAudioBandMaterialValue, ResolvedObjectState,
-    ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedScriptTextValue,
-    ResolvedSemanticFrame,
+    ResolvedAttachmentLink, ResolvedAudioBandMaterialValue, ResolvedMaterialScalarValue,
+    ResolvedObjectState, ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette,
+    ResolvedScriptTextValue, ResolvedSemanticFrame,
 };
 pub use semantic_resolution::SemanticFrameResolver;
 use semantic_resolution::{RetainedPuppetTopology, resolve_retained_attachment_anchor};

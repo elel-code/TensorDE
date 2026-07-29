@@ -40,6 +40,7 @@ pub(super) fn object_script_programs(
         programs.push(WeIrScriptProgram {
             object,
             target,
+            selector: 0,
             updates_target_value: analysis.exports_update,
             source: source.to_owned(),
             properties_json,
@@ -121,6 +122,7 @@ pub(super) fn effect_script_programs(
         programs.push(WeIrScriptProgram {
             object,
             target: SceneScriptTarget::TechCircleSectorWidth,
+            selector: 0,
             updates_target_value: analysis.exports_update,
             source: source.to_owned(),
             properties_json: binding
@@ -134,6 +136,60 @@ pub(super) fn effect_script_programs(
                 binding.as_object(),
             ),
             initial_numeric: [value_f32(Some(binding)).unwrap_or(0.0), 0.0, 0.0, 0.0],
+        });
+    }
+    Ok(programs)
+}
+
+pub(super) fn material_scalar_script_programs(
+    object: u32,
+    constant_start: u32,
+    constants: &[crate::convert::we_ingest::ir::WeIrMaterialConstant],
+    instance_pass: Option<&Value>,
+    project_properties: &Map<String, Value>,
+) -> Result<Vec<WeIrScriptProgram>, String> {
+    const SPECIALIZED_TECH_CIRCLE_SECTOR_WIDTH: &str = "ui_editor_properties_5_sector_1_width";
+    let Some(authored_constants) = instance_pass
+        .and_then(|pass| pass.get("constantshadervalues"))
+        .and_then(Value::as_object)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut programs = Vec::new();
+    for (name, binding) in authored_constants {
+        if name == SPECIALIZED_TECH_CIRCLE_SECTOR_WIDTH {
+            continue;
+        }
+        let Some(binding_object) = binding.as_object() else {
+            continue;
+        };
+        let Some(source) = binding_object.get("script").and_then(Value::as_str) else {
+            continue;
+        };
+        let analysis = analyze_scene_script(source).map_err(|error| error.to_string())?;
+        if !has_runtime_entrypoint(&analysis) {
+            continue;
+        }
+        let local_index = constants
+            .iter()
+            .position(|constant| constant.name == *name)
+            .ok_or_else(|| format!("scripted material constant {name:?} was not merged"))?;
+        let initial = value_f32(Some(binding))
+            .ok_or_else(|| format!("scripted material constant {name:?} is not a scalar"))?;
+        programs.push(WeIrScriptProgram {
+            object,
+            target: SceneScriptTarget::MaterialScalar,
+            selector: constant_start + local_index as u32,
+            updates_target_value: analysis.exports_update,
+            source: source.to_owned(),
+            properties_json: resolved_script_properties(binding_object, project_properties),
+            initial_text: String::new(),
+            subscriptions: subscriptions(
+                &analysis,
+                SceneScriptTarget::MaterialScalar,
+                Some(binding_object),
+            ),
+            initial_numeric: [initial, 0.0, 0.0, 0.0],
         });
     }
     Ok(programs)
@@ -383,6 +439,35 @@ mod tests {
                 .subscriptions
                 .contains(SceneScriptSubscriptions::POINTER_CLICK)
         );
+    }
+
+    #[test]
+    fn material_scalar_script_targets_the_merged_constant_index() {
+        let pass = json!({
+            "constantshadervalues": {
+                "static": 1,
+                "缺口大小": {
+                    "value": 225,
+                    "script": "export function update(value) { return value + engine.runtime; }"
+                }
+            }
+        });
+        let constants = vec![
+            crate::convert::we_ingest::ir::WeIrMaterialConstant {
+                name: "static".to_owned(),
+                value_json: "1".to_owned(),
+            },
+            crate::convert::we_ingest::ir::WeIrMaterialConstant {
+                name: "缺口大小".to_owned(),
+                value_json: "{\"value\":225}".to_owned(),
+            },
+        ];
+        let programs = material_scalar_script_programs(7, 40, &constants, Some(&pass), &Map::new())
+            .expect("material script");
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].target, SceneScriptTarget::MaterialScalar);
+        assert_eq!(programs[0].selector, 41);
+        assert_eq!(programs[0].initial_numeric[0], 225.0);
     }
 
     #[test]

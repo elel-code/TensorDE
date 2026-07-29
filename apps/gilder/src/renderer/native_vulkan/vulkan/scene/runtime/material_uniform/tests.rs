@@ -41,6 +41,28 @@ fn pack_test_scene_material_uniforms_with_spectrum(
 }
 
 #[test]
+fn material_scalar_override_replaces_only_its_typed_constant() {
+    let storage = storage_with_constants("effects/opacity__SLOTS_1", &[("alpha", "0.44")]);
+    let draw = draw_with_material(SceneMaterialHandle(0));
+    let override_value =
+        crate::engine::scene::semantic_world::ResolvedMaterialScalarValue {
+            object: crate::engine::scene::SceneObjectHandle(0),
+            constant_index: 0,
+            value: 0.75,
+        };
+    let payload = super::pack_scene_material_uniforms_with_frame_inputs(
+        &storage,
+        &[draw],
+        0.0,
+        TEST_OUTPUT_EXTENT,
+        None,
+        &[],
+        &[override_value],
+    );
+    assert_eq!(f32_from_payload(&payload, 0), 0.75);
+}
+
+#[test]
 fn material_uniform_uses_default_when_draw_has_no_material() {
     let storage = SceneStorage::from_document(SceneBinaryDocument::default()).expect("storage");
     let draw = draw_with_material(SceneMaterialHandle(INVALID_MATERIAL_ID));
@@ -606,6 +628,7 @@ fn final_audio_bars_uses_object_local_source_resolution_for_deformity() {
     let parameters = MaterialParameters {
         storage: &storage,
         pass,
+        scalar_overrides: &[],
     };
 
     let values = final_audio_bars_values(&parameters, &storage, &draw, None);

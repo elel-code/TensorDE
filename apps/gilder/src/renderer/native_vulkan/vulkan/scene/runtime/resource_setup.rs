@@ -135,7 +135,9 @@ pub(super) fn create_scene_gpu_resources(
             [extent.width, extent.height],
         )
     });
-    let dynamic_effect_uniforms = backend_plan
+    let dynamic_effect_uniforms = storage.script_programs().iter().any(|program| {
+        program.target == crate::engine::scene::SceneScriptTarget::MaterialScalar
+    }) || backend_plan
         .rendering_device_graph
         .mesh_draws
         .iter()

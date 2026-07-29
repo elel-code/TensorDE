@@ -1,5 +1,15 @@
 use super::*;
 
+struct EffectMaterialInstanceInput<'a> {
+    object: u32,
+    base_material: WeIrMaterial,
+    base_pass: WeIrMaterialPass,
+    base_textures: Vec<WeIrMaterialTexture>,
+    instance_pass: Option<&'a Value>,
+    resolved_bindings: &'a BTreeMap<u32, String>,
+    shader_key: &'a str,
+}
+
 impl WeIrBuilder {
     pub(super) fn add_material(&mut self, path: &str) -> Result<u32, WeIngestError> {
         let path = normalize_we_path(path);
@@ -710,14 +720,16 @@ impl WeIrBuilder {
             let (material_index, pass_constants) =
                 match (base_material, material_pass.clone(), shader.as_deref()) {
                     (Some(material), Some(pass), Some(shader)) => {
-                        let (material, material_shader) = self.add_effect_material_instance(
-                            material,
-                            pass,
-                            base_textures,
-                            instance_pass,
-                            &binds,
-                            shader,
-                        )?;
+                        let (material, material_shader) =
+                            self.add_effect_material_instance(EffectMaterialInstanceInput {
+                                object,
+                                base_material: material,
+                                base_pass: pass,
+                                base_textures,
+                                instance_pass,
+                                resolved_bindings: &binds,
+                                shader_key: shader,
+                            })?;
                         resolved_shader = Some(material_shader);
                         let pass = self.materials.get(material as usize).and_then(|material| {
                             self.material_passes.get(material.pass_start as usize)
@@ -774,15 +786,19 @@ impl WeIrBuilder {
         Ok(())
     }
 
-    pub(super) fn add_effect_material_instance(
+    fn add_effect_material_instance(
         &mut self,
-        base_material: WeIrMaterial,
-        base_pass: WeIrMaterialPass,
-        base_textures: Vec<WeIrMaterialTexture>,
-        instance_pass: Option<&Value>,
-        resolved_bindings: &BTreeMap<u32, String>,
-        shader_key: &str,
+        input: EffectMaterialInstanceInput<'_>,
     ) -> Result<(u32, String), WeIngestError> {
+        let EffectMaterialInstanceInput {
+            object,
+            base_material,
+            base_pass,
+            base_textures,
+            instance_pass,
+            resolved_bindings,
+            shader_key,
+        } = input;
         let material_path = self
             .resources
             .get(base_material.resource as usize)
@@ -817,7 +833,19 @@ impl WeIrBuilder {
         let texture_start = self.material_textures.len() as u32;
         self.material_textures.extend(textures);
         let constant_start = self.material_constants.len() as u32;
-        self.material_constants.extend(constants);
+        self.material_constants.extend(constants.iter().cloned());
+        let material_scripts = material_scalar_script_programs(
+            object,
+            constant_start,
+            &constants,
+            instance_pass,
+            &self.project_property_defaults,
+        )
+        .map_err(|source| WeIngestError::Script {
+            object,
+            message: source.to_string(),
+        })?;
+        self.script_programs.extend(material_scripts);
         let mut pass = base_pass;
         pass.material = handle;
         pass.shader_key = shader_key.clone();

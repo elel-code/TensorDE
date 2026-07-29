@@ -47,6 +47,7 @@ pub enum SceneScriptTarget {
     Text,
     TechCircleSectorWidth,
     EffectVisible,
+    MaterialScalar,
 }
 
 impl SceneScriptTarget {
@@ -61,6 +62,7 @@ impl SceneScriptTarget {
             Self::Text => 7,
             Self::TechCircleSectorWidth => 8,
             Self::EffectVisible => 9,
+            Self::MaterialScalar => 10,
         }
     }
 
@@ -75,6 +77,7 @@ impl SceneScriptTarget {
             7 => Some(Self::Text),
             8 => Some(Self::TechCircleSectorWidth),
             9 => Some(Self::EffectVisible),
+            10 => Some(Self::MaterialScalar),
             _ => None,
         }
     }
@@ -92,6 +95,9 @@ impl SceneScriptTarget {
 pub struct SceneScriptProgramRecord {
     pub object: SceneObjectHandle,
     pub target: SceneScriptTarget,
+    /// Target-specific stable selector. Material scalars use the global
+    /// `SceneMaterialConstantRecord` index; object properties use zero.
+    pub selector: u32,
     pub source: SceneStringId,
     pub properties_json: SceneStringId,
     pub initial_text: SceneStringId,

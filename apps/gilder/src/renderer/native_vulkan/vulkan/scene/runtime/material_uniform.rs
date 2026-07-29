@@ -76,6 +76,7 @@ fn pack_scene_material_uniforms_with_spectrum(
         output_extent,
         spectrum,
         &[],
+        &[],
     )
 }
 
@@ -86,6 +87,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
     output_extent: [u32; 2],
     spectrum: Option<&[f32; 32]>,
     audio_material_values: &[ResolvedAudioBandMaterialValue],
+    material_scalar_values: &[crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
 ) -> Vec<u8> {
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
@@ -97,6 +99,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
             output_extent,
             spectrum,
             audio_material_values,
+            material_scalar_values,
         ) {
             payload.extend_from_slice(&value.to_le_bytes());
         }
@@ -111,6 +114,7 @@ fn material_uniform_values(
     output_extent: [u32; 2],
     spectrum: Option<&[f32; 32]>,
     audio_material_values: &[ResolvedAudioBandMaterialValue],
+    material_scalar_values: &[crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let Some(pass) = first_material_pass(storage, draw.material) else {
         return [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
@@ -122,7 +126,11 @@ fn material_uniform_values(
     let layout = native_vulkan_scene_shader_for_key(shader_key)
         .map(|shader| shader.parameter_layout)
         .unwrap_or(BuiltinSceneParameterLayout::None);
-    let parameters = MaterialParameters { storage, pass };
+    let parameters = MaterialParameters {
+        storage,
+        pass,
+        scalar_overrides: material_scalar_values,
+    };
     let mut values = match layout {
         BuiltinSceneParameterLayout::None => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
         BuiltinSceneParameterLayout::Particle => {
@@ -624,7 +632,12 @@ pub(super) fn material_parameter_values(
     let Some(pass) = first_material_pass(storage, material) else {
         return Vec::new();
     };
-    MaterialParameters { storage, pass }.values(names)
+    MaterialParameters {
+        storage,
+        pass,
+        scalar_overrides: &[],
+    }
+    .values(names)
 }
 
 pub(super) fn material_parameter_layout(
@@ -652,6 +665,8 @@ pub(super) fn draw_parameter_layout(
 struct MaterialParameters<'a> {
     storage: &'a SceneStorage,
     pass: &'a SceneMaterialPassRecord,
+    scalar_overrides:
+        &'a [crate::engine::scene::semantic_world::ResolvedMaterialScalarValue],
 }
 
 impl MaterialParameters<'_> {
@@ -659,9 +674,19 @@ impl MaterialParameters<'_> {
         for name in names {
             if let Some(values) = material_pass_constants(self.storage, self.pass)
                 .iter()
+                .enumerate()
                 .find_map(|constant| {
+                    let (local_index, constant) = constant;
                     let constant_name = self.storage.string(constant.name)?;
                     constant_name.eq_ignore_ascii_case(name).then(|| {
+                        let constant_index = self.pass.constant_start + local_index as u32;
+                        if let Some(value) = self
+                            .scalar_overrides
+                            .iter()
+                            .find(|value| value.constant_index == constant_index)
+                        {
+                            return vec![value.value];
+                        }
                         parse_constant_values(
                             self.storage.string(constant.value_json).unwrap_or_default(),
                         )
@@ -731,7 +756,11 @@ pub(super) fn resolved_standard_material_color(
         )
     };
     let values = standard_material_values(
-        &MaterialParameters { storage, pass },
+        &MaterialParameters {
+            storage,
+            pass,
+            scalar_overrides: &[],
+        },
         resolved_color,
         resolved_alpha,
     );

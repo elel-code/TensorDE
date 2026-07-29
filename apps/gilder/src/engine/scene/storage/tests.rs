@@ -25,6 +25,64 @@ fn storage_rejects_overlapping_sampled_and_input_attachment_slots() {
 }
 
 #[test]
+fn storage_rejects_duplicate_material_scalar_script_selectors() {
+    let object = SceneObjectRecord {
+        id: SceneObjectHandle(0),
+        we_id: 1,
+        name: SceneStringId::NONE,
+        kind: SceneObjectKind::Image,
+        resource: SceneResourceId::NONE,
+        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+        parent_we_id: INVALID_OBJECT_ID,
+        attachment: SceneStringId::NONE,
+        origin: SceneVec3::default(),
+        angles: SceneVec3::default(),
+        scale: SceneVec3::ONE,
+        color: SceneVec3::ONE,
+        alpha: 1.0,
+        visible: true,
+        color_blend_mode: 0,
+        sort_order: 0,
+        effect_start: u32::MAX,
+        effect_count: 0,
+        render_graph: u32::MAX,
+    };
+    let script = SceneScriptProgramRecord {
+        object: SceneObjectHandle(0),
+        target: SceneScriptTarget::MaterialScalar,
+        selector: 0,
+        source: SceneStringId(0),
+        properties_json: SceneStringId(1),
+        initial_text: SceneStringId::NONE,
+        subscriptions: SceneScriptSubscriptions::FRAME,
+        initial_numeric: [1.0, 0.0, 0.0, 0.0],
+    };
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "export function update(value) { return value; }".to_owned(),
+            "{}".to_owned(),
+            "alpha".to_owned(),
+            "1".to_owned(),
+        ],
+        objects: vec![object],
+        material_constants: vec![SceneMaterialConstantRecord {
+            name: SceneStringId(2),
+            value_json: SceneStringId(3),
+        }],
+        script_programs: vec![script, script],
+        ..SceneBinaryDocument::default()
+    };
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidScriptProgram {
+            reason: "duplicate material scalar selector",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn storage_borrows_resource_payload_slices() {
     let mut document = SceneBinaryDocument {
         strings: vec!["scene".to_owned(), "scene.json".to_owned()],

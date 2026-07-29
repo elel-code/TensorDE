@@ -64,6 +64,7 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             document.render_graphs.len(),
         )?;
     }
+    let mut material_scalar_selectors = std::collections::BTreeSet::new();
     for program in &document.script_programs {
         validate_range(
             "script_program.object",
@@ -88,6 +89,25 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             return Err(SceneStorageError::InvalidScriptProgram {
                 object: program.object,
                 reason: "empty subscriptions or non-finite initial value",
+            });
+        }
+        if program.target == SceneScriptTarget::MaterialScalar {
+            validate_range(
+                "script_program.material_constant",
+                program.selector,
+                1,
+                document.material_constants.len(),
+            )?;
+            if !material_scalar_selectors.insert(program.selector) {
+                return Err(SceneStorageError::InvalidScriptProgram {
+                    object: program.object,
+                    reason: "duplicate material scalar selector",
+                });
+            }
+        } else if program.selector != 0 {
+            return Err(SceneStorageError::InvalidScriptProgram {
+                object: program.object,
+                reason: "object script target has a nonzero selector",
             });
         }
     }

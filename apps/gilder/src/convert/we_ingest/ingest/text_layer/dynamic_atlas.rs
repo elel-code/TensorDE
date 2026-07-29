@@ -444,6 +444,7 @@ mod tests {
         let programs = [WeIrScriptProgram {
             object: 0,
             target: crate::engine::scene::SceneScriptTarget::Text,
+            selector: 0,
             updates_target_value: true,
             source: "export function update() { return '运行'+17; }".to_owned(),
             properties_json: "{}".to_owned(),

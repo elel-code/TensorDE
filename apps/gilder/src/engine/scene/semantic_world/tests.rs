@@ -520,6 +520,7 @@ fn rquickjs_audio_module_applies_uniform_object_scale_before_transform_propagati
         script_programs: vec![SceneScriptProgramRecord {
             object: SceneObjectHandle(0),
             target: SceneScriptTarget::Scale,
+            selector: 0,
             source: SceneStringId(0),
             properties_json: SceneStringId(1),
             initial_text: SceneStringId::NONE,
@@ -554,6 +555,66 @@ fn rquickjs_audio_module_applies_uniform_object_scale_before_transform_propagati
 }
 
 #[test]
+fn audio_script_publishes_a_typed_material_scalar_selector() {
+    let mut object = image_object();
+    object.material = SceneMaterialHandle(INVALID_MATERIAL_ID);
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "const audio = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_16); let smoothValue = 0; let initialValue; export function init(value) { initialValue = value; } export function update() { const audioDelta = audio.average[0] - smoothValue; smoothValue += audioDelta * Math.min(1, engine.frametime * 2); return initialValue * (smoothValue * 0.38 + 1); }".to_owned(),
+            "{}".to_owned(),
+            "缺口大小".to_owned(),
+            "{\"value\":225}".to_owned(),
+        ],
+        objects: vec![object],
+        material_constants: vec![SceneMaterialConstantRecord {
+            name: SceneStringId(2),
+            value_json: SceneStringId(3),
+        }],
+        script_programs: vec![SceneScriptProgramRecord {
+            object: SceneObjectHandle(0),
+            target: SceneScriptTarget::MaterialScalar,
+            selector: 0,
+            source: SceneStringId(0),
+            properties_json: SceneStringId(1),
+            initial_text: SceneStringId::NONE,
+            subscriptions: SceneScriptSubscriptions::FRAME
+                .union(SceneScriptSubscriptions::AUDIO),
+            initial_numeric: [225.0, 0.0, 0.0, 0.0],
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("semantic resolver");
+    let initial = resolver
+        .resolve_frame_with_events_at(
+            &world,
+            0.0,
+            0.0,
+            &crate::engine::scene::SceneFrameEvents::default(),
+        )
+        .expect("initial scalar frame");
+    assert_eq!(initial.material_scalar_values[0].constant_index, 0);
+    assert_close(initial.material_scalar_values[0].value, 225.0);
+
+    let audio = crate::engine::scene::SceneFrameEvents {
+        audio: crate::engine::scene::SceneAudioState {
+            sequence: crate::engine::scene::SceneEventSequence(1),
+            source: crate::engine::scene::SceneAudioSource::Replay,
+            spectrum32: [1.0; 32],
+            ready: true,
+            ..crate::engine::scene::SceneAudioState::default()
+        },
+        ..crate::engine::scene::SceneFrameEvents::default()
+    };
+    let animated = resolver
+        .resolve_frame_with_events_at(&world, 1.0, 1.0, &audio)
+        .expect("audio scalar frame");
+    assert_eq!(animated.material_scalar_values[0].constant_index, 0);
+    assert_close(animated.material_scalar_values[0].value, 310.5);
+}
+
+#[test]
 fn scene_script_delta_updates_transform_before_parent_resolution() {
     let mut object = image_object();
     object.material = SceneMaterialHandle(INVALID_MATERIAL_ID);
@@ -567,6 +628,7 @@ fn scene_script_delta_updates_transform_before_parent_resolution() {
         script_programs: vec![SceneScriptProgramRecord {
             object: SceneObjectHandle(0),
             target: SceneScriptTarget::Origin,
+            selector: 0,
             source: SceneStringId(0),
             properties_json: SceneStringId(1),
             initial_text: SceneStringId::NONE,
@@ -607,6 +669,7 @@ fn cursor_click_requires_a_matching_press_release_hit_target() {
     document.script_programs.push(SceneScriptProgramRecord {
         object: SceneObjectHandle(0),
         target: SceneScriptTarget::Visible,
+        selector: 0,
         source: SceneStringId(source),
         properties_json: SceneStringId(properties),
         initial_text: SceneStringId::NONE,

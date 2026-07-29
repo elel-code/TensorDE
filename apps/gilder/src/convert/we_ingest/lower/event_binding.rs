@@ -33,6 +33,7 @@ pub(super) fn lower_event_bindings(
         .map(|program| SceneScriptProgramRecord {
             object: SceneObjectHandle(program.object),
             target: program.target,
+            selector: program.selector,
             source: strings.id(&program.source),
             properties_json: strings.id(&program.properties_json),
             initial_text: strings.optional_id(&program.initial_text),

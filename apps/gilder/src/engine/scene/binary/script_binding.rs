@@ -11,6 +11,7 @@ pub(super) fn encode_script_bindings(
     for program in script_programs {
         put_u32(&mut out, program.object.0);
         put_u32(&mut out, program.target.to_u32());
+        put_u32(&mut out, program.selector);
         put_string_id(&mut out, program.source);
         put_string_id(&mut out, program.properties_json);
         put_string_id(&mut out, program.initial_text);
@@ -37,6 +38,7 @@ pub(super) fn decode_script_bindings(
         script_programs.push(SceneScriptProgramRecord {
             object,
             target,
+            selector: decoder.u32()?,
             source: decoder.string_id()?,
             properties_json: decoder.string_id()?,
             initial_text: decoder.string_id()?,
@@ -61,6 +63,7 @@ mod tests {
         let scripts = [SceneScriptProgramRecord {
             object: SceneObjectHandle(3),
             target: SceneScriptTarget::Origin,
+            selector: 0,
             source: SceneStringId(8),
             properties_json: SceneStringId(9),
             initial_text: SceneStringId::NONE,

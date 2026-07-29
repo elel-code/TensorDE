@@ -22,6 +22,7 @@ pub struct ResolvedSemanticFrame {
     pub puppet_bone_palettes: Vec<ResolvedPuppetBonePalette>,
     pub puppet_bone_matrices: Vec<ResolvedPuppetBoneMatrix>,
     pub audio_band_material_values: Vec<ResolvedAudioBandMaterialValue>,
+    pub material_scalar_values: Vec<ResolvedMaterialScalarValue>,
     pub script_text_values: Vec<ResolvedScriptTextValue>,
     pub media_clock: Option<SceneMediaClockState>,
     pub video_frame: Option<SceneVideoState>,
@@ -83,6 +84,7 @@ impl ResolvedSemanticFrame {
             puppet_bone_palettes,
             puppet_bone_matrices,
             audio_band_material_values: Vec::new(),
+            material_scalar_values: Vec::new(),
             script_text_values: Vec::new(),
             media_clock: None,
             video_frame: None,
@@ -162,6 +164,13 @@ impl ResolvedSemanticFrame {
             .find(|value| value.object == object && value.target == target)
             .map(|value| value.value)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedMaterialScalarValue {
+    pub object: SceneObjectHandle,
+    pub constant_index: u32,
+    pub value: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

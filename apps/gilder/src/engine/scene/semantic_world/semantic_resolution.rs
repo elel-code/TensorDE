@@ -132,8 +132,13 @@ impl SemanticFrameResolver {
             &self.script_deltas,
             &mut self.frame.audio_band_material_values,
         );
+        merge_script_scalar_material_deltas(
+            &self.script_deltas,
+            &mut self.frame.material_scalar_values,
+        );
         if !self.incremental_enabled {
             let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
+            let material_scalar_values = std::mem::take(&mut self.frame.material_scalar_values);
             let text_values = std::mem::take(&mut self.frame.script_text_values);
             let media_clock = self.frame.media_clock;
             let video_frame = self.frame.video_frame;
@@ -143,6 +148,7 @@ impl SemanticFrameResolver {
                 &self.user_property_visibility,
             )?;
             self.frame.audio_band_material_values = audio_values;
+            self.frame.material_scalar_values = material_scalar_values;
             self.frame.script_text_values = text_values;
             self.frame.media_clock = media_clock;
             self.frame.video_frame = video_frame;
@@ -534,6 +540,32 @@ fn merge_script_material_deltas(
                 crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue {
                     object: delta.object,
                     target,
+                    value: delta.numeric[0],
+                },
+            );
+        }
+    }
+}
+
+fn merge_script_scalar_material_deltas(
+    deltas: &[SceneScriptDelta],
+    values: &mut Vec<crate::engine::scene::semantic_world::ResolvedMaterialScalarValue>,
+) {
+    for delta in deltas {
+        if delta.target != crate::engine::scene::SceneScriptTarget::MaterialScalar {
+            continue;
+        }
+        if let Some(value) = values
+            .iter_mut()
+            .find(|value| value.constant_index == delta.selector)
+        {
+            value.object = delta.object;
+            value.value = delta.numeric[0];
+        } else {
+            values.push(
+                crate::engine::scene::semantic_world::ResolvedMaterialScalarValue {
+                    object: delta.object,
+                    constant_index: delta.selector,
                     value: delta.numeric[0],
                 },
             );

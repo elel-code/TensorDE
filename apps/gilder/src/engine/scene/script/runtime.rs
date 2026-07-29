@@ -245,6 +245,7 @@ const HOST_PRELUDE: &str = r#"
             layer,
             object: metadata.object,
             target: metadata.target,
+            selector: metadata.selector,
             subscriptions: metadata.subscriptions,
             value,
             published: false,
@@ -312,7 +313,7 @@ const HOST_PRELUDE: &str = r#"
             const base = numericCount * 7;
             numeric[base] = program.object;
             numeric[base + 1] = program.target;
-            numeric[base + 2] = 0;
+            numeric[base + 2] = program.selector;
             if (program.target <= 4) {
                 if (typeof output === 'number') {
                     const scalar = Number(output);
@@ -804,6 +805,7 @@ fn register_program<'js>(
     metadata
         .set("object", program.record.object.0)
         .and_then(|_| metadata.set("target", program.record.target.to_u32()))
+        .and_then(|_| metadata.set("selector", program.record.selector))
         .and_then(|_| metadata.set("subscriptions", program.record.subscriptions.0))
         .and_then(|_| metadata.set("initial", initial))
         .and_then(|_| metadata.set("initialText", program.initial_text.as_str()))

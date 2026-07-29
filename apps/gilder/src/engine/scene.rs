@@ -43,11 +43,12 @@ pub use script::{
 };
 pub use semantic_world::{
     MaterialBindingComponent, MeshBindingComponent, ObjectEffectBindingComponent, ParentComponent,
-    PuppetBindingComponent, ResolvedAttachmentLink, ResolvedObjectEffectState, ResolvedObjectState,
-    ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld,
-    SceneSemanticWorldError, SemanticEntity, SemanticEntityRecord, SemanticMeshBinding,
-    SemanticObjectEffectBinding, SemanticRenderPlanInputs, SemanticUserPropertyBinding,
-    TransformAnimationComponent, TransformComponent, VisibilityComponent,
+    PuppetBindingComponent, ResolvedAttachmentLink, ResolvedMaterialScalarValue,
+    ResolvedObjectEffectState, ResolvedObjectState, ResolvedPuppetBoneMatrix,
+    ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld, SceneSemanticWorldError,
+    SemanticEntity, SemanticEntityRecord, SemanticMeshBinding, SemanticObjectEffectBinding,
+    SemanticRenderPlanInputs, SemanticUserPropertyBinding, TransformAnimationComponent,
+    TransformComponent, VisibilityComponent,
 };
 pub use server::{
     RendererSceneRenderPlan, RenderingServer, SceneEngineRenderPlan, SceneObjectRenderGraph,

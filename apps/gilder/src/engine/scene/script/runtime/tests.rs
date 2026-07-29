@@ -12,6 +12,7 @@ fn program(
         record: SceneScriptProgramRecord {
             object: SceneObjectHandle(3),
             target,
+            selector: 0,
             source: SceneStringId::NONE,
             properties_json: SceneStringId::NONE,
             initial_text: SceneStringId::NONE,
@@ -366,6 +367,22 @@ fn audio_spectrum_drives_typed_effect_target_through_quickjs() {
     let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::AUDIO)).expect("dispatch");
     assert_eq!(deltas[0].target, SceneScriptTarget::TechCircleSectorWidth);
     assert_eq!(deltas[0].numeric[0], 10.5);
+}
+
+#[test]
+fn material_scalar_delta_preserves_the_typed_constant_selector() {
+    let mut material = program(
+        SceneScriptTarget::MaterialScalar,
+        SceneScriptSubscriptions::FRAME,
+        "export function update(value) { return value + 2; }",
+    );
+    material.record.selector = 41;
+    let runtime =
+        SceneScriptRuntime::new(&[material], &SceneScriptHostCatalog::empty()).expect("runtime");
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+    assert_eq!(deltas[0].target, SceneScriptTarget::MaterialScalar);
+    assert_eq!(deltas[0].selector, 41);
+    assert_eq!(deltas[0].numeric[0], 12.0);
 }
 
 #[test]

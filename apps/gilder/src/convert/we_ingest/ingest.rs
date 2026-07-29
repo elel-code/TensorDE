@@ -81,8 +81,8 @@ use pipeline_state::{
     scene_blend_from_color_blend_mode,
 };
 use script_program::{
-    effect_script_programs, object_script_programs, project_property_defaults,
-    scene_scripts_may_mutate_effect_visibility,
+    effect_script_programs, material_scalar_script_programs, object_script_programs,
+    project_property_defaults, scene_scripts_may_mutate_effect_visibility,
 };
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;

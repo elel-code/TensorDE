@@ -1,6 +1,7 @@
 use gilder::engine::scene::{
     INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneCameraParallaxRecord,
-    SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneObjectHandle,
+    SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneMaterialConstantRecord,
+    SceneMaterialPassRecord, SceneMaterialRecord, SceneObjectHandle,
     SceneObjectParallaxDepthRecord, SceneObjectRecord, SceneRenderPassRecord, SceneResourceRecord,
     SceneScriptProgramRecord, SceneStorage, SceneTextureRecord,
 };
@@ -9,7 +10,7 @@ use gilder::renderer::native_vulkan::{
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 7;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 8;
 
 #[derive(Debug, Serialize)]
 pub(super) struct SceneBackendPlanReport<'a> {
@@ -20,6 +21,9 @@ pub(super) struct SceneBackendPlanReport<'a> {
     pub scene_resources: &'a [SceneResourceRecord],
     pub scene_textures: &'a [SceneTextureRecord],
     pub scene_render_passes: &'a [SceneRenderPassRecord],
+    pub scene_materials: &'a [SceneMaterialRecord],
+    pub scene_material_passes: &'a [SceneMaterialPassRecord],
+    pub scene_material_constants: &'a [SceneMaterialConstantRecord],
     pub scene_script_programs: &'a [SceneScriptProgramRecord],
     pub scene_dynamic_texts: &'a [SceneDynamicTextRecord],
     pub scene_dynamic_text_glyphs: &'a [SceneDynamicTextGlyphRecord],
@@ -41,7 +45,7 @@ pub(super) struct SceneBackendPlanDrawVisibility {
 
 pub(super) fn scene_backend_plan_report<'a>(
     storage: &'a SceneStorage,
-    semantic_frame: &ResolvedSemanticFrame,
+    semantic_frame: &'a ResolvedSemanticFrame,
 ) -> Result<SceneBackendPlanReport<'a>, String> {
     let backend_plan =
         native_vulkan_scene_backend_plan_from_semantic_frame(storage, semantic_frame);
@@ -86,6 +90,9 @@ pub(super) fn scene_backend_plan_report<'a>(
         scene_resources: storage.resources(),
         scene_textures: storage.textures(),
         scene_render_passes: &storage.document().render_passes,
+        scene_materials: &storage.document().materials,
+        scene_material_passes: &storage.document().material_passes,
+        scene_material_constants: &storage.document().material_constants,
         scene_script_programs: storage.script_programs(),
         scene_dynamic_texts: storage.dynamic_texts(),
         scene_dynamic_text_glyphs: &storage.document().dynamic_text_glyphs,
