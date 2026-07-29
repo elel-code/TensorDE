@@ -230,10 +230,10 @@ impl SpectrumNormalizer {
         let smooth_factor = (20.0 * effective_dt).min(1.0);
         let minimum_delta = (-40.0 * effective_dt).max(-1.0);
         let maximum_delta = (40.0 * effective_dt).min(1.0);
-        for index in 0..128 {
+        for (index, input_value) in input.iter().copied().enumerate() {
             let reciprocal =
                 approximate_reciprocal(self.envelopes[index / GROUP_WIDTH].max(ENVELOPE_FLOOR));
-            let normalized = input[index] * reciprocal;
+            let normalized = input_value * reciprocal;
             self.smoothed[index] += (normalized - self.smoothed[index]) * smooth_factor;
             let delta =
                 (self.smoothed[index] - self.output[index]).clamp(minimum_delta, maximum_delta);
