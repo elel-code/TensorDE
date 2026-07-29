@@ -80,6 +80,18 @@ impl WeAssetSource {
         }
         Ok(None)
     }
+
+    pub(super) fn shader_include_directories(&self, shader_key: &str) -> Vec<PathBuf> {
+        let mut directories = Vec::new();
+        if let Some(parent) = self.root.join("shaders").join(shader_key).parent() {
+            push_existing_unique(&mut directories, parent.to_path_buf());
+        }
+        push_existing_unique(&mut directories, self.root.join("shaders"));
+        for root in &self.builtin_roots {
+            push_existing_unique(&mut directories, root.join("shaders"));
+        }
+        directories
+    }
 }
 
 fn read_file_asset(

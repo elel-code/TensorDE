@@ -20,6 +20,7 @@ pub struct GlslToSlangRequest {
     pub output: PathBuf,
     pub include_directories: Vec<PathBuf>,
     pub definitions: Vec<(String, String)>,
+    pub disabled_warnings: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +92,19 @@ impl SlangCompiler {
             OsString::from("-O2"),
             OsString::from("-warnings-as-errors"),
             OsString::from("all"),
+        ]);
+        if !request.disabled_warnings.is_empty() {
+            arguments.push(OsString::from("-warnings-disable"));
+            arguments.push(OsString::from(
+                request
+                    .disabled_warnings
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        arguments.extend([
             OsString::from("-restrictive-capability-check"),
             OsString::from("-reflection-json"),
             reflection_output.as_os_str().to_owned(),

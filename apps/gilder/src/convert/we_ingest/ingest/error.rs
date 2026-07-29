@@ -31,6 +31,11 @@ pub enum WeIngestError {
         object: u32,
         message: String,
     },
+    ShaderCompile {
+        program: String,
+        stage: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for WeIngestError {
@@ -52,6 +57,14 @@ impl fmt::Display for WeIngestError {
             Self::Script { object, message } => {
                 write!(f, "invalid SceneScript on object {object}: {message}")
             }
+            Self::ShaderCompile {
+                program,
+                stage,
+                message,
+            } => write!(
+                f,
+                "failed to cold-compile authored {stage} shader {program}: {message}"
+            ),
         }
     }
 }

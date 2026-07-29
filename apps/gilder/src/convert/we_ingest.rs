@@ -40,7 +40,9 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
     project_root: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
 ) -> Result<WeConvertSummary, WeConvertError> {
-    let ir = ingest_wallpaper_engine_project(project_root.as_ref())?;
+    let project_root = project_root.as_ref();
+    let mut ir = ingest_wallpaper_engine_project(project_root)?;
+    ingest::compile_authored_shader_programs(project_root, &mut ir)?;
     let binary = lower_ir_to_scene_binary(&ir)?;
     let output_path = output_path.as_ref();
     if let Some(parent) = output_path.parent() {

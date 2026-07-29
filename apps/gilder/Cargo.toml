@@ -56,6 +56,7 @@ serde_json = "1"
 toml = "1"
 vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
 vulkan-renderer = { path = "../../crates/vulkan-renderer", optional = true }
+vulkan-renderer-build = { path = "../../crates/vulkan-renderer-build" }
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", default-features = false, optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 

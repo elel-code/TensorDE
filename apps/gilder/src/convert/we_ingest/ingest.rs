@@ -7,6 +7,7 @@
 
 mod animation_layer;
 mod asset_source;
+mod authored_shader;
 mod builtin_effect_texture;
 mod caustics_specialization;
 mod effect_instance;
@@ -62,6 +63,7 @@ use super::tex::{
 };
 use animation_layer::animation_layer_initial_progress;
 use asset_source::WeAssetSource;
+pub(super) use authored_shader::compile_authored_shader_programs;
 use builtin_effect_texture::apply_builtin_effect_texture_defaults;
 use effect_target::{image_target_role, scale_divisor_to_milli};
 pub use error::WeIngestError;
