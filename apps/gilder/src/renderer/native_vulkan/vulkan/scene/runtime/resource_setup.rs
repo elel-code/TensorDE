@@ -617,6 +617,7 @@ pub(super) fn create_scene_gpu_resources(
         )
         .is_none(),
         frame_topology,
+        transform_scratch: transform_payload,
         dynamic_text,
         dynamic_effect_uniforms,
         scene_color_msaa_enabled,

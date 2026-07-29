@@ -390,6 +390,7 @@ struct SceneGpuResources {
     local_read_limits: SceneLocalReadDeviceLimits,
     sampled_descriptor_dirty_update_enabled: bool,
     frame_topology: SceneFrameTopology,
+    transform_scratch: Vec<u8>,
     dynamic_text: dynamic_text::SceneDynamicTextRuntime,
     dynamic_effect_uniforms: bool,
     scene_color_msaa_enabled: bool,

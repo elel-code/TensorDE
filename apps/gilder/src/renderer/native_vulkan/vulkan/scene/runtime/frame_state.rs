@@ -17,7 +17,7 @@ use crate::renderer::native_vulkan::{
 use super::composite_scissor::update_scene_composite_scissors;
 use super::composite_scissor::SceneMeshCoveragePlans;
 use super::draw_recording::SceneGpuDrawCommand;
-use super::draw_uniform::pack_scene_draw_uniforms;
+use super::draw_uniform::pack_scene_draw_uniforms_into;
 use super::dynamic_text::SceneDynamicTextRuntime;
 use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
@@ -321,6 +321,7 @@ pub(super) fn write_scene_frame_buffers(
     semantic_resolver: &mut SemanticFrameResolver,
     topology: &mut SceneFrameTopology,
     draw_commands: &mut [SceneGpuDrawCommand],
+    transform_scratch: &mut Vec<u8>,
     transform_buffer: &NativeVulkanVulkanaliaBuffer,
     material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
@@ -355,7 +356,8 @@ pub(super) fn write_scene_frame_buffers(
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
     let transform_started = cpu_timing_enabled.then(Instant::now);
-    let mut transform_payload = pack_scene_draw_uniforms(
+    pack_scene_draw_uniforms_into(
+        transform_scratch,
         storage,
         &graph.mesh_draws,
         scene_time_seconds,
@@ -378,9 +380,9 @@ pub(super) fn write_scene_frame_buffers(
             command.first_instance = state.first_instance;
             command.instance_count = state.instance_count;
         }
-        transform_payload.extend_from_slice(instances);
+        transform_scratch.extend_from_slice(instances);
     }
-    write_exact_frame_payload(device, transform_buffer, &transform_payload)?;
+    write_exact_frame_payload(device, transform_buffer, transform_scratch)?;
     let transform_update_micros = elapsed_optional_micros(transform_started);
 
     let material_started = cpu_timing_enabled.then(Instant::now);

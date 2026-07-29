@@ -40,6 +40,9 @@ struct DynamicTextLayout {
     initial_text: String,
     first_instance: u32,
     last_text: String,
+    positioned: Vec<(char, f32, f32)>,
+    lines: Vec<(usize, usize, f32)>,
+    instances: Vec<GlyphInstance>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -101,6 +104,9 @@ impl SceneDynamicTextRuntime {
                 initial_text,
                 first_instance,
                 last_text: String::new(),
+                positioned: Vec::with_capacity(record.max_glyph_count as usize),
+                lines: Vec::with_capacity(record.max_glyph_count as usize + 1),
+                instances: Vec::with_capacity(record.max_glyph_count as usize),
             });
             first_instance = first_instance
                 .checked_add(record.max_glyph_count)
@@ -142,17 +148,35 @@ impl SceneDynamicTextRuntime {
     ) -> Result<(bool, &'a [u8], &'a [SceneDynamicTextDrawState]), String> {
         let mut changed = false;
         for (layout, state) in self.layouts.iter_mut().zip(&mut self.draw_states) {
+            let DynamicTextLayout {
+                record,
+                font,
+                glyphs,
+                initial_text,
+                first_instance,
+                last_text,
+                positioned,
+                lines,
+                instances,
+            } = layout;
             let text = frame
                 .script_text_values
                 .iter()
-                .find(|value| value.object == layout.record.object)
+                .find(|value| value.object == record.object)
                 .map(|value| value.text.as_str())
-                .unwrap_or(layout.initial_text.as_str());
-            if text != layout.last_text {
-                let (instances, extent) = layout_text(layout, text)?;
-                let base = layout.first_instance as usize * DYNAMIC_TEXT_INSTANCE_STRIDE;
-                let capacity =
-                    layout.record.max_glyph_count as usize * DYNAMIC_TEXT_INSTANCE_STRIDE;
+                .unwrap_or(initial_text.as_str());
+            if text != last_text {
+                let extent = layout_text_with_font_into(
+                    record,
+                    font,
+                    glyphs,
+                    text,
+                    positioned,
+                    lines,
+                    instances,
+                )?;
+                let base = *first_instance as usize * DYNAMIC_TEXT_INSTANCE_STRIDE;
+                let capacity = record.max_glyph_count as usize * DYNAMIC_TEXT_INSTANCE_STRIDE;
                 self.payload[base..base + capacity].fill(0);
                 for (index, instance) in instances.iter().enumerate() {
                     let start = base + index * DYNAMIC_TEXT_INSTANCE_STRIDE;
@@ -163,8 +187,8 @@ impl SceneDynamicTextRuntime {
                 }
                 state.instance_count = instances.len() as u32;
                 state.extent = extent;
-                layout.last_text.clear();
-                layout.last_text.push_str(text);
+                last_text.clear();
+                last_text.push_str(text);
                 changed = true;
             }
         }
@@ -189,6 +213,30 @@ fn layout_text_with_font(
     glyphs: &[SceneDynamicTextGlyphRecord],
     text: &str,
 ) -> Result<(Vec<GlyphInstance>, [f32; 2]), String> {
+    let mut positioned = Vec::with_capacity(record.max_glyph_count as usize);
+    let mut lines = Vec::with_capacity(record.max_glyph_count as usize + 1);
+    let mut instances = Vec::with_capacity(record.max_glyph_count as usize);
+    let extent = layout_text_with_font_into(
+        record,
+        font,
+        glyphs,
+        text,
+        &mut positioned,
+        &mut lines,
+        &mut instances,
+    )?;
+    Ok((instances, extent))
+}
+
+fn layout_text_with_font_into(
+    record: &SceneDynamicTextRecord,
+    font: &impl Font,
+    glyphs: &[SceneDynamicTextGlyphRecord],
+    text: &str,
+    positioned: &mut Vec<(char, f32, f32)>,
+    lines: &mut Vec<(usize, usize, f32)>,
+    instances: &mut Vec<GlyphInstance>,
+) -> Result<[f32; 2], String> {
     let character_count = text.chars().count();
     if character_count > record.max_glyph_count as usize {
         return Err(format!(
@@ -199,8 +247,9 @@ fn layout_text_with_font(
     let scale = font_scale(font, record.pixels_per_em)?;
     let scaled = font.as_scaled(scale);
     let line_advance = scaled.height() + scaled.line_gap() + record.spacing[1];
-    let mut positioned = Vec::<(char, f32, f32)>::with_capacity(character_count);
-    let mut lines = Vec::new();
+    positioned.clear();
+    lines.clear();
+    instances.clear();
     for (line_index, line) in text.split('\n').enumerate() {
         let line = line.strip_suffix('\r').unwrap_or(line);
         let start = positioned.len();
@@ -227,7 +276,7 @@ fn layout_text_with_font(
         .iter()
         .map(|(_, _, width)| *width)
         .fold(0.0_f32, f32::max);
-    for (start, end, width) in lines {
+    for &(start, end, width) in lines.iter() {
         let offset = match record.horizontal_align {
             SceneTextHorizontalAlign::Left => 0.0,
             SceneTextHorizontalAlign::Center => (maximum_line_width - width) * 0.5,
@@ -238,10 +287,9 @@ fn layout_text_with_font(
         }
     }
 
-    let mut raw = Vec::with_capacity(positioned.len());
     let mut minimum = [f32::INFINITY; 2];
     let mut maximum = [f32::NEG_INFINITY; 2];
-    for (character, x, y) in positioned {
+    for &(character, x, y) in positioned.iter() {
         if character.is_whitespace() {
             continue;
         }
@@ -265,10 +313,13 @@ fn layout_text_with_font(
         minimum[1] = minimum[1].min(bounds[1]);
         maximum[0] = maximum[0].max(bounds[2]);
         maximum[1] = maximum[1].max(bounds[3]);
-        raw.push((bounds, glyph.atlas_uv));
+        instances.push(GlyphInstance {
+            position: bounds,
+            atlas_uv: glyph.atlas_uv,
+        });
     }
-    if raw.is_empty() {
-        return Ok((Vec::new(), [0.0; 2]));
+    if instances.is_empty() {
+        return Ok([0.0; 2]);
     }
     let extent = [
         maximum[0] - minimum[0] + record.padding[0] * 2.0,
@@ -284,19 +335,16 @@ fn layout_text_with_font(
         SceneTextVerticalAlign::Center => extent[1] * 0.5,
         SceneTextVerticalAlign::Bottom => extent[1],
     };
-    let instances = raw
-        .into_iter()
-        .map(|(bounds, atlas_uv)| GlyphInstance {
-            position: [
-                bounds[0] - minimum[0] + anchor_x + record.padding[0],
-                anchor_y - (bounds[3] - minimum[1] + record.padding[1]),
-                bounds[2] - minimum[0] + anchor_x + record.padding[0],
-                anchor_y - (bounds[1] - minimum[1] + record.padding[1]),
-            ],
-            atlas_uv,
-        })
-        .collect();
-    Ok((instances, extent))
+    for instance in instances {
+        let bounds = instance.position;
+        instance.position = [
+            bounds[0] - minimum[0] + anchor_x + record.padding[0],
+            anchor_y - (bounds[3] - minimum[1] + record.padding[1]),
+            bounds[2] - minimum[0] + anchor_x + record.padding[0],
+            anchor_y - (bounds[1] - minimum[1] + record.padding[1]),
+        ];
+    }
+    Ok(extent)
 }
 
 fn font_scale(font: &impl Font, pixels_per_em: f32) -> Result<ab_glyph::PxScale, String> {
@@ -444,5 +492,51 @@ mod tests {
         assert_eq!(second.len(), 2);
         assert_eq!(first_extent, [17.0, 12.0]);
         assert_ne!(first_bytes, second_bytes);
+    }
+
+    #[test]
+    fn repeated_clock_layout_reuses_bounded_scratch_capacity() {
+        let record = SceneDynamicTextRecord {
+            object: SceneObjectHandle(4),
+            font_resource: crate::engine::scene::SceneResourceId(7),
+            atlas_resource: crate::engine::scene::SceneResourceId(9),
+            glyph_start: 0,
+            glyph_count: 3,
+            max_glyph_count: 8,
+            pixels_per_em: 20.0,
+            spacing: [0.0; 2],
+            padding: [1.0; 2],
+            horizontal_align: SceneTextHorizontalAlign::Right,
+            vertical_align: SceneTextVerticalAlign::Center,
+        };
+        let glyphs = [glyph('1', 0.0), glyph('2', 0.2), glyph('3', 0.4)];
+        let mut positioned = Vec::with_capacity(record.max_glyph_count as usize);
+        let mut lines = Vec::with_capacity(record.max_glyph_count as usize + 1);
+        let mut instances = Vec::with_capacity(record.max_glyph_count as usize);
+        let capacities = (
+            positioned.capacity(),
+            lines.capacity(),
+            instances.capacity(),
+        );
+        for text in ["12", "23", "31", "12\n3"].into_iter().cycle().take(4_096) {
+            layout_text_with_font_into(
+                &record,
+                &TestFont,
+                &glyphs,
+                text,
+                &mut positioned,
+                &mut lines,
+                &mut instances,
+            )
+            .expect("bounded retained clock layout");
+        }
+        assert_eq!(
+            (
+                positioned.capacity(),
+                lines.capacity(),
+                instances.capacity(),
+            ),
+            capacities
+        );
     }
 }

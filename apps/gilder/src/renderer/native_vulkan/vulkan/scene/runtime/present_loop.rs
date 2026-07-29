@@ -455,6 +455,7 @@ pub(super) fn with_scene_present(
             &mut semantic_resolver,
             &mut scene_resources.frame_topology,
             &mut scene_resources.draw_commands,
+            &mut scene_resources.transform_scratch,
             &frame_resources.transform_buffer,
             frame_resources.material_buffer.as_ref(),
             frame_resources.skinning_buffer.as_ref(),

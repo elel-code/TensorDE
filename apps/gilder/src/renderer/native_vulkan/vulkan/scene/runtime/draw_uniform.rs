@@ -32,6 +32,30 @@ pub(super) fn pack_scene_draw_uniforms(
     output_extent: [u32; 2],
 ) -> Vec<u8> {
     let mut payload = Vec::with_capacity(draws.len() * SCENE_DRAW_UNIFORM_BYTES as usize);
+    pack_scene_draw_uniforms_into(
+        &mut payload,
+        storage,
+        draws,
+        scene_time_seconds,
+        output_extent,
+    );
+    payload
+}
+
+pub(super) fn pack_scene_draw_uniforms_into(
+    payload: &mut Vec<u8>,
+    storage: &SceneStorage,
+    draws: &[SceneRenderingDeviceMeshDraw],
+    scene_time_seconds: f32,
+    output_extent: [u32; 2],
+) {
+    payload.clear();
+    payload.reserve(
+        draws
+            .len()
+            .saturating_mul(SCENE_DRAW_UNIFORM_BYTES as usize)
+            .saturating_sub(payload.capacity()),
+    );
     for draw in draws {
         let layout = draw_parameter_layout(storage, draw);
         let actual_shader = storage.string(draw.shader_key).unwrap_or_default();
@@ -116,7 +140,10 @@ pub(super) fn pack_scene_draw_uniforms(
             payload.extend_from_slice(&value.to_le_bytes());
         }
     }
-    payload
+    debug_assert_eq!(
+        payload.len(),
+        draws.len() * SCENE_DRAW_UNIFORM_BYTES as usize
+    );
 }
 
 fn material_shader_key(storage: &SceneStorage, material: SceneMaterialHandle) -> Option<&str> {

@@ -284,6 +284,37 @@ fn empty_pointer_click_frames_do_not_allocate_js_arrays() {
 }
 
 #[test]
+fn dynamic_text_frames_do_not_retain_js_strings_or_arrays() {
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Text,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return `clock:${engine.runtime.toFixed(3)}`; }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect("runtime");
+    let mut deltas = Vec::with_capacity(1);
+    runtime
+        .dispatch_into(input(SceneScriptSubscriptions::FRAME), &mut deltas)
+        .expect("initial dispatch");
+    runtime.run_gc();
+    let baseline = runtime.memory_snapshot();
+    for frame in 0..16_384 {
+        let mut frame_input = input(SceneScriptSubscriptions::FRAME);
+        frame_input.scene_time_seconds = f64::from(frame) / 240.0;
+        runtime
+            .dispatch_into(frame_input, &mut deltas)
+            .expect("retained dynamic-text dispatch");
+    }
+    runtime.run_gc();
+    let retained = runtime.memory_snapshot();
+    assert_eq!(retained.object_count, baseline.object_count);
+    assert_eq!(retained.string_count, baseline.string_count);
+    assert_eq!(retained.allocation_count, baseline.allocation_count);
+}
+
+#[test]
 fn builtin_we_math_module_is_shared_by_authored_modules() {
     let programs = [
         program(
