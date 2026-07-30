@@ -13,6 +13,22 @@ pub enum BuiltinSceneDescriptorHeapMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinSceneDescriptorBindingKind {
+    SampledImage,
+    StorageImage,
+    Sampler,
+    UniformBuffer,
+    StorageBuffer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinSceneDescriptorBinding {
+    pub kind: BuiltinSceneDescriptorBindingKind,
+    pub register: u32,
+    pub push_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSceneParameterLayout {
     None,
     Blend,

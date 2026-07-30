@@ -3,7 +3,10 @@
 use vulkan_renderer::descriptor_heap_element_index;
 
 use crate::engine::scene::{SceneRenderingDeviceMeshDraw, SceneStorage};
-use crate::renderer::native_vulkan::scene::BuiltinSceneDescriptorHeapMode;
+use crate::renderer::native_vulkan::scene::{
+    BuiltinSceneDescriptorBinding, BuiltinSceneDescriptorBindingKind,
+    BuiltinSceneDescriptorHeapMode, BuiltinSceneShader,
+};
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -20,18 +23,21 @@ use super::{SceneGpuDrawCommand, ScenePipelineDescriptorLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SceneNativeDescriptorPush {
+    EngineBuiltIn(Vec<u8>),
     SceneOwned(Vec<u8>),
 }
 
 impl SceneNativeDescriptorPush {
     pub(super) fn bytes(&self) -> &[u8] {
         match self {
+            Self::EngineBuiltIn(bytes) => bytes,
             Self::SceneOwned(bytes) => bytes,
         }
     }
 
     fn byte_len(&self) -> u64 {
         match self {
+            Self::EngineBuiltIn(bytes) => bytes.len() as u64,
             Self::SceneOwned(bytes) => bytes.len() as u64,
         }
     }
@@ -65,15 +71,132 @@ pub(super) fn resolve_scene_native_descriptor_pushes(
                 match shader.fragment_descriptor_heap_mode {
                     BuiltinSceneDescriptorHeapMode::Mapped => None,
                     BuiltinSceneDescriptorHeapMode::Native => {
-                        return Err(format!(
-                            "native descriptor-heap scene shader {key:?} has no typed push contract"
-                        ));
+                        let push = builtin_fragment_push(shader, layout, plan, command)?;
+                        validate_native_push_size(key, &push, plan.max_push_data_size)?;
+                        Some(push)
                     }
                 }
             }
         };
     }
     Ok(())
+}
+
+fn builtin_fragment_push(
+    shader: &BuiltinSceneShader,
+    layout: &ScenePipelineDescriptorLayout,
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    draw: &SceneGpuDrawCommand,
+) -> Result<SceneNativeDescriptorPush, String> {
+    let mut bytes = vec![0; shader.fragment_push_constant_bytes as usize];
+    let resource_slice_base = descriptor_slice_base(
+        &plan.resource_descriptor_offsets,
+        draw.resource_descriptor_base,
+        plan.resource_heap_alignment,
+        "resource",
+    )?;
+    let sampler_slice_base = shader
+        .fragment_bindings
+        .iter()
+        .any(|binding| binding.kind == BuiltinSceneDescriptorBindingKind::Sampler)
+        .then(|| {
+            descriptor_slice_base(
+                &plan.sampler_descriptor_offsets,
+                draw.sampler_descriptor_base,
+                plan.sampler_heap_alignment,
+                "sampler",
+            )
+        })
+        .transpose()?;
+    for binding in shader.fragment_bindings {
+        let element_index = builtin_fragment_binding_index(
+            binding,
+            layout,
+            plan,
+            draw,
+            resource_slice_base,
+            sampler_slice_base,
+        )?;
+        let offset = binding.push_offset as usize;
+        let push_byte_count = bytes.len();
+        let target = bytes.get_mut(offset..offset + 4).ok_or_else(|| {
+            format!(
+                "built-in scene fragment binding {:?} register {} exceeds {} push bytes",
+                binding.kind,
+                binding.register,
+                push_byte_count
+            )
+        })?;
+        target.copy_from_slice(&element_index.to_le_bytes());
+    }
+    Ok(SceneNativeDescriptorPush::EngineBuiltIn(bytes))
+}
+
+fn builtin_fragment_binding_index(
+    binding: &BuiltinSceneDescriptorBinding,
+    layout: &ScenePipelineDescriptorLayout,
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    draw: &SceneGpuDrawCommand,
+    resource_slice_base: u64,
+    sampler_slice_base: Option<u64>,
+) -> Result<u32, String> {
+    match binding.kind {
+        BuiltinSceneDescriptorBindingKind::UniformBuffer => {
+            let descriptor = draw.material_resource_descriptor.ok_or_else(|| {
+                "built-in fragment material uniform has no retained descriptor".to_owned()
+            })?;
+            validate_resource_kind(
+                plan,
+                descriptor,
+                NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                "built-in material uniform",
+            )?;
+            relative_element_index(
+                &plan.resource_descriptor_offsets,
+                descriptor,
+                resource_slice_base,
+                plan.buffer_descriptor_size,
+                "built-in material uniform",
+            )
+        }
+        BuiltinSceneDescriptorBindingKind::SampledImage => {
+            let descriptor = sampled_descriptor(layout, draw, builtin_texture_slot(binding.register))?;
+            validate_resource_kind(
+                plan,
+                descriptor,
+                NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                "built-in sampled image",
+            )?;
+            relative_element_index(
+                &plan.resource_descriptor_offsets,
+                descriptor,
+                resource_slice_base,
+                plan.image_descriptor_size,
+                "built-in sampled image",
+            )
+        }
+        BuiltinSceneDescriptorBindingKind::Sampler => {
+            let sampled_index = sampled_slot_index(layout, builtin_texture_slot(binding.register))?;
+            relative_element_index(
+                &plan.sampler_descriptor_offsets,
+                draw.sampler_descriptor_base + sampled_index,
+                sampler_slice_base.ok_or_else(|| {
+                    "built-in fragment sampler has no bound sampler heap slice".to_owned()
+                })?,
+                plan.sampler_descriptor_size,
+                "built-in sampler",
+            )
+        }
+        BuiltinSceneDescriptorBindingKind::StorageImage
+        | BuiltinSceneDescriptorBindingKind::StorageBuffer => Err(format!(
+            "built-in fragment {:?} register {} has no retained descriptor source",
+            binding.kind, binding.register
+        )),
+    }
+}
+
+fn builtin_texture_slot(register: u32) -> u32 {
+    if register == 35 { 3 } else { register }
 }
 
 fn validate_native_push_size(
@@ -370,13 +493,59 @@ mod tests {
 
         let push = scene_owned_pipeline_push(&vertex, &fragment, &layout, &plan, &draw)
             .expect("owned push");
-        let SceneNativeDescriptorPush::SceneOwned(bytes) = push;
+        let bytes = match push {
+            SceneNativeDescriptorPush::SceneOwned(bytes) => bytes,
+            SceneNativeDescriptorPush::EngineBuiltIn(_) => panic!("expected scene-owned push"),
+        };
         assert_eq!(
             bytes
                 .chunks_exact(4)
                 .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
                 .collect::<Vec<_>>(),
             [1, 3, 0, 2]
+        );
+    }
+
+    #[test]
+    fn built_in_fragment_push_uses_native_heap_indices_without_mapping_chain() {
+        let layout = ScenePipelineDescriptorLayout {
+            sampled_slots: vec![0],
+            input_attachment_slots: Vec::new(),
+            material_uniform_enabled: true,
+            skinning_storage_enabled: false,
+            scene_owned_uniform_count: 0,
+        };
+        let plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 1,
+                properties: descriptor_properties(),
+            },
+        );
+        let shader = crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key(
+            "gilder/dynamic-text",
+        )
+        .expect("dynamic-text built-in shader");
+        let mut draw = draw_command();
+        draw.material_resource_descriptor = Some(1);
+        draw.sampled_resource_descriptor_base = 2;
+
+        let push = builtin_fragment_push(shader, &layout, &plan, &draw)
+            .expect("built-in native fragment push");
+        let bytes = match push {
+            SceneNativeDescriptorPush::EngineBuiltIn(bytes) => bytes,
+            SceneNativeDescriptorPush::SceneOwned(_) => panic!("expected built-in push"),
+        };
+        assert_eq!(
+            bytes
+                .chunks_exact(4)
+                .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+                .collect::<Vec<_>>(),
+            [2, 0, 1]
         );
     }
 

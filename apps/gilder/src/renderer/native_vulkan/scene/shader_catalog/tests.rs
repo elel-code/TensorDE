@@ -204,7 +204,13 @@
                 SPIRV_STORAGE_INPUT,
                 1,
             );
-            assert_spirv_material_uniform(shader.fragment_spirv);
+            assert_eq!(
+                shader.fragment_descriptor_heap_mode,
+                BuiltinSceneDescriptorHeapMode::Native
+            );
+            assert!(shader.fragment_bindings.iter().any(|binding| {
+                binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer
+            }));
             assert!(shader
                 .fragment_source
                 .contains("float noise = texture(g_Texture2, v_NoiseTexCoord).x * 2.0 - 1.0;")
@@ -219,6 +225,25 @@
                 .contains("o_Color = texture(g_Texture0, v_TexCoord + offset);"));
             assert!(!shader.fragment_source.contains("clamp("));
             assert!(!shader.fragment_source.contains("noiseUv"));
+        }
+    }
+
+    #[test]
+    fn every_builtin_fragment_uses_typed_native_descriptor_heap_push_data() {
+        for shader in native_vulkan_scene_shader_catalog() {
+            assert_eq!(
+                shader.fragment_descriptor_heap_mode,
+                BuiltinSceneDescriptorHeapMode::Native,
+                "{}",
+                shader.key
+            );
+            assert!(!shader.fragment_bindings.is_empty(), "{}", shader.key);
+            assert_eq!(
+                shader.fragment_push_constant_bytes as usize,
+                shader.fragment_bindings.len() * 4,
+                "{}",
+                shader.key
+            );
         }
     }
 

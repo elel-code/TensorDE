@@ -43,6 +43,7 @@ pub use runtime::{
 pub(crate) use runtime::validate_scene_runtime_plan;
 #[allow(unused_imports)]
 pub use shader_catalog::{
+    BuiltinSceneDescriptorBinding, BuiltinSceneDescriptorBindingKind,
     BuiltinSceneDescriptorHeapMode, BuiltinSceneInputAttachment, BuiltinSceneLocalReadShader,
     BuiltinSceneParameterLayout, BuiltinSceneShader,
     native_vulkan_particle_compute_shader, native_vulkan_scene_shader_catalog,
