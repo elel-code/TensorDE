@@ -5,14 +5,16 @@ use std::collections::BTreeSet;
 mod installed_effects;
 #[path = "catalog/key.rs"]
 mod key;
-#[path = "catalog/native_fragment.rs"]
-mod native_fragment;
+#[path = "catalog/native_stage.rs"]
+mod native_stage;
 #[path = "catalog/specs.rs"]
 mod specs;
 
 use installed_effects::INSTALLED_EFFECT_PROGRAMS;
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
-use native_fragment::{builtin_binding_expressions, compile_native_scene_fragment};
+use native_stage::{
+    builtin_binding_expressions, compile_native_scene_fragment, compile_native_scene_vertex,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SceneShaderSpec {
@@ -99,8 +101,8 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str(
         "    pub vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive,\n",
     );
-    generated.push_str("    pub vertex_spirv: &'static [u32],\n");
-    generated.push_str("    pub object_mesh_vertex_spirv: Option<&'static [u32]>,\n");
+    generated.push_str("    pub vertex: BuiltinSceneVertexShader,\n");
+    generated.push_str("    pub object_mesh_vertex: Option<BuiltinSceneVertexShader>,\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
     generated.push_str("    #[cfg(test)]\n    pub fragment_source: &'static str,\n");
     generated.push_str("    pub fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,\n");
@@ -115,25 +117,30 @@ pub(crate) fn build_scene_shader_catalog() {
         .chain(super::FINAL_EFFECT_SHADER_SPECS)
     {
         let (vertex_source, fragment_source) = scene_shader_sources(*spec);
-        let vertex_path = compile_scene_shader_stage(&shader_dir, spec.key, "vert", &vertex_source);
-        let object_mesh_vertex_path = match spec.family {
+        let fragment = compile_native_scene_fragment(&shader_dir, spec.key, &fragment_source);
+        let vertex = compile_native_scene_vertex(
+            &shader_dir,
+            spec.key,
+            &vertex_source,
+            fragment.push_constant_bytes,
+        );
+        let object_mesh_vertex = match spec.family {
             SceneShaderFamily::Effect => {
                 let shader = effect_shader_name_for_key(spec.key);
                 let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
                 super::effect_object_mesh_vertex_source(spec.key, shader, texture_slot_mask).map(
                     |source| {
-                        compile_scene_shader_stage(
+                        compile_native_scene_vertex(
                             &shader_dir,
                             &format!("{}__OBJECT_MESH", spec.key),
-                            "vert",
                             &source,
+                            fragment.push_constant_bytes,
                         )
                     },
                 )
             }
             _ => None,
         };
-        let fragment = compile_native_scene_fragment(&shader_dir, spec.key, &fragment_source);
         let input_attachment_fragment_source = super::input_attachment_fragment_source(matches!(
             spec.family,
             SceneShaderFamily::FlatPassthrough
@@ -147,7 +154,8 @@ pub(crate) fn build_scene_shader_catalog() {
                     source.source(),
                 )
             });
-        let vertex_path = vertex_path
+        let vertex_path = vertex
+            .spirv
             .to_str()
             .expect("built-in scene vertex shader path must be UTF-8");
         let fragment_path = fragment
@@ -165,25 +173,34 @@ pub(crate) fn build_scene_shader_catalog() {
                 || "None".to_owned(),
                 |(source, path)| source.catalog_expression(path),
             );
-        let object_mesh_vertex_spirv = object_mesh_vertex_path.as_ref().map_or_else(
+        let object_mesh_vertex = object_mesh_vertex.as_ref().map_or_else(
             || "None".to_owned(),
-            |path| {
+            |vertex| {
+                let bindings = builtin_binding_expressions(&vertex.bindings);
                 format!(
-                    "Some(vulkan_renderer::include_spirv!({:?}))",
-                    path.to_str()
+                    "Some(BuiltinSceneVertexShader {{ spirv: vulkan_renderer::include_spirv!({:?}), push_constant_bytes: {}, bindings: &[{}] }})",
+                    vertex
+                        .spirv
+                        .to_str()
                         .expect("built-in object-mesh vertex shader path must be UTF-8")
+                    ,
+                    vertex.push_constant_bytes,
+                    bindings,
                 )
             },
         );
         let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
         let parameter_layout = scene_shader_parameter_layout(*spec);
+        let vertex_bindings = builtin_binding_expressions(&vertex.bindings);
         let fragment_bindings = builtin_binding_expressions(&fragment.bindings);
         let fragment_coordinate_fetch_slot_mask =
             u32::from(spec.key == "we/flat-rounded-hsl-source");
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex_spirv: vulkan_renderer::include_spirv!({:?}), object_mesh_vertex_spirv: {object_mesh_vertex_spirv}, fragment_spirv: vulkan_renderer::include_spirv!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode::Native, fragment_push_constant_bytes: {}, fragment_bindings: &[{}], local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            "    BuiltinSceneShader {{ key: {:?}, vertex_primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::{vertex_primitive}, vertex: BuiltinSceneVertexShader {{ spirv: vulkan_renderer::include_spirv!({:?}), push_constant_bytes: {}, bindings: &[{}] }}, object_mesh_vertex: {object_mesh_vertex}, fragment_spirv: vulkan_renderer::include_spirv!({:?}), #[cfg(test)] fragment_source: include_str!({:?}), fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode::Native, fragment_push_constant_bytes: {}, fragment_bindings: &[{}], local_read_shader: {local_read_shader}, fragment_coordinate_fetch_slot_mask: {fragment_coordinate_fetch_slot_mask}, parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
             spec.key,
             vertex_path,
+            vertex.push_constant_bytes,
+            vertex_bindings,
             fragment_path,
             fragment_source_path,
             fragment.push_constant_bytes,

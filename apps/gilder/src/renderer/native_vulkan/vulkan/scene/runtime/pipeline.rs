@@ -21,8 +21,6 @@ use crate::renderer::native_vulkan::scene::{
 };
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping,
-    native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 

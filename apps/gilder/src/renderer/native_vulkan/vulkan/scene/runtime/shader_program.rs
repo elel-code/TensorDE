@@ -19,8 +19,8 @@ use crate::engine::scene::{
     SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
-    BuiltinSceneShader, native_vulkan_scene_shader_for_key,
-    native_vulkan_scene_vertex_spirv_for_primitive,
+    BuiltinSceneShader, BuiltinSceneVertexShader, native_vulkan_scene_shader_for_key,
+    native_vulkan_scene_vertex_shader_for_primitive,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -33,7 +33,7 @@ pub(super) enum SceneResolvedGraphicsProgram<'a> {
     EngineBuiltIn {
         key: &'a str,
         shader: &'static BuiltinSceneShader,
-        vertex_spirv: &'static [u32],
+        vertex: BuiltinSceneVertexShader,
     },
 }
 
@@ -51,7 +51,7 @@ impl<'a> SceneResolvedGraphicsProgram<'a> {
     pub(super) fn vertex_spirv(self, storage: &'a SceneStorage) -> &'a [u32] {
         match self {
             Self::SceneOwned { vertex, .. } => storage.shader_program_spirv(vertex),
-            Self::EngineBuiltIn { vertex_spirv, .. } => vertex_spirv,
+            Self::EngineBuiltIn { vertex, .. } => vertex.spirv,
         }
     }
 
@@ -66,6 +66,12 @@ impl<'a> SceneResolvedGraphicsProgram<'a> {
         match self {
             Self::SceneOwned { vertex, .. } => Some(vertex),
             Self::EngineBuiltIn { .. } => None,
+        }
+    }
+    pub(super) fn built_in_vertex(self) -> Option<BuiltinSceneVertexShader> {
+        match self {
+            Self::SceneOwned { .. } => None,
+            Self::EngineBuiltIn { vertex, .. } => Some(vertex),
         }
     }
 }
@@ -108,13 +114,13 @@ pub(super) fn resolve_scene_graphics_program(
     }
     let shader = native_vulkan_scene_shader_for_key(key)
         .ok_or_else(|| format!("engine-owned scene shader {key:?} is not built in"))?;
-    let vertex_spirv = native_vulkan_scene_vertex_spirv_for_primitive(shader, primitive).ok_or_else(|| {
-        format!("engine-owned scene shader {key:?} has no {primitive:?} vertex program")
-    })?;
+    let vertex = native_vulkan_scene_vertex_shader_for_primitive(shader, primitive).ok_or_else(
+        || format!("engine-owned scene shader {key:?} has no {primitive:?} vertex program"),
+    )?;
     Ok(SceneResolvedGraphicsProgram::EngineBuiltIn {
         key,
         shader,
-        vertex_spirv,
+        vertex,
     })
 }
 

@@ -28,6 +28,13 @@ pub struct BuiltinSceneDescriptorBinding {
     pub push_offset: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BuiltinSceneVertexShader {
+    pub spirv: &'static [u32],
+    pub push_constant_bytes: u32,
+    pub bindings: &'static [BuiltinSceneDescriptorBinding],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSceneParameterLayout {
     None,
@@ -137,11 +144,19 @@ pub fn native_vulkan_scene_vertex_spirv_for_primitive(
     shader: &'static BuiltinSceneShader,
     primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive,
 ) -> Option<&'static [u32]> {
+    native_vulkan_scene_vertex_shader_for_primitive(shader, primitive)
+        .map(|vertex| vertex.spirv)
+}
+
+pub fn native_vulkan_scene_vertex_shader_for_primitive(
+    shader: &'static BuiltinSceneShader,
+    primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive,
+) -> Option<BuiltinSceneVertexShader> {
     if shader.vertex_primitive == primitive {
-        return Some(shader.vertex_spirv);
+        return Some(shader.vertex);
     }
     (primitive == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh)
-        .then_some(shader.object_mesh_vertex_spirv)
+        .then_some(shader.object_mesh_vertex)
         .flatten()
 }
 

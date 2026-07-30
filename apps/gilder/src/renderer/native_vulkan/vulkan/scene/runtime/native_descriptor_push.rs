@@ -5,7 +5,7 @@ use vulkan_renderer::descriptor_heap_element_index;
 use crate::engine::scene::{SceneRenderingDeviceMeshDraw, SceneStorage};
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneDescriptorBinding, BuiltinSceneDescriptorBindingKind,
-    BuiltinSceneDescriptorHeapMode, BuiltinSceneShader,
+    BuiltinSceneDescriptorHeapMode, BuiltinSceneShader, BuiltinSceneVertexShader,
 };
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
@@ -20,6 +20,21 @@ use super::shader_program::{
     scene_owned_stage_resource_plan,
 };
 use super::{SceneGpuDrawCommand, ScenePipelineDescriptorLayout};
+
+#[derive(Clone, Copy)]
+enum BuiltinSceneShaderStage {
+    Fragment,
+    Vertex,
+}
+
+impl BuiltinSceneShaderStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fragment => "fragment",
+            Self::Vertex => "vertex",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SceneNativeDescriptorPush {
@@ -67,11 +82,15 @@ pub(super) fn resolve_scene_native_descriptor_pushes(
                 validate_native_push_size(key, &push, plan.max_push_data_size)?;
                 Some(push)
             }
-            SceneResolvedGraphicsProgram::EngineBuiltIn { key, shader, .. } => {
+            SceneResolvedGraphicsProgram::EngineBuiltIn {
+                key,
+                shader,
+                vertex,
+            } => {
                 match shader.fragment_descriptor_heap_mode {
                     BuiltinSceneDescriptorHeapMode::Mapped => None,
                     BuiltinSceneDescriptorHeapMode::Native => {
-                        let push = builtin_fragment_push(shader, layout, plan, command)?;
+                        let push = builtin_pipeline_push(shader, vertex, layout, plan, command)?;
                         validate_native_push_size(key, &push, plan.max_push_data_size)?;
                         Some(push)
                     }
@@ -82,13 +101,17 @@ pub(super) fn resolve_scene_native_descriptor_pushes(
     Ok(())
 }
 
-fn builtin_fragment_push(
+fn builtin_pipeline_push(
     shader: &BuiltinSceneShader,
+    vertex: BuiltinSceneVertexShader,
     layout: &ScenePipelineDescriptorLayout,
     plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     draw: &SceneGpuDrawCommand,
 ) -> Result<SceneNativeDescriptorPush, String> {
-    let mut bytes = vec![0; shader.fragment_push_constant_bytes as usize];
+    let byte_count = shader
+        .fragment_push_constant_bytes
+        .max(vertex.push_constant_bytes) as usize;
+    let mut bytes = vec![0; byte_count];
     let resource_slice_base = descriptor_slice_base(
         &plan.resource_descriptor_offsets,
         draw.resource_descriptor_base,
@@ -108,31 +131,36 @@ fn builtin_fragment_push(
             )
         })
         .transpose()?;
-    for binding in shader.fragment_bindings {
-        let element_index = builtin_fragment_binding_index(
-            binding,
-            layout,
-            plan,
-            draw,
-            resource_slice_base,
-            sampler_slice_base,
-        )?;
-        let offset = binding.push_offset as usize;
-        let push_byte_count = bytes.len();
-        let target = bytes.get_mut(offset..offset + 4).ok_or_else(|| {
-            format!(
-                "built-in scene fragment binding {:?} register {} exceeds {} push bytes",
-                binding.kind,
-                binding.register,
-                push_byte_count
-            )
-        })?;
-        target.copy_from_slice(&element_index.to_le_bytes());
+    for (stage, bindings) in [
+        (
+            BuiltinSceneShaderStage::Fragment,
+            shader.fragment_bindings,
+        ),
+        (BuiltinSceneShaderStage::Vertex, vertex.bindings),
+    ] {
+        for binding in bindings {
+            let element_index = builtin_stage_binding_index(
+                stage, binding, layout, plan, draw, resource_slice_base, sampler_slice_base,
+            )?;
+            let offset = binding.push_offset as usize;
+            let push_byte_count = bytes.len();
+            let target = bytes.get_mut(offset..offset + 4).ok_or_else(|| {
+                format!(
+                    "built-in scene {stage} binding {:?} register {} exceeds {} push bytes",
+                    binding.kind,
+                    binding.register,
+                    push_byte_count,
+                    stage = stage.label()
+                )
+            })?;
+            target.copy_from_slice(&element_index.to_le_bytes());
+        }
     }
     Ok(SceneNativeDescriptorPush::EngineBuiltIn(bytes))
 }
 
-fn builtin_fragment_binding_index(
+fn builtin_stage_binding_index(
+    stage: BuiltinSceneShaderStage,
     binding: &BuiltinSceneDescriptorBinding,
     layout: &ScenePipelineDescriptorLayout,
     plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -140,6 +168,9 @@ fn builtin_fragment_binding_index(
     resource_slice_base: u64,
     sampler_slice_base: Option<u64>,
 ) -> Result<u32, String> {
+    if matches!(stage, BuiltinSceneShaderStage::Vertex) {
+        return builtin_vertex_binding_index(binding, plan, draw, resource_slice_base);
+    }
     match binding.kind {
         BuiltinSceneDescriptorBindingKind::UniformBuffer => {
             let descriptor = draw.material_resource_descriptor.ok_or_else(|| {
@@ -193,6 +224,49 @@ fn builtin_fragment_binding_index(
             binding.kind, binding.register
         )),
     }
+}
+
+fn builtin_vertex_binding_index(
+    binding: &BuiltinSceneDescriptorBinding,
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    draw: &SceneGpuDrawCommand,
+    resource_slice_base: u64,
+) -> Result<u32, String> {
+    let (descriptor, kind, label) = match (binding.kind, binding.register) {
+        (BuiltinSceneDescriptorBindingKind::UniformBuffer, 2) => (
+            draw.resource_descriptor_base,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+            "built-in draw uniform",
+        ),
+        (BuiltinSceneDescriptorBindingKind::UniformBuffer, 3) => (
+            draw.material_resource_descriptor.ok_or_else(|| {
+                "built-in vertex material uniform has no retained descriptor".to_owned()
+            })?,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+            "built-in vertex material uniform",
+        ),
+        (BuiltinSceneDescriptorBindingKind::StorageBuffer, 4) => (
+            draw.skinning_resource_descriptor.ok_or_else(|| {
+                "built-in vertex skinning buffer has no retained descriptor".to_owned()
+            })?,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+            "built-in vertex skinning buffer",
+        ),
+        _ => {
+            return Err(format!(
+                "built-in vertex {:?} register {} has no retained descriptor source",
+                binding.kind, binding.register
+            ));
+        }
+    };
+    validate_resource_kind(plan, descriptor, kind, label)?;
+    relative_element_index(
+        &plan.resource_descriptor_offsets,
+        descriptor,
+        resource_slice_base,
+        plan.buffer_descriptor_size,
+        label,
+    )
 }
 
 fn builtin_texture_slot(register: u32) -> u32 {
@@ -534,8 +608,8 @@ mod tests {
         draw.material_resource_descriptor = Some(1);
         draw.sampled_resource_descriptor_base = 2;
 
-        let push = builtin_fragment_push(shader, &layout, &plan, &draw)
-            .expect("built-in native fragment push");
+        let push = builtin_pipeline_push(shader, shader.vertex, &layout, &plan, &draw)
+            .expect("built-in native pipeline push");
         let bytes = match push {
             SceneNativeDescriptorPush::EngineBuiltIn(bytes) => bytes,
             SceneNativeDescriptorPush::SceneOwned(_) => panic!("expected built-in push"),
@@ -545,7 +619,7 @@ mod tests {
                 .chunks_exact(4)
                 .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
                 .collect::<Vec<_>>(),
-            [2, 0, 1]
+            [2, 0, 1, 0]
         );
     }
 

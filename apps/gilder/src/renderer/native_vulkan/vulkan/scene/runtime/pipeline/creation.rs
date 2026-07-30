@@ -11,7 +11,6 @@ struct ScenePipelineProgramSelection<'a> {
     fragment_spirv: &'a [u32],
     fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
     fragment_local_read_shader: Option<&'static BuiltinSceneLocalReadShader>,
-    vertex_uses_native_descriptor_heap: bool,
     vertex_attributes: Option<Vec<SceneVertexAttributePlan>>,
 }
 
@@ -19,7 +18,6 @@ struct ScenePipelineVertexSelection<'a> {
     key: &'a str,
     entry_point: &'a str,
     spirv: &'a [u32],
-    uses_native_descriptor_heap: bool,
     attributes: Option<Vec<SceneVertexAttributePlan>>,
 }
 
@@ -138,7 +136,6 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             program.vertex_entry_point,
             program.fragment_entry_point,
             program.fragment_descriptor_heap_mode,
-            program.vertex_uses_native_descriptor_heap,
             program.vertex_attributes.as_deref(),
             descriptor_heap_plan,
             descriptor_layout,
@@ -218,7 +215,6 @@ fn select_scene_pipeline_program(
                     fragment_spirv: authored.fragment_spirv(storage),
                     fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode::Native,
                     fragment_local_read_shader: None,
-                    vertex_uses_native_descriptor_heap: vertex.uses_native_descriptor_heap,
                     vertex_attributes: vertex.attributes,
                 })
             }
@@ -232,7 +228,6 @@ fn select_scene_pipeline_program(
                     fragment_spirv: authored.fragment_spirv(storage),
                     fragment_descriptor_heap_mode: shader.fragment_descriptor_heap_mode,
                     fragment_local_read_shader: shader.local_read_shader.as_ref(),
-                    vertex_uses_native_descriptor_heap: vertex.uses_native_descriptor_heap,
                     vertex_attributes: vertex.attributes,
                 })
             }
@@ -249,7 +244,6 @@ fn select_scene_pipeline_program(
                 fragment_spirv: passthrough.fragment_spirv,
                 fragment_descriptor_heap_mode: passthrough.fragment_descriptor_heap_mode,
                 fragment_local_read_shader: passthrough.local_read_shader.as_ref(),
-                vertex_uses_native_descriptor_heap: vertex.uses_native_descriptor_heap,
                 vertex_attributes: vertex.attributes,
             })
         }
@@ -271,7 +265,6 @@ fn select_scene_pipeline_vertex<'a>(
                 key,
                 entry_point,
                 spirv: program.vertex_spirv(storage),
-                uses_native_descriptor_heap: true,
                 attributes: Some(attributes),
             })
         }
@@ -280,7 +273,6 @@ fn select_scene_pipeline_vertex<'a>(
                 key: program.key(),
                 entry_point: "main",
                 spirv: program.vertex_spirv(storage),
-                uses_native_descriptor_heap: false,
                 attributes: None,
             })
         }
@@ -311,7 +303,6 @@ fn create_scene_pipeline(
     vertex_entry_point: &str,
     fragment_entry_point: &str,
     fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
-    vertex_uses_native_descriptor_heap: bool,
     vertex_attributes: Option<&[SceneVertexAttributePlan]>,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
@@ -360,7 +351,6 @@ fn create_scene_pipeline(
             vertex_entry.as_bytes_with_nul(),
             fragment_entry.as_bytes_with_nul(),
             fragment_descriptor_heap_mode,
-            vertex_uses_native_descriptor_heap,
             vertex_attributes,
             descriptor_heap_plan,
             descriptor_layout,
@@ -394,7 +384,6 @@ fn create_scene_pipeline_with_modules(
     vertex_entry_point: &[u8],
     fragment_entry_point: &[u8],
     fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
-    vertex_uses_native_descriptor_heap: bool,
     vertex_attributes: Option<&[SceneVertexAttributePlan]>,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     descriptor_layout: &ScenePipelineDescriptorLayout,
@@ -409,50 +398,11 @@ fn create_scene_pipeline_with_modules(
     topology: vk::PrimitiveTopology,
     dynamic_text: bool,
 ) -> Result<vk::Pipeline, String> {
-    let mut vertex_mappings = if vertex_uses_native_descriptor_heap {
-        Vec::new()
-    } else {
-        vec![
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
-                descriptor_heap_plan,
-                2,
-                0,
-                0,
-            )?,
-        ]
-    };
-    if !vertex_uses_native_descriptor_heap && descriptor_layout.material_uniform_enabled {
-        vertex_mappings.push(
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
-                descriptor_heap_plan,
-                3,
-                0,
-                1,
-            )?,
-        );
-    }
-    let skinning_descriptor_index = 1 + usize::from(descriptor_layout.material_uniform_enabled);
-    if !vertex_uses_native_descriptor_heap && descriptor_layout.skinning_storage_enabled {
-        vertex_mappings.push(
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
-                descriptor_heap_plan,
-                4,
-                0,
-                skinning_descriptor_index,
-                false,
-            )?,
-        );
-    }
-    let mut vertex_mapping_info =
-        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(&vertex_mappings)?;
-    let mut vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
+    let vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::VERTEX)
         .module(vertex_module)
         .name(vertex_entry_point)
         .build();
-    if !vertex_mappings.is_empty() {
-        vertex_stage.next = &mut vertex_mapping_info as *mut _ as *const std::ffi::c_void;
-    }
 
     let fragment_mappings = scene_fragment_descriptor_mappings(
         fragment_descriptor_heap_mode,
@@ -512,7 +462,6 @@ mod tests {
             selection.fragment_descriptor_heap_mode,
             BuiltinSceneDescriptorHeapMode::Native
         );
-        assert!(selection.vertex_uses_native_descriptor_heap);
         assert_eq!(
             selection.vertex_attributes.expect("typed attributes"),
             vec![
@@ -537,7 +486,6 @@ mod tests {
         let selection = select_scene_pipeline_program(&storage, authored_key())
             .expect("connected retained resources");
 
-        assert!(selection.vertex_uses_native_descriptor_heap);
         assert_eq!(selection.vertex_entry_point, "vertexMain");
         assert_eq!(selection.fragment_entry_point, "fragmentMain");
     }

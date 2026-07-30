@@ -1,15 +1,10 @@
     use super::*;
 
-    const SPIRV_OP_NAME: u16 = 5;
     const SPIRV_OP_VARIABLE: u16 = 59;
     const SPIRV_OP_DECORATE: u16 = 71;
-    const SPIRV_STORAGE_UNIFORM_CONSTANT: u32 = 0;
     const SPIRV_STORAGE_INPUT: u32 = 1;
-    const SPIRV_STORAGE_UNIFORM: u32 = 2;
     const SPIRV_STORAGE_OUTPUT: u32 = 3;
     const SPIRV_DECORATION_LOCATION: u32 = 30;
-    const SPIRV_DECORATION_BINDING: u32 = 33;
-    const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
 
     fn spirv_instructions(words: &[u32]) -> Vec<&[u32]> {
         assert!(words.len() >= 5, "SPIR-V module must contain its header");
@@ -28,71 +23,31 @@
         instructions
     }
 
-    fn spirv_named_id(words: &[u32], expected_name: &str) -> u32 {
-        spirv_instructions(words)
-            .into_iter()
-            .find_map(|instruction| {
-                let opcode = (instruction[0] & 0xffff) as u16;
-                if opcode != SPIRV_OP_NAME || instruction.len() < 3 {
-                    return None;
-                }
-                let mut bytes = instruction[2..]
-                    .iter()
-                    .flat_map(|word| word.to_le_bytes())
-                    .collect::<Vec<_>>();
-                bytes.truncate(bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len()));
-                (bytes == expected_name.as_bytes()).then_some(instruction[1])
-            })
-            .unwrap_or_else(|| panic!("SPIR-V interface variable {expected_name:?} is missing"))
-    }
-
-    fn assert_spirv_variable(words: &[u32], name: &str, storage_class: u32) -> u32 {
-        let id = spirv_named_id(words, name);
-        assert!(
-            spirv_instructions(words).into_iter().any(|instruction| {
-                (instruction[0] & 0xffff) as u16 == SPIRV_OP_VARIABLE
-                    && instruction.len() >= 4
-                    && instruction[2] == id
+    fn assert_spirv_stage_location(words: &[u32], storage_class: u32, location: u32) {
+        let instructions = spirv_instructions(words);
+        let ids = instructions
+            .iter()
+            .filter_map(|instruction| {
+                if instruction.len() >= 4
+                    && (instruction[0] & 0xffff) as u16 == SPIRV_OP_VARIABLE
                     && instruction[3] == storage_class
-            }),
-            "SPIR-V variable {name:?} does not use storage class {storage_class}"
-        );
-        id
-    }
-
-    fn assert_spirv_decoration(words: &[u32], id: u32, decoration: u32, value: u32) {
+                {
+                    Some(instruction[2])
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         assert!(
-            spirv_instructions(words).into_iter().any(|instruction| {
+            instructions.iter().any(|instruction| {
                 (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
                     && instruction.len() >= 4
-                    && instruction[1] == id
-                    && instruction[2] == decoration
-                    && instruction[3] == value
+                    && ids.contains(&instruction[1])
+                    && instruction[2] == SPIRV_DECORATION_LOCATION
+                    && instruction[3] == location
             }),
-            "SPIR-V id {id} is missing decoration {decoration}={value}"
+            "SPIR-V storage class {storage_class} has no interface at location {location}"
         );
-    }
-
-    fn assert_spirv_stage_interface(
-        words: &[u32],
-        name: &str,
-        storage_class: u32,
-        location: u32,
-    ) {
-        let id = assert_spirv_variable(words, name, storage_class);
-        assert_spirv_decoration(words, id, SPIRV_DECORATION_LOCATION, location);
-    }
-
-    fn assert_spirv_material_uniform(words: &[u32]) {
-        let id = assert_spirv_variable(words, "u_Effect", SPIRV_STORAGE_UNIFORM);
-        assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
-        assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, 3);
-    }
-
-    fn assert_spirv_sampled_binding(words: &[u32], name: &str, binding: u32) {
-        let id = assert_spirv_variable(words, name, SPIRV_STORAGE_UNIFORM_CONSTANT);
-        assert_spirv_decoration(words, id, SPIRV_DECORATION_DESCRIPTOR_SET, 0);
-        assert_spirv_decoration(words, id, SPIRV_DECORATION_BINDING, binding);
     }
 
     #[test]
@@ -108,8 +63,8 @@
             shader.vertex_primitive,
             crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
         );
-        assert!(!shader.vertex_spirv.is_empty());
-        assert!(shader.object_mesh_vertex_spirv.is_none());
+        assert!(!shader.vertex.spirv.is_empty());
+        assert!(shader.object_mesh_vertex.is_none());
         assert!(!shader.fragment_spirv.is_empty());
         assert!(shader.local_read_shader.is_none());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
@@ -137,13 +92,13 @@
             crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
         )
         .expect("shimmer object-mesh vertex shader");
-        assert_ne!(object_mesh, shimmer.vertex_spirv);
+        assert_ne!(object_mesh, shimmer.vertex.spirv);
         assert_eq!(
             native_vulkan_scene_vertex_spirv_for_primitive(
                 shimmer,
                 crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
             ),
-            Some(shimmer.vertex_spirv)
+            Some(shimmer.vertex.spirv)
         );
 
         let iris = native_vulkan_scene_shader_for_key("effects/iris__SLOTS_3__MASK_1")
@@ -184,26 +139,19 @@
             "effects/cloudmotion__SLOTS_5",
         ] {
             let shader = native_vulkan_scene_shader_for_key(key).expect("cloudmotion shader");
-            let object_mesh = native_vulkan_scene_vertex_spirv_for_primitive(
+            let object_mesh = native_vulkan_scene_vertex_shader_for_primitive(
                 shader,
                 crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
             )
             .expect("cloudmotion object-mesh vertex shader");
-            for vertex in [shader.vertex_spirv, object_mesh] {
-                assert_spirv_stage_interface(
-                    vertex,
-                    "v_NoiseTexCoord",
-                    SPIRV_STORAGE_OUTPUT,
-                    1,
-                );
-                assert_spirv_material_uniform(vertex);
+            for vertex in [shader.vertex, object_mesh] {
+                assert_spirv_stage_location(vertex.spirv, SPIRV_STORAGE_OUTPUT, 1);
+                assert!(vertex.bindings.iter().any(|binding| {
+                    binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer
+                        && binding.register == 3
+                }));
             }
-            assert_spirv_stage_interface(
-                shader.fragment_spirv,
-                "v_NoiseTexCoord",
-                SPIRV_STORAGE_INPUT,
-                1,
-            );
+            assert_spirv_stage_location(shader.fragment_spirv, SPIRV_STORAGE_INPUT, 1);
             assert_eq!(
                 shader.fragment_descriptor_heap_mode,
                 BuiltinSceneDescriptorHeapMode::Native
@@ -244,6 +192,39 @@
                 "{}",
                 shader.key
             );
+        }
+    }
+
+    #[test]
+    fn every_builtin_vertex_uses_descriptor_free_or_pipeline_global_native_push_data() {
+        for shader in native_vulkan_scene_shader_catalog() {
+            for vertex in [Some(shader.vertex), shader.object_mesh_vertex]
+                .into_iter()
+                .flatten()
+            {
+                if vertex.bindings.is_empty() {
+                    assert_eq!(vertex.push_constant_bytes, 0, "{}", shader.key);
+                    continue;
+                }
+                assert_eq!(
+                    vertex.push_constant_bytes as usize,
+                    shader.fragment_push_constant_bytes as usize + vertex.bindings.len() * 4,
+                    "{}",
+                    shader.key
+                );
+                for binding in vertex.bindings {
+                    assert!(
+                        binding.push_offset >= shader.fragment_push_constant_bytes,
+                        "{}",
+                        shader.key
+                    );
+                    assert!(matches!(
+                        (binding.kind, binding.register),
+                        (BuiltinSceneDescriptorBindingKind::UniformBuffer, 2 | 3)
+                            | (BuiltinSceneDescriptorBindingKind::StorageBuffer, 4)
+                    ));
+                }
+            }
         }
     }
 
@@ -304,7 +285,7 @@
             crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
         )
         .is_none());
-        assert!(!intermediate.vertex_spirv.is_empty());
+        assert!(!intermediate.vertex.spirv.is_empty());
         assert!(!intermediate.fragment_spirv.is_empty());
         assert!(intermediate
             .fragment_source
@@ -337,7 +318,7 @@
             final_program.vertex_primitive,
             crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
         );
-        assert!(!final_program.vertex_spirv.is_empty());
+        assert!(!final_program.vertex.spirv.is_empty());
         assert!(!final_program.fragment_spirv.is_empty());
         assert!(final_program
             .fragment_source
