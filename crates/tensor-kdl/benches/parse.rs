@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use tensor_kdl::{
-    Context, CountingVisitor, Decode, DecodeFromVisit, Opts, Parser, decode_node_str, from_str,
-    read_into, read_nodes_into, read_nodes_into_visit, visit_document,
+    Context, CountingVisitor, Decode, DecodeChildren, DecodeFromVisit, OPTS_DEFAULT, Opts, Parser,
+    decode_node_str, decode_node_str_const, from_str, read_into, read_into_const, read_nodes_into,
+    read_nodes_into_visit, visit_document,
 };
 
 const TINY: &str = r#"
@@ -575,6 +576,55 @@ fn bench_pg4_const_opts(c: &mut Criterion) {
     group.finish();
 }
 
+/// P-G5 stage gate: multi-named children-only root streams without full Document.
+fn bench_pg5_named_root_stream(c: &mut Criterion) {
+    #[derive(Debug, Decode, PartialEq)]
+    struct Entry {
+        #[kdl(child, unwrap(argument))]
+        name: String,
+        #[kdl(child, unwrap(argument))]
+        version: String,
+        #[kdl(child, unwrap(argument))]
+        license: Option<String>,
+    }
+
+    // Many repeated top-level named children (config-style document root).
+    let mut src = String::new();
+    for i in 0..100 {
+        src.push_str(&format!("name pkg-{i}\nversion \"1.0.{i}\"\nlicense MIT\n"));
+    }
+    // First-wins: only first name/version/license matter for fields, but the
+    // stream still walks all nodes (realistic wide config noise).
+
+    let mut group = c.benchmark_group("pg5_named_root_stream");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(4));
+    group.throughput(Throughput::Bytes(src.len() as u64));
+
+    group.bench_function("from_str_then_decode_children", |b| {
+        b.iter(|| {
+            let doc = from_str(black_box(&src)).expect("parse");
+            let e = Entry::decode_children(&doc.nodes).expect("decode");
+            black_box(e.name.len() + e.version.len())
+        })
+    });
+
+    group.bench_function("read_into_named_stream", |b| {
+        let mut e = Entry {
+            name: String::new(),
+            version: String::new(),
+            license: None,
+        };
+        b.iter(|| {
+            let ec = read_into(&mut e, black_box(&src));
+            assert!(!ec.is_err());
+            black_box(e.name.len() + e.version.len())
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parse,
@@ -585,6 +635,7 @@ criterion_group!(
     bench_pg3c_decode_from_visit,
     bench_pg3d_nested_visit,
     bench_pg3e_read_into_vec,
-    bench_pg4_const_opts
+    bench_pg4_const_opts,
+    bench_pg5_named_root_stream
 );
 criterion_main!(benches);

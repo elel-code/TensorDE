@@ -13,10 +13,11 @@ use crate::opts::Opts;
 use crate::parse::visitor::NodeVisitor;
 use crate::value::{KdlStr, Node, Value};
 
-/// Schema sink filled during [`crate::parse::reader::Parser::visit_node`].
+/// Schema sink filled during [`crate::Parser::visit_node`].
 ///
 /// Glaze writes directly into `T&`; we accumulate into a builder that
-/// [`Self::finish`] converts to `T` (allows `Default` field init + presence checks).
+/// [`VisitBuilder::finish`] converts to `T` (allows `Default` field init +
+/// presence checks).
 pub trait DecodeFromVisit<'a>: Sized {
     type Builder: VisitBuilder<'a, Output = Self>;
 

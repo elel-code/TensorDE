@@ -1,9 +1,10 @@
 # Tensor KDL crate design
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
-[glaze-alignment.md](glaze-alignment.md). Through **P-G4**: packed const-generic
-opts (`OPTS_DEFAULT` / `read_into_const`) + optional `diagnostics` miette
-`report_error`. Stage benches: `cargo bench -p tensor-kdl`.  
+[glaze-alignment.md](glaze-alignment.md). Through **P-G10**: `Parser::from_padded`
+SWAR over-read; through **P-G11**: typed padded-parser reads. Phase-2 typed
+encode is available, together with an explicitly incomplete KQL subset.
+Stage benches: `cargo bench -p tensor-kdl` (+ `--bench advanced`).
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  
 Language: KDL **2.0.0** (finalized). Process macros are a first-class surface, not an afterthought.
 
@@ -14,13 +15,13 @@ Language: KDL **2.0.0** (finalized). Process macros are a first-class surface, n
 | **Correct KDL 2.0** | Parse and emit according to `references/kdl/draft-marchan-kdl2.md`. Official test suite is the gate. |
 | **Glaze-class performance** | Single-pass, direct-to-memory decode; SWAR hot paths; reuse scratch/context; compile-time field dispatch. |
 | **Friendly diagnostics** | Byte offset + line/column + labeled spans + expected-token hints; usable without a DOM dump. |
-| **Typed config via proc macros** | `#[derive(Decode)]` / `#[derive(DecodeScalar)]` (and write-side later) map Rust types to nodes/args/props/children. |
+| **Typed config via proc macros** | `Decode` / `DecodeScalar` and `Encode` / `EncodeScalar` derives map Rust types to nodes/args/props/children. |
 | **Zero/low mandatory deps** | Core parser has no chumsky/pest stack. Diagnostics and fancy printing are feature-gated. |
 | **Rust idioms** | Traits + derive + `Result`/`ErrorCtx`, not C++ templates; still mirror Glaze’s *ideas*. |
 
 ## 2. Non-goals (v1)
 
-- Full KDL Query Language (`QUERY-SPEC.md`) or Schema Language (`SCHEMA-SPEC.md`).
+- Full KDL Query Language (`QUERY-SPEC.md`) or Schema Language (`SCHEMA-SPEC.md`); the crate exposes only a documented KQL subset.
 - Drop-in API compatibility with `knus` / `knuffel` / `kdl` crates.
 - Silent KDL 1.0 acceptance (optional `kdl1` feature may be a later migration aid).
 - Runtime reflection (no `Any`, no serde-data-model indirection on the hot path).
@@ -75,7 +76,7 @@ Workspace members (names tentative):
 ```text
 crates/
   tensor-kdl/              # runtime: parse, DOM (optional), decode traits, format_error
-  tensor-kdl-macros/       # proc-macro crate: Decode, DecodeScalar, (Encode later)
+  tensor-kdl-macros/       # proc-macro crate: Decode/Encode + scalar derives
 ```
 
 Optional later:
@@ -213,7 +214,8 @@ Child node name dispatch: same strategy; enums become a name → variant jump.
 |-------|------------|---------|
 | `#[derive(Decode)]` | `Decode`, optionally `DecodeChildren`, `DecodePartial` | Nodes / documents |
 | `#[derive(DecodeScalar)]` | `DecodeScalar` | Enums / newtypes from scalar values |
-| `#[derive(Encode)]` (phase 2) | `Encode` | Write KDL from structs |
+| `#[derive(Encode)]` | `Encode`, optionally `EncodeDocument` | Write KDL from structs |
+| `#[derive(EncodeScalar)]` | `EncodeScalar` | Unit enums/newtypes to scalar values |
 
 Attribute namespace: **`#[kdl(...)]`** (not `knus`), to avoid confusion and claim our dialect.
 
@@ -483,9 +485,12 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
 
 ## 11. Write / encode (phase 2)
 
-- `Encode` / `EncodeScalar` + `#[derive(Encode)]`.
-- Stable, minimal pretty printer for configs (deterministic property order = field order).
-- Not required for first typed-read milestone.
+- `Encode` / `EncodeScalar` plus matching derives are implemented for the
+  decode field shapes that have an unambiguous reverse mapping.
+- Output goes through the stable canonical formatter: rightmost property wins,
+  then properties are sorted by key, matching the official suite translation.
+- `flatten`, property maps, and `unwrap(property)` fail at derive time until a
+  lossless reverse policy is specified.
 
 ## 12. Testing strategy
 

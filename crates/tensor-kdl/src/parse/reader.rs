@@ -11,9 +11,19 @@ use crate::error::{CtxResult, ErrorCode, ErrorCtx};
 use crate::parse::chars::{is_newline_char, is_unicode_space};
 use crate::value::{Document, Entry, KdlStr, Node, Value};
 
+/// Single-pass KDL cursor.
+///
+/// **P-G10a (Glaze padded buffer):** [`Self::from_padded`] sets `bytes` to the
+/// full padded allocation while `logical_end` / `input` stay at content length.
+/// Scanners may SWAR-load past `logical_end` into zero padding; all EOF / peek
+/// checks use `logical_end` so NULs are never parsed as content.
 pub struct Parser<'a> {
+    /// Logical UTF-8 source (no padding).
     pub(super) input: &'a str,
+    /// Byte view: equals `input.as_bytes()`, or content+padding when from [`crate::PaddedInput`].
     pub(super) bytes: &'a [u8],
+    /// Exclusive end of logical content (`input.len()`).
+    pub(super) logical_end: usize,
     pub(super) index: usize,
     pub(super) ctx: Context,
 }
@@ -23,6 +33,7 @@ impl<'a> Parser<'a> {
         Self {
             input,
             bytes: input.as_bytes(),
+            logical_end: input.len(),
             index: 0,
             ctx: Context::new(),
         }
@@ -32,6 +43,29 @@ impl<'a> Parser<'a> {
         Self {
             input,
             bytes: input.as_bytes(),
+            logical_end: input.len(),
+            index: 0,
+            ctx,
+        }
+    }
+
+    /// Parse over a [`crate::PaddedInput`] (Glaze `padding_bytes` over-read).
+    pub fn from_padded(padded: &'a crate::PaddedInput) -> Self {
+        Self {
+            input: padded.as_str(),
+            bytes: padded.padded_bytes(),
+            logical_end: padded.len(),
+            index: 0,
+            ctx: Context::new(),
+        }
+    }
+
+    /// [`Self::from_padded`] with an existing [`Context`].
+    pub fn from_padded_with_context(padded: &'a crate::PaddedInput, ctx: Context) -> Self {
+        Self {
+            input: padded.as_str(),
+            bytes: padded.padded_bytes(),
+            logical_end: padded.len(),
             index: 0,
             ctx,
         }
@@ -49,24 +83,38 @@ impl<'a> Parser<'a> {
         self.index
     }
 
+    /// Logical remaining text (never includes padding).
     pub fn remaining(&self) -> &'a str {
-        &self.input[self.index..]
+        let i = self.index.min(self.logical_end);
+        &self.input[i..]
+    }
+
+    /// True when `bytes` carries Glaze-style trailing padding past logical EOF.
+    #[inline]
+    pub fn is_padded(&self) -> bool {
+        self.bytes.len() > self.logical_end
     }
 
     pub(super) fn err(&self, code: ErrorCode) -> ErrorCtx {
-        ErrorCtx::new(code, self.index).with_consumed(self.index)
+        ErrorCtx::new(code, self.index.min(self.logical_end))
+            .with_consumed(self.index.min(self.logical_end))
     }
 
     pub(super) fn err_at(&self, code: ErrorCode, offset: usize) -> ErrorCtx {
-        ErrorCtx::new(code, offset).with_consumed(self.index)
+        ErrorCtx::new(code, offset.min(self.logical_end))
+            .with_consumed(self.index.min(self.logical_end))
     }
 
     pub(super) fn eof(&self) -> bool {
-        self.index >= self.bytes.len()
+        self.index >= self.logical_end
     }
 
     pub(super) fn peek_byte(&self) -> Option<u8> {
-        self.bytes.get(self.index).copied()
+        if self.index >= self.logical_end {
+            None
+        } else {
+            self.bytes.get(self.index).copied()
+        }
     }
 
     pub(super) fn peek_char(&self) -> Option<char> {
@@ -74,7 +122,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn bump_byte(&mut self) {
-        if self.index < self.bytes.len() {
+        if self.index < self.logical_end {
             self.index += 1;
         }
     }
@@ -97,6 +145,17 @@ impl<'a> Parser<'a> {
         } else {
             false
         }
+    }
+
+    /// Byte slice for SWAR: full `bytes` (may include padding); scan end is logical.
+    #[inline]
+    pub(super) fn scan_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[inline]
+    pub(super) fn scan_end(&self) -> usize {
+        self.logical_end
     }
 
     /// Parse a full document into an owned DOM.

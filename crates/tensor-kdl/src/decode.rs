@@ -55,6 +55,10 @@ pub trait DecodeChildren<'a>: Sized {
 /// **P-G3e:** [`Self::read_stream`] is the Glaze primary path for
 /// [`crate::read_into`] — override to avoid buffering a full [`Document`] when
 /// the shape allows (e.g. [`Vec`] element loop).
+///
+/// **P-G11:** [`Self::read_stream_parser`] fills from an existing
+/// [`crate::Parser`] (including [`crate::Parser::from_padded`]) so SWAR may
+/// over-read padding.
 pub trait DecodeDocument<'a>: Sized {
     fn decode_document(doc: &Document<'a>) -> CtxResult<Self>;
 
@@ -71,6 +75,24 @@ pub trait DecodeDocument<'a>: Sized {
     ) -> ErrorCtx {
         crate::read_document_buffered(out, input, ctx, opts)
     }
+
+    /// Fill from a live [`crate::Parser`] (Glaze cursor already positioned).
+    ///
+    /// Default: collect top-level DOM nodes then [`Self::decode_document`].
+    /// Override for streaming (see `Vec`).
+    fn read_stream_parser(
+        out: &mut Self,
+        parser: &mut crate::Parser<'a>,
+        opts: crate::Opts,
+    ) -> CtxResult<()> {
+        let mut nodes = Vec::new();
+        parser.visit_document(opts, |node| {
+            nodes.push(node);
+            Ok(())
+        })?;
+        *out = Self::decode_document(&Document { nodes })?;
+        Ok(())
+    }
 }
 
 impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
@@ -79,17 +101,12 @@ impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
     }
 
     /// Stream each top-level node into the vec (Glaze array `from::op` loop).
-    ///
-    /// Uses [`TopLevelFill`] at this monomorphized site: `T: DecodeFromVisit`
-    /// skips intermediate [`Node`]; otherwise one DOM node per element.
     fn read_stream(
         out: &mut Self,
         input: &'a str,
         ctx: &mut crate::Context,
         opts: crate::Opts,
     ) -> ErrorCtx {
-        use nested_dispatch::{NestedProbe, TopLevelFill};
-
         ctx.clear_error();
         ctx.reset_depth();
         ctx.apply_opts(opts);
@@ -97,13 +114,7 @@ impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
 
         let owned = crate::take_context_for_parser(ctx);
         let mut parser = crate::Parser::with_context(input, owned);
-        let visit_result = parser.visit_document_at_nodes(opts, |parser| {
-            // Double-ref is required for autoref specialization (visit vs DOM).
-            #[allow(clippy::needless_borrow)]
-            let item = (&&NestedProbe::<T>::new()).fill_top(parser, opts)?;
-            out.push(item);
-            Ok(())
-        });
+        let visit_result = Self::read_stream_parser(out, &mut parser, opts);
         let consumed = parser.offset();
         crate::restore_context_from_parser(ctx, parser);
 
@@ -115,6 +126,22 @@ impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
                 e
             }
         }
+    }
+
+    fn read_stream_parser(
+        out: &mut Self,
+        parser: &mut crate::Parser<'a>,
+        opts: crate::Opts,
+    ) -> CtxResult<()> {
+        use nested_dispatch::{NestedProbe, TopLevelFill};
+
+        out.clear();
+        parser.visit_document_at_nodes(opts, |parser| {
+            #[allow(clippy::needless_borrow)]
+            let item = (&&NestedProbe::<T>::new()).fill_top(parser, opts)?;
+            out.push(item);
+            Ok(())
+        })
     }
 }
 

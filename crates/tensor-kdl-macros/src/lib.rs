@@ -8,7 +8,11 @@ use syn::{DeriveInput, parse_macro_input};
 mod attr;
 mod decode;
 mod emit;
+mod encode_emit;
+mod key_dispatch;
+mod key_hash;
 mod scalar;
+mod stream_emit;
 mod visit_emit;
 
 /// Derive `tensor_kdl::Decode` for a struct or enum of nodes.
@@ -26,6 +30,26 @@ pub fn derive_decode(input: TokenStream) -> TokenStream {
 pub fn derive_decode_scalar(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match scalar::expand_decode_scalar(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive `tensor_kdl::Encode` and, where applicable, `EncodeDocument`.
+#[proc_macro_derive(Encode, attributes(kdl))]
+pub fn derive_encode(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match encode_emit::expand_encode(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive `tensor_kdl::EncodeScalar` for unit enums or newtypes.
+#[proc_macro_derive(EncodeScalar, attributes(kdl))]
+pub fn derive_encode_scalar(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match scalar::expand_encode_scalar(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

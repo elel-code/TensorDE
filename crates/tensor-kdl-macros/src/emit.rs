@@ -307,14 +307,25 @@ pub(crate) fn expand_struct_decode(
     // props/children). Document roots that merely `flatten` another type should
     // not get it (and therefore should not require `Default`).
     let has_flatten = fields.iter().any(|f| matches!(f.role, FieldRole::Flatten));
-    let no_required_args = fields
-        .iter()
-        .all(|f| !matches!(f.role, FieldRole::Argument | FieldRole::Arguments) || f.optional);
+    // DecodePartial is for knus-style *Part fragments: no required slots
+    // (arguments, children, or properties). Required `#[kdl(child)]` document
+    // roots must not get Partial (would force `Default` on the whole type).
+    let no_required_slots = fields.iter().all(|f| {
+        f.optional
+            || matches!(
+                f.role,
+                FieldRole::Skip
+                    | FieldRole::DefaultOnly
+                    | FieldRole::Children { .. }
+                    | FieldRole::Properties
+                    | FieldRole::Flatten
+            )
+    });
     let has_partial_surface = fields.iter().any(|f| {
         (matches!(f.role, FieldRole::Child { .. } | FieldRole::Property { .. }) && f.optional)
             || matches!(f.role, FieldRole::Children { name: Some(_) })
     });
-    let partial_ok = !has_flatten && no_required_args && has_partial_surface && !fields.is_empty();
+    let partial_ok = !has_flatten && no_required_slots && has_partial_surface && !fields.is_empty();
 
     let decode_partial = if partial_ok {
         let mut child_arms = Vec::new();
@@ -424,6 +435,10 @@ pub(crate) fn expand_struct_decode(
     //
     // P-G3e: single unfiltered `#[kdl(children)]` document root streams via
     // TopLevelFill (Glaze array element loop) instead of buffering Document.
+    //
+    // P-G5: multi-named children-only roots stream top-level nodes into field
+    // slots (first-wins for single `child`, push for `children`) without
+    // retaining a full `Document` — Glaze object key fill as keys arrive.
     let stream_all_children = if children_only && fields.len() == 1 {
         match &fields[0].role {
             FieldRole::Children { name: None } => {
@@ -436,6 +451,38 @@ pub(crate) fn expand_struct_decode(
     } else {
         None
     };
+
+    // P-G5 / P-G9b: children-only roots (optional `flatten` for unknown names).
+    let named_stream = if children_only
+        && stream_all_children.is_none()
+        && fields.iter().all(|f| {
+            matches!(
+                f.role,
+                FieldRole::Child { .. }
+                    | FieldRole::Children { .. }
+                    | FieldRole::Flatten
+                    | FieldRole::Skip
+                    | FieldRole::DefaultOnly
+            )
+        }) {
+        Some(crate::stream_emit::emit_named_children_read_stream(fields)?)
+    } else {
+        None
+    };
+
+    // P-G8b / P-G10b: non-children-only visit-fill types are document roots.
+    // First top-level node fills T (Glaze root object). Optional unfiltered
+    // `#[kdl(children)]` collects *subsequent* top-level nodes (mixed multi-node
+    // documents: primary node + free top-level siblings).
+    let single_node_document =
+        !children_only && crate::visit_emit::visit_fill_supported(fields) && !has_flatten;
+    let sibling_children_field: Option<&syn::Ident> = fields.iter().find_map(|f| {
+        if matches!(f.role, FieldRole::Children { name: None }) {
+            Some(&f.ident)
+        } else {
+            None
+        }
+    });
 
     let decode_doc = if children_only {
         let read_stream_override = if let Some((id, ty)) = stream_all_children {
@@ -461,6 +508,8 @@ pub(crate) fn expand_struct_decode(
                     ec
                 }
             }
+        } else if let Some(body) = named_stream {
+            body
         } else {
             quote! {}
         };
@@ -496,6 +545,30 @@ pub(crate) fn expand_struct_decode(
                 #read_stream_override
             }
         }
+    } else if single_node_document {
+        let (decode_doc_body, read_stream_body) =
+            emit_single_node_document_bodies(name, ty_generics, sibling_children_field);
+        quote! {
+            impl #impl_generics ::tensor_kdl::DecodeDocument<'__kdl>
+                for #name #ty_generics
+            #where_clause
+            {
+                fn decode_document(
+                    doc: &::tensor_kdl::Document<'__kdl>,
+                ) -> ::tensor_kdl::CtxResult<Self> {
+                    #decode_doc_body
+                }
+
+                fn read_stream(
+                    out: &mut Self,
+                    input: &'__kdl str,
+                    ctx: &mut ::tensor_kdl::Context,
+                    opts: ::tensor_kdl::Opts,
+                ) -> ::tensor_kdl::ErrorCtx {
+                    #read_stream_body
+                }
+            }
+        }
     } else {
         quote! {}
     };
@@ -523,4 +596,130 @@ pub(crate) fn expand_struct_decode(
         #decode_partial
         #visit_fill
     })
+}
+
+/// P-G8b / P-G10b: decode_document + read_stream bodies for single-node roots.
+fn emit_single_node_document_bodies(
+    name: &Ident,
+    ty_generics: &syn::TypeGenerics<'_>,
+    sibling_children: Option<&Ident>,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let decode_doc_body = if let Some(ch) = sibling_children {
+        quote! {
+            let __node = doc.nodes.first().ok_or_else(|| {
+                ::tensor_kdl::ErrorCtx::new(
+                    ::tensor_kdl::ErrorCode::ExpectedNodeName,
+                    0,
+                )
+                .with_message("document has no nodes for single-node root")
+            })?;
+            let mut __root = <Self as ::tensor_kdl::Decode<'__kdl>>::decode_node(__node)?;
+            // P-G10b: remaining top-level nodes → unfiltered children collector.
+            for __sib in doc.nodes.iter().skip(1) {
+                __root.#ch.push(::tensor_kdl::Decode::decode_node(__sib)?);
+            }
+            ::std::result::Result::Ok(__root)
+        }
+    } else {
+        quote! {
+            let __node = doc.nodes.first().ok_or_else(|| {
+                ::tensor_kdl::ErrorCtx::new(
+                    ::tensor_kdl::ErrorCode::ExpectedNodeName,
+                    0,
+                )
+                .with_message("document has no nodes for single-node root")
+            })?;
+            <Self as ::tensor_kdl::Decode<'__kdl>>::decode_node(__node)
+        }
+    };
+
+    let read_stream_body = if let Some(ch) = sibling_children {
+        quote! {
+            // P-G10b: first node → T; later top-level nodes → #ch (Glaze multi-value doc).
+            use ::tensor_kdl::{NestedProbe, TopLevelFill as _};
+            ctx.clear_error();
+            ctx.reset_depth();
+            ctx.apply_opts(opts);
+            let mut __phase = 0u8;
+            let owned = ::tensor_kdl::take_context_for_parser(ctx);
+            let mut parser = ::tensor_kdl::Parser::with_context(input, owned);
+            let visit_result = parser.visit_document_at_nodes(opts, |parser| {
+                if __phase == 0 {
+                    #[allow(clippy::needless_borrow)]
+                    let item = (&&NestedProbe::<#name #ty_generics>::new())
+                        .fill_top(parser, opts)?;
+                    *out = item;
+                    __phase = 1;
+                } else {
+                    let mut __dom = ::tensor_kdl::DomNodeBuilder::default();
+                    parser.visit_node(opts, &mut __dom)?;
+                    let __node = __dom.finish()?;
+                    out.#ch.push(::tensor_kdl::Decode::decode_node(&__node)?);
+                }
+                ::std::result::Result::Ok(())
+            });
+            let consumed = parser.offset();
+            ::tensor_kdl::restore_context_from_parser(ctx, parser);
+            if let ::std::result::Result::Err(e) = visit_result {
+                ctx.error = e.code;
+                ctx.custom_error_message = e.message.clone();
+                return e;
+            }
+            if __phase == 0 {
+                let e = ::tensor_kdl::ErrorCtx::new(
+                    ::tensor_kdl::ErrorCode::ExpectedNodeName,
+                    consumed,
+                )
+                .with_message("document has no nodes for single-node root");
+                ctx.error = e.code;
+                ctx.custom_error_message = e.message.clone();
+                return e;
+            }
+            ::tensor_kdl::ErrorCtx::ok(consumed)
+        }
+    } else {
+        quote! {
+            // P-G8b: first top-level node only (Glaze root is one value).
+            use ::tensor_kdl::{NestedProbe, TopLevelFill as _};
+            ctx.clear_error();
+            ctx.reset_depth();
+            ctx.apply_opts(opts);
+            let mut __got = false;
+            let owned = ::tensor_kdl::take_context_for_parser(ctx);
+            let mut parser = ::tensor_kdl::Parser::with_context(input, owned);
+            let stream_opts = ::tensor_kdl::Opts {
+                partial_read: true,
+                validate_trailing: false,
+                ..opts
+            };
+            let visit_result = parser.visit_document_at_nodes(stream_opts, |parser| {
+                #[allow(clippy::needless_borrow)]
+                let item = (&&NestedProbe::<#name #ty_generics>::new())
+                    .fill_top(parser, opts)?;
+                *out = item;
+                __got = true;
+                ::std::result::Result::Ok(())
+            });
+            let consumed = parser.offset();
+            ::tensor_kdl::restore_context_from_parser(ctx, parser);
+            if let ::std::result::Result::Err(e) = visit_result {
+                ctx.error = e.code;
+                ctx.custom_error_message = e.message.clone();
+                return e;
+            }
+            if !__got {
+                let e = ::tensor_kdl::ErrorCtx::new(
+                    ::tensor_kdl::ErrorCode::ExpectedNodeName,
+                    consumed,
+                )
+                .with_message("document has no nodes for single-node root");
+                ctx.error = e.code;
+                ctx.custom_error_message = e.message.clone();
+                return e;
+            }
+            ::tensor_kdl::ErrorCtx::ok(consumed)
+        }
+    };
+
+    (decode_doc_body, read_stream_body)
 }

@@ -250,7 +250,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Drive a nested child's body into `child_visitor` after the parent already
-    /// observed `(type_name, name)` via [`NodeVisitor::begin_child_visit`].
+    /// observed `(type_name, name)` via [`NodeVisitor::take_child_after_header`].
     pub fn finish_nested_child<V: NodeVisitor<'a>>(
         &mut self,
         opts: Opts,

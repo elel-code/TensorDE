@@ -115,22 +115,34 @@ For KDL that means:
 | **P-G3d** Nested visit-fill (no child `Node` heap when child: `DecodeFromVisit`); top-level `read_nodes_into_visit` | **Done** — `NestedProbe` autoref specialization; DOM fallback for `Decode`-only children (`unwrap`, enums) |
 | **P-G3e** `read_into` → `DecodeDocument::read_stream` | **Done** — `Vec<T>` streams via `TopLevelFill` (visit when available); single unfiltered `#[kdl(children)]` document root reuses that path; multi-named children roots still buffer top-level `Node`s for lookup |
 | **P-G4** const-generic opts + diagnostics polish | **Done** — packed `u8` opts (`OPTS_DEFAULT` / `read_into_const` / `visit_*_const`); feature `diagnostics` → `report_error` miette `Report` with source span (Glaze `format_error` remains primary) |
+| **P-G5** multi-named children-only root stream + SWAR ws | **Done** — derive `read_stream` first-wins named `child` / push `children` without full `Document`; real 8-byte SWAR `skip_ascii_horizontal_ws` (`util/parse.hpp` zero-byte detect) |
+| **P-G6** unique-index key dispatch | **Done** — `find_unique_index` (Glaze `reflect.hpp`) for ≥3 property/child names with a unique column; outer byte switch + full-string verify |
+| **P-G7** sized unique-index + modular perfect-hash | **Done** — `find_unique_sized_index` (byte+len); FNV-1a + seed modular table when no unique column; full-string verify; else `decode_linear` string match |
+| **P-G8a** `front_hash` / `full_flat` | **Done** — Glaze `front_bytes_hash_info` + `full_flat` bucket tables (`key_hash.rs`, `primes_64` seeds, `bitmix`) |
+| **P-G8b** non-children-only document root | **Done** — visit-fill-eligible structs implement `DecodeDocument` + `read_stream` for first top-level node (Glaze single root value) |
+| **P-G8c** SIMD quote scan (bench-gated) | **Done** — feature `simd`: 16-byte dual-SWAR quote/escape scan (Glaze SSE2-width hot path); default remains 8-byte SWAR |
+| **P-G9a** owned buffer padding | **Done** — `PaddedInput` / `PADDING_BYTES=16` (Glaze `padding_bytes`); `from_padded` / `read_into_padded` |
+| **P-G9b** mixed children-only roots + flatten | **Done** — `read_stream` for named children + `#[kdl(flatten)]` via `DecodePartial::insert_child` |
+| **P-G9c** richer miette | **Done** — primary + line-related labels; `report_error_named`; help with `line:column` |
+| **P-G10a** Parser padded over-read | **Done** — `Parser::from_padded` / `logical_end`; SWAR skip/quote use content end + padding bytes |
+| **P-G10b** mixed primary + sibling nodes | **Done** — single-node roots with unfiltered `#[kdl(children)]` collect later top-level nodes via `read_stream` / `decode_document` |
+| **P-G11** padded typed read | **Done** — `DecodeDocument::read_stream_parser`; runtime/const padded APIs retain borrowed logical input while scanners consume the padded allocation |
 
-Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector roots.
+Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector).
 
 ## 5. SWAR / performance (cite before changing)
 
 | Technique | Glaze source | Status in tensor-kdl |
 |-----------|--------------|----------------------|
-| `repeat_byte` / quote-escape scan | `util/parse.hpp` | Partial (`parse/swar.rs`) |
-| Skip ASCII ws in chunks | `parse.hpp` `skip_ws` | Partial |
-| Pad buffer +16 for SWAR | `opts.hpp` `padding_bytes`, `read.hpp` resize | **Not** done (Rust `&str` immutable; only apply if we own `String` input) |
+| `repeat_byte` / quote-escape scan | `util/parse.hpp` | Present (`parse/swar.rs`) |
+| Skip ASCII ws in chunks | `parse.hpp` `skip_ws` | **Done** — true 8-byte SWAR lane advance (P-G5) |
+| Pad buffer +16 for SWAR | `opts.hpp` `padding_bytes`, `read.hpp` resize | **Done** (P-G9a) — `PaddedInput` for owned buffers; `&str` path unchanged |
 | Reuse `ctx.scratch` | `context.hpp`, perf doc | Present; ensure hot decode reuses `Context` |
-| `error_on_unknown_keys` enables faster reject | perf doc | Policy flag present; not tied to perfect hash yet |
+| `error_on_unknown_keys` enables faster reject | perf doc | Policy present; unique-index / front_hash reject after miss |
 | Forced inline on hot helpers | `util/inline.hpp` | Use `#[inline(always)]` only on measured SWAR helpers |
+| SSE2-width string scan | perf doc SIMD section | **Done** behind feature `simd` (P-G8c); default SWAR-8 |
 
-**Do not** add SIMD/AVX paths without a bench gate and a Glaze cite
-(`docs/optimizing-performance.md` SIMD section).
+SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 
 ## 6. What we will *not* copy
 
@@ -160,7 +172,87 @@ Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary
 7. ~~P-G3d nested visit-fill~~ done.
 8. ~~P-G3e `read_into` / `read_stream`~~ done (`DecodeDocument::read_stream`, `TopLevelFill`, single-`children` root).
 9. ~~P-G4 const-generic opts + miette `report_error`~~ done.
-10. **Next (optional):** multi-named children root incremental fill; SWAR/SIMD only with bench gate; property perfect-hash if measured.
+10. ~~P-G5 named root stream + SWAR ws~~ done.
+11. ~~P-G6 unique-index key dispatch~~ done (`macros/key_dispatch.rs`).
+12. ~~P-G7 sized + modular perfect-hash~~ done.
+13. ~~P-G8a front_hash/full_flat; P-G8b single-node document roots; P-G8c simd feature~~ done.
+14. ~~P-G9a pad; P-G9b flatten stream roots; P-G9c miette labels~~ done.
+15. ~~P-G10a Parser padded over-read; P-G10b mixed primary+sibling children~~ done.
+16. ~~P-G11 const/runtime typed reads on a padded parser~~ done.
+17. **Next (optional):** benchmark direct write before replacing DOM-backed
+    encode; extend KQL only against `QUERY-SPEC.md`, without claiming the full language.
+
+### Stage benchmark (P-G10)
+
+```bash
+cargo bench -p tensor-kdl --bench advanced -- pg10
+```
+
+### Stage benchmark (P-G8)
+
+```bash
+cargo bench -p tensor-kdl --bench advanced -- pg8
+# SIMD quote scan comparison:
+cargo bench -p tensor-kdl --bench advanced --features simd -- pg8
+```
+
+**Snapshot** (`--quick`):
+
+| Bench | default (SWAR-8) | `features = simd` (16-byte) |
+|-------|------------------|-------------------------------|
+| `from_str_decode_single_node` | **~471 ns** | **~476 ns** |
+| `read_into_single_node_stream` | **~590 ns** | **~426 ns** (~1.4×) |
+| `many_quoted_strings_scan` | **~116 µs** | **~96 µs** (~1.2×) |
+
+**Honest read:** dense quote scan benefits from 16-byte dual-SWAR (`simd`);
+single-node stream is competitive with DOM decode. Enable `simd` only when
+quote-heavy inputs dominate (Glaze: most work stays portable SWAR).
+
+### Stage benchmark (P-G7)
+
+```bash
+cargo bench -p tensor-kdl --bench parse -- pg7
+```
+
+**Snapshot** (`--quick`): `aa`/`ab`/`ba`/`bb` (no unique column → modular FNV).
+
+| Bench | time (approx) | notes |
+|-------|---------------|--------|
+| `decode_node_str_modular_4` | **~487 ns** | single node, modular perfect-hash visit-fill |
+| `read_into_vec_200x_modular` | **~141 µs** | 200 rows stream |
+
+**Intent:** keys without a unique byte column exercise modular FNV perfect-hash
+(Glaze modular role; not a full port of `hash_info` front_hash/full_flat).
+
+### Stage benchmark (P-G6)
+
+```bash
+cargo bench -p tensor-kdl --bench parse -- pg6
+```
+
+**Snapshot** (`--quick`): 8 properties with distinct first letters.
+
+| Bench | time (approx) | notes |
+|-------|---------------|--------|
+| `decode_node_str_8props` | **~1.19 µs** | single wide node, unique-index visit-fill |
+| `read_into_vec_100x8props` | **~138 µs** | 100 rows × 8 props stream |
+
+### Stage benchmark (P-G5)
+
+```bash
+cargo bench -p tensor-kdl --bench parse -- pg5
+```
+
+**Snapshot** (`--quick`): 100× repeated `name`/`version`/`license` top-level nodes.
+
+| Bench | time (approx) | notes |
+|-------|---------------|--------|
+| `from_str_then_decode_children` | **~77 µs** | full `Document` + first-wins from slice |
+| `read_into_named_stream` | **~53 µs** | stream fill (**~1.45×**); no retained `Document` |
+| `hot_paths/leading_spaces_4k` | **~442 ns** | SWAR horizontal-ws (was ~1.1 µs class before real SWAR) |
+
+**Intent:** `from_str` + `decode_children` (full top-level `Node` list) vs
+`read_into` named stream (first-wins field fill, no `Document` retention).
 
 ### Stage benchmark (P-G4)
 
@@ -168,10 +260,19 @@ Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary
 cargo bench -p tensor-kdl --bench parse -- pg4
 ```
 
-**Intent:** runtime `Opts` path vs `const OPTS: u8` monomorphization. Expect near-
-parity on micro inputs (policy checks are cheap); the win is branch folding /
-inlining for unknown-key and partial-read paths, matching Glaze’s compile-time
-opts model rather than a large wall-time delta.
+**Snapshot** (`--quick`):
+
+| Bench | time (approx) | notes |
+|-------|---------------|--------|
+| `decode_node_str_runtime_opts` | **~351 ns** | runtime `Opts` on single line |
+| `decode_node_str_const_opts` | **~479 ns** | `const OPTS: u8` — micro overhead (extra monomorphized wrapper) |
+| `read_into_vec_runtime_200` | **~111 µs** | 200 rows runtime opts |
+| `read_into_vec_const_200` | **~91 µs** | 200 rows const opts (**~1.2×**) |
+
+**Honest read:** const-generic opts are an API/mechanics alignment with Glaze
+`template <auto Opts>`, not a free micro-bench win. On wider streams the const
+path can fold policy better; on single-line micro the runtime path can win.
+Prefer `*_const` when the call site is hot **and** opts are fixed at compile time.
 
 ### Stage benchmark (P-G3e)
 

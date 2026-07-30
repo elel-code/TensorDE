@@ -39,9 +39,12 @@
 
 mod context;
 mod decode;
+mod encode;
 mod error;
 mod opts;
+mod pad;
 mod parse;
+mod query;
 mod value;
 mod write;
 
@@ -56,26 +59,35 @@ pub use decode::{
     opt_child_in, opt_one_argument_in, opt_one_property, opt_property, property,
     read_nodes_into_visit,
 };
-#[cfg(feature = "diagnostics")]
-pub use error::report_error;
+pub use encode::{
+    Encode, EncodeDocument, EncodeScalar, arg_entry, arg_node, flag_node, prop_entry, to_string,
+    to_string_node,
+};
 pub use error::{CtxResult, Error, ErrorCode, ErrorCtx, Result, format_error, format_error_code};
+#[cfg(feature = "diagnostics")]
+pub use error::{report_error, report_error_named};
 pub use opts::{
     FLAG_ERROR_ON_MISSING, FLAG_ERROR_ON_UNKNOWN, FLAG_PARTIAL_READ, FLAG_VALIDATE_TRAILING,
     OPTS_DEFAULT, OPTS_LENIENT, OPTS_PARTIAL, Opts, flag_error_on_missing, flag_error_on_unknown,
     flag_partial_read, flag_validate_trailing,
 };
+pub use pad::{PADDING_BYTES, PaddedInput, load_u64_for_scan, pad_string, unpad_string};
 pub use parse::{
     CountingVisitor, DomNodeBuilder, NodeVisitor, Parser, parse_document,
     parse_document_with_context, visit_document, visit_document_with_context,
 };
+pub use query::{query, query_node};
 pub use value::{Document, Entry, KdlStr, Node, Value};
 pub use write::format_document;
 
 #[cfg(feature = "derive")]
-pub use tensor_kdl_macros::{Decode as DecodeMacro, DecodeScalar as DecodeScalarMacro};
+pub use tensor_kdl_macros::{
+    Decode as DecodeMacro, DecodeScalar as DecodeScalarMacro, Encode as EncodeMacro,
+    EncodeScalar as EncodeScalarMacro,
+};
 
 #[cfg(feature = "derive")]
-pub use tensor_kdl_macros::{Decode, DecodeScalar};
+pub use tensor_kdl_macros::{Decode, DecodeScalar, Encode, EncodeScalar};
 
 /// Parse a KDL 2.0 document from `input` into a DOM.
 ///
@@ -85,6 +97,71 @@ pub use tensor_kdl_macros::{Decode, DecodeScalar};
 /// [`Document`] (`docs/kdl/glaze-alignment.md`: KDL wins on syntax).
 pub fn from_str(input: &str) -> Result<Document<'_>> {
     parse_document(input).map_err(Error::from)
+}
+
+/// Parse from a [`PaddedInput`] (Glaze padded `std::string` pattern).
+///
+/// **P-G10a:** uses [`Parser::from_padded`] so SWAR may over-read into the
+/// 16 trailing zero bytes; logical EOF stays at content length.
+pub fn from_padded(input: &PaddedInput) -> Result<Document<'_>> {
+    Parser::from_padded(input)
+        .parse_document()
+        .map_err(Error::from)
+}
+
+/// [`read_into`] from a [`PaddedInput`] (padded parser path).
+pub fn read_into_padded<'a, T: DecodeDocument<'a>>(
+    value: &mut T,
+    input: &'a PaddedInput,
+) -> ErrorCtx {
+    read_into_padded_with_opts(value, input, &mut Context::new(), Opts::new())
+}
+
+/// Like [`read_into_padded`] with reused [`Context`].
+///
+/// The parser keeps the logical `&str` for borrowed decoded values while its
+/// scanners see the complete padded allocation.
+pub fn read_into_padded_with_context<'a, T: DecodeDocument<'a>>(
+    value: &mut T,
+    input: &'a PaddedInput,
+    ctx: &mut Context,
+) -> ErrorCtx {
+    read_into_padded_with_opts(value, input, ctx, Opts::new())
+}
+
+/// Padded [`read_into_with_opts`] using one live [`Parser`].
+pub fn read_into_padded_with_opts<'a, T: DecodeDocument<'a>>(
+    value: &mut T,
+    input: &'a PaddedInput,
+    ctx: &mut Context,
+    opts: Opts,
+) -> ErrorCtx {
+    ctx.clear_error();
+    ctx.reset_depth();
+    ctx.apply_opts(opts);
+
+    let owned = take_context_for_parser(ctx);
+    let mut parser = Parser::from_padded_with_context(input, owned);
+    let result = T::read_stream_parser(value, &mut parser, opts);
+    let consumed = parser.offset();
+    restore_context_from_parser(ctx, parser);
+
+    match result {
+        Ok(()) => ErrorCtx::ok(consumed),
+        Err(error) => {
+            ctx.error = error.code;
+            ctx.custom_error_message = error.message.clone();
+            error
+        }
+    }
+}
+
+/// Const-generic padded read (Glaze `template <auto Opts>` + padded buffer).
+pub fn read_into_padded_const<'a, T: DecodeDocument<'a>, const OPTS: u8>(
+    value: &mut T,
+    input: &'a PaddedInput,
+) -> ErrorCtx {
+    read_into_padded_with_opts(value, input, &mut Context::new(), Opts::from_bits(OPTS))
 }
 
 /// Parse with an explicit reusable [`Context`] (Glaze ctx reuse).
@@ -267,7 +344,8 @@ pub fn read_document_with_opts(
     parser.parse_document_with_opts(opts)
 }
 
-pub(crate) fn take_context_for_parser(ctx: &mut Context) -> Context {
+/// Split scratch/limits out of `ctx` for a temporary [`Parser`] (derive + lib).
+pub fn take_context_for_parser(ctx: &mut Context) -> Context {
     Context {
         error: ctx.error,
         custom_error_message: ctx.custom_error_message.clone(),
@@ -282,7 +360,8 @@ pub(crate) fn take_context_for_parser(ctx: &mut Context) -> Context {
     }
 }
 
-pub(crate) fn restore_context_from_parser(ctx: &mut Context, parser: Parser<'_>) {
+/// Restore scratch/depth from a temporary [`Parser`] back into `ctx`.
+pub fn restore_context_from_parser(ctx: &mut Context, parser: Parser<'_>) {
     let back = parser.into_context();
     ctx.scratch = back.scratch;
     ctx.current_file = back.current_file;

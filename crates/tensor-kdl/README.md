@@ -1,6 +1,7 @@
 # tensor-kdl
 
-High-performance **KDL 2.0** parser and typed decode for TensorDE.
+High-performance **KDL 2.0** parser, typed decode/encode, and DOM query subset
+for TensorDE.
 
 Design notes: [`docs/kdl/design.md`](../../docs/kdl/design.md).
 
@@ -10,6 +11,9 @@ Design notes: [`docs/kdl/design.md`](../../docs/kdl/design.md).
 - SWAR-assisted whitespace and string scanning (Glaze-inspired)
 - Friendly `ErrorCtx` with byte offsets and `format_error`
 - Optional `#[derive(Decode)]` / `#[derive(DecodeScalar)]` via `tensor-kdl-macros`
+- Typed `#[derive(Encode)]` / `#[derive(EncodeScalar)]` with canonical KDL output
+- Glaze-style padded input for DOM and direct typed reads
+- Deliberately small KQL subset (`top()`, `>`, `>>`, `||`, existence matchers)
 - Criterion benches under `benches/`
 
 ## Quick start
@@ -43,6 +47,21 @@ struct Root {
     #[kdl(child)]
     package: Package,
 }
+```
+
+Typed encode uses the same field roles:
+
+```rust
+use tensor_kdl::{Decode, Encode, to_string};
+
+#[derive(Debug, Decode, Encode)]
+struct Version {
+    #[kdl(child, unwrap(argument))]
+    version: String,
+}
+
+let text = to_string(&Version { version: "2".into() }).unwrap();
+assert_eq!(text, "version 2\n");
 ```
 
 ## Benchmarks

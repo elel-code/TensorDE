@@ -98,3 +98,73 @@ pub(crate) fn expand_decode_scalar(input: &DeriveInput) -> syn::Result<proc_macr
         )),
     }
 }
+
+pub(crate) fn expand_encode_scalar(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    match &input.data {
+        Data::Enum(data) => {
+            let mut arms = Vec::new();
+            for variant in &data.variants {
+                if !matches!(variant.fields, Fields::Unit) {
+                    return Err(syn::Error::new_spanned(
+                        &variant.ident,
+                        "EncodeScalar enums must be unit variants",
+                    ));
+                }
+                let variant_name = &variant.ident;
+                let mut label = kebab(&variant_name.to_string());
+                for attr in &variant.attrs {
+                    if attr.path().is_ident("kdl") {
+                        attr.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("name") {
+                                let value: LitStr = meta.value()?.parse()?;
+                                label = value.value();
+                            }
+                            Ok(())
+                        })?;
+                    }
+                }
+                arms.push(quote! { #name::#variant_name => #label });
+            }
+            Ok(quote! {
+                impl #impl_generics ::tensor_kdl::EncodeScalar for #name #ty_generics
+                #where_clause
+                {
+                    fn encode_scalar(
+                        &self,
+                    ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {
+                        let __value = match self {
+                            #(#arms,)*
+                        };
+                        ::std::result::Result::Ok(::tensor_kdl::Value::String(
+                            ::tensor_kdl::KdlStr::owned(__value.to_owned()),
+                        ))
+                    }
+                }
+            })
+        }
+        Data::Struct(data) => match &data.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => Ok(quote! {
+                impl #impl_generics ::tensor_kdl::EncodeScalar for #name #ty_generics
+                #where_clause
+                {
+                    fn encode_scalar(
+                        &self,
+                    ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {
+                        ::tensor_kdl::EncodeScalar::encode_scalar(&self.0)
+                    }
+                }
+            }),
+            _ => Err(syn::Error::new_spanned(
+                name,
+                "EncodeScalar supports unit enums or single-field newtypes",
+            )),
+        },
+        _ => Err(syn::Error::new_spanned(
+            name,
+            "EncodeScalar supports enums and newtypes only",
+        )),
+    }
+}

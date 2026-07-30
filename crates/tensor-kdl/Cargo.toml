@@ -12,6 +12,10 @@ default = ["std", "derive"]
 std = []
 derive = ["dep:tensor-kdl-macros"]
 diagnostics = ["dep:miette"]
+# 16-byte dual-SWAR quote/escape scan (Glaze SSE2-width hot path). Bench-gated:
+# `cargo bench -p tensor-kdl --features simd -- pg8`. Off by default — SWAR-8
+# remains the portable primary path (Glaze: most work is SWAR, not SIMD).
+simd = []
 # Pretty-printer is always available; feature kept for API stability / future streaming write.
 write = []
 
@@ -24,6 +28,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "parse"
+harness = false
+
+[[bench]]
+name = "advanced"
 harness = false
 
 [lints]

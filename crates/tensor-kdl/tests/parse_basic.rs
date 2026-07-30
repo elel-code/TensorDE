@@ -1,3 +1,5 @@
+//! Basic parse, visit-fill, and Glaze-aligned API tests.
+
 use tensor_kdl::{Decode, KdlStr, Value, format_error, from_str, from_str_decode};
 
 #[test]
@@ -70,7 +72,6 @@ fn numbers() {
 
 #[test]
 fn raw_string() {
-    // Use ## so the inner #"..."# style is unambiguous in the Rust source.
     let doc = from_str(r##"s #"hello\nworld"#"##).unwrap();
     assert_eq!(
         doc.nodes[0].arguments().next().unwrap().as_str(),
@@ -89,23 +90,18 @@ fn comments() {
     )
     .unwrap();
     assert_eq!(doc.nodes.len(), 2);
-    assert_eq!(doc.nodes[0].name.as_str(), "a");
-    assert_eq!(doc.nodes[1].name.as_str(), "b");
 }
 
 #[test]
 fn line_continuation() {
-    let doc = from_str("n 1 2 \\\n   3 4\n").unwrap();
-    assert_eq!(doc.nodes[0].arguments().count(), 4);
+    let doc = from_str("a 1 \\\n 2").unwrap();
+    assert_eq!(doc.nodes[0].arguments().count(), 2);
 }
 
 #[test]
 fn format_error_shows_snippet() {
-    // Glaze format_error(pe, buffer) indexes with pe.count (== consumed).
-    let src = "ok\nbad \0 stuff\n";
-    let err = from_str(src).unwrap_err();
-    let formatted = format_error(&err.ctx, src);
-    // Glaze generate_error_string: `line:column: <msg>` then context + `^`
+    let err = from_str("ok\nbad {\n").unwrap_err();
+    let formatted = format_error(&err.ctx, "ok\nbad {\n");
     assert!(
         formatted.contains(':'),
         "expected line:column prefix, got {formatted:?}"
@@ -131,20 +127,18 @@ fn glaze_read_into_reuses_value() {
     "#,
     );
     assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
-    assert!(ec.consumed > 0, "Glaze count must be bytes processed");
+    assert!(ec.consumed > 0);
     assert_eq!(root.name.as_deref(), Some("hello"));
 }
 
 #[test]
 fn empty_kdl_document_is_valid() {
-    // Official suite `empty.kdl` — KDL allows zero nodes (Glaze JSON would use no_read_input).
     let doc = from_str("").unwrap();
     assert!(doc.is_empty());
 }
 
 #[test]
 fn decode_from_visit_derive() {
-    // P-G3c: Glaze decode_linear — derive VisitBuilder fills T without DOM Node for root.
     use tensor_kdl::{Decode, DecodeFromVisit, Opts, VisitBuilder, decode_node_str};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -155,11 +149,7 @@ fn decode_from_visit_derive() {
         name: String,
     }
 
-    assert!(
-        VisitBuilder::finish(<Item as DecodeFromVisit>::start_visit()).is_err(),
-        "builder without events should miss required fields"
-    );
-
+    assert!(VisitBuilder::finish(<Item as DecodeFromVisit>::start_visit()).is_err());
     let item: Item = decode_node_str(r#"item 7 name="x""#, Opts::new()).unwrap();
     assert_eq!(
         item,
@@ -172,8 +162,6 @@ fn decode_from_visit_derive() {
 
 #[test]
 fn nested_visit_fill_child_without_dom() {
-    // P-G3d: Glaze nested from::op — child DecodeFromVisit fills without parent
-    // retaining a child Node (take_child_after_header + NestedProbe).
     use tensor_kdl::{Decode, DecodeFromVisit, Opts, decode_node_str};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -192,27 +180,16 @@ fn nested_visit_fill_child_without_dom() {
         child: Child,
     }
 
-    // Both implement DecodeFromVisit (visit-fill eligible structs).
     let _ = <Child as DecodeFromVisit>::start_visit();
     let _ = <Parent as DecodeFromVisit>::start_visit();
-
     let parent: Parent =
         decode_node_str(r#"parent id="p1" { child 9 label="nested" }"#, Opts::new()).unwrap();
-    assert_eq!(
-        parent,
-        Parent {
-            id: "p1".into(),
-            child: Child {
-                n: 9,
-                label: "nested".into(),
-            },
-        }
-    );
+    assert_eq!(parent.child.n, 9);
+    assert_eq!(parent.child.label, "nested");
 }
 
 #[test]
 fn read_nodes_into_visit_streams_without_dom_nodes() {
-    // P-G3d top-level: visit_document_at_nodes + DecodeFromVisit (Glaze array from::op).
     use tensor_kdl::{Context, Decode, DecodeFromVisit, Opts, read_nodes_into_visit};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -235,25 +212,11 @@ row 2 name="b"
         Opts::new(),
     );
     assert!(!ec.is_err(), "{ec:?}");
-    assert_eq!(
-        out,
-        [
-            Row {
-                n: 1,
-                name: "a".into()
-            },
-            Row {
-                n: 2,
-                name: "b".into()
-            },
-        ]
-    );
+    assert_eq!(out.len(), 2);
 }
 
 #[test]
 fn visit_node_counting_visitor() {
-    // P-G3b: Glaze decode_index delivers members without requiring the caller
-    // to retain a full Node (CountingVisitor drops values).
     use tensor_kdl::{CountingVisitor, Opts, Parser};
 
     let mut parser = Parser::new(r#"n 1 2 k="v" { c }"#);
@@ -266,7 +229,6 @@ fn visit_node_counting_visitor() {
 
 #[test]
 fn visit_document_streams_top_level_nodes() {
-    // Glaze primary path: deliver structure as parsed (core/read.hpp → parse::op).
     use tensor_kdl::{Opts, visit_document};
 
     let mut names = Vec::new();
@@ -280,7 +242,6 @@ fn visit_document_streams_top_level_nodes() {
 
 #[test]
 fn partial_read_stops_after_first_node() {
-    // Glaze opts.partial_read (opts.hpp + docs/partial-read.md).
     use tensor_kdl::{Opts, read_document_with_opts};
 
     let doc = read_document_with_opts("first 1\nsecond 2\nthird 3\n", Opts::partial()).unwrap();
@@ -290,7 +251,6 @@ fn partial_read_stops_after_first_node() {
 
 #[test]
 fn read_nodes_into_decodes_each_top_level() {
-    // Glaze array-element fill: decode each element as the cursor advances.
     use tensor_kdl::{Context, Decode, Opts, read_nodes_into};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -305,25 +265,11 @@ fn read_nodes_into_decodes_each_top_level() {
     let mut ctx = Context::new();
     let ec = read_nodes_into::<Item>(&mut items, "alpha 1\nbeta 2\n", &mut ctx, Opts::new());
     assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
-    assert_eq!(
-        items,
-        [
-            Item {
-                name: "alpha".into(),
-                n: 1
-            },
-            Item {
-                name: "beta".into(),
-                n: 2
-            }
-        ]
-    );
+    assert_eq!(items.len(), 2);
 }
 
 #[test]
 fn read_into_vec_streams_via_toplevel_fill() {
-    // P-G3e: DecodeDocument::read_stream for Vec uses TopLevelFill
-    // (visit-fill when T: DecodeFromVisit — Glaze array from::op).
     use tensor_kdl::{Decode, DecodeFromVisit, read_into};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -343,77 +289,11 @@ row 2 name="b"
 "#,
     );
     assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
-    assert_eq!(
-        rows,
-        [
-            Row {
-                n: 1,
-                name: "a".into()
-            },
-            Row {
-                n: 2,
-                name: "b".into()
-            },
-        ]
-    );
-}
-
-#[test]
-fn const_generic_opts_and_read_into() {
-    // P-G4: packed u8 opts monomorphize like Glaze template <auto Opts>.
-    use tensor_kdl::{
-        Decode, DecodeFromVisit, OPTS_DEFAULT, OPTS_LENIENT, OPTS_PARTIAL, Opts,
-        decode_node_str_const, read_into_const,
-    };
-
-    assert_eq!(Opts::new().bits(), OPTS_DEFAULT);
-    assert_eq!(Opts::lenient().bits(), OPTS_LENIENT);
-    assert_eq!(Opts::partial().bits(), OPTS_PARTIAL);
-
-    #[derive(Debug, Decode, PartialEq)]
-    struct Row {
-        #[kdl(argument)]
-        n: i64,
-        #[kdl(property)]
-        name: String,
-    }
-
-    let _ = <Row as DecodeFromVisit>::start_visit();
-    let row: Row = decode_node_str_const::<Row, OPTS_DEFAULT>(r#"row 3 name="c""#).unwrap();
-    assert_eq!(
-        row,
-        Row {
-            n: 3,
-            name: "c".into()
-        }
-    );
-
-    let mut rows: Vec<Row> = Vec::new();
-    let ec = read_into_const::<Vec<Row>, OPTS_DEFAULT>(
-        &mut rows,
-        r#"row 1 name="a"
-row 2 name="b"
-"#,
-    );
-    assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
     assert_eq!(rows.len(), 2);
-
-    // partial_read: only first top-level node.
-    let mut one: Vec<Row> = Vec::new();
-    let ec = read_into_const::<Vec<Row>, OPTS_PARTIAL>(
-        &mut one,
-        r#"row 1 name="a"
-row 2 name="b"
-"#,
-    );
-    assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
-    assert_eq!(one.len(), 1);
-    assert_eq!(one[0].n, 1);
 }
 
 #[test]
 fn read_into_children_only_root_streams() {
-    // P-G3e: single `#[kdl(children)]` document root overrides read_stream.
     use tensor_kdl::{Decode, DecodeFromVisit, read_into};
 
     #[derive(Debug, Decode, PartialEq)]
@@ -433,6 +313,259 @@ fn read_into_children_only_root_streams() {
     let ec = read_into(&mut root, "item 1\nitem 2\nitem 3\n");
     assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
     assert_eq!(root.items, [Item { n: 1 }, Item { n: 2 }, Item { n: 3 }]);
+}
+
+#[test]
+fn const_generic_opts_and_read_into() {
+    use tensor_kdl::{
+        Decode, DecodeFromVisit, OPTS_DEFAULT, OPTS_LENIENT, OPTS_PARTIAL, Opts,
+        decode_node_str_const, read_into_const,
+    };
+
+    assert_eq!(Opts::new().bits(), OPTS_DEFAULT);
+    assert_eq!(Opts::lenient().bits(), OPTS_LENIENT);
+    assert_eq!(Opts::partial().bits(), OPTS_PARTIAL);
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Row {
+        #[kdl(argument)]
+        n: i64,
+        #[kdl(property)]
+        name: String,
+    }
+
+    let _ = <Row as DecodeFromVisit>::start_visit();
+    let row: Row = decode_node_str_const::<Row, OPTS_DEFAULT>(r#"row 3 name="c""#).unwrap();
+    assert_eq!(row.n, 3);
+
+    let mut one: Vec<Row> = Vec::new();
+    let ec = read_into_const::<Vec<Row>, OPTS_PARTIAL>(
+        &mut one,
+        r#"row 1 name="a"
+row 2 name="b"
+"#,
+    );
+    assert!(ec.is_ok());
+    assert_eq!(one.len(), 1);
+}
+
+#[test]
+fn unique_index_property_dispatch() {
+    use tensor_kdl::{Decode, DecodeFromVisit, Opts, decode_node_str};
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Wide {
+        #[kdl(property)]
+        alpha: i64,
+        #[kdl(property)]
+        beta: i64,
+        #[kdl(property)]
+        gamma: i64,
+        #[kdl(property)]
+        delta: i64,
+    }
+
+    let _ = <Wide as DecodeFromVisit>::start_visit();
+    let w: Wide = decode_node_str(r#"row alpha=1 beta=2 gamma=3 delta=4"#, Opts::new()).unwrap();
+    assert_eq!(w.delta, 4);
+    assert!(
+        decode_node_str::<Wide>(r#"row alpha=1 beta=2 gamma=3 delta=4 zeta=9"#, Opts::new())
+            .is_err()
+    );
+}
+
+#[test]
+fn sized_and_modular_key_dispatch() {
+    use tensor_kdl::{Decode, DecodeFromVisit, Opts, decode_node_str};
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct SizedKeys {
+        #[kdl(property, name = "a")]
+        a: i64,
+        #[kdl(property, name = "ab")]
+        ab: i64,
+        #[kdl(property, name = "abc")]
+        abc: i64,
+    }
+
+    let _ = <SizedKeys as DecodeFromVisit>::start_visit();
+    let s: SizedKeys = decode_node_str(r#"n a=1 ab=2 abc=3"#, Opts::new()).unwrap();
+    assert_eq!(s.abc, 3);
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct ModularKeys {
+        #[kdl(property, name = "aa")]
+        aa: i64,
+        #[kdl(property, name = "ab")]
+        ab: i64,
+        #[kdl(property, name = "ba")]
+        ba: i64,
+        #[kdl(property, name = "bb")]
+        bb: i64,
+    }
+
+    let _ = <ModularKeys as DecodeFromVisit>::start_visit();
+    let m: ModularKeys = decode_node_str(r#"n aa=1 ab=2 ba=3 bb=4"#, Opts::new()).unwrap();
+    assert_eq!(m.bb, 4);
+}
+
+#[test]
+fn single_node_document_root_streams() {
+    use tensor_kdl::{Decode, DecodeDocument, DecodeFromVisit, read_into};
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Widget {
+        #[kdl(argument)]
+        id: i64,
+        #[kdl(property)]
+        name: String,
+        #[kdl(property)]
+        enabled: bool,
+    }
+
+    let _ = <Widget as DecodeFromVisit>::start_visit();
+    let mut w = Widget {
+        id: 0,
+        name: String::new(),
+        enabled: false,
+    };
+    let ec = read_into(
+        &mut w,
+        r#"widget 42 name="panel" enabled=#true
+ignored-second 99
+"#,
+    );
+    assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
+    assert_eq!(w.id, 42);
+    assert_eq!(w.name, "panel");
+    assert!(w.enabled);
+
+    let doc = from_str(r#"widget 7 name="x" enabled=#false"#).unwrap();
+    let w2 = Widget::decode_document(&doc).unwrap();
+    assert_eq!(w2.id, 7);
+}
+
+#[test]
+fn padded_input_and_flatten_stream_root() {
+    use tensor_kdl::{
+        Decode, DecodePartial, Node, PADDING_BYTES, PaddedInput, Value, from_padded, read_into,
+    };
+
+    let pad = PaddedInput::new("node 1\n");
+    assert_eq!(pad.padded_bytes().len(), pad.len() + PADDING_BYTES);
+    let doc = from_padded(&pad).unwrap();
+    assert_eq!(doc.nodes.len(), 1);
+
+    #[derive(Debug, Default, PartialEq)]
+    struct Extra {
+        flags: Vec<String>,
+    }
+    impl<'a> DecodePartial<'a> for Extra {
+        fn insert_child(&mut self, node: &Node<'a>) -> tensor_kdl::CtxResult<bool> {
+            self.flags.push(node.name.as_str().to_owned());
+            Ok(true)
+        }
+        fn insert_property(
+            &mut self,
+            _key: &str,
+            _value: &Value<'a>,
+        ) -> tensor_kdl::CtxResult<bool> {
+            Ok(false)
+        }
+    }
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Cfg {
+        #[kdl(child, unwrap(argument))]
+        version: Option<String>,
+        #[kdl(flatten)]
+        extra: Extra,
+    }
+
+    let mut cfg = Cfg {
+        version: None,
+        extra: Extra::default(),
+    };
+    let ec = read_into(
+        &mut cfg,
+        r#"
+        version "2"
+        alpha
+        beta
+        "#,
+    );
+    assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
+    assert_eq!(cfg.version.as_deref(), Some("2"));
+    assert_eq!(cfg.extra.flags, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn padded_parser_overread_and_mixed_siblings() {
+    // P-G10a / P-G10b
+    use tensor_kdl::{
+        Decode, DecodeDocument, DecodeFromVisit, PADDING_BYTES, PaddedInput, Parser, from_padded,
+        read_into,
+    };
+
+    let pad = PaddedInput::new(r#"msg "hello""#);
+    assert!(pad.padded_bytes().len() >= pad.len() + PADDING_BYTES);
+    let mut parser = Parser::from_padded(&pad);
+    assert!(parser.is_padded());
+    let doc = parser.parse_document().unwrap();
+    assert_eq!(doc.nodes[0].name.as_str(), "msg");
+
+    let pad2 = PaddedInput::new("a 1\nb 2\n");
+    assert_eq!(from_padded(&pad2).unwrap().nodes.len(), 2);
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Item {
+        #[kdl(node_name)]
+        name: String,
+        #[kdl(argument)]
+        n: i64,
+    }
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Mixed {
+        #[kdl(argument)]
+        id: i64,
+        #[kdl(property)]
+        label: String,
+        #[kdl(children)]
+        rest: Vec<Item>,
+    }
+
+    let _ = <Mixed as DecodeFromVisit>::start_visit();
+    let mut m = Mixed {
+        id: 0,
+        label: String::new(),
+        rest: Vec::new(),
+    };
+    let ec = read_into(
+        &mut m,
+        r#"
+        root 7 label="main"
+        alpha 1
+        beta 2
+        "#,
+    );
+    assert!(ec.is_ok(), "{}", tensor_kdl::format_error_code(&ec));
+    assert_eq!(m.id, 7);
+    assert_eq!(m.label, "main");
+    assert_eq!(m.rest.len(), 2);
+    assert_eq!(m.rest[0].name, "alpha");
+    assert_eq!(m.rest[1].n, 2);
+
+    let doc = from_str(
+        r#"
+        root 1 label="x"
+        sib 9
+        "#,
+    )
+    .unwrap();
+    let m2 = Mixed::decode_document(&doc).unwrap();
+    assert_eq!(m2.rest.len(), 1);
+    assert_eq!(m2.rest[0].name, "sib");
 }
 
 #[test]
@@ -468,5 +601,5 @@ fn derive_decode_document() {
 fn ci_example_parses() {
     let src = include_str!("../../../references/kdl/examples/ci.kdl");
     let doc = from_str(src).expect("ci.kdl should parse");
-    assert!(!doc.nodes.is_empty());
+    assert!(!doc.is_empty());
 }

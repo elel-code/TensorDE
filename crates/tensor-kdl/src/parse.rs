@@ -2,6 +2,7 @@
 
 pub(crate) mod chars;
 mod reader;
+mod simd;
 mod swar;
 pub mod visitor;
 

@@ -65,7 +65,7 @@ impl<'a> Parser<'a> {
     pub(super) fn skip_ws_only(&mut self) -> CtxResult<()> {
         loop {
             let before = self.index;
-            self.index = skip_ascii_horizontal_ws(self.bytes, self.index);
+            self.index = skip_ascii_horizontal_ws(self.scan_bytes(), self.index, self.scan_end());
             if let Some(c) = self.peek_char()
                 && is_unicode_space(c)
             {

@@ -35,37 +35,43 @@ pub fn first_lane(mask: u64) -> usize {
     (mask.trailing_zeros() as usize) >> 3
 }
 
-/// Skip runs of ASCII space/tab using 8-byte steps.
+/// Skip ASCII space/tab up to logical `end` (may SWAR-load into padding past `end`).
 ///
-/// Returns the new index. Does not handle unicode spaces or comments.
+/// When `input.len() == end` this is the classic unpadded path. When `input` is a
+/// [`crate::PaddedInput`] buffer, pass `end = content_len` so EOF is correct while
+/// u64 loads may touch zero padding (Glaze `padding_bytes`).
+///
+/// Cite: Glaze `util/parse.hpp` + `opts.hpp` `padding_bytes`.
 #[inline(always)]
-pub fn skip_ascii_horizontal_ws(input: &[u8], mut index: usize) -> usize {
-    let len = input.len();
-    while index + 8 <= len {
-        let chunk = load_u64_unaligned(&input[index..index + 8]);
-        let ws = has_ascii_horizontal_ws(chunk);
-        // All eight lanes are space/tab if every high bit of the equal-mask is set
-        // for positions that are ws — simpler: check byte-by-byte in chunk when mixed.
-        let mut all_ws = true;
-        let mut advance = 0usize;
-        for i in 0..8 {
-            let b = input[index + i];
-            if b == b' ' || b == b'\t' {
-                advance += 1;
-            } else {
-                all_ws = false;
-                break;
+pub fn skip_ascii_horizontal_ws(input: &[u8], mut index: usize, end: usize) -> usize {
+    let end = end.min(input.len());
+    // All eight high-bits set ⇒ every lane matched space or tab.
+    const ALL_WS: u64 = 0x8080_8080_8080_8080;
+    while index < end {
+        // Prefer full u64 when padding or content supplies 8 bytes.
+        if index + 8 <= input.len() {
+            let chunk = load_u64_unaligned(&input[index..index + 8]);
+            let ws = has_ascii_horizontal_ws(chunk);
+            if index + 8 <= end && ws == ALL_WS {
+                index += 8;
+                continue;
             }
-        }
-        if all_ws {
+            let non_ws = ALL_WS & !ws;
+            if non_ws != 0 {
+                let lane = first_lane(non_ws);
+                let at = index + lane;
+                return at.min(end);
+            }
+            // All ws in this u64 but straddles logical end — advance to end.
+            if index + 8 > end {
+                return end;
+            }
             index += 8;
-            let _ = ws;
             continue;
         }
-        index += advance;
         break;
     }
-    while index < len && (input[index] == b' ' || input[index] == b'\t') {
+    while index < end && (input[index] == b' ' || input[index] == b'\t') {
         index += 1;
     }
     index
@@ -75,15 +81,23 @@ pub fn skip_ascii_horizontal_ws(input: &[u8], mut index: usize) -> usize {
 /// Returns absolute byte index of the first special, or `end` if none in range.
 #[inline(always)]
 pub fn find_quote_or_escape(input: &[u8], mut index: usize, end: usize) -> usize {
-    while index + 8 <= end {
-        let chunk = load_u64_unaligned(&input[index..index + 8]);
-        let hit = has_byte(chunk, b'"') | has_byte(chunk, b'\\');
-        if hit != 0 {
-            return index + first_lane(hit);
+    let end = end.min(input.len());
+    while index < end {
+        if index + 8 <= input.len() {
+            let chunk = load_u64_unaligned(&input[index..index + 8]);
+            let hit = has_byte(chunk, b'"') | has_byte(chunk, b'\\');
+            if hit != 0 {
+                let at = index + first_lane(hit);
+                return at.min(end);
+            }
+            if index + 8 > end {
+                // Remainder inside this chunk past logical end is padding — stop.
+                break;
+            }
+            index += 8;
+            continue;
         }
-        // Also stop on ASCII control (< 0x20) roughly: any byte with high bits clear in low 5?
-        // For speed we only SWAR quote/escape; controls checked on the slow path.
-        index += 8;
+        break;
     }
     while index < end {
         let b = input[index];
@@ -102,9 +116,19 @@ mod tests {
     #[test]
     fn skip_spaces() {
         let s = b"        foo";
-        assert_eq!(skip_ascii_horizontal_ws(s, 0), 8);
+        assert_eq!(skip_ascii_horizontal_ws(s, 0, s.len()), 8);
         let s2 = b"  \t bar";
-        assert_eq!(skip_ascii_horizontal_ws(s2, 0), 4);
+        assert_eq!(skip_ascii_horizontal_ws(s2, 0, s2.len()), 4);
+        let s3 = b"   x    rest";
+        assert_eq!(skip_ascii_horizontal_ws(s3, 0, s3.len()), 3);
+        let s4 = b"                end";
+        assert_eq!(skip_ascii_horizontal_ws(s4, 0, s4.len()), 16);
+        // Padded: logical end mid-buffer.
+        let mut pad = b"  x\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec();
+        pad[0] = b' ';
+        pad[1] = b' ';
+        pad[2] = b'x';
+        assert_eq!(skip_ascii_horizontal_ws(&pad, 0, 3), 2);
     }
 
     #[test]

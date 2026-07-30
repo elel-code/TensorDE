@@ -5,7 +5,7 @@ use crate::parse::chars::{
     is_disallowed_literal, is_newline_char, is_non_identifier_char, is_unicode_space,
 };
 use crate::parse::reader::Parser;
-use crate::parse::swar::find_quote_or_escape;
+use crate::parse::simd::find_quote_or_escape_fast;
 use crate::value::KdlStr;
 
 impl<'a> Parser<'a> {
@@ -97,12 +97,12 @@ impl<'a> Parser<'a> {
         }
         self.bump_byte();
         let start = self.index;
-        let end_limit = self.bytes.len();
+        let end_limit = self.scan_end();
         let mut i = start;
         let mut needs_unescape = false;
 
         while i < end_limit {
-            let special = find_quote_or_escape(self.bytes, i, end_limit);
+            let special = find_quote_or_escape_fast(self.scan_bytes(), i, end_limit);
             if special >= end_limit {
                 return Err(self
                     .err(ErrorCode::UnexpectedEof)

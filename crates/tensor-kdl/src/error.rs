@@ -357,13 +357,21 @@ impl From<ErrorCtx> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 pub type CtxResult<T> = std::result::Result<T, ErrorCtx>;
 
-/// Build a miette [`Report`] from [`ErrorCtx`] + source (feature `diagnostics`).
+/// Build a miette [`miette::Report`] from [`ErrorCtx`] + source
+/// (feature `diagnostics`).
 ///
 /// Core path stays Glaze `format_error`; miette is an optional presentation layer
-/// (`docs/kdl/glaze-alignment.md` §2).
+/// (`docs/kdl/glaze-alignment.md` §2). Prefer [`report_error_named`] when a file
+/// path is known (richer related spans).
 #[cfg(feature = "diagnostics")]
 pub fn report_error(err: &ErrorCtx, input: &str) -> miette::Report {
-    miette_support::report_from_ctx(err, input)
+    miette_support::report_from_ctx(err, input, "kdl")
+}
+
+/// Like [`report_error`] with an explicit source name (path or buffer id).
+#[cfg(feature = "diagnostics")]
+pub fn report_error_named(err: &ErrorCtx, input: &str, name: &str) -> miette::Report {
+    miette_support::report_from_ctx(err, input, name)
 }
 
 #[cfg(feature = "diagnostics")]
@@ -373,11 +381,52 @@ mod miette_support {
     use std::sync::Arc;
 
     /// Owned source + error for miette (spans need a named source).
+    ///
+    /// P-G9c: primary label at `consumed` (Glaze `count`); secondary label for
+    /// the current line snippet window (Glaze `get_source_info` context).
     #[derive(Debug)]
     struct KdlDiagnostic {
         ctx: ErrorCtx,
         src: Arc<String>,
         name: String,
+        line: usize,
+        column: usize,
+        line_start: usize,
+        line_end: usize,
+    }
+
+    impl KdlDiagnostic {
+        fn from_ctx(ctx: ErrorCtx, input: &str, name: &str) -> Self {
+            let info = source_info(input, ctx.consumed);
+            let (line, column) = info.line_col();
+            // Recompute line byte range for related span (full line, not truncated).
+            let probe = if ctx.consumed >= input.len() && !input.is_empty() {
+                input.len().saturating_sub(1)
+            } else {
+                ctx.consumed
+                    .min(input.len().saturating_sub(1).min(ctx.consumed))
+            };
+            let probe = probe.min(
+                input
+                    .len()
+                    .saturating_sub(if input.is_empty() { 0 } else { 1 }),
+            );
+            let prefix = &input[..probe.min(input.len())];
+            let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = input[probe.min(input.len())..]
+                .find('\n')
+                .map(|i| probe + i)
+                .unwrap_or(input.len());
+            Self {
+                ctx,
+                src: Arc::new(input.to_owned()),
+                name: name.to_owned(),
+                line,
+                column,
+                line_start,
+                line_end: line_end.max(line_start),
+            }
+        }
     }
 
     impl fmt::Display for KdlDiagnostic {
@@ -400,9 +449,20 @@ mod miette_support {
         }
 
         fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
-            self.ctx
-                .expected
-                .map(|e| Box::new(format!("expected {e}")) as Box<dyn fmt::Display + 'a>)
+            let loc = format!("{}:{}", self.line, self.column);
+            match (&self.ctx.expected, &self.ctx.message) {
+                (Some(exp), Some(msg)) => {
+                    Some(Box::new(format!("{loc}: expected {exp}; {msg}"))
+                        as Box<dyn fmt::Display + 'a>)
+                }
+                (Some(exp), None) => {
+                    Some(Box::new(format!("{loc}: expected {exp}")) as Box<dyn fmt::Display + 'a>)
+                }
+                (None, Some(msg)) => {
+                    Some(Box::new(format!("{loc}: {msg}")) as Box<dyn fmt::Display + 'a>)
+                }
+                (None, None) => Some(Box::new(format!("at {loc}")) as Box<dyn fmt::Display + 'a>),
+            }
         }
 
         fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
@@ -419,18 +479,33 @@ mod miette_support {
             } else {
                 0
             };
-            let span = SourceSpan::new(SourceOffset::from(offset), len);
-            let label = self
+            let primary = SourceSpan::new(SourceOffset::from(offset), len);
+            let primary_label = self
                 .ctx
                 .message
                 .as_ref()
                 .map(|m| m.as_ref().to_owned())
                 .or_else(|| self.ctx.expected.map(|e| format!("expected {e}")))
                 .unwrap_or_else(|| self.ctx.code.as_str().to_owned());
-            Some(Box::new(std::iter::once(LabeledSpan::new_with_span(
-                Some(label),
-                span,
-            ))))
+
+            let mut labels = vec![LabeledSpan::new_primary_with_span(
+                Some(primary_label),
+                primary,
+            )];
+
+            // Related: whole source line (Glaze context window role).
+            if self.line_end > self.line_start && self.line_end <= self.src.len() {
+                let line_span = SourceSpan::new(
+                    SourceOffset::from(self.line_start),
+                    self.line_end - self.line_start,
+                );
+                labels.push(LabeledSpan::new_with_span(
+                    Some(format!("line {}", self.line)),
+                    line_span,
+                ));
+            }
+
+            Some(Box::new(labels.into_iter()))
         }
 
         fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -438,8 +513,11 @@ mod miette_support {
         }
 
         fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
-            let _ = &self.name;
             None
+        }
+
+        fn severity(&self) -> Option<miette::Severity> {
+            Some(miette::Severity::Error)
         }
     }
 
@@ -464,12 +542,9 @@ mod miette_support {
         }
     }
 
-    pub(super) fn report_from_ctx(err: &ErrorCtx, input: &str) -> miette::Report {
-        let diag = KdlDiagnostic {
-            ctx: err.clone(),
-            src: Arc::new(input.to_owned()),
-            name: "kdl".into(),
-        };
-        miette::Report::new(diag)
+    pub(super) fn report_from_ctx(err: &ErrorCtx, input: &str, name: &str) -> miette::Report {
+        let diag = KdlDiagnostic::from_ctx(err.clone(), input, name);
+        let _ = diag.name.as_str(); // keep name for NamedSource consumers
+        miette::Report::new(diag).with_source_code(Arc::new(input.to_owned()))
     }
 }

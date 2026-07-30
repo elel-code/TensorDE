@@ -1,13 +1,14 @@
 //! Emit [`DecodeFromVisit`] / [`VisitBuilder`] — Glaze `decode_linear` shape.
 //!
-//! Property/child names use linear `match` on a static set of keys
-//! (`json/read.hpp` `decode_linear`).
+//! Property/child names use:
+//! - Glaze `unique_index` / `unique_sized` / modular perfect-hash (P-G6/P-G7)
+//! - else linear string `match` (`json/read.hpp` `decode_linear`)
 
 use quote::{format_ident, quote};
-use syn::{Ident, ImplGenerics, TypeGenerics, WhereClause};
+use syn::{Ident, ImplGenerics, Type, TypeGenerics, WhereClause};
 
 use crate::attr::{FieldInfo, FieldRole, UnwrapKind, kebab};
-use syn::Type;
+use crate::key_dispatch::emit_key_strategy_match;
 
 /// Structs eligible for visit-fill (no flatten / properties map / unwrap(property)).
 pub(crate) fn visit_fill_supported(fields: &[FieldInfo]) -> bool {
@@ -35,8 +36,10 @@ pub(crate) fn emit_decode_from_visit(
     let mut inits = Vec::new();
     let mut finish = Vec::new();
     let mut arg_arms = Vec::new();
-    let mut prop_arms = Vec::new();
-    let mut child_arms = Vec::new();
+    let mut prop_keys: Vec<String> = Vec::new();
+    let mut prop_bodies: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut child_keys: Vec<String> = Vec::new();
+    let mut child_bodies: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut take_child_arms = Vec::new();
     let mut header_stmts = Vec::new();
     let mut arg_i = 0usize;
@@ -86,23 +89,21 @@ pub(crate) fn emit_decode_from_visit(
                 if f.optional {
                     decls.push(quote! { #id: #ty });
                     inits.push(quote! { #id: ::std::option::Option::None });
-                    prop_arms.push(quote! {
-                        #key => {
-                            self.#id = ::tensor_kdl::DecodeScalar::decode_scalar(&value)?;
-                            return ::std::result::Result::Ok(true);
-                        }
+                    prop_keys.push(key.clone());
+                    prop_bodies.push(quote! {
+                        self.#id = ::tensor_kdl::DecodeScalar::decode_scalar(&value)?;
+                        return ::std::result::Result::Ok(true);
                     });
                     finish.push(quote! { #id: self.#id });
                 } else {
                     decls.push(quote! { #id: ::std::option::Option<#ty> });
                     inits.push(quote! { #id: ::std::option::Option::None });
-                    prop_arms.push(quote! {
-                        #key => {
-                            self.#id = ::std::option::Option::Some(
-                                ::tensor_kdl::DecodeScalar::decode_scalar(&value)?,
-                            );
-                            return ::std::result::Result::Ok(true);
-                        }
+                    prop_keys.push(key.clone());
+                    prop_bodies.push(quote! {
+                        self.#id = ::std::option::Option::Some(
+                            ::tensor_kdl::DecodeScalar::decode_scalar(&value)?,
+                        );
+                        return ::std::result::Result::Ok(true);
                     });
                     finish.push(quote! {
                         #id: self.#id.ok_or_else(|| ::tensor_kdl::missing_field(#key))?
@@ -147,21 +148,19 @@ pub(crate) fn emit_decode_from_visit(
                 if f.optional {
                     decls.push(quote! { #id: #ty });
                     inits.push(quote! { #id: ::std::option::Option::None });
-                    child_arms.push(quote! {
-                        #key => {
-                            self.#id = ::std::option::Option::Some(#decode_child);
-                            return ::std::result::Result::Ok(true);
-                        }
+                    child_keys.push(key.clone());
+                    child_bodies.push(quote! {
+                        self.#id = ::std::option::Option::Some(#decode_child);
+                        return ::std::result::Result::Ok(true);
                     });
                     finish.push(quote! { #id: self.#id });
                 } else {
                     decls.push(quote! { #id: ::std::option::Option<#ty> });
                     inits.push(quote! { #id: ::std::option::Option::None });
-                    child_arms.push(quote! {
-                        #key => {
-                            self.#id = ::std::option::Option::Some(#decode_child);
-                            return ::std::result::Result::Ok(true);
-                        }
+                    child_keys.push(key.clone());
+                    child_bodies.push(quote! {
+                        self.#id = ::std::option::Option::Some(#decode_child);
+                        return ::std::result::Result::Ok(true);
                     });
                     finish.push(quote! {
                         #id: self.#id.ok_or_else(|| ::tensor_kdl::missing_child_named(#key))?
@@ -185,11 +184,10 @@ pub(crate) fn emit_decode_from_visit(
                             return ::std::result::Result::Ok(true);
                         }
                     });
-                    child_arms.push(quote! {
-                        #filter => {
-                            self.#id.push(::tensor_kdl::Decode::decode_node(&child)?);
-                            return ::std::result::Result::Ok(true);
-                        }
+                    child_keys.push(filter.clone());
+                    child_bodies.push(quote! {
+                        self.#id.push(::tensor_kdl::Decode::decode_node(&child)?);
+                        return ::std::result::Result::Ok(true);
                     });
                 } else {
                     // Unfiltered children: take every child via nested dispatch
@@ -205,17 +203,12 @@ pub(crate) fn emit_decode_from_visit(
                             return ::std::result::Result::Ok(true);
                         }
                     });
-                    // Catch-all collector — must be last; use a flag in on_child default.
-                    child_arms.push(quote! {
-                        // collected in fallback
-                    });
-                    // Store id for fallback
+                    // Catch-all: handled in child_fallback, not unique-index table.
                     let catch_id = id;
-                    child_arms.push(quote! {
-                        __tensor_kdl_collect_all if true => {
-                            self.#catch_id.push(::tensor_kdl::Decode::decode_node(&child)?);
-                            return ::std::result::Result::Ok(true);
-                        }
+                    child_keys.push(String::new()); // marker for unfiltered — strip later
+                    child_bodies.push(quote! {
+                        self.#catch_id.push(::tensor_kdl::Decode::decode_node(&child)?);
+                        return ::std::result::Result::Ok(true);
                     });
                 }
             }
@@ -260,9 +253,6 @@ pub(crate) fn emit_decode_from_visit(
         }
     }
 
-    // Fix Children { None } arms — remove empty placeholders from botched emit
-    let child_arms: Vec<_> = child_arms.into_iter().filter(|t| !t.is_empty()).collect();
-
     let args_rest_push = if let Some(id) = args_rest {
         let start = arg_i;
         quote! {
@@ -292,14 +282,34 @@ pub(crate) fn emit_decode_from_visit(
         quote! { ::std::result::Result::Ok(false) }
     };
 
-    // Filter child_arms that are the broken collect_all
-    let child_arms: Vec<_> = child_arms
+    // Named children only for unique-index / string match (drop unfiltered markers).
+    let named_child_pairs: Vec<(String, proc_macro2::TokenStream)> = child_keys
         .into_iter()
-        .filter(|tt| {
-            let s = tt.to_string();
-            !s.contains("__tensor_kdl_collect_all") && s.contains("=>")
-        })
+        .zip(child_bodies)
+        .filter(|(k, _)| !k.is_empty())
         .collect();
+
+    let on_property_body = emit_key_dispatch(
+        quote! { key.as_str() },
+        &prop_keys,
+        &prop_bodies,
+        quote! {
+            let _ = value;
+            ::std::result::Result::Ok(false)
+        },
+    );
+
+    let named_child_keys: Vec<&str> = named_child_pairs.iter().map(|(k, _)| k.as_str()).collect();
+    let named_child_bodies: Vec<_> = named_child_pairs.iter().map(|(_, b)| b.clone()).collect();
+    let on_child_body = emit_key_dispatch(
+        quote! { child.name.as_str() },
+        &named_child_keys
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>(),
+        &named_child_bodies,
+        child_fallback,
+    );
 
     quote! {
         struct #builder<'__kdl> {
@@ -358,24 +368,16 @@ pub(crate) fn emit_decode_from_visit(
                 _type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
                 value: ::tensor_kdl::Value<'__kdl>,
             ) -> ::tensor_kdl::CtxResult<bool> {
-                // Glaze decode_linear: equality scan over known keys.
-                match key.as_str() {
-                    #(#prop_arms)*
-                    _ => {
-                        let _ = value;
-                        ::std::result::Result::Ok(false)
-                    }
-                }
+                // P-G6: unique_index byte dispatch when keys admit it; else
+                // Glaze decode_linear string match.
+                #on_property_body
             }
 
             fn on_child(
                 &mut self,
                 child: ::tensor_kdl::Node<'__kdl>,
             ) -> ::tensor_kdl::CtxResult<bool> {
-                match child.name.as_str() {
-                    #(#child_arms)*
-                    _ => { #child_fallback }
-                }
+                #on_child_body
             }
 
             // P-G3d: nested from::op — fill child without intermediate Node when
@@ -403,6 +405,16 @@ pub(crate) fn emit_decode_from_visit(
             }
         }
     }
+}
+
+/// Build property/child name match via P-G6/P-G7 strategy selection.
+fn emit_key_dispatch(
+    key_expr: proc_macro2::TokenStream,
+    keys: &[String],
+    bodies: &[proc_macro2::TokenStream],
+    fallback: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    emit_key_strategy_match(key_expr, keys, bodies, fallback)
 }
 
 /// Peel `Option<T>` → `T` for nested visit-fill of optional child fields.
