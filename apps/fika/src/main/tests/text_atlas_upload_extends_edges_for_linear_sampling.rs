@@ -210,7 +210,8 @@
             1.0,
             Vec::new(),
         );
-        for index in 0..16 {
+        let label_count = 256;
+        for index in 0..label_count {
             second.push_label(
                 &format!("label-{index}"),
                 label_rect,
@@ -221,8 +222,8 @@
         let second_frame = second.finish();
 
         assert!(second_frame.height > first_height);
-        assert_eq!(second_frame.stats.quads, 16);
-        assert_eq!(second_frame.uploads.len(), 16);
+        assert_eq!(second_frame.stats.quads, label_count);
+        assert_eq!(second_frame.uploads.len(), label_count);
         assert_eq!(second_frame.stats.atlas_reused, 0);
     }
 

@@ -22,6 +22,8 @@ pub(crate) const DETAILS_SIZE_WIDTH: f32 = 104.0;
 pub(crate) const DETAILS_MODIFIED_WIDTH: f32 = 164.0;
 pub(crate) const SCROLL_LINE_PX: f32 = 56.0;
 pub(crate) const TEXT_ATLAS_WIDTH: u32 = 2048;
+// Retain common view-density changes without replacing the Vulkan atlas in an input frame.
+pub(crate) const TEXT_ATLAS_RETAINED_HEIGHT: u32 = 512;
 pub(crate) const TEXT_FONT_SIZE: f32 = 14.0;
 pub(crate) const TEXT_LINE_HEIGHT: f32 = 18.0;
 pub(crate) const TEXT_ATLAS_MAX_HEIGHT: u32 = 8192;
