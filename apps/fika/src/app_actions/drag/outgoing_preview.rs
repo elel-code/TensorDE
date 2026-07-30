@@ -337,6 +337,7 @@ fn outgoing_dnd_gpu_drag_icon(
             ui_scale: metrics.buffer_scale as f32,
             sync_resolve_budget: draws.len(),
             role_updates_paused: false,
+            icon_size_update_pending: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         },
     );

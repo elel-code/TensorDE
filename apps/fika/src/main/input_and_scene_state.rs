@@ -252,6 +252,8 @@ impl FikaApp {
         self.reconcile_dialog_window_lifecycle();
         let rendered = {
             let role_updates_paused = self.visible_role_updates.role_updates_paused();
+            let icon_size_update_pending =
+                self.visible_role_updates.icon_size_update_pending();
             let resolve_visible_exact = self.visible_role_sync_required;
             let Some(window) = self.window.as_ref() else {
                 return;
@@ -267,6 +269,7 @@ impl FikaApp {
                 reason,
                 crate::fika_renderer::VisibleRoleRenderPolicy {
                     paused: role_updates_paused,
+                    icon_size_update_pending,
                     resolve_exact: resolve_visible_exact,
                 },
                 force_log,

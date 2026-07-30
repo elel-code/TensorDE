@@ -214,8 +214,8 @@ impl ThumbnailSourceResolver {
 
     /// Drop ready sizes ≤ resident GPU content size for path+mtime.
     ///
-    /// Larger ready buckets are kept so zoom-in can upgrade the size-free
-    /// content GPU slot instead of replaying the first-open resolution.
+    /// Larger ready buckets are kept so zoom-in can upgrade the retained
+    /// content texture instead of replaying the first-open resolution.
     #[cfg(test)]
     fn release_gpu_resident_content_upto(&mut self, keys: &[ThumbnailSourceKey]) {
         let targets = keys

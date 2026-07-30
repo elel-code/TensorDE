@@ -309,7 +309,7 @@ struct ShellThumbnailCandidate {
 struct IconFrameBuilder<'a> {
     resolver: &'a mut FileIconResolver,
     thumbnails: &'a mut ThumbnailSourceResolver,
-    /// Snapshot of GPU-resident icons at frame start (size-free sample path).
+    /// Snapshot of GPU-resident icon rasters at frame start.
     gpu_resident: IconGpuResidentIndex,
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
@@ -335,6 +335,7 @@ struct IconFrameBuilder<'a> {
     deferred: usize,
     sync_resolve_budget: usize,
     role_updates_paused: bool,
+    icon_size_update_pending: bool,
     resolve_us: u128,
 }
 include!("icon_frame_builder/builder.rs");

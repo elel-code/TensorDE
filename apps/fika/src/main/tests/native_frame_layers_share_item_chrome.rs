@@ -34,6 +34,7 @@ fn icon_engine_builds_frame_without_a_wgpu_renderer() {
             ui_scale: 1.0,
             sync_resolve_budget: 0,
             role_updates_paused: false,
+            icon_size_update_pending: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         },
     )

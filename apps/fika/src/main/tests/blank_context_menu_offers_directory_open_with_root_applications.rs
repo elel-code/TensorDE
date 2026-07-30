@@ -162,7 +162,7 @@ fn icon_frame_vertices_sample_gpu_source_texture_for_clamp() {
     let mut thumbnails = ThumbnailSourceResolver::new();
     let mut builder =
         IconFrameBuilder::new_for_test(&mut resolver, &mut thumbnails, PhysicalSize::new(128, 96));
-    let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"));
+    let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"), 2);
     let rect = ViewRect {
         x: 4.0,
         y: 4.0,
@@ -201,7 +201,7 @@ fn icon_frame_keeps_gpu_overlay_vertices_separate() {
     let mut thumbnails = ThumbnailSourceResolver::new();
     let mut builder =
         IconFrameBuilder::new_for_test(&mut resolver, &mut thumbnails, PhysicalSize::new(128, 96));
-    let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"));
+    let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/icon.png"), 2);
     let source = IconGpuSource::file(PathBuf::from("/test/icon.png"), 2);
     let content = ViewRect {
         x: 4.0,
@@ -376,7 +376,7 @@ fn scrolling_icon_miss_uses_preliminary_icon_and_queues_exact_role() {
     );
     assert_eq!(
         frame.slots[0].identity,
-        IconGpuUploadKey::role(preliminary_role.kind)
+        IconGpuUploadKey::role(preliminary_role.kind, 32)
     );
     let exact = harness.next_request_key().expect("exact role queued");
     assert_eq!(
@@ -436,14 +436,16 @@ fn gpu_resident_thumbnail_does_not_requeue_encoded_source_work() {
 }
 
 #[test]
-fn active_zoom_scales_resident_mime_icon_without_replacing_its_source() {
+fn active_zoom_rasterizes_known_mime_at_target_size_without_preliminary_replacement() {
     let entry = test_entry_with_mime_and_modified("document.txt", false, "text/plain", Some(17));
-    let gpu_key = IconGpuUploadKey::role(FileIconKind::Mime {
+    let role = FileIconKind::Mime {
         mime: Arc::from("text/plain"),
-    });
+    };
+    let old_gpu_key = IconGpuUploadKey::role(role.clone(), 48);
+    let target_gpu_key = IconGpuUploadKey::role(role, 128);
     let resident = IconGpuResidentIndex {
         entries: HashMap::from([(
-            gpu_key.clone(),
+            old_gpu_key,
             IconGpuResidentEntry {
                 width: 48,
                 height: 48,
@@ -458,6 +460,7 @@ fn active_zoom_scales_resident_mime_icon_without_replacing_its_source() {
     let mut thumbnails = ThumbnailSourceResolver::new();
     let mut config = IconFrameConfig::new(PhysicalSize::new(256, 192), 1.0, 0);
     config.role_updates_paused = true;
+    config.icon_size_update_pending = true;
     let mut builder = IconFrameBuilder::new(
         IconFrameResources::new(&mut resolver, &mut thumbnails, resident),
         config,
@@ -483,12 +486,11 @@ fn active_zoom_scales_resident_mime_icon_without_replacing_its_source() {
 
     let frame = builder.finish();
     assert_eq!(frame.slots.len(), 1);
-    assert_eq!(frame.slots[0].identity, gpu_key);
-    assert_eq!(frame.slots[0].content_hash, 0x1234);
-    assert_eq!(frame.slots[0].content_width, 48);
-    assert!(frame.slots[0].source.is_none());
-    assert_eq!(frame.stats.cache_hits, 1);
-    assert_eq!(frame.stats.cache_misses, 0);
+    assert_eq!(frame.slots[0].identity, target_gpu_key);
+    assert_eq!(frame.slots[0].content_width, 128);
+    assert_eq!(frame.slots[0].source.as_ref().map(IconGpuSource::size_px), Some(128));
+    assert_eq!(frame.stats.cache_hits, 0);
+    assert_eq!(frame.stats.cache_misses, 1);
     assert_eq!(frame.stats.quads, 1);
 }
 
@@ -517,6 +519,7 @@ fn active_zoom_scales_small_resident_thumbnail_without_requesting_an_upgrade() {
         test_entry_with_mime_and_modified("resident.png", false, "image/png", Some(modified_secs));
     let mut config = IconFrameConfig::new(PhysicalSize::new(256, 192), 1.0, 0);
     config.role_updates_paused = true;
+    config.icon_size_update_pending = true;
     let mut builder = IconFrameBuilder::new(
         IconFrameResources::new(&mut resolver, &mut thumbnails, resident),
         config,
@@ -553,16 +556,16 @@ fn active_zoom_scales_small_resident_thumbnail_without_requesting_an_upgrade() {
 }
 
 #[test]
-fn active_zoom_scales_resident_emblem_without_theme_lookup_or_replacement() {
-    let gpu_key = IconGpuUploadKey::named_asset("emblem-readonly".to_string());
+fn active_zoom_reuses_exact_size_resident_emblem() {
+    let gpu_key = IconGpuUploadKey::named_asset("emblem-readonly".to_string(), 32);
     let resident = IconGpuResidentIndex {
         entries: HashMap::from([(
             gpu_key.clone(),
             IconGpuResidentEntry {
-                width: 16,
-                height: 16,
-                content_width: 16,
-                content_height: 16,
+                width: 32,
+                height: 32,
+                content_width: 32,
+                content_height: 32,
                 content_hash: 0x9abc,
                 rounding: None,
             },
@@ -572,6 +575,7 @@ fn active_zoom_scales_resident_emblem_without_theme_lookup_or_replacement() {
     let mut thumbnails = ThumbnailSourceResolver::new();
     let mut config = IconFrameConfig::new(PhysicalSize::new(128, 96), 1.0, 0);
     config.role_updates_paused = true;
+    config.icon_size_update_pending = true;
     let mut builder = IconFrameBuilder::new(
         IconFrameResources::new(&mut resolver, &mut thumbnails, resident),
         config,
@@ -594,7 +598,7 @@ fn active_zoom_scales_resident_emblem_without_theme_lookup_or_replacement() {
     assert_eq!(frame.slots.len(), 1);
     assert_eq!(frame.slots[0].identity, gpu_key);
     assert_eq!(frame.slots[0].content_hash, 0x9abc);
-    assert_eq!(frame.slots[0].content_width, 16);
+    assert_eq!(frame.slots[0].content_width, 32);
     assert!(frame.slots[0].source.is_none());
     assert_eq!(frame.stats.cache_hits, 1);
     assert_eq!(frame.stats.cache_misses, 0);

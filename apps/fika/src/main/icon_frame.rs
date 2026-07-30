@@ -152,12 +152,18 @@ pub(crate) struct IconSlotBatch {
     pub(crate) vertex_count: u32,
 }
 
-/// Size-independent identity for a resident GPU icon.
+/// Identity for one resident GPU icon raster.
+///
+/// Theme icons retain one texture per FileManager cache size. This mirrors
+/// QPixmapCache: the semantic role stays stable while rapid zoom can switch
+/// between already-rasterized sizes without replacing the texture for another
+/// zoom level. Content previews remain size-independent because their larger
+/// retained source is intentionally scaled while preview regeneration settles.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum IconGpuIdentity {
-    Role(FileIconKind),
-    NamedAsset { name: String },
-    ThemeAsset { path: PathBuf },
+    Role { kind: FileIconKind, size_px: u16 },
+    NamedAsset { name: String, size_px: u16 },
+    ThemeAsset { path: PathBuf, size_px: u16 },
     Content { path: PathBuf, stamp: u64 },
 }
 
@@ -167,21 +173,21 @@ pub(crate) struct IconGpuUploadKey {
 }
 
 impl IconGpuUploadKey {
-    pub(crate) fn role(kind: FileIconKind) -> Self {
+    pub(crate) fn role(kind: FileIconKind, size_px: u16) -> Self {
         Self {
-            identity: IconGpuIdentity::Role(kind),
+            identity: IconGpuIdentity::Role { kind, size_px },
         }
     }
 
-    pub(crate) fn theme_asset(path: PathBuf) -> Self {
+    pub(crate) fn theme_asset(path: PathBuf, size_px: u16) -> Self {
         Self {
-            identity: IconGpuIdentity::ThemeAsset { path },
+            identity: IconGpuIdentity::ThemeAsset { path, size_px },
         }
     }
 
-    pub(crate) fn named_asset(name: String) -> Self {
+    pub(crate) fn named_asset(name: String, size_px: u16) -> Self {
         Self {
-            identity: IconGpuIdentity::NamedAsset { name },
+            identity: IconGpuIdentity::NamedAsset { name, size_px },
         }
     }
 

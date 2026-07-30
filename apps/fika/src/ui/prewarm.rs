@@ -80,6 +80,10 @@ impl VisibleRoleUpdateState {
         self.pending()
     }
 
+    pub(crate) fn icon_size_update_pending(self) -> bool {
+        self.icon_size_deadline.is_some()
+    }
+
     pub(crate) fn pending(self) -> bool {
         self.visible_range_deadline.is_some() || self.icon_size_deadline.is_some()
     }
@@ -218,6 +222,7 @@ mod tests {
         state.schedule_icon_size(start + Duration::from_millis(10));
         state.schedule_visible_range(start + Duration::from_millis(20));
         assert!(state.role_updates_paused());
+        assert!(state.icon_size_update_pending());
         assert_eq!(
             state.take_due_update(
                 start + Duration::from_millis(FILE_MANAGER_VISIBLE_RANGE_UPDATE_MS)
@@ -231,5 +236,6 @@ mod tests {
             Some(VisibleRoleUpdateKind::IconSize)
         );
         assert!(!state.role_updates_paused());
+        assert!(!state.icon_size_update_pending());
     }
 }

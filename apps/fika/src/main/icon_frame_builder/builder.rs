@@ -1,7 +1,7 @@
 struct IconFrameResources<'a> {
     resolver: &'a mut FileIconResolver,
     thumbnails: &'a mut ThumbnailSourceResolver,
-    /// Resident GPU icon sizes at frame start (size-free identity → sample).
+    /// Resident GPU icon rasters at frame start (identity + raster size → sample).
     gpu_resident: IconGpuResidentIndex,
 }
 
@@ -35,6 +35,7 @@ struct IconFrameConfig {
     ui_scale: f32,
     sync_resolve_budget: usize,
     role_updates_paused: bool,
+    icon_size_update_pending: bool,
     folder_preview_cache: FolderPreviewCacheStats,
 }
 
@@ -46,6 +47,7 @@ impl IconFrameConfig {
             ui_scale,
             sync_resolve_budget,
             role_updates_paused: false,
+            icon_size_update_pending: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         }
     }
@@ -61,8 +63,11 @@ impl<'a> IconFrameBuilder<'a> {
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return;
         }
+        let size_px = source.size_px();
         let identity = match &source {
-            IconGpuSource::File { path, .. } => IconGpuUploadKey::theme_asset(path.clone()),
+            IconGpuSource::File { path, .. } => {
+                IconGpuUploadKey::theme_asset(path.clone(), size_px)
+            }
             IconGpuSource::FolderPreview { children, seed, .. } => {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 children.hash(&mut hasher);
@@ -99,6 +104,7 @@ impl<'a> IconFrameBuilder<'a> {
             ui_scale,
             sync_resolve_budget,
             role_updates_paused,
+            icon_size_update_pending,
             folder_preview_cache,
         } = config;
         Self {
@@ -128,6 +134,7 @@ impl<'a> IconFrameBuilder<'a> {
             deferred: 0,
             sync_resolve_budget,
             role_updates_paused,
+            icon_size_update_pending,
             resolve_us: 0,
         }
     }
@@ -162,17 +169,19 @@ impl<'a> IconFrameBuilder<'a> {
             icon_size,
         );
         let role_key = path_key.role.clone();
-        let requested_gpu_key = IconGpuUploadKey::role(role_key.kind.clone());
-        if self.push_paused_resident_draw(
-            &requested_gpu_key,
-            rect,
-            screen,
-            layer,
-        ) {
+        let requested_gpu_key = IconGpuUploadKey::role(role_key.kind.clone(), size_px);
+        if self.push_paused_resident_draw(&requested_gpu_key, rect, screen, layer) {
             self.resolve_us += resolve_start.elapsed().as_micros();
             return true;
         }
-        let resolved = if self.role_updates_paused {
+        let resolved = if self.icon_size_update_pending {
+            // Dolphin invalidates each visible widget's pixmap cache on every
+            // icon-size change. Only preview/role generation waits for the
+            // 300 ms updater timer: a stable iconName is rasterized at the new
+            // size immediately. Resolve the already-known role synchronously
+            // instead of falling back to a preliminary icon for this size.
+            Some(self.resolver.resolve_path_cache_key_fast(path_key))
+        } else if self.role_updates_paused {
             self.resolver.cached_path_cache_key(&path_key)
         } else if self.sync_resolve_budget > 0 {
             self.sync_resolve_budget -= 1;
@@ -194,8 +203,10 @@ impl<'a> IconFrameBuilder<'a> {
         self.resolve_us += resolve_start.elapsed().as_micros();
 
         // MIME / directory / generic icons share one GPU slot per *role*, not
-        // per filesystem path — thousands of /bin entries must not thrash VRAM.
-        let gpu_key = IconGpuUploadKey::role(role_key.kind.clone());
+        // per filesystem path. Each FileManager raster size has its own
+        // retained variant, matching Dolphin's size-keyed QPixmapCache without
+        // making thousands of /bin entries thrash VRAM.
+        let gpu_key = IconGpuUploadKey::role(role_key.kind.clone(), size_px);
         if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
             return true;
         }
@@ -439,7 +450,7 @@ impl<'a> IconFrameBuilder<'a> {
             return false;
         };
         let size_px = icon_cache_size(icon_size);
-        let gpu_key = IconGpuUploadKey::theme_asset(path.clone());
+        let gpu_key = IconGpuUploadKey::theme_asset(path.clone(), size_px);
         self.push_gpu_source_draw(
             gpu_key,
             IconGpuSource::file(path, size_px),
@@ -467,7 +478,9 @@ impl<'a> IconFrameBuilder<'a> {
         if icon_name.is_empty() {
             return false;
         }
-        let gpu_key = IconGpuUploadKey::named_asset(icon_name.to_string());
+        let icon_size = rect.width.max(rect.height).clamp(8.0, 256.0);
+        let size_px = icon_size.round() as u16;
+        let gpu_key = IconGpuUploadKey::named_asset(icon_name.to_string(), size_px);
         if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
             return true;
         }
@@ -475,8 +488,6 @@ impl<'a> IconFrameBuilder<'a> {
         // Routing an 8 px badge through the generic >=16 px cache chooses
         // different artwork and then downsamples it, which visibly softens
         // the permission/link mark.
-        let icon_size = rect.width.max(rect.height).clamp(8.0, 256.0);
-        let size_px = icon_size.round() as u16;
         let Some(path) = self.resolver.resolve_named_exact_fast(icon_name, icon_size) else {
             return false;
         };
@@ -559,8 +570,8 @@ impl<'a> IconFrameBuilder<'a> {
         self.push_slot_draw(slot, rect, screen, layer);
     }
 
-    /// During Dolphin's icon-size transaction, keep sampling the resource
-    /// that was resident at frame start and only change its draw rectangle.
+    /// During Dolphin's icon-size transaction, reuse an exact-size theme
+    /// raster or a size-independent retained content preview when available.
     fn push_paused_resident_draw(
         &mut self,
         identity: &IconGpuUploadKey,

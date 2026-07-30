@@ -30,6 +30,7 @@ pub(crate) struct FikaRenderer {
 #[derive(Clone, Copy)]
 pub(crate) struct VisibleRoleRenderPolicy {
     pub(crate) paused: bool,
+    pub(crate) icon_size_update_pending: bool,
     pub(crate) resolve_exact: bool,
 }
 
@@ -150,14 +151,7 @@ impl FikaRenderer {
     ) -> ShellRenderOutcome {
         let started_at = Instant::now();
         let view_mode = scene.active_view_mode().as_str();
-        match self.render_inner(
-            window,
-            event_loop,
-            scene,
-            reason,
-            visible_roles.paused,
-            visible_roles.resolve_exact,
-        ) {
+        match self.render_inner(window, event_loop, scene, reason, visible_roles) {
             Ok(()) => {
                 if crate::fika_frame_log_all_enabled() || (force_log && crate::fika_log_enabled()) {
                     eprintln!(
@@ -187,13 +181,14 @@ impl FikaRenderer {
         event_loop: &ActiveEventLoop,
         scene: &mut ShellScene,
         reason: &'static str,
-        role_updates_paused: bool,
-        resolve_visible_exact: bool,
+        visible_roles: VisibleRoleRenderPolicy,
     ) -> Result<(), String> {
+        let role_updates_paused = visible_roles.paused;
+        let icon_size_update_pending = visible_roles.icon_size_update_pending;
         let icon_work_reason =
             crate::ui::prewarm::icon_work_reason_for_frame(reason, self.frame_count);
         let resolve_visible_exact =
-            !role_updates_paused && (resolve_visible_exact || self.frame_count == 0);
+            !role_updates_paused && (visible_roles.resolve_exact || self.frame_count == 0);
         // Worker completions must become visible without another scroll or
         // navigation event. Draining is non-blocking; only cold resolution is
         // gated by the Dolphin-compatible visible-role timers below.
@@ -253,6 +248,7 @@ impl FikaRenderer {
                     role_updates_paused,
                 ),
                 role_updates_paused,
+                icon_size_update_pending,
                 folder_preview_cache: FolderPreviewCacheStats {
                     ready_entries: scene.folder_preview_roles.borrow().ready_len(),
                     ready_bytes: scene.folder_preview_roles.borrow().ready_bytes(),
@@ -335,6 +331,7 @@ impl FikaRenderer {
                 ui_scale: request.viewport.scale,
                 sync_resolve_budget: crate::ui::prewarm::icon_sync_resolve_budget(false),
                 role_updates_paused: false,
+                icon_size_update_pending: false,
                 folder_preview_cache: FolderPreviewCacheStats::default(),
             },
         );

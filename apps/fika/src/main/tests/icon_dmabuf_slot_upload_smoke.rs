@@ -82,7 +82,10 @@ fn icon_slot_imports_udmabuf_into_native_vulkan_resident_cache() {
             },
         )
         .unwrap();
-    let identity = IconGpuUploadKey::theme_asset(PathBuf::from("/test/native-dmabuf-icon"));
+    let identity = IconGpuUploadKey::theme_asset(
+        PathBuf::from("/test/native-dmabuf-icon"),
+        W.max(H) as u16,
+    );
     let mut frame = IconFrame {
         slots: vec![IconGpuSlot {
             identity: identity.clone(),

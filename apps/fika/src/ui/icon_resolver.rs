@@ -29,8 +29,9 @@ pub(crate) struct FileIconResolver {
     result_rx: Receiver<IconResolveResult>,
 }
 
-const FILE_MANAGER_VISIBLE_ICON_PREWARM_SIZES: &[u16] =
-    &[16, 22, 32, 48, 64, 80, 96, 112, 128, 144];
+const FILE_MANAGER_VISIBLE_ICON_PREWARM_SIZES: &[u16] = &[
+    16, 22, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256,
+];
 
 #[derive(Clone, Debug)]
 struct IconResolveRequest {
@@ -125,8 +126,8 @@ impl FileIconResolver {
     /// Resolve a precomputed visible key synchronously, matching FileManager's
     /// `updateVisibleIcons()` pass. Deferred resolution is reserved for
     /// off-screen/read-ahead roles; painting a generic fallback here can leave
-    /// a size-free GPU role showing the wrong icon until the directory is
-    /// entered again.
+    /// a resident role-size variant showing the wrong icon until the directory
+    /// is entered again.
     pub(crate) fn resolve_path_cache_key_visible(
         &mut self,
         key: FileIconPathCacheKey,
@@ -475,7 +476,7 @@ mod tests {
             is_dir: false,
         });
         // First visible frame must not fall back to generic File — that would
-        // paint the wrong size-free Role GPU slot until re-enter.
+        // paint the wrong resident Role variant until re-enter.
         let (icon, deferred) = resolver.resolve_entry_visible(&root, &entry, 48.0);
         assert!(
             !deferred,
