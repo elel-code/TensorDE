@@ -495,6 +495,7 @@ pub(super) fn create_scene_gpu_resources(
         storage,
         &backend_plan.rendering_device_graph,
         &descriptor_heap_plan,
+        particle_global_descriptor_base,
         &effect_target_plans,
         advanced_blend_enabled,
         advanced_blend_coherent,

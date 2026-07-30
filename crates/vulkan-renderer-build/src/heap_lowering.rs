@@ -391,7 +391,17 @@ fn entry_definition_offset(source: &str, entry_point: &str) -> Result<usize> {
     let found = source
         .find(&needle)
         .ok_or_else(|| Error::SourceLowering(format!("entry point `{entry_point}` is missing")))?;
-    Ok(source[..found].rfind('\n').map_or(0, |offset| offset + 1))
+    let mut offset = source[..found].rfind('\n').map_or(0, |offset| offset + 1);
+    loop {
+        let prefix = source[..offset].trim_end_matches(['\r', '\n']);
+        let line_offset = prefix.rfind('\n').map_or(0, |line| line + 1);
+        let line = prefix[line_offset..].trim();
+        if !line.starts_with('[') || !line.ends_with(']') {
+            break;
+        }
+        offset = line_offset;
+    }
+    Ok(offset)
 }
 
 fn replace_identifier(source: &str, name: &str, replacement: &str) -> String {
@@ -506,5 +516,32 @@ float4 main(float2 uv : COLOR0) : SV_TARGET0
     fn pipeline_global_base_must_be_word_aligned() {
         let source = "Texture2D<float4> image : register(t0);\nfloat4 main() : SV_TARGET0 { return image.Load(0); }";
         assert!(lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", 2).is_err());
+    }
+
+    #[test]
+    fn compute_entry_attributes_remain_attached_after_heap_lowering() {
+        let source = r#"StructuredBuffer<float> values : register(t0);
+[[shader("compute")]]
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    float value = values[id.x];
+}"#;
+
+        let lowered = lower_slang_bindings_to_descriptor_heap(source, "main").unwrap();
+
+        let prelude = lowered
+            .source
+            .find("struct GilderDescriptorHeapPush")
+            .unwrap();
+        let shader_attribute = lowered.source.find("[[shader(\"compute\")]]").unwrap();
+        let entry = lowered.source.find("void main(").unwrap();
+        assert!(prelude < shader_attribute);
+        assert!(shader_attribute < entry);
+        assert!(
+            lowered
+                .source
+                .contains("[[shader(\"compute\")]]\n[numthreads(64, 1, 1)]\nvoid main(")
+        );
     }
 }

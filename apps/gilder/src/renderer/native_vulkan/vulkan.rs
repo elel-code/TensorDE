@@ -68,7 +68,6 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
-    native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,

@@ -1,43 +1,46 @@
-//! Compute shader source for the retained particle indirect-draw contract.
+//! Native Slang compute source for the retained particle indirect-draw contract.
 
-pub(crate) fn particle_compute_source() -> String {
-    r#"#version 450
-layout(local_size_x = 64) in;
-
-struct ParticleEmitterState {
-    vec4 timeScaleRateStartCapacity;
-    vec4 lifetimeMinMaxProfileFlags;
-    vec4 emitterOrigin;
-    vec4 emitterDirections;
-    vec4 velocityMin;
-    vec4 velocityMax;
-    vec4 gravity;
-    vec4 sizeMinMaxFade;
+pub(crate) fn particle_compute_source() -> &'static str {
+    r#"struct ParticleEmitterState
+{
+    float4 timeScaleRateStartCapacity;
+    float4 lifetimeMinMaxProfileFlags;
+    float4 emitterOrigin;
+    float4 emitterDirections;
+    float4 velocityMin;
+    float4 velocityMax;
+    float4 gravity;
+    float4 sizeMinMaxFade;
 };
 
-struct DrawIndirect {
+struct DrawIndirect
+{
     uint vertexCount;
     uint instanceCount;
     uint firstVertex;
     uint firstInstance;
 };
 
-layout(set = 0, binding = 0, std430) readonly buffer ParticleStates {
-    ParticleEmitterState states[];
-};
-layout(set = 0, binding = 1, std430) buffer ParticleIndirect {
-    DrawIndirect draws[];
-};
-layout(set = 0, binding = 2, std430) readonly buffer ParticleFrame {
-    float sceneTime;
-} frameState;
+StructuredBuffer<ParticleEmitterState> states : register(t0);
+RWStructuredBuffer<DrawIndirect> draws : register(u1);
+StructuredBuffer<float> frameState : register(t2);
 
-void main() {
-    uint emitter = gl_GlobalInvocationID.x;
-    if (emitter >= states.length() || emitter >= draws.length()) {
+[[shader("compute")]]
+[numthreads(64, 1, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint stateCount;
+    uint stateStride;
+    states.GetDimensions(stateCount, stateStride);
+    uint drawCount;
+    uint drawStride;
+    draws.GetDimensions(drawCount, drawStride);
+    uint emitter = dispatchThreadId.x;
+    if (emitter >= stateCount || emitter >= drawCount)
+    {
         return;
     }
-    float now = frameState.sceneTime * states[emitter].timeScaleRateStartCapacity.x;
+    float now = frameState[0] * states[emitter].timeScaleRateStartCapacity.x;
     float start = states[emitter].timeScaleRateStartCapacity.z;
     float rate = max(states[emitter].timeScaleRateStartCapacity.y, 0.0);
     uint capacity = uint(max(states[emitter].timeScaleRateStartCapacity.w, 0.0));
@@ -45,7 +48,6 @@ void main() {
     draws[emitter].instanceCount = min(spawned, capacity);
 }
 "#
-    .to_owned()
 }
 
 #[cfg(test)]
@@ -57,8 +59,10 @@ mod tests {
         let source = particle_compute_source();
         assert!(source.contains("DrawIndirect"));
         assert!(source.contains("draws[emitter].instanceCount"));
-        assert!(source.contains("binding = 2"));
-        assert!(source.contains("frameState.sceneTime"));
-        assert!(source.contains("local_size_x = 64"));
+        assert!(source.contains("StructuredBuffer<float> frameState : register(t2)"));
+        assert!(source.contains("frameState[0]"));
+        assert!(source.contains("[numthreads(64, 1, 1)]"));
+        assert!(!source.contains("#version"));
+        assert!(!source.contains("layout("));
     }
 }

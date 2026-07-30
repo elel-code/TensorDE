@@ -306,26 +306,9 @@ fn validate_descriptor_contract(bytes: &[u8], contract: ShaderContract) -> Resul
         offset += instruction_words;
     }
 
-    let mapped_bindings = !binding_ids.is_empty() || !descriptor_set_ids.is_empty();
-    if contract.uses_mapped_descriptor_heap() {
-        if binding_ids.is_empty() || binding_ids != descriptor_set_ids {
-            return Err(Error::SpirvContract(
-                "mapped descriptor-heap SPIR-V requires matching Binding and DescriptorSet decorations"
-                    .to_owned(),
-            ));
-        }
-        if descriptor_heap_capability || descriptor_heap_extension {
-            return Err(Error::SpirvContract(
-                "mapped descriptor-heap SPIR-V unexpectedly uses native DescriptorHeapEXT"
-                    .to_owned(),
-            ));
-        }
-        return Ok(());
-    }
-    if mapped_bindings {
+    if !binding_ids.is_empty() || !descriptor_set_ids.is_empty() {
         return Err(Error::SpirvContract(
-            "SPIR-V contains Binding or DescriptorSet decorations outside the mapped descriptor-heap contract"
-                .to_owned(),
+            "SPIR-V contains forbidden Binding or DescriptorSet decorations".to_owned(),
         ));
     }
     if contract.emits_native_descriptor_heap()
@@ -410,21 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn mapped_descriptor_heap_requires_paired_set_and_binding_decorations() {
+    fn every_contract_rejects_paired_set_and_binding_decorations() {
         let paired = module(&[
             instruction(71, &[1, 33, 0]),
             instruction(71, &[1, 34, 0]),
             instruction(71, &[2, 33, 3]),
             instruction(71, &[2, 34, 0]),
         ]);
-        validate_descriptor_contract(&paired, ShaderContract::mapped_descriptor_heap(0)).unwrap();
         assert!(validate_descriptor_contract(&paired, ShaderContract::descriptor_free(0)).is_err());
-
-        let unpaired = module(&[instruction(71, &[1, 33, 0])]);
-        assert!(
-            validate_descriptor_contract(&unpaired, ShaderContract::mapped_descriptor_heap(0))
-                .is_err()
-        );
+        assert!(validate_descriptor_contract(&paired, ShaderContract::descriptor_heap(0)).is_err());
     }
 
     fn module(instructions: &[Vec<u32>]) -> Vec<u8> {

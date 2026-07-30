@@ -51,7 +51,7 @@ use shader_module::create_shader_module;
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineResources {
     pub entries: Vec<ScenePipelineEntry>,
-    pub particle_compute: Option<vk::Pipeline>,
+    pub particle_compute: Option<particle_compute::SceneParticleComputePipeline>,
 }
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {

@@ -13,7 +13,7 @@ pub(super) fn record_particle_compute_dispatch(
     scene: &SceneGpuResources,
 ) -> Result<bool, String> {
     let (Some(pipeline), Some(resources)) = (
-        scene.pipelines.particle_compute,
+        scene.pipelines.particle_compute.as_ref(),
         scene.particle_resources.as_ref(),
     ) else {
         return Ok(false);
@@ -52,7 +52,15 @@ pub(super) fn record_particle_compute_dispatch(
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &state_dependency);
         device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
-        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline);
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.handle(),
+        );
+        let push_bytes = pipeline.descriptor_push();
+        let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
+        let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
+        device.cmd_push_data_ext(command_buffer, &push);
         device.cmd_dispatch(command_buffer, group_count, 1, 1);
         let barrier = vk::BufferMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)

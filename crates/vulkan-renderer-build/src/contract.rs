@@ -12,7 +12,6 @@ pub struct ShaderContract {
 enum DescriptorMode {
     Free,
     NativeHeap,
-    MappedHeap,
 }
 
 impl ShaderContract {
@@ -30,22 +29,8 @@ impl ShaderContract {
         }
     }
 
-    /// Requires Vulkan descriptor-heap binding mappings for reflected SPIR-V
-    /// set/binding declarations. This is the strict `VK_EXT_descriptor_heap`
-    /// mapping model, not a descriptor-set runtime fallback.
-    pub const fn mapped_descriptor_heap(push_constant_bytes: u64) -> Self {
-        Self {
-            push_constant_bytes: Some(push_constant_bytes),
-            descriptor_mode: DescriptorMode::MappedHeap,
-        }
-    }
-
     pub(crate) const fn emits_native_descriptor_heap(self) -> bool {
         matches!(self.descriptor_mode, DescriptorMode::NativeHeap)
-    }
-
-    pub(crate) const fn uses_mapped_descriptor_heap(self) -> bool {
-        matches!(self.descriptor_mode, DescriptorMode::MappedHeap)
     }
 
     pub(crate) fn validate(
@@ -64,37 +49,14 @@ impl ShaderContract {
             .iter()
             .filter(|parameter| binding_kind(parameter) == Some("pushConstantBuffer"))
             .collect();
-        let descriptor_parameters = parameters
-            .iter()
-            .filter(|parameter| binding_kind(parameter) == Some("descriptorTableSlot"))
-            .count();
-        if matches!(self.descriptor_mode, DescriptorMode::Free) {
-            for parameter in parameters {
-                let kind = binding_kind(parameter).ok_or_else(|| {
-                    Error::Reflection("parameter is missing its binding kind".to_owned())
-                })?;
-                if kind != "pushConstantBuffer" {
-                    return Err(Error::Reflection(format!(
-                        "descriptor-free shader exposes binding kind `{kind}`"
-                    )));
-                }
-            }
-        }
-        if matches!(self.descriptor_mode, DescriptorMode::MappedHeap) {
-            if descriptor_parameters == 0 {
-                return Err(Error::Reflection(
-                    "mapped descriptor-heap shader exposes no descriptor binding".to_owned(),
-                ));
-            }
-            for parameter in parameters {
-                let kind = binding_kind(parameter).ok_or_else(|| {
-                    Error::Reflection("parameter is missing its binding kind".to_owned())
-                })?;
-                if !matches!(kind, "descriptorTableSlot" | "pushConstantBuffer") {
-                    return Err(Error::Reflection(format!(
-                        "mapped descriptor-heap shader exposes unsupported binding kind `{kind}`"
-                    )));
-                }
+        for parameter in parameters {
+            let kind = binding_kind(parameter).ok_or_else(|| {
+                Error::Reflection("parameter is missing its binding kind".to_owned())
+            })?;
+            if kind != "pushConstantBuffer" {
+                return Err(Error::Reflection(format!(
+                    "shader contract exposes non-native binding kind `{kind}`"
+                )));
             }
         }
 
@@ -215,30 +177,6 @@ mod tests {
         assert!(
             ShaderContract::descriptor_free(0)
                 .validate(&with_push, "mainVertex", ShaderStage::Vertex)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn mapped_heap_contract_requires_reflected_descriptor_bindings() {
-        let mapped = json!({
-            "parameters": [
-                { "binding": { "kind": "descriptorTableSlot", "index": 0 } },
-                { "binding": { "kind": "descriptorTableSlot", "index": 3 } }
-            ],
-            "entryPoints": [{ "name": "mainFragment", "stage": "fragment" }]
-        });
-        ShaderContract::mapped_descriptor_heap(0)
-            .validate(&mapped, "mainFragment", ShaderStage::Fragment)
-            .unwrap();
-
-        let empty = json!({
-            "parameters": [],
-            "entryPoints": [{ "name": "mainFragment", "stage": "fragment" }]
-        });
-        assert!(
-            ShaderContract::mapped_descriptor_heap(0)
-                .validate(&empty, "mainFragment", ShaderStage::Fragment)
                 .is_err()
         );
     }

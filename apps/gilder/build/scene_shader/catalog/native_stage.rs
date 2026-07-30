@@ -89,6 +89,40 @@ pub(super) fn compile_native_scene_input_attachment(
     }
 }
 
+pub(super) fn compile_native_particle_compute(
+    shader_dir: &Path,
+    key: &str,
+    source: &str,
+) -> NativeSceneStage {
+    let safe_name = key
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    let source_path = shader_dir.join(format!("{safe_name}.comp.source.slang"));
+    let native_path = shader_dir.join(format!("{safe_name}.comp.slang"));
+    let spirv_path = shader_dir.join(format!("{safe_name}.comp.spv"));
+    fs::write(&source_path, source).expect("write built-in particle compute Slang source");
+    let lowered = lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", 0)
+        .unwrap_or_else(|error| panic!("lower built-in particle compute shader {key}: {error}"));
+    fs::write(&native_path, &lowered.source)
+        .expect("write native built-in particle compute source");
+    SlangCompiler::from_environment()
+        .compile(&ShaderCompileRequest {
+            source: native_path,
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Compute,
+            output: spirv_path.clone(),
+            contract: ShaderContract::descriptor_heap(u64::from(lowered.push_constant_bytes)),
+        })
+        .unwrap_or_else(|error| panic!("compile built-in particle compute shader {key}: {error}"));
+    NativeSceneStage {
+        spirv: spirv_path,
+        source: source_path,
+        push_constant_bytes: lowered.push_constant_bytes,
+        bindings: lowered.bindings,
+    }
+}
+
 fn compile_native_scene_stage(
     shader_dir: &Path,
     key: &str,

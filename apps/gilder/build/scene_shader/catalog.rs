@@ -13,7 +13,7 @@ mod specs;
 use installed_effects::INSTALLED_EFFECT_PROGRAMS;
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
 use native_stage::{
-    builtin_binding_expressions, compile_native_scene_fragment,
+    builtin_binding_expressions, compile_native_particle_compute, compile_native_scene_fragment,
     compile_native_scene_input_attachment, compile_native_scene_vertex,
 };
 
@@ -216,22 +216,27 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str(&entries);
     generated.push_str("];\n");
 
-    let compute_path = compile_scene_shader_stage(
+    let compute = compile_native_particle_compute(
         &shader_dir,
         "particle_compute",
-        "comp",
-        &super::particle_compute_source(),
+        super::particle_compute_source(),
     );
-    let compute_path = compute_path
+    let compute_path = compute
+        .spirv
         .to_str()
         .expect("particle compute shader path must be UTF-8");
+    let compute_bindings = builtin_binding_expressions(&compute.bindings);
     generated.push_str("\n#[derive(Debug, Clone, Copy)]\n");
     generated.push_str("pub struct BuiltinParticleComputeShader {\n");
     generated.push_str("    pub spirv: &'static [u32],\n");
+    generated.push_str("    pub push_constant_bytes: u32,\n");
+    generated.push_str("    pub bindings: &'static [BuiltinSceneDescriptorBinding],\n");
     generated.push_str("}\n\n");
     generated.push_str(&format!(
-        "pub static BUILTIN_PARTICLE_COMPUTE_SHADER: BuiltinParticleComputeShader = BuiltinParticleComputeShader {{ spirv: vulkan_renderer::include_spirv!({:?}) }};\n",
-        compute_path
+        "pub static BUILTIN_PARTICLE_COMPUTE_SHADER: BuiltinParticleComputeShader = BuiltinParticleComputeShader {{ spirv: vulkan_renderer::include_spirv!({:?}), push_constant_bytes: {}, bindings: &[{}] }};\n",
+        compute_path,
+        compute.push_constant_bytes,
+        compute_bindings,
     ));
 
     fs::write(out_dir.join("gilder_scene_shader_catalog.rs"), generated)
@@ -421,37 +426,4 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             )
         }
     }
-}
-
-fn compile_scene_shader_stage(shader_dir: &Path, key: &str, stage: &str, source: &str) -> PathBuf {
-    let safe_name = key
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect::<String>();
-    let source_path = shader_dir.join(format!("{safe_name}.{stage}.glsl"));
-    let spirv_path = shader_dir.join(format!("{safe_name}.{stage}.spv"));
-    fs::write(&source_path, source).expect("write build-time scene shader source");
-    let output = Command::new("glslangValidator")
-        .args(["-V", "--target-env", "vulkan1.4", "-S", stage, "-o"])
-        .arg(&spirv_path)
-        .arg(&source_path)
-        .output()
-        .expect("run glslangValidator for built-in scene shader");
-    if !output.status.success() {
-        panic!(
-            "compile built-in scene shader {key} {stage} failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let byte_len = fs::metadata(&spirv_path)
-        .expect("stat build-time scene shader SPIR-V")
-        .len();
-    if byte_len < 4 || !byte_len.is_multiple_of(4) {
-        panic!(
-            "built-in scene shader {key} {stage} SPIR-V length {} is invalid",
-            byte_len
-        );
-    }
-    spirv_path
 }

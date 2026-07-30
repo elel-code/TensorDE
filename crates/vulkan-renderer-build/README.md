@@ -11,10 +11,9 @@ resources with typed `DescriptorHandle<T>` accessors and a compact push-index
 ABI. The normal compiler validates and optimizes that source into the only
 artifact consumed by a runtime: native descriptor-heap SPIR-V.
 
-The tool exposes explicit descriptor-free, native descriptor-heap, and mapped
-descriptor-heap contracts. Both heap contracts require a
-`VK_EXT_descriptor_heap` runtime; neither permits descriptor-set allocation or
-binding.
+The tool exposes explicit descriptor-free and native descriptor-heap
+contracts. Descriptor resources must be lowered to typed `DescriptorHandle<T>`
+accesses before compilation; mapped set/binding SPIR-V is rejected.
 
 Generate and verify an asset with the pinned compiler:
 
@@ -23,8 +22,6 @@ cargo run -p vulkan-renderer-build -- \
   compile source.slang entryPoint fragment output.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
   verify source.slang entryPoint fragment output.spv 64 descriptor-free
-cargo run -p vulkan-renderer-build -- \
-  compile mapped.slang entryPoint fragment output.spv 0 mapped-descriptor-heap
 cargo run -p vulkan-renderer-build -- \
   lower-heap normalized.slang entryPoint native-heap.slang
 ```
@@ -37,7 +34,6 @@ The `descriptor-heap` contract requests Slang's `spvDescriptorHeapEXT`
 capability, requires `OpCapability DescriptorHeapEXT` and
 `SPV_EXT_descriptor_heap`, and rejects every `Binding` or `DescriptorSet`
 decoration. The `descriptor-free` contract rejects those decorations and the
-heap extension alike. The `mapped-descriptor-heap` contract accepts only
-paired `Binding` and `DescriptorSet` decorations and rejects native
-`DescriptorHeapEXT` instructions; pipelines must map every declaration to a
-heap range through `VkShaderDescriptorSetAndBindingMappingInfoEXT`.
+heap extension alike. Both contracts reject reflected descriptor-table slots;
+the native heap contract accepts only push data plus direct resource-heap
+access.

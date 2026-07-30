@@ -11,6 +11,7 @@
     const SPIRV_DECORATION_BUILT_IN: u32 = 11;
     const SPIRV_DECORATION_BINDING: u32 = 33;
     const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
+    const SPIRV_DECORATION_ARRAY_STRIDE: u32 = 6;
     const SPIRV_STORAGE_INPUT: u32 = 1;
     const SPIRV_STORAGE_OUTPUT: u32 = 3;
     const SPIRV_DECORATION_LOCATION: u32 = 30;
@@ -86,6 +87,64 @@
         assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
         assert!(native_vulkan_scene_shader_for_key(" we/genericimage4").is_none());
+    }
+
+    #[test]
+    fn particle_compute_uses_native_storage_heap_push_data() {
+        let shader = native_vulkan_particle_compute_shader();
+        assert_eq!(shader.push_constant_bytes, 12);
+        assert_eq!(
+            shader.bindings,
+            &[
+                BuiltinSceneDescriptorBinding {
+                    kind: BuiltinSceneDescriptorBindingKind::StorageBuffer,
+                    register: 0,
+                    push_offset: 0,
+                },
+                BuiltinSceneDescriptorBinding {
+                    kind: BuiltinSceneDescriptorBindingKind::StorageBuffer,
+                    register: 1,
+                    push_offset: 4,
+                },
+                BuiltinSceneDescriptorBinding {
+                    kind: BuiltinSceneDescriptorBindingKind::StorageBuffer,
+                    register: 2,
+                    push_offset: 8,
+                },
+            ]
+        );
+        let instructions = spirv_instructions(shader.spirv);
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_CAPABILITY
+                && instruction.get(1) == Some(&SPIRV_CAPABILITY_DESCRIPTOR_HEAP_EXT)
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                && instruction.get(2) == Some(&SPIRV_DECORATION_BUILT_IN)
+                && instruction.get(3) == Some(&SPIRV_BUILT_IN_RESOURCE_HEAP_EXT)
+        }));
+        assert!(!instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                && matches!(
+                    instruction.get(2),
+                    Some(&SPIRV_DECORATION_BINDING) | Some(&SPIRV_DECORATION_DESCRIPTOR_SET)
+                )
+        }));
+        let array_strides = instructions
+            .iter()
+            .filter_map(|instruction| {
+                ((instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                    && instruction.get(2) == Some(&SPIRV_DECORATION_ARRAY_STRIDE))
+                .then(|| instruction.get(3).copied())
+                .flatten()
+            })
+            .collect::<Vec<_>>();
+        for required in [4, 16, 128] {
+            assert!(
+                array_strides.contains(&required),
+                "missing array stride {required}"
+            );
+        }
     }
 
     #[test]

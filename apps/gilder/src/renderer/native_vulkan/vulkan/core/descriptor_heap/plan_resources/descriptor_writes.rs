@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "descriptor_writes/input_attachment.rs"]
 mod input_attachment;
+#[path = "descriptor_writes/storage_buffer.rs"]
+mod storage_buffer;
 
 pub(in crate::renderer::native_vulkan) use input_attachment::{
     native_vulkan_vulkanalia_descriptor_heap_resource_input_attachment_binding_mapping,
@@ -9,6 +11,7 @@ pub(in crate::renderer::native_vulkan) use input_attachment::{
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_mixed_input_attachment_binding_mapping,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_input_attachment,
 };
+pub(in crate::renderer::native_vulkan) use storage_buffer::native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer;
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_uniform_buffer(
     device: &Device,
@@ -112,66 +115,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descrip
             .write_resource_descriptors_ext(&[resource_info], &[resource_range])
             .map_err(|err| {
                 format!("vkWriteResourceDescriptorsEXT(vulkanalia mixed uniform buffer): {err:?}")
-            })?;
-    }
-    flush_descriptor_heap_buffer(
-        device,
-        &resources.resource_heap,
-        resource_offset,
-        descriptor_size,
-    )?;
-
-    resources.snapshot.resource_descriptors_written = resources
-        .snapshot
-        .resource_descriptors_written
-        .saturating_add(1);
-    Ok(())
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
-    device: &Device,
-    resources: &mut VulkanaliaDescriptorHeapResourceResources,
-    resource_descriptor_index: usize,
-    device_address: vk::DeviceAddress,
-    range: u64,
-) -> Result<(), String> {
-    if device_address == 0 {
-        return Err(
-            "descriptor heap mixed storage buffer requires non-zero device address".to_owned(),
-        );
-    }
-    if range == 0 {
-        return Err("descriptor heap mixed storage buffer requires non-zero range".to_owned());
-    }
-    validate_mixed_resource_descriptor_kind(
-        resources,
-        resource_descriptor_index,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
-    )?;
-    let resource_offset = mixed_resource_descriptor_offset(resources, resource_descriptor_index)?;
-    let descriptor_size = resources.plan.buffer_descriptor_size;
-    let address_range = vk::DeviceAddressRangeEXT::builder()
-        .address(device_address)
-        .size(range)
-        .build();
-    let resource_info = vk::ResourceDescriptorInfoEXT::builder()
-        .type_(vk::DescriptorType::STORAGE_BUFFER)
-        .data(vk::ResourceDescriptorDataEXT {
-            address_range: &address_range,
-        })
-        .build();
-    let resource_range = heap_host_address_range(
-        &resources.resource_heap,
-        resource_offset,
-        descriptor_size,
-        "mixed-resource-heap",
-    )?;
-
-    unsafe {
-        device
-            .write_resource_descriptors_ext(&[resource_info], &[resource_range])
-            .map_err(|err| {
-                format!("vkWriteResourceDescriptorsEXT(vulkanalia mixed storage buffer): {err:?}")
             })?;
     }
     flush_descriptor_heap_buffer(
@@ -438,86 +381,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
             binding,
             vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
-            vk::DescriptorMappingSourceDataEXT {
-                constant_offset: source,
-            },
-        ),
-    )
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
-    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    binding: u32,
-    base_resource_descriptor_index: usize,
-    resource_descriptor_index: usize,
-    read_write: bool,
-) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
-    let base_kind = plan
-        .resource_descriptor_kinds
-        .get(base_resource_descriptor_index)
-        .copied()
-        .ok_or_else(|| {
-            format!(
-                "descriptor heap storage slice base {base_resource_descriptor_index} is missing"
-            )
-        })?;
-    if !matches!(
-        base_kind,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
-            | NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer
-    ) {
-        return Err(format!(
-            "descriptor heap storage slice base {base_resource_descriptor_index} has incompatible kind {base_kind:?}"
-        ));
-    }
-    validate_mixed_plan_descriptor_kind(
-        plan,
-        resource_descriptor_index,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
-    )?;
-    let base_heap_offset = *plan
-        .resource_descriptor_offsets
-        .get(base_resource_descriptor_index)
-        .ok_or_else(|| {
-            format!(
-                "descriptor heap mixed base storage descriptor index {base_resource_descriptor_index} has no resource offset"
-            )
-        })?;
-    let base_heap_offset = align_down(base_heap_offset, plan.resource_heap_alignment);
-    let heap_offset = plan
-        .resource_descriptor_offsets
-        .get(resource_descriptor_index)
-        .copied()
-        .ok_or_else(|| {
-            format!(
-                "descriptor heap mixed storage descriptor index {resource_descriptor_index} has no resource offset"
-            )
-        })?
-        .checked_sub(base_heap_offset)
-        .ok_or_else(|| {
-            format!(
-                "descriptor heap mixed storage descriptor index {resource_descriptor_index} precedes heap-slice base {base_resource_descriptor_index}"
-            )
-        })?;
-    let heap_offset = u32::try_from(heap_offset)
-        .map_err(|_| "descriptor heap mixed relative storage offset exceeds u32".to_owned())?;
-    let heap_array_stride = u32::try_from(plan.buffer_descriptor_stride)
-        .map_err(|_| "descriptor heap mixed storage-buffer stride exceeds u32".to_owned())?;
-    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
-        .heap_offset(heap_offset)
-        .heap_array_stride(heap_array_stride)
-        .sampler_heap_offset(0)
-        .sampler_heap_array_stride(0)
-        .build();
-
-    Ok(
-        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
-            binding,
-            if read_write {
-                vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER
-            } else {
-                vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER
-            },
             vk::DescriptorMappingSourceDataEXT {
                 constant_offset: source,
             },

@@ -27,6 +27,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    particle_global_descriptor_base: Option<usize>,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
@@ -175,6 +176,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
         device,
         graph,
         descriptor_heap_plan,
+        particle_global_descriptor_base,
     )?;
     Ok(ScenePipelineResources {
         entries,
