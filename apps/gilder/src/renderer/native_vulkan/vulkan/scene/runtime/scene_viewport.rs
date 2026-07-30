@@ -22,8 +22,18 @@ pub(super) fn scene_surface_extent(
 pub(super) fn scene_cover_clip_transform(
     project: &SceneProjectRecord,
     output_extent: [u32; 2],
-    mut clip_transform: [[f32; 4]; 4],
+    clip_transform: [[f32; 4]; 4],
 ) -> [[f32; 4]; 4] {
+    apply_scene_cover_clip_scale(
+        clip_transform,
+        scene_cover_clip_scale(project, output_extent),
+    )
+}
+
+pub(super) fn scene_cover_clip_scale(
+    project: &SceneProjectRecord,
+    output_extent: [u32; 2],
+) -> [f32; 2] {
     let logical_width = project.logical_width.max(1) as f32;
     let logical_height = project.logical_height.max(1) as f32;
     let output_width = output_extent[0].max(1) as f32;
@@ -31,11 +41,17 @@ pub(super) fn scene_cover_clip_transform(
     let logical_aspect = logical_width / logical_height;
     let output_aspect = output_width / output_height;
 
-    let [clip_scale_x, clip_scale_y] = if logical_aspect > output_aspect {
+    if logical_aspect > output_aspect {
         [logical_aspect / output_aspect, 1.0]
     } else {
         [1.0, output_aspect / logical_aspect]
-    };
+    }
+}
+
+pub(super) fn apply_scene_cover_clip_scale(
+    mut clip_transform: [[f32; 4]; 4],
+    [clip_scale_x, clip_scale_y]: [f32; 2],
+) -> [[f32; 4]; 4] {
     for value in &mut clip_transform[0] {
         *value *= clip_scale_x;
     }

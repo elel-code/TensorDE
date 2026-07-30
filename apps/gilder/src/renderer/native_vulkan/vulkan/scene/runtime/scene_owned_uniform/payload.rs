@@ -1,9 +1,6 @@
 //! Allocation-free writes into reflected scene-owned uniform layouts.
 
-pub(super) fn write_matrix(
-    destination: &mut [u8],
-    matrix: &[[f32; 4]; 4],
-) -> Result<(), String> {
+pub(super) fn write_matrix(destination: &mut [u8], matrix: &[[f32; 4]; 4]) -> Result<(), String> {
     if destination.len() != 64 {
         return Err(format!(
             "scene-owned matrix destination has {} bytes, expected 64",
