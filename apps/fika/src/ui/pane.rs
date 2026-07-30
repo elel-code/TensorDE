@@ -8,8 +8,9 @@ use fika_core::{Entry, ItemLayout, ViewRect, ViewSize, read_entries_sync};
 use crate::filtered_indexes_for_entries;
 use crate::ui::{
     metrics::{
-        FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT, FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
-        FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT, FILE_MANAGER_ZOOM_LEVEL_MAX,
+        FILE_MANAGER_COMPACT_PREVIEW_ZOOM_LEVEL_DEFAULT,
+        FILE_MANAGER_DETAILS_PREVIEW_ZOOM_LEVEL_DEFAULT,
+        FILE_MANAGER_ICONS_PREVIEW_ZOOM_LEVEL_DEFAULT, FILE_MANAGER_ZOOM_LEVEL_MAX,
         FILE_MANAGER_ZOOM_LEVEL_MIN,
     },
     options::ShellViewMode,
@@ -28,9 +29,9 @@ impl Default for ShellPaneZoomLevels {
             // per-mode PreviewSize settings are 64px for Icons and 48px for
             // Compact/Details, corresponding to ZoomLevelInfo levels 4/3/3.
             levels: [
-                FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT,
-                FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT,
-                FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
+                FILE_MANAGER_ICONS_PREVIEW_ZOOM_LEVEL_DEFAULT,
+                FILE_MANAGER_COMPACT_PREVIEW_ZOOM_LEVEL_DEFAULT,
+                FILE_MANAGER_DETAILS_PREVIEW_ZOOM_LEVEL_DEFAULT,
             ],
         }
     }

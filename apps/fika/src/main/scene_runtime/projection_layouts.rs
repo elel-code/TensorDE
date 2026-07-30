@@ -356,7 +356,7 @@ impl ShellScene {
     fn zoom_percent_for_level(&self, view_mode: ShellViewMode, zoom_level: i32) -> i32 {
         let size = file_manager_icon_size_for_zoom_level(zoom_level);
         let default_size = file_manager_icon_size_for_zoom_level(
-            Self::default_zoom_level_for_view_mode(view_mode),
+            Self::preview_default_zoom_level_for_view_mode(view_mode),
         );
         (size / default_size * 100.0).round() as i32
     }
@@ -365,7 +365,7 @@ impl ShellScene {
         self.pane_zoom_level(pane)
             .map(Self::zoom_fraction_for_level)
             .unwrap_or_else(|| {
-                Self::zoom_fraction_for_level(FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT)
+                Self::zoom_fraction_for_level(FILE_MANAGER_ICONS_PREVIEW_ZOOM_LEVEL_DEFAULT)
             })
     }
 

@@ -257,8 +257,8 @@ impl ShellScene {
             ZoomAction::Out => current_level - 1,
             ZoomAction::Reset => self
                 .pane_state(self.normalized_pane_id(pane_id))
-                .map(|pane| Self::default_zoom_level_for_view_mode(pane.view_mode))
-                .unwrap_or(FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT),
+                .map(|pane| Self::reset_default_zoom_level_for_view_mode(pane.view_mode))
+                .unwrap_or(FILE_MANAGER_ICONS_RESET_ZOOM_LEVEL_DEFAULT),
         };
         self.set_zoom_level(pane_id, next_level, size, true)
     }

@@ -334,6 +334,7 @@
             _ => unreachable!(),
         };
         assert!(scene.zoom(ZoomAction::Reset, size));
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 0);
         let compact_reset = match scene.layout(size) {
             ShellLayout::Compact(layout) => layout.item(0).unwrap(),
             _ => unreachable!(),
@@ -349,6 +350,7 @@
         assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 5);
 
         assert!(scene.set_view_mode(ShellViewMode::Details, size));
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 3);
         let details_before = match scene.layout(size) {
             ShellLayout::Details(layout) => layout.item(0).unwrap(),
             _ => unreachable!(),
@@ -360,6 +362,9 @@
         };
         assert!(details_after.item_rect.height <= details_before.item_rect.height);
         assert!(details_after.icon_rect.width < details_before.icon_rect.width);
+
+        assert!(scene.zoom(ZoomAction::Reset, size));
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 0);
     }
 
     #[test]
@@ -455,7 +460,9 @@
             y: rects.label.y + rects.label.height / 2.0,
         };
         assert_eq!(scene.begin_scrollbar_drag(label, size), Some(true));
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 4);
+        // DolphinView::resetZoomLevel() uses the mode IconSize setting, not
+        // PreviewSize: the Icons default is 32px / ZoomLevelInfo level 2.
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 2);
         assert!(scene.scrollbar_drag.is_none());
     }
 

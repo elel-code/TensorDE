@@ -13,11 +13,19 @@ impl ShellScene {
             .map(ShellPaneState::zoom_level)
     }
 
-    fn default_zoom_level_for_view_mode(view_mode: ShellViewMode) -> i32 {
+    fn preview_default_zoom_level_for_view_mode(view_mode: ShellViewMode) -> i32 {
         match view_mode {
-            ShellViewMode::Icons => FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT,
-            ShellViewMode::Compact => FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT,
-            ShellViewMode::Details => FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Icons => FILE_MANAGER_ICONS_PREVIEW_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Compact => FILE_MANAGER_COMPACT_PREVIEW_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Details => FILE_MANAGER_DETAILS_PREVIEW_ZOOM_LEVEL_DEFAULT,
+        }
+    }
+
+    fn reset_default_zoom_level_for_view_mode(view_mode: ShellViewMode) -> i32 {
+        match view_mode {
+            ShellViewMode::Icons => FILE_MANAGER_ICONS_RESET_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Compact => FILE_MANAGER_COMPACT_RESET_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Details => FILE_MANAGER_DETAILS_RESET_ZOOM_LEVEL_DEFAULT,
         }
     }
 
