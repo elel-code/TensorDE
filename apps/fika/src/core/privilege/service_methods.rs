@@ -190,7 +190,7 @@ fn is_writeback_event(kind: &notify::EventKind) -> bool {
     )
 }
 
-fn sync_external_edit(edit: &mut ExternalEdit) -> Result<PathBuf, String> {
+pub(super) fn sync_external_edit(edit: &mut ExternalEdit) -> Result<PathBuf, String> {
     if !edit.scratch_path.is_file() {
         return Err("scratch file no longer exists".to_string());
     }
@@ -359,11 +359,11 @@ async fn user_bus_connection(session_bus_address: Option<&str>) -> Result<Connec
     }
 }
 
-fn is_finished_unit_state(state: &str) -> bool {
+pub(super) fn is_finished_unit_state(state: &str) -> bool {
     matches!(state, "inactive" | "failed")
 }
 
-fn cleanup_scratch_token_dir(scratch_path: &Path) -> Result<(), String> {
+pub(super) fn cleanup_scratch_token_dir(scratch_path: &Path) -> Result<(), String> {
     let Some(token_dir) = scratch_path.parent() else {
         return Err("scratch path has no token directory".to_string());
     };
@@ -376,23 +376,23 @@ fn cleanup_scratch_token_dir(scratch_path: &Path) -> Result<(), String> {
     fs::remove_dir_all(token_dir).map_err(|err| err.to_string())
 }
 
-fn polkit_authority_unavailable_message(err: &str) -> String {
+pub(super) fn polkit_authority_unavailable_message(err: &str) -> String {
     format!(
         "cannot contact polkit authority for action {ACTION_ID}: {err}; ensure polkit is running, {POLICY_FILE} is installed, and a desktop polkit agent is available"
     )
 }
 
-fn polkit_check_failed_message(err: &str) -> String {
+pub(super) fn polkit_check_failed_message(err: &str) -> String {
     format!(
         "polkit authorization failed for action {ACTION_ID}: {err}; ensure {POLICY_FILE} is installed in the polkit actions directory"
     )
 }
 
-fn polkit_denied_message() -> String {
+pub(super) fn polkit_denied_message() -> String {
     format!("polkit denied authorization for action {ACTION_ID}")
 }
 
-fn privileged_helper_start_failed_message(
+pub(super) fn privileged_helper_start_failed_message(
     system_error: &str,
     session_error: &str,
     fallback_error: &str,
@@ -406,7 +406,7 @@ fn privileged_helper_start_failed_message(
     )
 }
 
-fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+pub(super) fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
@@ -429,4 +429,3 @@ impl SummaryMessage for file_ops::FileActionSummary {
         }
     }
 }
-
