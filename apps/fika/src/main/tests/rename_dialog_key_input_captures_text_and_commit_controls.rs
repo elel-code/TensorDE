@@ -275,8 +275,8 @@
 
         scene.active_pane = ShellPaneId::SLOT_1;
         assert!(scene.zoom(ZoomAction::In, size));
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, 0);
-        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_step, 1);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 4);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_level(), 5);
         assert_eq!(scene.zoom_percent_for_pane(ShellPaneId::SLOT_0), 100);
         assert!(scene.zoom_percent_for_pane(ShellPaneId::SLOT_1) > 100);
 
@@ -327,6 +327,8 @@
         );
 
         assert!(scene.set_view_mode(ShellViewMode::Compact, size));
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 3);
+        assert!(scene.zoom(ZoomAction::In, size));
         let compact_zoomed = match scene.layout(size) {
             ShellLayout::Compact(layout) => layout.item(0).unwrap(),
             _ => unreachable!(),
@@ -342,6 +344,9 @@
             scene.compact_options(size).text_height,
             scene.text_line_height()
         );
+
+        assert!(scene.set_view_mode(ShellViewMode::Icons, size));
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 5);
 
         assert!(scene.set_view_mode(ShellViewMode::Details, size));
         let details_before = match scene.layout(size) {
@@ -362,9 +367,9 @@
         let mut scene = test_scene(vec![test_entry("alpha.txt", false)], ShellViewMode::Icons);
         let size = PhysicalSize::new(420, 260);
         let options = scene.icons_options(size);
-        let zoom_level = scene.file_manager_zoom_level_for_step(0);
+        let zoom_level = scene.panes[ShellPaneId::SLOT_0].zoom_level();
         let expected = file_manager_icons_item_width(
-            48.0,
+            64.0,
             2.0,
             FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             9.0,
@@ -374,12 +379,12 @@
 
         assert_eq!(FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX, 1.0);
         assert_eq!(options.item_width, expected);
-        assert_eq!(options.item_width, 96.0);
+        assert_eq!(options.item_width, 103.0);
 
         assert!(scene.set_scale_factor(1.5, size));
         let scaled_options = scene.icons_options(size);
         let scaled_expected = file_manager_icons_item_width(
-            72.0,
+            96.0,
             3.0,
             FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             13.5,
@@ -387,7 +392,7 @@
             zoom_level,
         );
         assert_eq!(scaled_options.item_width, scaled_expected);
-        assert_eq!(scaled_options.item_width, 144.0);
+        assert_eq!(scaled_options.item_width, 154.0);
     }
 
     #[test]
@@ -424,7 +429,7 @@
             y: rects.track.y + rects.track.height / 2.0,
         };
 
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, 0);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 4);
         assert_eq!(scene.begin_scrollbar_drag(high, size), Some(true));
         assert_eq!(
             scene.scrollbar_drag.map(|drag| drag.target),
@@ -432,7 +437,7 @@
                 pane: ShellPaneId::SLOT_0
             })
         );
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, ZOOM_STEP_MAX);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 16);
         assert_eq!(scene.cursor_icon(size), CursorIcon::Pointer);
 
         let low = ViewPoint {
@@ -440,17 +445,17 @@
             y: rects.track.y + rects.track.height / 2.0,
         };
         assert!(scene.set_pointer(low, size));
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, ZOOM_STEP_MIN);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 0);
         let _ = scene.end_scrollbar_drag(low, size);
         assert!(scene.scrollbar_drag.is_none());
 
-        assert!(scene.set_zoom_step(ShellPaneId::SLOT_0, ZOOM_STEP_MAX, size, true));
+        assert!(scene.set_zoom_level(ShellPaneId::SLOT_0, 16, size, true));
         let label = ViewPoint {
             x: rects.label.x + rects.label.width / 2.0,
             y: rects.label.y + rects.label.height / 2.0,
         };
         assert_eq!(scene.begin_scrollbar_drag(label, size), Some(true));
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, 0);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 4);
         assert!(scene.scrollbar_drag.is_none());
     }
 

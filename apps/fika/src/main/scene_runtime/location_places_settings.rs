@@ -259,26 +259,32 @@ impl ShellScene {
             .pane_state(source_pane)
             .map(|pane| pane.view_mode)
             .unwrap_or_else(|| self.active_view_mode());
-        let zoom_step = self.pane_zoom_step(source_pane).unwrap_or(0);
-        self.open_split_pane_with_view_mode(path, view_mode, zoom_step, size)
+        let zoom_levels = self
+            .pane_state(source_pane)
+            .map(|pane| pane.zoom_levels)
+            .unwrap_or_default();
+        self.open_split_pane_with_view_mode(path, view_mode, zoom_levels, size)
     }
 
     #[cfg(test)]
     fn open_split_pane(&mut self, path: PathBuf, size: PhysicalSize<u32>) -> Result<bool, String> {
         let view_mode = self.active_view_mode();
-        let zoom_step = self.active_zoom_step();
-        self.open_split_pane_with_view_mode(path, view_mode, zoom_step, size)
+        let zoom_levels = self
+            .pane_state(self.active_pane())
+            .map(|pane| pane.zoom_levels)
+            .unwrap_or_default();
+        self.open_split_pane_with_view_mode(path, view_mode, zoom_levels, size)
     }
 
     fn open_split_pane_with_view_mode(
         &mut self,
         path: PathBuf,
         view_mode: ShellViewMode,
-        zoom_step: i32,
+        zoom_levels: ShellPaneZoomLevels,
         size: PhysicalSize<u32>,
     ) -> Result<bool, String> {
         let mut split_pane = ShellPaneState::load(path, view_mode, self.show_hidden)?;
-        split_pane.zoom_step = zoom_step.clamp(ZOOM_STEP_MIN, ZOOM_STEP_MAX);
+        split_pane.zoom_levels = zoom_levels;
         split_pane.scroll_x = 0.0;
         split_pane.scroll_y = 0.0;
         self.panes.set(ShellPaneId::SLOT_1, split_pane);
@@ -322,11 +328,11 @@ impl ShellScene {
         };
         let current_path = state.path.clone();
         let view_mode = state.view_mode;
-        let zoom_step = state.zoom_step;
+        let zoom_levels = state.zoom_levels;
         let path = self
             .single_selected_directory_path_for_pane(pane)
             .unwrap_or(current_path);
-        self.open_split_pane_with_view_mode(path, view_mode, zoom_step, size)
+        self.open_split_pane_with_view_mode(path, view_mode, zoom_levels, size)
     }
 
     fn toggle_split_view_from_toolbar(&mut self, size: PhysicalSize<u32>) -> Result<bool, String> {

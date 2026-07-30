@@ -20,8 +20,8 @@
         };
 
         assert_eq!(scene.begin_scrollbar_drag(high, size), Some(true));
-        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, 0);
-        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_step, ZOOM_STEP_MAX);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_level(), 4);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_level(), 16);
         assert_eq!(
             scene.scrollbar_drag.map(|drag| drag.target),
             Some(ScrollbarDragTarget::StatusZoom {
@@ -45,7 +45,7 @@
         scene.panes[pane].scroll_x = 640.0;
         let old_scroll_x = scene.panes[pane].scroll_x;
 
-        assert!(scene.set_zoom_step(pane, 1, size, true));
+        assert!(scene.set_zoom_level(pane, 4, size, true));
         assert_eq!(scene.panes[pane].scroll_x, old_scroll_x);
         assert_eq!(scene.panes[pane].scroll_y, 0.0);
     }
@@ -299,7 +299,7 @@
             _ => unreachable!(),
         };
         assert_eq!(scene.icons_options(size).text_height, 27.0);
-        assert_eq!(icons_item.icon_rect.width, 72.0);
+        assert_eq!(icons_item.icon_rect.width, 96.0);
         assert!(icons_item.text_rect.height >= 27.0);
 
         assert!(scene.set_view_mode(ShellViewMode::Compact, size));
@@ -308,7 +308,7 @@
             _ => unreachable!(),
         };
         assert_eq!(scene.compact_options(size).text_height, 27.0);
-        assert_eq!(compact_item.icon_rect.width, 42.0);
+        assert_eq!(compact_item.icon_rect.width, 72.0);
         assert!(compact_item.text_rect.height >= 27.0);
 
         assert!(scene.set_view_mode(ShellViewMode::Details, size));
@@ -316,7 +316,7 @@
             ShellLayout::Details(layout) => layout.item(0).unwrap(),
             _ => unreachable!(),
         };
-        assert_eq!(details_item.icon_rect.width, 27.0);
+        assert_eq!(details_item.icon_rect.width, 72.0);
         assert_eq!(details_item.text_rect.height, 27.0);
     }
 

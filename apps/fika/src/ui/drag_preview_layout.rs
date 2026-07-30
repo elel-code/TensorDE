@@ -1,6 +1,6 @@
 use fika_core::{ItemLayout, ViewPoint, ViewRect};
 
-use crate::ui::metrics::{COMPACT_ICON_SIZE, COMPACT_MIN_TEXT_WIDTH, DETAILS_ICON_SIZE};
+use crate::ui::metrics::COMPACT_MIN_TEXT_WIDTH;
 use crate::ui::options::ShellViewMode;
 
 /// The text treatment used by the item delegates in FileManager's drag pixmaps.
@@ -318,7 +318,6 @@ fn fallback_item_layout(
             }
         }
         ShellViewMode::Compact => {
-            let icon_size = icon_size.max(COMPACT_ICON_SIZE * scale);
             let width = (padding * 4.0
                 + icon_size
                 + gap
@@ -356,7 +355,6 @@ fn fallback_item_layout(
             }
         }
         ShellViewMode::Details => {
-            let icon_size = icon_size.max(DETAILS_ICON_SIZE * scale);
             let height = (8.0 * scale + icon_size.max(text_line_height)).max(1.0);
             let text_x = 8.0 * scale + icon_size + gap;
             let width = text_x + natural_text_width.max(1.0) + 8.0 * scale;

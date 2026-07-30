@@ -266,15 +266,7 @@ impl ShellScene {
     ) -> f32 {
         item_layout
             .map(|layout| layout.icon_rect.width.max(layout.icon_rect.height))
-            .unwrap_or_else(|| match pane.view_mode {
-                ShellViewMode::Icons => {
-                    self.zoom_icon_metric_for_step(pane.zoom_step, ICONS_ICON_SIZE, 16.0, 256.0)
-                }
-                ShellViewMode::Compact => {
-                    self.zoom_icon_metric_for_step(pane.zoom_step, COMPACT_ICON_SIZE, 16.0, 144.0)
-                }
-                ShellViewMode::Details => self.details_icon_size_for_step(pane.zoom_step),
-            })
+            .unwrap_or_else(|| self.zoom_icon_metric_for_level(pane.zoom_level, 16.0, 256.0))
     }
 
     fn internal_drag_active(&self) -> bool {

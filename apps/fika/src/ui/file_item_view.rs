@@ -123,6 +123,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zoom_level_icon_sizes_match_dolphin_zoom_level_info() {
+        let sizes = (0..=16)
+            .map(|level| file_manager_icon_size_for_zoom_level(level) as i32)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            sizes,
+            vec![
+                16, 22, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256,
+            ]
+        );
+    }
+
+    #[test]
     fn deferred_all_indexes_exclude_visible_range() {
         let indexes = shell_file_manager_deferred_all_indexes(Some(4..7), 10);
 

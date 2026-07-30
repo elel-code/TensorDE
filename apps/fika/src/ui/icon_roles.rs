@@ -545,10 +545,11 @@ mod tests {
     }
 
     #[test]
-    fn thumbnail_display_cache_size_prefers_large_for_default_icons_mode() {
-        // Default Icons mode (48px) should decode from freestanding large (256).
+    fn thumbnail_display_cache_size_prefers_large_for_default_preview_modes() {
+        // Dolphin's default preview sizes are Icons=64 and Compact/Details=48.
+        assert_eq!(thumbnail_display_cache_size(64.0), 256);
         assert_eq!(thumbnail_display_cache_size(48.0), 256);
-        assert_eq!(thumbnail_display_cache_size(28.0), 128); // compact → normal
+        assert_eq!(thumbnail_display_cache_size(32.0), 128);
         assert_eq!(thumbnail_display_cache_size(96.0), 256);
         assert_eq!(thumbnail_display_cache_size(160.0), 256); // capped GPU texture size
     }

@@ -303,7 +303,7 @@ impl ShellScene {
         for projection in projections {
             let read_ahead_size_px = self.folder_preview_role_size_px_for_view_mode(
                 projection.view.view_mode,
-                projection.view.zoom_step,
+                projection.view.zoom_level,
             );
             for item in &projection.visible_items {
                 let Some(entry_index) = projection
@@ -414,11 +414,11 @@ impl ShellScene {
     fn folder_preview_role_size_px_for_view_mode(
         &self,
         view_mode: ShellViewMode,
-        zoom_step: i32,
+        zoom_level: i32,
     ) -> u16 {
         let item = match view_mode {
             ShellViewMode::Icons => {
-                let options = self.icons_options_for_viewport(1.0, 1.0, zoom_step);
+                let options = self.icons_options_for_viewport(1.0, 1.0, zoom_level);
                 ItemLayout {
                     model_index: 0,
                     column: 0,
@@ -445,7 +445,7 @@ impl ShellScene {
                 }
             }
             ShellViewMode::Compact => {
-                let options = self.compact_options_for_viewport(1.0, 1.0, zoom_step);
+                let options = self.compact_options_for_viewport(1.0, 1.0, zoom_level);
                 ItemLayout {
                     model_index: 0,
                     column: 0,
@@ -476,8 +476,8 @@ impl ShellScene {
                 }
             }
             ShellViewMode::Details => {
-                let icon_size = self.details_icon_size_for_step(zoom_step);
-                let row_height = self.details_row_height_for_step(zoom_step);
+                let icon_size = self.details_icon_size_for_level(zoom_level);
+                let row_height = self.details_row_height_for_level(zoom_level);
                 let icon_padding = self.scale_metric(8.0);
                 ItemLayout {
                     model_index: 0,

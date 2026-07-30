@@ -9,13 +9,14 @@ pub(crate) const FILTER_BAR_HEIGHT: f32 = 30.0;
 pub(crate) const STATUS_BAR_HEIGHT: f32 = 28.0;
 #[cfg(test)]
 pub(crate) const ICONS_ITEM_WIDTH: f32 = 96.0;
-pub(crate) const ICONS_ICON_SIZE: f32 = 48.0;
+#[cfg(test)]
+pub(crate) const ICONS_ICON_SIZE: f32 = 64.0;
 pub(crate) const FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX: f32 = 1.0;
 pub(crate) const FILE_MANAGER_ICONS_MAX_TEXT_LINES: usize = 3;
 pub(crate) const COMPACT_MIN_TEXT_WIDTH: f32 = 24.0;
-pub(crate) const COMPACT_ICON_SIZE: f32 = 28.0;
+#[cfg(test)]
+pub(crate) const COMPACT_ICON_SIZE: f32 = 48.0;
 pub(crate) const DETAILS_HEADER_HEIGHT: f32 = 28.0;
-pub(crate) const DETAILS_ICON_SIZE: f32 = 18.0;
 pub(crate) const DETAILS_NAME_WIDTH: f32 = 360.0;
 pub(crate) const DETAILS_SIZE_WIDTH: f32 = 104.0;
 pub(crate) const DETAILS_MODIFIED_WIDTH: f32 = 164.0;
@@ -153,10 +154,10 @@ pub(crate) const TRASH_CONFLICT_DIALOG_MARGIN: f32 = 18.0;
 pub(crate) const TRASH_CONFLICT_DIALOG_TITLE_HEIGHT: f32 = 44.0;
 pub(crate) const PATH_HISTORY_LIMIT: usize = 128;
 pub(crate) const FILE_MANAGER_ZOOM_LEVEL_MIN: i32 = 0;
-pub(crate) const FILE_MANAGER_ZOOM_LEVEL_DEFAULT: i32 = 3;
 pub(crate) const FILE_MANAGER_ZOOM_LEVEL_MAX: i32 = 16;
-pub(crate) const ZOOM_STEP_MIN: i32 = FILE_MANAGER_ZOOM_LEVEL_MIN - FILE_MANAGER_ZOOM_LEVEL_DEFAULT;
-pub(crate) const ZOOM_STEP_MAX: i32 = FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER_ZOOM_LEVEL_DEFAULT;
+pub(crate) const FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT: i32 = 4;
+pub(crate) const FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT: i32 = 3;
+pub(crate) const FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT: i32 = 3;
 pub(crate) const AUTO_CYCLE_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(500);
 pub(crate) const DOUBLE_CLICK_MAX_DISTANCE: f32 = 6.0;

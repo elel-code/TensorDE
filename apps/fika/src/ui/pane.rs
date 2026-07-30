@@ -6,7 +6,54 @@ use std::time::Instant;
 use fika_core::{Entry, ItemLayout, ViewRect, ViewSize, read_entries_sync};
 
 use crate::filtered_indexes_for_entries;
-use crate::ui::{options::ShellViewMode, selection::ShellSelection};
+use crate::ui::{
+    metrics::{
+        FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT, FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
+        FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT, FILE_MANAGER_ZOOM_LEVEL_MAX,
+        FILE_MANAGER_ZOOM_LEVEL_MIN,
+    },
+    options::ShellViewMode,
+    selection::ShellSelection,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShellPaneZoomLevels {
+    levels: [i32; 3],
+}
+
+impl Default for ShellPaneZoomLevels {
+    fn default() -> Self {
+        Self {
+            // Dolphin global view properties default to previews enabled. Its
+            // per-mode PreviewSize settings are 64px for Icons and 48px for
+            // Compact/Details, corresponding to ZoomLevelInfo levels 4/3/3.
+            levels: [
+                FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT,
+                FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT,
+                FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
+            ],
+        }
+    }
+}
+
+impl ShellPaneZoomLevels {
+    fn index(mode: ShellViewMode) -> usize {
+        match mode {
+            ShellViewMode::Icons => 0,
+            ShellViewMode::Compact => 1,
+            ShellViewMode::Details => 2,
+        }
+    }
+
+    pub(crate) fn get(self, mode: ShellViewMode) -> i32 {
+        self.levels[Self::index(mode)]
+    }
+
+    pub(crate) fn set(&mut self, mode: ShellViewMode, level: i32) {
+        self.levels[Self::index(mode)] =
+            level.clamp(FILE_MANAGER_ZOOM_LEVEL_MIN, FILE_MANAGER_ZOOM_LEVEL_MAX);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ShellPaneId {
@@ -53,7 +100,7 @@ pub(crate) struct ShellPaneState {
     /// directory interactable until completion.
     pub(crate) pending_path: Option<PathBuf>,
     pub(crate) view_mode: ShellViewMode,
-    pub(crate) zoom_step: i32,
+    pub(crate) zoom_levels: ShellPaneZoomLevels,
     pub(crate) entries: Vec<Entry>,
     pub(crate) dir_count: usize,
     pub(crate) filtered_indexes: Vec<usize>,
@@ -76,7 +123,7 @@ impl ShellPaneState {
             path,
             pending_path: None,
             view_mode,
-            zoom_step: 0,
+            zoom_levels: ShellPaneZoomLevels::default(),
             entries,
             dir_count,
             filtered_indexes,
@@ -110,7 +157,7 @@ impl ShellPaneState {
             path,
             pending_path: None,
             view_mode,
-            zoom_step: 0,
+            zoom_levels: ShellPaneZoomLevels::default(),
             entries,
             dir_count,
             filtered_indexes,
@@ -136,6 +183,14 @@ impl ShellPaneState {
 
     pub(crate) fn pending_path_matches(&self, path: &Path) -> bool {
         self.pending_path.as_deref() == Some(path)
+    }
+
+    pub(crate) fn zoom_level(&self) -> i32 {
+        self.zoom_levels.get(self.view_mode)
+    }
+
+    pub(crate) fn set_zoom_level(&mut self, level: i32) {
+        self.zoom_levels.set(self.view_mode, level);
     }
 }
 
@@ -190,7 +245,7 @@ impl IndexMut<ShellPaneId> for ShellPaneStates {
 pub(crate) struct ShellPaneView<'a> {
     pub(crate) path: &'a Path,
     pub(crate) view_mode: ShellViewMode,
-    pub(crate) zoom_step: i32,
+    pub(crate) zoom_level: i32,
     pub(crate) entries: &'a [Entry],
     pub(crate) dir_count: usize,
     pub(crate) filtered_indexes: &'a [usize],
@@ -205,7 +260,7 @@ impl<'a> ShellPaneView<'a> {
         Self {
             path: state.display_path(),
             view_mode: state.view_mode,
-            zoom_step: state.zoom_step,
+            zoom_level: state.zoom_level(),
             entries: if loading { &[] } else { &state.entries },
             dir_count: if loading { 0 } else { state.dir_count },
             filtered_indexes: if loading {
@@ -510,6 +565,21 @@ pub(crate) struct ShellPaneSplitMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_zoom_levels_use_and_retain_dolphin_preview_defaults_by_mode() {
+        let mut levels = ShellPaneZoomLevels::default();
+
+        assert_eq!(levels.get(ShellViewMode::Icons), 4);
+        assert_eq!(levels.get(ShellViewMode::Compact), 3);
+        assert_eq!(levels.get(ShellViewMode::Details), 3);
+
+        levels.set(ShellViewMode::Icons, 7);
+        levels.set(ShellViewMode::Compact, 99);
+        assert_eq!(levels.get(ShellViewMode::Icons), 7);
+        assert_eq!(levels.get(ShellViewMode::Compact), 16);
+        assert_eq!(levels.get(ShellViewMode::Details), 3);
+    }
 
     #[test]
     fn pane_visible_slot_pools_are_addressed_by_pane_id() {

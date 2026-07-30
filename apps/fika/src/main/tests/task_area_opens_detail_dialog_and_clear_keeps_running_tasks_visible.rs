@@ -198,10 +198,10 @@
             _ => unreachable!(),
         };
 
-        assert_eq!(layout.rows_per_column(), 3);
+        assert_eq!(layout.rows_per_column(), 2);
         let short_first_column = layout.item(0).unwrap();
         let long_first_column = layout.item(1).unwrap();
-        let short_second_column = layout.item(3).unwrap();
+        let short_second_column = layout.item(2).unwrap();
 
         assert_eq!(
             short_first_column.item_rect.width,

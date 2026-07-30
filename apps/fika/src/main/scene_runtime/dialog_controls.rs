@@ -77,7 +77,7 @@ impl ShellScene {
         if let Some((pane, rects)) = self.status_zoom_control_rects_at_screen_point(point, size) {
             if rects.label.contains(point) {
                 self.pointer = Some(point);
-                return Some(self.set_zoom_step(pane, 0, size, true));
+                return Some(self.zoom_pane(pane, ZoomAction::Reset, size));
             }
             let thumb_center_offset = if rects.thumb_outer.contains(point) {
                 point.x - (rects.thumb_outer.x + rects.thumb_outer.width / 2.0)
@@ -189,7 +189,7 @@ impl ShellScene {
             .open_with_chooser
             .as_ref()
             .map(|chooser| chooser.scroll_row);
-        let old_zoom_steps = ShellPaneId::ALL.map(|pane| self.pane_zoom_step(pane));
+        let old_zoom_levels = ShellPaneId::ALL.map(|pane| self.pane_zoom_level(pane));
 
         match drag.target {
             ScrollbarDragTarget::OpenWith => {
@@ -314,8 +314,8 @@ impl ShellScene {
             .is_some_and(|(old_scroll, new_scroll)| old_scroll != new_scroll);
         let zoom_changed = ShellPaneId::ALL
             .into_iter()
-            .zip(old_zoom_steps)
-            .any(|(pane, old_step)| self.pane_zoom_step(pane) != old_step);
+            .zip(old_zoom_levels)
+            .any(|(pane, old_level)| self.pane_zoom_level(pane) != old_level);
         if places_changed {
             self.places_scroll_changes += 1;
         }

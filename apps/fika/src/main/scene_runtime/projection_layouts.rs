@@ -101,8 +101,11 @@ impl ShellScene {
         let item_count = pane.filtered_entry_count();
         match pane.view_mode {
             ShellViewMode::Icons => {
-                let mut options =
-                    self.icons_options_for_viewport(content_width, viewport_height, pane.zoom_step);
+                let mut options = self.icons_options_for_viewport(
+                    content_width,
+                    viewport_height,
+                    pane.zoom_level,
+                );
                 options.scroll_x = pane.scroll_x;
                 options.scroll_y = pane.scroll_y;
                 ShellLayout::Icons(self.pane_icons_layout(pane_id, pane, options))
@@ -111,7 +114,7 @@ impl ShellScene {
                 let mut options = self.compact_options_for_viewport(
                     content_width,
                     viewport_height,
-                    pane.zoom_step,
+                    pane.zoom_level,
                 );
                 options.scroll_x = pane.scroll_x;
                 ShellLayout::Compact(self.pane_compact_layout(pane_id, pane, options))
@@ -121,8 +124,8 @@ impl ShellScene {
                 content_width,
                 viewport_height,
                 pane.scroll_y,
-                self.details_row_height_for_step(pane.zoom_step),
-                self.details_icon_size_for_step(pane.zoom_step),
+                self.details_row_height_for_level(pane.zoom_level),
+                self.details_icon_size_for_level(pane.zoom_level),
                 self.ui_scale(),
                 self.details_name_width(),
                 self.details_size_width(),
@@ -260,7 +263,7 @@ impl ShellScene {
         let mut options = self.icons_options_for_viewport(
             self.content_width(size),
             self.viewport_height(size),
-            self.panes[ShellPaneId::SLOT_0].zoom_step,
+            self.panes[ShellPaneId::SLOT_0].zoom_level(),
         );
         options.scroll_x = self.panes[ShellPaneId::SLOT_0].scroll_x;
         options.scroll_y = self.panes[ShellPaneId::SLOT_0].scroll_y;
@@ -271,12 +274,12 @@ impl ShellScene {
         &self,
         viewport_width: f32,
         viewport_height: f32,
-        zoom_step: i32,
+        zoom_level: i32,
     ) -> IconsLayoutOptions {
         let scale = self.ui_scale();
         let padding = self.scale_metric(2.0);
         let gap = self.scale_metric(12.0);
-        let icon_size = self.zoom_icon_metric_for_step(zoom_step, ICONS_ICON_SIZE, 16.0, 256.0);
+        let icon_size = self.zoom_icon_metric_for_level(zoom_level, 16.0, 256.0);
         let average_char_width = 9.0 * scale;
         let item_width = file_manager_icons_item_width(
             icon_size,
@@ -284,7 +287,7 @@ impl ShellScene {
             FILE_MANAGER_ICONS_TEXT_WIDTH_INDEX,
             average_char_width,
             scale,
-            self.file_manager_zoom_level_for_step(zoom_step),
+            zoom_level,
         );
         let item_height = (padding * 3.0 + icon_size + self.text_line_height()).round();
         IconsLayoutOptions {
@@ -307,7 +310,7 @@ impl ShellScene {
         let mut options = self.compact_options_for_viewport(
             self.content_width(size),
             self.viewport_height(size),
-            self.panes[ShellPaneId::SLOT_0].zoom_step,
+            self.panes[ShellPaneId::SLOT_0].zoom_level(),
         );
         options.scroll_x = self.panes[ShellPaneId::SLOT_0].scroll_x;
         options
@@ -317,13 +320,13 @@ impl ShellScene {
         &self,
         viewport_width: f32,
         viewport_height: f32,
-        zoom_step: i32,
+        zoom_level: i32,
     ) -> CompactLayoutOptions {
         let padding = self.scale_metric(2.0);
         let side_padding = self.scale_metric(8.0);
         let gap = self.scale_metric(8.0);
         let text_gap = padding * 2.0;
-        let icon_size = self.zoom_icon_metric_for_step(zoom_step, COMPACT_ICON_SIZE, 16.0, 144.0);
+        let icon_size = self.zoom_icon_metric_for_level(zoom_level, 16.0, 256.0);
         let min_text_width =
             (self.text_line_height() * 5.0).max(self.scale_metric(COMPACT_MIN_TEXT_WIDTH));
         let item_height = (padding * 2.0 + icon_size.max(self.text_line_height())).round();
@@ -345,38 +348,43 @@ impl ShellScene {
     }
 
     fn zoom_percent_for_pane(&self, pane: ShellPaneId) -> i32 {
-        self.pane_zoom_step(pane)
-            .map(|zoom_step| self.zoom_percent_for_step(zoom_step))
+        self.pane_state(self.normalized_pane_id(pane))
+            .map(|pane| self.zoom_percent_for_level(pane.view_mode, pane.zoom_level()))
             .unwrap_or(100)
     }
 
-    fn zoom_percent_for_step(&self, zoom_step: i32) -> i32 {
-        (self.zoom_icon_factor_for_step(zoom_step) * 100.0).round() as i32
+    fn zoom_percent_for_level(&self, view_mode: ShellViewMode, zoom_level: i32) -> i32 {
+        let size = file_manager_icon_size_for_zoom_level(zoom_level);
+        let default_size = file_manager_icon_size_for_zoom_level(
+            Self::default_zoom_level_for_view_mode(view_mode),
+        );
+        (size / default_size * 100.0).round() as i32
     }
 
     fn zoom_fraction_for_pane(&self, pane: ShellPaneId) -> f32 {
-        self.pane_zoom_step(pane)
-            .map(|zoom_step| self.zoom_fraction_for_step(zoom_step))
-            .unwrap_or_else(|| self.zoom_fraction_for_step(0))
+        self.pane_zoom_level(pane)
+            .map(Self::zoom_fraction_for_level)
+            .unwrap_or_else(|| {
+                Self::zoom_fraction_for_level(FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT)
+            })
     }
 
-    fn zoom_fraction_for_step(&self, zoom_step: i32) -> f32 {
-        let level = self.file_manager_zoom_level_for_step(zoom_step);
+    fn zoom_fraction_for_level(level: i32) -> f32 {
         let span = (FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER_ZOOM_LEVEL_MIN).max(1) as f32;
         ((level - FILE_MANAGER_ZOOM_LEVEL_MIN) as f32 / span).clamp(0.0, 1.0)
     }
 
-    fn details_row_height_for_step(&self, zoom_step: i32) -> f32 {
+    fn details_row_height_for_level(&self, zoom_level: i32) -> f32 {
         let padding = self.scale_metric(4.0);
         (padding * 2.0
             + self
-                .details_icon_size_for_step(zoom_step)
+                .details_icon_size_for_level(zoom_level)
                 .max(self.text_line_height()))
         .round()
     }
 
-    fn details_icon_size_for_step(&self, zoom_step: i32) -> f32 {
-        self.zoom_icon_metric_for_step(zoom_step, DETAILS_ICON_SIZE, 16.0, 144.0)
+    fn details_icon_size_for_level(&self, zoom_level: i32) -> f32 {
+        self.zoom_icon_metric_for_level(zoom_level, 16.0, 256.0)
     }
 
     /// Builds structural quad layers independent of glyph-atlas, sampled-icon,

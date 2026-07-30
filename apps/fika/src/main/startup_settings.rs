@@ -138,7 +138,7 @@ use ui::paint::ShellPaintPalettes;
 use ui::pane::{
     ShellPaneGeometry, ShellPaneId, ShellPaneProjection, ShellPaneScrollMetrics,
     ShellPaneSplitMetrics, ShellPaneState, ShellPaneStates, ShellPaneView, ShellPaneVisibleItem,
-    ShellPaneVisibleSlotPools, ShellVisibleItemSlotStats, ShellVisibleSlotItem,
+    ShellPaneVisibleSlotPools, ShellPaneZoomLevels, ShellVisibleItemSlotStats, ShellVisibleSlotItem,
 };
 use ui::pane_layout::{
     CompactLayoutCache, CompactLayoutCacheKey, CompactLayoutCacheValue, DetailsLayout,

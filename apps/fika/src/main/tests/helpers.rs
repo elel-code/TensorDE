@@ -450,7 +450,7 @@
         path: PathBuf,
         view_mode: ShellViewMode,
         entries: Vec<Entry>,
-        zoom_step: i32,
+        zoom_level: Option<i32>,
     }
 
     impl TestShellSceneBuilder {
@@ -520,14 +520,14 @@
                 path: path.into(),
                 view_mode,
                 entries,
-                zoom_step: 0,
+                zoom_level: None,
             });
             self
         }
 
-        fn with_secondary_zoom_step(mut self, zoom_step: i32) -> Self {
+        fn with_secondary_zoom_level(mut self, zoom_level: i32) -> Self {
             if let Some(secondary) = self.secondary.as_mut() {
-                secondary.zoom_step = zoom_step;
+                secondary.zoom_level = Some(zoom_level);
             }
             self
         }
@@ -555,13 +555,13 @@
             scene.places_visible = self.places_visible;
             scene.scale_factor = self.scale_factor;
             if let Some(secondary) = self.secondary {
-                set_test_pane_with_zoom(
+                set_test_pane_with_zoom_level(
                     &mut scene,
                     ShellPaneId::SLOT_1,
                     secondary.path,
                     secondary.view_mode,
                     secondary.entries,
-                    secondary.zoom_step,
+                    secondary.zoom_level,
                 );
             }
             scene
@@ -583,16 +583,16 @@
         view_mode: ShellViewMode,
         entries: Vec<Entry>,
     ) {
-        set_test_pane_with_zoom(scene, pane, path, view_mode, entries, 0);
+        set_test_pane_with_zoom_level(scene, pane, path, view_mode, entries, None);
     }
 
-    fn set_test_pane_with_zoom(
+    fn set_test_pane_with_zoom_level(
         scene: &mut ShellScene,
         pane: ShellPaneId,
         path: PathBuf,
         view_mode: ShellViewMode,
         entries: Vec<Entry>,
-        zoom_step: i32,
+        zoom_level: Option<i32>,
     ) {
         let dir_count = entries.iter().filter(|entry| entry.is_dir).count();
         let filtered_indexes = filtered_indexes_for_entries(
@@ -600,21 +600,22 @@
             scene.show_hidden,
             scene.filter_pattern_for_pane(pane),
         );
-        scene.panes.set(
-            pane,
-            ShellPaneState {
-                path,
-                pending_path: None,
-                view_mode,
-                zoom_step,
-                dir_count,
-                filtered_indexes,
-                entries,
-                selection: ShellSelection::default(),
-                scroll_x: 0.0,
-                scroll_y: 0.0,
-            },
-        );
+        let mut state = ShellPaneState {
+            path,
+            pending_path: None,
+            view_mode,
+            zoom_levels: ShellPaneZoomLevels::default(),
+            dir_count,
+            filtered_indexes,
+            entries,
+            selection: ShellSelection::default(),
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+        };
+        if let Some(zoom_level) = zoom_level {
+            state.set_zoom_level(zoom_level);
+        }
+        scene.panes.set(pane, state);
     }
 
     fn filtered_names(scene: &ShellScene, pane: ShellPaneId) -> Vec<String> {
@@ -641,7 +642,7 @@
                 ShellViewMode::Compact,
                 vec![test_entry("b.txt", false)],
             )
-            .with_secondary_zoom_step(2)
+            .with_secondary_zoom_level(2)
             .build();
         assert_eq!(
             scene.panes[ShellPaneId::SLOT_0].path,
@@ -664,7 +665,7 @@
             scene.panes[ShellPaneId::SLOT_1].view_mode,
             ShellViewMode::Compact
         );
-        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_step, 2);
+        assert_eq!(scene.panes[ShellPaneId::SLOT_1].zoom_level(), 2);
         assert_eq!(scene.panes[ShellPaneId::SLOT_1].entries.len(), 1);
     }
 

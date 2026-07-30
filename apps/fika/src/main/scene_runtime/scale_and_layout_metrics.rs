@@ -8,33 +8,22 @@ impl ShellScene {
         (value * self.ui_scale()).round().max(1.0)
     }
 
-    fn pane_zoom_step(&self, pane: ShellPaneId) -> Option<i32> {
+    fn pane_zoom_level(&self, pane: ShellPaneId) -> Option<i32> {
         self.pane_state(self.normalized_pane_id(pane))
-            .map(|pane| pane.zoom_step)
+            .map(ShellPaneState::zoom_level)
     }
 
-    #[cfg(test)]
-    fn active_zoom_step(&self) -> i32 {
-        self.pane_zoom_step(self.active_pane()).unwrap_or(0)
+    fn default_zoom_level_for_view_mode(view_mode: ShellViewMode) -> i32 {
+        match view_mode {
+            ShellViewMode::Icons => FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Compact => FILE_MANAGER_COMPACT_ZOOM_LEVEL_DEFAULT,
+            ShellViewMode::Details => FILE_MANAGER_DETAILS_ZOOM_LEVEL_DEFAULT,
+        }
     }
 
-    fn file_manager_zoom_level_for_step(&self, zoom_step: i32) -> i32 {
-        (zoom_step + FILE_MANAGER_ZOOM_LEVEL_DEFAULT)
-            .clamp(FILE_MANAGER_ZOOM_LEVEL_MIN, FILE_MANAGER_ZOOM_LEVEL_MAX)
-    }
-
-    fn file_manager_zoom_icon_size_for_step(&self, zoom_step: i32) -> f32 {
-        file_manager_icon_size_for_zoom_level(self.file_manager_zoom_level_for_step(zoom_step))
-    }
-
-    fn zoom_icon_factor_for_step(&self, zoom_step: i32) -> f32 {
-        self.file_manager_zoom_icon_size_for_step(zoom_step)
-            / file_manager_icon_size_for_zoom_level(FILE_MANAGER_ZOOM_LEVEL_DEFAULT)
-    }
-
-    fn zoom_icon_metric_for_step(&self, zoom_step: i32, value: f32, min: f32, max: f32) -> f32 {
+    fn zoom_icon_metric_for_level(&self, zoom_level: i32, min: f32, max: f32) -> f32 {
         let scale = self.ui_scale();
-        (value * self.zoom_icon_factor_for_step(zoom_step) * scale)
+        (file_manager_icon_size_for_zoom_level(zoom_level) * scale)
             .round()
             .clamp(min * scale, max * scale)
     }

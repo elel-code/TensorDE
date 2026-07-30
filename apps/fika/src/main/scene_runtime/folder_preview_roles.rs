@@ -9,8 +9,7 @@ impl ShellScene {
         let Some(visible_range) = visible_layout_range_for_projection(projection) else {
             return;
         };
-        let size_px =
-            self.thumbnail_read_ahead_size_px(projection.view.view_mode, projection.view.zoom_step);
+        let size_px = self.thumbnail_read_ahead_size_px(projection.view.zoom_level);
         if size_px < 32 {
             return;
         }
@@ -35,16 +34,8 @@ impl ShellScene {
         }
     }
 
-    fn thumbnail_read_ahead_size_px(&self, view_mode: ShellViewMode, zoom_step: i32) -> u16 {
-        let icon_size = match view_mode {
-            ShellViewMode::Icons => {
-                self.zoom_icon_metric_for_step(zoom_step, ICONS_ICON_SIZE, 16.0, 256.0)
-            }
-            ShellViewMode::Compact => {
-                self.zoom_icon_metric_for_step(zoom_step, COMPACT_ICON_SIZE, 16.0, 144.0)
-            }
-            ShellViewMode::Details => self.details_icon_size_for_step(zoom_step),
-        };
+    fn thumbnail_read_ahead_size_px(&self, zoom_level: i32) -> u16 {
+        let icon_size = self.zoom_icon_metric_for_level(zoom_level, 16.0, 256.0);
         // Folder previews are already a composed icon-sized raster. Keeping
         // their ready/GPU size at the actual FileManager zoom bucket avoids doing
         // four 256px child compositions for a 48px folder icon.
@@ -206,8 +197,8 @@ impl ShellScene {
             &PaneStatusBarPaint {
                 rect: projection.geometry.status_bar,
                 status: &status,
-                zoom_percent: self.zoom_percent_for_step(pane.zoom_step),
-                zoom_fraction: self.zoom_fraction_for_step(pane.zoom_step),
+                zoom_percent: self.zoom_percent_for_level(pane.view_mode, pane.zoom_level),
+                zoom_fraction: Self::zoom_fraction_for_level(pane.zoom_level),
                 theme,
                 scale: self.ui_scale(),
                 line_height: self.text_line_height(),
@@ -263,7 +254,7 @@ impl ShellScene {
             rect,
             self.ui_scale(),
             self.text_line_height(),
-            self.zoom_fraction_for_step(pane.zoom_step),
+            Self::zoom_fraction_for_level(pane.zoom_level),
         ) else {
             return;
         };

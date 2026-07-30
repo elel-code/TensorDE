@@ -10,44 +10,48 @@ pub(crate) fn zoom_action_for_scroll_delta(delta_y: f32) -> Option<ZoomAction> {
     }
 }
 
-/// Multiplicative finger-spacing change required for one icon zoom step.
-///
-/// Absolute pinch `scale` is relative to spacing at gesture begin (~1.0). About
-/// 12% spacing change maps to one FileManager-style zoom step so continuous pinch
-/// does not jump multiple levels on tiny motion.
-const PINCH_ZOOM_STEP_RATIO: f64 = 1.12;
+/// Dolphin's `KItemListController::pinchTriggered()` sensitivity modifier.
+const PINCH_ZOOM_SENSITIVITY: f64 = 0.2;
 
-/// Tracks absolute pinch scale and emits discrete [`ZoomAction`] steps.
+/// Adapts Wayland's gesture-total scale to Dolphin's per-update pinch counter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PinchZoomTracker {
-    /// Scale at which the last zoom step was applied (starts at 1.0 on begin).
-    last_applied_scale: f64,
+    last_scale: f64,
+    counter: f64,
 }
 
 impl PinchZoomTracker {
     pub(crate) fn begin() -> Self {
         Self {
-            last_applied_scale: 1.0,
+            last_scale: 1.0,
+            counter: 0.0,
         }
     }
 
-    /// Consume an absolute pinch scale update; may emit zero or more zoom steps.
+    /// Consume an absolute Wayland pinch scale update.
+    ///
+    /// Qt supplies Dolphin with a per-update `scaleFactor()`, while Wayland's
+    /// protocol scale is cumulative from gesture begin. Dividing consecutive
+    /// totals produces the factor Dolphin adds as `scaleFactor() - 1`. Dolphin
+    /// resets the accumulator after crossing ±0.2 and emits at most one step
+    /// for each update, which also prevents one coalesced event from jumping
+    /// across several icon sizes.
     pub(crate) fn update(&mut self, scale: f64) -> Vec<ZoomAction> {
         if !scale.is_finite() || scale <= 0.0 {
             return Vec::new();
         }
-        let mut actions = Vec::new();
-        let step = PINCH_ZOOM_STEP_RATIO;
-        // Fingers farther apart (scale grows) → zoom in; pinch together → out.
-        while scale / self.last_applied_scale >= step {
-            self.last_applied_scale *= step;
-            actions.push(ZoomAction::In);
+        let factor = scale / self.last_scale;
+        self.last_scale = scale;
+        self.counter += factor - 1.0;
+        if self.counter >= PINCH_ZOOM_SENSITIVITY {
+            self.counter = 0.0;
+            vec![ZoomAction::In]
+        } else if self.counter <= -PINCH_ZOOM_SENSITIVITY {
+            self.counter = 0.0;
+            vec![ZoomAction::Out]
+        } else {
+            Vec::new()
         }
-        while self.last_applied_scale / scale >= step {
-            self.last_applied_scale /= step;
-            actions.push(ZoomAction::Out);
-        }
-        actions
     }
 }
 
@@ -112,16 +116,19 @@ mod pinch_zoom_tests {
     #[test]
     fn pinch_open_emits_zoom_in_steps() {
         let mut tracker = PinchZoomTracker::begin();
-        assert!(tracker.update(1.05).is_empty());
-        assert_eq!(tracker.update(1.12), vec![ZoomAction::In]);
-        assert_eq!(tracker.update(1.12 * 1.12), vec![ZoomAction::In]);
+        assert!(tracker.update(1.11).is_empty());
+        assert_eq!(tracker.update(1.2321), vec![ZoomAction::In]);
+        assert!(tracker.update(1.367631).is_empty());
+        assert_eq!(tracker.update(1.51807041), vec![ZoomAction::In]);
     }
 
     #[test]
     fn pinch_close_emits_zoom_out_steps() {
         let mut tracker = PinchZoomTracker::begin();
-        assert_eq!(tracker.update(1.0 / 1.12), vec![ZoomAction::Out]);
-        assert_eq!(tracker.update(1.0 / (1.12 * 1.12)), vec![ZoomAction::Out]);
+        assert!(tracker.update(0.89).is_empty());
+        assert_eq!(tracker.update(0.7921), vec![ZoomAction::Out]);
+        assert!(tracker.update(0.704969).is_empty());
+        assert_eq!(tracker.update(0.62742241), vec![ZoomAction::Out]);
     }
 
     #[test]
@@ -133,13 +140,18 @@ mod pinch_zoom_tests {
     }
 
     #[test]
-    fn large_pinch_jump_emits_multiple_steps() {
+    fn coalesced_pinch_update_emits_at_most_one_step_like_dolphin() {
         let mut tracker = PinchZoomTracker::begin();
-        // 1.12^3 ≈ 1.405; one large jump should yield three zoom-in steps.
-        assert_eq!(
-            tracker.update(PINCH_ZOOM_STEP_RATIO.powi(3)),
-            vec![ZoomAction::In, ZoomAction::In, ZoomAction::In]
-        );
+        assert_eq!(tracker.update(1.8), vec![ZoomAction::In]);
+        assert!(tracker.update(1.8).is_empty());
+    }
+
+    #[test]
+    fn pinch_counter_cancels_opposite_incremental_motion() {
+        let mut tracker = PinchZoomTracker::begin();
+        assert!(tracker.update(1.15).is_empty());
+        assert!(tracker.update(1.0).is_empty());
+        assert_eq!(tracker.update(0.75), vec![ZoomAction::Out]);
     }
 }
 

@@ -87,7 +87,10 @@ impl ShellScene {
             .pane_state(pane)
             .map(|state| state.view_mode)
             .unwrap_or(ShellViewMode::Icons);
-        let zoom_step = self.pane_zoom_step(pane).unwrap_or(0);
+        let zoom_levels = self
+            .pane_state(pane)
+            .map(|state| state.zoom_levels)
+            .unwrap_or_default();
         if let Some(old_path) = self.pane_state(pane).map(|state| state.path.clone()) {
             self.folder_preview_roles
                 .borrow_mut()
@@ -106,7 +109,7 @@ impl ShellScene {
             ),
         );
         if let Some(state) = self.pane_state_mut(pane) {
-            state.zoom_step = zoom_step;
+            state.zoom_levels = zoom_levels;
         }
         self.invalidate_layout_caches(pane);
         self.visible_slots.clear(pane);
@@ -213,7 +216,7 @@ impl ShellScene {
         pane.view_mode = view_mode;
         pane.scroll_x = 0.0;
         pane.scroll_y = 0.0;
-        self.visible_slots.clear(pane_id);
+        self.invalidate_layout_caches_for_pane(pane_id);
         self.folder_preview_roles
             .borrow_mut()
             .clear_request_lifecycle();
@@ -246,15 +249,18 @@ impl ShellScene {
         action: ZoomAction,
         size: PhysicalSize<u32>,
     ) -> bool {
-        let Some(current_step) = self.pane_zoom_step(pane_id) else {
+        let Some(current_level) = self.pane_zoom_level(pane_id) else {
             return false;
         };
-        let next_step = match action {
-            ZoomAction::In => current_step + 1,
-            ZoomAction::Out => current_step - 1,
-            ZoomAction::Reset => 0,
+        let next_level = match action {
+            ZoomAction::In => current_level + 1,
+            ZoomAction::Out => current_level - 1,
+            ZoomAction::Reset => self
+                .pane_state(self.normalized_pane_id(pane_id))
+                .map(|pane| Self::default_zoom_level_for_view_mode(pane.view_mode))
+                .unwrap_or(FILE_MANAGER_ICONS_ZOOM_LEVEL_DEFAULT),
         };
-        self.set_zoom_step(pane_id, next_step, size, true)
+        self.set_zoom_level(pane_id, next_level, size, true)
     }
 
     fn set_zoom_fraction(
@@ -266,31 +272,29 @@ impl ShellScene {
     ) -> bool {
         let span = (FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER_ZOOM_LEVEL_MIN).max(1) as f32;
         let level = FILE_MANAGER_ZOOM_LEVEL_MIN + (fraction.clamp(0.0, 1.0) * span).round() as i32;
-        self.set_zoom_step(
-            pane_id,
-            level - FILE_MANAGER_ZOOM_LEVEL_DEFAULT,
-            size,
-            clear_scrollbar_drag,
-        )
+        self.set_zoom_level(pane_id, level, size, clear_scrollbar_drag)
     }
 
-    fn set_zoom_step(
+    fn set_zoom_level(
         &mut self,
         pane_id: ShellPaneId,
-        next_step: i32,
+        next_level: i32,
         size: PhysicalSize<u32>,
         clear_scrollbar_drag: bool,
     ) -> bool {
-        let next_step = next_step.clamp(ZOOM_STEP_MIN, ZOOM_STEP_MAX);
-        let Some(old_step) = self.pane_zoom_step(pane_id) else {
+        let next_level = next_level.clamp(
+            FILE_MANAGER_ZOOM_LEVEL_MIN,
+            FILE_MANAGER_ZOOM_LEVEL_MAX,
+        );
+        let Some(old_level) = self.pane_zoom_level(pane_id) else {
             return false;
         };
-        if next_step == old_step {
+        if next_level == old_level {
             return false;
         }
 
         if let Some(pane) = self.pane_state_mut(pane_id) {
-            pane.zoom_step = next_step;
+            pane.set_zoom_level(next_level);
         }
         self.invalidate_layout_caches_for_pane(pane_id);
         self.folder_preview_roles
@@ -309,9 +313,9 @@ impl ShellScene {
         self.clamp_pane_scroll(active_pane, size);
         self.refresh_hover(size);
         fika_log!(
-            "[fika] zoom pane={} step={} percent={} changes={} scroll_x={:.1} scroll_y={:.1}",
+            "[fika] zoom pane={} level={} percent={} changes={} scroll_x={:.1} scroll_y={:.1}",
             active_pane.as_str(),
-            next_step,
+            next_level,
             self.zoom_percent_for_pane(active_pane),
             self.zoom_changes,
             self.panes[active_pane].scroll_x,
