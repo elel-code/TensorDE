@@ -22,6 +22,7 @@ pub(crate) struct ResolvedFileIcon {
 
 pub(crate) struct FileIconResolver {
     cached: HashMap<FileIconPathCacheKey, ResolvedFileIcon>,
+    cached_role_source: HashMap<FileIconRoleCacheKey, ResolvedFileIcon>,
     pending: HashMap<FileIconPathCacheKey, IconResolvePriority>,
     fast_theme: IconThemeResolver,
     fast_profiles: HashMap<FileIconRoleCacheKey, FileIconProfile>,
@@ -72,6 +73,7 @@ impl FileIconResolver {
             .map(|_| request_tx);
         let mut resolver = Self {
             cached: HashMap::new(),
+            cached_role_source: HashMap::new(),
             pending: HashMap::new(),
             fast_theme: IconThemeResolver::default(),
             fast_profiles: HashMap::new(),
@@ -258,6 +260,22 @@ impl FileIconResolver {
         self.resolve_key_fast(key)
     }
 
+    /// Matches Dolphin's `iconName` + QPixmapCache path during an icon-size
+    /// transaction. A semantic role committed before the transaction can be
+    /// rasterized immediately from its retained theme asset. A newly visible
+    /// role stays preliminary until the paused visible-role updater resumes.
+    pub(crate) fn resolve_path_cache_key_for_icon_size_change(
+        &mut self,
+        key: FileIconPathCacheKey,
+    ) -> Option<ResolvedFileIcon> {
+        if let Some(icon) = self.cached.get(&key) {
+            return Some(icon.clone());
+        }
+        let role_source = self.cached_role_source.get(&key.role).cloned();
+        let _ = self.resolve_key(key, IconResolvePriority::Deferred);
+        role_source
+    }
+
     fn resolve_key(
         &mut self,
         key: FileIconPathCacheKey,
@@ -297,8 +315,15 @@ impl FileIconResolver {
             });
         let icon = file_icon_snapshot(profile, key.size_px, &mut self.fast_theme);
         self.pending.remove(&key);
+        self.remember_role_source(&key.role, &icon);
         self.cached.insert(key, icon.clone());
         icon
+    }
+
+    fn remember_role_source(&mut self, role: &FileIconRoleCacheKey, icon: &ResolvedFileIcon) {
+        if icon.path.is_some() || !self.cached_role_source.contains_key(role) {
+            self.cached_role_source.insert(role.clone(), icon.clone());
+        }
     }
 
     pub(crate) fn drain_results(&mut self) -> usize {
@@ -312,6 +337,7 @@ impl FileIconResolver {
         while let Ok(result) = self.result_rx.try_recv() {
             let _ = self.pending.remove(&result.key);
             deferred += 1;
+            self.remember_role_source(&result.key.role, &result.icon);
             self.cached.insert(result.key, result.icon);
         }
         (visible, deferred)
@@ -367,6 +393,7 @@ impl FileIconResolverTestHarness {
         Self {
             resolver: FileIconResolver {
                 cached: HashMap::new(),
+                cached_role_source: HashMap::new(),
                 pending: HashMap::new(),
                 fast_theme: IconThemeResolver::default(),
                 fast_profiles: HashMap::new(),
@@ -412,6 +439,7 @@ mod tests {
         };
         let mut resolver = FileIconResolver {
             cached: HashMap::new(),
+            cached_role_source: HashMap::new(),
             pending: HashMap::from([(key.clone(), IconResolvePriority::Deferred)]),
             fast_theme: IconThemeResolver::default(),
             fast_profiles: HashMap::new(),
@@ -455,6 +483,7 @@ mod tests {
         let (_result_tx, result_rx) = mpsc::channel::<IconResolveResult>();
         let mut resolver = FileIconResolver {
             cached: HashMap::new(),
+            cached_role_source: HashMap::new(),
             pending: HashMap::new(),
             fast_theme: IconThemeResolver::default(),
             fast_profiles: HashMap::new(),
@@ -488,5 +517,56 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn icon_size_change_reuses_semantic_role_source_and_queues_exact_size() {
+        let mut harness = FileIconResolverTestHarness::new();
+        let role = FileIconRoleCacheKey {
+            kind: FileIconKind::Mime {
+                mime: Arc::from("application/x-fika-test"),
+            },
+        };
+        let old_key = FileIconPathCacheKey {
+            role: role.clone(),
+            size_px: 48,
+        };
+        let target_key = FileIconPathCacheKey { role, size_px: 128 };
+        let path = PathBuf::from("/theme/scalable/mimetypes/fika-test.svg");
+
+        assert_eq!(
+            harness.resolver.resolve_path_cache_key(old_key.clone()),
+            None
+        );
+        assert_eq!(harness.next_request_key(), Some(old_key.clone()));
+        harness.complete(old_key, Some(path.clone()));
+        assert_eq!(harness.resolver.drain_results(), 1);
+
+        let reused = harness
+            .resolver
+            .resolve_path_cache_key_for_icon_size_change(target_key.clone());
+        assert_eq!(reused.and_then(|icon| icon.path), Some(path));
+        assert_eq!(harness.next_request_key(), Some(target_key));
+    }
+
+    #[test]
+    fn icon_size_change_keeps_an_unknown_role_preliminary_and_queues_exact_size() {
+        let mut harness = FileIconResolverTestHarness::new();
+        let target_key = FileIconPathCacheKey {
+            role: FileIconRoleCacheKey {
+                kind: FileIconKind::Mime {
+                    mime: Arc::from("application/x-fika-new-visible-role"),
+                },
+            },
+            size_px: 128,
+        };
+
+        assert_eq!(
+            harness
+                .resolver
+                .resolve_path_cache_key_for_icon_size_change(target_key.clone()),
+            None
+        );
+        assert_eq!(harness.next_request_key(), Some(target_key));
     }
 }

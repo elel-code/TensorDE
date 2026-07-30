@@ -176,11 +176,11 @@ impl<'a> IconFrameBuilder<'a> {
         }
         let resolved = if self.icon_size_update_pending {
             // Dolphin invalidates each visible widget's pixmap cache on every
-            // icon-size change. Only preview/role generation waits for the
-            // 300 ms updater timer: a stable iconName is rasterized at the new
-            // size immediately. Resolve the already-known role synchronously
-            // instead of falling back to a preliminary icon for this size.
-            Some(self.resolver.resolve_path_cache_key_fast(path_key))
+            // icon-size change. A stable iconName is rasterized at the new
+            // size immediately; a newly visible unresolved role keeps its
+            // preliminary icon until the 300 ms updater timer expires.
+            self.resolver
+                .resolve_path_cache_key_for_icon_size_change(path_key)
         } else if self.role_updates_paused {
             self.resolver.cached_path_cache_key(&path_key)
         } else if self.sync_resolve_budget > 0 {
