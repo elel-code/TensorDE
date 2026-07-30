@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     Error, REQUIRED_SLANG_VERSION, Result, SPIRV_PROFILE, ShaderContract, ShaderStage,
-    VULKAN_TARGET_ENVIRONMENT,
+    VULKAN_TARGET_ENVIRONMENT, input_attachment,
 };
 
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
@@ -53,6 +53,31 @@ impl SlangCompiler {
     }
 
     pub fn compile(&self, request: &ShaderCompileRequest) -> Result<CompileReport> {
+        self.compile_with_legalization(request, false)
+    }
+
+    /// Compiles a native resource-heap storage-image proxy and legalizes it to
+    /// a strictly validated Vulkan input attachment.
+    pub fn compile_input_attachment(
+        &self,
+        request: &ShaderCompileRequest,
+    ) -> Result<CompileReport> {
+        if request.stage != ShaderStage::Fragment
+            || !request.contract.emits_native_descriptor_heap()
+        {
+            return Err(Error::SpirvContract(
+                "native input attachments require a fragment-stage descriptor-heap contract"
+                    .to_owned(),
+            ));
+        }
+        self.compile_with_legalization(request, true)
+    }
+
+    fn compile_with_legalization(
+        &self,
+        request: &ShaderCompileRequest,
+        input_attachment: bool,
+    ) -> Result<CompileReport> {
         self.check_tools()?;
         if let Some(parent) = request.output.parent() {
             fs::create_dir_all(parent)
@@ -64,11 +89,31 @@ impl SlangCompiler {
         request
             .contract
             .validate(&reflection, &request.entry_point, request.stage)?;
+        if input_attachment {
+            let proxy = fs::read(&temporary.spirv).map_err(|error| {
+                Error::io(
+                    "read input-attachment proxy SPIR-V",
+                    &temporary.spirv,
+                    error,
+                )
+            })?;
+            let lowered = input_attachment::legalize_native_input_attachment(&proxy)?;
+            fs::write(&temporary.spirv, lowered).map_err(|error| {
+                Error::io(
+                    "write legalized input-attachment SPIR-V",
+                    &temporary.spirv,
+                    error,
+                )
+            })?;
+        }
         self.validate_spirv(&temporary.spirv)?;
         let bytes = fs::read(&temporary.spirv)
             .map_err(|error| Error::io("read generated SPIR-V", &temporary.spirv, error))?;
         validate_word_length(&bytes)?;
         validate_descriptor_contract(&bytes, request.contract)?;
+        if input_attachment {
+            input_attachment::validate_native_input_attachment(&bytes)?;
+        }
         fs::rename(&temporary.spirv, &request.output)
             .map_err(|error| Error::io("install generated SPIR-V", &request.output, error))?;
         Ok(CompileReport {

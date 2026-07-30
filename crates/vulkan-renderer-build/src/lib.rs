@@ -7,6 +7,7 @@ mod compiler;
 mod contract;
 mod error;
 mod heap_lowering;
+mod input_attachment;
 mod reflection;
 mod stage;
 mod transpile;
@@ -17,6 +18,7 @@ pub use error::{Error, Result};
 pub use heap_lowering::{
     DescriptorHeapBinding, DescriptorHeapBindingKind, DescriptorHeapSlang,
     lower_slang_bindings_to_descriptor_heap, lower_slang_bindings_to_descriptor_heap_at_offset,
+    lower_slang_input_attachment_to_descriptor_heap_at_offset,
 };
 pub use reflection::{
     ShaderInterface, ShaderIoDirection, ShaderScalarType, ShaderStageIo, ShaderUniformBuffer,
@@ -26,7 +28,7 @@ pub use stage::ShaderStage;
 pub use transpile::{GlslToSlangRequest, SlangSourceReport};
 
 /// Exact compiler release used to produce checked-in TensorDE shader assets.
-pub const REQUIRED_SLANG_VERSION: &str = "v2026.13.1";
+pub const REQUIRED_SLANG_VERSION: &str = "2026.14";
 
 /// SPIR-V capability profile emitted by the standard compiler path.
 pub const SPIRV_PROFILE: &str = "spirv_1_5";

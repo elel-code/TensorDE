@@ -7,6 +7,7 @@ use std::{env, fs};
 use vulkan_renderer_build::{
     DescriptorHeapBinding, DescriptorHeapBindingKind, ShaderCompileRequest, ShaderContract,
     ShaderStage, SlangCompiler, lower_slang_bindings_to_descriptor_heap_at_offset,
+    lower_slang_input_attachment_to_descriptor_heap_at_offset,
 };
 
 pub(super) struct NativeSceneStage {
@@ -38,6 +39,54 @@ pub(super) fn compile_native_scene_vertex(
         ShaderStage::Vertex,
         push_base_bytes,
     )
+}
+
+pub(super) fn compile_native_scene_input_attachment(
+    shader_dir: &Path,
+    key: &str,
+    source: &str,
+    push_base_bytes: u32,
+) -> NativeSceneStage {
+    let safe_name = key
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    let source_path = shader_dir.join(format!("{safe_name}.input.frag.source.slang"));
+    let native_path = shader_dir.join(format!("{safe_name}.input.frag.slang"));
+    let spirv_path = shader_dir.join(format!("{safe_name}.input.frag.spv"));
+    fs::write(&source_path, source).expect("write built-in input-attachment source");
+    let lowered =
+        lower_slang_input_attachment_to_descriptor_heap_at_offset(source, "main", push_base_bytes)
+            .unwrap_or_else(|error| {
+                panic!("lower built-in input-attachment shader {key}: {error}")
+            });
+    assert_eq!(
+        lowered.bindings.len(),
+        1,
+        "built-in input-attachment shader must expose one native binding"
+    );
+    assert_eq!(
+        lowered.bindings[0].kind,
+        DescriptorHeapBindingKind::InputAttachment,
+        "built-in local-read binding must remain typed as an input attachment"
+    );
+    fs::write(&native_path, &lowered.source)
+        .expect("write native built-in input-attachment proxy source");
+    SlangCompiler::from_environment()
+        .compile_input_attachment(&ShaderCompileRequest {
+            source: native_path,
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Fragment,
+            output: spirv_path.clone(),
+            contract: ShaderContract::descriptor_heap(u64::from(lowered.push_constant_bytes)),
+        })
+        .unwrap_or_else(|error| panic!("compile built-in input-attachment shader {key}: {error}"));
+    NativeSceneStage {
+        spirv: spirv_path,
+        source: source_path,
+        push_constant_bytes: lowered.push_constant_bytes,
+        bindings: lowered.bindings,
+    }
 }
 
 fn compile_native_scene_stage(
@@ -500,6 +549,7 @@ pub(super) fn builtin_binding_expressions(bindings: &[DescriptorHeapBinding]) ->
         .iter()
         .map(|binding| {
             let kind = match binding.kind {
+                DescriptorHeapBindingKind::InputAttachment => "InputAttachment",
                 DescriptorHeapBindingKind::SampledImage => "SampledImage",
                 DescriptorHeapBindingKind::StorageImage => "StorageImage",
                 DescriptorHeapBindingKind::Sampler => "Sampler",

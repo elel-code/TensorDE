@@ -7,13 +7,8 @@
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinSceneDescriptorHeapMode {
-    Mapped,
-    Native,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSceneDescriptorBindingKind {
+    InputAttachment,
     SampledImage,
     StorageImage,
     Sampler,

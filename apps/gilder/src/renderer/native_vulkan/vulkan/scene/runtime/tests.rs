@@ -58,7 +58,7 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         index_count: 6,
         instance_count: 1,
     };
-    let layout = pipeline::ScenePipelineDescriptorLayout {
+    let layout = descriptor_layout::ScenePipelineDescriptorLayout {
         sampled_slots: vec![1, 3],
         input_attachment_slots: vec![7],
         material_uniform_enabled: true,

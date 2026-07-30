@@ -2,6 +2,15 @@
 
     const SPIRV_OP_VARIABLE: u16 = 59;
     const SPIRV_OP_DECORATE: u16 = 71;
+    const SPIRV_OP_CAPABILITY: u16 = 17;
+    const SPIRV_OP_TYPE_IMAGE: u16 = 25;
+    const SPIRV_CAPABILITY_INPUT_ATTACHMENT: u32 = 40;
+    const SPIRV_CAPABILITY_DESCRIPTOR_HEAP_EXT: u32 = 5_128;
+    const SPIRV_BUILT_IN_RESOURCE_HEAP_EXT: u32 = 5_123;
+    const SPIRV_DIM_SUBPASS_DATA: u32 = 6;
+    const SPIRV_DECORATION_BUILT_IN: u32 = 11;
+    const SPIRV_DECORATION_BINDING: u32 = 33;
+    const SPIRV_DECORATION_DESCRIPTOR_SET: u32 = 34;
     const SPIRV_STORAGE_INPUT: u32 = 1;
     const SPIRV_STORAGE_OUTPUT: u32 = 3;
     const SPIRV_DECORATION_LOCATION: u32 = 30;
@@ -152,10 +161,6 @@
                 }));
             }
             assert_spirv_stage_location(shader.fragment_spirv, SPIRV_STORAGE_INPUT, 1);
-            assert_eq!(
-                shader.fragment_descriptor_heap_mode,
-                BuiltinSceneDescriptorHeapMode::Native
-            );
             assert!(shader.fragment_bindings.iter().any(|binding| {
                 binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer
             }));
@@ -179,12 +184,6 @@
     #[test]
     fn every_builtin_fragment_uses_typed_native_descriptor_heap_push_data() {
         for shader in native_vulkan_scene_shader_catalog() {
-            assert_eq!(
-                shader.fragment_descriptor_heap_mode,
-                BuiltinSceneDescriptorHeapMode::Native,
-                "{}",
-                shader.key
-            );
             assert!(!shader.fragment_bindings.is_empty(), "{}", shader.key);
             assert_eq!(
                 shader.fragment_push_constant_bytes as usize,
@@ -340,6 +339,15 @@
             .local_read_shader
             .expect("exact-pixel input-attachment variant");
         assert!(!variant.fragment_spirv.is_empty());
+        assert_eq!(variant.push_constant_bytes, 12);
+        assert_eq!(
+            variant.bindings,
+            &[BuiltinSceneDescriptorBinding {
+                kind: BuiltinSceneDescriptorBindingKind::InputAttachment,
+                register: 64,
+                push_offset: passthrough.fragment_push_constant_bytes,
+            }]
+        );
         assert_eq!(
             variant.input_attachments,
             &[BuiltinSceneInputAttachment {
@@ -349,6 +357,31 @@
             }]
         );
         assert_eq!(variant.color_output_locations, &[0]);
+        let instructions = spirv_instructions(variant.fragment_spirv);
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_CAPABILITY
+                && instruction.get(1) == Some(&SPIRV_CAPABILITY_INPUT_ATTACHMENT)
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_CAPABILITY
+                && instruction.get(1) == Some(&SPIRV_CAPABILITY_DESCRIPTOR_HEAP_EXT)
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_TYPE_IMAGE
+                && instruction.get(3) == Some(&SPIRV_DIM_SUBPASS_DATA)
+        }));
+        assert!(instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                && instruction.get(2) == Some(&SPIRV_DECORATION_BUILT_IN)
+                && instruction.get(3) == Some(&SPIRV_BUILT_IN_RESOURCE_HEAP_EXT)
+        }));
+        assert!(!instructions.iter().any(|instruction| {
+            (instruction[0] & 0xffff) as u16 == SPIRV_OP_DECORATE
+                && matches!(
+                    instruction.get(2),
+                    Some(&SPIRV_DECORATION_BINDING) | Some(&SPIRV_DECORATION_DESCRIPTOR_SET)
+                )
+        }));
         assert!(native_vulkan_scene_shader_for_key("we/genericimage4")
             .expect("generic image shader")
             .local_read_shader

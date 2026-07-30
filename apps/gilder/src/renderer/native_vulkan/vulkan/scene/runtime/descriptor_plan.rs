@@ -97,6 +97,7 @@ pub(super) fn scene_descriptor_plan_inputs(
                 + layout.input_attachment_resource_offset(),
             sampler_descriptor_base: index * layout.sampler_count_per_draw(),
             native_descriptor_push: None,
+            disabled_native_descriptor_push: None,
             skinning_byte_offset,
             skinning_byte_count,
             scissor: None,

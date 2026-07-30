@@ -384,13 +384,22 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
     let bindings = lowered
         .bindings
         .into_iter()
-        .map(|binding| WeIrShaderBinding {
-            kind: lower_binding_kind(binding.kind),
-            register: binding.register,
-            descriptor_count: 1,
-            push_offset: binding.push_offset,
+        .map(|binding| {
+            let kind = lower_binding_kind(binding.kind).ok_or_else(|| {
+                shader_error(
+                    &input.spec.program_key,
+                    stage_name,
+                    "authored shader unexpectedly exposes an engine-owned input attachment",
+                )
+            })?;
+            Ok(WeIrShaderBinding {
+                kind,
+                register: binding.register,
+                descriptor_count: 1,
+                push_offset: binding.push_offset,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, WeIngestError>>()?;
     Ok(WeIrShaderProgram {
         program_key: input.spec.program_key.clone(),
         stage: input.ir_stage,
@@ -486,13 +495,14 @@ fn read_spirv_words(
         .collect())
 }
 
-fn lower_binding_kind(kind: DescriptorHeapBindingKind) -> WeIrShaderBindingKind {
+fn lower_binding_kind(kind: DescriptorHeapBindingKind) -> Option<WeIrShaderBindingKind> {
     match kind {
-        DescriptorHeapBindingKind::SampledImage => WeIrShaderBindingKind::SampledImage,
-        DescriptorHeapBindingKind::StorageImage => WeIrShaderBindingKind::StorageImage,
-        DescriptorHeapBindingKind::Sampler => WeIrShaderBindingKind::Sampler,
-        DescriptorHeapBindingKind::UniformBuffer => WeIrShaderBindingKind::UniformBuffer,
-        DescriptorHeapBindingKind::StorageBuffer => WeIrShaderBindingKind::StorageBuffer,
+        DescriptorHeapBindingKind::InputAttachment => None,
+        DescriptorHeapBindingKind::SampledImage => Some(WeIrShaderBindingKind::SampledImage),
+        DescriptorHeapBindingKind::StorageImage => Some(WeIrShaderBindingKind::StorageImage),
+        DescriptorHeapBindingKind::Sampler => Some(WeIrShaderBindingKind::Sampler),
+        DescriptorHeapBindingKind::UniformBuffer => Some(WeIrShaderBindingKind::UniformBuffer),
+        DescriptorHeapBindingKind::StorageBuffer => Some(WeIrShaderBindingKind::StorageBuffer),
     }
 }
 

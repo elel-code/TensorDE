@@ -59,9 +59,20 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub input_attachment_resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub native_descriptor_push: Option<SceneNativeDescriptorPush>,
+    pub disabled_native_descriptor_push: Option<SceneNativeDescriptorPush>,
     pub skinning_byte_offset: u64,
     pub skinning_byte_count: u64,
     pub scissor: Option<SceneGpuScissor>,
+}
+
+impl SceneGpuDrawCommand {
+    pub(super) fn active_native_descriptor_push(&self) -> Option<&SceneNativeDescriptorPush> {
+        if self.disabled_pipeline_index == Some(self.pipeline_index) {
+            self.disabled_native_descriptor_push.as_ref()
+        } else {
+            self.native_descriptor_push.as_ref()
+        }
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
@@ -189,7 +200,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                 })?
                 .pipeline;
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            if let Some(push) = &draw.native_descriptor_push {
+            if let Some(push) = draw.active_native_descriptor_push() {
                 let bytes = push.bytes();
                 let range = vk::HostAddressRangeConstEXT::builder().address(bytes);
                 let info = vk::PushDataInfoEXT::builder().offset(0).data(range);

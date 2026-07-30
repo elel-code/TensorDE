@@ -16,18 +16,11 @@ use crate::engine::scene::{
     SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
-    BuiltinSceneDescriptorHeapMode, BuiltinSceneLocalReadShader,
-    native_vulkan_scene_shader_for_key,
+    BuiltinSceneLocalReadShader, native_vulkan_scene_shader_for_key,
 };
-use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
-};
+use crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot;
 
 use super::effect_target::SceneEffectTargetImagePlan;
-pub(in crate::renderer::native_vulkan) use super::descriptor_layout::{
-    ScenePipelineDescriptorLayout,
-};
 use super::descriptor_layout::{
     ScenePipelineShaderDescriptorAccess, scene_passthrough_descriptor_access,
     scene_pipeline_shader_descriptor_access,
@@ -43,7 +36,6 @@ use super::shader_program::{
 
 mod blend;
 mod creation;
-mod descriptor_mapping;
 mod diagnostics;
 mod graphics;
 mod local_read_key;
@@ -52,7 +44,6 @@ mod samples;
 mod shader_module;
 
 pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
-use descriptor_mapping::scene_fragment_descriptor_mappings;
 use graphics::create_graphics_pipeline;
 use local_read_key::{ScenePipelineLocalReadRole, local_read_pipeline_role};
 use samples::ScenePipelineSamples;

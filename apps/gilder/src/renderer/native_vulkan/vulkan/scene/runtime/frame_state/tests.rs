@@ -413,6 +413,7 @@
             input_attachment_resource_descriptor_base: 0,
             sampler_descriptor_base: 0,
             native_descriptor_push: None,
+            disabled_native_descriptor_push: None,
             skinning_byte_offset: 0,
             skinning_byte_count: 0,
             scissor: None,

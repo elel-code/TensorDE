@@ -6,11 +6,128 @@ use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum DescriptorHeapBindingKind {
+    InputAttachment,
     SampledImage,
     StorageImage,
     Sampler,
     UniformBuffer,
     StorageBuffer,
+}
+
+/// Lowers one exact-pixel fragment input into a native resource-heap proxy.
+///
+/// Slang 2026.14 does not allow `SubpassInput<T>` as a `DescriptorHandle<T>`
+/// argument. The returned source therefore uses a storage-image proxy with
+/// the same `OpImageRead` operation. [`crate::SlangCompiler::compile_input_attachment`]
+/// legalizes and strictly validates the final SPIR-V `SubpassData` type.
+pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
+    source: &str,
+    entry_point: &str,
+    push_base_bytes: u32,
+) -> Result<DescriptorHeapSlang> {
+    if !push_base_bytes.is_multiple_of(4) {
+        return Err(Error::SourceLowering(
+            "descriptor push base must be a multiple of four bytes".to_owned(),
+        ));
+    }
+    let mut retained = Vec::new();
+    let mut input = None;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some((declaration, register)) = trimmed.split_once(" : register(t")
+            && declaration.starts_with("SubpassInput<")
+        {
+            if input.is_some() {
+                return Err(Error::SourceLowering(
+                    "native input-attachment shader exposes more than one input".to_owned(),
+                ));
+            }
+            let register = register.strip_suffix(");").ok_or_else(|| {
+                Error::SourceLowering(format!(
+                    "invalid input-attachment register declaration `{trimmed}`"
+                ))
+            })?;
+            let register = register.parse::<u32>().map_err(|error| {
+                Error::SourceLowering(format!(
+                    "invalid input-attachment register `{register}`: {error}"
+                ))
+            })?;
+            let split = declaration.rfind(char::is_whitespace).ok_or_else(|| {
+                Error::SourceLowering(format!(
+                    "input-attachment declaration has no name: {trimmed}"
+                ))
+            })?;
+            let source_type = declaration[..split].trim();
+            let source_name = declaration[split..].trim();
+            if source_type != "SubpassInput<float4>" || source_name.is_empty() {
+                return Err(Error::SourceLowering(format!(
+                    "unsupported native input-attachment declaration `{trimmed}`"
+                )));
+            }
+            input = Some((register, source_name.to_owned(), source_type.to_owned()));
+            continue;
+        }
+        if trimmed.starts_with("SubpassInput") || trimmed.contains(": register(") {
+            return Err(Error::SourceLowering(format!(
+                "native input-attachment shader exposes an unsupported resource `{trimmed}`"
+            )));
+        }
+        retained.push(line.to_owned());
+    }
+    let Some((register, source_name, source_type)) = input else {
+        return Err(Error::SourceLowering(
+            "native input-attachment shader exposes no SubpassInput<float4>".to_owned(),
+        ));
+    };
+    let load = format!("{source_name}.SubpassLoad()");
+    let load_count = retained
+        .iter()
+        .map(|line| line.matches(&load).count())
+        .sum::<usize>();
+    if load_count != 1 {
+        return Err(Error::SourceLowering(format!(
+            "native input attachment `{source_name}` must have exactly one SubpassLoad, found {load_count}"
+        )));
+    }
+    let mut body = retained
+        .join("\n")
+        .replace(&load, &format!("gilderHeap_{source_name}()[int2(0, 0)]"));
+    if body.contains("SubpassInput") || body.contains("SubpassLoad") {
+        return Err(Error::SourceLowering(
+            "native input-attachment lowering left an opaque subpass operation".to_owned(),
+        ));
+    }
+    let entry_offset = entry_definition_offset(&body, entry_point)?;
+    let push_offset = push_base_bytes;
+    let push_constant_bytes = push_base_bytes
+        .checked_add(4)
+        .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
+    let mut prelude = String::from("struct GilderDescriptorHeapPush\n{\n");
+    if push_base_bytes != 0 {
+        prelude.push_str(&format!(
+            "    uint reservedPipelineWords[{}];\n",
+            push_base_bytes / 4
+        ));
+    }
+    prelude.push_str("    uint binding0Index;\n};\n");
+    prelude.push_str(
+        "[[vk::push_constant]] ConstantBuffer<GilderDescriptorHeapPush> gilderHeapPush;\n\n",
+    );
+    prelude.push_str(&format!(
+        "RWTexture2D<float4> gilderHeap_{source_name}()\n{{\n    return DescriptorHandle<RWTexture2D<float4>>(gilderHeapPush.binding0Index);\n}}\n\n"
+    ));
+    body.insert_str(entry_offset, &prelude);
+    Ok(DescriptorHeapSlang {
+        source: body,
+        push_constant_bytes,
+        bindings: vec![DescriptorHeapBinding {
+            kind: DescriptorHeapBindingKind::InputAttachment,
+            register,
+            push_offset,
+            source_name,
+            source_type,
+        }],
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -21,7 +21,12 @@ impl InputAttachmentFragmentSource {
         &self.source
     }
 
-    pub(crate) fn catalog_expression(&self, path: &Path) -> String {
+    pub(crate) fn catalog_expression(
+        &self,
+        path: &Path,
+        push_constant_bytes: u32,
+        bindings: &str,
+    ) -> String {
         let inputs = self
             .inputs
             .iter()
@@ -39,7 +44,7 @@ impl InputAttachmentFragmentSource {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "Some(BuiltinSceneLocalReadShader {{ fragment_spirv: vulkan_renderer::include_spirv!({:?}), input_attachments: &[{inputs}], color_output_locations: &[{outputs}] }})",
+            "Some(BuiltinSceneLocalReadShader {{ fragment_spirv: vulkan_renderer::include_spirv!({:?}), push_constant_bytes: {push_constant_bytes}, bindings: &[{bindings}], input_attachments: &[{inputs}], color_output_locations: &[{outputs}] }})",
             path.to_str()
                 .expect("built-in input-attachment fragment shader path must be UTF-8")
         )
@@ -57,6 +62,8 @@ pub struct BuiltinSceneInputAttachment {
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinSceneLocalReadShader {
     pub fragment_spirv: &'static [u32],
+    pub push_constant_bytes: u32,
+    pub bindings: &'static [BuiltinSceneDescriptorBinding],
     pub input_attachments: &'static [BuiltinSceneInputAttachment],
     pub color_output_locations: &'static [u32],
 }
@@ -68,11 +75,15 @@ pub(crate) fn input_attachment_fragment_source(
     flat_passthrough_family: bool,
 ) -> Option<InputAttachmentFragmentSource> {
     flat_passthrough_family.then(|| {
-        let source = r#"#version 450
-layout(input_attachment_index = 0, set = 0, binding = 64) uniform subpassInput g_Input0;
-layout(location = 0) out vec4 o_Color;
-void main() {
-    o_Color = subpassLoad(g_Input0);
+        let source = r#"SubpassInput<float4> g_Input0 : register(t64);
+struct FragmentOutput
+{
+    float4 color : SV_TARGET0;
+};
+FragmentOutput main()
+{
+    FragmentOutput output = { g_Input0.SubpassLoad() };
+    return output;
 }
 "#
         .to_owned();

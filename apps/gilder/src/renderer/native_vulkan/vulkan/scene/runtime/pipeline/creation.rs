@@ -9,7 +9,6 @@ struct ScenePipelineProgramSelection<'a> {
     fragment_entry_point: &'a str,
     vertex_spirv: &'a [u32],
     fragment_spirv: &'a [u32],
-    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
     fragment_local_read_shader: Option<&'static BuiltinSceneLocalReadShader>,
     vertex_attributes: Option<Vec<SceneVertexAttributePlan>>,
 }
@@ -28,7 +27,6 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
@@ -135,11 +133,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             program.fragment_spirv,
             program.vertex_entry_point,
             program.fragment_entry_point,
-            program.fragment_descriptor_heap_mode,
             program.vertex_attributes.as_deref(),
-            descriptor_heap_plan,
-            descriptor_layout,
-            &descriptor_access,
             local_read_metadata.as_ref(),
             key.blend,
             key.cull_mode,
@@ -213,7 +207,6 @@ fn select_scene_pipeline_program(
                     })?,
                     vertex_spirv: vertex.spirv,
                     fragment_spirv: authored.fragment_spirv(storage),
-                    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode::Native,
                     fragment_local_read_shader: None,
                     vertex_attributes: vertex.attributes,
                 })
@@ -226,7 +219,6 @@ fn select_scene_pipeline_program(
                     fragment_entry_point: "main",
                     vertex_spirv: vertex.spirv,
                     fragment_spirv: authored.fragment_spirv(storage),
-                    fragment_descriptor_heap_mode: shader.fragment_descriptor_heap_mode,
                     fragment_local_read_shader: shader.local_read_shader.as_ref(),
                     vertex_attributes: vertex.attributes,
                 })
@@ -242,7 +234,6 @@ fn select_scene_pipeline_program(
                 fragment_entry_point: "main",
                 vertex_spirv: vertex.spirv,
                 fragment_spirv: passthrough.fragment_spirv,
-                fragment_descriptor_heap_mode: passthrough.fragment_descriptor_heap_mode,
                 fragment_local_read_shader: passthrough.local_read_shader.as_ref(),
                 vertex_attributes: vertex.attributes,
             })
@@ -302,11 +293,7 @@ fn create_scene_pipeline(
     fragment_spirv: &[u32],
     vertex_entry_point: &str,
     fragment_entry_point: &str,
-    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
     vertex_attributes: Option<&[SceneVertexAttributePlan]>,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
-    descriptor_access: &ScenePipelineShaderDescriptorAccess,
     local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
@@ -326,19 +313,11 @@ fn create_scene_pipeline(
     let result = (|| -> Result<vk::Pipeline, String> {
         let local_read_fragment_spirv = local_read_metadata
             .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv);
-        let (fragment_spirv, fragment_entry_point, fragment_descriptor_heap_mode) =
+        let (fragment_spirv, fragment_entry_point) =
             if let Some(local_read_fragment_spirv) = local_read_fragment_spirv {
-                (
-                    local_read_fragment_spirv,
-                    "main",
-                    BuiltinSceneDescriptorHeapMode::Mapped,
-                )
+                (local_read_fragment_spirv, "main")
             } else {
-                (
-                    fragment_spirv,
-                    fragment_entry_point,
-                    fragment_descriptor_heap_mode,
-                )
+                (fragment_spirv, fragment_entry_point)
             };
         let fragment_entry = std::ffi::CString::new(fragment_entry_point)
             .map_err(|_| "scene fragment entry point contains an embedded NUL".to_owned())?;
@@ -350,11 +329,7 @@ fn create_scene_pipeline(
             fragment_module,
             vertex_entry.as_bytes_with_nul(),
             fragment_entry.as_bytes_with_nul(),
-            fragment_descriptor_heap_mode,
             vertex_attributes,
-            descriptor_heap_plan,
-            descriptor_layout,
-            descriptor_access,
             local_read_metadata,
             blend,
             cull_mode,
@@ -383,11 +358,7 @@ fn create_scene_pipeline_with_modules(
     fragment_module: vk::ShaderModule,
     vertex_entry_point: &[u8],
     fragment_entry_point: &[u8],
-    fragment_descriptor_heap_mode: BuiltinSceneDescriptorHeapMode,
     vertex_attributes: Option<&[SceneVertexAttributePlan]>,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    descriptor_layout: &ScenePipelineDescriptorLayout,
-    descriptor_access: &ScenePipelineShaderDescriptorAccess,
     local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
@@ -404,23 +375,11 @@ fn create_scene_pipeline_with_modules(
         .name(vertex_entry_point)
         .build();
 
-    let fragment_mappings = scene_fragment_descriptor_mappings(
-        fragment_descriptor_heap_mode,
-        descriptor_heap_plan,
-        descriptor_layout,
-        descriptor_access,
-        local_read_metadata,
-    )?;
-    let mut fragment_mapping_info =
-        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(&fragment_mappings)?;
-    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+    let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::FRAGMENT)
         .module(fragment_module)
         .name(fragment_entry_point)
         .build();
-    if !fragment_mappings.is_empty() {
-        fragment_stage.next = &mut fragment_mapping_info as *mut _ as *const std::ffi::c_void;
-    }
     create_graphics_pipeline(
         device,
         target_format,
@@ -458,10 +417,6 @@ mod tests {
         assert_eq!(selection.fragment_key, selection.vertex_key);
         assert_eq!(selection.vertex_entry_point, "vertexMain");
         assert_eq!(selection.fragment_entry_point, "fragmentMain");
-        assert_eq!(
-            selection.fragment_descriptor_heap_mode,
-            BuiltinSceneDescriptorHeapMode::Native
-        );
         assert_eq!(
             selection.vertex_attributes.expect("typed attributes"),
             vec![
