@@ -132,6 +132,7 @@
 
         save_view_mode_setting(&settings_path, ShellViewMode::Details).unwrap();
         save_show_hidden_setting(&settings_path, true).unwrap();
+        save_preview_size_settings(&settings_path, [Some(96), Some(80), Some(32)]).unwrap();
         save_dark_mode_setting(&settings_path, true).unwrap();
         save_background_effect_settings(&settings_path, true, 0.78).unwrap();
         let loaded = load_app_settings(&settings_path).unwrap();
@@ -139,6 +140,9 @@
         assert_eq!(loaded.places_sidebar.visible, Some(true));
         assert_eq!(loaded.view.mode, Some(ShellViewMode::Details));
         assert_eq!(loaded.view.show_hidden, Some(true));
+        assert_eq!(loaded.view.icons_preview_size, Some(96));
+        assert_eq!(loaded.view.compact_preview_size, Some(80));
+        assert_eq!(loaded.view.details_preview_size, Some(32));
         assert_eq!(loaded.appearance.dark_mode, Some(true));
         assert_eq!(loaded.appearance.background_blur, Some(true));
         assert_eq!(loaded.appearance.background_opacity, Some(0.78));
@@ -150,6 +154,10 @@
             startup_view_mode(ShellViewMode::Compact, true, &loaded),
             ShellViewMode::Compact
         );
+        let zoom_levels = startup_zoom_levels(&loaded);
+        assert_eq!(zoom_levels.get(ShellViewMode::Icons), 6);
+        assert_eq!(zoom_levels.get(ShellViewMode::Compact), 5);
+        assert_eq!(zoom_levels.get(ShellViewMode::Details), 2);
         assert!(startup_show_hidden(&loaded));
         assert!(startup_places_visible(&loaded));
         assert!(startup_dark_mode(&loaded));

@@ -10,6 +10,9 @@ const PLACES_SIDEBAR_WIDTH_KEY: &str = "places.sidebar.width";
 const PLACES_SIDEBAR_VISIBLE_KEY: &str = "places.sidebar.visible";
 const VIEW_MODE_KEY: &str = "view.mode";
 const VIEW_SHOW_HIDDEN_KEY: &str = "view.show_hidden";
+const VIEW_ICONS_PREVIEW_SIZE_KEY: &str = "view.icons.preview_size";
+const VIEW_COMPACT_PREVIEW_SIZE_KEY: &str = "view.compact.preview_size";
+const VIEW_DETAILS_PREVIEW_SIZE_KEY: &str = "view.details.preview_size";
 const APPEARANCE_DARK_MODE_KEY: &str = "appearance.dark_mode";
 const APPEARANCE_BACKGROUND_BLUR_KEY: &str = "appearance.background_blur";
 const APPEARANCE_BACKGROUND_OPACITY_KEY: &str = "appearance.background_opacity";
@@ -31,6 +34,9 @@ pub struct PlacesSidebarSettings {
 pub struct ViewSettings {
     pub mode: Option<ViewMode>,
     pub show_hidden: Option<bool>,
+    pub icons_preview_size: Option<u16>,
+    pub compact_preview_size: Option<u16>,
+    pub details_preview_size: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -106,6 +112,21 @@ pub fn parse_app_settings(contents: &str) -> AppSettings {
                     settings.view.show_hidden = Some(show_hidden);
                 }
             }
+            VIEW_ICONS_PREVIEW_SIZE_KEY => {
+                if let Some(size) = parse_u16(value) {
+                    settings.view.icons_preview_size = Some(size);
+                }
+            }
+            VIEW_COMPACT_PREVIEW_SIZE_KEY => {
+                if let Some(size) = parse_u16(value) {
+                    settings.view.compact_preview_size = Some(size);
+                }
+            }
+            VIEW_DETAILS_PREVIEW_SIZE_KEY => {
+                if let Some(size) = parse_u16(value) {
+                    settings.view.details_preview_size = Some(size);
+                }
+            }
             APPEARANCE_DARK_MODE_KEY => {
                 if let Some(dark_mode) = parse_bool(value) {
                     settings.appearance.dark_mode = Some(dark_mode);
@@ -141,6 +162,15 @@ pub fn app_settings_tsv(settings: &AppSettings) -> String {
     if let Some(show_hidden) = settings.view.show_hidden {
         lines.push(format!("{VIEW_SHOW_HIDDEN_KEY}\t{show_hidden}"));
     }
+    if let Some(size) = settings.view.icons_preview_size {
+        lines.push(format!("{VIEW_ICONS_PREVIEW_SIZE_KEY}\t{size}"));
+    }
+    if let Some(size) = settings.view.compact_preview_size {
+        lines.push(format!("{VIEW_COMPACT_PREVIEW_SIZE_KEY}\t{size}"));
+    }
+    if let Some(size) = settings.view.details_preview_size {
+        lines.push(format!("{VIEW_DETAILS_PREVIEW_SIZE_KEY}\t{size}"));
+    }
     if let Some(dark_mode) = settings.appearance.dark_mode {
         lines.push(format!("{APPEARANCE_DARK_MODE_KEY}\t{dark_mode}"));
     }
@@ -174,6 +204,10 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+fn parse_u16(value: &str) -> Option<u16> {
+    value.trim().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +229,9 @@ places.sidebar.width\t276.5
 places.sidebar.visible\tfalse
 view.mode\tdetails
 view.show_hidden\ttrue
+view.icons.preview_size\t80
+view.compact.preview_size\t64
+view.details.preview_size\t32
 appearance.dark_mode\ttrue
 appearance.background_blur\ttrue
 appearance.background_opacity\t0.825
@@ -203,6 +240,9 @@ places.sidebar.width\tnan
 places.sidebar.visible\tmaybe
 view.mode\tunknown
 view.show_hidden\tmaybe
+view.icons.preview_size\t-1
+view.compact.preview_size\tnot-a-number
+view.details.preview_size\t999999
 appearance.dark_mode\tmaybe
 appearance.background_blur\tmaybe
 appearance.background_opacity\tnan
@@ -213,6 +253,9 @@ appearance.background_opacity\tnan
         assert_eq!(settings.places_sidebar.visible, Some(false));
         assert_eq!(settings.view.mode, Some(ViewMode::Details));
         assert_eq!(settings.view.show_hidden, Some(true));
+        assert_eq!(settings.view.icons_preview_size, Some(80));
+        assert_eq!(settings.view.compact_preview_size, Some(64));
+        assert_eq!(settings.view.details_preview_size, Some(32));
         assert_eq!(settings.appearance.dark_mode, Some(true));
         assert_eq!(settings.appearance.background_blur, Some(true));
         assert_eq!(settings.appearance.background_opacity, Some(0.825));
@@ -244,6 +287,9 @@ appearance.background_opacity\tnan
             view: ViewSettings {
                 mode: Some(ViewMode::Compact),
                 show_hidden: Some(true),
+                icons_preview_size: Some(96),
+                compact_preview_size: Some(64),
+                details_preview_size: Some(32),
             },
             appearance: AppearanceSettings {
                 dark_mode: Some(true),

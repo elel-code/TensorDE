@@ -17,7 +17,7 @@ impl FikaApp {
         if shortcut {
             // Zoom follows vertical wheel; horizontal-only gestures do not zoom.
             if let Some(zoom_action) = zoom_action_for_scroll_delta(delta_y)
-                && self.scene.zoom(zoom_action, size)
+                && self.set_user_zoom(zoom_action, size)
             {
                 self.apply_window_action_outcome(ShellActionOutcome::queue_animation(
                     ShellAnimationKind::ZoomSettle,
@@ -50,7 +50,7 @@ impl FikaApp {
                 };
                 let mut changed = false;
                 for action in actions {
-                    changed |= self.scene.zoom(action, size);
+                    changed |= self.set_user_zoom(action, size);
                 }
                 if changed {
                     self.apply_window_action_outcome(ShellActionOutcome::queue_animation(

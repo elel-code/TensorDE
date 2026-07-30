@@ -180,7 +180,11 @@ impl FikaApp {
         match route.intent {
             MainLeftPointerButtonIntent::EndScrollbarDrag => {
                 let role_update = self.scene.scrollbar_drag_visible_role_update_kind();
+                let zoom_pane = self.scene.scrollbar_drag_zoom_pane();
                 let changed = self.scene.end_scrollbar_drag(point, size);
+                if let Some(pane) = zoom_pane {
+                    self.record_zoom_setting_for_pane(pane);
+                }
                 if changed && let Some(kind) = role_update {
                     self.visible_role_updates.schedule(kind, Instant::now());
                 }
@@ -220,6 +224,7 @@ impl FikaApp {
             }
             MainLeftPointerButtonIntent::BeginScrollbarDrag => {
                 let zoom_changes = self.scene.zoom_changes;
+                let zoom_levels = self.zoom_levels_snapshot();
                 let changed = self
                     .scene
                     .begin_scrollbar_drag(point, size)
@@ -232,6 +237,9 @@ impl FikaApp {
                         crate::ui::prewarm::VisibleRoleUpdateKind::IconSize,
                         Instant::now(),
                     );
+                }
+                if self.scene.zoom_changes != zoom_changes && !self.scene.is_scrollbar_dragging() {
+                    self.record_changed_zoom_settings(zoom_levels);
                 }
                 self.update_window_cursor_for_scene(size);
                 ShellActionOutcome::redraw_if(changed)

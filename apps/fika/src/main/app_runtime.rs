@@ -2,6 +2,10 @@ struct FikaApp {
     scene: ShellScene,
     mime_applications: MimeApplicationCache,
     settings_path: PathBuf,
+    /// Mirrors DolphinItemListView's in-memory mode settings: zoom stays off
+    /// the interaction hot path and is written once by `writeSettings()` at
+    /// shutdown.
+    pending_preview_sizes: [Option<u16>; 3],
     event_loop_proxy: EventLoopProxy,
     directory_watchers: ShellDirectoryWatcherRuntime,
     async_task_tx: Sender<ShellAsyncTaskResult>,
@@ -44,6 +48,12 @@ struct FikaApp {
     autosmoke_scroll_interval: Duration,
     autosmoke_scroll_allow_pending_redraw: bool,
     dialog_lifecycle_smoke: Option<DialogLifecycleSmoke>,
+}
+
+impl Drop for FikaApp {
+    fn drop(&mut self) {
+        self.flush_preview_size_settings();
+    }
 }
 #[derive(Clone, Debug)]
 struct IncomingDndTransfer {

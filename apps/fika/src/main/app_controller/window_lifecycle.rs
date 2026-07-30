@@ -17,6 +17,7 @@ impl FikaApp {
             scene,
             mime_applications: MimeApplicationCache::load(),
             settings_path,
+            pending_preview_sizes: [None; 3],
             event_loop_proxy,
             directory_watchers,
             async_task_tx,
@@ -278,6 +279,7 @@ impl FikaApp {
             reason,
             self.dialog_windows.has_open_window() as u8,
         );
+        self.flush_preview_size_settings();
         self.drop_windows_for_exit();
         self.exit_event_loop(event_loop, reason);
     }

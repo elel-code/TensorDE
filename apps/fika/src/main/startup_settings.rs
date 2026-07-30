@@ -61,7 +61,8 @@ use ui::file_item_view::text_layout::{
     file_manager_layout_icons_filename, file_manager_text_width_no_wrap,
 };
 use ui::file_item_view::{
-    file_manager_icon_size_for_zoom_level, file_manager_icons_item_width, shell_file_manager_read_ahead_indexes,
+    file_manager_icon_size_for_zoom_level, file_manager_icons_item_width,
+    file_manager_zoom_level_for_icon_size, shell_file_manager_read_ahead_indexes,
     visible_layout_range_for_projection,
 };
 use ui::drop_menu::{
@@ -245,6 +246,19 @@ fn startup_view_mode(
 fn startup_show_hidden(settings: &AppSettings) -> bool {
     settings.view.show_hidden.unwrap_or(false)
 }
+fn startup_zoom_levels(settings: &AppSettings) -> ShellPaneZoomLevels {
+    let mut levels = ShellPaneZoomLevels::default();
+    for (mode, size) in [
+        (ShellViewMode::Icons, settings.view.icons_preview_size),
+        (ShellViewMode::Compact, settings.view.compact_preview_size),
+        (ShellViewMode::Details, settings.view.details_preview_size),
+    ] {
+        if let Some(size) = size {
+            levels.set(mode, file_manager_zoom_level_for_icon_size(size));
+        }
+    }
+    levels
+}
 fn startup_places_visible(settings: &AppSettings) -> bool {
     settings.places_sidebar.visible.unwrap_or(true)
 }
@@ -274,6 +288,24 @@ fn save_view_mode_setting(settings_path: &Path, view_mode: ShellViewMode) -> Res
     let mut settings = load_app_settings(settings_path)
         .map_err(|error| format!("load settings {}: {error}", settings_path.display()))?;
     settings.view.mode = Some(view_mode);
+    save_app_settings(settings_path, &settings)
+        .map_err(|error| format!("save settings {}: {error}", settings_path.display()))
+}
+fn save_preview_size_settings(
+    settings_path: &Path,
+    preview_sizes: [Option<u16>; 3],
+) -> Result<(), String> {
+    let mut settings = load_app_settings(settings_path)
+        .map_err(|error| format!("load settings {}: {error}", settings_path.display()))?;
+    if let Some(size) = preview_sizes[0] {
+        settings.view.icons_preview_size = Some(size);
+    }
+    if let Some(size) = preview_sizes[1] {
+        settings.view.compact_preview_size = Some(size);
+    }
+    if let Some(size) = preview_sizes[2] {
+        settings.view.details_preview_size = Some(size);
+    }
     save_app_settings(settings_path, &settings)
         .map_err(|error| format!("save settings {}: {error}", settings_path.display()))
 }
@@ -341,6 +373,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let view_mode = startup_view_mode(options.view_mode, options.view_mode_explicit, &settings);
     let show_hidden = startup_show_hidden(&settings);
     let mut scene = ShellScene::load_with_hidden_visibility(options.path, view_mode, show_hidden)?;
+    scene.apply_startup_zoom_levels(startup_zoom_levels(&settings));
     scene.places_visible = startup_places_visible(&settings);
     scene.dark_mode = startup_dark_mode(&settings);
     scene.background_blur = startup_background_blur(&settings);

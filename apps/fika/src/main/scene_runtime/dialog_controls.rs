@@ -350,6 +350,13 @@ impl ShellScene {
         self.scrollbar_drag.is_some()
     }
 
+    fn scrollbar_drag_zoom_pane(&self) -> Option<ShellPaneId> {
+        match self.scrollbar_drag?.target {
+            ScrollbarDragTarget::StatusZoom { pane } => Some(pane),
+            _ => None,
+        }
+    }
+
     fn scrollbar_drag_visible_role_update_kind(
         &self,
     ) -> Option<crate::ui::prewarm::VisibleRoleUpdateKind> {

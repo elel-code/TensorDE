@@ -89,7 +89,7 @@ impl FikaApp {
             return ShellActionOutcome::present_if(changed, "switch-immediate").into();
         }
         if shortcut && let Some(zoom_action) = zoom_action_for_key_event(event) {
-            if self.scene.zoom(zoom_action, size) {
+            if self.set_user_zoom(zoom_action, size) {
                 return ShellActionOutcome::queue_animation(ShellAnimationKind::ZoomSettle).into();
             }
             return ShellActionOutcome::None.into();

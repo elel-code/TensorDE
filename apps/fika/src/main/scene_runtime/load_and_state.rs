@@ -143,6 +143,11 @@ impl ShellScene {
         self.icons_layout_height_cache.invalidate_pane(pane.index());
     }
 
+    fn apply_startup_zoom_levels(&mut self, zoom_levels: ShellPaneZoomLevels) {
+        self.panes[ShellPaneId::SLOT_0].zoom_levels = zoom_levels;
+        self.invalidate_layout_caches_for_pane(ShellPaneId::SLOT_0);
+    }
+
     fn invalidate_layout_caches_for_pane(&mut self, pane: ShellPaneId) {
         self.invalidate_layout_caches(pane);
         self.visible_slots.clear(pane);
