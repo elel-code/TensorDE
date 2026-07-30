@@ -23,11 +23,11 @@ check requires `tensor-runtime` to expose Compio async operations with the io_ur
 rejects direct readiness-reactor dependencies. Compio's defaults and `polling` feature remain
 disabled.
 
-TTY builds still compile the remaining descriptor-heap client and cursor GLSL
-with `glslangValidator`. Migrated Slang sources instead ship checked-in,
-validated SPIR-V, so users and binary packages do not need Slang, LLVM, or
-SPIR-V Tools at runtime. Shader authors regenerating those assets need the
-exact `slangc` version declared by `vulkan-renderer-build` plus `spirv-val`.
+Tensor's client, cursor, and focus-ring pipelines use Slang sources with
+checked-in, validated SPIR-V. Users and binary packages therefore do not need
+Slang, LLVM, SPIR-V Tools, or `glslangValidator` at build or runtime. Shader
+authors regenerating those assets need the exact `slangc` version declared by
+`vulkan-renderer-build` plus `spirv-val`.
 On CachyOS/Arch, install the shader compiler with:
 
 ```sh
@@ -35,15 +35,21 @@ sudo pacman -S shader-slang
 ```
 
 The similarly named `slang` package is the unrelated JedSoft interpreter.
-Regenerate and byte-for-byte verify Tensor's first Slang shader with:
+Byte-for-byte verify all checked-in Tensor shaders with:
 
 ```sh
 cargo run -p vulkan-renderer-build -- \
-  compile apps/tensor/shaders/focus_ring.slang vertexMain vertex \
-  apps/tensor/shaders/spirv/focus_ring.vert.spv 64 descriptor-free
+  verify apps/tensor/shaders/client.slang vertexMain vertex \
+  apps/tensor/shaders/spirv/client.vert.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  compile apps/tensor/shaders/focus_ring.slang fragmentMain fragment \
-  apps/tensor/shaders/spirv/focus_ring.frag.spv 64 descriptor-free
+  verify apps/tensor/shaders/client.slang fragmentMain fragment \
+  apps/tensor/shaders/spirv/client.frag.spv 64 descriptor-heap
+cargo run -p vulkan-renderer-build -- \
+  verify apps/tensor/shaders/cursor.slang vertexMain vertex \
+  apps/tensor/shaders/spirv/cursor.vert.spv 16 descriptor-free
+cargo run -p vulkan-renderer-build -- \
+  verify apps/tensor/shaders/cursor.slang fragmentMain fragment \
+  apps/tensor/shaders/spirv/cursor.frag.spv 0 descriptor-free
 cargo run -p vulkan-renderer-build -- \
   verify apps/tensor/shaders/focus_ring.slang vertexMain vertex \
   apps/tensor/shaders/spirv/focus_ring.vert.spv 64 descriptor-free
@@ -51,6 +57,9 @@ cargo run -p vulkan-renderer-build -- \
   verify apps/tensor/shaders/focus_ring.slang fragmentMain fragment \
   apps/tensor/shaders/spirv/focus_ring.frag.spv 64 descriptor-free
 ```
+
+Use the same commands with `compile` in place of `verify` to regenerate the
+assets, then run `spirv-val --target-env vulkan1.4` on every output.
 
 Default features also link system `libudev`, `libinput`, `libseat`, `libdrm`, `libgbm`,
 `libwayland-server`, and `libxkbcommon`. TTY builds require **libinput ≥ 1.26** (tablet-pad
@@ -66,8 +75,7 @@ sudo apt-get install -y \
   libdrm-dev \
   libgbm-dev \
   libwayland-dev \
-  libxkbcommon-dev \
-  glslang-tools
+  libxkbcommon-dev
 ```
 
 The Tensor GitHub Actions workflow runs on `ubuntu-26.04` and installs the same set before

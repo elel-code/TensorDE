@@ -3,8 +3,8 @@
 use std::{mem, slice};
 
 use thiserror::Error;
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 mod cursor;
 pub(super) use cursor::{CursorPipeline, CursorPipelineError};
@@ -12,28 +12,14 @@ mod focus_ring;
 pub(super) use focus_ring::{FocusRingPipeline, FocusRingPipelineError};
 
 const VERTEX_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_client.vert.spv"));
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/client.vert.spv");
 const FRAGMENT_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_client.frag.spv"));
-
-fn surface_sampler_info() -> vk::SamplerCreateInfo {
-    vk::SamplerCreateInfo::builder()
-        .mag_filter(vk::Filter::LINEAR)
-        .min_filter(vk::Filter::LINEAR)
-        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .max_lod(1.0)
-        .build()
-}
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/client.frag.spv");
 
 /// The first real scene pipeline. It deliberately has no descriptor-set
-/// layout: `VK_EXT_descriptor_heap` maps the sampled-image declaration at
-/// pipeline creation and a per-draw push index selects the frame descriptor.
-/// `resource_heap_base` is the byte offset immediately after the implementation
-/// reserved range; push indices are relative to that base so descriptor sizes
-/// need not divide the reserved range itself.
+/// layout or binding mapping: the bindless Slang fragment shader selects the
+/// sampled image and the shared linear-clamp sampler through absolute
+/// descriptor-heap element indices in its push record.
 pub(super) struct ClientImagePipeline {
     pipeline: vk::Pipeline,
 }
@@ -55,35 +41,8 @@ impl ClientImagePipeline {
     pub(super) fn new(
         device: &Device,
         target_format: vk::Format,
-        descriptor_stride: u64,
-        resource_heap_base: u64,
     ) -> Result<Self, ClientPipelineError> {
-        let descriptor_stride = u32::try_from(descriptor_stride)
-            .map_err(|_| ClientPipelineError::DescriptorStrideTooLarge(descriptor_stride))?;
-        let resource_heap_base = u32::try_from(resource_heap_base)
-            .map_err(|_| ClientPipelineError::HeapOffsetTooLarge(resource_heap_base))?;
-
         let (vertex_module, fragment_module) = create_shader_modules(device)?;
-
-        let sampler = surface_sampler_info();
-        let source = vk::DescriptorMappingSourcePushIndexEXT::builder()
-            .heap_offset(resource_heap_base)
-            .push_offset(0)
-            .heap_index_stride(descriptor_stride)
-            .heap_array_stride(descriptor_stride)
-            .embedded_sampler(&sampler)
-            .build();
-        let mapping = vk::DescriptorSetAndBindingMappingEXT::builder()
-            .descriptor_set(0)
-            .first_binding(0)
-            .binding_count(1)
-            .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-            .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_PUSH_INDEX)
-            .source_data(vk::DescriptorMappingSourceDataEXT { push_index: source })
-            .build();
-        let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-            .mappings(slice::from_ref(&mapping))
-            .build();
 
         let entry = b"main\0";
         let vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
@@ -91,13 +50,11 @@ impl ClientImagePipeline {
             .module(vertex_module)
             .name(entry)
             .build();
-        let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+        let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(fragment_module)
             .name(entry)
             .build();
-        fragment_stage.next =
-            (&mut mapping_info as *mut vk::ShaderDescriptorSetAndBindingMappingInfoEXT).cast();
         let stages = [vertex_stage, fragment_stage];
 
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
@@ -215,10 +172,6 @@ fn shader_module_info(code: &[u32]) -> vk::ShaderModuleCreateInfo {
 
 #[derive(Debug, Error)]
 pub(super) enum ClientPipelineError {
-    #[error("descriptor stride {0} does not fit descriptor-heap mapping fields")]
-    DescriptorStrideTooLarge(u64),
-    #[error("resource heap base offset {0} does not fit descriptor-heap mapping fields")]
-    HeapOffsetTooLarge(u64),
     #[error("failed to create the client vertex shader module: {0:?}")]
     CreateVertexModule(vk::ErrorCode),
     #[error("failed to create the client fragment shader module: {0:?}")]
@@ -234,28 +187,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn surface_sampler_preserves_fractional_downscaling_quality() {
-        let sampler = surface_sampler_info();
-
-        assert_eq!(sampler.mag_filter, vk::Filter::LINEAR);
-        assert_eq!(sampler.min_filter, vk::Filter::LINEAR);
-        assert_eq!(sampler.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
-        assert_eq!(
-            sampler.address_mode_u,
-            vk::SamplerAddressMode::CLAMP_TO_EDGE
-        );
-        assert_eq!(
-            sampler.address_mode_v,
-            vk::SamplerAddressMode::CLAMP_TO_EDGE
-        );
-        assert_eq!(
-            sampler.address_mode_w,
-            vk::SamplerAddressMode::CLAMP_TO_EDGE
-        );
-    }
-
-    #[test]
     fn shader_module_info_carries_the_complete_spirv_byte_length() {
+        assert!(vulkan_renderer::validate_spirv(VERTEX_SHADER).is_ok());
+        assert!(vulkan_renderer::validate_spirv(FRAGMENT_SHADER).is_ok());
         let vertex = shader_module_info(VERTEX_SHADER);
         let fragment = shader_module_info(FRAGMENT_SHADER);
 

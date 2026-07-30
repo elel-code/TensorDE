@@ -1,6 +1,6 @@
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkanalia::{Version, loader::LIBRARY, vk};
+use vulkan_renderer::vulkanalia::{Version, loader::LIBRARY, vk};
 
 use super::super::DeviceSelectionError;
 

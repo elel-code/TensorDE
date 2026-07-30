@@ -3,13 +3,13 @@
 use std::{mem, slice};
 
 use thiserror::Error;
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 const VERTEX_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_cursor.vert.spv"));
+    vulkan_renderer::include_spirv!("../../../../shaders/spirv/cursor.vert.spv");
 const FRAGMENT_SHADER: &[u32] =
-    vulkanalia::include_shader_code!(concat!(env!("OUT_DIR"), "/tensor_cursor.frag.spv"));
+    vulkan_renderer::include_spirv!("../../../../shaders/spirv/cursor.frag.spv");
 
 /// The cursor has no sampled resources, so it uses a zero-set pipeline layout
 /// solely for its geometry push constant. This is not a descriptor-set
@@ -196,6 +196,8 @@ mod tests {
 
     #[test]
     fn cursor_shader_modules_have_complete_word_lengths() {
+        assert!(vulkan_renderer::validate_spirv(VERTEX_SHADER).is_ok());
+        assert!(vulkan_renderer::validate_spirv(FRAGMENT_SHADER).is_ok());
         assert_eq!(
             shader_module_info(VERTEX_SHADER).code_size,
             mem::size_of_val(VERTEX_SHADER)

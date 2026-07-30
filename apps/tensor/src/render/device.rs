@@ -6,7 +6,7 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkanalia::{Version, vk};
+use vulkan_renderer::vulkanalia::{Version, vk};
 
 use super::NativeInteropCapabilities;
 

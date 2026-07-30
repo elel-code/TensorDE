@@ -3,8 +3,8 @@
 use std::{mem, slice};
 
 use thiserror::Error;
-use vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 const VERTEX_SHADER: &[u32] =
     vulkan_renderer::include_spirv!("../../../../shaders/spirv/focus_ring.vert.spv");

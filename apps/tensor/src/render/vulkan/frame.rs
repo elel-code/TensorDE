@@ -4,9 +4,9 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkanalia::vk::KhrExternalSemaphoreFdExtensionDeviceCommands;
-use vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, Handle, HasBuilder};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::KhrExternalSemaphoreFdExtensionDeviceCommands;
+use vulkan_renderer::vulkanalia::vk::{DeviceV1_0, DeviceV1_2, DeviceV1_3, Handle, HasBuilder};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::render::{DescriptorHeapLayout, FrameSubmission};
 
@@ -53,7 +53,7 @@ pub(super) struct VulkanFrameExecutor {
 
 impl VulkanFrameExecutor {
     pub(super) fn new(
-        instance: &vulkanalia::Instance,
+        instance: &vulkan_renderer::vulkanalia::Instance,
         device: &Device,
         physical_device: vk::PhysicalDevice,
         graphics_queue_family: u32,
@@ -225,13 +225,13 @@ impl VulkanFrameExecutor {
         let draws = prepare_draws(
             frame,
             self.heap.descriptor_stride(),
-            self.heap.resource_heap_base(),
+            self.heap.linear_sampler_index(),
         )
         .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let cursors = prepare_cursor_draws(
             frame,
             self.heap.descriptor_stride(),
-            self.heap.resource_heap_base(),
+            self.heap.linear_sampler_index(),
         )
         .map_err(|error| VulkanFrameError::Record(error.to_string()))?;
         let focus_rings = prepare_focus_ring_draws(frame)
@@ -352,15 +352,10 @@ impl VulkanFrameExecutor {
         device: &Device,
         format: vk::Format,
     ) -> Result<vk::Pipeline, VulkanFrameError> {
-        if !self.pipelines.contains_key(&format) {
-            let pipeline = ClientImagePipeline::new(
-                device,
-                format,
-                self.heap.descriptor_stride(),
-                self.heap.resource_heap_base(),
-            )
-            .map_err(VulkanFrameError::Pipeline)?;
-            self.pipelines.insert(format, pipeline);
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.pipelines.entry(format) {
+            let pipeline =
+                ClientImagePipeline::new(device, format).map_err(VulkanFrameError::Pipeline)?;
+            entry.insert(pipeline);
         }
         Ok(self
             .pipelines

@@ -3,46 +3,65 @@
 use std::{ptr, slice};
 
 use thiserror::Error;
-use vulkanalia::vk::{
+use vulkan_renderer::vulkanalia::vk::{
     DeviceV1_0, DeviceV1_2, DeviceV1_3, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder,
     InstanceV1_0,
 };
-use vulkanalia::{Device, Instance, vk};
+use vulkan_renderer::vulkanalia::{Device, Instance, vk};
 
 use crate::render::DescriptorHeapProperties;
 use crate::render::frame::{DescriptorHeapLayout, HeapAllocation};
 
-/// The sampler heap is currently reserved for embedded samplers.  It shares
-/// the backing descriptor-heap allocation with the resource heap, but occupies
-/// a disjoint, sampler-aligned address range so the implementation-reserved
-/// regions can never overlap.
+/// The sampler heap keeps the implementation-reserved embedded-sampler range
+/// and adds one user slot holding the shared linear-clamp surface sampler.
+/// It shares the backing descriptor-heap allocation with the resource heap,
+/// but occupies a disjoint, sampler-aligned address range so the
+/// implementation-reserved regions can never overlap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SamplerHeapLayout {
     pub(super) capacity: u64,
     pub(super) alignment: u64,
     pub(super) reserved_range: u64,
+    /// Byte offset of the shared linear-clamp sampler descriptor.
+    pub(super) linear_sampler_offset: u64,
+    pub(super) descriptor_size: u64,
 }
 
 pub(super) fn sampler_heap_layout(
     properties: DescriptorHeapProperties,
 ) -> Result<SamplerHeapLayout, DescriptorHeapError> {
-    if properties.sampler_heap_alignment == 0
-        || !properties.sampler_heap_alignment.is_power_of_two()
-    {
-        return Err(DescriptorHeapError::InvalidSamplerLayout(
-            SamplerHeapLayout {
-                capacity: 0,
-                alignment: properties.sampler_heap_alignment,
-                reserved_range: properties
-                    .min_sampler_heap_reserved_range
-                    .max(properties.min_sampler_heap_reserved_range_with_embedded),
-            },
-        ));
-    }
+    let invalid = |reserved_range| {
+        DescriptorHeapError::InvalidSamplerLayout(SamplerHeapLayout {
+            capacity: 0,
+            alignment: properties.sampler_heap_alignment,
+            reserved_range,
+            linear_sampler_offset: 0,
+            descriptor_size: properties.sampler_descriptor_size,
+        })
+    };
     let reserved_range = properties
         .min_sampler_heap_reserved_range
         .max(properties.min_sampler_heap_reserved_range_with_embedded);
-    let capacity = align_up(reserved_range.max(1), properties.sampler_heap_alignment)
+    if properties.sampler_heap_alignment == 0
+        || !properties.sampler_heap_alignment.is_power_of_two()
+    {
+        return Err(invalid(reserved_range));
+    }
+    // Bindless shaders index the sampler heap as a runtime array strided by
+    // the driver's sampler descriptor size; descriptors must be size-strided.
+    let descriptor_size = properties.sampler_descriptor_size;
+    if descriptor_size == 0
+        || !descriptor_size.is_power_of_two()
+        || !descriptor_size.is_multiple_of(properties.sampler_descriptor_alignment.max(1))
+    {
+        return Err(invalid(reserved_range));
+    }
+    let linear_sampler_offset = align_up(reserved_range, descriptor_size)
+        .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+    let end = linear_sampler_offset
+        .checked_add(descriptor_size)
+        .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+    let capacity = align_up(end.max(1), properties.sampler_heap_alignment)
         .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
     if capacity > properties.max_sampler_heap_size {
         return Err(DescriptorHeapError::InvalidSamplerLayout(
@@ -50,6 +69,8 @@ pub(super) fn sampler_heap_layout(
                 capacity,
                 alignment: properties.sampler_heap_alignment,
                 reserved_range,
+                linear_sampler_offset,
+                descriptor_size,
             },
         ));
     }
@@ -57,6 +78,8 @@ pub(super) fn sampler_heap_layout(
         capacity,
         alignment: properties.sampler_heap_alignment,
         reserved_range,
+        linear_sampler_offset,
+        descriptor_size,
     })
 }
 
@@ -75,6 +98,9 @@ pub(super) struct DescriptorHeapResource {
     sampler_reserved_range: u64,
     descriptor_size: u64,
     descriptor_stride: u64,
+    linear_sampler_backing_offset: u64,
+    linear_sampler_size: u64,
+    linear_sampler_index: u32,
     staging_buffer: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_mapping: *mut u8,
@@ -97,11 +123,23 @@ impl DescriptorHeapResource {
         // allocated, leaking them on an extreme (but testable) layout.
         let descriptor_stride = align_up(layout.descriptor_size, layout.alignment)
             .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        // Bindless shaders index the resource heap as a runtime array strided
+        // by the driver's descriptor size, so packed descriptors must be
+        // exactly size-strided.
+        if descriptor_stride != layout.descriptor_size {
+            return Err(DescriptorHeapError::InvalidLayout(layout));
+        }
         let sampler_offset = align_up(layout.capacity, sampler_layout.alignment)
             .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
         let backing_size = sampler_offset
             .checked_add(sampler_layout.capacity)
             .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        let linear_sampler_backing_offset = sampler_offset
+            .checked_add(sampler_layout.linear_sampler_offset)
+            .ok_or(DescriptorHeapError::DescriptorRangeOverflow)?;
+        let linear_sampler_index =
+            u32::try_from(sampler_layout.linear_sampler_offset / sampler_layout.descriptor_size)
+                .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
         if backing_size > vk::WHOLE_SIZE - 1 {
             return Err(DescriptorHeapError::DescriptorRangeOverflow);
         }
@@ -178,7 +216,7 @@ impl DescriptorHeapResource {
         }
 
         let staging_buffer =
-            match create_buffer(device, layout.capacity, vk::BufferUsageFlags::TRANSFER_SRC) {
+            match create_buffer(device, backing_size, vk::BufferUsageFlags::TRANSFER_SRC) {
                 Ok(buffer) => buffer,
                 Err(source) => {
                     unsafe {
@@ -243,7 +281,7 @@ impl DescriptorHeapResource {
             }
         };
 
-        Ok(Self {
+        let resource = Self {
             heap_buffer,
             heap_memory,
             heap_address,
@@ -254,11 +292,55 @@ impl DescriptorHeapResource {
             sampler_reserved_range: sampler_layout.reserved_range,
             descriptor_size: layout.descriptor_size,
             descriptor_stride,
+            linear_sampler_backing_offset,
+            linear_sampler_size: sampler_layout.descriptor_size,
+            linear_sampler_index,
             staging_buffer,
             staging_memory,
             staging_mapping,
             staging_coherent,
-        })
+        };
+        if let Err(error) = resource.write_linear_sampler(device) {
+            let mut resource = resource;
+            unsafe { resource.destroy(device) };
+            return Err(error);
+        }
+        Ok(resource)
+    }
+
+    /// Encodes the shared linear-clamp surface sampler into its staging slot.
+    ///
+    /// The descriptor is copied beside the frame image descriptors on every
+    /// submission; bindless shaders select it through
+    /// [`Self::linear_sampler_index`].
+    fn write_linear_sampler(&self, device: &Device) -> Result<(), DescriptorHeapError> {
+        let offset = usize::try_from(self.linear_sampler_backing_offset)
+            .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
+        let size = usize::try_from(self.linear_sampler_size)
+            .map_err(|_| DescriptorHeapError::DescriptorRangeOverflow)?;
+        let sampler = linear_clamp_sampler_info();
+        let range = vk::HostAddressRangeEXT {
+            address: unsafe { self.staging_mapping.add(offset).cast() },
+            size,
+        };
+        unsafe {
+            device
+                .write_sampler_descriptors_ext(slice::from_ref(&sampler), slice::from_ref(&range))
+                .map_err(DescriptorHeapError::WriteDescriptor)?;
+        }
+        if !self.staging_coherent {
+            let range = vk::MappedMemoryRange::builder()
+                .memory(self.staging_memory)
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .build();
+            unsafe {
+                device
+                    .flush_mapped_memory_ranges(slice::from_ref(&range))
+                    .map_err(DescriptorHeapError::FlushStaging)?;
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn prepare_image_descriptors(
@@ -359,8 +441,9 @@ impl DescriptorHeapResource {
         self.descriptor_stride
     }
 
-    pub(super) const fn resource_heap_base(&self) -> u64 {
-        self.reserved_range
+    /// Descriptor-heap element index of the shared linear-clamp sampler.
+    pub(super) const fn linear_sampler_index(&self) -> u32 {
+        self.linear_sampler_index
     }
 
     pub(super) unsafe fn record_copy_and_bind(
@@ -407,12 +490,18 @@ impl DescriptorHeapResource {
             .dst_offset(allocation.offset)
             .size(allocation.size)
             .build();
+        let sampler_copy = vk::BufferCopy::builder()
+            .src_offset(self.linear_sampler_backing_offset)
+            .dst_offset(self.linear_sampler_backing_offset)
+            .size(self.linear_sampler_size)
+            .build();
+        let copies = [copy, sampler_copy];
         unsafe {
             device.cmd_copy_buffer(
                 command_buffer,
                 self.staging_buffer,
                 self.heap_buffer,
-                slice::from_ref(&copy),
+                &copies,
             );
         }
 
@@ -459,6 +548,15 @@ fn validate_sampler_layout(layout: SamplerHeapLayout) -> Result<(), DescriptorHe
         || layout.capacity > vk::WHOLE_SIZE - 1
         || !layout.alignment.is_power_of_two()
         || layout.reserved_range > layout.capacity
+        || layout.descriptor_size == 0
+        || layout.linear_sampler_offset < layout.reserved_range
+        || !layout
+            .linear_sampler_offset
+            .is_multiple_of(layout.descriptor_size)
+        || layout
+            .linear_sampler_offset
+            .checked_add(layout.descriptor_size)
+            .is_none_or(|end| end > layout.capacity)
     {
         return Err(DescriptorHeapError::InvalidSamplerLayout(layout));
     }
@@ -468,6 +566,19 @@ fn validate_sampler_layout(layout: SamplerHeapLayout) -> Result<(), DescriptorHe
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
     let remainder = value % alignment;
     value.checked_add((alignment - remainder) % alignment)
+}
+
+/// Shared linear-clamp sampler for client-surface and cursor-texture draws.
+fn linear_clamp_sampler_info() -> vk::SamplerCreateInfo {
+    vk::SamplerCreateInfo::builder()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .max_lod(1.0)
+        .build()
 }
 
 fn create_buffer(
@@ -611,6 +722,26 @@ mod tests {
             max_push_data_size: 128,
             max_descriptor_heap_embedded_samplers: 1,
         }
+    }
+
+    #[test]
+    fn linear_clamp_sampler_preserves_fractional_downscaling_quality() {
+        let sampler = linear_clamp_sampler_info();
+        assert_eq!(sampler.mag_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.min_filter, vk::Filter::LINEAR);
+        assert_eq!(sampler.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
+        assert_eq!(
+            sampler.address_mode_u,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            sampler.address_mode_v,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            sampler.address_mode_w,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
     }
 
     #[test]

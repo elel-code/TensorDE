@@ -1,5 +1,5 @@
 use tensor_host::{DrmFormat, Fourcc, Modifier};
-use vulkanalia::{Instance, Version, prelude::v1_4::*, vk};
+use vulkan_renderer::vulkanalia::{Instance, Version, prelude::v1_4::*, vk};
 
 use crate::render::{
     DescriptorHeapProperties, DeviceCandidate, DrmDeviceIdentity, DrmNodeId,

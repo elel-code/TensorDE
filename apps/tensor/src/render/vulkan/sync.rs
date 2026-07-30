@@ -7,8 +7,10 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkanalia::vk::{DeviceV1_0, HasBuilder, KhrExternalSemaphoreFdExtensionDeviceCommands};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::{
+    DeviceV1_0, HasBuilder, KhrExternalSemaphoreFdExtensionDeviceCommands,
+};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::{ecs::SurfaceId, render::FrameSubmission};
 

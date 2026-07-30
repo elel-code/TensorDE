@@ -6,11 +6,11 @@ use std::{
 
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkanalia::vk::{
+use vulkan_renderer::vulkanalia::vk::{
     DeviceV1_0, ExtImageDrmFormatModifierExtensionDeviceCommands, HasBuilder, InstanceV1_0,
     KhrExternalMemoryFdExtensionDeviceCommands,
 };
-use vulkanalia::{Device, Instance, vk};
+use vulkan_renderer::vulkanalia::{Device, Instance, vk};
 
 use crate::render::{
     DmabufPlane, DrmNodeId, ExportedDmabuf, NativeCursorTarget, NativeOutputTarget, OutputFormat,

@@ -1,4 +1,4 @@
-use vulkanalia::vk::Handle;
+use vulkan_renderer::vulkanalia::vk::Handle;
 
 use tensor_host::{DrmFormat, Fourcc, Modifier};
 use tensor_util::{OutputScale, Size};
@@ -52,7 +52,7 @@ fn prepared_client(descriptor_index: u32) -> PreparedDraw {
             descriptor_index,
             corner_radius: 0,
             opacity: 1.0,
-            padding: 0.0,
+            sampler_index: 0,
             destination: [0.0; 4],
             uv_origin_axis_x: [0.0; 4],
             uv_axis_y_surface_size: [0.0; 4],
@@ -74,7 +74,7 @@ fn prepared_ring() -> PreparedFocusRingDraw {
 }
 
 #[test]
-fn descriptor_push_index_includes_the_frame_heap_offset() {
+fn descriptor_push_index_is_an_absolute_heap_element_index() {
     assert_eq!(
         descriptor_index(
             HeapAllocation {
@@ -82,11 +82,10 @@ fn descriptor_push_index_includes_the_frame_heap_offset() {
                 size: 256,
             },
             32,
-            128,
             3,
         )
         .unwrap(),
-        7
+        11
     );
 }
 
@@ -136,7 +135,6 @@ fn descriptor_push_index_rejects_out_of_slice_draws() {
                 size: 64,
             },
             32,
-            128,
             2,
         ),
         Err(FrameRecordError::DescriptorOutsideAllocation { .. })
@@ -221,19 +219,18 @@ fn cropped_sampling_transform_reaches_push_constants_without_record_time_math() 
 }
 
 #[test]
-fn descriptor_push_index_is_relative_to_a_non_stride_aligned_reserved_range() {
+fn descriptor_push_index_uses_size_strided_absolute_offsets() {
     assert_eq!(
         descriptor_index(
             HeapAllocation {
-                offset: 192,
+                offset: 256,
                 size: 256,
             },
             128,
-            64,
             1,
         )
         .unwrap(),
-        2
+        3
     );
 }
 

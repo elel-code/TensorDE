@@ -6,8 +6,10 @@ use std::{
 
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkanalia::vk::{DeviceV1_0, HasBuilder, KhrExternalMemoryFdExtensionDeviceCommands};
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::vk::{
+    DeviceV1_0, HasBuilder, KhrExternalMemoryFdExtensionDeviceCommands,
+};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::{ecs::SurfaceBufferId, render::Dmabuf};
 

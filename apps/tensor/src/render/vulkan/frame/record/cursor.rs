@@ -1,4 +1,4 @@
-use vulkanalia::vk;
+use vulkan_renderer::vulkanalia::vk;
 
 use crate::render::{FrameSubmission, cursor::MAX_CURSOR_OVERLAYS};
 
@@ -52,7 +52,7 @@ impl PreparedCursorDraws {
 pub(in crate::render::vulkan::frame) fn prepare_cursor_draws(
     frame: &FrameSubmission,
     descriptor_stride: u64,
-    resource_heap_base: u64,
+    sampler_index: u32,
 ) -> Result<PreparedCursorDraws, FrameRecordError> {
     let mut draws = PreparedCursorDraws::new();
     if frame.draw_plan.cursors().is_empty() {
@@ -72,12 +72,8 @@ pub(in crate::render::vulkan::frame) fn prepare_cursor_draws(
             },
         };
         if let (Some(texture), Some(image_descriptor)) = (cursor.texture, image_descriptor) {
-            let descriptor_index = descriptor_index(
-                frame.descriptors,
-                descriptor_stride,
-                resource_heap_base,
-                *image_descriptor,
-            )?;
+            let descriptor_index =
+                descriptor_index(frame.descriptors, descriptor_stride, *image_descriptor)?;
             let origin = texture.sample_transform.origin();
             let axis_x = texture.sample_transform.axis_x();
             let axis_y = texture.sample_transform.axis_y();
@@ -86,7 +82,7 @@ pub(in crate::render::vulkan::frame) fn prepare_cursor_draws(
                     descriptor_index,
                     corner_radius: 0,
                     opacity: 1.0,
-                    padding: 0.0,
+                    sampler_index,
                     destination: destination_to_ndc(cursor.destination, viewport),
                     uv_origin_axis_x: [origin.0, origin.1, axis_x.0, axis_x.1],
                     uv_axis_y_surface_size: [

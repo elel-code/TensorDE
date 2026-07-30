@@ -3913,7 +3913,6 @@ dependencies = [
  "tracing-subscriber",
  "udev",
  "vulkan-renderer",
- "vulkanalia",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-misc",

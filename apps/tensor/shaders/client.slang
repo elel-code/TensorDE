@@ -1,23 +1,20 @@
 // Client-surface sampling with rounded-corner coverage.
 //
-// The image descriptor is selected at draw time through Tensor's
-// descriptor-heap binding mapping; `descriptorIndex` rides in the same
-// 64-byte push record consumed by that mapping.
+// Bindless: the sampled image and sampler are selected through direct
+// descriptor-heap element indices carried in the 64-byte push record.
 
 struct DrawData
 {
     uint descriptorIndex;
     uint cornerRadius;
     float opacity;
-    float padding;
+    uint samplerIndex;
     float4 destination;
     float4 uvOriginAxisX;
     float4 uvAxisYSurfaceSize;
 };
 
 [[vk::push_constant]] ConstantBuffer<DrawData> draw;
-
-[[vk::binding(0, 0)]] Sampler2D clientImage;
 
 static const float2 kPositions[6] =
 {
@@ -56,7 +53,9 @@ VertexOutput vertexMain(uint vertexIndex : SV_VulkanVertexID)
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target0
 {
-    float4 color = clientImage.Sample(input.texCoord);
+    Texture2D<float4> clientImage = DescriptorHandle<Texture2D<float4>>(draw.descriptorIndex);
+    SamplerState clientSampler = DescriptorHandle<SamplerState>(draw.samplerIndex);
+    float4 color = clientImage.Sample(clientSampler, input.texCoord);
     float coverage = draw.opacity;
     float2 surfaceSize = draw.uvAxisYSurfaceSize.zw;
     float radius = min(float(draw.cornerRadius), min(surfaceSize.x, surfaceSize.y) * 0.5);

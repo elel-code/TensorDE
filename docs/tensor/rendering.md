@@ -18,8 +18,8 @@ An eligible physical device must provide all of the following before ranking:
   or descriptor-set fallback is permitted).
 - A usable resource heap: non-zero heap alignment, maximum size beyond the implementation's
   reserved range, and non-zero image descriptor size/alignment.
-- A sampler heap range large enough for `minSamplerHeapReservedRangeWithEmbedded`, plus at least one
-  embedded sampler and enough push data for Tensor's 64-byte draw record.
+- A sampler heap range large enough for `minSamplerHeapReservedRangeWithEmbedded`, plus one
+  explicit linear-clamp sampler descriptor and enough push data for Tensor's 64-byte draw record.
 - `VK_EXT_physical_device_drm` with a complete primary/render node pair.
 - `VK_KHR_external_memory_fd` and `VK_EXT_external_memory_dma_buf`.
 - `VK_EXT_image_drm_format_modifier`.
@@ -106,7 +106,8 @@ duplicated fd or recycled Wayland object ID cannot alias a live scene image acci
 
 Client images are now accepted by the protocol boundary and have a first real sampling path. A
 client image is acquired from the foreign queue family, selected through a descriptor-heap push
-index, sampled with an embedded linear sampler, and composited by a dynamic-rendering pipeline with
+index, sampled with a shared linear-clamp sampler from the sampler heap, and composited by a
+dynamic-rendering pipeline with
 premultiplied-alpha blending. The first acquire uses `UNDEFINED + FOREIGN` to preserve the
 producer's explicit-modifier contents; only a successful queue submission advances the cache to the
 subsequent `GENERAL + FOREIGN` path. Resource and sampler heap ranges share one device allocation but
@@ -170,8 +171,9 @@ native output image slots, and keeps descriptor ranges live until the Vulkan tim
 path. `render/vulkan/frame.rs` writes the native output and deduplicated client-image descriptors
 into staging, copies them into the device-local resource range, binds both heaps, and submits through
 three resettable command buffers plus one timeline semaphore. The sampled-image pipeline pushes a
-64-byte draw record whose first word is the descriptor index relative to the resource heap's user
-range, while the pipeline mapping supplies the implementation-reserved byte offset. A lost device
+64-byte draw record whose first and fourth words are absolute resource- and sampler-heap element
+indices. Slang emits `SPV_EXT_descriptor_heap` direct accesses, so pipeline creation needs no
+descriptor binding mapping. A lost device
 stops future frame scheduling instead of recycling GPU-visible ranges.
 
 The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the

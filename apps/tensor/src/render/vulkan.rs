@@ -9,7 +9,7 @@ use std::{
 
 use tensor_host::Fourcc;
 use tracing::{debug, info};
-use vulkanalia::{
+use vulkan_renderer::vulkanalia::{
     Device, Entry, Instance, Version,
     loader::{LIBRARY, LibloadingLoader},
     prelude::v1_4::*,

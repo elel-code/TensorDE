@@ -1,4 +1,4 @@
-use vulkanalia::{Version, vk};
+use vulkan_renderer::vulkanalia::{Version, vk};
 
 use super::device::{DeviceSelector, DrmNodeId, GpuPreference};
 

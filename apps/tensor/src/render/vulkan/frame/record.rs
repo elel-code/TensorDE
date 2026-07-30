@@ -4,10 +4,10 @@ use std::{mem, slice};
 
 use tensor_util::Rect;
 use thiserror::Error;
-use vulkanalia::vk::{
+use vulkan_renderer::vulkanalia::vk::{
     DeviceV1_0, DeviceV1_3, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder,
 };
-use vulkanalia::{Device, vk};
+use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::render::{
     FrameSubmission,
@@ -26,7 +26,7 @@ struct DrawPushData {
     descriptor_index: u32,
     corner_radius: u32,
     opacity: f32,
-    padding: f32,
+    sampler_index: u32,
     destination: [f32; 4],
     uv_origin_axis_x: [f32; 4],
     uv_axis_y_surface_size: [f32; 4],
@@ -71,23 +71,16 @@ pub(super) enum PreparedSceneDraw {
 pub(super) fn prepare_draws(
     frame: &FrameSubmission,
     descriptor_stride: u64,
-    resource_heap_base: u64,
+    sampler_index: u32,
 ) -> Result<Vec<PreparedDraw>, FrameRecordError> {
     if descriptor_stride == 0 {
         return Err(FrameRecordError::ZeroDescriptorStride);
     }
-    let descriptor_offset = frame
-        .descriptors
-        .offset
-        .checked_sub(resource_heap_base)
-        .ok_or(FrameRecordError::DescriptorBeforeHeapBase {
-            offset: frame.descriptors.offset,
-            base: resource_heap_base,
-        })?;
-    if !descriptor_offset.is_multiple_of(descriptor_stride) {
+    // Bindless indices are absolute heap element indices, so the frame
+    // allocation itself must sit on a stride boundary.
+    if !frame.descriptors.offset.is_multiple_of(descriptor_stride) {
         return Err(FrameRecordError::DescriptorOffsetMisaligned {
             offset: frame.descriptors.offset,
-            base: resource_heap_base,
             stride: descriptor_stride,
         });
     }
@@ -104,12 +97,8 @@ pub(super) fn prepare_draws(
                     draw.image_descriptor,
                 ));
             }
-            let descriptor_index = descriptor_index(
-                frame.descriptors,
-                descriptor_stride,
-                resource_heap_base,
-                draw.image_descriptor,
-            )?;
+            let descriptor_index =
+                descriptor_index(frame.descriptors, descriptor_stride, draw.image_descriptor)?;
             let origin = draw.sample_transform.origin();
             let axis_x = draw.sample_transform.axis_x();
             let axis_y = draw.sample_transform.axis_y();
@@ -121,7 +110,7 @@ pub(super) fn prepare_draws(
                         .scale
                         .physical_length_round(draw.effects.corner_radius),
                     opacity: draw.effects.opacity.as_f32() * draw.alpha.as_f32(),
-                    padding: 0.0,
+                    sampler_index,
                     destination: destination_to_ndc(draw.destination, viewport),
                     uv_origin_axis_x: [origin.0, origin.1, axis_x.0, axis_x.1],
                     uv_axis_y_surface_size: [
@@ -257,7 +246,6 @@ fn destination_to_ndc(destination: Rect, viewport: Rect) -> [f32; 4] {
 fn descriptor_index(
     allocation: HeapAllocation,
     descriptor_stride: u64,
-    resource_heap_base: u64,
     relative_index: u32,
 ) -> Result<u32, FrameRecordError> {
     let relative_offset = descriptor_stride
@@ -273,13 +261,7 @@ fn descriptor_index(
             allocation,
         });
     }
-    let relative_heap_offset = byte_offset.checked_sub(resource_heap_base).ok_or(
-        FrameRecordError::DescriptorBeforeHeapBase {
-            offset: byte_offset,
-            base: resource_heap_base,
-        },
-    )?;
-    u32::try_from(relative_heap_offset / descriptor_stride)
+    u32::try_from(byte_offset / descriptor_stride)
         .map_err(|_| FrameRecordError::DescriptorIndexOverflow)
 }
 
@@ -721,12 +703,8 @@ fn output_release(
 pub(super) enum FrameRecordError {
     #[error("descriptor stride must be non-zero")]
     ZeroDescriptorStride,
-    #[error("descriptor offset {offset} is before resource heap base {base}")]
-    DescriptorBeforeHeapBase { offset: u64, base: u64 },
-    #[error(
-        "descriptor allocation offset {offset} relative to heap base {base} is not aligned to stride {stride}"
-    )]
-    DescriptorOffsetMisaligned { offset: u64, base: u64, stride: u64 },
+    #[error("descriptor allocation offset {offset} is not aligned to stride {stride}")]
+    DescriptorOffsetMisaligned { offset: u64, stride: u64 },
     #[error("descriptor index arithmetic overflowed the push-index representation")]
     DescriptorIndexOverflow,
     #[error("draw references invalid client image descriptor {0}")]
