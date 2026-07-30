@@ -33,6 +33,7 @@ fn icon_engine_builds_frame_without_a_wgpu_renderer() {
             surface_size: PhysicalSize::new(720, 420),
             ui_scale: 1.0,
             sync_resolve_budget: 0,
+            role_updates_paused: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         },
     )
@@ -45,23 +46,32 @@ fn icon_engine_builds_frame_without_a_wgpu_renderer() {
 #[test]
 fn native_frame_layers_keep_structural_and_interaction_chrome_analytic() {
     let mut scene = test_scene(
-        vec![test_entry("alpha.txt", false), test_entry("beta.txt", false)],
+        vec![
+            test_entry("alpha.txt", false),
+            test_entry("beta.txt", false),
+        ],
         ShellViewMode::Icons,
     );
     let size = PhysicalSize::new(720, 420);
 
+    let mut empty_scene = test_scene(Vec::new(), ShellViewMode::Icons);
+    let empty = native_frame_layers(&mut empty_scene, size);
     let plain = native_frame_layers(&mut scene, size);
-    assert!(plain.base_rects.len() >= 6);
+    assert_eq!(plain.base_rects.len(), empty.base_rects.len());
 
-    assert!(scene.panes[ShellPaneId::SLOT_0]
-        .selection
-        .apply_navigation(0, false));
+    assert!(
+        scene.panes[ShellPaneId::SLOT_0]
+            .selection
+            .apply_navigation(0, false)
+    );
     let selected = native_frame_layers(&mut scene, size);
     assert!(selected.base_rects.len() > plain.base_rects.len());
-    assert!(selected
-        .base_rects
-        .iter()
-        .any(|instance| instance.color() == [0.239, 0.502, 0.710, 0.32]));
+    assert!(
+        selected
+            .base_rects
+            .iter()
+            .any(|instance| instance.color() == [0.239, 0.502, 0.710, 0.32])
+    );
 
     scene.rubber_band = Some(RubberBand {
         start: ViewPoint { x: 16.0, y: 20.0 },
@@ -72,14 +82,18 @@ fn native_frame_layers_keep_structural_and_interaction_chrome_analytic() {
     });
     let with_rubber_band = native_frame_layers(&mut scene, size);
     assert!(with_rubber_band.base_rects.len() > selected.base_rects.len());
-    assert!(with_rubber_band
-        .base_rects
-        .iter()
-        .any(|instance| instance.color() == [0.280, 0.580, 0.920, 0.18]));
-    assert!(with_rubber_band
-        .base_rects
-        .iter()
-        .any(|instance| instance.color() == [0.450, 0.720, 0.980, 0.92]));
+    assert!(
+        with_rubber_band
+            .base_rects
+            .iter()
+            .any(|instance| instance.color() == [0.280, 0.580, 0.920, 0.18])
+    );
+    assert!(
+        with_rubber_band
+            .base_rects
+            .iter()
+            .any(|instance| instance.color() == [0.450, 0.720, 0.980, 0.92])
+    );
 }
 
 #[test]
@@ -100,7 +114,10 @@ fn native_frame_layers_encode_filter_and_details_chrome_as_instances() {
 #[test]
 fn native_text_atlas_uses_retained_shell_label_recipes_without_cpu_quads() {
     let mut scene = test_scene(
-        vec![test_entry("alpha.txt", false), test_entry("beta.txt", false)],
+        vec![
+            test_entry("alpha.txt", false),
+            test_entry("beta.txt", false),
+        ],
         ShellViewMode::Icons,
     );
     let size = PhysicalSize::new(720, 420);

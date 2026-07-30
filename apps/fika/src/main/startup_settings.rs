@@ -68,8 +68,10 @@ use ui::drop_menu::{
     ShellDropMenu, ShellDropMenuCommand, ShellDropOperationRequest, ShellDropTarget,
     drop_menu_items,
 };
+#[cfg(test)]
 use ui::folder_preview::{
-    FileManagerDirectoryPreviewLayout, folder_preview_thumbnail_angle, folder_preview_thumbnail_slots,
+    FileManagerDirectoryPreviewLayout, folder_preview_thumbnail_angle,
+    folder_preview_thumbnail_slots,
 };
 use ui::folder_preview::{
     FOLDER_PREVIEW_LAYOUT_VERSION, folder_preview_directory_seed,
@@ -89,7 +91,7 @@ use ui::location::{
     normalized_text_cursor,
 };
 #[cfg(test)]
-use ui::menu_geometry::{context_menu_rect, context_menu_submenu_rect, drop_menu_rect};
+use ui::menu_geometry::{context_menu_rect, drop_menu_rect};
 use ui::menu_geometry::{
     context_menu_row_at_screen_point, context_submenu_row_at_screen_point,
     drop_menu_row_at_screen_point,
@@ -143,17 +145,10 @@ use ui::pane_layout::{
     IconsLayoutHeightCache, IconsLayoutHeightCacheKey, IconsLayoutHeightCacheValue,
     ShellCompactLayout, ShellLayout, navigation_target,
 };
-use ui::perf::{
-    ShellFrameLatencyAsyncResults, ShellFrameLatencyCounters, ShellFrameLatencyTracker,
-};
 use ui::popup::style::PopupTheme;
 use ui::prewarm::{
-    IconRolePrewarmStats, TextLabelPrewarmMode, TextLabelPrewarmStats,
-    default_text_raster_miss_budget, icon_role_prewarm_budget_for_frame,
-    icon_role_read_ahead_queue_budget_for_frame, text_label_prewarm_budget_for_mode,
-    text_label_prewarm_mode_for_frame, text_label_prewarm_mode_for_scene_prewarm,
-    text_label_raster_miss_budget_for_mode, visible_exact_icon_roles_enabled_for_frame,
-    icon_work_reason_for_frame,
+    IconRolePrewarmStats, default_text_raster_miss_budget, icon_role_prewarm_budget,
+    icon_role_read_ahead_queue_budget_for_frame,
 };
 #[cfg(test)]
 use ui::privilege::{run_privileged_command_sync, should_attempt_privileged_operation};
@@ -163,34 +158,12 @@ use ui::properties::geometry::properties_dialog_window_size_scaled;
 #[cfg(test)]
 use ui::properties::geometry::properties_overlay_rect_scaled;
 use ui::properties::{ShellPropertiesOverlay, property_row};
-#[cfg(test)]
-use ui::render::damage::folder_preview_damage_rects_for_changed_keys;
-use ui::render::damage::folder_preview_damage_rects_for_changes;
-use ui::render::damage_bounds::{DamageScissorRect, ShellRenderDamage, ShellRenderDamageKind};
-#[cfg(test)]
-use ui::render::damage_bounds::{damage_scissor_rect, full_surface_rect, rect_area};
-use ui::render::damage_snapshot::ShellRenderDamageSnapshot;
-use ui::render::dirty_key::{ShellRenderDirtyKey, ShellRenderDirtyKeyContext};
-use ui::render::frame::{
-    DialogFrameRenderers, DialogFrameRequest, FrameGpuContext, SceneFrame, SceneFrameProjections,
-    SceneFrameRenderers, SceneFrameRequest, prepare_dialog_frame, prepare_scene_frame,
-};
-#[cfg(test)]
-use ui::render::gpu::upload_vertex_hash_for_test;
-use ui::render::gpu::{
-    VertexBufferUploadStats, create_icon_bind_group, create_icon_texture, create_text_bind_group,
-    create_text_texture, create_text_vertex_buffer, hash_bytes_with_len,
-    upload_vertex_buffer_if_dirty, vertex_pair_hash,
-};
+use ui::render::projections::SceneFrameProjections;
+use ui::render::gpu::{hash_bytes_with_len, vertex_pair_hash};
 use ui::render::quad::{
-    QuadRenderer, QuadVertex, RoundedHighlightStyle, push_clipped_rect,
-    push_clipped_rect_outline, push_clipped_rounded_highlight, push_clipped_rounded_rect,
-    push_clipped_rounded_rect_outline, push_rect,
+    QuadVertex, RoundedHighlightStyle, push_clipped_rect, push_clipped_rect_outline,
+    push_clipped_rounded_highlight, push_clipped_rounded_rect, push_rect,
 };
-use ui::render::retained::RetainedSceneRenderer;
-#[cfg(test)]
-use ui::render::retained::retained_scene_vertices;
-use ui::render::shaders::{ICON_TEXTURE_SHADER, TEXT_SHADER};
 use ui::render::texture::{AtlasRect, TextVertex, push_textured_rect};
 use ui::role_worker_queue::{PriorityWorkerQueue, PriorityWorkerRequest, WorkerRequestPriority};
 use ui::selection::{
@@ -219,9 +192,7 @@ use ui::shortcuts::{
     view_mode_for_key_parts, zoom_action_for_key, zoom_action_for_scroll_delta,
 };
 use ui::status::paint::{
-    PaneStatusBarPaint, PlacesTaskAreaPaint, StatusZoomIndicatorRects,
-    pane_status_zoom_indicator_rects, push_pane_status_bar as push_status_pane_bar,
-    push_places_task_area as push_status_places_task_area,
+    PaneStatusBarPaint, StatusZoomIndicatorRects, pane_status_zoom_indicator_rects,
 };
 use ui::status::{ShellPaneStatus, ShellTaskStatusStore};
 #[cfg(test)]
@@ -260,10 +231,6 @@ use ui::transfer::{
 #[cfg(test)]
 use ui::transfer::transfer_paths_with_privilege;
 use ui::trash_conflict::{ShellTrashConflictDialog, TrashConflictDialogClick};
-use ui::ui_chrome::{
-    PlaceIconPaint, push_fallback_file_icon, push_location_bar_icon, push_place_icon,
-    push_scrollbar,
-};
 use ui::window_semantics::{ShellWindowRole, apply_window_semantics};
 fn startup_view_mode(
     requested: ShellViewMode,
@@ -296,7 +263,7 @@ fn load_startup_app_settings(settings_path: &Path) -> AppSettings {
         Ok(settings) => settings,
         Err(error) => {
             fika_log!(
-                "[fika-wgpu] settings-load-error path={} error={error}",
+                "[fika] settings-load-error path={} error={error}",
                 settings_path.display()
             );
             AppSettings::default()
@@ -383,20 +350,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let event_loop_proxy = event_loop.create_proxy();
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    if env_flag_enabled("FIKA_VULKAN_RENDERER") {
-        event_loop.run_app(crate::native_vulkan_app::FikaNativeVulkanApp::new(
-            scene,
-            event_loop_proxy,
-        ))?;
-    } else {
-        let app = FikaWgpuApp::new(
-            scene,
-            options.auto_cycle_views,
-            settings_path,
-            event_loop_proxy,
-        );
-        event_loop.run_app(app)?;
-    }
+    let app = FikaApp::new(
+        scene,
+        options.auto_cycle_views,
+        settings_path,
+        event_loop_proxy,
+    );
+    event_loop.run_app(app)?;
     Ok(())
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -449,13 +409,13 @@ impl DialogLifecycleSmoke {
     }
 }
 fn dialog_lifecycle_autosmoke_cycles_from_env() -> usize {
-    env::var_os("FIKA_WGPU_AUTOSMOKE_DIALOG_CYCLES")
+    env::var_os("FIKA_AUTOSMOKE_DIALOG_CYCLES")
         .and_then(|value| value.to_string_lossy().trim().parse::<usize>().ok())
         .filter(|cycles| *cycles > 0)
         .unwrap_or(1)
 }
 fn dialog_lifecycle_autosmoke_kind_from_env() -> ShellDialogWindowKind {
-    let Some(value) = env::var_os("FIKA_WGPU_AUTOSMOKE_DIALOG_KIND") else {
+    let Some(value) = env::var_os("FIKA_AUTOSMOKE_DIALOG_KIND") else {
         return ShellDialogWindowKind::Create;
     };
     match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {

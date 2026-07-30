@@ -12,11 +12,6 @@
         let initial_value = temp.display().to_string();
         assert_eq!(scene.location_draft_value(), Some(initial_value.as_str()));
         assert!(scene.next_animation_frame_deadline().is_some());
-        assert_ne!(
-            scene.animation_dirty_value_with_hover(true),
-            scene.animation_dirty_value_with_hover(false)
-        );
-
         assert!(scene.apply_location_command(LocationCommand::Insert("a".to_string()), size));
         assert_eq!(scene.location_draft_value(), Some("a"));
 
@@ -154,10 +149,6 @@
         assert!(scene.text_caret_visible());
         assert!(scene.next_text_caret_blink_deadline().is_some());
         assert_ne!(scene.location_text_caret_dirty_value(), 0);
-        let editing_key = ShellRenderDirtyKey::from_scene(&scene, size);
-        let editing_hoverless = ShellRenderDirtyKey::from_scene_ignoring_hover(&scene, size);
-        assert_ne!(editing_key, editing_hoverless);
-
         assert!(scene.close_location_draft(size));
         assert!(!scene.location_text_caret_active());
         assert_eq!(scene.location_text_caret_dirty_value(), 0);
@@ -179,6 +170,40 @@
         assert!(scene.text_caret_blink_active());
         assert!(scene.next_text_caret_blink_deadline().is_some());
         assert_ne!(scene.open_with_text_caret_dirty_value(), 0);
+    }
+
+    #[test]
+    fn native_location_overlay_draws_active_text_caret() {
+        let mut scene = test_scene(Vec::new(), ShellViewMode::Compact);
+        scene.panes[ShellPaneId::SLOT_0].path = PathBuf::from("/tmp");
+        let size = PhysicalSize::new(640, 360);
+        assert!(scene.apply_location_command(LocationCommand::Activate, size));
+        assert!(scene.text_caret_visible());
+
+        let mut text_engine = TextEngine::new();
+        text_engine.begin_frame();
+        let mut text = TextFrameBuilder::new(
+            TextFrameResources::from_engine(&mut text_engine),
+            size,
+            scene.ui_scale(),
+            Vec::new(),
+        );
+        let mut instances = Vec::new();
+        scene.push_native_location_bar_carets(
+            &mut instances,
+            &mut text,
+            size,
+            scene.theme(),
+        );
+
+        assert_eq!(instances.len(), 1);
+    }
+
+    #[test]
+    fn emblem_theme_lookup_keeps_dolphin_exact_eight_pixel_variant() {
+        let sizes = preferred_icon_size_dirs(8);
+
+        assert_eq!(&sizes[..2], &["8x8", "8"]);
     }
 
     #[test]

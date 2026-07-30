@@ -350,17 +350,3 @@
             seed: spec.seed,
         }
     }
-
-    fn solid_gpu_icon_spec(width: u32, height: u32, color: [u8; 4]) -> TestGpuIconSpec {
-        let mut seed = 0_u64;
-        for channel in color {
-            seed = seed.rotate_left(8) | u64::from(channel);
-        }
-        TestGpuIconSpec {
-            width,
-            height,
-            seed,
-        }
-    }
-
-    

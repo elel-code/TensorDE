@@ -1,172 +1,16 @@
-use std::borrow::Cow;
-
 use crate::windowing::PhysicalSize;
 use bytemuck::{Pod, Zeroable};
 #[cfg(test)]
 use fika_core::ViewPoint;
 use fika_core::ViewRect;
 
-use crate::ui::render::gpu::{
-    VertexBufferUploadStats, create_vertex_buffer, upload_vertex_buffer_if_dirty,
-};
-use crate::ui::render::shaders::QUAD_SHADER;
+use super::coordinates::rect_to_vulkan_ndc;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct QuadVertex {
     pub(crate) position: [f32; 2],
     pub(crate) color: [f32; 4],
-}
-
-impl QuadVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-
-    pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-pub(crate) struct QuadRenderer {
-    pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_capacity: usize,
-    vertex_count: usize,
-    last_vertices_hash: Option<u64>,
-}
-
-impl QuadRenderer {
-    pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::new_with_blend(device, format, wgpu::BlendState::ALPHA_BLENDING)
-    }
-
-    pub(crate) fn new_transparent_clear(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-    ) -> Self {
-        let mut renderer = Self::new_with_blend(device, format, wgpu::BlendState::REPLACE);
-        renderer.upload(device, queue, &transparent_fullscreen_quad());
-        renderer
-    }
-
-    fn new_with_blend(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        blend: wgpu::BlendState,
-    ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("fika-wgpu-quad-shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(QUAD_SHADER)),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("fika-wgpu-quad-layout"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fika-wgpu-quad-pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(QuadVertex::layout())],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let vertex_capacity = 6;
-        let vertex_buffer = create_vertex_buffer(device, vertex_capacity);
-        Self {
-            pipeline,
-            vertex_buffer,
-            vertex_capacity,
-            vertex_count: 0,
-            last_vertices_hash: None,
-        }
-    }
-
-    pub(crate) fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        vertices: &[QuadVertex],
-    ) -> VertexBufferUploadStats {
-        if vertices.len() > self.vertex_capacity {
-            self.vertex_capacity = vertices.len().next_power_of_two();
-            self.vertex_buffer = create_vertex_buffer(device, self.vertex_capacity);
-            self.last_vertices_hash = None;
-        }
-
-        self.vertex_count = vertices.len();
-        upload_vertex_buffer_if_dirty(
-            queue,
-            &self.vertex_buffer,
-            vertices,
-            &mut self.last_vertices_hash,
-        )
-    }
-
-    pub(crate) fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
-        if self.vertex_count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.draw(0..self.vertex_count as u32, 0..1);
-    }
-
-    pub(crate) fn batch_count(&self) -> usize {
-        usize::from(self.vertex_count > 0)
-    }
-}
-
-fn transparent_fullscreen_quad() -> [QuadVertex; 6] {
-    let color = [0.0; 4];
-    [
-        QuadVertex {
-            position: [-1.0, 1.0],
-            color,
-        },
-        QuadVertex {
-            position: [-1.0, -1.0],
-            color,
-        },
-        QuadVertex {
-            position: [1.0, -1.0],
-            color,
-        },
-        QuadVertex {
-            position: [-1.0, 1.0],
-            color,
-        },
-        QuadVertex {
-            position: [1.0, -1.0],
-            color,
-        },
-        QuadVertex {
-            position: [1.0, 1.0],
-            color,
-        },
-    ]
 }
 
 pub(crate) fn push_clipped_rect(
@@ -453,12 +297,7 @@ pub(crate) fn push_rect(
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return;
     }
-    let width = size.width.max(1) as f32;
-    let height = size.height.max(1) as f32;
-    let left = rect.x / width * 2.0 - 1.0;
-    let right = rect.right() / width * 2.0 - 1.0;
-    let top = 1.0 - rect.y / height * 2.0;
-    let bottom = 1.0 - rect.bottom() / height * 2.0;
+    let [left, top, right, bottom] = rect_to_vulkan_ndc(rect, size);
 
     vertices.extend_from_slice(&[
         QuadVertex {
@@ -504,22 +343,6 @@ fn intersect_rect(rect: ViewRect, clip: ViewRect) -> Option<ViewRect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn transparent_clear_quad_covers_the_full_target_without_color() {
-        let vertices = transparent_fullscreen_quad();
-
-        assert!(vertices.iter().all(|vertex| vertex.color == [0.0; 4]));
-        assert_eq!(
-            quad_screen_rect(&vertices, PhysicalSize::new(120, 80)),
-            ViewRect {
-                x: 0.0,
-                y: 0.0,
-                width: 120.0,
-                height: 80.0,
-            }
-        );
-    }
 
     #[test]
     fn rounded_highlight_with_transparent_fill_paints_only_outline() {
@@ -630,8 +453,8 @@ mod tests {
         let height = size.height.max(1) as f32;
         let left = (min_x + 1.0) * width / 2.0;
         let right = (max_x + 1.0) * width / 2.0;
-        let top = (1.0 - max_y) * height / 2.0;
-        let bottom = (1.0 - min_y) * height / 2.0;
+        let top = (min_y + 1.0) * height / 2.0;
+        let bottom = (max_y + 1.0) * height / 2.0;
         ViewRect {
             x: left,
             y: top,

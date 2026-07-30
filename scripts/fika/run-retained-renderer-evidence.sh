@@ -14,14 +14,14 @@ Options:
       Capture item-view and Places evidence. This is the default.
 
   --items-only
-      Capture only item-view wgpu frame evidence.
+      Capture only item-view Vulkan frame evidence.
 
   --places-only
       Capture only Places evidence.
 
   --metadata-tail-scroll
-      Capture a small extensionless-file directory with wgpu autosmoke scroll
-      enabled and gate metadata role prewarm/drain evidence for tail scrolling.
+      Capture a small extensionless-file directory with Vulkan autosmoke scroll
+      enabled and gate successful frame submission during tail scrolling.
 
   --all
       Same as --core --metadata-tail-scroll.
@@ -265,29 +265,25 @@ if [[ "$capture_metadata_tail_scroll" == true ]]; then
     run_capture "metadata tail scroll" "$metadata_tail_log" \
         env \
             FIKA_LOG=1 \
-            FIKA_WGPU_FRAME_LOG_ALL=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL_RAPID=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL_STEP=160 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL_FORWARD_COUNT=18 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL_BACK_COUNT=0 \
+            FIKA_FRAME_LOG_ALL=1 \
+            FIKA_AUTOSMOKE_SCROLL=1 \
+            FIKA_AUTOSMOKE_SCROLL_RAPID=1 \
+            FIKA_AUTOSMOKE_SCROLL_STEP=160 \
+            FIKA_AUTOSMOKE_SCROLL_FORWARD_COUNT=18 \
+            FIKA_AUTOSMOKE_SCROLL_BACK_COUNT=0 \
             "$binary" --view icons "$metadata_tail_dir"
 
-    run_gate "metadata tail-scroll visible metadata queue" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "metadata tail-scroll Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --gate-scope all \
-        --min-metadata-visible 1 \
         "$metadata_tail_log"
 
-    run_gate "metadata tail-scroll autosmoke metadata drain" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "metadata tail-scroll autosmoke submission" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --require-autosmoke-scroll \
         --gate-scope reason:autosmoke-scroll \
-        --max-icon-raster-us 0 \
-        --min-metadata-results 1 \
-        --min-metadata-applied 1 \
         "$metadata_tail_log"
 fi
 
@@ -299,48 +295,48 @@ if [[ "$capture_items" == true ]]; then
     item_details_log="$(log_path item-etc-details-zoom-scroll)"
 
     run_capture "item downloads" "$item_downloads_log" \
-        env FIKA_LOG=1 FIKA_WGPU_FRAME_LOG_ALL=1 "$binary" "$downloads_dir"
+        env FIKA_LOG=1 FIKA_FRAME_LOG_ALL=1 "$binary" "$downloads_dir"
     run_capture "item etc compact" "$item_etc_log" \
-        env FIKA_LOG=1 FIKA_WGPU_FRAME_LOG_ALL=1 "$binary" --view compact /etc
+        env FIKA_LOG=1 FIKA_FRAME_LOG_ALL=1 "$binary" --view compact /etc
     run_capture "item etc compact zoom-scroll" "$item_zoom_log" \
-        env FIKA_LOG=1 FIKA_WGPU_FRAME_LOG_ALL=1 \
-            FIKA_WGPU_AUTOSMOKE_ZOOM=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL=1 \
+        env FIKA_LOG=1 FIKA_FRAME_LOG_ALL=1 \
+            FIKA_AUTOSMOKE_ZOOM=1 \
+            FIKA_AUTOSMOKE_SCROLL=1 \
             "$binary" --view compact /etc
     run_capture "item etc icons zoom-scroll" "$item_icons_log" \
-        env FIKA_LOG=1 FIKA_WGPU_FRAME_LOG_ALL=1 \
-            FIKA_WGPU_AUTOSMOKE_ZOOM=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL=1 \
+        env FIKA_LOG=1 FIKA_FRAME_LOG_ALL=1 \
+            FIKA_AUTOSMOKE_ZOOM=1 \
+            FIKA_AUTOSMOKE_SCROLL=1 \
             "$binary" --view icons /etc
     run_capture "item etc details zoom-scroll" "$item_details_log" \
-        env FIKA_LOG=1 FIKA_WGPU_FRAME_LOG_ALL=1 \
-            FIKA_WGPU_AUTOSMOKE_ZOOM=1 \
-            FIKA_WGPU_AUTOSMOKE_SCROLL=1 \
+        env FIKA_LOG=1 FIKA_FRAME_LOG_ALL=1 \
+            FIKA_AUTOSMOKE_ZOOM=1 \
+            FIKA_AUTOSMOKE_SCROLL=1 \
             "$binary" --view details /etc
 
-    run_gate "item downloads wgpu frames" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "item downloads Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         "$item_downloads_log"
-    run_gate "item compact wgpu frames" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "item compact Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --gate-scope view:compact \
         "$item_etc_log"
-    run_gate "item compact zoom-scroll wgpu frames" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "item compact zoom-scroll Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --require-autosmoke-scroll \
         --gate-scope reason:autosmoke-scroll \
         "$item_zoom_log"
-    run_gate "item icons zoom-scroll wgpu frames" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "item icons zoom-scroll Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --require-autosmoke-scroll \
         --gate-scope view:icons \
         "$item_icons_log"
-    run_gate "item details zoom-scroll wgpu frames" \
-        bash "$script_dir/analyze-wgpu-frame-log.sh" \
+    run_gate "item details zoom-scroll Vulkan frames" \
+        bash "$script_dir/analyze-vulkan-frame-log.sh" \
         --require-frames \
         --require-autosmoke-scroll \
         --gate-scope view:details \

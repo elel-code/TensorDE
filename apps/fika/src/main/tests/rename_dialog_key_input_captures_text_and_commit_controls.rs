@@ -314,7 +314,7 @@
 
         assert!(scene.zoom(ZoomAction::In, size));
         assert_eq!(scene.zoom_changes, 1);
-        assert!(scene.zoom_percent() > 100);
+        assert!(scene.zoom_percent_for_pane(scene.active_pane()) > 100);
         let icons_after = match scene.layout(size) {
             ShellLayout::Icons(layout) => layout.item(0).unwrap(),
             _ => unreachable!(),
@@ -452,4 +452,112 @@
         assert_eq!(scene.begin_scrollbar_drag(label, size), Some(true));
         assert_eq!(scene.panes[ShellPaneId::SLOT_0].zoom_step, 0);
         assert!(scene.scrollbar_drag.is_none());
+    }
+
+    #[test]
+    fn content_scrollbar_thumb_drag_reports_debounced_visible_range_updates() {
+        let mut scene = test_scene(
+            (0..240)
+                .map(|index| test_entry(&format!("tool-{index:03}"), false))
+                .collect(),
+            ShellViewMode::Compact,
+        );
+        scene.places_visible = false;
+        let size = PhysicalSize::new(760, 520);
+        let pane = ShellPaneId::SLOT_0;
+        let (track, thumb) = scene
+            .pane_content_scrollbar_rects(pane, size)
+            .expect("compact /bin-sized model should expose a horizontal scrollbar");
+        let start = ViewPoint {
+            x: thumb.x + thumb.width / 2.0,
+            y: thumb.y + thumb.height / 2.0,
+        };
+
+        assert_eq!(scene.begin_scrollbar_drag(start, size), Some(false));
+        assert_eq!(
+            scene.scrollbar_drag_visible_role_update_kind(),
+            Some(crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange)
+        );
+        let end = ViewPoint {
+            x: track.right() - 1.0,
+            y: start.y,
+        };
+        assert!(scene.set_pointer(end, size));
+        assert!(scene.panes[pane].scroll_x > 0.0);
+        let _ = scene.end_scrollbar_drag(end, size);
+        assert_eq!(scene.scrollbar_drag_visible_role_update_kind(), None);
+    }
+
+    #[test]
+    fn held_content_scrollbar_thumb_resolves_the_settled_visible_page() {
+        let root = test_dir("held-scrollbar-visible-mime");
+        std::fs::create_dir_all(&root).unwrap();
+        let target_name = "zzz-extensionless-image";
+        std::fs::write(
+            root.join(target_name),
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+        )
+        .unwrap();
+
+        let mut entries = (0..239)
+            .map(|index| test_entry(&format!("tool-{index:03}"), false))
+            .collect::<Vec<_>>();
+        entries.push(test_unchecked_generic_entry(target_name, 24, 0));
+        let mut scene = TestShellSceneBuilder::new()
+            .with_path(root.clone())
+            .with_entries(entries)
+            .with_view_mode(ShellViewMode::Compact)
+            .with_places_visible(false)
+            .build();
+        let size = PhysicalSize::new(760, 520);
+        let pane = ShellPaneId::SLOT_0;
+        let (track, thumb) = scene
+            .pane_content_scrollbar_rects(pane, size)
+            .expect("compact model should expose a horizontal scrollbar");
+        let start = ViewPoint {
+            x: thumb.x + thumb.width / 2.0,
+            y: thumb.y + thumb.height / 2.0,
+        };
+        assert_eq!(scene.begin_scrollbar_drag(start, size), Some(false));
+        assert!(scene.set_pointer(
+            ViewPoint {
+                x: track.right() - 1.0,
+                y: start.y,
+            },
+            size,
+        ));
+
+        let timer_start = Instant::now();
+        let mut updates = crate::ui::prewarm::VisibleRoleUpdateState::default();
+        updates.schedule_visible_range(timer_start);
+        assert_eq!(
+            synchronize_visible_metadata_roles(&mut scene, size, updates.role_updates_paused())
+                .applied,
+            0
+        );
+        assert_eq!(
+            updates.take_due_update(
+                timer_start
+                    + Duration::from_millis(FILE_MANAGER_VISIBLE_RANGE_UPDATE_MS),
+            ),
+            Some(crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange)
+        );
+        assert!(scene.is_scrollbar_dragging());
+
+        let settled = synchronize_visible_metadata_roles(
+            &mut scene,
+            size,
+            updates.role_updates_paused(),
+        );
+        let target = scene.panes[pane]
+            .entries
+            .iter()
+            .find(|entry| entry.name.as_ref() == target_name)
+            .expect("target entry");
+        assert!(settled.visible > 0);
+        assert_eq!(settled.applied, 1);
+        assert!(target.mime_magic_checked);
+        assert_eq!(target.mime_type.as_deref(), Some("image/png"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }

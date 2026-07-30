@@ -30,7 +30,6 @@ pub(crate) const TEXT_LABEL_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const TEXT_LABEL_RECYCLE_CACHE_ENTRIES: usize = 100;
 pub(crate) const TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES: usize = 4096;
 pub(crate) const TEXT_RASTER_MISS_BUDGET_PER_FRAME: usize = 256;
-pub(crate) const VISIBLE_TEXT_LABEL_PREWARM_BUDGET: Duration = Duration::from_millis(8);
 pub(crate) const TEXT_SWASH_IMAGE_CACHE_MAX_ENTRIES: usize = 1024;
 pub(crate) const TEXT_SWASH_OUTLINE_CACHE_MAX_ENTRIES: usize = 256;
 /// Legacy atlas packing constants (text still uses its own atlas; icons are
@@ -45,7 +44,6 @@ pub(crate) const ICON_VISIBLE_SYNC_RESOLVE_BUDGET: usize = 128;
 pub(crate) const ICON_ROLE_READ_AHEAD_LIMIT: usize = 512;
 pub(crate) const ICON_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 64;
 pub(crate) const METADATA_ROLE_BATCH_SIZE: usize = 64;
-pub(crate) const METADATA_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME: usize = 64;
 /// FileManager `ResolveAllItemsLimit` — small directories resolve fully; larger ones
 /// only touch the visible + read-ahead window.
 pub(crate) const FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT: usize = 500;
@@ -54,7 +52,6 @@ pub(crate) const FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT: usize = 500;
 pub(crate) const FILE_MANAGER_MAX_BLOCK_TIMEOUT: Duration = Duration::from_millis(200);
 /// FileManager `KFileItemListView` short delay before applying a new visible range
 /// after scroll (avoids thrashing expensive icon loads mid-fling).
-#[allow(dead_code)]
 pub(crate) const FILE_MANAGER_VISIBLE_RANGE_UPDATE_MS: u64 = 50;
 /// FileManager long delay after icon-size / zoom changes before regenerating previews.
 #[allow(dead_code)]
@@ -101,7 +98,6 @@ pub(crate) const PLACES_ROW_GAP: f32 = 0.0;
 pub(crate) const PLACES_ICON_SIZE: f32 = 22.0;
 pub(crate) const PLACES_TASK_AREA_HEIGHT: f32 = 132.0;
 pub(crate) const PLACES_TASK_AREA_GAP: f32 = 8.0;
-pub(crate) const PLACES_TASK_ROW_HEIGHT: f32 = 40.0;
 pub(crate) const PLACES_SCROLLBAR_WIDTH: f32 = 3.0;
 pub(crate) const PLACES_SCROLLBAR_MARGIN: f32 = 4.0;
 pub(crate) const PLACES_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 28.0;
@@ -164,7 +160,7 @@ pub(crate) const ZOOM_STEP_MAX: i32 = FILE_MANAGER_ZOOM_LEVEL_MAX - FILE_MANAGER
 pub(crate) const AUTO_CYCLE_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(500);
 pub(crate) const DOUBLE_CLICK_MAX_DISTANCE: f32 = 6.0;
-pub(crate) const WGPU_SHELL_PANE_ID: PaneId = PaneId(1);
+pub(crate) const SHELL_PANE_ID: PaneId = PaneId(1);
 
 pub(crate) fn scaled_dialog_metric(value: f32, scale_factor: f32) -> f32 {
     (value * scale_factor.max(1.0)).round().max(1.0)

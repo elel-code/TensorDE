@@ -254,9 +254,6 @@ fn is_hidden_entry(entry: &Entry) -> bool {
 fn content_height(size: PhysicalSize<u32>) -> f32 {
     (size.height as f32 - TOP_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(1.0)
 }
-fn nonzero_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
-    PhysicalSize::new(size.width.max(1), size.height.max(1))
-}
 fn text_metrics_for_label_height(
     label_height: u32,
     max_font_size: f32,

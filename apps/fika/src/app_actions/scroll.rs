@@ -5,9 +5,9 @@ use crate::ui::animation::ShellAnimationKind;
 use crate::ui::shortcuts::{
     PinchZoomTracker, SwipeNavigationTracker, zoom_action_for_scroll_delta,
 };
-use crate::{FikaWgpuApp, SCROLL_REDRAW_FRAMES, scroll_delta_xy};
+use crate::{FikaApp, SCROLL_REDRAW_FRAMES, scroll_delta_xy};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn handle_main_mouse_wheel(&mut self, delta: MouseScrollDelta) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;

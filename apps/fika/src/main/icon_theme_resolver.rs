@@ -339,8 +339,10 @@ fn parse_icon_theme_inherits(contents: &str) -> Vec<String> {
 }
 fn preferred_icon_size_dirs(desired_size: u16) -> Vec<String> {
     let mut dirs = Vec::new();
-    let fixed_sizes = [256u16, 128, 96, 64, 48, 32, 24, 22, 16];
-    let desired = desired_size.max(16);
+    // Dolphin/KIconUtils uses purpose-built 8 px emblem artwork instead of
+    // selecting a 16 px icon and shrinking it after rasterization.
+    let fixed_sizes = [256u16, 128, 96, 64, 48, 32, 24, 22, 16, 8];
+    let desired = desired_size.max(1);
     let mut ordered = fixed_sizes.into_iter().collect::<Vec<_>>();
     ordered.sort_by_key(|size| size.abs_diff(desired));
     for size in ordered {

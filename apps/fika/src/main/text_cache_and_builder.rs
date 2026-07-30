@@ -431,8 +431,6 @@ struct TextCursorLayout {
 enum LabelCacheOutcome {
     Hit,
     Miss,
-    Deferred,
-    Skipped,
 }
 struct TextFrameBuilder<'a> {
     font_system: &'a mut FontSystem,

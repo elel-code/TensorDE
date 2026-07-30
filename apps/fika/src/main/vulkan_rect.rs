@@ -8,6 +8,7 @@ use vulkan_renderer::{
 };
 
 use crate::ViewRect;
+use crate::ui::render::coordinates::rect_to_vulkan_ndc;
 use crate::windowing::PhysicalSize;
 
 use super::vulkan_rect_spirv;
@@ -77,8 +78,8 @@ impl VulkanRectInstance {
             .min(rect.width.max(0.0) * 0.5)
             .min(rect.height.max(0.0) * 0.5);
         Self {
-            rect: rect_to_ndc(rect, width, height),
-            clip: rect_to_ndc(clip, width, height),
+            rect: rect_to_vulkan_ndc(rect, size),
+            clip: rect_to_vulkan_ndc(clip, size),
             color,
             style: [
                 radius * 2.0 / width,
@@ -88,15 +89,6 @@ impl VulkanRectInstance {
             ],
         }
     }
-}
-
-fn rect_to_ndc(rect: ViewRect, width: f32, height: f32) -> [f32; 4] {
-    [
-        rect.x / width * 2.0 - 1.0,
-        1.0 - rect.y / height * 2.0,
-        rect.right() / width * 2.0 - 1.0,
-        1.0 - rect.bottom() / height * 2.0,
-    ]
 }
 
 /// Native frame layers use analytic instances for Fika's texture-free chrome.
@@ -341,7 +333,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(std::mem::size_of::<VulkanRectInstance>(), 64);
-        assert_eq!(instance.rect, [-0.75, 0.75, -0.25, 0.25]);
+        assert_eq!(instance.rect, [-0.75, -0.75, -0.25, -0.25]);
         assert_eq!(instance.style, [0.05, 0.1, 0.0, 0.0]);
         assert_eq!(instance.color(), [0.1, 0.2, 0.3, 0.4]);
     }

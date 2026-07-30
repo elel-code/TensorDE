@@ -20,7 +20,7 @@ Dolphin reference。
 - 本地 Dolphin 文件路径，以及相关 class、function 或数据流；
 - Dolphin 中被复制、改写或明确不复制的行为/性能边界；
 - Fika 中对应的模块或代码路径；
-- 如果 Fika 因 `winit/wgpu` shell 需要偏离 Dolphin，要写明原因；
+- 如果 Fika 因原生 Wayland/Vulkan shell 需要偏离 Dolphin，要写明原因；
 - 本次变更使用的验证命令、日志、benchmark 或 smoke gate。
 
 如果 Dolphin 没有直接对应实现，必须明确写出“无直接 Dolphin reference”，并给出
@@ -120,9 +120,9 @@ Dolphin reference:
 - Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: View paint 入口只处理 view/widget 绘制，窗口系统的 backing surface 与 expose/recover 由 Qt 图形栈统一承担。
-- Fika mapping: src/main.rs WgpuState::acquire_surface_frame / begin_surface_frame_encoding / submit_surface_frame / render / render_detached_dialog。
-- Divergence: 无直接 Dolphin wgpu surface reference；Fika 需要显式处理 wgpu Surface lost/outdated/timeout/validation、texture view/encoder 创建和 submit/present/frame counter，但把 main/dialog 的 acquire/recover/encode setup/present 合并成单一 frame surface 边界，避免 detached dialog 继续维护独立错误策略。
-- Verification: cargo test surface_frame_context_keeps_dialog_suboptimal_recovery_local；cargo check；cargo test；git diff --check。
+- Fika mapping: `src/main/fika_renderer.rs::FikaRenderer::render` / `render_detached_dialog`；`src/main/vulkan_state.rs::VulkanState::present_layers`。
+- Divergence: Dolphin 不直接管理 Vulkan surface；Fika 通过 `vulkan-renderer` 显式执行 swapchain acquire、dynamic rendering、timeline submit 和 FIFO latest-ready present，并把缺失 capability 与 surface 失败作为显式错误。main/dialog 共用同一产品级提交接口，不保留第二种 renderer backend。
+- Verification: `cargo test -p fika --all-targets`；`cargo clippy -p fika --all-targets -- -D warnings`；`cargo test -p vulkan-renderer --all-targets`；`git diff --check`。
 ```
 
 ### Detached dialog frame pipeline
@@ -132,9 +132,9 @@ Dolphin reference:
 - Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: view paint 入口只负责把已经准备好的 view/widget 内容交给 painter，窗口 backing surface、缓存 begin/end 和 expose/present 生命周期由 Qt 图形栈统一承载。
-- Fika mapping: src/ui/render/frame.rs::prepare_dialog_frame；src/main.rs::WgpuState::render_detached_dialog / encode_detached_dialog_pass。
-- Divergence: 无直接 Dolphin dialog+wGPU reference；Fika 的 detached dialog 仍需要显式维护 text/icon atlas、async icon result drain、vertex upload、swash cache trim 和 render pass encode，但这些阶段从具体 dialog window handler 中抽到共享 DialogFrame 边界，避免 Open With 搜索结果变化继续复制一整套上传/重绘管线。
-- Verification: cargo check；cargo test surface_frame_context_keeps_dialog_suboptimal_recovery_local；git diff --check。
+- Fika mapping: `src/main/fika_renderer.rs::FikaRenderer::render_detached_dialog`；`src/ui/dialog_window.rs::ShellDialogWindow`。
+- Divergence: Fika 的 detached dialog 显式维护 Vulkan swapchain、text/icon atlas 和 dynamic rendering 提交，但所有 dialog paint 都进入同一 `PresentLayers` 边界，窗口 handler 不再复制后端管线，也没有隐藏的 CPU 或旧 renderer fallback。
+- Verification: `cargo test -p fika --all-targets`；`scripts/fika/dialog-lifecycle-smoke.sh`（真实桌面会话）；`git diff --check`。
 ```
 
 ### Main SceneFrame upload and retained encode
@@ -144,9 +144,9 @@ Dolphin reference:
 - Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::paint
 - Dolphin boundary: paint 阶段聚合 view/item/widget 绘制，局部 repaint 区域由 view/update 体系传入，具体 backing surface 复制和窗口 present 由 Qt 图形栈承担。
-- Fika mapping: src/ui/render/frame.rs::SceneFrame::upload_quads；src/main.rs::WgpuState::encode_retained_scene_pass / encode_retained_present_pass。
-- Divergence: 无直接 Dolphin retained wGPU reference；Fika 需要显式维护 retained texture、damage scissor、quad/text/icon GPU buffer upload 和 surface present，因此把 quad upload stats 收进 SceneFrame，把 retained scene encode 与 present-copy encode 收成两个固定阶段，后续动画 dirty 和局部 damage 可以在同一 frame encode 边界扩展。
-- Verification: cargo check；cargo test surface_frame_context_keeps_dialog_suboptimal_recovery_local；cargo test；git diff --check。
+- Fika mapping: `src/main/fika_renderer.rs::FikaRenderer::render_inner`；`src/main/vulkan_state.rs::VulkanState::present_layers`；`src/main/vulkan_color.rs`；`src/main/vulkan_icon.rs`。
+- Divergence: Fika 在一条 dynamic-rendering 提交中组合颜色、analytic rect、图标和 R8 文本层；顶点、atlas、图片和绑定内存由 Vulkan 路径保留并以 timeline 回收。frame log 直接记录整条 Vulkan render/present 边界耗时，不再经过中间 renderer texture 与复制 pass。
+- Verification: `scripts/fika/check-vulkan-frame-log-analyzer.sh`；`cargo test -p fika --all-targets`；`cargo test -p vulkan-renderer --all-targets`；`git diff --check`。
 ```
 
 ### SceneFrame work-pending boundary
@@ -156,21 +156,9 @@ Dolphin reference:
 - Source: references/fika/dolphin/src/kitemviews/kfileitemmodelrolesupdater.cpp
 - Symbol: KFileItemModelRolesUpdater::setVisibleIndexRange / startUpdating / resolveNextPendingRoles
 - Dolphin boundary: expensive roles、icons 和 previews 的待处理状态集中在 roles updater，visible range 改变后统一决定继续异步更新，而不是由 paint/event handler 分散判断。
-- Fika mapping: src/ui/render/frame.rs::SceneFrame::work_pending / SceneFrameWorkPending；src/main.rs::WgpuState::render。
-- Divergence: Dolphin 的 pending work 由 Qt/KIO job 和 model updater 驱动；Fika 目前仍有 metadata role worker、icon resolver、icon raster worker、thumbnail worker、folder preview role queue 和 text atlas miss 多个队列，因此先在 SceneFrame 层合并这些“是否需要下一帧”的信号，后续再把 visible-priority queue 和动画 dirty 接入同一入口。
-- Verification: cargo check；cargo test；git diff --check。
-```
-
-### Dirty key projection reuse
-
-```text
-Dolphin reference:
-- Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
-- Symbol: KItemListView::doLayout / slotItemsChanged / m_visibleItems
-- Dolphin boundary: item view layout 维护一份 visible widget/item 集合，role 变化、paint 和局部更新复用该可见集合，而不是在每个判断点重新计算可见项。
-- Fika mapping: src/ui/render/dirty_key.rs::ShellRenderDirtyKey::*_with_projections；src/ui/render/damage_snapshot.rs::ShellRenderDamageSnapshot::from_scene；src/main.rs::WgpuState::render。
-- Divergence: Dolphin 的可见集合是长期 `m_visibleItems` widget map；Fika 当前 frame 仍以临时 `ShellPaneProjection` 表达可见项，因此本次先让 dirty key 和 damage snapshot 复用同一 frame projections，避免 details visible hash 和 folder preview dirty hash 重复触发布局。
-- Verification: cargo test render_dirty_key_with_projections_matches_scene_lookup；cargo check；cargo test；git diff --check。
+- Fika mapping: `src/main/fika_renderer.rs::FikaRenderer::render_inner` 的 `render_work_pending`；`IconFrameStats::deferred`；`TextFrameStats::deferred`。
+- Divergence: Dolphin 的 pending work 由 Qt/KIO job 和 model updater 驱动；Fika 在构建 native Vulkan frame 后合并 icon/text deferred 状态，由产品 controller 决定后续 redraw。metadata、thumbnail 与 folder preview worker 仍按 visible priority 独立调度，但不再绑定旧 renderer frame 类型。
+- Verification: `cargo test -p fika --all-targets`；`cargo clippy -p fika --all-targets -- -D warnings`；`git diff --check`。
 ```
 
 ### SceneFrame projection reuse
@@ -180,9 +168,9 @@ Dolphin reference:
 - Source: references/fika/dolphin/src/kitemviews/kitemlistview.cpp
 - Symbol: KItemListView::doLayout / updateVisibleItems / paint
 - Dolphin boundary: layout 阶段维护的可见 item/widget 集合会被 paint、role update 和局部更新复用；paint 不再为同一帧重新计算可见集合。
-- Fika mapping: src/main.rs::ShellScene::prepare_frame_projection_layouts / update_visible_slot_pools_for_projection_layouts / pane_projections_from_layouts / WgpuState::render / prewarm_scene_caches / ShellScene::build_frame；src/ui/render/frame.rs::SceneFrameProjections / prepare_scene_frame。
-- Divergence: Dolphin 的可见集合是长期 widget map；Fika 仍使用每帧临时 `ShellPaneProjection`，但现在先用一次 layout 产出 prepared projection layouts，visible slot pool 直接消费这份 layout 的可见路径，随后 dirty key、damage、metadata/icon/text prewarm 和 SceneFrame paint 共用同一组 projections，避免 visible slot 更新和主帧 build 阶段分别重跑 layout/projection。
-- Verification: cargo fmt；cargo check；cargo test prepared_pane_projections_match_direct_projection；cargo test render_dirty_key_with_projections_matches_scene_lookup；cargo test；git diff --check。
+- Fika mapping: `ShellScene::prepare_frame_projection_layouts` / `update_visible_slot_pools_for_projection_layouts` / `pane_projections_from_layouts`；`FikaRenderer::prewarm_scene_caches` / `render_inner`。
+- Divergence: Dolphin 的可见集合是长期 widget map；Fika 仍使用每帧临时 `ShellPaneProjection`，但 layout、visible slot、metadata/icon/text prewarm 与 native Vulkan paint 复用同一 projection 边界，不再为旧 dirty/damage backend 维护第二套投影。
+- Verification: `cargo test -p fika pane_projection_assigns_reused_visible_slots`；`cargo test -p fika --all-targets`；`git diff --check`。
 ```
 
 ### Visible slot assignment fused with projection layouts
@@ -217,7 +205,7 @@ Dolphin reference:
 - Symbol: DolphinViewContainer::delayedStatusBarUpdate / updateStatusBar；DolphinStatusBar::setDefaultText / showProgress
 - Dolphin boundary: view container 计算 status text，status bar 负责展示与 progress/task 表现，二者不把任务状态和绘制细节散落进主窗口事件路径。
 - Fika mapping: src/ui/status.rs::ShellPaneStatus / ShellTaskStatusStore；src/ui/status/paint.rs::push_pane_status_bar / push_places_task_area；src/main.rs::ShellScene::push_pane_status_bar / push_places_task_area。
-- Divergence: Dolphin 由 Qt widget/statusbar 拆分展示；Fika 需要手动向 wgpu quad/text frame 写入图元，因此保留 ShellScene 的薄 paint wrapper，但 status summary、task store 和 status/task area paint 已分层。pane qualifier 从 Vec<String> 收敛为单个 String，减少 status frame 路径的临时容器和 join。
+- Divergence: Dolphin 由 Qt widget/statusbar 拆分展示；Fika 需要手动向 native Vulkan color/text stream 写入图元，因此保留 ShellScene 的薄 paint wrapper，但 status summary、task store 和 status/task area paint 已分层。pane qualifier 从 Vec<String> 收敛为单个 String，减少 status frame 路径的临时容器和 join。
 - Verification: cargo fmt；cargo check；cargo test task_status_store；cargo test pane_status_text_is_plain_pane_state；cargo test task_area_opens_detail_dialog_and_clear_keeps_running_tasks_visible；cargo test；git diff --check。
 ```
 

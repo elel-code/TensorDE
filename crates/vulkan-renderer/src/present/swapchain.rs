@@ -18,6 +18,7 @@ pub struct SurfaceConfigurationRequest<'a> {
     pub formats: &'a [vk::SurfaceFormatKHR],
     pub present_modes: &'a [PresentMode],
     pub composite_alpha: &'a [vk::CompositeAlphaFlagsKHR],
+    pub pre_transforms: &'a [vk::SurfaceTransformFlagsKHR],
     pub desired_image_count: u32,
 }
 
@@ -78,6 +79,12 @@ impl SurfaceConfiguration {
             .ok_or_else(|| {
                 Error::Validation("surface has no requested composite alpha mode".into())
             })?;
+        let pre_transform = request
+            .pre_transforms
+            .iter()
+            .copied()
+            .find(|transform| capabilities.supported_transforms.contains(*transform))
+            .ok_or_else(|| Error::Validation("surface has no requested pre-transform".into()))?;
         let extent = capabilities.current_extent.unwrap_or(vk::Extent2D {
             width: request.width.clamp(
                 capabilities.min_image_extent.width,
@@ -106,7 +113,7 @@ impl SurfaceConfiguration {
             usage: request.usage,
             present_mode,
             composite_alpha,
-            pre_transform: capabilities.current_transform,
+            pre_transform,
             image_count,
         })
     }
@@ -538,6 +545,7 @@ mod tests {
                 formats: &formats,
                 present_modes: &modes,
                 composite_alpha: &alpha,
+                pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
                 desired_image_count: 3,
             },
         )
@@ -570,10 +578,38 @@ mod tests {
                     formats: &formats,
                     present_modes: &[PresentMode::Fifo],
                     composite_alpha: &[vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED],
+                    pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
                     desired_image_count: 3,
                 },
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn requested_identity_transform_is_not_replaced_by_the_surface_rotation() {
+        let mut capabilities = capabilities();
+        capabilities.supported_transforms =
+            vk::SurfaceTransformFlagsKHR::IDENTITY | vk::SurfaceTransformFlagsKHR::ROTATE_180;
+        capabilities.current_transform = vk::SurfaceTransformFlagsKHR::ROTATE_180;
+        let configuration = SurfaceConfiguration::choose(
+            &capabilities,
+            Features::FIFO_LATEST_READY,
+            SurfaceConfigurationRequest {
+                width: 1280,
+                height: 720,
+                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                formats: &capabilities.formats,
+                present_modes: &[PresentMode::FifoLatestReady],
+                composite_alpha: &[vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED],
+                pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
+                desired_image_count: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            configuration.pre_transform,
+            vk::SurfaceTransformFlagsKHR::IDENTITY
         );
     }
 }

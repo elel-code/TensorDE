@@ -74,15 +74,6 @@ impl ShellPlace {
         self
     }
 }
-pub(crate) fn place_icon_paint(place: &ShellPlace) -> PlaceIconPaint {
-    PlaceIconPaint::from_flags(
-        place.trash,
-        place.network,
-        place.root,
-        place.editable,
-        place.marker == "D" || place.marker == "/",
-    )
-}
 pub(crate) fn shell_place_icon_name(
     marker: &str,
     trash: bool,

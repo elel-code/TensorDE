@@ -1,6 +1,6 @@
-use crate::{FikaWgpuApp, save_background_effect_settings};
+use crate::{FikaApp, save_background_effect_settings};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn toggle_user_background_blur(&mut self) -> bool {
         if !self.scene.toggle_background_blur() {
             return false;
@@ -26,7 +26,7 @@ impl FikaWgpuApp {
             self.scene.background_blur,
             self.scene.background_opacity,
         ) {
-            fika_log!("[fika-wgpu] settings-save-error {error}");
+            fika_log!("[fika] settings-save-error {error}");
         }
     }
 }

@@ -20,7 +20,7 @@ impl ShellScene {
             self.location_changes += 1;
             self.clamp_scroll(size);
             fika_log!(
-                "[fika-wgpu] add-network-folder input=1 value={:?} changes={}",
+                "[fika] add-network-folder input=1 value={:?} changes={}",
                 self.location_draft_value().unwrap_or(""),
                 self.location_changes
             );
@@ -155,7 +155,7 @@ impl ShellScene {
         self.rubber_band = None;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] location active={} value={:?} changes={}",
+            "[fika] location active={} value={:?} changes={}",
             self.location_draft.is_some() as u8,
             self.location_draft_value().unwrap_or(""),
             self.location_changes
@@ -201,7 +201,7 @@ impl ShellScene {
         }
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] filter active={} pattern={:?} matches={} changes={} selection_changed={}",
+            "[fika] filter active={} pattern={:?} matches={} changes={} selection_changed={}",
             self.filter_active as u8,
             self.filter_pattern,
             self.panes[ShellPaneId::SLOT_0].filtered_indexes.len(),
@@ -221,7 +221,7 @@ impl ShellScene {
         }
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] hidden show={} visible={} changes={} selection_changed={}",
+            "[fika] hidden show={} visible={} changes={} selection_changed={}",
             self.show_hidden as u8,
             self.filtered_entry_count(),
             self.hidden_changes,
@@ -240,7 +240,7 @@ impl ShellScene {
         self.rubber_band = None;
         self.animations.clear();
         fika_log!(
-            "[fika-wgpu] dark-mode enabled={} view_switches={}",
+            "[fika] dark-mode enabled={} view_switches={}",
             self.dark_mode as u8,
             self.view_switches
         );
@@ -304,7 +304,7 @@ impl ShellScene {
         self.scrollbar_drag = None;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] split-pane open=1 changes={} left={} right={}",
+            "[fika] split-pane open=1 changes={} left={} right={}",
             self.split_pane_changes,
             self.panes[ShellPaneId::SLOT_0].path.display(),
             self.panes
@@ -382,7 +382,7 @@ impl ShellScene {
         self.scrollbar_drag = None;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] split-pane open=0 closed={} changes={} remaining={}",
+            "[fika] split-pane open=0 closed={} changes={} remaining={}",
             active.as_str(),
             self.split_pane_changes,
             self.panes[ShellPaneId::SLOT_0].path.display()
@@ -463,7 +463,7 @@ impl ShellScene {
         }
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] scale-factor={:.2} ui_scale={:.2} scroll_x={:.1} scroll_y={:.1}",
+            "[fika] scale-factor={:.2} ui_scale={:.2} scroll_x={:.1} scroll_y={:.1}",
             self.scale_factor,
             self.ui_scale(),
             self.panes[ShellPaneId::SLOT_0].scroll_x,

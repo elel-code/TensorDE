@@ -4,10 +4,10 @@ use crate::windowing::PhysicalSize;
 use super::outcome::ShellActionOutcome;
 use crate::ui::options::ShellViewMode;
 use crate::{
-    FikaWgpuApp, save_places_visible_setting, save_show_hidden_setting, save_view_mode_setting,
+    FikaApp, save_places_visible_setting, save_show_hidden_setting, save_view_mode_setting,
 };
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn set_user_view_mode(
         &mut self,
         view_mode: ShellViewMode,
@@ -17,7 +17,7 @@ impl FikaWgpuApp {
             return false;
         }
         if let Err(error) = save_view_mode_setting(&self.settings_path, view_mode) {
-            fika_log!("[fika-wgpu] settings-save-error {error}");
+            fika_log!("[fika] settings-save-error {error}");
         }
         true
     }
@@ -27,7 +27,7 @@ impl FikaWgpuApp {
             return false;
         }
         if let Err(error) = save_show_hidden_setting(&self.settings_path, self.scene.show_hidden) {
-            fika_log!("[fika-wgpu] settings-save-error {error}");
+            fika_log!("[fika] settings-save-error {error}");
         }
         self.request_settings_dialog_redraw();
         true
@@ -40,7 +40,7 @@ impl FikaWgpuApp {
         if let Err(error) =
             save_places_visible_setting(&self.settings_path, self.scene.places_visible)
         {
-            fika_log!("[fika-wgpu] settings-save-error {error}");
+            fika_log!("[fika] settings-save-error {error}");
         }
         self.request_settings_dialog_redraw();
         true
@@ -58,7 +58,7 @@ impl FikaWgpuApp {
             Ok(true) => self.apply_action_outcome(event_loop, ShellActionOutcome::Present(reason)),
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
-                fika_log!("[fika-wgpu] split-pane-error {error}");
+                fika_log!("[fika] split-pane-error {error}");
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             }
         }
@@ -75,7 +75,7 @@ impl FikaWgpuApp {
             ),
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
-                fika_log!("[fika-wgpu] split-pane-error {error}");
+                fika_log!("[fika] split-pane-error {error}");
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             }
         }

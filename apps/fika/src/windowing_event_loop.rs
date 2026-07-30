@@ -175,10 +175,8 @@ impl EventLoop {
                     self.active.last_pointer_seat.set(Some(seat));
                 }
                 let scale = window.scale_factor();
-                let position = PhysicalPosition::new(
-                    event.position.0 * scale,
-                    event.position.1 * scale,
-                );
+                let position =
+                    PhysicalPosition::new(event.position.0 * scale, event.position.1 * scale);
                 let event = match event.kind {
                     PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                         WindowEvent::PointerMoved { position }
@@ -245,10 +243,7 @@ impl EventLoop {
             Event::Dmabuf(event) => {
                 // Cache feedback for import negotiation; present stays RWH/swapchain.
                 match event {
-                    wayland_client_runtime::DmabufEvent::Feedback {
-                        surface,
-                        feedback,
-                    } => {
+                    wayland_client_runtime::DmabufEvent::Feedback { surface, feedback } => {
                         let surface_id = match surface {
                             Some(id) => {
                                 self.active
@@ -263,17 +258,16 @@ impl EventLoop {
                                 None
                             }
                         };
-                        // Verbose format table only when FIKA_LOG / FIKA_WGPU_LOG is set.
+                        // Verbose format table only when FIKA_LOG is set.
                         // App-level readiness still logs via dmabuf_feedback_updated.
                         if windowing_verbose_log_enabled() {
-                            let pick =
-                                crate::ui::render::dmabuf::pick_import_format(&feedback);
+                            let pick = crate::ui::render::dmabuf::pick_import_format(&feedback);
                             let scope = match surface_id {
                                 Some(id) => format!("surface={id:?}"),
                                 None => "default".to_string(),
                             };
                             eprintln!(
-                                "[fika-wgpu] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
+                                "[fika] dmabuf-feedback {scope} main_device=0x{:x} formats={} tranches={} pick={pick:?}",
                                 feedback.main_device(),
                                 feedback.formats().len(),
                                 feedback.tranches().len(),
@@ -283,17 +277,17 @@ impl EventLoop {
                     }
                     wayland_client_runtime::DmabufEvent::BufferCreated { id } => {
                         if windowing_verbose_log_enabled() {
-                            eprintln!("[fika-wgpu] dmabuf-buffer-created id={id:?}");
+                            eprintln!("[fika] dmabuf-buffer-created id={id:?}");
                         }
                     }
                     wayland_client_runtime::DmabufEvent::BufferFailed => {
                         if windowing_verbose_log_enabled() {
-                            eprintln!("[fika-wgpu] dmabuf-buffer-failed");
+                            eprintln!("[fika] dmabuf-buffer-failed");
                         }
                     }
                     wayland_client_runtime::DmabufEvent::BufferReleased { id } => {
                         if windowing_verbose_log_enabled() {
-                            eprintln!("[fika-wgpu] dmabuf-buffer-released id={id:?}");
+                            eprintln!("[fika] dmabuf-buffer-released id={id:?}");
                         }
                     }
                 }
@@ -401,18 +395,9 @@ impl EventLoop {
                 if !dropped {
                     self.active.dnd_transfers.borrow_mut().remove(&id);
                     if self.window(surface).is_some() {
-                        app.window_event(
-                            &self.active,
-                            surface,
-                            WindowEvent::DragLeft { id },
-                        );
+                        app.window_event(&self.active, surface, WindowEvent::DragLeft { id });
                     }
-                    if let Err(error) = self
-                        .active
-                        .runtime
-                        .borrow_mut()
-                        .discard_dnd_offer(offer)
-                    {
+                    if let Err(error) = self.active.runtime.borrow_mut().discard_dnd_offer(offer) {
                         eprintln!("[fika-wayland] discard DnD offer failed: {error}");
                     }
                 }
@@ -427,11 +412,7 @@ impl EventLoop {
                     transfer.dropped = true;
                 }
                 if self.window(surface).is_some() {
-                    app.window_event(
-                        &self.active,
-                        surface,
-                        WindowEvent::DragDropped { id },
-                    );
+                    app.window_event(&self.active, surface, WindowEvent::DragDropped { id });
                 }
                 self.finish_dnd_if_ready(id);
             }
@@ -473,11 +454,7 @@ impl EventLoop {
             std::mem::take(&mut *events)
         };
         for synthetic in events {
-            app.window_event(
-                &self.active,
-                synthetic.window,
-                synthetic.event,
-            );
+            app.window_event(&self.active, synthetic.window, synthetic.event);
             if let Some(offer) = synthetic.completed_offer {
                 let id = DataTransferId(offer.get());
                 if let Some(transfer) = self.active.dnd_transfers.borrow_mut().get_mut(&id) {
@@ -573,12 +550,7 @@ impl EventLoop {
                 let Some(window) = self.window(surface) else {
                     return Ok(());
                 };
-                let fractional_scale = self
-                    .active
-                    .runtime
-                    .borrow()
-                    .capabilities()
-                    .fractional_scale;
+                let fractional_scale = self.active.runtime.borrow().capabilities().fractional_scale;
                 let (physical, logical, surface_state_changed, resized) = {
                     let mut state = window
                         .state
@@ -609,11 +581,7 @@ impl EventLoop {
                     runtime.commit(surface)?;
                 }
                 if resized {
-                    app.window_event(
-                        &self.active,
-                        surface,
-                        WindowEvent::SurfaceResized(physical),
-                    );
+                    app.window_event(&self.active, surface, WindowEvent::SurfaceResized(physical));
                 }
                 Ok(())
             }
@@ -625,11 +593,7 @@ impl EventLoop {
                 // Native dispatch may already have processed a following
                 // xdg_surface.configure from the same socket batch. Prefer that
                 // compositor-confirmed size over WindowState's provisional one.
-                let configured_logical = self
-                    .active
-                    .runtime
-                    .borrow()
-                    .logical_size(surface);
+                let configured_logical = self.active.runtime.borrow().logical_size(surface);
                 let logical = {
                     let mut state = window
                         .state
@@ -745,11 +709,15 @@ impl EventLoop {
     }
 
     fn window(&self, id: SurfaceId) -> Option<Arc<Window>> {
-        self.active.windows.borrow().get(&id).and_then(Weak::upgrade)
+        self.active
+            .windows
+            .borrow()
+            .get(&id)
+            .and_then(Weak::upgrade)
     }
 }
 
-/// Verbose window-runtime diagnostics (`FIKA_LOG` / `FIKA_WGPU_LOG`), using
+/// Verbose window-runtime diagnostics (`FIKA_LOG`), using
 /// the same policy as the main binary's `fika_log!`.
 fn windowing_verbose_log_enabled() -> bool {
     use std::sync::OnceLock;
@@ -762,6 +730,6 @@ fn windowing_verbose_log_enabled() -> bool {
                 !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
             })
         };
-        on("FIKA_LOG") || on("FIKA_WGPU_LOG")
+        on("FIKA_LOG")
     })
 }

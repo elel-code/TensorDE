@@ -350,6 +350,22 @@ impl ShellScene {
         self.scrollbar_drag.is_some()
     }
 
+    fn scrollbar_drag_visible_role_update_kind(
+        &self,
+    ) -> Option<crate::ui::prewarm::VisibleRoleUpdateKind> {
+        match self.scrollbar_drag?.target {
+            ScrollbarDragTarget::Content { .. }
+            | ScrollbarDragTarget::PlacesResize
+            | ScrollbarDragTarget::SplitPaneResize => {
+                Some(crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange)
+            }
+            ScrollbarDragTarget::StatusZoom { .. } => {
+                Some(crate::ui::prewarm::VisibleRoleUpdateKind::IconSize)
+            }
+            ScrollbarDragTarget::OpenWith | ScrollbarDragTarget::Places => None,
+        }
+    }
+
     fn set_pointer(&mut self, point: ViewPoint, size: PhysicalSize<u32>) -> bool {
         self.pointer = Some(point);
         if self.scrollbar_drag.is_some() {

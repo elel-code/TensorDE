@@ -4,7 +4,7 @@ use crate::windowing::ActiveEventLoop;
 use crate::windowing::PhysicalSize;
 
 use super::outcome::ShellActionOutcome;
-use crate::FikaWgpuApp;
+use crate::FikaApp;
 use crate::navigation_completion::apply_navigation_completion;
 use crate::ui::location::LocationDraftPurpose;
 use crate::ui::operation_request::ShellOperationRequest;
@@ -14,7 +14,7 @@ use crate::ui::tasks::ShellTaskStatus;
 use crate::ui::transfer::{ShellAsyncNavigationCompletion, ShellNavigationHistoryUpdate};
 use fika_core::default_user_places_path;
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn perform_path_navigation(
         &mut self,
         _event_loop: &ActiveEventLoop,
@@ -71,7 +71,7 @@ impl FikaWgpuApp {
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] reload-error {error}");
+                fika_log!("[fika] reload-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Refresh failed",
                     error,
@@ -92,7 +92,7 @@ impl FikaWgpuApp {
         }
         let input = self.scene.location_draft_value().unwrap_or("").to_string();
         let Some((pane, path)) = self.scene.resolved_location_draft() else {
-            fika_log!("[fika-wgpu] location-error input={input:?} error=empty");
+            fika_log!("[fika] location-error input={input:?} error=empty");
             return;
         };
         let closed = self.scene.close_location_draft(size);
@@ -102,7 +102,7 @@ impl FikaWgpuApp {
             ShellNavigationHistoryUpdate::Push,
             "location-commit",
         ) {
-            fika_log!("[fika-wgpu] location-unchanged input={input:?}");
+            fika_log!("[fika] location-unchanged input={input:?}");
             self.apply_window_action_outcome(ShellActionOutcome::redraw_if(closed));
         }
     }
@@ -116,7 +116,7 @@ impl FikaWgpuApp {
         let request = match self.scene.add_network_folder_request_from_draft() {
             Ok(request) => request,
             Err(error) => {
-                fika_log!("[fika-wgpu] add-network-folder-error input={input:?} error={error}");
+                fika_log!("[fika] add-network-folder-error input={input:?} error={error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Add Network Folder failed",
                     error,
@@ -143,7 +143,7 @@ impl FikaWgpuApp {
                 );
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] add-network-folder-error input={input:?} error={error}");
+                fika_log!("[fika] add-network-folder-error input={input:?} error={error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Add Network Folder failed",
                     error,
@@ -206,7 +206,6 @@ impl FikaWgpuApp {
         {
             return false;
         }
-
         let generation = self.navigation_generations[pane.index()].wrapping_add(1);
         self.navigation_generations[pane.index()] = generation;
         self.submit_operation_request(ShellOperationRequest::navigation(

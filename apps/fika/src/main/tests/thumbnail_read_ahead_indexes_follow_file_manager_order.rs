@@ -244,9 +244,6 @@
         let result_stats = runtime.drain_results();
         assert_eq!(result_stats.results, 1);
         assert_eq!(result_stats.applied, 1);
-        assert_eq!(result_stats.changes.len(), 1);
-        assert_eq!(result_stats.changes[0].key, key);
-        assert!(result_stats.changes[0].previous.is_none());
         assert!(runtime.failed.contains(&key));
         assert!(runtime.finished.contains(&key));
         assert!(!runtime.has_pending());

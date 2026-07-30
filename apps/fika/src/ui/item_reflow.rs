@@ -15,7 +15,6 @@ type ReflowRectsByPane = Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)>;
 #[derive(Default)]
 pub(crate) struct ShellItemReflowRuntime {
     pending: Option<ShellPendingItemReflow>,
-    generation: u64,
 }
 
 struct ShellPendingItemReflow {
@@ -35,7 +34,6 @@ impl ShellItemReflowRuntime {
         if !rects_by_pane_moved(&previous_rects_by_pane, &next_rects_by_pane) {
             if self.pending.is_some() {
                 self.pending = None;
-                self.bump_generation();
             }
             return false;
         }
@@ -45,7 +43,6 @@ impl ShellItemReflowRuntime {
             size,
             deadline: Instant::now() + ITEM_REFLOW_ANIMATION_DELAY,
         });
-        self.bump_generation();
         true
     }
 
@@ -68,7 +65,6 @@ impl ShellItemReflowRuntime {
             .as_ref()
             .is_some_and(|pending| now >= pending.deadline)
         {
-            self.bump_generation();
             return self.pending.take();
         }
         None
@@ -78,7 +74,6 @@ impl ShellItemReflowRuntime {
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
-        let old_len = pending.previous_rects_by_pane.len();
         pending
             .previous_rects_by_pane
             .retain(|(pending_pane, _)| *pending_pane != pane);
@@ -88,28 +83,10 @@ impl ShellItemReflowRuntime {
         if pending.previous_rects_by_pane.is_empty() {
             self.pending = None;
         }
-        if self.pending.is_none()
-            || old_len
-                != self
-                    .pending
-                    .as_ref()
-                    .map_or(0, |p| p.previous_rects_by_pane.len())
-        {
-            self.bump_generation();
-        }
     }
 
     fn next_deadline(&self) -> Option<Instant> {
         self.pending.as_ref().map(|pending| pending.deadline)
-    }
-
-    fn dirty_value(&self) -> u64 {
-        let pending = self.pending.is_some() as u64;
-        (self.generation << 32) ^ pending
-    }
-
-    fn bump_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
     }
 }
 
@@ -226,10 +203,6 @@ pub(crate) fn start_due_item_reflow_transitions(scene: &mut ShellScene, now: Ins
 
 pub(crate) fn next_item_reflow_deadline(scene: &ShellScene) -> Option<Instant> {
     scene.item_reflow.next_deadline()
-}
-
-pub(crate) fn item_reflow_dirty_value(scene: &ShellScene) -> u64 {
-    scene.item_reflow.dirty_value()
 }
 
 #[cfg(test)]

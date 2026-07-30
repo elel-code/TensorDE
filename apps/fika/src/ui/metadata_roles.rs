@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,11 +17,9 @@ use crate::ui::file_item_view::{
     shell_file_manager_deferred_all_indexes, shell_file_manager_read_ahead_indexes,
     visible_layout_range_for_projection,
 };
-use crate::ui::metrics::{
-    FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT, METADATA_ROLE_BATCH_SIZE,
-    METADATA_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME,
-};
+use crate::ui::metrics::{FILE_MANAGER_RESOLVE_ALL_ITEMS_LIMIT, METADATA_ROLE_BATCH_SIZE};
 use crate::ui::pane::{ShellPaneId, ShellPaneProjection};
+use crate::windowing::EventLoopProxy;
 
 #[derive(Default)]
 pub(crate) struct MetadataRolePrewarmStats {
@@ -48,15 +47,24 @@ pub(crate) struct ShellMetadataRoleRuntime {
     scheduler: RefCell<MetadataRoleScheduler>,
     tx: Option<Sender<MetadataRoleBatch>>,
     rx: Receiver<Vec<MetadataRoleResult>>,
+    wake_proxy: Arc<Mutex<Option<EventLoopProxy>>>,
 }
 
 impl ShellMetadataRoleRuntime {
     pub(crate) fn new() -> Self {
-        let (tx, rx) = shell_metadata_role_channel();
+        let wake_proxy = Arc::new(Mutex::new(None));
+        let (tx, rx) = shell_metadata_role_channel(wake_proxy.clone());
         Self {
             scheduler: RefCell::new(MetadataRoleScheduler::default()),
             tx,
             rx,
+            wake_proxy,
+        }
+    }
+
+    pub(crate) fn set_event_loop_proxy(&self, proxy: EventLoopProxy) {
+        if let Ok(mut wake_proxy) = self.wake_proxy.lock() {
+            *wake_proxy = Some(proxy);
         }
     }
 
@@ -90,17 +98,7 @@ impl ShellMetadataRoleRuntime {
                 stats.queued_snapshots += 1;
             }
         }
-        if let Some(batch) = self
-            .scheduler
-            .borrow_mut()
-            .start_role_batch(METADATA_ROLE_BATCH_SIZE)
-        {
-            if self.tx.as_ref().is_some_and(|tx| tx.send(batch).is_ok()) {
-                stats.batches_started += 1;
-            } else {
-                self.scheduler.borrow_mut().finish_role_batch();
-            }
-        }
+        stats.batches_started += usize::from(self.start_next_batch());
         stats
     }
 
@@ -133,9 +131,30 @@ impl ShellMetadataRoleRuntime {
                 .count();
             ready.extend(results.into_iter().zip(priorities));
         }
+        stats.batches_started += usize::from(self.start_next_batch());
         (stats, ready)
     }
 
+    fn start_next_batch(&self) -> bool {
+        let Some(batch) = self
+            .scheduler
+            .borrow_mut()
+            .start_role_batch(METADATA_ROLE_BATCH_SIZE)
+        else {
+            return false;
+        };
+        if self.tx.as_ref().is_some_and(|tx| tx.send(batch).is_ok()) {
+            true
+        } else {
+            self.scheduler.borrow_mut().finish_role_batch();
+            false
+        }
+    }
+
+    /// Mirrors Dolphin's `updateVisibleIcons()`: after the 50 ms visible-range
+    /// timer settles, resolve the current viewport as one bounded synchronous
+    /// transaction before publishing a frame. This prevents a completed
+    /// 64-item worker batch from changing MIME identities one item at a time.
     pub(crate) fn resolve_visible_synchronously(
         &self,
         projections: &[ShellPaneProjection<'_>],
@@ -159,22 +178,12 @@ impl ShellMetadataRoleRuntime {
             ..MetadataRoleSyncStats::default()
         };
         let started = Instant::now();
-        let mut results = Vec::with_capacity(requests.len());
-        for request in requests {
-            if started.elapsed() >= budget {
-                stats.over_budget = true;
-                break;
-            }
-            results.push(metadata_role_result_for_request(request));
-        }
+        let results = resolve_visible_requests_bounded(requests, started, budget);
         stats.resolved = results.len();
         stats.deferred = stats.visible.saturating_sub(stats.resolved);
+        stats.over_budget = stats.deferred > 0;
         stats.resolve_us = started.elapsed().as_micros();
         (stats, results)
-    }
-
-    pub(crate) fn has_visible_pending(&self) -> bool {
-        self.scheduler.borrow().has_visible_pending()
     }
 
     pub(crate) fn cancel_pane(&self, pane: ShellPaneId) {
@@ -184,15 +193,68 @@ impl ShellMetadataRoleRuntime {
     }
 }
 
-fn shell_metadata_role_channel() -> (
+fn resolve_visible_requests_bounded(
+    requests: Vec<MetadataRoleRequest>,
+    started: Instant,
+    budget: Duration,
+) -> Vec<MetadataRoleResult> {
+    const MAX_WORKERS: usize = 4;
+    const PARALLEL_THRESHOLD: usize = 16;
+
+    if requests.len() < PARALLEL_THRESHOLD {
+        return requests
+            .into_iter()
+            .take_while(|_| started.elapsed() < budget)
+            .map(metadata_role_result_for_request)
+            .collect();
+    }
+
+    let worker_count = thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(MAX_WORKERS)
+        .min(requests.len());
+    let chunk_size = requests.len().div_ceil(worker_count);
+    let mut requests = requests.into_iter();
+    let partitions = (0..worker_count)
+        .map(|_| requests.by_ref().take(chunk_size).collect::<Vec<_>>())
+        .filter(|partition| !partition.is_empty())
+        .collect::<Vec<_>>();
+
+    thread::scope(|scope| {
+        let handles = partitions
+            .into_iter()
+            .map(|partition| {
+                scope.spawn(move || {
+                    partition
+                        .into_iter()
+                        .take_while(|_| started.elapsed() < budget)
+                        .map(metadata_role_result_for_request)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .expect("visible MIME resolver worker panicked")
+            })
+            .collect()
+    })
+}
+
+fn shell_metadata_role_channel(
+    wake_proxy: Arc<Mutex<Option<EventLoopProxy>>>,
+) -> (
     Option<Sender<MetadataRoleBatch>>,
     Receiver<Vec<MetadataRoleResult>>,
 ) {
     let (request_tx, request_rx) = mpsc::channel::<MetadataRoleBatch>();
     let (result_tx, result_rx) = mpsc::channel::<Vec<MetadataRoleResult>>();
     let request_tx = thread::Builder::new()
-        .name("fika-wgpu-metadata-role".to_string())
-        .spawn(move || shell_metadata_role_worker(request_rx, result_tx))
+        .name("fika-metadata-role".to_string())
+        .spawn(move || shell_metadata_role_worker(request_rx, result_tx, wake_proxy))
         .ok()
         .map(|_| request_tx);
     (request_tx, result_rx)
@@ -201,11 +263,15 @@ fn shell_metadata_role_channel() -> (
 fn shell_metadata_role_worker(
     request_rx: Receiver<MetadataRoleBatch>,
     result_tx: Sender<Vec<MetadataRoleResult>>,
+    wake_proxy: Arc<Mutex<Option<EventLoopProxy>>>,
 ) {
     while let Ok(batch) = request_rx.recv() {
         let results = metadata_role_results_for_requests(batch.requests);
         if result_tx.send(results).is_err() {
             break;
+        }
+        if let Some(proxy) = wake_proxy.lock().ok().and_then(|proxy| proxy.clone()) {
+            proxy.wake_up();
         }
     }
 }
@@ -247,7 +313,6 @@ fn metadata_role_candidates_for_deferred_projection(
         let entry = projection.view.entries.get(entry_index)?;
         shell_metadata_role_candidate(projection.view.path, entry_index, entry)
     })
-    .take(METADATA_ROLE_READ_AHEAD_QUEUE_BUDGET_PER_FRAME)
     .collect()
 }
 

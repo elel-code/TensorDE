@@ -16,7 +16,7 @@ use crate::ui::transfer::{
 
 /// Typed async work submitted by UI actions into the operation dispatcher.
 ///
-/// Call sites should build a request and call `FikaWgpuApp::submit_operation_request`
+/// Call sites should build a request and call `FikaApp::submit_operation_request`
 /// rather than invoking individual spawn helpers.
 ///
 /// Not `Clone`: some variants own oneshot/mpsc receivers that cannot be cloned.

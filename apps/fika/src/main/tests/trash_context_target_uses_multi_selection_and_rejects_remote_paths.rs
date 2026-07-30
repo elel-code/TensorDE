@@ -258,7 +258,7 @@
             action: ShellContextMenuAction::EmptyTrash,
             pane_to_reload: ShellPaneId::SLOT_0,
             result: TrashViewOperationResult {
-                pane_id: WGPU_SHELL_PANE_ID,
+                pane_id: SHELL_PANE_ID,
                 operation: TrashViewOperation::Empty,
                 success_count: 1,
                 failure_count: 0,
@@ -443,7 +443,7 @@
     #[test]
     fn load_path_replaces_entries_and_resets_transient_state() {
         let unique = format!(
-            "fika-wgpu-load-path-{}-{}",
+            "fika-load-path-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

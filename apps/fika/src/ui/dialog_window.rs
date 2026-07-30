@@ -7,7 +7,7 @@ use crate::windowing::{
     WindowEvent, WindowId,
 };
 
-use crate::WgpuState;
+use crate::FikaRenderer;
 use crate::ui::window_semantics::{ShellDialogWindowRole, ShellWindowRole, apply_window_semantics};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -95,7 +95,7 @@ impl ShellDialogWindowSpec {
 
 pub(crate) struct ShellDetachedDialogWindow {
     kind: ShellDialogWindowKind,
-    renderer: WgpuState,
+    renderer: FikaRenderer,
     window: Arc<Window>,
     layout_size: PhysicalSize<u32>,
     cursor_icon: CursorIcon,
@@ -104,20 +104,17 @@ pub(crate) struct ShellDetachedDialogWindow {
 impl ShellDetachedDialogWindow {
     pub(crate) fn create(
         event_loop: &ActiveEventLoop,
-        shared_renderer: Option<&WgpuState>,
+        _shared_renderer: Option<&FikaRenderer>,
         kind: ShellDialogWindowKind,
         spec: &ShellDialogWindowSpec,
     ) -> Result<Self, String> {
         let window = event_loop
             .create_window(spec.window_attributes(event_loop, kind))
             .map_err(|error| format!("{} dialog window create failed: {error}", kind.as_str()))?;
-        let renderer = match shared_renderer {
-            Some(renderer) => WgpuState::new_with_shared_device(window.clone(), renderer),
-            None => WgpuState::new(window.clone()),
-        }
-        .map_err(|error| format!("{} dialog renderer init failed: {error}", kind.as_str()))?;
+        let renderer = FikaRenderer::new(window.clone())
+            .map_err(|error| format!("{} dialog renderer init failed: {error}", kind.as_str()))?;
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-window-created kind={} window={:?} surface={}x{}",
+            "[fika] dialog-window-created kind={} window={:?} surface={}x{}",
             kind.as_str(),
             window.id(),
             spec.surface_size.width,
@@ -163,14 +160,24 @@ impl ShellDetachedDialogWindow {
         self.window.set_min_surface_size(spec.min_surface_size);
         self.window.set_max_surface_size(spec.max_surface_size);
         self.window.set_resizable(spec.resizable);
-        if let Some(applied) = self.window.request_surface_size(spec.surface_size) {
-            self.renderer.resize(applied);
+        if let Some(applied) = self.window.request_surface_size(spec.surface_size)
+            && let Err(error) = self.renderer.resize(applied)
+        {
+            eprintln!(
+                "[fika-vulkan] {} dialog resize failed: {error}",
+                self.kind.as_str()
+            );
         }
         self.request_redraw();
     }
 
     pub(crate) fn resize(&mut self, size: PhysicalSize<u32>) {
-        self.renderer.resize(size);
+        if let Err(error) = self.renderer.resize(size) {
+            eprintln!(
+                "[fika-vulkan] {} dialog resize failed: {error}",
+                self.kind.as_str()
+            );
+        }
     }
 
     pub(crate) fn request_redraw(&self) {
@@ -193,14 +200,19 @@ impl ShellDetachedDialogWindow {
 
     fn prepare_for_drop(&mut self) {
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-window-renderer-idle kind={} window={:?}",
+            "[fika] dialog-window-renderer-idle kind={} window={:?}",
             self.kind.as_str(),
             self.window_id()
         );
-        self.renderer.wait_idle("dialog-window-drop");
+        if let Err(error) = self.renderer.wait_idle("dialog-window-drop") {
+            eprintln!(
+                "[fika-vulkan] {} dialog idle failed: {error}",
+                self.kind.as_str()
+            );
+        }
     }
 
-    pub(crate) fn renderer_and_window_mut(&mut self) -> (&mut WgpuState, &Window) {
+    pub(crate) fn renderer_and_window_mut(&mut self) -> (&mut FikaRenderer, &Window) {
         (&mut self.renderer, self.window.as_ref())
     }
 }
@@ -337,7 +349,7 @@ impl ShellDialogWindows {
     pub(crate) fn set(&mut self, kind: ShellDialogWindowKind, window: ShellDetachedDialogWindow) {
         debug_assert_eq!(window.kind(), kind);
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-window-set kind={} window={:?}",
+            "[fika] dialog-window-set kind={} window={:?}",
             kind.as_str(),
             window.window_id()
         );
@@ -365,7 +377,7 @@ impl ShellDialogWindows {
         if let Some(window) = closed {
             let window_id = window.window_id();
             fika_dialog_trace!(
-                "[fika-wgpu] dialog-window-close-deferred kind={} window={:?}",
+                "[fika] dialog-window-close-deferred kind={} window={:?}",
                 kind.as_str(),
                 window_id
             );
@@ -378,7 +390,7 @@ impl ShellDialogWindows {
             true
         } else {
             fika_dialog_trace!(
-                "[fika-wgpu] dialog-window-close kind={} window=<none>",
+                "[fika] dialog-window-close kind={} window=<none>",
                 kind.as_str()
             );
             false
@@ -395,7 +407,7 @@ impl ShellDialogWindows {
                 continue;
             }
             fika_dialog_trace!(
-                "[fika-wgpu] dialog-window-drop-deferred kind={} window={:?}",
+                "[fika] dialog-window-drop-deferred kind={} window={:?}",
                 close.kind.as_str(),
                 close.window_id
             );
@@ -424,7 +436,7 @@ impl ShellDialogWindows {
         .flatten()
         {
             fika_dialog_trace!(
-                "[fika-wgpu] dialog-window-close-all kind={} window={:?}",
+                "[fika] dialog-window-close-all kind={} window={:?}",
                 window.kind().as_str(),
                 window.window_id()
             );
@@ -432,7 +444,7 @@ impl ShellDialogWindows {
         }
         while let Some(mut close) = self.deferred_closes.pop_front() {
             fika_dialog_trace!(
-                "[fika-wgpu] dialog-window-close-all-deferred kind={} window={:?}",
+                "[fika] dialog-window-close-all-deferred kind={} window={:?}",
                 close.kind.as_str(),
                 close.window_id
             );

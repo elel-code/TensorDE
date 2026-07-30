@@ -177,10 +177,10 @@ env \
     XDG_CACHE_HOME="$tmpdir/cache" \
     XDG_DATA_HOME="$tmpdir/data" \
     FIKA_LOG=1 \
-    FIKA_WGPU_DIALOG_TRACE=1 \
-    FIKA_WGPU_AUTOSMOKE_DIALOG_LIFECYCLE=1 \
-    FIKA_WGPU_AUTOSMOKE_DIALOG_KIND="$dialog_kind" \
-    FIKA_WGPU_AUTOSMOKE_DIALOG_CYCLES="$cycles" \
+    FIKA_DIALOG_TRACE=1 \
+    FIKA_AUTOSMOKE_DIALOG_LIFECYCLE=1 \
+    FIKA_AUTOSMOKE_DIALOG_KIND="$dialog_kind" \
+    FIKA_AUTOSMOKE_DIALOG_CYCLES="$cycles" \
     timeout "${timeout_seconds}s" "$binary" "$target_path" >"$log_path" 2>&1
 status=$?
 set -e
@@ -191,31 +191,25 @@ if [[ $status -ne 0 && $status -ne 124 ]]; then
     exit 1
 fi
 
-if ! rg -q "\[fika-wgpu\] dialog-smoke complete" "$log_path"; then
+if ! rg -q "\[fika\] dialog-smoke complete" "$log_path"; then
     echo "fail: missing dialog-smoke complete marker" >&2
     echo "log: $log_path" >&2
     exit 1
 fi
 
-if ! rg -q "\[fika-wgpu\] renderer-shared-device" "$log_path"; then
-    echo "fail: dialog renderer did not reuse the main wgpu device" >&2
-    echo "log: $log_path" >&2
-    exit 1
-fi
-
-if ! rg -q "\[fika-wgpu\] dialog-window-drop-deferred kind=$dialog_kind" "$log_path"; then
+if ! rg -q "\[fika\] dialog-window-drop-deferred kind=$dialog_kind" "$log_path"; then
     echo "fail: missing deferred dialog drop marker" >&2
     echo "log: $log_path" >&2
     exit 1
 fi
 
-if rg -q "\[fika-wgpu\] dialog-window-(close-parked|reuse-parked) kind=$dialog_kind" "$log_path"; then
+if rg -q "\[fika\] dialog-window-(close-parked|reuse-parked) kind=$dialog_kind" "$log_path"; then
     echo "fail: dialog lifecycle used hidden parked window fallback" >&2
     echo "log: $log_path" >&2
     exit 1
 fi
 
-if rg -q "\[fika-wgpu\] event-loop-exit reason=main-close-requested" "$log_path"; then
+if rg -q "\[fika\] event-loop-exit reason=main-close-requested" "$log_path"; then
     echo "fail: main window close requested during dialog lifecycle smoke" >&2
     echo "log: $log_path" >&2
     exit 1

@@ -101,6 +101,12 @@ pub use upload::{
     ImageDataLayout, ImageUpload, TexelBlockLayout, UploadBatch, UploadBelt, UploadBeltDescriptor,
     UploadBeltStats, UploadSlice,
 };
+/// Full raw Vulkanalia re-export for embedders migrating onto this crate.
+///
+/// Applications must not add their own `vulkanalia` dependency; version and
+/// feature selection (including `libloading`) is owned here so the whole
+/// workspace shares one loader contract.
+pub use vulkanalia;
 /// Includes a little-endian, four-byte-aligned SPIR-V asset as `&[u32]`.
 ///
 /// This is the standard shader-asset inclusion path for consumers. It keeps

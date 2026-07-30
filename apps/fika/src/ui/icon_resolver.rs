@@ -35,7 +35,6 @@ const FILE_MANAGER_VISIBLE_ICON_PREWARM_SIZES: &[u16] =
 #[derive(Clone, Debug)]
 struct IconResolveRequest {
     key: FileIconPathCacheKey,
-    priority: IconResolvePriority,
 }
 
 impl PriorityWorkerRequest for IconResolveRequest {
@@ -46,17 +45,13 @@ impl PriorityWorkerRequest for IconResolveRequest {
     }
 
     fn priority(&self) -> WorkerRequestPriority {
-        match self.priority {
-            IconResolvePriority::Visible => WorkerRequestPriority::Visible,
-            IconResolvePriority::Deferred => WorkerRequestPriority::Deferred,
-        }
+        WorkerRequestPriority::Deferred
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum IconResolvePriority {
     Deferred,
-    Visible,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +65,7 @@ impl FileIconResolver {
         let (request_tx, request_rx) = mpsc::channel::<IconResolveRequest>();
         let (result_tx, result_rx) = mpsc::channel::<IconResolveResult>();
         let request_tx = thread::Builder::new()
-            .name("fika-wgpu-icon-resolver".to_string())
+            .name("fika-icon-resolver".to_string())
             .spawn(move || icon_resolve_worker(request_rx, result_tx))
             .ok()
             .map(|_| request_tx);
@@ -227,6 +222,33 @@ impl FileIconResolver {
         self.resolve_key(key, IconResolvePriority::Deferred)
     }
 
+    /// Reads only the role snapshot that was already committed before the
+    /// current scroll transaction. Completed worker messages intentionally
+    /// remain queued until the visible-range updater is unpaused at settle.
+    pub(crate) fn cached_path_cache_key(
+        &self,
+        key: &FileIconPathCacheKey,
+    ) -> Option<ResolvedFileIcon> {
+        self.cached.get(key).cloned()
+    }
+
+    /// Returns the already-prewarmed preliminary file icon without touching
+    /// the icon theme on the frame thread. Dolphin keeps showing preliminary
+    /// icons while its visible-range role updater is paused during scrolling.
+    pub(crate) fn cached_preliminary_file_icon(
+        &self,
+        size_px: u16,
+    ) -> Option<(FileIconRoleCacheKey, ResolvedFileIcon)> {
+        let role = FileIconRoleCacheKey {
+            kind: FileIconKind::PreliminaryFile { extension: None },
+        };
+        let key = FileIconPathCacheKey {
+            role: role.clone(),
+            size_px,
+        };
+        self.cached.get(&key).cloned().map(|icon| (role, icon))
+    }
+
     pub(crate) fn resolve_path_cache_key_fast(
         &mut self,
         key: FileIconPathCacheKey,
@@ -253,7 +275,7 @@ impl FileIconResolver {
             if self
                 .request_tx
                 .as_ref()
-                .is_none_or(|tx| tx.send(IconResolveRequest { key, priority }).is_err())
+                .is_none_or(|tx| tx.send(IconResolveRequest { key }).is_err())
             {
                 self.pending.clear();
             }
@@ -284,27 +306,14 @@ impl FileIconResolver {
     }
 
     pub(crate) fn drain_results_by_priority(&mut self) -> (usize, usize) {
-        let mut visible = 0usize;
+        let visible = 0usize;
         let mut deferred = 0usize;
         while let Ok(result) = self.result_rx.try_recv() {
-            match self
-                .pending
-                .remove(&result.key)
-                .unwrap_or(IconResolvePriority::Deferred)
-            {
-                IconResolvePriority::Visible => visible += 1,
-                IconResolvePriority::Deferred => deferred += 1,
-            }
+            let _ = self.pending.remove(&result.key);
+            deferred += 1;
             self.cached.insert(result.key, result.icon);
         }
         (visible, deferred)
-    }
-
-    pub(crate) fn has_visible_pending(&mut self) -> bool {
-        self.drain_results();
-        self.pending
-            .values()
-            .any(|priority| *priority == IconResolvePriority::Visible)
     }
 }
 
@@ -384,89 +393,40 @@ impl FileIconResolverTestHarness {
 mod tests {
     use super::*;
 
-    fn test_mime_key(mime: &'static str) -> FileIconPathCacheKey {
-        FileIconPathCacheKey {
+    #[test]
+    fn cached_scroll_lookup_does_not_publish_completed_worker_result() {
+        let (_request_tx, request_rx) = mpsc::channel::<IconResolveRequest>();
+        let (result_tx, result_rx) = mpsc::channel::<IconResolveResult>();
+        drop(request_rx);
+        let key = FileIconPathCacheKey {
             role: FileIconRoleCacheKey {
                 kind: FileIconKind::Mime {
-                    mime: Arc::from(mime),
+                    mime: Arc::from("text/plain"),
                 },
             },
             size_px: 32,
-        }
-    }
-
-    #[test]
-    fn icon_resolve_worker_queue_promotes_visible_request_over_deferred() {
-        let mut queue = PriorityWorkerQueue::default();
-        let first = test_mime_key("text/plain");
-        let second = test_mime_key("image/png");
-
-        queue.push(IconResolveRequest {
-            key: first.clone(),
-            priority: IconResolvePriority::Deferred,
-        });
-        queue.push(IconResolveRequest {
-            key: second.clone(),
-            priority: IconResolvePriority::Deferred,
-        });
-        queue.push(IconResolveRequest {
-            key: first.clone(),
-            priority: IconResolvePriority::Visible,
-        });
-
-        let promoted = queue
-            .pop_ready()
-            .expect("visible request should be available first");
-        assert_eq!(promoted.key, first);
-        assert_eq!(promoted.priority, IconResolvePriority::Visible);
-
-        let remaining = queue
-            .pop_ready()
-            .expect("unpromoted deferred request should remain queued");
-        assert_eq!(remaining.key, second);
-        assert_eq!(remaining.priority, IconResolvePriority::Deferred);
-        assert!(queue.pop_ready().is_none());
-    }
-
-    #[test]
-    fn file_icon_resolver_promotes_pending_deferred_key_to_visible() {
-        let (request_tx, request_rx) = mpsc::channel::<IconResolveRequest>();
-        let (_result_tx, result_rx) = mpsc::channel::<IconResolveResult>();
+        };
+        let expected = ResolvedFileIcon {
+            path: Some(PathBuf::from("/theme/text-plain.svg")),
+        };
         let mut resolver = FileIconResolver {
             cached: HashMap::new(),
-            pending: HashMap::new(),
+            pending: HashMap::from([(key.clone(), IconResolvePriority::Deferred)]),
             fast_theme: IconThemeResolver::default(),
             fast_profiles: HashMap::new(),
-            request_tx: Some(request_tx),
+            request_tx: None,
             result_rx,
         };
-        let key = test_mime_key("text/plain");
+        result_tx
+            .send(IconResolveResult {
+                key: key.clone(),
+                icon: expected.clone(),
+            })
+            .unwrap();
 
-        assert_eq!(
-            resolver.resolve_key(key.clone(), IconResolvePriority::Deferred),
-            None
-        );
-        assert!(!resolver.has_visible_pending());
-        let deferred = request_rx
-            .try_recv()
-            .expect("deferred miss should queue worker request");
-        assert_eq!(deferred.key, key);
-        assert_eq!(deferred.priority, IconResolvePriority::Deferred);
-
-        assert_eq!(
-            resolver.resolve_key(key.clone(), IconResolvePriority::Visible),
-            None
-        );
-        let visible = request_rx
-            .try_recv()
-            .expect("visible miss should promote pending worker request");
-        assert_eq!(visible.key, key);
-        assert_eq!(visible.priority, IconResolvePriority::Visible);
-        assert_eq!(
-            resolver.pending.get(&key),
-            Some(&IconResolvePriority::Visible)
-        );
-        assert!(resolver.has_visible_pending());
+        assert_eq!(resolver.cached_path_cache_key(&key), None);
+        assert_eq!(resolver.drain_results(), 1);
+        assert_eq!(resolver.cached_path_cache_key(&key), Some(expected));
     }
 
     #[test]

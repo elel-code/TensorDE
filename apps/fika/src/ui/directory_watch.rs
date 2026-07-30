@@ -80,7 +80,7 @@ impl ShellDirectoryWatcherRuntime {
                     self.failed_paths.remove(&pane);
                     self.watchers.insert(pane, watcher);
                     fika_log!(
-                        "[fika-wgpu] directory-watch-start pane={} path={}",
+                        "[fika] directory-watch-start pane={} path={}",
                         pane.as_str(),
                         path.display()
                     );
@@ -88,7 +88,7 @@ impl ShellDirectoryWatcherRuntime {
                 Err(error) => {
                     self.failed_paths.insert(pane, path.clone());
                     fika_log!(
-                        "[fika-wgpu] directory-watch-start-error pane={} path={} error={error}",
+                        "[fika] directory-watch-start-error pane={} path={} error={error}",
                         pane.as_str(),
                         path.display()
                     );
@@ -123,7 +123,7 @@ impl ShellDirectoryWatcherRuntime {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    fika_log!("[fika-wgpu] directory-watch-error {error}");
+                    fika_log!("[fika] directory-watch-error {error}");
                     should_debounce |= self.schedule_all_watched_reloads();
                 }
             }

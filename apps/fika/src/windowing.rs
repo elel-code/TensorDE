@@ -380,7 +380,7 @@ impl ActiveEventLoop {
             .or_else(|| self.dmabuf_default_feedback.borrow().clone())
     }
 
-    /// Prefer a wgpu-importable format from cached feedback (surface then default).
+    /// Prefer a Vulkan-importable format from cached feedback (surface then default).
     #[allow(dead_code)]
     pub fn preferred_dmabuf_import_format(
         &self,

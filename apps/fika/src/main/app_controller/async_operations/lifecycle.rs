@@ -1,4 +1,4 @@
-impl FikaWgpuApp {
+impl FikaApp {
     fn next_task_id(&mut self) -> ShellTaskId {
         let task_id = self.next_task_id;
         self.next_task_id = self.next_task_id.saturating_add(1).max(1);

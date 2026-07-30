@@ -21,7 +21,7 @@ impl ShellScene {
             .join(", ");
 
         fika_log!(
-            "[fika-wgpu] path={} entries={} dirs={} files={} load={}us",
+            "[fika] path={} entries={} dirs={} files={} load={}us",
             path.display(),
             entries.len(),
             dir_count,
@@ -29,13 +29,13 @@ impl ShellScene {
             elapsed.as_micros()
         );
         if !preview.is_empty() {
-            fika_log!("[fika-wgpu] first-entries={preview}");
+            fika_log!("[fika] first-entries={preview}");
         }
 
         let slot0_pane = ShellPaneState::from_entries(path, view_mode, entries, show_hidden, "");
         let places = build_shell_places();
         let trash_has_items = file_ops::trash_has_items();
-        fika_log!("[fika-wgpu] places entries={}", places.len());
+        fika_log!("[fika] places entries={}", places.len());
 
         Ok(Self::from_primary_pane(
             slot0_pane,
@@ -334,11 +334,6 @@ impl ShellScene {
         self.animations.prune_finished()
             || item_reflow_started
             || context_menu_hover_due
-    }
-
-    fn animation_dirty_value_with_hover(&self, include_hover: bool) -> u64 {
-        self.animations.dirty_value_with_hover(include_hover)
-            ^ ui::item_reflow::item_reflow_dirty_value(self).rotate_left(11)
     }
 
     fn start_hover_animation(&mut self) {

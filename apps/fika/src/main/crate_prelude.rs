@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
@@ -74,27 +73,25 @@ fn env_flag_enabled(name: &str) -> bool {
 }
 fn fika_log_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_LOG") || env_flag_enabled("FIKA_WGPU_LOG"))
+    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_LOG"))
 }
 fn fika_dialog_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        env_flag_enabled("FIKA_WGPU_DIALOG_TRACE")
-            || env_flag_enabled("FIKA_LOG")
-            || env_flag_enabled("FIKA_WGPU_LOG")
+        env_flag_enabled("FIKA_DIALOG_TRACE") || env_flag_enabled("FIKA_LOG")
     })
 }
 fn fika_dialog_trace_verbose_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_WGPU_DIALOG_TRACE_VERBOSE"))
+    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_DIALOG_TRACE_VERBOSE"))
 }
 fn fika_frame_log_all_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_WGPU_FRAME_LOG_ALL"))
+    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_FRAME_LOG_ALL"))
 }
 fn dialog_lifecycle_autosmoke_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_WGPU_AUTOSMOKE_DIALOG_LIFECYCLE"))
+    *ENABLED.get_or_init(|| env_flag_enabled("FIKA_AUTOSMOKE_DIALOG_LIFECYCLE"))
 }
 fn window_event_label(event: &WindowEvent) -> &'static str {
     match event {

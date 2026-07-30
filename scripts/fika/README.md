@@ -15,14 +15,14 @@ Run these paths from the TensorDE workspace root.
 
 - `analyze-item-view-perf.sh` and `check-item-view-perf-analyzer.sh`
 - `analyze-places-perf.sh` and `check-places-perf-analyzer.sh`
-- `analyze-wgpu-frame-log.sh` and `check-wgpu-frame-log-analyzer.sh`
+- `analyze-vulkan-frame-log.sh` and `check-vulkan-frame-log-analyzer.sh`
 - `check-item-view-runtime-log.sh`
 - `compare-item-image-renderers.sh`
 - `summarize-item-view-renderer-evidence.sh`
 
 The `check-*-analyzer.sh` scripts test their matching parser with synthetic
-logs. The wgpu-named tools describe existing migration debt; they are removed
-with that renderer path, not retained as compatibility entry points.
+logs. Vulkan frame logs report presentation latency and retained-work state;
+the analyzer can scope evidence by view mode or redraw reason.
 
 ## Runtime evidence
 

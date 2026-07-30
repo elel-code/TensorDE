@@ -104,130 +104,33 @@ include!("scene_runtime/places_status_paint.rs");
 include!("scene_runtime/content_paint.rs");
 include!("scene_runtime/dialog_controls.rs");
 include!("scene_runtime/rubber_band_cleanup.rs");
-impl TextLabelPrewarmStats {
-    fn record(&mut self, outcome: LabelCacheOutcome) {
-        match outcome {
-            LabelCacheOutcome::Hit => self.cache_hits += 1,
-            LabelCacheOutcome::Miss => self.cache_misses += 1,
-            LabelCacheOutcome::Deferred => self.deferred += 1,
-            LabelCacheOutcome::Skipped => {}
-        }
-    }
-}
-struct WgpuState {
-    damage_clear_renderer: QuadRenderer,
-    quad_renderer: QuadRenderer,
-    overlay_quad_renderer: QuadRenderer,
-    icon_renderer: IconRenderer,
-    text_renderer: TextRenderer,
-    overlay_text_renderer: Option<TextRenderer>,
-    retained_scene: RetainedSceneRenderer,
-    surface: wgpu::Surface<'static>,
-    queue: wgpu::Queue,
-    device: wgpu::Device,
-    adapter: wgpu::Adapter,
-    instance: wgpu::Instance,
-    config: wgpu::SurfaceConfiguration,
-    size: PhysicalSize<u32>,
-    frame_count: u64,
-    last_log: Instant,
-    rendered_view_switches: u64,
-    /// Last scene `path_changes` observed while presenting; used to free
-    /// directory-scoped thumbnail / failure caches after navigate.
-    rendered_path_changes: u64,
-    /// Open pane paths from the last presented frame (for pruning left dirs).
-    rendered_open_paths: Vec<PathBuf>,
-    last_render_dirty_key: Option<ShellRenderDirtyKey>,
-    last_render_damage_snapshot: Option<ShellRenderDamageSnapshot>,
-    frame_latency: ShellFrameLatencyTracker,
-    render_work_pending: bool,
-    clean_redraw_skips: u64,
-    /// Cached: adapter+device support Vulkan dmabuf texture import.
-    dmabuf_import_supported: bool,
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShellRenderOutcome {
     Presented,
-    SkippedClean,
     NotReady,
 }
-#[derive(Clone, Copy, Debug)]
-enum ShellSurfaceFrameContext {
-    Main { view: &'static str, force_log: bool },
-    DetachedDialog { dialog_label: &'static str },
+#[derive(Clone, Copy)]
+struct DialogRenderViewport {
+    popup_theme: PopupTheme,
+    scale: f32,
+    layout_size: PhysicalSize<u32>,
 }
-impl ShellSurfaceFrameContext {
-    fn log_retry(self, reason: &'static str, status: &'static str) {
-        if let Self::Main {
-            view,
-            force_log: true,
-        } = self
-        {
-            fika_log!(
-                "[fika-wgpu] frame-retry reason={reason} view={view} surface={status} action=reconfigure"
-            );
-        }
-    }
 
-    fn log_reconfigure_pending(self, reason: &'static str) {
-        if let Self::Main {
-            view,
-            force_log: true,
-        } = self
-        {
-            fika_log!(
-                "[fika-wgpu] frame-skip reason={reason} view={view} surface=reconfigure-pending"
-            );
-        }
-    }
-
-    fn log_not_ready(self, reason: &'static str) {
-        if let Self::Main {
-            view,
-            force_log: true,
-        } = self
-        {
-            fika_log!("[fika-wgpu] frame-skip reason={reason} view={view} surface=not-ready");
-        }
-    }
-
-    fn log_validation(self) {
-        match self {
-            Self::Main { .. } => fika_log!("[fika-wgpu] surface validation error"),
-            Self::DetachedDialog { dialog_label } => {
-                fika_log!("[fika-wgpu] {dialog_label}-dialog surface validation error");
-            }
-        }
-    }
+struct DetachedDialogRenderRequest<'a> {
+    window: &'a Window,
+    event_loop: &'a ActiveEventLoop,
+    viewport: DialogRenderViewport,
+    reason: &'static str,
+    dialog_label: &'static str,
 }
+
 impl ShellRenderOutcome {
     fn presented(self) -> bool {
         matches!(self, Self::Presented)
     }
 
     fn consumed_redraw_request(self) -> bool {
-        matches!(self, Self::Presented | Self::SkippedClean)
-    }
-}
-include!("gpu_state/init.rs");
-include!("gpu_state/frame_pipeline.rs");
-include!("gpu_state/redraw_skip.rs");
-fn clean_render_skip_reason_allowed(reason: &str, force_log: bool) -> bool {
-    reason == "redraw" && !force_log || reason == "switch-redraw" && force_log
-}
-fn frame_latency_counters_for_scene(scene: &ShellScene) -> ShellFrameLatencyCounters {
-    ShellFrameLatencyCounters {
-        zoom_changes: scene.zoom_changes,
-        content_scroll_changes: scene.content_scroll_changes,
-        places_scroll_changes: scene.places_scroll_changes,
-        path_changes: scene.path_changes,
-        directory_reloads: scene.directory_reloads,
-    }
-}
-impl Drop for WgpuState {
-    fn drop(&mut self) {
-        self.wait_idle("renderer-drop");
-        let _ = self.instance.poll_all(false);
+        matches!(self, Self::Presented)
     }
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

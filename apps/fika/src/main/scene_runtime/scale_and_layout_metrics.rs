@@ -280,7 +280,7 @@ impl ShellScene {
         self.last_item_click = None;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] places visible={} width={:.1} changes={}",
+            "[fika] places visible={} width={:.1} changes={}",
             self.places_visible as u8,
             self.places_sidebar_width(size),
             self.places_changes
@@ -425,7 +425,7 @@ impl ShellScene {
             let device = place.device.as_ref()?;
             self.places_changes += 1;
             fika_log!(
-                "[fika-wgpu] place-mount index={} label={:?} target_pane={} path={} changes={}",
+                "[fika] place-mount index={} label={:?} target_pane={} path={} changes={}",
                 index,
                 place.label,
                 target_pane.as_str(),
@@ -443,7 +443,7 @@ impl ShellScene {
         }
         self.places_changes += 1;
         fika_log!(
-            "[fika-wgpu] place-open index={} label={:?} target_pane={} path={} hover_changed={} item_hover_changed={} changes={}",
+            "[fika] place-open index={} label={:?} target_pane={} path={} hover_changed={} item_hover_changed={} changes={}",
             index,
             place.label,
             target_pane.as_str(),

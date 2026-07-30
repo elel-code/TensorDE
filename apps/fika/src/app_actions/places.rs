@@ -1,11 +1,11 @@
 use crate::windowing::ActiveEventLoop;
 
 use super::outcome::ShellActionOutcome;
-use crate::FikaWgpuApp;
+use crate::FikaApp;
 use crate::ui::tasks::ShellTaskStatus;
 use fika_core::default_user_places_path;
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn open_add_network_folder_input(&mut self) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
@@ -27,7 +27,7 @@ impl FikaWgpuApp {
             }
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
-                fika_log!("[fika-wgpu] add-place-error {error}");
+                fika_log!("[fika] add-place-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Add to Places failed",
                     error,
@@ -51,7 +51,7 @@ impl FikaWgpuApp {
             }
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
-                fika_log!("[fika-wgpu] remove-place-error {error}");
+                fika_log!("[fika] remove-place-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Remove Place failed",
                     error,

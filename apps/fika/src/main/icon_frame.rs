@@ -156,6 +156,7 @@ pub(crate) struct IconSlotBatch {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum IconGpuIdentity {
     Role(FileIconKind),
+    NamedAsset { name: String },
     ThemeAsset { path: PathBuf },
     Content { path: PathBuf, stamp: u64 },
 }
@@ -175,6 +176,12 @@ impl IconGpuUploadKey {
     pub(crate) fn theme_asset(path: PathBuf) -> Self {
         Self {
             identity: IconGpuIdentity::ThemeAsset { path },
+        }
+    }
+
+    pub(crate) fn named_asset(name: String) -> Self {
+        Self {
+            identity: IconGpuIdentity::NamedAsset { name },
         }
     }
 

@@ -88,7 +88,7 @@ impl ShellScene {
         let (label, path) = self.context_target_add_place_candidate()?;
         if self.places.iter().any(|place| place.path == path) {
             fika_log!(
-                "[fika-wgpu] add-place label={:?} path={} added=0 duplicate=1 changes={}",
+                "[fika] add-place label={:?} path={} added=0 duplicate=1 changes={}",
                 label,
                 path.display(),
                 self.places_changes
@@ -102,7 +102,7 @@ impl ShellScene {
         }
         if !add_user_place_at_path(user_places_path, &path, label.clone())? {
             fika_log!(
-                "[fika-wgpu] add-place label={:?} path={} added=0 duplicate=1 changes={}",
+                "[fika] add-place label={:?} path={} added=0 duplicate=1 changes={}",
                 label,
                 path.display(),
                 self.places_changes
@@ -126,7 +126,7 @@ impl ShellScene {
         self.places_changes += 1;
         self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] add-place label={:?} path={} added=1 places={} changes={}",
+            "[fika] add-place label={:?} path={} added=1 places={} changes={}",
             label,
             path.display(),
             self.places.len(),
@@ -152,7 +152,7 @@ impl ShellScene {
         }
         if self.places.iter().any(|place| place.path == path) {
             fika_log!(
-                "[fika-wgpu] add-network-folder label={:?} path={} added=0 duplicate=1 changes={}",
+                "[fika] add-network-folder label={:?} path={} added=0 duplicate=1 changes={}",
                 label,
                 path.display(),
                 self.places_changes
@@ -184,7 +184,7 @@ impl ShellScene {
         self.places_changes += 1;
         self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] add-network-folder label={:?} path={} added=1 places={} changes={}",
+            "[fika] add-network-folder label={:?} path={} added=1 places={} changes={}",
             label,
             path.display(),
             self.places.len(),
@@ -219,7 +219,7 @@ impl ShellScene {
         let path = path.clone();
         if !remove_user_place_at_path(user_places_path, &path)? {
             fika_log!(
-                "[fika-wgpu] remove-place label={:?} path={} removed=0 changes={}",
+                "[fika] remove-place label={:?} path={} removed=0 changes={}",
                 label,
                 path.display(),
                 self.places_changes
@@ -242,7 +242,7 @@ impl ShellScene {
         self.places_changes += 1;
         self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] remove-place label={:?} path={} removed=1 places={} changes={}",
+            "[fika] remove-place label={:?} path={} removed=1 places={} changes={}",
             label,
             path.display(),
             self.places.len(),
@@ -292,7 +292,7 @@ impl ShellScene {
     fn record_file_clipboard_export(&mut self, request: &FileClipboardExportRequest) {
         self.file_clipboard_changes += 1;
         fika_log!(
-            "[fika-wgpu] clipboard-export role={} paths={} bytes={} changes={}",
+            "[fika] clipboard-export role={} paths={} bytes={} changes={}",
             file_clipboard_role_as_str(request.role),
             request.paths.len(),
             request.text.len(),
@@ -322,7 +322,7 @@ impl ShellScene {
             .map(|state| (pane, state.path.clone()))
     }
 
-    // Production paste path is async via FikaWgpuApp::finish_paste_from_clipboard_text.
+    // Production paste path is async via FikaApp::finish_paste_from_clipboard_text.
     #[cfg(test)]
     fn paste_clipboard_text_from_context(
         &mut self,
@@ -388,7 +388,7 @@ impl ShellScene {
             );
         } else {
             ShellTransferExecution {
-                result: paste_text_result(WGPU_SHELL_PANE_ID, target_dir.clone(), clipboard_text),
+                result: paste_text_result(SHELL_PANE_ID, target_dir.clone(), clipboard_text),
                 privileged: false,
                 administrator_available: false,
                 first_error: None,

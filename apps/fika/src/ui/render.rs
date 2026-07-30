@@ -1,11 +1,6 @@
-pub(crate) mod damage;
-pub(crate) mod damage_bounds;
-pub(crate) mod damage_snapshot;
-pub(crate) mod dirty_key;
+pub(crate) mod coordinates;
 pub(crate) mod dmabuf;
-pub(crate) mod frame;
 pub(crate) mod gpu;
+pub(crate) mod projections;
 pub(crate) mod quad;
-pub(crate) mod retained;
-pub(crate) mod shaders;
 pub(crate) mod texture;

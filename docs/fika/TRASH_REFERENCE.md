@@ -111,7 +111,7 @@ operation flow, while using the local XDG Trash layout as the backing store.
     pane lister events, and drains the core `TrashEmptinessMonitor` singleton
     watcher for external changes when no Trash pane is open. Places projection
     consumes that state and does not poll the filesystem.
-  - The winit/wgpu Places renderer displays the Trash state with the current
+  - The native Vulkan Places renderer displays the Trash state with the current
     shell marker style.
   - The Trash place context menu offers Open, Empty Trash, Copy Location, and
     Properties; Empty Trash uses the same app-owned state for enablement and

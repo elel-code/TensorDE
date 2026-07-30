@@ -31,6 +31,26 @@
     }
 
     #[test]
+    fn zoom_preserves_dolphin_scroll_offset_instead_of_reanchoring_selection() {
+        let mut scene = test_scene(
+            (0..240)
+                .map(|index| test_entry(&format!("tool-{index:03}"), false))
+                .collect(),
+            ShellViewMode::Compact,
+        );
+        scene.places_visible = false;
+        let size = PhysicalSize::new(760, 520);
+        let pane = ShellPaneId::SLOT_0;
+        scene.panes[pane].selection.select_indexes(&[180]);
+        scene.panes[pane].scroll_x = 640.0;
+        let old_scroll_x = scene.panes[pane].scroll_x;
+
+        assert!(scene.set_zoom_step(pane, 1, size, true));
+        assert_eq!(scene.panes[pane].scroll_x, old_scroll_x);
+        assert_eq!(scene.panes[pane].scroll_y, 0.0);
+    }
+
+    #[test]
     fn icons_layout_allocates_multiple_text_lines_for_long_names() {
         let long_name = "a-very-long-folder-name-that-needs-more-than-one-line-in-icons-layout.png";
         let scene = test_scene(vec![test_entry(long_name, false)], ShellViewMode::Icons);
@@ -242,14 +262,9 @@
             Vec::new(),
         );
 
-        let outcome =
-            scene.prewarm_projection_text_label(&projection, item, &mut text, scene.theme());
-        drop(text);
+        scene.push_native_frame_text(&mut text, std::slice::from_ref(&projection), size);
+        let _ = text.finish();
 
-        assert!(matches!(
-            outcome,
-            LabelCacheOutcome::Miss | LabelCacheOutcome::Hit
-        ));
         assert!(label_cache.entries.keys().any(|key| key.text == long_name));
         assert!(
             !label_cache

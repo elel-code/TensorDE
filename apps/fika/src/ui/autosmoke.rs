@@ -37,7 +37,7 @@ fn env_value(key: &str) -> Option<String> {
 fn autosmoke_zoom_config_from_env(
     get_env: &impl Fn(&str) -> Option<String>,
 ) -> AutosmokeZoomConfig {
-    let enabled = env_flag_enabled(get_env, "FIKA_WGPU_AUTOSMOKE_ZOOM");
+    let enabled = env_flag_enabled(get_env, "FIKA_AUTOSMOKE_ZOOM");
     if !enabled {
         return AutosmokeZoomConfig {
             actions: VecDeque::new(),
@@ -46,8 +46,8 @@ fn autosmoke_zoom_config_from_env(
         };
     }
 
-    let rapid = env_flag_enabled(get_env, "FIKA_WGPU_AUTOSMOKE_ZOOM_RAPID");
-    let interval = env_duration_millis(get_env, "FIKA_WGPU_AUTOSMOKE_ZOOM_INTERVAL_MS")
+    let rapid = env_flag_enabled(get_env, "FIKA_AUTOSMOKE_ZOOM_RAPID");
+    let interval = env_duration_millis(get_env, "FIKA_AUTOSMOKE_ZOOM_INTERVAL_MS")
         .unwrap_or_else(|| Duration::from_millis(if rapid { 16 } else { 250 }));
     let actions = if rapid {
         let mut actions = VecDeque::new();
@@ -78,7 +78,7 @@ fn autosmoke_scroll_config_from_env(
     get_env: &impl Fn(&str) -> Option<String>,
     default_step: f32,
 ) -> AutosmokeScrollConfig {
-    let enabled = env_flag_enabled(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL");
+    let enabled = env_flag_enabled(get_env, "FIKA_AUTOSMOKE_SCROLL");
     if !enabled {
         return AutosmokeScrollConfig {
             actions: VecDeque::new(),
@@ -87,15 +87,18 @@ fn autosmoke_scroll_config_from_env(
         };
     }
 
-    let rapid = env_flag_enabled(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL_RAPID");
-    let interval = env_duration_millis(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL_INTERVAL_MS")
+    let rapid = env_flag_enabled(get_env, "FIKA_AUTOSMOKE_SCROLL_RAPID");
+    let interval = env_duration_millis(get_env, "FIKA_AUTOSMOKE_SCROLL_INTERVAL_MS")
         .unwrap_or_else(|| Duration::from_millis(if rapid { 16 } else { 120 }));
-    let step = env_f32(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL_STEP").unwrap_or(default_step);
+    let step = env_f32(get_env, "FIKA_AUTOSMOKE_SCROLL_STEP").unwrap_or(default_step);
     let mut actions = VecDeque::new();
-    let forward_count = env_usize(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL_FORWARD_COUNT")
+    let forward_count = env_usize(get_env, "FIKA_AUTOSMOKE_SCROLL_FORWARD_COUNT")
         .unwrap_or(if rapid { 28 } else { 10 });
-    let back_count = env_usize(get_env, "FIKA_WGPU_AUTOSMOKE_SCROLL_BACK_COUNT")
-        .unwrap_or(if rapid { 14 } else { 5 });
+    let back_count = env_usize(get_env, "FIKA_AUTOSMOKE_SCROLL_BACK_COUNT").unwrap_or(if rapid {
+        14
+    } else {
+        5
+    });
     for _ in 0..forward_count {
         actions.push_back(AutosmokeScrollAction {
             delta: step,
@@ -152,8 +155,8 @@ mod tests {
     #[test]
     fn autosmoke_zoom_config_uses_rapid_sequence_and_interval() {
         let env = map_env(&[
-            ("FIKA_WGPU_AUTOSMOKE_ZOOM", "1"),
-            ("FIKA_WGPU_AUTOSMOKE_ZOOM_RAPID", "true"),
+            ("FIKA_AUTOSMOKE_ZOOM", "1"),
+            ("FIKA_AUTOSMOKE_ZOOM_RAPID", "true"),
         ]);
         let config = autosmoke_zoom_config_from_env(&env);
 
@@ -167,11 +170,11 @@ mod tests {
     #[test]
     fn autosmoke_scroll_config_uses_counts_and_step() {
         let env = map_env(&[
-            ("FIKA_WGPU_AUTOSMOKE_SCROLL", "1"),
-            ("FIKA_WGPU_AUTOSMOKE_SCROLL_STEP", "160"),
-            ("FIKA_WGPU_AUTOSMOKE_SCROLL_FORWARD_COUNT", "2"),
-            ("FIKA_WGPU_AUTOSMOKE_SCROLL_BACK_COUNT", "1"),
-            ("FIKA_WGPU_AUTOSMOKE_SCROLL_INTERVAL_MS", "42"),
+            ("FIKA_AUTOSMOKE_SCROLL", "1"),
+            ("FIKA_AUTOSMOKE_SCROLL_STEP", "160"),
+            ("FIKA_AUTOSMOKE_SCROLL_FORWARD_COUNT", "2"),
+            ("FIKA_AUTOSMOKE_SCROLL_BACK_COUNT", "1"),
+            ("FIKA_AUTOSMOKE_SCROLL_INTERVAL_MS", "42"),
         ]);
         let config = autosmoke_scroll_config_from_env(&env, 32.0);
 

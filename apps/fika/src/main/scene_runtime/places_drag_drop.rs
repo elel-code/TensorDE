@@ -39,7 +39,7 @@ impl ShellScene {
         self.places_changes += 1;
         self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] add-place label={:?} path={} gap={} places={} changes={}",
+            "[fika] add-place label={:?} path={} gap={} places={} changes={}",
             label,
             path.display(),
             gap_index,
@@ -130,17 +130,11 @@ impl ShellScene {
         self.drop_menu.is_some()
     }
 
-    fn overlay_text_needed(&self) -> bool {
-        self.internal_drag.as_ref().is_some_and(|drag| drag.active)
-            || self.drop_menu.is_some()
-            || self.context_menu.is_some()
-    }
-
     fn close_drop_menu(&mut self) -> bool {
         if self.drop_menu.take().is_none() {
             return false;
         }
-        fika_log!("[fika-wgpu] dnd-menu open=0");
+        fika_log!("[fika] dnd-menu open=0");
         true
     }
 
@@ -191,7 +185,7 @@ impl ShellScene {
                 self.pending_drop_request = Some(request.clone());
                 self.dnd_drop_requests += 1;
                 fika_log!(
-                    "[fika-wgpu] dnd-drop-request sources={} target={} mode={} privileged={} requests={}",
+                    "[fika] dnd-drop-request sources={} target={} mode={} privileged={} requests={}",
                     request.sources.len(),
                     request.target_dir.display(),
                     request.mode.operation(),
@@ -201,13 +195,13 @@ impl ShellScene {
                 Some(request)
             }
             Some(ShellDropMenuCommand::Cancel) | None => {
-                fika_log!("[fika-wgpu] dnd-menu open=0");
+                fika_log!("[fika] dnd-menu open=0");
                 None
             }
         }
     }
 
-    // Production drop path is async via FikaWgpuApp::perform_drop_operation_request.
+    // Production drop path is async via FikaApp::perform_drop_operation_request.
     // Sync helper reuses apply_transfer_result so bookkeeping matches production.
     #[cfg(test)]
     #[allow(dead_code)]
@@ -272,7 +266,7 @@ impl ShellScene {
         let menu_changed = old_menu != self.context_menu;
         if menu_changed {
             fika_log!(
-                "[fika-wgpu] context-menu open={} target={} actions={}",
+                "[fika] context-menu open={} target={} actions={}",
                 self.context_menu.is_some() as u8,
                 self.context_target
                     .as_ref()

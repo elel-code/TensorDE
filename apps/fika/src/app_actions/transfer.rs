@@ -1,14 +1,14 @@
 use crate::windowing::ActiveEventLoop;
 
 use super::outcome::ShellActionOutcome;
-use crate::FikaWgpuApp;
+use crate::FikaApp;
 use crate::ui::drop_menu::ShellDropOperationRequest;
 use crate::ui::operation_request::ShellOperationRequest;
 use crate::ui::tasks::ShellTaskStatus;
 use crate::ui::transfer::ShellAsyncTransferSource;
 use fika_core::{FileClipboardRole, FileTransferMode, decode_file_clipboard_text, is_network_path};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn paste_from_clipboard(&mut self, event_loop: &ActiveEventLoop, privileged: bool) {
         self.paste_from_clipboard_with_target(event_loop, true, privileged);
     }

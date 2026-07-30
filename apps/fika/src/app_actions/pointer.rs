@@ -14,10 +14,10 @@ use super::pointer_route::{
 use crate::ui::animation::ShellAnimationKind;
 use crate::ui::selection::SelectionClick;
 use crate::{
-    FikaWgpuApp, ShellItemActivation, ShellPlaceActivation, view_point_from_physical_position,
+    FikaApp, ShellItemActivation, ShellPlaceActivation, view_point_from_physical_position,
 };
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn handle_main_pointer_moved(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -81,7 +81,11 @@ impl FikaWgpuApp {
                 ShellActionOutcome::None
             }
             MainPointerMoveIntent::ScenePointer => {
+                let role_update = self.scene.scrollbar_drag_visible_role_update_kind();
                 let changed = self.scene.set_pointer(point, size);
+                if changed && let Some(kind) = role_update {
+                    self.visible_role_updates.schedule(kind, Instant::now());
+                }
                 self.update_window_cursor_for_scene(size);
                 // Hover (and other pointer-driven motion) may start hover ease;
                 // queue the registry budget so presentation survives until the
@@ -175,7 +179,11 @@ impl FikaWgpuApp {
 
         match route.intent {
             MainLeftPointerButtonIntent::EndScrollbarDrag => {
+                let role_update = self.scene.scrollbar_drag_visible_role_update_kind();
                 let changed = self.scene.end_scrollbar_drag(point, size);
+                if changed && let Some(kind) = role_update {
+                    self.visible_role_updates.schedule(kind, Instant::now());
+                }
                 self.update_window_cursor_for_scene(size);
                 ShellActionOutcome::redraw_if(changed).into()
             }
@@ -211,10 +219,20 @@ impl FikaWgpuApp {
                     .into()
             }
             MainLeftPointerButtonIntent::BeginScrollbarDrag => {
+                let zoom_changes = self.scene.zoom_changes;
                 let changed = self
                     .scene
                     .begin_scrollbar_drag(point, size)
                     .unwrap_or(false);
+                if changed && let Some(kind) = self.scene.scrollbar_drag_visible_role_update_kind()
+                {
+                    self.visible_role_updates.schedule(kind, Instant::now());
+                } else if self.scene.zoom_changes != zoom_changes {
+                    self.visible_role_updates.schedule(
+                        crate::ui::prewarm::VisibleRoleUpdateKind::IconSize,
+                        Instant::now(),
+                    );
+                }
                 self.update_window_cursor_for_scene(size);
                 ShellActionOutcome::redraw_if(changed)
                     .with_redraw_if(location_blur_changed)

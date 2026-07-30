@@ -3,10 +3,6 @@ use fika_core::ViewRect;
 
 use crate::ui::options::ShellViewMode;
 use crate::ui::pane::ShellPaneId;
-use crate::ui::render::quad::{
-    QuadVertex, push_clipped_rect_outline, push_clipped_rounded_rect,
-    push_clipped_rounded_rect_outline,
-};
 use crate::ui::theme::ShellTheme;
 use crate::vulkan_rect::VulkanRectInstance;
 use crate::{ShellScene, ui::toolbar::ShellToolbarViewModeControl};
@@ -24,40 +20,6 @@ trait ToolbarRectSink {
         stroke_width: f32,
         color: [f32; 4],
     );
-}
-
-struct CpuToolbarRectSink<'a> {
-    vertices: &'a mut Vec<QuadVertex>,
-    size: PhysicalSize<u32>,
-}
-
-impl ToolbarRectSink for CpuToolbarRectSink<'_> {
-    fn fill(&mut self, rect: ViewRect, clip: ViewRect, radius: f32, color: [f32; 4]) {
-        push_clipped_rounded_rect(self.vertices, rect, clip, radius, color, self.size);
-    }
-
-    fn outline(
-        &mut self,
-        rect: ViewRect,
-        clip: ViewRect,
-        radius: f32,
-        stroke_width: f32,
-        color: [f32; 4],
-    ) {
-        if radius <= 1.0 {
-            push_clipped_rect_outline(self.vertices, rect, clip, stroke_width, color, self.size);
-        } else {
-            push_clipped_rounded_rect_outline(
-                self.vertices,
-                rect,
-                clip,
-                radius,
-                stroke_width,
-                color,
-                self.size,
-            );
-        }
-    }
 }
 
 struct NativeToolbarRectSink<'a> {
@@ -89,18 +51,7 @@ impl ToolbarRectSink for NativeToolbarRectSink<'_> {
 }
 
 impl ShellScene {
-    pub(crate) fn push_app_toolbar(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        size: PhysicalSize<u32>,
-        theme: ShellTheme,
-    ) {
-        let mut sink = CpuToolbarRectSink { vertices, size };
-        self.paint_app_toolbar(&mut sink, size, theme);
-    }
-
-    /// Emits the exact same toolbar scene as [`Self::push_app_toolbar`] into
-    /// Vulkan analytic-rectangle instances instead of CPU-tessellated quads.
+    /// Emits the toolbar scene as Vulkan analytic-rectangle instances.
     pub(crate) fn push_native_app_toolbar(
         &self,
         instances: &mut Vec<VulkanRectInstance>,

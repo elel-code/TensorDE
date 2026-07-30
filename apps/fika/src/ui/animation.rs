@@ -117,7 +117,6 @@ pub(crate) struct ShellAnimationRuntime {
     hover: ShellHoverAnimationRuntime,
     location_focus_shine: ShellLocationFocusShineRuntime,
     text_caret_blink: ShellTextCaretBlinkRuntime,
-    generation: u64,
 }
 
 impl ShellAnimationRuntime {
@@ -150,7 +149,6 @@ impl ShellAnimationRuntime {
         self.item_reflow_transitions
             .retain(|transition| transition.pane != pane);
         self.item_reflow_transitions.append(&mut transitions);
-        self.bump_generation();
         // Keep registry presentation reachable so Queue budgets stay in sync
         // when action-layer reflow scheduling is wired later.
         let _ = ShellAnimationKind::ItemReflow.presentation();
@@ -255,7 +253,6 @@ impl ShellAnimationRuntime {
         if self.item_reflow_transitions.len() == old_len {
             return hover_pruned || shine_pruned;
         }
-        self.bump_generation();
         true
     }
 
@@ -264,43 +261,11 @@ impl ShellAnimationRuntime {
             return;
         }
         self.item_reflow_transitions.clear();
-        self.bump_generation();
-    }
-
-    pub(crate) fn dirty_value_with_hover(&self, include_hover: bool) -> u64 {
-        let item_dirty = self.item_reflow_dirty_value();
-        if include_hover {
-            item_dirty
-                ^ self.hover.dirty_value().rotate_left(17)
-                ^ self.location_focus_shine.dirty_value().rotate_left(29)
-        } else {
-            item_dirty
-        }
-    }
-
-    fn item_reflow_dirty_value(&self) -> u64 {
-        if self.item_reflow_transitions.is_empty() {
-            return self.generation << 32;
-        }
-        let now = Instant::now();
-        let frame_ms = ITEM_REFLOW_ANIMATION_FRAME.as_millis().max(1) as u64;
-        let frame = self
-            .item_reflow_transitions
-            .iter()
-            .filter(|transition| transition.active(now))
-            .map(|transition| now.duration_since(transition.started).as_millis() as u64 / frame_ms)
-            .min()
-            .unwrap_or(0);
-        (self.generation << 32) ^ frame
     }
 
     #[cfg(test)]
     pub(crate) fn item_reflow_transitions(&self) -> &[ShellItemReflowTransition] {
         &self.item_reflow_transitions
-    }
-
-    fn bump_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
     }
 }
 
@@ -312,7 +277,6 @@ pub(crate) fn item_reflow_rect_moved(from: ViewRect, to: ViewRect) -> bool {
 struct ShellHoverAnimationRuntime {
     started: Instant,
     active: bool,
-    generation: u64,
 }
 
 impl Default for ShellHoverAnimationRuntime {
@@ -320,7 +284,6 @@ impl Default for ShellHoverAnimationRuntime {
         Self {
             started: Instant::now(),
             active: false,
-            generation: 0,
         }
     }
 }
@@ -329,7 +292,6 @@ impl ShellHoverAnimationRuntime {
     fn start(&mut self) {
         self.started = Instant::now();
         self.active = true;
-        self.generation = self.generation.wrapping_add(1);
     }
 
     fn factor(&self) -> f32 {
@@ -358,18 +320,7 @@ impl ShellHoverAnimationRuntime {
             return false;
         }
         self.active = false;
-        self.generation = self.generation.wrapping_add(1);
         true
-    }
-
-    fn dirty_value(&self) -> u64 {
-        if !self.active {
-            return self.generation << 32;
-        }
-        let now = Instant::now();
-        let frame_ms = HOVER_ANIMATION_FRAME.as_millis().max(1) as u64;
-        let frame = now.saturating_duration_since(self.started).as_millis() as u64 / frame_ms;
-        (self.generation << 32) ^ frame
     }
 }
 
@@ -377,7 +328,6 @@ impl ShellHoverAnimationRuntime {
 struct ShellLocationFocusShineRuntime {
     started: Instant,
     active: bool,
-    generation: u64,
 }
 
 impl Default for ShellLocationFocusShineRuntime {
@@ -385,7 +335,6 @@ impl Default for ShellLocationFocusShineRuntime {
         Self {
             started: Instant::now(),
             active: false,
-            generation: 0,
         }
     }
 }
@@ -394,7 +343,6 @@ impl ShellLocationFocusShineRuntime {
     fn start(&mut self) {
         self.started = Instant::now() + LOCATION_FOCUS_SHINE_DELAY;
         self.active = true;
-        self.generation = self.generation.wrapping_add(1);
     }
 
     fn stop(&mut self) -> bool {
@@ -402,7 +350,6 @@ impl ShellLocationFocusShineRuntime {
             return false;
         }
         self.active = false;
-        self.generation = self.generation.wrapping_add(1);
         true
     }
 
@@ -448,21 +395,7 @@ impl ShellLocationFocusShineRuntime {
             return false;
         }
         self.active = false;
-        self.generation = self.generation.wrapping_add(1);
         true
-    }
-
-    fn dirty_value(&self) -> u64 {
-        self.dirty_value_at(Instant::now())
-    }
-
-    fn dirty_value_at(&self, now: Instant) -> u64 {
-        if !self.active || now < self.started || !self.active_at(now) {
-            return self.generation << 32;
-        }
-        let frame_ms = LOCATION_FOCUS_SHINE_FRAME.as_millis().max(1) as u64;
-        let frame = now.duration_since(self.started).as_millis() as u64 / frame_ms;
-        (self.generation << 32) ^ frame
     }
 }
 

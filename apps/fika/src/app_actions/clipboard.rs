@@ -2,9 +2,9 @@ use crate::ui::clipboard::FileClipboardExportRequest;
 use crate::ui::operation_request::{ShellClipboardWork, ShellOperationRequest};
 use crate::ui::tasks::ShellTaskStatus;
 use crate::ui::transfer::ShellAsyncClipboardCompletion;
-use crate::{CopyLocationRequest, FikaWgpuApp, file_clipboard_role_as_str, paths_task_summary};
+use crate::{CopyLocationRequest, FikaApp, file_clipboard_role_as_str, paths_task_summary};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn store_file_clipboard_request(&mut self, request: &FileClipboardExportRequest) {
         if let Some(clipboard) = self.clipboard.as_ref() {
             match clipboard.store_file_clipboard_async(
@@ -24,7 +24,7 @@ impl FikaWgpuApp {
             }
         } else {
             fika_log!(
-                "[fika-wgpu] clipboard-export-error role={} paths={} error=clipboard-unavailable",
+                "[fika] clipboard-export-error role={} paths={} error=clipboard-unavailable",
                 file_clipboard_role_as_str(request.role),
                 request.paths.len()
             );
@@ -42,7 +42,7 @@ impl FikaWgpuApp {
     pub(crate) fn store_copy_location_request(&mut self, request: CopyLocationRequest) {
         let Some(clipboard) = self.clipboard.as_ref() else {
             fika_log!(
-                "[fika-wgpu] copy-location-error path={} error=clipboard-unavailable",
+                "[fika] copy-location-error path={} error=clipboard-unavailable",
                 request.path.display()
             );
             self.scene.record_task_status(ShellTaskStatus::failed(
@@ -65,7 +65,7 @@ impl FikaWgpuApp {
 
     pub(crate) fn load_clipboard_text_for_paste(&mut self, use_context: bool, privileged: bool) {
         let Some(clipboard) = self.clipboard.as_ref() else {
-            fika_log!("[fika-wgpu] paste-error error=clipboard-unavailable");
+            fika_log!("[fika] paste-error error=clipboard-unavailable");
             self.scene.record_task_status(ShellTaskStatus::failed(
                 "Paste failed",
                 "Clipboard is unavailable",
@@ -85,7 +85,7 @@ impl FikaWgpuApp {
                 ));
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] paste-error load={error}");
+                fika_log!("[fika] paste-error load={error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Paste failed",
                     format!("Clipboard read failed: {error}"),
@@ -98,7 +98,7 @@ impl FikaWgpuApp {
     /// Middle-click / primary selection paste (async; does not block the UI thread).
     pub(crate) fn load_primary_text_for_paste(&mut self) {
         let Some(clipboard) = self.clipboard.as_ref() else {
-            fika_log!("[fika-wgpu] primary-paste-error error=clipboard-unavailable");
+            fika_log!("[fika] primary-paste-error error=clipboard-unavailable");
             return;
         };
 
@@ -115,16 +115,14 @@ impl FikaWgpuApp {
             }
             Err(error) => {
                 // Missing primary global or empty offer is common; keep quiet unless noisy.
-                fika_log!("[fika-wgpu] primary-paste-error load={error}");
+                fika_log!("[fika] primary-paste-error load={error}");
             }
         }
     }
 
     pub(crate) fn queue_clipboard_clear(&mut self, reason: &'static str) {
         let Some(clipboard) = self.clipboard.as_ref() else {
-            fika_log!(
-                "[fika-wgpu] clipboard-clear-error reason={reason} error=clipboard-unavailable"
-            );
+            fika_log!("[fika] clipboard-clear-error reason={reason} error=clipboard-unavailable");
             return;
         };
 
@@ -135,7 +133,7 @@ impl FikaWgpuApp {
                 ));
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] clipboard-clear-error reason={reason} error={error}");
+                fika_log!("[fika] clipboard-clear-error reason={reason} error={error}");
             }
         }
     }
@@ -172,7 +170,7 @@ impl FikaWgpuApp {
             } => match result {
                 Ok(text) => self.finish_paste_from_clipboard_text(use_context, privileged, text),
                 Err(error) => {
-                    fika_log!("[fika-wgpu] paste-error load={error}");
+                    fika_log!("[fika] paste-error load={error}");
                     self.scene.record_task_status(ShellTaskStatus::failed(
                         "Paste failed",
                         format!("Clipboard read failed: {error}"),
@@ -183,7 +181,7 @@ impl FikaWgpuApp {
             },
             ShellAsyncClipboardCompletion::Clear { reason, result } => {
                 if let Err(error) = result {
-                    fika_log!("[fika-wgpu] clipboard-clear-error reason={reason} error={error}");
+                    fika_log!("[fika] clipboard-clear-error reason={reason} error={error}");
                 }
                 false
             }
@@ -196,7 +194,7 @@ impl FikaWgpuApp {
         error: String,
     ) {
         fika_log!(
-            "[fika-wgpu] clipboard-export-error role={} paths={} error={error}",
+            "[fika] clipboard-export-error role={} paths={} error={error}",
             file_clipboard_role_as_str(request.role),
             request.paths.len()
         );
@@ -212,7 +210,7 @@ impl FikaWgpuApp {
 
     fn record_copy_location_error(&mut self, request: &CopyLocationRequest, error: String) {
         fika_log!(
-            "[fika-wgpu] copy-location-error path={} error={error}",
+            "[fika] copy-location-error path={} error={error}",
             request.path.display()
         );
         self.scene.record_task_status(ShellTaskStatus::failed(

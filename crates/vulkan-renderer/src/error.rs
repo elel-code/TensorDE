@@ -26,6 +26,15 @@ impl Error {
     pub(crate) const fn vulkan(operation: &'static str, source: vk::ErrorCode) -> Self {
         Self::Vulkan { operation, source }
     }
+
+    /// Returns the raw Vulkan failure for callers that must handle an
+    /// explicitly recoverable WSI condition such as an out-of-date swapchain.
+    pub const fn vulkan_code(&self) -> Option<vk::ErrorCode> {
+        match self {
+            Self::Vulkan { source, .. } => Some(*source),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Error {

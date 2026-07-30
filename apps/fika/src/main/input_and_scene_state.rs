@@ -1,5 +1,8 @@
-impl FikaWgpuApp {
+impl FikaApp {
     fn queue_scene_change(&mut self, reason: &'static str, redraw_frames: u8) {
+        if let Some(kind) = crate::ui::prewarm::visible_role_update_kind_for_reason(reason) {
+            self.visible_role_updates.schedule(kind, Instant::now());
+        }
         self.pending_redraw_frames = self.pending_redraw_frames.max(redraw_frames);
         self.pending_render_reason = Some(reason);
         if let Some(window) = self.window.as_ref() {
@@ -21,15 +24,24 @@ impl FikaWgpuApp {
         if self.dialog_windows.is_open(ShellDialogWindowKind::TaskDetail) {
             self.sync_task_detail_dialog_window();
         }
-        self.prewarm_current_scene_caches(reason);
+        self.visible_role_sync_required = true;
         self.render_now(event_loop, reason, true);
     }
 
-    fn prewarm_current_scene_caches(&mut self, reason: &'static str) {
-        let Some(renderer) = self.renderer.as_mut() else {
+    fn settle_visible_icon_roles(&mut self) {
+        let Some(kind) = self.visible_role_updates.take_due_update(Instant::now()) else {
             return;
         };
-        renderer.prewarm_scene_caches(&mut self.scene, reason);
+        let (reason, redraw_frames) = match kind {
+            crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange => {
+                ("scroll-settle", SCROLL_REDRAW_FRAMES)
+            }
+            crate::ui::prewarm::VisibleRoleUpdateKind::IconSize => {
+                ("zoom-settle", ZOOM_REDRAW_FRAMES)
+            }
+        };
+        self.visible_role_sync_required = true;
+        self.queue_scene_change(reason, redraw_frames);
     }
 
     fn render_create_dialog_now(
@@ -239,6 +251,8 @@ impl FikaWgpuApp {
         }
         self.reconcile_dialog_window_lifecycle();
         let rendered = {
+            let role_updates_paused = self.visible_role_updates.role_updates_paused();
+            let resolve_visible_exact = self.visible_role_sync_required;
             let Some(window) = self.window.as_ref() else {
                 return;
             };
@@ -251,6 +265,10 @@ impl FikaWgpuApp {
                 event_loop,
                 &mut self.scene,
                 reason,
+                crate::fika_renderer::VisibleRoleRenderPolicy {
+                    paused: role_updates_paused,
+                    resolve_exact: resolve_visible_exact,
+                },
                 force_log,
             )
         };
@@ -259,6 +277,7 @@ impl FikaWgpuApp {
             self.pending_redraw_frames -= 1;
         }
         if rendered.presented() {
+            self.visible_role_sync_required = false;
             self.drive_autosmoke_after_render();
         }
     }

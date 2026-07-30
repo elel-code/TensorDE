@@ -120,13 +120,13 @@ loop {
 | clipboard + DnD | yes |
 | blur / activation / icons | yes |
 | wp_presentation | yes |
-| raw-window-handle 0.6 (wgpu → Vulkan) | yes |
+| raw-window-handle 0.6 (direct Vulkan) | yes |
 
-### wgpu
+### Vulkan
 
-Fika uses wgpu with `Backends::VULKAN` (GL fallback). The same
-`SurfaceHandle` feeds wgpu's Wayland surface creation; no separate ash path
-is required for the app.
+Fika feeds the same `SurfaceHandle` into `vulkan-renderer`, which owns the
+Vulkanalia loader and creates `VK_KHR_wayland_surface` objects. There is no GL,
+CPU-rendering, or application-local Vulkan dependency fallback.
 
 ## Testing
 

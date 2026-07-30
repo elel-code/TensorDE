@@ -1,4 +1,4 @@
-impl FikaWgpuApp {
+impl FikaApp {
     fn new(
         scene: ShellScene,
         auto_cycle_views: bool,
@@ -8,6 +8,9 @@ impl FikaWgpuApp {
         let (async_task_tx, async_task_rx) = mpsc::channel();
         let autosmoke_zoom = autosmoke_zoom_config();
         let autosmoke_scroll = autosmoke_scroll_config(SCROLL_LINE_PX * 2.0);
+        scene
+            .metadata_roles
+            .set_event_loop_proxy(event_loop_proxy.clone());
         let mut directory_watchers = ShellDirectoryWatcherRuntime::new(event_loop_proxy.clone());
         directory_watchers.sync_with_scene(&scene);
         Self {
@@ -37,6 +40,8 @@ impl FikaWgpuApp {
             cursor_icon: CursorIcon::Default,
             pending_redraw_frames: 0,
             pending_render_reason: None,
+            visible_role_updates: crate::ui::prewarm::VisibleRoleUpdateState::default(),
+            visible_role_sync_required: false,
             next_animation_redraw: None,
             last_location_text_caret_dirty_value: 0,
             last_open_with_text_caret_dirty_value: 0,
@@ -61,10 +66,10 @@ impl FikaWgpuApp {
         let Some(window) = self.window.clone() else {
             return false;
         };
-        let mut renderer = match WgpuState::new(window.clone()) {
+        let mut renderer = match FikaRenderer::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(error) => {
-                fika_log!("[fika-wgpu] renderer init failed: {error}");
+                fika_log!("[fika] renderer init failed: {error}");
                 self.exit_event_loop(event_loop, "main-renderer-init-failed");
                 return false;
             }
@@ -73,10 +78,10 @@ impl FikaWgpuApp {
         self.scene
             .set_scale_factor(window.scale_factor() as f32, renderer.size);
         self.scene.clamp_scroll(renderer.size);
-        renderer.sync_icon_dmabuf_plan(event_loop, Some(window.id()));
+        renderer.sync_drag_preview_dmabuf_plan(event_loop);
         renderer.log_dmabuf_readiness(event_loop, Some(window.id()), "startup");
         fika_log!(
-            "[fika-wgpu] shell-ready size={}x{} scale={:.2}",
+            "[fika] shell-ready size={}x{} scale={:.2}",
             renderer.size.width,
             renderer.size.height,
             window.scale_factor()
@@ -139,7 +144,7 @@ impl FikaWgpuApp {
             "unknown"
         };
         fika_dialog_trace!(
-            "[fika-wgpu] window-event event={} window={:?} role={} main={:?} dialog={} dialogs_open={}",
+            "[fika] window-event event={} window={:?} role={} main={:?} dialog={} dialogs_open={}",
             window_event_label(event),
             window_id,
             role,
@@ -153,7 +158,7 @@ impl FikaWgpuApp {
 
     fn exit_event_loop(&self, event_loop: &ActiveEventLoop, reason: &'static str) {
         fika_log!(
-            "[fika-wgpu] event-loop-exit reason={} main_open={} dialogs_open={}",
+            "[fika] event-loop-exit reason={} main_open={} dialogs_open={}",
             reason,
             self.window.is_some() as u8,
             self.dialog_windows.has_open_window() as u8,
@@ -209,13 +214,13 @@ impl FikaWgpuApp {
         }
         let dialog = match ShellDetachedDialogWindow::create(
             event_loop,
-            self.renderer.as_ref(),
+            None,
             kind,
             spec,
         ) {
             Ok(dialog) => dialog,
             Err(error) => {
-                fika_log!("[fika-wgpu] {error}");
+                fika_log!("[fika] {error}");
                 return false;
             }
         };
@@ -233,7 +238,7 @@ impl FikaWgpuApp {
     fn close_dialog_window(&mut self, kind: ShellDialogWindowKind) -> bool {
         let closed = self.dialog_windows.close(kind);
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-close-dispatch kind={} closed={}",
+            "[fika] dialog-close-dispatch kind={} closed={}",
             kind.as_str(),
             closed as u8
         );
@@ -255,7 +260,7 @@ impl FikaWgpuApp {
         };
         let closed = self.close_dialog_window(kind);
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-state-close kind={} changed={} closed={}",
+            "[fika] dialog-state-close kind={} changed={} closed={}",
             kind.as_str(),
             changed as u8,
             closed as u8
@@ -269,7 +274,7 @@ impl FikaWgpuApp {
         reason: &'static str,
     ) {
         fika_dialog_trace!(
-            "[fika-wgpu] main-close accept=1 reason={} dialogs_open={}",
+            "[fika] main-close accept=1 reason={} dialogs_open={}",
             reason,
             self.dialog_windows.has_open_window() as u8,
         );
@@ -298,7 +303,7 @@ impl FikaWgpuApp {
             return false;
         };
         fika_dialog_trace!(
-            "[fika-wgpu] dialog-host-event kind={} event={:?}",
+            "[fika] dialog-host-event kind={} event={:?}",
             kind.as_str(),
             event
         );

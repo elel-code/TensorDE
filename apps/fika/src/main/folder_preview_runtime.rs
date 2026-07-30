@@ -7,7 +7,7 @@ impl ShellFolderPreviewRoleRuntime {
         let (request_tx, request_rx) = mpsc::channel::<FolderPreviewRoleRequest>();
         let (result_tx, result_rx) = mpsc::channel::<FolderPreviewRoleResult>();
         let request_tx = thread::Builder::new()
-            .name("fika-wgpu-folder-preview".to_string())
+            .name("fika-folder-preview".to_string())
             .spawn(move || folder_preview_worker(cache_root, request_rx, result_tx))
             .ok()
             .map(|_| request_tx);
@@ -30,35 +30,6 @@ impl ShellFolderPreviewRoleRuntime {
             self.frame = self.frame.wrapping_add(1);
             entry.last_used_frame = self.frame;
         }
-    }
-
-    /// Look up without mutating LRU (damage / dirty-key paths are shared `&`).
-    fn preview(
-        &self,
-        path: &Path,
-        directory_modified_secs: u64,
-        size_px: u16,
-    ) -> Option<&FolderPreviewReady> {
-        let key = FolderPreviewRoleKey::new(path.to_path_buf(), directory_modified_secs, size_px);
-        self.ready.get(&key).map(|entry| &entry.preview)
-    }
-
-    fn preview_or_closest(
-        &self,
-        path: &Path,
-        directory_modified_secs: u64,
-        size_px: u16,
-    ) -> Option<&FolderPreviewReady> {
-        self.preview(path, directory_modified_secs, size_px)
-            .or_else(|| {
-                self.ready
-                    .iter()
-                    .filter(|(key, _)| {
-                        key.path == path && key.directory_modified_secs == directory_modified_secs
-                    })
-                    .min_by_key(|(key, _)| key.size_px.abs_diff(size_px))
-                    .map(|(_, entry)| &entry.preview)
-            })
     }
 
     /// Paint-path hit: refresh LRU so scrolled-away previews evict first.
@@ -164,13 +135,9 @@ impl ShellFolderPreviewRoleRuntime {
             self.finished.insert(result.key.clone());
             match result.preview {
                 Some(preview) => {
-                    let previous = self.insert_ready(result.key.clone(), preview);
+                    self.insert_ready(result.key.clone(), preview);
                     self.failed.remove(&result.key);
                     stats.applied += 1;
-                    stats.changes.push(FolderPreviewRoleChange {
-                        key: result.key,
-                        previous,
-                    });
                 }
                 None => {
                     let previous = self.ready.remove(&result.key).map(|entry| {
@@ -180,12 +147,6 @@ impl ShellFolderPreviewRoleRuntime {
                     let had_ready = previous.is_some();
                     let was_not_failed = self.failed.insert(result.key.clone());
                     stats.applied += usize::from(had_ready || was_not_failed);
-                    if had_ready || was_not_failed {
-                        stats.changes.push(FolderPreviewRoleChange {
-                            key: result.key,
-                            previous,
-                        });
-                    }
                 }
             }
         }
@@ -415,7 +376,7 @@ fn folder_preview_child_gpu_source(
     size_px: u16,
 ) -> Option<PathBuf> {
     let thumbnail_source = ThumbnailRequest::from_entry_metadata_with_mime(
-        WGPU_SHELL_PANE_ID,
+        SHELL_PANE_ID,
         Generation(0),
         ItemId(0),
         source.path.clone(),

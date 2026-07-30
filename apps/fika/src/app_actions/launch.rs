@@ -5,15 +5,15 @@ use crate::ui::open_with::OpenWithLaunchRequest;
 use crate::ui::operation_request::ShellOperationRequest;
 use crate::ui::service_menu::ServiceMenuLaunchRequest;
 use crate::ui::tasks::ShellTaskStatus;
-use crate::{FikaWgpuApp, path_display_label};
+use crate::{FikaApp, path_display_label};
 use fika_core::service_menu_target_label;
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn launch_open_file_request(&mut self, request: &OpenFileRequest) {
         let launch = match default_open_file_launch_request(&self.mime_applications, request) {
             Ok(launch) => launch,
             Err(error) => {
-                fika_log!("[fika-wgpu] open-error {error}");
+                fika_log!("[fika] open-error {error}");
                 self.scene
                     .record_task_status(ShellTaskStatus::failed("Open failed", error, false));
                 self.apply_window_action_outcome(ShellActionOutcome::Redraw);
@@ -40,7 +40,7 @@ impl FikaWgpuApp {
         {
             Ok(request) => request,
             Err(error) => {
-                fika_log!("[fika-wgpu] service-menu-error action={action_id:?} {error}");
+                fika_log!("[fika] service-menu-error action={action_id:?} {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Action failed",
                     error,
@@ -85,7 +85,7 @@ impl FikaWgpuApp {
         {
             Ok(request) => request,
             Err(error) => {
-                fika_log!("[fika-wgpu] open-with-error app={desktop_id:?} {error}");
+                fika_log!("[fika] open-with-error app={desktop_id:?} {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Open With failed",
                     error,

@@ -1,9 +1,6 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub(crate) const FILE_ICON_CORNER_RADIUS_RATIO: f32 = 0.16;
-pub(crate) const FOLDER_ICON_CORNER_RADIUS_RATIO: f32 = 0.14;
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum FileIconKind {
     Directory,

@@ -287,7 +287,7 @@ fn transfer_task_detail(
 }
 fn trash_view_operation_runtime_failure(operation: TrashViewOperation) -> TrashViewOperationResult {
     TrashViewOperationResult {
-        pane_id: WGPU_SHELL_PANE_ID,
+        pane_id: SHELL_PANE_ID,
         operation,
         success_count: 0,
         failure_count: 1,

@@ -78,7 +78,7 @@
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("fika-wgpu-{name}-{unique}"))
+        std::env::temp_dir().join(format!("fika-{name}-{unique}"))
     }
 
     fn wait_for_thumbnail_state(
@@ -208,7 +208,6 @@
         assert_eq!(transition.pane, ShellPaneId::SLOT_0);
         assert!(transition.moved());
         assert!(scene.animation_active());
-        assert_ne!(scene.animation_dirty_value_with_hover(true), 0);
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -339,6 +338,75 @@
         let entry = &scene.panes[ShellPaneId::SLOT_0].entries[0];
         assert!(entry.mime_magic_checked);
         assert_eq!(entry.mime_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn settled_visible_page_resolves_mime_without_a_scroll_event() {
+        let root = test_dir("visible-mime-without-scroll");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("extensionless-image"),
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+        )
+        .unwrap();
+        let mut scene = ShellScene::load(root.clone(), ShellViewMode::Compact).unwrap();
+        let size = PhysicalSize::new(1100, 720);
+        assert!(!scene.panes[ShellPaneId::SLOT_0].entries[0].mime_magic_checked);
+
+        let paused = synchronize_visible_metadata_roles(&mut scene, size, true);
+        assert_eq!(paused.applied, 0);
+        assert!(!scene.panes[ShellPaneId::SLOT_0].entries[0].mime_magic_checked);
+
+        let settled = synchronize_visible_metadata_roles(&mut scene, size, false);
+        assert_eq!(settled.visible, 1);
+        assert_eq!(settled.applied, 1);
+        let entry = &scene.panes[ShellPaneId::SLOT_0].entries[0];
+        assert!(entry.mime_magic_checked);
+        assert_eq!(entry.mime_type.as_deref(), Some("image/png"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_read_ahead_pumps_all_batches_without_another_prewarm() {
+        const ITEM_COUNT: usize = METADATA_ROLE_BATCH_SIZE * 2 + 5;
+        let root = test_dir("metadata-read-ahead-pump");
+        std::fs::create_dir_all(&root).unwrap();
+        for index in 0..ITEM_COUNT {
+            std::fs::write(
+                root.join(format!("extensionless-{index:03}")),
+                b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+            )
+            .unwrap();
+        }
+        let mut scene = ShellScene::load(root.clone(), ShellViewMode::Compact).unwrap();
+        let size = PhysicalSize::new(640, 360);
+        let layouts = scene.prepare_frame_projection_layouts(size);
+        let projections = scene.pane_projections_from_layouts(layouts);
+        let initial = scene.prewarm_file_metadata_roles(projections.projections());
+        drop(projections);
+
+        assert_eq!(initial.batches_started, 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut applied = 0;
+        let mut batches_started = initial.batches_started;
+        while applied < ITEM_COUNT && Instant::now() < deadline {
+            let stats = scene.drain_metadata_role_results();
+            applied += stats.applied;
+            batches_started += stats.batches_started;
+            if stats.results == 0 {
+                std::thread::yield_now();
+            }
+        }
+
+        assert_eq!(applied, ITEM_COUNT);
+        assert_eq!(batches_started, ITEM_COUNT.div_ceil(METADATA_ROLE_BATCH_SIZE));
+        assert!(scene.panes[ShellPaneId::SLOT_0]
+            .entries
+            .iter()
+            .all(|entry| entry.mime_magic_checked && entry.mime_type.as_deref() == Some("image/png")));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn test_desktop_application(

@@ -45,7 +45,7 @@ impl ShellScene {
             return false;
         }
         self.context_menu_safe_triangle.reset();
-        fika_log!("[fika-wgpu] context-menu open=0");
+        fika_log!("[fika] context-menu open=0");
         true
     }
 
@@ -62,7 +62,7 @@ impl ShellScene {
         if let Some(action) = action {
             self.context_menu_actions += 1;
             fika_log!(
-                "[fika-wgpu] context-menu action={} target={} actions={}",
+                "[fika] context-menu action={} target={} actions={}",
                 action.as_str(),
                 self.context_target
                     .as_ref()
@@ -72,7 +72,7 @@ impl ShellScene {
             );
             return Some(action);
         } else if menu_was_open {
-            fika_log!("[fika-wgpu] context-menu open=0");
+            fika_log!("[fika] context-menu open=0");
         }
         None
     }
@@ -174,7 +174,7 @@ impl ShellScene {
                 selection_count,
                 ..
             }) => fika_log!(
-                "[fika-wgpu] context-target kind=item pane={} index={} dir={} selection={} path={} changes={}",
+                "[fika] context-target kind=item pane={} index={} dir={} selection={} path={} changes={}",
                 pane.as_str(),
                 index,
                 *is_dir as u8,
@@ -183,7 +183,7 @@ impl ShellScene {
                 self.context_target_changes
             ),
             Some(ShellContextTarget::Blank { pane, path, .. }) => fika_log!(
-                "[fika-wgpu] context-target kind=blank pane={} path={} changes={}",
+                "[fika] context-target kind=blank pane={} path={} changes={}",
                 pane.as_str(),
                 path.display(),
                 self.context_target_changes
@@ -199,7 +199,7 @@ impl ShellScene {
                 editable,
                 ..
             }) => fika_log!(
-                "[fika-wgpu] context-target kind=place index={} label={:?} device={} mounted={} ejectable={} poweroff={} network={} trash={} root={} editable={} path={} changes={}",
+                "[fika] context-target kind=place index={} label={:?} device={} mounted={} ejectable={} poweroff={} network={} trash={} root={} editable={} path={} changes={}",
                 index,
                 label,
                 device.is_some() as u8,
@@ -214,7 +214,7 @@ impl ShellScene {
                 self.context_target_changes
             ),
             None => fika_log!(
-                "[fika-wgpu] context-target kind=none changes={}",
+                "[fika] context-target kind=none changes={}",
                 self.context_target_changes
             ),
         }
@@ -243,7 +243,7 @@ impl ShellScene {
     fn record_open_file_request(&mut self, request: &OpenFileRequest) {
         self.open_changes += 1;
         fika_log!(
-            "[fika-wgpu] open path={} uri={} changes={}",
+            "[fika] open path={} uri={} changes={}",
             request.path.display(),
             request.uri,
             self.open_changes
@@ -259,7 +259,7 @@ impl ShellScene {
         let chooser = match self.open_with_chooser_for_context(cache) {
             Ok(chooser) => chooser,
             Err(error) => {
-                fika_log!("[fika-wgpu] open-with-error {error}");
+                fika_log!("[fika] open-with-error {error}");
                 self.record_task_status(ShellTaskStatus::failed("Open With failed", error, false));
                 return false;
             }

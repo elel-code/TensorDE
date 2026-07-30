@@ -1,4 +1,12 @@
 impl ShellScene {
+    fn active_place_index(&self) -> Option<usize> {
+        let active_path = self
+            .pane_state(self.active_pane())
+            .map(ShellPaneState::display_path)
+            .unwrap_or_else(|| self.panes[ShellPaneId::SLOT_0].display_path());
+        active_shell_place_index(&self.places, active_path)
+    }
+
     /// Emits Places labels without resolving icons or generating CPU quads.
     /// Both renderer paths call this exact retained layout recipe.
     fn push_places_sidebar_text(
@@ -12,11 +20,7 @@ impl ShellScene {
             return;
         }
         let panel = self.places_panel_rect(size);
-        let active_place_path = self
-            .pane_state(self.active_pane())
-            .map(|pane| pane.path.as_path())
-            .unwrap_or_else(|| self.panes[ShellPaneId::SLOT_0].path.as_path());
-        let active_place = active_shell_place_index(&self.places, active_place_path);
+        let active_place = self.active_place_index();
         let padding_x = self.scale_metric(PLACES_SIDEBAR_PADDING_X);
         let section_height = self.scale_metric(PLACES_SECTION_HEIGHT);
         let row_height = self.scale_metric(PLACES_ROW_HEIGHT);

@@ -5,9 +5,9 @@ use crate::ui::context_menu::ShellContextMenuAction;
 use crate::ui::operation_request::ShellOperationRequest;
 use crate::ui::tasks::ShellTaskStatus;
 use crate::ui::transfer::ShellAsyncDeviceCompletion;
-use crate::{DeviceActionRequest, FikaWgpuApp};
+use crate::{DeviceActionRequest, FikaApp};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn perform_device_context_action(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -15,7 +15,7 @@ impl FikaWgpuApp {
     ) {
         let Some(request) = self.scene.context_target_device_action(action) else {
             fika_log!(
-                "[fika-wgpu] device-action-error action={} target=none",
+                "[fika] device-action-error action={} target=none",
                 action.as_str()
             );
             self.scene.record_task_status(ShellTaskStatus::failed(
@@ -35,7 +35,7 @@ impl FikaWgpuApp {
         request: DeviceActionRequest,
     ) {
         fika_log!(
-            "[fika-wgpu] device-action-start action={} id={:?} label={:?}",
+            "[fika] device-action-start action={} id={:?} label={:?}",
             request.action.as_str(),
             request.id,
             request.label
@@ -68,7 +68,7 @@ impl FikaWgpuApp {
             Ok(None) => None,
             Err(error) => {
                 fika_log!(
-                    "[fika-wgpu] device-action-error action={} id={:?} label={:?} error={error}",
+                    "[fika] device-action-error action={} id={:?} label={:?} error={error}",
                     request.action.as_str(),
                     request.id,
                     request.label
@@ -92,7 +92,7 @@ impl FikaWgpuApp {
             }
             Err(error) => {
                 fika_log!(
-                    "[fika-wgpu] device-action-refresh-error action={} id={:?} error={error}",
+                    "[fika] device-action-refresh-error action={} id={:?} error={error}",
                     request.action.as_str(),
                     request.id
                 );

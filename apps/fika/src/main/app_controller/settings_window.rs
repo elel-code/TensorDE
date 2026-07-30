@@ -1,4 +1,4 @@
-impl FikaWgpuApp {
+impl FikaApp {
     fn settings_snapshot(&self) -> ShellSettingsSnapshot {
         ShellSettingsSnapshot {
             show_hidden: self.scene.show_hidden,
@@ -138,7 +138,7 @@ impl FikaWgpuApp {
         };
         if changed {
             fika_log!(
-                "[fika-wgpu] settings action={} value={:?}",
+                "[fika] settings action={} value={:?}",
                 action.as_str(),
                 action
             );

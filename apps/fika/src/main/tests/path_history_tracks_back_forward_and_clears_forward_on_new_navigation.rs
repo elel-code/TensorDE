@@ -2,7 +2,7 @@
     #[test]
     fn path_history_tracks_back_forward_and_clears_forward_on_new_navigation() {
         let unique = format!(
-            "fika-wgpu-history-{}-{}",
+            "fika-history-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -82,7 +82,7 @@
     #[test]
     fn reload_current_path_preserves_history_and_selection_by_name() {
         let unique = format!(
-            "fika-wgpu-reload-{}-{}",
+            "fika-reload-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

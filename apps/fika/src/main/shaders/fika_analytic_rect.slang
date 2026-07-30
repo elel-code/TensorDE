@@ -1,5 +1,5 @@
 // Instanced analytic rounded rectangle with clip and optional outline.
-// All coordinates are Vulkan NDC with the projection's y-up convention.
+// All coordinates are Vulkan NDC with a positive-height, y-down viewport.
 
 struct VertexInput
 {
@@ -74,7 +74,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
 {
     float2 pixel = input.pixel;
     if (pixel.x < input.clip.x || pixel.x > input.clip.z
-        || pixel.y > input.clip.y || pixel.y < input.clip.w)
+        || pixel.y < input.clip.y || pixel.y > input.clip.w)
     {
         discard;
     }
@@ -83,7 +83,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
         (input.rect.y + input.rect.w) * 0.5);
     float2 halfSize = float2(
         (input.rect.z - input.rect.x) * 0.5,
-        (input.rect.y - input.rect.w) * 0.5);
+        (input.rect.w - input.rect.y) * 0.5);
     float2 local = pixel - center;
     float2 radius = input.style.xy;
     float2 stroke = input.style.zw;

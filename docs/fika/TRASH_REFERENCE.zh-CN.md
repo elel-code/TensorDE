@@ -96,7 +96,7 @@ Fika 的回收站实现遵循 Dolphin 的 `trash:/` model role 和操作流程�
     在回收站影响操作后刷新，从回收站 pane lister 事件更新，并在没有回收站
     pane 打开时从 core `TrashEmptinessMonitor` 单例 watcher 获取外部变化。
     Places 投影消费该状态，不轮询文件系统。
-  - winit/wgpu Places renderer 使用当前 shell marker 样式渲染回收站状态。
+  - 原生 Vulkan Places renderer 使用当前 shell marker 样式渲染回收站状态。
   - 回收站 place 右键菜单提供打开、清空回收站、复制位置和属性；
     清空回收站使用相同的 app 状态进行启用判断，并通过聚焦 pane 的
     pane-local 操作状态运行。

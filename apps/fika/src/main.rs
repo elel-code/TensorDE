@@ -1,11 +1,11 @@
 mod windowing;
 
+#[path = "main/fika_renderer.rs"]
+mod fika_renderer;
 #[path = "main/icon_engine.rs"]
 mod icon_engine;
 #[path = "main/icon_frame.rs"]
 mod icon_frame;
-#[path = "main/native_vulkan_app.rs"]
-mod native_vulkan_app;
 #[path = "main/navigation_completion.rs"]
 mod navigation_completion;
 #[path = "main/scene_types.rs"]
@@ -16,6 +16,10 @@ mod svg_geometry;
 mod text_engine;
 #[path = "main/text_frame.rs"]
 mod text_frame;
+#[path = "main/vulkan_color.rs"]
+mod vulkan_color;
+#[path = "main/vulkan_color_spirv.rs"]
+mod vulkan_color_spirv;
 #[path = "main/vulkan_frame.rs"]
 mod vulkan_frame;
 #[path = "main/vulkan_icon.rs"]
@@ -34,6 +38,7 @@ mod vulkan_text;
 mod vulkan_text_spirv;
 
 include!("main/crate_prelude.rs");
+use fika_renderer::*;
 use icon_engine::*;
 use icon_frame::*;
 use scene_types::*;
@@ -52,11 +57,9 @@ include!("main/thumbnail_source_jobs.rs");
 include!("main/thumbnail_jobs.rs");
 include!("main/folder_preview_runtime.rs");
 include!("main/folder_preview_layout.rs");
-include!("main/gpu_svg_renderer.rs");
-include!("main/gpu_icon_source_renderer.rs");
-include!("main/icon_renderer_and_text_stats.rs");
+include!("main/icon_source.rs");
 include!("main/text_cache_and_builder.rs");
-include!("main/text_renderer_and_icon_theme.rs");
+include!("main/text_render_data.rs");
 include!("main/icon_theme_resolver.rs");
 include!("main/geometry_tasks_places.rs");
 include!("main/places_filters_text_metrics.rs");

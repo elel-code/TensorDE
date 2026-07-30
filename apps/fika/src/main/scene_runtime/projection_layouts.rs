@@ -344,10 +344,6 @@ impl ShellScene {
         }
     }
 
-    fn zoom_percent(&self) -> i32 {
-        self.zoom_percent_for_pane(self.active_pane())
-    }
-
     fn zoom_percent_for_pane(&self, pane: ShellPaneId) -> i32 {
         self.pane_zoom_step(pane)
             .map(|zoom_step| self.zoom_percent_for_step(zoom_step))
@@ -383,95 +379,8 @@ impl ShellScene {
         self.zoom_icon_metric_for_step(zoom_step, DETAILS_ICON_SIZE, 16.0, 144.0)
     }
 
-    fn build_frame(
-        &self,
-        size: PhysicalSize<u32>,
-        projections: &[ShellPaneProjection<'_>],
-        projection_layout_us: u128,
-        text: &mut TextFrameBuilder<'_>,
-        icons: &mut IconFrameBuilder<'_>,
-        overlay_text: Option<&mut TextFrameBuilder<'_>>,
-    ) -> SceneFrame {
-        let layout_start = Instant::now();
-        let mut vertices = Vec::with_capacity(64);
-        let mut overlay_vertices = Vec::with_capacity(32);
-        let width = size.width.max(1) as f32;
-        let height = size.height.max(1) as f32;
-        let slot0_projection = projections
-            .iter()
-            .find(|projection| projection.geometry.kind == ShellPaneId::SLOT_0)
-            .expect("pane slot 0 is open");
-        let content_size = slot0_projection.scroll_metrics.content_size;
-        let first_item_rect = slot0_projection
-            .visible_items
-            .first()
-            .map(|item| item.layout.item_rect);
-        let visible_items = slot0_projection.visible_items.len();
-        let thumbnail_candidates = projections
-            .iter()
-            .map(|projection| self.thumbnail_candidate_count_for_projection(projection))
-            .sum();
-        let folder_preview_candidates = projections
-            .iter()
-            .map(|projection| self.folder_preview_role_candidate_count_for_projection(projection))
-            .sum();
-        let paint = ShellPaintPalettes::from_shell_theme(self.theme());
-        let theme = paint.shell;
-
-        push_rect(
-            &mut vertices,
-            ViewRect {
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
-            },
-            theme.view_mode_surface(slot0_projection.view.view_mode),
-            size,
-        );
-        self.push_app_toolbar(&mut vertices, size, theme);
-        self.push_places_sidebar(&mut vertices, text, icons, size, paint);
-        if let Some(metrics) = self.split_pane_metrics(size) {
-            push_rect(&mut vertices, metrics.divider, theme.divider(), size);
-        }
-
-        let mut content_scrollbar_visible = false;
-        for projection in projections {
-            let scrollbar_visible =
-                self.push_pane_projection(&mut vertices, text, icons, projection, size, paint);
-            if projection.geometry.kind == ShellPaneId::SLOT_0 {
-                content_scrollbar_visible = scrollbar_visible;
-            }
-            self.queue_thumbnail_read_ahead_for_projection(projection, icons);
-        }
-        if let Some(overlay_text) = overlay_text {
-            // Drag preview is a Wayland DnD icon (compositor surface), not an
-            // in-window overlay. Only drop/context menus paint into this layer.
-            self.push_drop_menu_overlay(&mut overlay_vertices, overlay_text, theme, size);
-            self.push_context_menu_overlay(&mut overlay_vertices, overlay_text, icons, theme, size);
-        }
-
-        SceneFrame {
-            layout_us: projection_layout_us + layout_start.elapsed().as_micros(),
-            visible_items,
-            thumbnail_candidates,
-            folder_preview_candidates,
-            quad_count: (vertices.len() + overlay_vertices.len()) / 6,
-            content_size,
-            content_scrollbar_visible,
-            first_item_rect,
-            vertices,
-            overlay_vertices,
-            quad_upload_us: 0,
-            text_stats: TextFrameStats::default(),
-            icon_stats: IconFrameStats::default(),
-            vertex_upload_stats: VertexBufferUploadStats::default(),
-        }
-    }
-
-    /// Builds the structural quad layers that do not depend on a glyph atlas,
-    /// texture sampling, or icon decode. The native Vulkan migration path uses
-    /// this to present real Fika chrome without creating a wgpu device.
+    /// Builds structural quad layers independent of glyph-atlas, sampled-icon,
+    /// and decode work for the native Vulkan frame.
     pub(crate) fn build_native_frame_layers(
         &self,
         size: PhysicalSize<u32>,
@@ -627,7 +536,7 @@ impl ShellScene {
             for item in projection.visible_items.iter().copied() {
                 self.push_native_pane_item_text(text, projection, item, theme);
             }
-            self.push_native_pane_status_text(text, projection, size, theme);
+            self.push_native_pane_status_text(text, projection, theme);
         }
     }
 

@@ -26,7 +26,7 @@ struct AsyncTransferFailure {
     privileged: bool,
 }
 
-impl FikaWgpuApp {
+impl FikaApp {
     /// Single entry point for typed operation requests from UI actions.
     fn submit_operation_request(&mut self, request: ShellOperationRequest) {
         match request {
@@ -138,7 +138,7 @@ impl FikaWgpuApp {
                         })
                     },
                 ) {
-                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                    fika_log!("[fika] clipboard-reply-runtime-error error={error}");
                 }
             }
             ShellClipboardWork::CopyLocation { request, reply_rx } => {
@@ -150,7 +150,7 @@ impl FikaWgpuApp {
                         )
                     },
                 ) {
-                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                    fika_log!("[fika] clipboard-reply-runtime-error error={error}");
                 }
             }
             ShellClipboardWork::LoadPaste {
@@ -168,7 +168,7 @@ impl FikaWgpuApp {
                         })
                     },
                 ) {
-                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                    fika_log!("[fika] clipboard-reply-runtime-error error={error}");
                 }
             }
             ShellClipboardWork::Clear { reason, reply_rx } => {
@@ -181,7 +181,7 @@ impl FikaWgpuApp {
                         })
                     },
                 ) {
-                    fika_log!("[fika-wgpu] clipboard-reply-runtime-error error={error}");
+                    fika_log!("[fika] clipboard-reply-runtime-error error={error}");
                 }
             }
         }
@@ -201,7 +201,7 @@ impl FikaWgpuApp {
                 ShellAsyncTaskResult::Create(ShellAsyncCreateCompletion { request, outcome })
             },
         ) {
-            fika_log!("[fika-wgpu] create-runtime-error {error}");
+            fika_log!("[fika] create-runtime-error {error}");
             if self.scene.set_create_dialog_error(error.to_string()) {
                 self.finish_create_dialog_state_change();
             }
@@ -227,7 +227,7 @@ impl FikaWgpuApp {
                 ShellAsyncTaskResult::Rename(ShellAsyncRenameCompletion { request, outcome })
             },
         ) {
-            fika_log!("[fika-wgpu] rename-runtime-error {error}");
+            fika_log!("[fika] rename-runtime-error {error}");
             if self.scene.set_rename_dialog_error(error.to_string()) {
                 self.finish_rename_dialog_state_change();
             }
@@ -246,7 +246,7 @@ impl FikaWgpuApp {
         if let Err(error) = self.spawn_async_task_result(
             move || async move {
                 perform_device_place_operation(
-                    WGPU_SHELL_PANE_ID,
+                    SHELL_PANE_ID,
                     request_for_task.id.clone(),
                     request_for_task.label.clone(),
                     request_for_task.operation,
@@ -257,7 +257,7 @@ impl FikaWgpuApp {
                 ShellAsyncTaskResult::Device(ShellAsyncDeviceCompletion { request, result })
             },
         ) {
-            fika_log!("[fika-wgpu] device-action-runtime-error action={action_name} error={error}");
+            fika_log!("[fika] device-action-runtime-error action={action_name} error={error}");
             self.scene.record_task_status(ShellTaskStatus::failed(
                 format!("{action_label} failed"),
                 error.to_string(),
@@ -291,7 +291,7 @@ impl FikaWgpuApp {
                                     result.units.len()
                                 );
                                 fika_log!(
-                                    "[fika-wgpu] open-finished path={} app={:?} units={}",
+                                    "[fika] open-finished path={} app={:?} units={}",
                                     path.display(),
                                     app_name,
                                     result.units.join(",")
@@ -305,7 +305,7 @@ impl FikaWgpuApp {
                                     app_name
                                 );
                                 fika_log!(
-                                    "[fika-wgpu] open-finished path={} app={:?} error={error}",
+                                    "[fika] open-finished path={} app={:?} error={error}",
                                     path.display(),
                                     app_name
                                 );
@@ -317,26 +317,26 @@ impl FikaWgpuApp {
                         let result = launch_with_systemd_user(plan).await;
                         let success = result.is_ok();
                         let status = OpenWithLaunchResult {
-                            pane_id: WGPU_SHELL_PANE_ID,
+                            pane_id: SHELL_PANE_ID,
                             path,
                             app_name,
                             result,
                         }
                         .status_message();
-                        fika_log!("[fika-wgpu] open-with-finished {status}");
+                        fika_log!("[fika] open-with-finished {status}");
                         (success, status)
                     }
                     ShellAsyncLaunchKind::ServiceMenu => {
                         let result = launch_with_systemd_user(plan).await;
                         let success = result.is_ok();
                         let status = ServiceMenuLaunchResult {
-                            pane_id: WGPU_SHELL_PANE_ID,
+                            pane_id: SHELL_PANE_ID,
                             target_label: target_label.unwrap_or_else(|| path.display().to_string()),
                             app_name,
                             result,
                         }
                         .status_message();
-                        fika_log!("[fika-wgpu] service-menu-finished {status}");
+                        fika_log!("[fika] service-menu-finished {status}");
                         (success, status)
                     }
                     ShellAsyncLaunchKind::ArkExtractAndTrash => {
@@ -350,13 +350,13 @@ impl FikaWgpuApp {
                     match crate::ui::ark::extract::execute_ark_extract_and_trash(request).await {
                         Ok(message) => {
                             let status = format!("Ran {app_name} for {target_label}: {message}");
-                            fika_log!("[fika-wgpu] service-menu-finished {status}");
+                            fika_log!("[fika] service-menu-finished {status}");
                             (true, status)
                         }
                         Err(err) => {
                             let status =
                                 format!("Cannot run {app_name} for {target_label}: {err}");
-                            fika_log!("[fika-wgpu] service-menu-finished {status}");
+                            fika_log!("[fika] service-menu-finished {status}");
                             (false, status)
                         }
                     }
@@ -554,7 +554,7 @@ impl FikaWgpuApp {
                 })
             },
         ) {
-            fika_log!("[fika-wgpu] move-to-trash-runtime-error {error}");
+            fika_log!("[fika] move-to-trash-runtime-error {error}");
             self.forget_active_task(task_id);
             self.scene.record_task_status(ShellTaskStatus::failed(
                 if privileged {
@@ -581,7 +581,7 @@ impl FikaWgpuApp {
 
         if let Err(error) = self.spawn_async_task_result(
             move || async move {
-                trash_view_operation_result_async(WGPU_SHELL_PANE_ID, operation, paths).await
+                trash_view_operation_result_async(SHELL_PANE_ID, operation, paths).await
             },
             move |result| {
                 ShellAsyncTaskResult::TrashView(ShellAsyncTrashViewCompletion {
@@ -593,7 +593,7 @@ impl FikaWgpuApp {
             },
         ) {
             fika_log!(
-                "[fika-wgpu] trash-view-runtime-error action={} {error}",
+                "[fika] trash-view-runtime-error action={} {error}",
                 action.as_str()
             );
             self.post_async_task_result(ShellAsyncTaskResult::TrashView(

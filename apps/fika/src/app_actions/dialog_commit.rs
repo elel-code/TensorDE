@@ -7,10 +7,10 @@ use crate::ui::operation_request::ShellOperationRequest;
 use crate::ui::privilege::should_attempt_privileged_operation;
 use crate::ui::tasks::ShellTaskStatus;
 use crate::ui::transfer::{ShellAsyncCreateCompletion, ShellAsyncRenameCompletion};
-use crate::{FikaWgpuApp, path_display_label, task_error_detail};
+use crate::{FikaApp, path_display_label, task_error_detail};
 use fika_core::{MimeApplicationCache, set_default_mime_application};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn commit_rename_dialog(&mut self, _event_loop: &ActiveEventLoop) {
         let request = match self.scene.rename_entry_request() {
             Ok(request) => request,
@@ -105,7 +105,7 @@ impl FikaWgpuApp {
                 true
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] rename-reload-error {error}");
+                fika_log!("[fika] rename-reload-error {error}");
                 true
             }
         }
@@ -192,7 +192,7 @@ impl FikaWgpuApp {
                 true
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] create-new-reload-error {error}");
+                fika_log!("[fika] create-new-reload-error {error}");
                 true
             }
         }
@@ -221,7 +221,7 @@ impl FikaWgpuApp {
             ) {
                 Ok(path) => {
                     fika_log!(
-                        "[fika-wgpu] open-with-default mime={} desktop={} path={}",
+                        "[fika] open-with-default mime={} desktop={} path={}",
                         default_update.mime_type,
                         default_update.desktop_id,
                         path.display()

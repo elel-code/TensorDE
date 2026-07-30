@@ -7,7 +7,7 @@ impl ThumbnailSourceResolver {
         let (request_tx, request_rx) = mpsc::channel::<ThumbnailSourceRequest>();
         let (result_tx, result_rx) = mpsc::channel::<ThumbnailSourceResult>();
         let request_tx = thread::Builder::new()
-            .name("fika-wgpu-thumbnail-source".to_string())
+            .name("fika-thumbnail-source".to_string())
             .spawn(move || thumbnail_source_worker(cache_root, request_rx, result_tx))
             .ok()
             .map(|_| request_tx);
@@ -216,6 +216,7 @@ impl ThumbnailSourceResolver {
     ///
     /// Larger ready buckets are kept so zoom-in can upgrade the size-free
     /// content GPU slot instead of replaying the first-open resolution.
+    #[cfg(test)]
     fn release_gpu_resident_content_upto(&mut self, keys: &[ThumbnailSourceKey]) {
         let targets = keys
             .iter()
@@ -249,6 +250,7 @@ impl ThumbnailSourceResolver {
     /// Mirrors FileManager killing preview jobs and clearing finished items when the
     /// model is emptied / items leave the view, so memory and stale failure
     /// markers do not accumulate across folders.
+    #[cfg(test)]
     fn clear_path_prefix(&mut self, path: &Path) {
         self.ready.retain(|key, entry| {
             let keep = !key.path.starts_with(path);
@@ -277,6 +279,7 @@ impl ThumbnailSourceResolver {
         }
     }
 
+    #[cfg(test)]
     fn shrink_maps_if_sparse(&mut self) {
         if self.ready.capacity() > self.ready.len().saturating_mul(2).max(64) {
             self.ready.shrink_to_fit();
@@ -289,11 +292,6 @@ impl ThumbnailSourceResolver {
         }
     }
 
-    fn has_visible_pending(&self) -> bool {
-        self.pending
-            .values()
-            .any(|priority| *priority == ThumbnailRequestPriority::Visible)
-    }
 }
 fn thumbnail_source_worker(
     cache_root: PathBuf,
@@ -397,12 +395,6 @@ struct FolderPreviewRoleResult {
 struct FolderPreviewRoleDrainStats {
     results: usize,
     applied: usize,
-    changes: Vec<FolderPreviewRoleChange>,
-}
-#[derive(Clone, Debug)]
-struct FolderPreviewRoleChange {
-    key: FolderPreviewRoleKey,
-    previous: Option<FolderPreviewReady>,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct FolderPreviewRoleUpdateStats {

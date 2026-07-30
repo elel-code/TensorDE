@@ -37,9 +37,9 @@ pub(crate) fn tessellate_svg(bytes: &[u8], width: u32, height: u32) -> Option<Sv
         a: scale * 2.0 / width as f32,
         b: 0.0,
         c: 0.0,
-        d: -scale * 2.0 / height as f32,
+        d: scale * 2.0 / height as f32,
         e: -1.0 + (dx - vx * scale) * 2.0 / width as f32,
-        f: 1.0 - (dy - vy * scale) * 2.0 / height as f32,
+        f: -1.0 + (dy - vy * scale) * 2.0 / height as f32,
     };
     let mut geometry = VertexBuffers::<SvgVertex, u32>::new();
     let stylesheet = svg_stylesheet(root);

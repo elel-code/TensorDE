@@ -2,6 +2,8 @@ use crate::windowing::PhysicalSize;
 use bytemuck::{Pod, Zeroable};
 use fika_core::ViewRect;
 
+use super::coordinates::rect_to_vulkan_ndc;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AtlasRect {
     pub(crate) x: f32,
@@ -18,19 +20,6 @@ pub(crate) struct TextVertex {
     pub(crate) color: [f32; 4],
 }
 
-impl TextVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
-
-    pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
 pub(crate) fn push_textured_rect(
     vertices: &mut Vec<TextVertex>,
     rect: ViewRect,
@@ -43,12 +32,7 @@ pub(crate) fn push_textured_rect(
     if rect.width <= 0.0 || rect.height <= 0.0 || atlas.width <= 0.0 || atlas.height <= 0.0 {
         return;
     }
-    let width = size.width.max(1) as f32;
-    let height = size.height.max(1) as f32;
-    let left = rect.x / width * 2.0 - 1.0;
-    let right = rect.right() / width * 2.0 - 1.0;
-    let top = 1.0 - rect.y / height * 2.0;
-    let bottom = 1.0 - rect.bottom() / height * 2.0;
+    let [left, top, right, bottom] = rect_to_vulkan_ndc(rect, size);
 
     let atlas_width = atlas_width.max(1) as f32;
     let atlas_height = atlas_height.max(1) as f32;
@@ -89,4 +73,38 @@ pub(crate) fn push_textured_rect(
             color,
         },
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn textured_rect_keeps_top_left_uv_on_vulkan_top_left_vertex() {
+        let mut vertices = Vec::new();
+        push_textured_rect(
+            &mut vertices,
+            ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+            },
+            AtlasRect {
+                x: 10.0,
+                y: 20.0,
+                width: 30.0,
+                height: 40.0,
+            },
+            100,
+            100,
+            PhysicalSize::new(100, 100),
+            [1.0; 4],
+        );
+
+        assert_eq!(vertices[0].position, [-1.0, -1.0]);
+        assert_eq!(vertices[0].uv, [0.1, 0.2]);
+        assert_eq!(vertices[1].position, [-1.0, 0.0]);
+        assert_eq!(vertices[1].uv, [0.1, 0.6]);
+    }
 }

@@ -20,29 +20,6 @@ pub(crate) struct TextFrameStats {
     pub(crate) swash_resets: usize,
     pub(crate) raster_us: u128,
 }
-impl TextFrameStats {
-    pub(crate) fn merged(self, other: Self) -> Self {
-        Self {
-            labels: self.labels + other.labels,
-            quads: self.quads + other.quads,
-            deferred: self.deferred + other.deferred,
-            atlas_reused: self.atlas_reused + other.atlas_reused,
-            atlas_uploads: self.atlas_uploads + other.atlas_uploads,
-            atlas_upload_skips: self.atlas_upload_skips + other.atlas_upload_skips,
-            atlas_width: self.atlas_width.max(other.atlas_width),
-            atlas_height: self.atlas_height.max(other.atlas_height),
-            atlas_bytes: self.atlas_bytes + other.atlas_bytes,
-            cache_hits: self.cache_hits + other.cache_hits,
-            cache_misses: self.cache_misses + other.cache_misses,
-            cache_entries: self.cache_entries + other.cache_entries,
-            cache_bytes: self.cache_bytes + other.cache_bytes,
-            swash_image_entries: self.swash_image_entries.max(other.swash_image_entries),
-            swash_outline_entries: self.swash_outline_entries.max(other.swash_outline_entries),
-            swash_resets: self.swash_resets + other.swash_resets,
-            raster_us: self.raster_us + other.raster_us,
-        }
-    }
-}
 pub(crate) struct TextFrame {
     pub(crate) vertices: Vec<TextVertex>,
     pub(crate) pixels: Vec<u8>,

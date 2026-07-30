@@ -11,7 +11,7 @@ use crate::DeviceActionRequest;
 use crate::ui::clipboard::FileClipboardExportRequest;
 use crate::ui::context_menu::ShellContextMenuAction;
 use crate::ui::create_rename::{CreateEntryRequest, RenameEntryRequest};
-use crate::ui::metrics::WGPU_SHELL_PANE_ID;
+use crate::ui::metrics::SHELL_PANE_ID;
 use crate::ui::pane::ShellPaneId;
 #[cfg(test)]
 use crate::ui::privilege::run_privileged_command_sync;
@@ -229,7 +229,7 @@ pub(crate) fn transfer_paths_with_privilege(
                         first_error = Some(error.clone());
                     }
                     fika_log!(
-                        "[fika-wgpu] privileged-transfer-error mode={} source={} target={} error={error}",
+                        "[fika] privileged-transfer-error mode={} source={} target={} error={error}",
                         mode.label(),
                         source.display(),
                         target_dir.display()
@@ -271,7 +271,7 @@ pub(crate) fn transfer_paths_with_privilege(
                     first_error = Some(error.clone());
                 }
                 fika_log!(
-                    "[fika-wgpu] transfer-error mode={} source={} target={} error={error}",
+                    "[fika] transfer-error mode={} source={} target={} error={error}",
                     mode.label(),
                     source.display(),
                     target_dir.display()
@@ -283,7 +283,7 @@ pub(crate) fn transfer_paths_with_privilege(
 
     ShellTransferExecution {
         result: TransferTaskResult {
-            pane_id: WGPU_SHELL_PANE_ID,
+            pane_id: SHELL_PANE_ID,
             mode,
             label,
             clear_clipboard,
@@ -353,7 +353,7 @@ pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
                         first_error = Some(error.clone());
                     }
                     fika_log!(
-                        "[fika-wgpu] privileged-async-transfer-error mode={} source={} target={} error={error}",
+                        "[fika] privileged-async-transfer-error mode={} source={} target={} error={error}",
                         mode.label(),
                         source.display(),
                         target_dir.display()
@@ -400,7 +400,7 @@ pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
                     first_error = Some(error.clone());
                 }
                 fika_log!(
-                    "[fika-wgpu] async-transfer-error mode={} source={} target={} error={error}",
+                    "[fika] async-transfer-error mode={} source={} target={} error={error}",
                     mode.label(),
                     source.display(),
                     target_dir.display()
@@ -412,7 +412,7 @@ pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
 
     ShellTransferExecution {
         result: TransferTaskResult {
-            pane_id: WGPU_SHELL_PANE_ID,
+            pane_id: SHELL_PANE_ID,
             mode,
             label,
             clear_clipboard,
@@ -432,7 +432,7 @@ pub(crate) async fn transfer_paths_async_with_controller_and_privilege(
 
 /// Paste plain clipboard text as a new `Pasted Text*.txt` file.
 pub(crate) async fn paste_text_async(target_dir: PathBuf, text: String) -> ShellTransferExecution {
-    let result = paste_text_result_async(WGPU_SHELL_PANE_ID, target_dir, text).await;
+    let result = paste_text_result_async(SHELL_PANE_ID, target_dir, text).await;
     let first_error = if result.failure_count > 0 {
         Some("cannot write pasted text file".to_string())
     } else {
@@ -556,7 +556,7 @@ pub(crate) fn transfer_runtime_failure(
 ) -> ShellTransferExecution {
     ShellTransferExecution {
         result: TransferTaskResult {
-            pane_id: WGPU_SHELL_PANE_ID,
+            pane_id: SHELL_PANE_ID,
             mode,
             label,
             clear_clipboard,

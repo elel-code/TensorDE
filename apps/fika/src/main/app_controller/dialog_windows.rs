@@ -1,4 +1,4 @@
-impl FikaWgpuApp {
+impl FikaApp {
 
     fn ensure_open_with_dialog_window(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(spec) = self.open_with_dialog_spec() else {
@@ -100,7 +100,7 @@ impl FikaWgpuApp {
                 Ok(reloaded) => changed |= reloaded,
                 Err(error) => {
                     fika_log!(
-                        "[fika-wgpu] directory-watch-reload-error path={} error={error}",
+                        "[fika] directory-watch-reload-error path={} error={error}",
                         path.display()
                     );
                 }
@@ -118,7 +118,7 @@ impl FikaWgpuApp {
     fn toggle_user_dark_mode(&mut self) -> bool {
         self.scene.toggle_dark_mode();
         if let Err(error) = save_dark_mode_setting(&self.settings_path, self.scene.dark_mode) {
-            fika_log!("[fika-wgpu] settings-save-error {error}");
+            fika_log!("[fika] settings-save-error {error}");
         }
         if self.dialog_windows.is_open(ShellDialogWindowKind::Create) {
             self.sync_create_dialog_window();
@@ -182,7 +182,7 @@ impl FikaWgpuApp {
                     return;
                 }
                 fika_log!(
-                    "[fika-wgpu] dialog-smoke open kind={} main_frame={}",
+                    "[fika] dialog-smoke open kind={} main_frame={}",
                     kind.as_str(),
                     frame_count
                 );
@@ -203,7 +203,7 @@ impl FikaWgpuApp {
                     .map(|renderer| renderer.frame_count)
                     .unwrap_or(0);
                 fika_log!(
-                    "[fika-wgpu] dialog-smoke close kind={} dialog_frame={} main_frame={}",
+                    "[fika] dialog-smoke close kind={} dialog_frame={} main_frame={}",
                     kind.as_str(),
                     frame_count,
                     close_frame
@@ -294,7 +294,7 @@ impl FikaWgpuApp {
             return;
         };
         fika_log!(
-            "[fika-wgpu] dialog-smoke {} main_open={} dialogs_open={}",
+            "[fika] dialog-smoke {} main_open={} dialogs_open={}",
             if success { "complete" } else { "failed" },
             self.window.is_some() as u8,
             self.dialog_windows.has_open_window() as u8,
@@ -311,7 +311,7 @@ impl FikaWgpuApp {
             return;
         };
         if self.scene.zoom(action, size) {
-            fika_log!("[fika-wgpu] autosmoke-zoom action={}", action.as_str());
+            fika_log!("[fika] autosmoke-zoom action={}", action.as_str());
             self.next_autosmoke_zoom = Instant::now() + self.autosmoke_zoom_interval;
             self.queue_scene_change("autosmoke-zoom", ZOOM_REDRAW_FRAMES);
         } else {
@@ -328,11 +328,19 @@ impl FikaWgpuApp {
         while let Some(action) = self.autosmoke_scroll_actions.pop_front() {
             let old_x = self.scene.panes[ShellPaneId::SLOT_0].scroll_x;
             let old_y = self.scene.panes[ShellPaneId::SLOT_0].scroll_y;
-            let changed = self.scene.scroll_by(action.delta, size);
+            // Performance evidence must not depend on where the real pointer
+            // happened to be when autosmoke started (for example, over the
+            // Places sidebar). Drive the compact pane's actual scroll path.
+            let changed = self.scene.scroll_pane_by_delta(
+                ShellPaneId::SLOT_0,
+                0.0,
+                action.delta,
+                size,
+            );
             let new_x = self.scene.panes[ShellPaneId::SLOT_0].scroll_x;
             let new_y = self.scene.panes[ShellPaneId::SLOT_0].scroll_y;
             fika_log!(
-                "[fika-wgpu] autosmoke-scroll action={} delta={:.1} changed={} old_scroll_x={:.1} new_scroll_x={:.1} old_scroll_y={:.1} new_scroll_y={:.1}",
+                "[fika] autosmoke-scroll action={} delta={:.1} changed={} old_scroll_x={:.1} new_scroll_x={:.1} old_scroll_y={:.1} new_scroll_y={:.1}",
                 action.label,
                 action.delta,
                 changed as u8,
@@ -351,13 +359,13 @@ impl FikaWgpuApp {
 
     /// Exit after zoom/scroll autosmoke queues drain (and pending redraws settle).
     ///
-    /// Enable with `FIKA_WGPU_AUTOSMOKE_EXIT=1` for headless per-frame benches
+    /// Enable with `FIKA_AUTOSMOKE_EXIT=1` for headless per-frame benches
     /// (e.g. `fika --view icons /bin`).
     fn maybe_autosmoke_exit(&mut self, event_loop: &ActiveEventLoop) {
         use std::sync::OnceLock;
         static ENABLED: OnceLock<bool> = OnceLock::new();
         let enabled = *ENABLED.get_or_init(|| {
-            std::env::var_os("FIKA_WGPU_AUTOSMOKE_EXIT").is_some_and(|value| {
+            std::env::var_os("FIKA_AUTOSMOKE_EXIT").is_some_and(|value| {
                 let value = value.to_string_lossy();
                 let value = value.trim().to_ascii_lowercase();
                 !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
@@ -372,6 +380,9 @@ impl FikaWgpuApp {
         if self.pending_redraw_frames > 0 {
             return;
         }
+        if self.visible_role_updates.pending() {
+            return;
+        }
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
@@ -383,10 +394,10 @@ impl FikaWgpuApp {
             return;
         }
         fika_log!(
-            "[fika-wgpu] autosmoke-exit frames={} icon_gpu_bytes={} thumb_ready_bytes={}",
+            "[fika] autosmoke-exit frames={} icon_gpu_bytes={} thumb_ready_bytes={}",
             renderer.frame_count,
-            renderer.icon_renderer.gpu_texture_bytes,
-            renderer.icon_renderer.thumbnails.ready_bytes(),
+            0,
+            renderer.icon_engine.thumbnails.ready_bytes(),
         );
         self.exit_event_loop(event_loop, "autosmoke-complete");
     }

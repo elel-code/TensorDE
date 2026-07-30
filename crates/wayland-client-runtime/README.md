@@ -51,11 +51,12 @@ Examples (protocol-only, `--no-default-features` works):
 | `native_layer_poll` | layer-shell GPU surface + regions + frame pacing |
 | `native_capabilities` | seats / outputs / capability inventory |
 
-## wgpu (Vulkan on Linux)
+## Vulkan presentation on Linux
 
-Fika's wgpu instance uses `Backends::VULKAN | GL`. The same
-[`SurfaceHandle`](crate::SurfaceHandle) implements raw-window-handle **0.6**
-and is passed to `wgpu::Instance::create_surface`.
+Fika passes the raw-window-handle **0.6** display and surface handles from
+[`SurfaceHandle`](crate::SurfaceHandle) to the shared `vulkan-renderer` crate.
+That crate owns Vulkanalia loading, device selection, swapchain presentation,
+and the required descriptor-heap contract.
 
 | Need | API |
 | --- | --- |
@@ -76,14 +77,14 @@ and is passed to `wgpu::Instance::create_surface`.
 | Layer surfaces | Exposes a backend-neutral layer API over deployed `zwlr_layer_shell_v1` through v5, including output targeting, dynamic layer, on-demand keyboard focus, exclusive-edge disambiguation, configure/closed events, and layer-parented popups |
 | Popups | Exposes the complete xdg-positioner anchor, gravity, constraint, offset, reactive and reposition state; accepts only opaque press/down serials for grabs |
 | Lifetimes | Owns a surface tree, removes descendants child-first, and makes every renderer lease retain its ancestors |
-| Rendering | `SurfaceHandle` implements raw-window-handle 0.6 for both wgpu and direct Vulkan use |
+| Rendering | `SurfaceHandle` implements raw-window-handle 0.6 for direct Vulkan use |
 | Scaling | Uses `wp-fractional-scale-v1` together with `wp-viewporter`, reports `f64` preferred scales, and retains integer output-scale fallback |
 | Blur | Uses `ext-background-effect-v1` and preserves complete-surface or arbitrary surface-local rectangle regions |
 | Data transfer | Clipboard and DnD share one MIME-content model, runtime connection, seat/serial state, data devices and pipe I/O; application-specific formats stay in the application |
 | Drag and drop | Handles incoming/outgoing offers, action negotiation and lifecycle events; optional RGBA previews use owned SHM drag-icon surfaces |
 | Input | Translates framed multi-touch, keyboard, pointer, and touchpad gesture events into crate-owned values; full `wl_pointer` axis frames (continuous, discrete, value120, source, stop, relative-direction) accumulated per seat; uses cursor-shape when available |
 | Seats / outputs | Binds every `wl_seat` and `wl_output`; `SeatEvent::{Added,Changed,Removed}`; per-seat focus/serial/transfer/gestures; capability loss releases devices; seat-scoped grab/cursor/clipboard/DnD APIs; primary-seat compat for single-seat callers |
-| GPU present | Bufferless toplevel/layer surfaces + raw-window-handle 0.6 for Vulkan/wgpu; `SurfaceRegion` opaque/input; `request_frame` / presentation feedback; dmabuf feedback and import helpers |
+| GPU present | Bufferless toplevel/layer surfaces + raw-window-handle 0.6 for Vulkan; `SurfaceRegion` opaque/input; `request_frame` / presentation feedback; dmabuf feedback and import helpers |
 | Pointer capture | Implements `zwp_pointer_constraints_v1` confinement/locking and per-seat `zwp_relative_pointer_v1` streams when relative motion is enabled |
 | Pointer gestures | Implements `zwp_pointer_gestures_v1` swipe, pinch/pan/rotation, and v3 hold lifecycles with per-seat objects and surface-safe routing |
 | Text input | Implements seat-scoped `zwp_text_input_v3`, atomic preedit/commit/delete batches, retained editor state, UTF-8 byte offsets, content hints and cursor rectangles |
@@ -104,8 +105,8 @@ let surface = runtime.create_toplevel(ToplevelAttributes {
 })?;
 
 let renderer_handle = runtime.surface_handle(surface).unwrap();
-// Pass renderer_handle (usually in an Arc) to wgpu, or use its raw handles
-// to create VK_KHR_wayland_surface objects.
+// Keep renderer_handle alive while its raw handles back a
+// VK_KHR_wayland_surface object.
 
 loop {
     runtime.dispatch(Some(Duration::from_millis(16)))?;

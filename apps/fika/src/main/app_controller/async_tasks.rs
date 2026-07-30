@@ -1,4 +1,4 @@
-impl FikaWgpuApp {
+impl FikaApp {
     fn create_dialog_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         if self.handle_common_dialog_window_event(ShellDialogWindowKind::Create, &event) {
             return;

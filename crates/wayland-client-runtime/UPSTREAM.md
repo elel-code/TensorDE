@@ -83,7 +83,7 @@ oversized region clipped by the compositor because a NULL region means
 - Protocol: `zwlr_layer_shell_v1`
 - SHM path: `create_layer_surface` / `create_layer_surface_full` (solid fill for smoke)
 - **GPU path**: `create_layer_surface_gpu` — bufferless initial commit, no SHM on
-  configure; exports RWH for `VK_KHR_wayland_surface` / wgpu swapchain present
+  configure; exports RWH for `VK_KHR_wayland_surface` swapchain present
   (Gilder-style wallpaper hosts).
 - Layers bind `wp_viewporter` + `wp_fractional_scale_v1` when available (same
   buffer_scale=1 rule as toplevels); `scale_factor` / `set_viewport_destination`
@@ -109,20 +109,15 @@ oversized region clipped by the compositor because a NULL region means
 - Public API: `DmabufBufferParams` / `DmabufFeedback` / `create_dmabuf_buffer` /
   `attach_dmabuf_buffer` / feedback request helpers; events via `Event::Dmabuf`.
 - Format-table mapping uses `rustix::mm` (no `memmap2`).
-- **wgpu integration (Fika):** present still uses RWH → wgpu swapchain. Fika
-  requests `Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter allows
-  it, and can import single-plane dmabuf fds via
-  `wgpu_hal::vulkan::Device::texture_from_dmabuf_fd` +
-  `Device::create_texture_from_hal` (`shell/render/dmabuf.rs`). Default and
-  surface feedback are requested on main toplevel create; snapshots are cached
-  on `ActiveEventLoop`. `DmabufImportPlan` / `DmabufReadiness` combine GPU
-  capability with feedback to pick a fourcc+modifier; startup logs readiness.
-  An optional `/dev/udmabuf` smoke test exercises real import when the node
-  is available. Business entry point is `acquire_external_texture` (dmabuf
-  import with CPU `write_texture` fallback); icon/text atlases stay on their
-  packed `write_texture` paths. Feedback events notify the app so readiness
-  can be re-logged. Export (wgpu texture → dmabuf → `wl_buffer`) is not
-  implemented; that would need a reverse path not yet in wgpu-hal.
+- **Native Vulkan integration (Fika):** presentation uses RWH through
+  `vulkan-renderer`. Default and surface feedback are requested when the main
+  toplevel is created and cached on `ActiveEventLoop`; `DmabufImportPlan`
+  combines that feedback with Vulkan external-memory capability to select an
+  explicit fourcc and modifier. Icon sources are imported directly into
+  retained Vulkan images, while outgoing drag previews render into exported
+  dma-buf images without CPU readback. Icon and text atlas uploads remain on
+  retained Vulkan staging resources. Feedback changes notify the app so the
+  plan and readiness can be refreshed and logged.
 
 ## Core data-device and cursor behavior
 

@@ -262,7 +262,7 @@
             path: device_path,
         };
         let result = DevicePlaceOperationResult {
-            pane_id: WGPU_SHELL_PANE_ID,
+            pane_id: SHELL_PANE_ID,
             device_id: request.id.clone(),
             label: request.label.clone(),
             operation: request.operation,

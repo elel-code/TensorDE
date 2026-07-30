@@ -96,7 +96,7 @@ impl ShellScene {
         self.places_width = next_width / self.ui_scale().max(f32::EPSILON);
         self.places_resize_changes += 1;
         fika_log!(
-            "[fika-wgpu] places-resize width={:.1} min={:.1} max={:.1} changes={}",
+            "[fika] places-resize width={:.1} min={:.1} max={:.1} changes={}",
             next_width,
             min_width,
             max_width,
@@ -182,7 +182,7 @@ impl ShellScene {
         self.split_pane_left_fraction = (next_width / available_width).clamp(0.0, 1.0);
         self.split_pane_changes += 1;
         fika_log!(
-            "[fika-wgpu] split-pane-resize left_width={:.1} fraction={:.3} changes={}",
+            "[fika] split-pane-resize left_width={:.1} fraction={:.3} changes={}",
             next_width,
             self.split_pane_left_fraction,
             self.split_pane_changes
@@ -259,6 +259,7 @@ impl ShellScene {
         self.refresh_hover(size);
     }
 
+    #[cfg(test)]
     fn scroll_by(&mut self, delta_y: f32, size: PhysicalSize<u32>) -> bool {
         self.scroll_by_delta(0.0, delta_y, size)
     }

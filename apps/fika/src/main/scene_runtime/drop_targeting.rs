@@ -284,7 +284,7 @@ impl ShellScene {
     fn clear_internal_drag(&mut self) -> bool {
         let changed = self.internal_drag.take().is_some() || self.clear_dnd_hover_target();
         if changed {
-            fika_log!("[fika-wgpu] internal-dnd clear=1");
+            fika_log!("[fika] internal-dnd clear=1");
         }
         changed
     }
@@ -292,7 +292,7 @@ impl ShellScene {
     fn clear_external_drag(&mut self) -> bool {
         let changed = self.external_drag.take().is_some() || self.clear_dnd_hover_target();
         if changed {
-            fika_log!("[fika-wgpu] external-dnd clear=1");
+            fika_log!("[fika] external-dnd clear=1");
         }
         changed
     }
@@ -353,7 +353,7 @@ impl ShellScene {
         let changed = drag_cleared || old_menu != self.drop_menu;
         if changed {
             fika_log!(
-                "[fika-wgpu] external-dnd-menu open=1 sources={} target={}",
+                "[fika] external-dnd-menu open=1 sources={} target={}",
                 self.drop_menu
                     .as_ref()
                     .map(|menu| menu.sources.len())
@@ -537,7 +537,7 @@ impl ShellScene {
         match self.finish_internal_drag_with_user_places_path(point, size, &user_places_path) {
             Ok(changed) => changed,
             Err(error) => {
-                fika_log!("[fika-wgpu] dnd-error {error}");
+                fika_log!("[fika] dnd-error {error}");
                 false
             }
         }
@@ -583,7 +583,7 @@ impl ShellScene {
         let changed = old_menu != self.drop_menu;
         if changed {
             fika_log!(
-                "[fika-wgpu] dnd-menu open=1 sources={} target={}",
+                "[fika] dnd-menu open=1 sources={} target={}",
                 self.drop_menu
                     .as_ref()
                     .map(|menu| menu.sources.len())
@@ -653,7 +653,7 @@ impl ShellScene {
         self.places_changes += 1;
         self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] places-reorder label={:?} path={} from={} gap={} to={} changes={}",
+            "[fika] places-reorder label={:?} path={} from={} gap={} to={} changes={}",
             label,
             path.display(),
             source_index,

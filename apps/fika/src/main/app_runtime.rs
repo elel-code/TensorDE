@@ -1,4 +1,4 @@
-struct FikaWgpuApp {
+struct FikaApp {
     scene: ShellScene,
     mime_applications: MimeApplicationCache,
     settings_path: PathBuf,
@@ -19,7 +19,7 @@ struct FikaWgpuApp {
     outgoing_dnd_transfer: Option<OutgoingDndTransfer>,
     outgoing_dnd_start_failed: bool,
     // Drop order matters: renderer owns a surface tied to the window handle.
-    renderer: Option<WgpuState>,
+    renderer: Option<FikaRenderer>,
     dialog_windows: ShellDialogWindows,
     text_input: FikaTextInputRuntime,
     settings_dialog: ShellSettingsDialogState,
@@ -28,6 +28,8 @@ struct FikaWgpuApp {
     cursor_icon: CursorIcon,
     pending_redraw_frames: u8,
     pending_render_reason: Option<&'static str>,
+    visible_role_updates: crate::ui::prewarm::VisibleRoleUpdateState,
+    visible_role_sync_required: bool,
     next_animation_redraw: Option<Instant>,
     last_location_text_caret_dirty_value: u64,
     last_open_with_text_caret_dirty_value: u64,
@@ -77,7 +79,7 @@ struct OutgoingDndTransfer {
     paths: Vec<PathBuf>,
     source: ShellInternalDragSource,
     /// Keeps exported Vulkan memory alive until Wayland finishes the drag.
-    _icon_texture: Option<wgpu::Texture>,
+    _icon_texture: Option<vulkan_renderer::ExportedDmaBufImage>,
 }
 include!("app_controller/window_lifecycle.rs");
 include!("app_controller/dialog_windows.rs");
@@ -85,7 +87,7 @@ include!("app_controller/text_input.rs");
 include!("app_controller/async_operations.rs");
 include!("app_controller/async_tasks.rs");
 include!("app_controller/settings_window.rs");
-impl ApplicationHandler for FikaWgpuApp {
+impl ApplicationHandler for FikaApp {
     fn proxy_wake_up(&mut self, event_loop: &ActiveEventLoop) {
         // Directory enumeration completes on worker threads. Drain its result
         // on the wake itself, rather than depending on a later idle turn: a
@@ -94,6 +96,12 @@ impl ApplicationHandler for FikaWgpuApp {
         // directoryLoadingCompleted signal on the UI loop.
         self.drain_async_task_results(event_loop);
         self.drive_directory_watchers(event_loop);
+        let metadata = self.scene.drain_metadata_role_results();
+        if metadata.visible_applied > 0
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
+        }
         if let Some(deadline) = self.directory_watchers.next_reload_deadline() {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
@@ -109,7 +117,7 @@ impl ApplicationHandler for FikaWgpuApp {
         };
         // Prefer the surface from the event; fall back to main window.
         let surface = surface.or_else(|| self.window.as_ref().map(|w| w.id()));
-        renderer.sync_icon_dmabuf_plan(event_loop, surface);
+        renderer.sync_drag_preview_dmabuf_plan(event_loop);
         renderer.log_dmabuf_readiness(event_loop, surface, "feedback");
     }
 
@@ -127,7 +135,7 @@ impl ApplicationHandler for FikaWgpuApp {
         let window = match event_loop.create_window(attrs) {
             Ok(window) => window,
             Err(error) => {
-                fika_log!("[fika-wgpu] window create failed: {error}");
+                fika_log!("[fika] window create failed: {error}");
                 self.exit_event_loop(event_loop, "main-window-create-failed");
                 return;
             }
@@ -136,7 +144,7 @@ impl ApplicationHandler for FikaWgpuApp {
         window.set_blur(self.scene.background_blur);
         let clipboard = ShellClipboard::new(event_loop);
         fika_log!(
-            "[fika-wgpu] clipboard-ready backend={}",
+            "[fika] clipboard-ready backend={}",
             clipboard.backend()
         );
         self.clipboard = Some(clipboard);
@@ -171,7 +179,7 @@ impl ApplicationHandler for FikaWgpuApp {
                         window.set_title(&window_title(&self.scene));
                         window.request_redraw();
                     }
-                    self.prewarm_current_scene_caches("auto-cycle");
+                    self.visible_role_sync_required = true;
                     self.render_now(event_loop, "auto-cycle", true);
                 }
             }
@@ -183,6 +191,7 @@ impl ApplicationHandler for FikaWgpuApp {
             self.drive_autosmoke_zoom(size);
             self.drive_autosmoke_scroll(size);
         }
+        self.settle_visible_icon_roles();
         self.maybe_autosmoke_exit(event_loop);
         self.drive_dialog_lifecycle_autosmoke(event_loop);
         self.drain_dialog_window_deferred_closes();
@@ -239,6 +248,7 @@ impl ApplicationHandler for FikaWgpuApp {
             next_scene_animation_deadline,
             next_text_caret_deadline,
             self.directory_watchers.next_reload_deadline(),
+            self.visible_role_updates.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -321,7 +331,11 @@ impl ApplicationHandler for FikaWgpuApp {
                 if let Some(renderer) = self.renderer.as_mut() {
                     let previous_size = renderer.size;
                     let animate_reflow = renderer.frame_count > 0;
-                    renderer.resize(size);
+                    if let Err(error) = renderer.resize(size) {
+                        eprintln!("[fika-vulkan] resize failed: {error}");
+                        self.exit_event_loop(event_loop, "main-resize-failed");
+                        return;
+                    }
                     if animate_reflow {
                         self.scene
                             .reflow_pane_items_after_window_resize(previous_size, renderer.size);
@@ -344,7 +358,11 @@ impl ApplicationHandler for FikaWgpuApp {
                             self.scene
                                 .visible_item_rects_by_path_for_open_panes(previous_size)
                         });
-                        renderer.resize(surface_size);
+                        if let Err(error) = renderer.resize(surface_size) {
+                            eprintln!("[fika-vulkan] scale resize failed: {error}");
+                            self.exit_event_loop(event_loop, "main-scale-resize-failed");
+                            return;
+                        }
                         let next_size = renderer.size;
                         let scale_changed = self
                             .scene

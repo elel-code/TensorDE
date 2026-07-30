@@ -29,7 +29,6 @@ struct PaneItemChrome {
 }
 
 impl ShellScene {
-
     fn prepare_pane_item(
         &self,
         projection: &ShellPaneProjection<'_>,
@@ -104,99 +103,26 @@ impl ShellScene {
         };
         PaneItemChrome {
             paint: file_manager_item_paint_with_palette_and_hover_progress(
-            projection.view.view_mode,
-            FileManagerItemGeometry {
-                item: item.item_rect,
-                visual: item.visual_rect,
-                content: item.visual_rect,
-            },
-            FileManagerItemInteraction {
-                selected,
-                hovered,
-                current,
-                alternate: item.entry_index % 2 == 1,
-            },
-            self.ui_scale(),
-            context.palette,
-            hover_progress,
+                projection.view.view_mode,
+                FileManagerItemGeometry {
+                    item: item.item_rect,
+                    visual: item.visual_rect,
+                    content: item.visual_rect,
+                },
+                FileManagerItemInteraction {
+                    selected,
+                    hovered,
+                    current,
+                    alternate: item.entry_index % 2 == 1,
+                },
+                self.ui_scale(),
+                context.palette,
+                hover_progress,
             ),
             dnd_hovered,
         }
     }
 
-    fn push_pane_item_chrome(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        projection: &ShellPaneProjection<'_>,
-        item: PreparedPaneItem,
-        context: PaneItemPaintContext,
-    ) {
-        let PaneItemChrome { paint, dnd_hovered } =
-            self.pane_item_chrome(projection, item, context);
-
-        if let Some(background) = paint.alternate_background {
-            push_clipped_rect(
-                vertices,
-                background.rect,
-                item.content_clip,
-                background.color,
-                context.size,
-            );
-        }
-        if let Some(background) = paint.background {
-            if background.radius <= 0.0 {
-                push_clipped_rect(
-                    vertices,
-                    background.rect,
-                    item.content_clip,
-                    background.color,
-                    context.size,
-                );
-            } else {
-                push_clipped_rounded_rect(
-                    vertices,
-                    background.rect,
-                    item.content_clip,
-                    background.radius,
-                    background.color,
-                    context.size,
-                );
-            }
-        }
-        if let Some(focus) = paint.focus {
-            push_clipped_rounded_highlight(
-                vertices,
-                focus.rect,
-                item.content_clip,
-                focus.radius,
-                RoundedHighlightStyle {
-                    fill: [0.0, 0.0, 0.0, 0.0],
-                    border: focus.color,
-                    border_width: focus.stroke_width,
-                },
-                context.size,
-            );
-        }
-        if dnd_hovered {
-            let radius = self.scale_metric(7.0);
-            let drop_target = context.theme.drop_target();
-            push_clipped_rounded_highlight(
-                vertices,
-                item.visual_rect,
-                item.content_clip,
-                radius,
-                RoundedHighlightStyle {
-                    fill: drop_target.fill,
-                    border: drop_target.border,
-                    border_width: self.scale_metric(1.0),
-                },
-                context.size,
-            );
-        }
-    }
-
-    /// Emits the same item chrome state as [`Self::push_pane_item_chrome`],
-    /// but keeps rounded corners and outlines as GPU-evaluated instances.
     fn push_native_pane_item_chrome(
         &self,
         instances: &mut Vec<VulkanRectInstance>,
@@ -204,9 +130,6 @@ impl ShellScene {
         item: PreparedPaneItem,
         context: PaneItemPaintContext,
     ) {
-        let Some(entry) = projection.view.entries.get(item.entry_index) else {
-            return;
-        };
         let PaneItemChrome { paint, dnd_hovered } =
             self.pane_item_chrome(projection, item, context);
         if let Some(background) = paint.alternate_background
@@ -266,14 +189,6 @@ impl ShellScene {
                 instances.push(instance);
             }
         }
-        crate::ui::ui_chrome::push_native_fallback_file_icon(
-            instances,
-            entry,
-            item.icon_rect,
-            item.content_clip,
-            context.theme,
-            context.size,
-        );
     }
 
     fn enqueue_file_manager_small_directory_icon_roles(
@@ -342,219 +257,6 @@ impl ShellScene {
             }
             let _ = snapshot;
         }
-    }
-
-    fn prewarm_file_item_text_labels(
-        &self,
-        projections: &[ShellPaneProjection<'_>],
-        text: &mut TextFrameBuilder<'_>,
-        mode: TextLabelPrewarmMode,
-    ) -> TextLabelPrewarmStats {
-        let mut stats = TextLabelPrewarmStats::default();
-        let raster_us_start = text.raster_us;
-        let deadline = Instant::now() + text_label_prewarm_budget_for_mode(mode);
-        let theme = self.theme();
-
-        for projection in projections {
-            for item in &projection.visible_items {
-                if Instant::now() >= deadline {
-                    stats.over_budget = true;
-                    stats.raster_us = text.raster_us.saturating_sub(raster_us_start);
-                    return stats;
-                }
-                let outcome =
-                    self.prewarm_projection_text_label(projection, item.layout, text, theme);
-                if outcome != LabelCacheOutcome::Skipped {
-                    stats.entries += 1;
-                }
-                stats.record(outcome);
-            }
-        }
-
-        stats.raster_us = text.raster_us.saturating_sub(raster_us_start);
-        stats
-    }
-
-    fn prewarm_projection_text_label(
-        &self,
-        projection: &ShellPaneProjection<'_>,
-        layout: ItemLayout,
-        text: &mut TextFrameBuilder<'_>,
-        theme: ShellTheme,
-    ) -> LabelCacheOutcome {
-        let Some(entry_index) = projection
-            .view
-            .filtered_indexes
-            .get(layout.model_index)
-            .copied()
-        else {
-            return LabelCacheOutcome::Skipped;
-        };
-        let Some(entry) = projection.view.entries.get(entry_index) else {
-            return LabelCacheOutcome::Skipped;
-        };
-        let selected = projection.view.selection.contains(entry_index);
-        let text_color = pane_item_text_color(projection.view.view_mode, entry, selected, theme);
-        match projection.view.view_mode {
-            ShellViewMode::Compact => text.prewarm_label_aligned_wrapped(
-                entry.name.as_ref(),
-                layout.text_rect,
-                text_color,
-                LabelAlignment::Start,
-                LabelWrap::None,
-            ),
-            ShellViewMode::Details => text.prewarm_filename_label_aligned_no_wrap(
-                entry.name.as_ref(),
-                layout.text_rect,
-                text_color,
-                LabelAlignment::Start,
-            ),
-            ShellViewMode::Icons => text.prewarm_filename_label_wrapped(
-                entry.name.as_ref(),
-                layout.text_rect,
-                text_color,
-            ),
-        }
-    }
-
-    fn push_pane_projection(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        text: &mut TextFrameBuilder<'_>,
-        icons: &mut IconFrameBuilder<'_>,
-        projection: &ShellPaneProjection<'_>,
-        size: PhysicalSize<u32>,
-        paint: ShellPaintPalettes,
-    ) -> bool {
-        let theme = paint.shell;
-        let pane_id = projection.geometry.kind;
-        let pane = projection.geometry.pane;
-        let top_bar = projection.geometry.top_bar;
-        let screen = ViewRect {
-            x: 0.0,
-            y: 0.0,
-            width: size.width.max(1) as f32,
-            height: size.height.max(1) as f32,
-        };
-
-        if let Some(path_rect) = self.pane_path_bar_rect(pane_id, size) {
-            let location_active = self.location_bar_active_for_pane(pane_id);
-            let path_label = self.location_label_for_pane(pane_id);
-            let path_cursor = self.location_cursor_for_pane(pane_id);
-            self.push_location_bar(
-                vertices,
-                text,
-                LocationBarLayout {
-                    size,
-                    rect: path_rect,
-                    clip: top_bar,
-                },
-                LocationBarContent {
-                    label: &path_label,
-                    active: location_active,
-                    cursor: path_cursor,
-                },
-                theme,
-            );
-        }
-
-        self.push_pane_body_border(vertices, projection, theme, size);
-        if pane_id == ShellPaneId::SLOT_0 {
-            self.push_filter_bar(vertices, text, size, theme);
-        }
-        if projection.view.view_mode == ShellViewMode::Details {
-            self.push_details_header_for_projection(vertices, text, projection, size, theme);
-        }
-
-        let item_palette = paint.file_manager_item;
-        for item in projection.visible_items.iter().copied() {
-            self.push_pane_item(
-                vertices,
-                text,
-                icons,
-                projection,
-                item,
-                PaneItemPaintContext {
-                    palette: item_palette,
-                    size,
-                    theme,
-                },
-            );
-        }
-        if self.rubber_band.is_some() && pane_id == self.active_pane() {
-            self.push_rubber_band_for_projection(vertices, projection, theme, size);
-        }
-        let content_scrollbar_visible =
-            self.push_content_scrollbar_for_projection(vertices, projection, theme, size);
-        self.push_pane_status_bar(vertices, text, projection, size, theme);
-        push_clipped_rect_outline(
-            vertices,
-            pane,
-            screen,
-            self.scale_metric(1.0).max(1.0),
-            theme.divider(),
-            size,
-        );
-        content_scrollbar_visible
-    }
-
-    fn push_pane_item(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        text: &mut TextFrameBuilder<'_>,
-        icons: &mut IconFrameBuilder<'_>,
-        projection: &ShellPaneProjection<'_>,
-        item: ShellPaneVisibleItem,
-        context: PaneItemPaintContext,
-    ) {
-        let PaneItemPaintContext {
-            size,
-            theme,
-            ..
-        } = context;
-        let Some(item) = self.prepare_pane_item(projection, item) else {
-            return;
-        };
-        let entry_index = item.entry_index;
-        let Some(entry) = projection.view.entries.get(entry_index) else {
-            return;
-        };
-        self.push_pane_item_chrome(vertices, projection, item, context);
-        let untransformed_item_rect = item.item_rect;
-        let untransformed_text_rect = item.text_rect;
-        let pixmap_layout = ItemPixmapLayout {
-            view_mode: projection.view.view_mode,
-            icon_rect: item.icon_rect,
-            text_rect: item.text_rect,
-            text_midline_shift: text.file_manager_midline_shift(),
-        };
-        let folder_preview =
-            self.folder_preview_role_for_pane_entry(projection.view, entry_index, pixmap_layout);
-        if !icons.push_thumbnail_or_icon(
-            projection.view.path,
-            entry,
-            folder_preview.as_ref(),
-            pixmap_layout,
-            item.content_clip,
-        ) {
-            push_fallback_file_icon(
-                vertices,
-                entry,
-                item.icon_rect,
-                item.content_clip,
-                theme,
-                size,
-            );
-        }
-
-        self.push_pane_item_text(
-            text,
-            projection,
-            item,
-            untransformed_item_rect,
-            untransformed_text_rect,
-            theme,
-        );
     }
 
     fn push_pane_item_text(

@@ -18,11 +18,6 @@ impl<'a> IconFrameResources<'a> {
         }
     }
 
-    fn from_renderer(renderer: &'a mut IconRenderer) -> Self {
-        let gpu_resident = renderer.gpu_resident_index();
-        Self::from_engine(&mut renderer.engine, gpu_resident)
-    }
-
     fn from_engine(engine: &'a mut IconEngine, gpu_resident: IconGpuResidentIndex) -> Self {
         Self::new(&mut engine.resolver, &mut engine.thumbnails, gpu_resident)
     }
@@ -39,6 +34,7 @@ struct IconFrameConfig {
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
     sync_resolve_budget: usize,
+    role_updates_paused: bool,
     folder_preview_cache: FolderPreviewCacheStats,
 }
 
@@ -49,25 +45,37 @@ impl IconFrameConfig {
             surface_size,
             ui_scale,
             sync_resolve_budget,
+            role_updates_paused: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         }
     }
 }
 
-#[cfg(test)]
-struct IconDmabufDraw {
-    identity: IconGpuUploadKey,
-    width: u32,
-    height: u32,
-    content_hash: u64,
-    fourcc: u32,
-    rect: ViewRect,
-    screen: ViewRect,
-    layer: IconDrawLayer,
-    plane: crate::ui::render::dmabuf::DmabufImportPlane,
-}
-
 impl<'a> IconFrameBuilder<'a> {
+    pub(crate) fn push_encoded_source(
+        &mut self,
+        source: IconGpuSource,
+        rect: ViewRect,
+        layer: IconDrawLayer,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        let identity = match &source {
+            IconGpuSource::File { path, .. } => IconGpuUploadKey::theme_asset(path.clone()),
+            IconGpuSource::FolderPreview { children, seed, .. } => {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                children.hash(&mut hasher);
+                seed.hash(&mut hasher);
+                IconGpuUploadKey::content(
+                    PathBuf::from(format!("fika-folder-preview-{:016x}", hasher.finish())),
+                    *seed,
+                )
+            }
+        };
+        self.push_gpu_source_draw(identity, source, rect, rect, layer);
+    }
+
     #[cfg(test)]
     fn new_for_test(
         resolver: &'a mut FileIconResolver,
@@ -90,6 +98,7 @@ impl<'a> IconFrameBuilder<'a> {
             surface_size,
             ui_scale,
             sync_resolve_budget,
+            role_updates_paused,
             folder_preview_cache,
         } = config;
         Self {
@@ -118,6 +127,7 @@ impl<'a> IconFrameBuilder<'a> {
             cache_misses: 0,
             deferred: 0,
             sync_resolve_budget,
+            role_updates_paused,
             resolve_us: 0,
         }
     }
@@ -141,6 +151,7 @@ impl<'a> IconFrameBuilder<'a> {
         self.icons += 1;
         let resolve_start = Instant::now();
         let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0);
+        let size_px = icon_cache_size(icon_size);
         let path = directory.join(entry.name.as_ref());
         let path_key = file_icon_path_cache_key_with_stamp(
             &path,
@@ -151,16 +162,43 @@ impl<'a> IconFrameBuilder<'a> {
             icon_size,
         );
         let role_key = path_key.role.clone();
-        let (snapshot, deferred) = self.resolver.resolve_path_cache_key_visible(path_key);
-        if deferred {
-            self.deferred += 1;
+        let requested_gpu_key = IconGpuUploadKey::role(role_key.kind.clone());
+        if self.push_paused_resident_draw(
+            &requested_gpu_key,
+            rect,
+            screen,
+            layer,
+        ) {
+            self.resolve_us += resolve_start.elapsed().as_micros();
+            return true;
         }
+        let resolved = if self.role_updates_paused {
+            self.resolver.cached_path_cache_key(&path_key)
+        } else if self.sync_resolve_budget > 0 {
+            self.sync_resolve_budget -= 1;
+            Some(self.resolver.resolve_path_cache_key_visible(path_key).0)
+        } else {
+            self.resolver.resolve_path_cache_key(path_key)
+        };
+        let (role_key, snapshot) = if let Some(snapshot) = resolved {
+            (role_key, snapshot)
+        } else {
+            self.deferred += 1;
+            let Some(fallback) = self.resolver.cached_preliminary_file_icon(size_px) else {
+                self.resolve_us += resolve_start.elapsed().as_micros();
+                self.fallbacks += 1;
+                return false;
+            };
+            fallback
+        };
         self.resolve_us += resolve_start.elapsed().as_micros();
 
-        let size_px = icon_cache_size(icon_size);
         // MIME / directory / generic icons share one GPU slot per *role*, not
         // per filesystem path — thousands of /bin entries must not thrash VRAM.
         let gpu_key = IconGpuUploadKey::role(role_key.kind.clone());
+        if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
+            return true;
+        }
         let Some(theme_path) = snapshot.path else {
             self.fallbacks += 1;
             return false;
@@ -217,7 +255,7 @@ impl<'a> IconFrameBuilder<'a> {
             self.push_icon(directory, entry, pixmap_layout.icon_rect, clip, layer)
         };
         if drew {
-            self.push_entry_icon_emblems(directory, entry, pixmap_layout.icon_rect, clip, layer);
+            self.push_entry_icon_emblems(directory, entry, pixmap_layout.icon_rect, clip);
         }
         drew
     }
@@ -250,6 +288,10 @@ impl<'a> IconFrameBuilder<'a> {
         };
         let size_px = preview.size_px;
         let gpu_key = IconGpuUploadKey::content(path, preview.stamp);
+        if self.push_paused_resident_draw(&gpu_key, preview_rect, screen, layer) {
+            self.folder_preview_quads += 1;
+            return drew_folder_shell;
+        }
         if let Some(resident) = self.gpu_resident.get(&gpu_key) {
             let resident_px = resident.content_width.max(resident.content_height) as u16;
             if resident_px >= size_px {
@@ -304,6 +346,16 @@ impl<'a> IconFrameBuilder<'a> {
         let size_px = thumbnail_display_cache_size(display_px);
         // Content previews are path+mtime only — zoom reuses the same GPU texture.
         let gpu_key = IconGpuUploadKey::content(path.clone(), modified_secs);
+        if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
+            self.thumbnail_quads += 1;
+            return true;
+        }
+        // Dolphin keeps the current iconPixmap while its 300 ms icon-size
+        // timer is active. Do not start an exact-size thumbnail job mid-zoom:
+        // a newly visible item uses its stable MIME icon until settling.
+        if self.role_updates_paused {
+            return false;
+        }
         if let Some(resident) = self.gpu_resident.get(&gpu_key) {
             let resident_px = resident.content_width.max(resident.content_height) as u16;
             if resident_px >= size_px {
@@ -415,15 +467,19 @@ impl<'a> IconFrameBuilder<'a> {
         if icon_name.is_empty() {
             return false;
         }
-        let icon_size = rect
-            .width
-            .max(rect.height)
-            .clamp(16.0, 256.0 * self.ui_scale);
-        let size_px = icon_cache_size(icon_size);
+        let gpu_key = IconGpuUploadKey::named_asset(icon_name.to_string());
+        if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
+            return true;
+        }
+        // KIconUtils asks the theme for the exact 8/16/22 px emblem variant.
+        // Routing an 8 px badge through the generic >=16 px cache chooses
+        // different artwork and then downsamples it, which visibly softens
+        // the permission/link mark.
+        let icon_size = rect.width.max(rect.height).clamp(8.0, 256.0);
+        let size_px = icon_size.round() as u16;
         let Some(path) = self.resolver.resolve_named_exact_fast(icon_name, icon_size) else {
             return false;
         };
-        let gpu_key = IconGpuUploadKey::theme_asset(path.clone());
         self.push_gpu_source_draw(
             gpu_key,
             IconGpuSource::file(path, size_px),
@@ -440,7 +496,6 @@ impl<'a> IconFrameBuilder<'a> {
         entry: &Entry,
         icon_rect: ViewRect,
         clip: ViewRect,
-        layer: IconDrawLayer,
     ) {
         let path = directory.join(entry.name.as_ref());
         let emblems = icon_emblem_kinds_for_path(&path);
@@ -450,7 +505,12 @@ impl<'a> IconFrameBuilder<'a> {
         let rects = icon_emblem_rects(icon_rect, self.ui_scale);
         for (index, emblem) in emblems.into_iter().take(rects.len()).enumerate() {
             for icon_name in emblem.theme_names() {
-                if self.push_named_theme_icon_exact(icon_name, rects[index], clip, layer) {
+                if self.push_named_theme_icon_exact(
+                    icon_name,
+                    rects[index],
+                    clip,
+                    icon_emblem_draw_layer(),
+                ) {
                     break;
                 }
             }
@@ -497,6 +557,23 @@ impl<'a> IconFrameBuilder<'a> {
             slot
         };
         self.push_slot_draw(slot, rect, screen, layer);
+    }
+
+    /// During Dolphin's icon-size transaction, keep sampling the resource
+    /// that was resident at frame start and only change its draw rectangle.
+    fn push_paused_resident_draw(
+        &mut self,
+        identity: &IconGpuUploadKey,
+        rect: ViewRect,
+        screen: ViewRect,
+        layer: IconDrawLayer,
+    ) -> bool {
+        if !self.role_updates_paused || self.gpu_resident.get(identity).is_none() {
+            return false;
+        }
+        self.cache_hits += 1;
+        self.push_resident_draw(identity.clone(), rect, screen, layer);
+        true
     }
 
     fn push_gpu_source_draw(
@@ -587,38 +664,6 @@ impl<'a> IconFrameBuilder<'a> {
             self.slot_by_identity.insert(identity, slot);
             slot
         };
-        self.push_slot_draw(slot, rect, screen, layer);
-    }
-
-    /// Attach a dmabuf plane to a logical GPU slot (zero-copy producer).
-    #[cfg(test)]
-    fn push_dmabuf_draw(&mut self, draw: IconDmabufDraw) {
-        let IconDmabufDraw {
-            identity,
-            width,
-            height,
-            content_hash,
-            fourcc,
-            rect,
-            screen,
-            layer,
-            plane,
-        } = draw;
-        let width = width.max(1);
-        let height = height.max(1);
-        let slot = self.slots.len() as u32;
-        self.slots.push(IconGpuSlot {
-            identity: identity.clone(),
-            width,
-            height,
-            content_width: width,
-            content_height: height,
-            content_hash,
-            rounding: None,
-            source: None,
-            dmabuf: Some(IconDmabufSource { fourcc, plane }),
-        });
-        self.slot_by_identity.insert(identity, slot);
         self.push_slot_draw(slot, rect, screen, layer);
     }
 
@@ -724,4 +769,8 @@ impl<'a> IconFrameBuilder<'a> {
             },
         }
     }
+}
+
+pub(crate) const fn icon_emblem_draw_layer() -> IconDrawLayer {
+    IconDrawLayer::Overlay
 }

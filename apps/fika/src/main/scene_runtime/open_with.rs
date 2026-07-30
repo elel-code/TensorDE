@@ -2,7 +2,7 @@ impl ShellScene {
 
     fn set_open_with_chooser_error(&mut self, error: String) -> bool {
         let Some(chooser) = self.open_with_chooser.as_mut() else {
-            fika_log!("[fika-wgpu] open-with-error {error}");
+            fika_log!("[fika] open-with-error {error}");
             return false;
         };
         if chooser.error.as_ref() == Some(&error) {
@@ -20,7 +20,7 @@ impl ShellScene {
         }
         self.open_with_changes += 1;
         fika_log!(
-            "[fika-wgpu] open-with open=0 changes={}",
+            "[fika] open-with open=0 changes={}",
             self.open_with_changes
         );
         true
@@ -32,7 +32,7 @@ impl ShellScene {
         }
         self.open_with_changes += 1;
         fika_log!(
-            "[fika-wgpu] open-with path={} app={:?} changes={}",
+            "[fika] open-with path={} app={:?} changes={}",
             request.path.display(),
             request.app_name,
             self.open_with_changes
@@ -54,7 +54,7 @@ impl ShellScene {
     fn log_open_with_chooser_state(&self) {
         match self.open_with_chooser.as_ref() {
             Some(chooser) => fika_log!(
-                "[fika-wgpu] open-with open=1 path={} mime={} apps={} filtered={} category={} selected={} scroll={} set_default={} query={:?} cursor={} error={:?} changes={}",
+                "[fika] open-with open=1 path={} mime={} apps={} filtered={} category={} selected={} scroll={} set_default={} query={:?} cursor={} error={:?} changes={}",
                 chooser.path.display(),
                 chooser.mime_type.as_deref().unwrap_or("unknown"),
                 chooser.applications.len(),
@@ -72,7 +72,7 @@ impl ShellScene {
                 self.open_with_changes
             ),
             None => fika_log!(
-                "[fika-wgpu] open-with open=0 changes={}",
+                "[fika] open-with open=0 changes={}",
                 self.open_with_changes
             ),
         }
@@ -150,7 +150,7 @@ impl ShellScene {
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "-".to_string());
                 fika_log!(
-                    "[fika-wgpu] device-action-finished action={} id={:?} label={:?} mount={} changes={}",
+                    "[fika] device-action-finished action={} id={:?} label={:?} mount={} changes={}",
                     request.action.as_str(),
                     result.device_id,
                     result.label,
@@ -165,7 +165,7 @@ impl ShellScene {
             }
             Err(error) => {
                 fika_log!(
-                    "[fika-wgpu] device-action-finished action={} id={:?} label={:?} error={error} changes={}",
+                    "[fika] device-action-finished action={} id={:?} label={:?} error={error} changes={}",
                     request.action.as_str(),
                     result.device_id,
                     result.label,
@@ -211,7 +211,7 @@ impl ShellScene {
     fn record_copy_location(&mut self, request: &CopyLocationRequest) {
         self.copy_location_changes += 1;
         fika_log!(
-            "[fika-wgpu] copy-location path={} text={:?} changes={}",
+            "[fika] copy-location path={} text={:?} changes={}",
             request.path.display(),
             request.text,
             self.copy_location_changes
@@ -227,7 +227,7 @@ impl ShellScene {
         self.task_statuses.record(status);
         if let Some(status) = self.task_statuses.front() {
             fika_log!(
-                "[fika-wgpu] task-status kind={:?} label={:?} privileged={} detail={:?} changes={}",
+                "[fika] task-status kind={:?} label={:?} privileged={} detail={:?} changes={}",
                 status.kind,
                 status.label,
                 status.privileged as u8,
@@ -361,7 +361,7 @@ impl ShellScene {
         let result = ShellPasteResult::from_transfer(transfer);
         self.paste_changes += 1;
         fika_log!(
-            "[fika-wgpu] transfer source={:?} mode={} target={} success={} failure={} cancelled={} privileged={} changes={}",
+            "[fika] transfer source={:?} mode={} target={} success={} failure={} cancelled={} privileged={} changes={}",
             source,
             result.mode.label(),
             target_dir.display(),
@@ -501,7 +501,7 @@ impl ShellScene {
     ) -> Result<ShellTrashResult, String> {
         self.record_trash_content_change();
         fika_log!(
-            "[fika-wgpu] trash paths={} success={} failure={} privileged={} changes={}",
+            "[fika] trash paths={} success={} failure={} privileged={} changes={}",
             paths.len(),
             result.success_count,
             result.failure_count,

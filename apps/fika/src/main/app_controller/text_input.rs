@@ -68,7 +68,7 @@ impl FikaTextInputRuntime {
     }
 }
 
-impl FikaWgpuApp {
+impl FikaApp {
     fn sync_text_input_states(&mut self) {
         let mut live_windows = HashSet::new();
 
@@ -202,7 +202,7 @@ impl FikaWgpuApp {
                     }),
                 };
                 fika_dialog_trace!(
-                    "[fika-wgpu] text-input-done window={window_id:?} serial={serial}"
+                    "[fika] text-input-done window={window_id:?} serial={serial}"
                 );
                 self.apply_text_input_batch_for_window(window_id, batch, true);
             }

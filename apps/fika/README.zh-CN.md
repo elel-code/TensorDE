@@ -14,18 +14,15 @@ UI runtime 已经从源码树移除。
 - `fika` 是默认运行目标，也是当前源码树里唯一的文件管理器 UI。
 - `wayland-client-runtime` 是基于 SCTK 的通用协议、surface 和事件层；Fika
   自身不再直接依赖 winit 或 SCTK。
-- `wgpu` 使用官方 crates.io 版本。
-- `FIKA_VULKAN_RENDERER=1` 选择直接 Vulkan 1.4 主窗口路径；该路径已不创建
-  wgpu 对象，并通过 device-local R8 glyph atlas、动态 vertex buffer、descriptor
+- 完整文件管理器控制器统一使用共享的原生 Vulkan 1.4 后端，并通过
+  device-local R8 glyph atlas、动态 vertex buffer、descriptor
   heap 和 timeline 资源生命周期渲染 retained analytic chrome，以及 Places、地址栏、
   Filter、Details、文件项和状态栏文字。外部 icon dma-buf 会经显式 foreign queue
-  ownership transfer 直接进入同一套 Vulkan resident cache，不再经过 wgpu-hal 包装或
-  CPU 像素回读。
+  ownership transfer 直接进入同一套 Vulkan resident cache，不经过 CPU 像素回读。
 - `fika-core` 保持 UI-neutral，负责文件系统和领域行为。
-- 剪贴板和 DnD 使用 Wayland `wl_data_device`；渲染句柄可供 wgpu 或直接
-  Vulkan 使用，KDE blur 保留完整的 region 语义。
-- 已删除在 wgpu 初始化前临时创建第二套 Vulkan device 的单帧 probe。Vulkan 资源现在
-  只由持久原生 renderer 路径创建和持有。
+- 剪贴板和 DnD 使用 Wayland `wl_data_device`；导出的渲染句柄保持为原生 Vulkan
+  dma-buf，KDE blur 保留完整的 region 语义。
+- Vulkan 资源只由持久原生 renderer 路径创建和持有。
 - 父子 dialog、popup 定位/重定位、cursor-shape 回退和 drag icon 均由通用
   Wayland 层管理。
 - Portal 与 privileged helper 继续作为独立集成二进制保留。

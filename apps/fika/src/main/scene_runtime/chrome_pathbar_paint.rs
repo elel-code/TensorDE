@@ -1,179 +1,4 @@
-struct LocationBarLayout {
-    size: PhysicalSize<u32>,
-    rect: ViewRect,
-    clip: ViewRect,
-}
-
-struct LocationBarContent<'a> {
-    label: &'a str,
-    active: bool,
-    cursor: Option<usize>,
-}
-
 impl ShellScene {
-
-    fn push_location_focus_shine(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        rect: ViewRect,
-        clip: ViewRect,
-        current_value: f32,
-        size: PhysicalSize<u32>,
-    ) {
-        let Some(inner) = inset_rect(rect, self.scale_metric(2.0)) else {
-            return;
-        };
-        let Some(clip) = intersect_rect(inner, clip) else {
-            return;
-        };
-        let min_width = (48.0 * self.ui_scale()).min(inner.width.max(1.0));
-        let band_width = (114.0 * self.ui_scale()).clamp(min_width, inner.width.max(min_width));
-        let shine_x = rect.x + (rect.width + band_width) * current_value - band_width;
-        let strips = 24;
-        let strip_width = band_width / strips as f32;
-        let peak = 0.666_463_6;
-        for index in 0..strips {
-            let local = (index as f32 + 0.5) / strips as f32;
-            let falloff = if local <= peak {
-                local / peak
-            } else {
-                1.0 - (local - peak) / (1.0 - peak)
-            }
-            .clamp(0.0, 1.0);
-            let alpha = 0.20 * falloff;
-            if alpha <= 0.0 {
-                continue;
-            }
-            push_clipped_rect(
-                vertices,
-                ViewRect {
-                    x: shine_x + strip_width * index as f32,
-                    y: inner.y,
-                    width: strip_width + 1.0,
-                    height: inner.height,
-                },
-                clip,
-                [0.173, 0.655, 0.973, alpha],
-                size,
-            );
-        }
-    }
-
-    fn push_location_bar(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        text: &mut TextFrameBuilder<'_>,
-        layout: LocationBarLayout,
-        content: LocationBarContent<'_>,
-        theme: ShellTheme,
-    ) {
-        let LocationBarLayout { size, rect, clip } = layout;
-        let LocationBarContent {
-            label,
-            active,
-            cursor,
-        } = content;
-        let radius = self.scale_metric(7.0);
-        let editing = active && cursor.is_some();
-        let border_color = theme.divider();
-        push_clipped_rounded_rect(vertices, rect, clip, radius, border_color, size);
-        if let Some(inner) = inset_rect(rect, self.scale_metric(1.0)) {
-            push_clipped_rounded_rect(
-                vertices,
-                inner,
-                clip,
-                (radius - self.scale_metric(1.0)).max(1.0),
-                theme.field(),
-                size,
-            );
-        }
-        if editing {
-            if let Some(shine_value) = self.location_focus_shine_value() {
-                self.push_location_focus_shine(vertices, rect, clip, shine_value, size);
-            }
-            let mut focus_border = theme.accent();
-            focus_border[3] = 0.92;
-            push_clipped_rounded_highlight(
-                vertices,
-                rect,
-                clip,
-                radius,
-                RoundedHighlightStyle {
-                    fill: [0.0, 0.0, 0.0, 0.0],
-                    border: focus_border,
-                    border_width: (0.75 * self.ui_scale()).clamp(1.0, 1.5),
-                },
-                size,
-            );
-        }
-
-        let icon_size = self
-            .scale_metric(18.0)
-            .min((rect.height - self.scale_metric(8.0)).max(1.0));
-        let icon_rect = ViewRect {
-            x: rect.x + self.scale_metric(8.0),
-            y: rect.y + (rect.height - icon_size) / 2.0,
-            width: icon_size,
-            height: icon_size,
-        };
-        push_location_bar_icon(
-            vertices,
-            icon_rect,
-            clip,
-            false,
-            theme,
-            self.ui_scale(),
-            size,
-        );
-        let separator_x = icon_rect.right() + self.scale_metric(8.0);
-        push_clipped_rect(
-            vertices,
-            ViewRect {
-                x: separator_x,
-                y: rect.y + self.scale_metric(7.0),
-                width: self.scale_metric(1.0),
-                height: (rect.height - self.scale_metric(14.0)).max(1.0),
-            },
-            clip,
-            theme.field_separator(),
-            size,
-        );
-        let text_rect = self.location_text_rect_for_path_bar_rect(rect);
-        let cursor_x = cursor.map(|cursor| {
-            text.measure_label_cursor_x(
-                label,
-                text_rect,
-                cursor,
-                LabelAlignment::Start,
-                LabelWrap::None,
-            )
-        });
-        self.push_location_bar_text(text, rect, clip, label, theme);
-        if editing && self.text_caret_visible() {
-            let caret_width = self.scale_metric(1.25);
-            let caret_height = self
-                .scale_metric(17.0)
-                .min((rect.height - self.scale_metric(10.0)).max(1.0));
-            let caret_x = (text_rect.x + cursor_x.unwrap_or(0.0)).clamp(
-                text_rect.x,
-                (text_rect.right() - caret_width).max(text_rect.x),
-            );
-            push_clipped_rounded_rect(
-                vertices,
-                ViewRect {
-                    x: caret_x,
-                    y: rect.y + (rect.height - caret_height) / 2.0,
-                    width: caret_width,
-                    height: caret_height,
-                },
-                clip,
-                caret_width / 2.0,
-                text_color_to_vertex_color(theme.primary_text()),
-                size,
-            );
-        }
-    }
-
     fn push_location_bar_text(
         &self,
         text: &mut TextFrameBuilder<'_>,
@@ -204,6 +29,60 @@ impl ShellScene {
         };
         let label = self.location_label_for_pane(pane);
         self.push_location_bar_text(text, rect, top_bar, &label, theme);
+    }
+
+    fn push_native_location_bar_carets(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        text: &mut TextFrameBuilder<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        if !self.text_caret_visible() {
+            return;
+        }
+        for pane in ShellPaneId::ALL {
+            let Some(cursor) = self.location_cursor_for_pane(pane) else {
+                continue;
+            };
+            if !self.location_bar_active_for_pane(pane) {
+                continue;
+            }
+            let Some(rect) = self.pane_path_bar_rect(pane, size) else {
+                continue;
+            };
+            let Some(clip) = self.pane_geometry(pane, size).map(|geometry| geometry.top_bar) else {
+                continue;
+            };
+            let text_rect = self.location_text_rect_for_path_bar_rect(rect);
+            let label = self.location_label_for_pane(pane);
+            let cursor_x = text.measure_label_cursor_x(
+                &label,
+                text_rect,
+                cursor,
+                LabelAlignment::Start,
+                LabelWrap::None,
+            );
+            let caret_width = self.scale_metric(1.25);
+            let caret_height = self
+                .scale_metric(17.0)
+                .min((rect.height - self.scale_metric(10.0)).max(1.0));
+            let caret_x = (text_rect.x + cursor_x)
+                .clamp(text_rect.x, (text_rect.right() - caret_width).max(text_rect.x));
+            push_native_rounded_rect_fill(
+                instances,
+                ViewRect {
+                    x: caret_x,
+                    y: rect.y + (rect.height - caret_height) / 2.0,
+                    width: caret_width,
+                    height: caret_height,
+                },
+                clip,
+                caret_width / 2.0,
+                text_color_to_vertex_color(theme.primary_text()),
+                size,
+            );
+        }
     }
 
     /// Emits the texture-free location-bar chrome for the native Vulkan path.
@@ -410,6 +289,7 @@ impl ShellScene {
         }
         applied
     }
+
 
     fn drain_folder_preview_role_results(&self) -> FolderPreviewRoleDrainStats {
         self.folder_preview_roles.borrow_mut().drain_results()
@@ -658,9 +538,6 @@ impl ShellScene {
         true
     }
 
-    fn metadata_role_visible_work_pending(&self) -> bool {
-        self.metadata_roles.has_visible_pending()
-    }
 
     fn cancel_metadata_role_work_for_pane(&self, pane: ShellPaneId) {
         self.metadata_roles.cancel_pane(pane);
@@ -671,9 +548,10 @@ impl ShellScene {
         projections: &[ShellPaneProjection<'_>],
         resolver: &mut FileIconResolver,
         reason: &str,
+        resolve_visible_exact: bool,
     ) -> IconRolePrewarmStats {
         let mut stats = IconRolePrewarmStats::default();
-        let deadline = Instant::now() + icon_role_prewarm_budget_for_frame(reason);
+        let deadline = Instant::now() + icon_role_prewarm_budget(resolve_visible_exact);
         for projection in projections {
             for item in &projection.visible_items {
                 if Instant::now() >= deadline {
@@ -698,7 +576,7 @@ impl ShellScene {
                     .max(item.layout.icon_rect.height)
                     .clamp(16.0, 256.0);
                 let resolve_start = Instant::now();
-                if visible_exact_icon_roles_enabled_for_frame(reason) {
+                if resolve_visible_exact {
                     let snapshot =
                         resolver.resolve_entry_visible_fast(projection.view.path, entry, icon_size);
                     let _ = snapshot;
@@ -761,7 +639,11 @@ impl ShellScene {
             }
         }
         let read_ahead_budget =
-            icon_role_read_ahead_queue_budget_for_frame(reason, small_directory_read_ahead);
+            icon_role_read_ahead_queue_budget_for_frame(
+                reason,
+                small_directory_read_ahead,
+                resolve_visible_exact,
+            );
         if read_ahead_budget > 0 {
             self.resolve_next_icon_role_read_ahead(
                 resolver,

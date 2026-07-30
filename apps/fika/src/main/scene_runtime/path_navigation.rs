@@ -160,7 +160,7 @@ impl ShellScene {
             return;
         };
         fika_log!(
-            "[fika-wgpu] pane={} path={} entries={} dirs={} files={} load={}us changes={}",
+            "[fika] pane={} path={} entries={} dirs={} files={} load={}us changes={}",
             pane.as_str(),
             state.path.display(),
             state.entries.len(),
@@ -170,7 +170,7 @@ impl ShellScene {
             self.path_changes
         );
         if !preview.is_empty() {
-            fika_log!("[fika-wgpu] first-entries={preview}");
+            fika_log!("[fika] first-entries={preview}");
         }
     }
 
@@ -186,7 +186,7 @@ impl ShellScene {
             return;
         };
         fika_log!(
-            "[fika-wgpu] reload pane={} path={} entries={} dirs={} files={} load={}us reloads={} selected={} selection_changed={}",
+            "[fika] reload pane={} path={} entries={} dirs={} files={} load={}us reloads={} selected={} selection_changed={}",
             pane.as_str(),
             state.path.display(),
             state.entries.len(),
@@ -198,7 +198,7 @@ impl ShellScene {
             selection_changed as u8
         );
         if !preview.is_empty() {
-            fika_log!("[fika-wgpu] first-entries={preview}");
+            fika_log!("[fika] first-entries={preview}");
         }
     }
 
@@ -222,7 +222,7 @@ impl ShellScene {
         self.view_switches += 1;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] view-mode pane={} mode={} switches={} scroll_x={:.1} scroll_y={:.1}",
+            "[fika] view-mode pane={} mode={} switches={} scroll_x={:.1} scroll_y={:.1}",
             pane_id.as_str(),
             view_mode.as_str(),
             self.view_switches,
@@ -302,16 +302,14 @@ impl ShellScene {
         }
         self.zoom_changes += 1;
         let active_pane = self.normalized_pane_id(pane_id);
-        if let Some(index) = self
-            .pane_selection(active_pane)
-            .and_then(ShellSelection::focus_or_first_selected)
-        {
-            self.ensure_index_visible_in_pane(active_pane, index, size);
-        } else {
-            self.clamp_scroll(size);
-        }
+        // Dolphin's KItemListView::setItemSize() preserves the current scroll
+        // offset and only clamps it when the resized layout shortens the
+        // available range. Re-centering the focused item at every slider tick
+        // makes rapid zoom visibly jump between unrelated viewport anchors.
+        self.clamp_pane_scroll(active_pane, size);
+        self.refresh_hover(size);
         fika_log!(
-            "[fika-wgpu] zoom pane={} step={} percent={} changes={} scroll_x={:.1} scroll_y={:.1}",
+            "[fika] zoom pane={} step={} percent={} changes={} scroll_x={:.1} scroll_y={:.1}",
             active_pane.as_str(),
             next_step,
             self.zoom_percent_for_pane(active_pane),
@@ -342,7 +340,7 @@ impl ShellScene {
         }
         if selection_changed || rubber_band_changed {
             fika_log!(
-                "[fika-wgpu] selection command={} selected={} changes={}",
+                "[fika] selection command={} selected={} changes={}",
                 command.as_str(),
                 self.active_selection_len(),
                 self.selection_changes
@@ -499,7 +497,7 @@ impl ShellScene {
         self.rubber_band = None;
         self.clamp_scroll(size);
         fika_log!(
-            "[fika-wgpu] location active=0 value=\"\" changes={}",
+            "[fika] location active=0 value=\"\" changes={}",
             self.location_changes
         );
         true
@@ -557,7 +555,7 @@ impl ShellScene {
             self.rubber_band = None;
             self.clamp_scroll(size);
             fika_log!(
-                "[fika-wgpu] location active={} value={:?} changes={}",
+                "[fika] location active={} value={:?} changes={}",
                 self.location_draft.is_some() as u8,
                 self.location_draft_value().unwrap_or(""),
                 self.location_changes

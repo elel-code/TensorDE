@@ -14,19 +14,17 @@ client runtime; the previous UI runtimes have been removed from the source tree.
 - `fika` is the default run target and the only in-tree file-manager UI.
 - `wayland-client-runtime` is the reusable SCTK-based protocol, surface and
   event layer. Fika itself has no direct winit or SCTK dependency.
-- `wgpu` comes from the official crates.io release.
-- `FIKA_VULKAN_RENDERER=1` selects the direct Vulkan 1.4 main-window path. It
-  already renders retained analytic chrome plus Places, location/filter,
+- The complete file-manager controller renders through the shared native
+  Vulkan 1.4 backend. It renders retained analytic chrome plus Places, location/filter,
   Details, file-item, and status labels through a device-local R8 glyph atlas,
   dynamic vertex buffers, descriptor heaps, and timeline-managed resources
-  without creating wgpu objects. External icon dma-bufs are imported directly
+  without a second rendering backend. External icon dma-bufs are imported directly
   into the same Vulkan resident cache with explicit foreign-queue ownership
-  transfer; no wgpu-hal wrapper or CPU pixel readback is involved.
+  transfer and no CPU pixel readback.
 - `fika-core` stays UI-neutral and owns filesystem/domain behavior.
-- Clipboard and DnD use Wayland `wl_data_device`; rendering handles can be
-  consumed by wgpu or direct Vulkan, and KDE blur keeps full region semantics.
-- The obsolete one-frame Vulkan-before-wgpu probe has been removed. Vulkan
-  resources are created only by the persistent native renderer path.
+- Clipboard and DnD use Wayland `wl_data_device`; exported rendering handles
+  remain native Vulkan dma-bufs, and KDE blur keeps full region semantics.
+- Vulkan resources are created only by the persistent native renderer path.
 - Parented dialogs, popup positioning/repositioning, cursor-shape fallback and
   drag icons are owned by the reusable Wayland layer.
 - Local and inter-application drag-and-drop share the same Wayland

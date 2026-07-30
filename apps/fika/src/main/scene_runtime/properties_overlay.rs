@@ -6,7 +6,7 @@ impl ShellScene {
 
     fn open_properties_overlay_from_context(&mut self) -> bool {
         let Some(overlay) = self.properties_overlay_for_context_target() else {
-            fika_log!("[fika-wgpu] properties-error target=none");
+            fika_log!("[fika] properties-error target=none");
             return false;
         };
         let changed = self.properties_overlay.as_ref() != Some(&overlay);
@@ -15,7 +15,7 @@ impl ShellScene {
             self.properties_changes += 1;
             if let Some(overlay) = self.properties_overlay.as_ref() {
                 fika_log!(
-                    "[fika-wgpu] properties open=1 title={:?} rows={} changes={}",
+                    "[fika] properties open=1 title={:?} rows={} changes={}",
                     overlay.title,
                     overlay.rows.len(),
                     self.properties_changes
@@ -31,7 +31,7 @@ impl ShellScene {
         }
         self.properties_changes += 1;
         fika_log!(
-            "[fika-wgpu] properties open=0 changes={}",
+            "[fika] properties open=0 changes={}",
             self.properties_changes
         );
         true
@@ -63,7 +63,7 @@ impl ShellScene {
     fn open_create_dialog_for_autosmoke(&mut self) -> bool {
         let pane = self.active_pane();
         let Some(path) = self.pane_state(pane).map(|state| state.path.clone()) else {
-            fika_log!("[fika-wgpu] dialog-smoke failed reason=no-active-pane");
+            fika_log!("[fika] dialog-smoke failed reason=no-active-pane");
             return false;
         };
         self.open_create_dialog_for_parent(pane, path, CreateEntryKind::Folder, false)
@@ -72,7 +72,7 @@ impl ShellScene {
     fn open_open_with_chooser_for_autosmoke(&mut self, cache: &MimeApplicationCache) -> bool {
         let pane = self.active_pane();
         let Some(target) = self.first_item_context_target_for_autosmoke(pane) else {
-            fika_log!("[fika-wgpu] dialog-smoke failed reason=no-open-with-target");
+            fika_log!("[fika] dialog-smoke failed reason=no-open-with-target");
             return false;
         };
         self.context_target = Some(target);
@@ -82,7 +82,7 @@ impl ShellScene {
     fn open_rename_dialog_for_autosmoke(&mut self) -> bool {
         let pane = self.active_pane();
         let Some(target) = self.first_item_context_target_for_autosmoke(pane) else {
-            fika_log!("[fika-wgpu] dialog-smoke failed reason=no-rename-target");
+            fika_log!("[fika] dialog-smoke failed reason=no-rename-target");
             return false;
         };
         let index = match target {
@@ -123,7 +123,7 @@ impl ShellScene {
         let Some(ShellContextTarget::Blank { pane, path, .. }) = self.context_target.as_ref()
         else {
             fika_log!(
-                "[fika-wgpu] create-new-error target={}",
+                "[fika] create-new-error target={}",
                 self.context_target
                     .as_ref()
                     .map(ShellContextTarget::kind)
@@ -151,7 +151,7 @@ impl ShellScene {
             self.create_changes += 1;
             if let Some(dialog) = self.create_dialog.as_ref() {
                 fika_log!(
-                    "[fika-wgpu] create-new open=1 kind={} parent={} name={:?} privileged={} changes={}",
+                    "[fika] create-new open=1 kind={} parent={} name={:?} privileged={} changes={}",
                     dialog.kind.as_str(),
                     dialog.parent.display(),
                     dialog.name,
@@ -244,7 +244,7 @@ impl ShellScene {
 
     fn set_create_dialog_error(&mut self, error: String) -> bool {
         let Some(dialog) = self.create_dialog.as_mut() else {
-            fika_log!("[fika-wgpu] create-new-error {error}");
+            fika_log!("[fika] create-new-error {error}");
             return false;
         };
         let already = dialog.error.as_ref() == Some(&error) && !dialog.busy;
@@ -280,7 +280,7 @@ impl ShellScene {
         }
         self.create_changes += 1;
         fika_log!(
-            "[fika-wgpu] create-new open=0 changes={}",
+            "[fika] create-new open=0 changes={}",
             self.create_changes
         );
         true
@@ -292,7 +292,7 @@ impl ShellScene {
         }
         self.create_changes += 1;
         fika_log!(
-            "[fika-wgpu] create-new created kind={} path={} changes={}",
+            "[fika] create-new created kind={} path={} changes={}",
             request.kind.as_str(),
             request.path.display(),
             self.create_changes
@@ -361,7 +361,7 @@ impl ShellScene {
     fn log_create_dialog_state(&self) {
         match self.create_dialog.as_ref() {
             Some(dialog) => fika_log!(
-                "[fika-wgpu] create-new open=1 kind={} parent={} name={:?} privileged={} error={:?} changes={}",
+                "[fika] create-new open=1 kind={} parent={} name={:?} privileged={} error={:?} changes={}",
                 dialog.kind.as_str(),
                 dialog.parent.display(),
                 dialog.name,
@@ -370,7 +370,7 @@ impl ShellScene {
                 self.create_changes
             ),
             None => fika_log!(
-                "[fika-wgpu] create-new open=0 changes={}",
+                "[fika] create-new open=0 changes={}",
                 self.create_changes
             ),
         }
@@ -386,7 +386,7 @@ impl ShellScene {
         }) = self.context_target.as_ref()
         else {
             fika_log!(
-                "[fika-wgpu] rename-error target={}",
+                "[fika] rename-error target={}",
                 self.context_target
                     .as_ref()
                     .map(ShellContextTarget::kind)
@@ -396,7 +396,7 @@ impl ShellScene {
         };
         let Some(dialog) = ShellRenameDialog::new(*pane, path.clone(), *is_dir, privileged) else {
             fika_log!(
-                "[fika-wgpu] rename-error path={} error=no-file-name",
+                "[fika] rename-error path={} error=no-file-name",
                 path.display()
             );
             return false;
@@ -410,7 +410,7 @@ impl ShellScene {
             self.rename_changes += 1;
             if let Some(dialog) = self.rename_dialog.as_ref() {
                 fika_log!(
-                    "[fika-wgpu] rename open=1 source={} name={:?} dir={} privileged={} changes={}",
+                    "[fika] rename open=1 source={} name={:?} dir={} privileged={} changes={}",
                     dialog.source.display(),
                     dialog.name,
                     dialog.is_dir as u8,

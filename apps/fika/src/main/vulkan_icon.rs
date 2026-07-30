@@ -332,9 +332,8 @@ impl VulkanIconRenderer {
 
     /// Composites a `FolderPreview` source into one resident texture.
     ///
-    /// Mirrors the wgpu `render_folder_preview_gpu` path: each child icon is
-    /// rendered at its destination size, then drawn three times (soft shadow,
-    /// white frame, content) with a per-child rotation.
+    /// Each child icon is rendered at its destination size, then drawn three
+    /// times (soft shadow, white frame, content) with a per-child rotation.
     fn create_folder_preview_texture(
         &mut self,
         allocator: &MemoryAllocator,

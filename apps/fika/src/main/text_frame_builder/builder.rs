@@ -26,10 +26,6 @@ impl<'a> TextFrameResources<'a> {
         }
     }
 
-    fn from_renderer(renderer: &'a mut TextRenderer) -> Self {
-        Self::from_engine(&mut renderer.engine)
-    }
-
     fn from_engine(engine: &'a mut TextEngine) -> Self {
         Self::new(
             &mut engine.font_system,
@@ -270,71 +266,6 @@ impl<'a> TextFrameBuilder<'a> {
             color,
         });
         self.labels += 1;
-    }
-
-    fn set_raster_miss_budget(&mut self, budget: usize) {
-        self.raster_miss_budget = budget;
-    }
-
-    fn prewarm_filename_label_aligned_no_wrap(
-        &mut self,
-        label: &str,
-        rect: ViewRect,
-        color: TextColor,
-        alignment: LabelAlignment,
-    ) -> LabelCacheOutcome {
-        let display = file_manager_elide_filename_to_width_shaped(
-            self.font_system,
-            self.text_buffer,
-            label,
-            rect.width,
-            self.max_font_size,
-            self.max_line_height,
-        );
-        self.prewarm_label_aligned_wrapped(&display, rect, color, alignment, LabelWrap::None)
-    }
-
-    fn prewarm_filename_label_wrapped(
-        &mut self,
-        label: &str,
-        rect: ViewRect,
-        color: TextColor,
-    ) -> LabelCacheOutcome {
-        let display = file_manager_layout_icons_filename(
-            self.font_system,
-            self.text_buffer,
-            label,
-            rect.width,
-            FILE_MANAGER_ICONS_MAX_TEXT_LINES,
-            self.max_font_size,
-            self.max_line_height,
-        )
-        .display;
-        self.prewarm_label_aligned_wrapped(
-            &display,
-            rect,
-            color,
-            LabelAlignment::Center,
-            LabelWrap::WordOrGlyph,
-        )
-    }
-
-    fn prewarm_label_aligned_wrapped(
-        &mut self,
-        label: &str,
-        rect: ViewRect,
-        _color: TextColor,
-        alignment: LabelAlignment,
-        wrap: LabelWrap,
-    ) -> LabelCacheOutcome {
-        let Some((key, _, label_width, label_height)) =
-            self.label_raster_key(label, rect, alignment, wrap)
-        else {
-            return LabelCacheOutcome::Skipped;
-        };
-        self.resolve_label_pixels(label, &key, label_width, label_height, alignment, wrap)
-            .map(|(_, outcome)| outcome)
-            .unwrap_or(LabelCacheOutcome::Deferred)
     }
 
     fn label_raster_key(

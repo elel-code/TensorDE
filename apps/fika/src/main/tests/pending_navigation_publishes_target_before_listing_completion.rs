@@ -12,7 +12,6 @@ fn pending_navigation_publishes_target_and_hides_the_previous_model() {
     let source = scene.panes[pane].path.clone();
     assert!(scene.panes[pane].selection.apply_navigation(0, false));
 
-    let before = ShellRenderDirtyKey::from_scene(&scene, size);
     assert!(scene.begin_pane_navigation(pane, target.clone(), size));
 
     assert_eq!(scene.location_label_for_pane(pane), target.display().to_string());
@@ -22,12 +21,32 @@ fn pending_navigation_publishes_target_and_hides_the_previous_model() {
     assert_eq!(projection.view.path, target.as_path());
     assert!(projection.view.entries.is_empty());
     assert!(projection.visible_items.is_empty());
-    assert_ne!(before, ShellRenderDirtyKey::from_scene(&scene, size));
-
     assert!(scene.cancel_pane_navigation(pane));
     let restored = scene.pane_projection(pane, size).unwrap();
     assert_eq!(restored.view.path, source.as_path());
     assert_eq!(restored.visible_items.len(), 2);
+}
+
+#[test]
+fn pending_navigation_updates_places_selection_with_the_published_url() {
+    let mut scene = test_scene(vec![test_entry("Desktop", true)], ShellViewMode::Icons);
+    let size = PhysicalSize::new(720, 420);
+    let pane = ShellPaneId::SLOT_0;
+    let source = scene.panes[pane].path.clone();
+    let target = PathBuf::from("/fixture/Desktop");
+    scene.places = vec![
+        ShellPlace::new("", "B", "Source", source, true),
+        ShellPlace::new("", "B", "Desktop", target.clone(), true),
+    ];
+    assert_eq!(scene.active_place_index(), Some(0));
+
+    assert!(scene.begin_pane_navigation(pane, target.clone(), size));
+    // Dolphin's urlChanged -> PlacesPanel::setUrl happens when the requested
+    // URL is published, not after directoryLoadingCompleted.
+    assert_eq!(scene.active_place_index(), Some(1));
+
+    assert!(scene.complete_pane_navigation(pane, target, Vec::new(), size));
+    assert_eq!(scene.active_place_index(), Some(1));
 }
 
 #[test]

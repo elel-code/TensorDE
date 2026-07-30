@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::windowing::{
     ActiveEventLoop, AsyncRequestSerial, DataTransferId, DataTransferSendBuilder, DndAction,
-    DragIcon, PhysicalPosition, SendData, TypeHint, TypedData,
+    DragIcon, PhysicalPosition, PhysicalSize, SendData, TypeHint, TypedData,
 };
 
 use super::outcome::ShellActionOutcome;
@@ -23,12 +23,13 @@ use crate::ui::file_item_view::style::{
 use crate::ui::icon_roles::{file_icon_path_cache_key, icon_cache_size};
 use crate::ui::tasks::ShellTaskStatus;
 use crate::{
-    FikaWgpuApp, GpuDragPreview, GpuDragPreviewDraw, IconGpuSource, IncomingDndTransfer,
-    ItemPixmapLayout, OutgoingDndTransfer, ShellInternalDragPreviewSource, ShellViewMode,
+    FikaApp, FolderPreviewCacheStats, IconDrawLayer, IconFrameBuilder, IconFrameConfig,
+    IconFrameResources, IconGpuSource, IncomingDndTransfer, ItemPixmapLayout, OutgoingDndTransfer,
+    ShellInternalDragPreviewSource, ShellViewMode, TextFrameBuilder, TextFrameResources,
     ThumbnailSourceKey, ViewRect, decode_file_clipboard_text, entry_path_for_thumbnail,
     folder_preview_gpu_draw_rect, icon_emblem_kinds_for_path, icon_emblem_rects,
-    normalized_scale_factor, path_uri_from_path, rasterize_gpu_drag_preview_label,
-    thumbnail_request_may_have_preview, view_point_from_physical_position,
+    normalized_scale_factor, path_uri_from_path, thumbnail_request_may_have_preview,
+    view_point_from_physical_position,
 };
 
 const ACCEPTED_DND_ACTIONS: [DndAction; 3] = [DndAction::Ask, DndAction::Move, DndAction::Copy];
@@ -40,7 +41,7 @@ struct OutgoingDndPayload {
     text: String,
 }
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn reset_outgoing_drag_tracking(&mut self) {
         self.outgoing_dnd_transfer = None;
         self.outgoing_dnd_start_failed = false;
@@ -121,7 +122,7 @@ impl FikaWgpuApp {
         match event_loop.start_drag(window_id, send_data, &ACCEPTED_DND_ACTIONS, drag_icon) {
             Ok(id) => {
                 fika_log!(
-                    "[fika-wgpu] outgoing-dnd start id={} sources={}",
+                    "[fika] outgoing-dnd start id={} sources={}",
                     id.into_raw(),
                     paths.len()
                 );
@@ -134,7 +135,7 @@ impl FikaWgpuApp {
             }
             Err(error) => {
                 self.outgoing_dnd_start_failed = true;
-                fika_log!("[fika-wgpu] outgoing-dnd-unavailable {error}");
+                fika_log!("[fika] outgoing-dnd-unavailable {error}");
                 if self.scene.clear_internal_drag()
                     && let Some(window) = self.window.as_ref()
                 {
@@ -168,7 +169,7 @@ impl FikaWgpuApp {
             .map(|data| data.has_type(&TypeHint::UriList))
             .unwrap_or_else(|error| {
                 fika_log!(
-                    "[fika-wgpu] external-dnd data-transfer-error id={} {error}",
+                    "[fika] external-dnd data-transfer-error id={} {error}",
                     id.into_raw()
                 );
                 false
@@ -179,7 +180,7 @@ impl FikaWgpuApp {
             self.incoming_dnd_transfer = None;
             let changed = self.scene.clear_external_drag();
             fika_log!(
-                "[fika-wgpu] external-dnd reject id={} reason=missing-uri-list",
+                "[fika] external-dnd reject id={} reason=missing-uri-list",
                 id.into_raw()
             );
             return ShellActionOutcome::redraw_if(changed);
@@ -191,7 +192,7 @@ impl FikaWgpuApp {
             }
             Err(error) => {
                 fika_log!(
-                    "[fika-wgpu] external-dnd fetch-error id={} {error}",
+                    "[fika] external-dnd fetch-error id={} {error}",
                     id.into_raw()
                 );
                 self.set_valid_dnd_actions(event_loop, id, false);
@@ -218,7 +219,7 @@ impl FikaWgpuApp {
         self.incoming_dnd_transfer = Some(transfer);
         self.sync_external_dnd_actions(event_loop, id);
         fika_log!(
-            "[fika-wgpu] external-dnd enter id={} target={}",
+            "[fika] external-dnd enter id={} target={}",
             id.into_raw(),
             self.scene
                 .dnd_hover_target
@@ -308,7 +309,7 @@ impl FikaWgpuApp {
             Ok(paths) => paths,
             Err(error) => {
                 fika_log!(
-                    "[fika-wgpu] external-dnd data-error id={} {error}",
+                    "[fika] external-dnd data-error id={} {error}",
                     id.into_raw()
                 );
                 self.set_valid_dnd_actions(event_loop, id, false);
@@ -322,7 +323,7 @@ impl FikaWgpuApp {
             self.incoming_dnd_transfer = None;
             let changed = self.scene.clear_external_drag();
             fika_log!(
-                "[fika-wgpu] external-dnd reject id={} reason=empty-uri-list",
+                "[fika] external-dnd reject id={} reason=empty-uri-list",
                 id.into_raw()
             );
             return ShellActionOutcome::redraw_if(changed);
@@ -351,7 +352,7 @@ impl FikaWgpuApp {
         let drop_pending = transfer.drop_pending;
         self.sync_external_dnd_actions(event_loop, id);
         fika_log!(
-            "[fika-wgpu] external-dnd data id={} sources={}",
+            "[fika] external-dnd data id={} sources={}",
             id.into_raw(),
             self.incoming_dnd_transfer
                 .as_ref()
@@ -386,7 +387,7 @@ impl FikaWgpuApp {
         self.outgoing_dnd_start_failed = false;
         let changed = self.scene.clear_internal_drag();
         fika_log!(
-            "[fika-wgpu] outgoing-dnd drop id={} action={:?} sources={}",
+            "[fika] outgoing-dnd drop id={} action={:?} sources={}",
             id.into_raw(),
             action,
             source_count
@@ -411,7 +412,7 @@ impl FikaWgpuApp {
         self.outgoing_dnd_start_failed = false;
         let changed = self.scene.clear_internal_drag();
         fika_log!(
-            "[fika-wgpu] outgoing-dnd cancel id={} sources={}",
+            "[fika] outgoing-dnd cancel id={} sources={}",
             id.into_raw(),
             source_count
         );
@@ -453,7 +454,7 @@ impl FikaWgpuApp {
         match self.scene.finish_external_drag(sources, point, size) {
             Ok(changed) => {
                 fika_log!(
-                    "[fika-wgpu] external-dnd drop menu={} target={}",
+                    "[fika] external-dnd drop menu={} target={}",
                     self.scene.drop_menu.is_some() as u8,
                     self.scene
                         .drop_menu
@@ -464,7 +465,7 @@ impl FikaWgpuApp {
                 ShellActionOutcome::redraw_if(changed)
             }
             Err(error) => {
-                fika_log!("[fika-wgpu] external-dnd-error {error}");
+                fika_log!("[fika] external-dnd-error {error}");
                 self.scene
                     .record_task_status(ShellTaskStatus::failed("Drop failed", error, false));
                 ShellActionOutcome::Redraw
@@ -499,7 +500,7 @@ impl FikaWgpuApp {
         };
         if let Err(error) = event_loop.set_valid_dnd_actions(id, actions) {
             fika_log!(
-                "[fika-wgpu] dnd-actions-error id={} accepted={} {error}",
+                "[fika] dnd-actions-error id={} accepted={} {error}",
                 id.into_raw(),
                 accepted as u8
             );

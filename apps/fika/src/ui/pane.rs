@@ -98,7 +98,7 @@ impl ShellPaneState {
         let dir_count = entries.iter().filter(|entry| entry.is_dir).count();
         let filtered_indexes = filtered_indexes_for_entries(&entries, show_hidden, "");
         fika_log!(
-            "[fika-wgpu] split-pane path={} entries={} dirs={} files={} visible={} load={}us",
+            "[fika] split-pane path={} entries={} dirs={} files={} visible={} load={}us",
             path.display(),
             entries.len(),
             dir_count,

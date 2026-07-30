@@ -1,13 +1,13 @@
 use crate::windowing::ActiveEventLoop;
 
 use super::outcome::ShellActionOutcome;
-use crate::FikaWgpuApp;
+use crate::FikaApp;
 use crate::ui::context_menu::ShellContextMenuAction;
 use crate::ui::operation_request::ShellOperationRequest;
 use crate::ui::tasks::ShellTaskStatus;
 use fika_core::{TrashViewOperation, file_ops, is_network_path};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn perform_trash_view_context_action(
         &mut self,
         _event_loop: &ActiveEventLoop,
@@ -20,10 +20,7 @@ impl FikaWgpuApp {
         let (operation, paths) = match self.scene.context_target_trash_view_operation(action) {
             Ok(value) => value,
             Err(error) => {
-                fika_log!(
-                    "[fika-wgpu] trash-view-error action={} {error}",
-                    action.as_str()
-                );
+                fika_log!("[fika] trash-view-error action={} {error}", action.as_str());
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     format!("{} failed", action.label()),
                     error,
@@ -54,7 +51,7 @@ impl FikaWgpuApp {
         let paths = match self.scene.context_target_trash_paths() {
             Ok(paths) => paths,
             Err(error) => {
-                fika_log!("[fika-wgpu] trash-error {error}");
+                fika_log!("[fika] trash-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     if privileged {
                         "Administrator move to Trash failed"
@@ -97,7 +94,7 @@ impl FikaWgpuApp {
             Ok(Some(paths)) => paths,
             Ok(None) => return,
             Err(error) => {
-                fika_log!("[fika-wgpu] delete-error {error}");
+                fika_log!("[fika] delete-error {error}");
                 self.scene.record_task_status(ShellTaskStatus::failed(
                     "Move to Trash failed",
                     error,
@@ -142,7 +139,7 @@ impl FikaWgpuApp {
 
     pub(crate) fn replace_trash_restore_conflicts(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(dialog) = self.scene.trash_conflict_dialog.take() else {
-            fika_log!("[fika-wgpu] trash-conflict-error no Trash restore conflicts to replace");
+            fika_log!("[fika] trash-conflict-error no Trash restore conflicts to replace");
             self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             return;
         };
@@ -152,7 +149,7 @@ impl FikaWgpuApp {
             .map(|conflict| conflict.trash_path)
             .collect::<Vec<_>>();
         if paths.is_empty() {
-            fika_log!("[fika-wgpu] trash-conflict-error no Trash restore conflicts to replace");
+            fika_log!("[fika] trash-conflict-error no Trash restore conflicts to replace");
             self.apply_window_action_outcome(ShellActionOutcome::Redraw);
             return;
         }

@@ -1,77 +1,6 @@
 impl ShellScene {
 
-    fn push_places_task_area(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        text: &mut TextFrameBuilder<'_>,
-        size: PhysicalSize<u32>,
-        theme: ShellTheme,
-    ) {
-        let Some(rect) = self.places_task_area_rect(size) else {
-            return;
-        };
-        push_status_places_task_area(
-            vertices,
-            text,
-            PlacesTaskAreaPaint {
-                rect,
-                sidebar: self.places_sidebar_rect(size),
-                statuses: &self.task_statuses,
-                theme,
-                scale: self.ui_scale(),
-                small_line_height: self.small_text_line_height(),
-                size,
-            },
-        );
-    }
 
-    fn push_filter_bar(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        text: &mut TextFrameBuilder<'_>,
-        size: PhysicalSize<u32>,
-        theme: ShellTheme,
-    ) {
-        let Some(rect) = self.filter_bar_rect(size) else {
-            return;
-        };
-        push_rect(
-            vertices,
-            ViewRect {
-                x: rect.x,
-                y: rect.bottom() - 1.0,
-                width: rect.width,
-                height: 1.0,
-            },
-            theme.divider(),
-            size,
-        );
-        let field = ViewRect {
-            x: rect.x + self.scale_metric(62.0),
-            y: rect.y + self.scale_metric(4.0),
-            width: (rect.width - self.scale_metric(74.0)).max(1.0),
-            height: (rect.height - self.scale_metric(8.0)).max(1.0),
-        };
-        push_clipped_rounded_rect(
-            vertices,
-            field,
-            rect,
-            self.scale_metric(7.0),
-            theme.field_separator(),
-            size,
-        );
-        if let Some(inner) = inset_rect(field, self.scale_metric(1.0)) {
-            push_clipped_rounded_rect(
-                vertices,
-                inner,
-                rect,
-                self.scale_metric(6.0),
-                theme.field(),
-                size,
-            );
-        }
-        self.push_filter_bar_text(text, size, theme);
-    }
 
     fn push_filter_bar_text(
         &self,
@@ -166,21 +95,6 @@ impl ShellScene {
         }
     }
 
-    fn push_rubber_band_for_projection(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        projection: &ShellPaneProjection<'_>,
-        theme: ShellTheme,
-        size: PhysicalSize<u32>,
-    ) {
-        let Some(rect) = self.rubber_band_screen_rect_for_projection(projection) else {
-            return;
-        };
-        let content_clip = projection.geometry.content;
-        let rubber_band = theme.rubber_band();
-        push_clipped_rect(vertices, rect, content_clip, rubber_band.fill, size);
-        push_clipped_rect_outline(vertices, rect, content_clip, 1.5, rubber_band.border, size);
-    }
 
     fn push_native_rubber_band_for_projection(
         &self,
@@ -256,58 +170,8 @@ impl ShellScene {
             .unwrap_or_else(|| "No active pane".to_string())
     }
 
-    fn push_pane_body_border(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        projection: &ShellPaneProjection<'_>,
-        theme: ShellTheme,
-        size: PhysicalSize<u32>,
-    ) {
-        let body = ViewRect {
-            x: projection.geometry.pane.x,
-            y: projection.geometry.top_bar.bottom(),
-            width: projection.geometry.pane.width,
-            height: (projection.geometry.status_bar.y - projection.geometry.top_bar.bottom())
-                .max(1.0),
-        };
-        push_rect(
-            vertices,
-            ViewRect {
-                x: body.x,
-                y: body.y,
-                width: body.width,
-                height: 1.0,
-            },
-            theme.divider(),
-            size,
-        );
-    }
 
-    fn push_content_scrollbar_for_projection(
-        &self,
-        vertices: &mut Vec<QuadVertex>,
-        projection: &ShellPaneProjection<'_>,
-        theme: ShellTheme,
-        size: PhysicalSize<u32>,
-    ) -> bool {
-        let Some((track, thumb)) = self.content_scrollbar_rects_for_projection(projection) else {
-            return false;
-        };
-        let screen = ViewRect {
-            x: 0.0,
-            y: 0.0,
-            width: size.width.max(1) as f32,
-            height: size.height.max(1) as f32,
-        };
-        push_scrollbar(vertices, track, thumb, screen, theme.scrollbar(), size);
-        true
-    }
 
-    /// Native Vulkan counterpart of [`Self::push_content_scrollbar_for_projection`].
-    ///
-    /// Scrollbar capsules are analytic rectangles, so resizing or scrolling a
-    /// large directory updates two compact instances instead of CPU-tessellated
-    /// rounded geometry.
     fn push_native_content_scrollbar_for_projection(
         &self,
         instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
@@ -377,6 +241,18 @@ impl ShellScene {
                 },
             );
         }
+    }
+
+    pub(crate) fn push_native_overlays(
+        &self,
+        vertices: &mut Vec<QuadVertex>,
+        text: &mut TextFrameBuilder<'_>,
+        icons: &mut IconFrameBuilder<'_>,
+        size: PhysicalSize<u32>,
+    ) {
+        let theme = self.theme();
+        self.push_drop_menu_overlay(vertices, text, theme, size);
+        self.push_context_menu_overlay(vertices, text, icons, theme, size);
     }
 
     fn content_origin_x(&self, size: PhysicalSize<u32>) -> f32 {

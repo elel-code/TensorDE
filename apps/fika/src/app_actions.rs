@@ -25,9 +25,9 @@ use crate::ui::action::{
 use crate::ui::context_menu::ShellContextMenuCommand;
 use crate::ui::shortcuts::{FileKeyboardCommand, SelectionCommand};
 use crate::ui::tasks::ShellTaskStatus;
-use crate::{FikaWgpuApp, file_clipboard_role_as_str};
+use crate::{FikaApp, file_clipboard_role_as_str};
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn perform_context_menu_action(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -148,7 +148,7 @@ impl FikaWgpuApp {
                     Ok(Some(request)) => self.store_file_clipboard_request(&request),
                     Ok(None) => {
                         fika_log!(
-                            "[fika-wgpu] clipboard-export-error role={} target=none",
+                            "[fika] clipboard-export-error role={} target=none",
                             file_clipboard_role_as_str(role)
                         );
                         self.scene.record_task_status(ShellTaskStatus::failed(
@@ -159,7 +159,7 @@ impl FikaWgpuApp {
                     }
                     Err(error) => {
                         fika_log!(
-                            "[fika-wgpu] clipboard-export-error role={} {error}",
+                            "[fika] clipboard-export-error role={} {error}",
                             file_clipboard_role_as_str(role)
                         );
                         self.scene.record_task_status(ShellTaskStatus::failed(
@@ -175,7 +175,7 @@ impl FikaWgpuApp {
                 match self.scene.context_target_copy_location_request() {
                     Some(request) => self.store_copy_location_request(request),
                     None => {
-                        fika_log!("[fika-wgpu] copy-location-error target=none");
+                        fika_log!("[fika] copy-location-error target=none");
                         self.scene.record_task_status(ShellTaskStatus::failed(
                             "Copy Location failed",
                             "No target",
@@ -208,11 +208,11 @@ impl FikaWgpuApp {
                 match self.scene.active_file_clipboard_request(role) {
                     Ok(Some(request)) => self.store_file_clipboard_request(&request),
                     Ok(None) => fika_log!(
-                        "[fika-wgpu] clipboard-export-error role={} target=none",
+                        "[fika] clipboard-export-error role={} target=none",
                         file_clipboard_role_as_str(role)
                     ),
                     Err(error) => fika_log!(
-                        "[fika-wgpu] clipboard-export-error role={} {error}",
+                        "[fika] clipboard-export-error role={} {error}",
                         file_clipboard_role_as_str(role)
                     ),
                 }

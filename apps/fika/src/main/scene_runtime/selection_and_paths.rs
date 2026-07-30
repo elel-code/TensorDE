@@ -26,29 +26,29 @@ impl ShellScene {
     fn open_rename_dialog_from_active_selection(&mut self, privileged: bool) -> bool {
         let pane = self.active_pane();
         let Some(selection) = self.pane_selection(pane) else {
-            fika_log!("[fika-wgpu] rename-error target=none");
+            fika_log!("[fika] rename-error target=none");
             return false;
         };
         let Some(index) = selection.focus_or_first_selected() else {
-            fika_log!("[fika-wgpu] rename-error target=none");
+            fika_log!("[fika] rename-error target=none");
             return false;
         };
         let Some(view) = self.pane_view(pane) else {
-            fika_log!("[fika-wgpu] rename-error target=none");
+            fika_log!("[fika] rename-error target=none");
             return false;
         };
         let Some(entry) = view.entries.get(index) else {
-            fika_log!("[fika-wgpu] rename-error target=none");
+            fika_log!("[fika] rename-error target=none");
             return false;
         };
         let Some(path) = self.entry_path_for_pane_view(view, index) else {
-            fika_log!("[fika-wgpu] rename-error target=none");
+            fika_log!("[fika] rename-error target=none");
             return false;
         };
         let Some(dialog) = ShellRenameDialog::new(pane, path.clone(), entry.is_dir, privileged)
         else {
             fika_log!(
-                "[fika-wgpu] rename-error path={} error=no-file-name",
+                "[fika] rename-error path={} error=no-file-name",
                 path.display()
             );
             return false;
@@ -67,7 +67,7 @@ impl ShellScene {
         changed
     }
 
-    // Production delete path is async via FikaWgpuApp::delete_active_selection.
+    // Production delete path is async via FikaApp::delete_active_selection.
     // Sync helper reuses apply_move_to_trash_result so UI bookkeeping matches production.
     #[cfg(test)]
     fn delete_active_selection(&mut self, size: PhysicalSize<u32>) -> Result<bool, String> {
@@ -80,7 +80,7 @@ impl ShellScene {
             .all(|path| file_ops::is_in_trash_files_dir(path))
         {
             let result = trash_view_operation_result(
-                WGPU_SHELL_PANE_ID,
+                SHELL_PANE_ID,
                 TrashViewOperation::DeletePermanently,
                 paths,
             );
@@ -169,7 +169,7 @@ impl ShellScene {
         }
     }
 
-    // Production trash-view path is async via FikaWgpuApp::perform_trash_view_context_action.
+    // Production trash-view path is async via FikaApp::perform_trash_view_context_action.
     #[cfg(test)]
     fn perform_trash_view_context_action(
         &mut self,
@@ -180,12 +180,12 @@ impl ShellScene {
             .context_target_pane()
             .unwrap_or_else(|| self.active_pane());
         let (operation, paths) = self.context_target_trash_view_operation(action)?;
-        let result = trash_view_operation_result(WGPU_SHELL_PANE_ID, operation, paths);
+        let result = trash_view_operation_result(SHELL_PANE_ID, operation, paths);
         self.apply_trash_view_result(action.as_str(), pane_to_reload, &result, size)?;
         Ok(result)
     }
 
-    // Production conflict replace path is async via FikaWgpuApp::replace_trash_restore_conflicts.
+    // Production conflict replace path is async via FikaApp::replace_trash_restore_conflicts.
     #[cfg(test)]
     fn replace_trash_restore_conflicts(
         &mut self,
@@ -203,7 +203,7 @@ impl ShellScene {
             return Err("no Trash restore conflicts to replace".to_string());
         }
         let result = trash_view_operation_result(
-            WGPU_SHELL_PANE_ID,
+            SHELL_PANE_ID,
             TrashViewOperation::Restore {
                 conflict_policy: file_ops::TrashRestoreConflictPolicy::Replace,
             },
@@ -238,7 +238,7 @@ impl ShellScene {
             .map(|state| state.path.clone());
         self.record_trash_content_change();
         fika_log!(
-            "[fika-wgpu] trash-view action={} success={} failure={} conflicts={} changes={}",
+            "[fika] trash-view action={} success={} failure={} conflicts={} changes={}",
             action,
             result.success_count,
             result.failure_count,
@@ -247,7 +247,7 @@ impl ShellScene {
         );
         for conflict in &result.restore_conflicts {
             fika_log!(
-                "[fika-wgpu] trash-restore-conflict original={} trash={}",
+                "[fika] trash-restore-conflict original={} trash={}",
                 conflict.original_path.display(),
                 conflict.trash_path.display()
             );
@@ -288,7 +288,7 @@ impl ShellScene {
             self.rename_dialog = None;
             self.rubber_band = None;
             fika_log!(
-                "[fika-wgpu] trash-conflict open=1 conflicts={} changes={}",
+                "[fika] trash-conflict open=1 conflicts={} changes={}",
                 result.restore_conflicts.len(),
                 self.trash_changes
             );
@@ -313,7 +313,7 @@ impl ShellScene {
         Ok(())
     }
 
-    // Production path is async via FikaWgpuApp::move_context_target_to_trash.
+    // Production path is async via FikaApp::move_context_target_to_trash.
     #[cfg(test)]
     fn move_context_target_to_trash(
         &mut self,
@@ -355,7 +355,7 @@ impl ShellScene {
         }
         self.trash_changes += 1;
         fika_log!(
-            "[fika-wgpu] trash-conflict open=0 changes={}",
+            "[fika] trash-conflict open=0 changes={}",
             self.trash_changes
         );
         true

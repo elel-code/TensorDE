@@ -15,7 +15,7 @@ A valid reference names:
 - the Dolphin behavior or performance boundary being copied, adapted, or
   intentionally not copied;
 - the matching Fika module or code path;
-- any deliberate divergence and why it is needed for Fika's winit/wgpu shell;
+- any deliberate divergence and why it is needed for Fika's native Vulkan shell;
 - the verification command, log, benchmark, or smoke gate used for the change.
 
 If Dolphin has no direct equivalent, the change must say so explicitly and cite

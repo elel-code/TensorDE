@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::windowing::ActiveEventLoop;
 
-use crate::FikaWgpuApp;
+use crate::FikaApp;
 use crate::ui::animation::ShellAnimationKind;
 use crate::ui::pane::ShellPaneId;
 
@@ -97,7 +97,7 @@ impl From<ShellActionOutcome> for ShellActionEffect {
     }
 }
 
-impl FikaWgpuApp {
+impl FikaApp {
     pub(crate) fn apply_action_effect(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -131,7 +131,7 @@ impl FikaWgpuApp {
                 redraw_frames,
             } => self.queue_scene_change(reason, redraw_frames),
             ShellActionOutcome::Present(reason) => {
-                fika_log!("[fika-wgpu] action-outcome-present-without-event-loop reason={reason}");
+                fika_log!("[fika] action-outcome-present-without-event-loop reason={reason}");
                 self.request_main_redraw();
             }
         }

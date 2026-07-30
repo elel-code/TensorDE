@@ -7,7 +7,10 @@ fn folder_preview_thumbnail_sources(directory: &Path) -> Vec<FolderPreviewThumbn
     };
     let mime_database = MimeDatabase::shared();
     let mut candidates = Vec::new();
-    for entry in entries.flatten().take(FILE_MANAGER_FOLDER_PREVIEW_SCAN_LIMIT) {
+    for entry in entries
+        .flatten()
+        .take(FILE_MANAGER_FOLDER_PREVIEW_SCAN_LIMIT)
+    {
         let path = entry.path();
         let name = entry.file_name();
         if entry
@@ -119,7 +122,7 @@ fn thumbnail_request_from_source_request(
     request: &ThumbnailSourceRequest,
 ) -> Option<ThumbnailRequest> {
     ThumbnailRequest::from_entry_metadata_with_mime(
-        WGPU_SHELL_PANE_ID,
+        SHELL_PANE_ID,
         Generation(0),
         ItemId(0),
         request.key.path.clone(),
@@ -198,7 +201,7 @@ fn icon_emblem_kinds_for_path(path: &Path) -> Vec<IconEmblemKind> {
 
 #[cfg(unix)]
 fn path_is_readable(path: &Path, _metadata: &fs::Metadata) -> bool {
-    use rustix::fs::{access, Access};
+    use rustix::fs::{Access, access};
     access(path, Access::READ_OK).is_ok()
 }
 
@@ -221,12 +224,21 @@ fn icon_emblem_rects(paint_area: ViewRect, scale: f32) -> [ViewRect; 4] {
     } else {
         64.0
     };
-    let emblem_width = (logical_emblem_size * scale).min(paint_area.width);
-    let emblem_height = (logical_emblem_size * scale).min(paint_area.height);
-    let left = paint_area.x;
-    let top = paint_area.y;
-    let right = paint_area.right() - emblem_width;
-    let bottom = paint_area.bottom() - emblem_height;
+    // The emblem is a pixel-hinted micro-icon. Keep its destination edges on
+    // physical pixels; sampling it at a half-pixel origin softens every edge
+    // even when the selected theme asset has the correct resolution.
+    let emblem_width = (logical_emblem_size * scale)
+        .min(paint_area.width)
+        .round()
+        .max(1.0);
+    let emblem_height = (logical_emblem_size * scale)
+        .min(paint_area.height)
+        .round()
+        .max(1.0);
+    let left = paint_area.x.round();
+    let top = paint_area.y.round();
+    let right = (paint_area.right() - emblem_width).round();
+    let bottom = (paint_area.bottom() - emblem_height).round();
     [
         ViewRect {
             x: right,
@@ -322,6 +334,7 @@ struct IconFrameBuilder<'a> {
     cache_misses: usize,
     deferred: usize,
     sync_resolve_budget: usize,
+    role_updates_paused: bool,
     resolve_us: u128,
 }
 include!("icon_frame_builder/builder.rs");
@@ -333,12 +346,8 @@ fn push_icon_draw_vertices(
     slot: &IconGpuSlot,
     surface_size: PhysicalSize<u32>,
 ) {
-    let surface_width = surface_size.width.max(1) as f32;
-    let surface_height = surface_size.height.max(1) as f32;
-    let left = draw.screen.x / surface_width * 2.0 - 1.0;
-    let right = draw.screen.right() / surface_width * 2.0 - 1.0;
-    let top = 1.0 - draw.screen.y / surface_height * 2.0;
-    let bottom = 1.0 - draw.screen.bottom() / surface_height * 2.0;
+    let [left, top, right, bottom] =
+        crate::ui::render::coordinates::rect_to_vulkan_ndc(draw.screen, surface_size);
     let texture_width = slot.width.max(1) as f32;
     let texture_height = slot.height.max(1) as f32;
     let u0 = draw.source.x / texture_width;
@@ -377,10 +386,13 @@ fn pack_icon_batches(
     let mut by_slot: HashMap<u32, Vec<usize>> = HashMap::new();
     let mut slot_order: Vec<u32> = Vec::new();
     for (i, draw) in draws.iter().enumerate() {
-        by_slot.entry(draw.slot).or_insert_with(|| {
-            slot_order.push(draw.slot);
-            Vec::new()
-        }).push(i);
+        by_slot
+            .entry(draw.slot)
+            .or_insert_with(|| {
+                slot_order.push(draw.slot);
+                Vec::new()
+            })
+            .push(i);
     }
     let mut vertices = Vec::with_capacity(draws.len() * 6);
     let mut batches = Vec::with_capacity(slot_order.len());
@@ -393,12 +405,7 @@ fn pack_icon_batches(
         };
         let start = vertices.len() as u32;
         for &i in indices {
-            push_icon_draw_vertices(
-                &mut vertices,
-                &draws[i],
-                gpu_slot,
-                surface_size,
-            );
+            push_icon_draw_vertices(&mut vertices, &draws[i], gpu_slot, surface_size);
         }
         let count = vertices.len() as u32 - start;
         if count > 0 {
@@ -467,65 +474,4 @@ fn icon_slot_hash(slots: &[IconGpuSlot]) -> u64 {
         slot.height.hash(&mut hasher);
     }
     hasher.finish()
-}
-/// Resident GPU texture for one logical icon (scheme C, full GPU sample path).
-struct IconGpuTexture {
-    bind_group: wgpu::BindGroup,
-    /// Keeps the texture alive for the bind group.
-    #[allow(dead_code)]
-    texture: wgpu::Texture,
-    width: u32,
-    height: u32,
-    content_width: u32,
-    content_height: u32,
-    /// Matches last uploaded CPU content generation.
-    content_hash: u64,
-    rounding: Option<IconRounding>,
-    last_used_frame: u64,
-    /// How this texture was last filled (dmabuf import vs CPU upload).
-    #[allow(dead_code)]
-    source: crate::ui::render::dmabuf::ExternalTextureSource,
-}
-
-struct IconRenderer {
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    /// Persistent logical-key → GPU texture map (scheme C).
-    gpu_textures: HashMap<IconGpuUploadKey, IconGpuTexture>,
-    /// Approximate RGBA residency for byte-based VRAM eviction.
-    gpu_texture_bytes: usize,
-    /// Frame-local: slot index → logical cache key for draw.
-    frame_slot_keys: Vec<IconGpuUploadKey>,
-    content_batches: Vec<IconSlotBatch>,
-    overlay_batches: Vec<IconSlotBatch>,
-    vertex_buffer: wgpu::Buffer,
-    vertex_capacity: usize,
-    content_vertex_count: usize,
-    overlay_vertex_start: usize,
-    overlay_vertex_count: usize,
-    last_vertices_hash: Option<u64>,
-    gpu_frame: u64,
-    /// Negotiated compositor/GPU import plan (updated from feedback).
-    dmabuf_plan: Option<crate::ui::render::dmabuf::DmabufImportPlan>,
-    /// Adapter supports Vulkan DMA-BUF import feature.
-    dmabuf_import_supported: bool,
-    /// Lifetime stats (reset never; useful for logs).
-    dmabuf_imports: u64,
-    gpu_source_renderer: Option<GpuIconSourceRenderer>,
-    engine: IconEngine,
-}
-
-impl std::ops::Deref for IconRenderer {
-    type Target = IconEngine;
-
-    fn deref(&self) -> &Self::Target {
-        &self.engine
-    }
-}
-
-impl std::ops::DerefMut for IconRenderer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.engine
-    }
 }

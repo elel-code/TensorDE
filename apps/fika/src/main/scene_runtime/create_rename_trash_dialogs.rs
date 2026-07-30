@@ -2,7 +2,7 @@ impl ShellScene {
 
     fn set_rename_dialog_error(&mut self, error: String) -> bool {
         let Some(dialog) = self.rename_dialog.as_mut() else {
-            fika_log!("[fika-wgpu] rename-error {error}");
+            fika_log!("[fika] rename-error {error}");
             return false;
         };
         let already = dialog.error.as_ref() == Some(&error) && !dialog.busy;
@@ -37,7 +37,7 @@ impl ShellScene {
             return false;
         }
         self.rename_changes += 1;
-        fika_log!("[fika-wgpu] rename open=0 changes={}", self.rename_changes);
+        fika_log!("[fika] rename open=0 changes={}", self.rename_changes);
         true
     }
 
@@ -47,7 +47,7 @@ impl ShellScene {
         }
         self.rename_changes += 1;
         fika_log!(
-            "[fika-wgpu] rename source={} target={} dir={} privileged={} changes={}",
+            "[fika] rename source={} target={} dir={} privileged={} changes={}",
             request.source.display(),
             request.target.display(),
             request.is_dir as u8,
@@ -81,14 +81,14 @@ impl ShellScene {
     fn log_rename_dialog_state(&self) {
         match self.rename_dialog.as_ref() {
             Some(dialog) => fika_log!(
-                "[fika-wgpu] rename open=1 source={} name={:?} privileged={} error={:?} changes={}",
+                "[fika] rename open=1 source={} name={:?} privileged={} error={:?} changes={}",
                 dialog.source.display(),
                 dialog.name,
                 dialog.privileged as u8,
                 dialog.error,
                 self.rename_changes
             ),
-            None => fika_log!("[fika-wgpu] rename open=0 changes={}", self.rename_changes),
+            None => fika_log!("[fika] rename open=0 changes={}", self.rename_changes),
         }
     }
 
