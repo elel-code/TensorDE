@@ -556,6 +556,55 @@ fn active_zoom_scales_small_resident_thumbnail_without_requesting_an_upgrade() {
 }
 
 #[test]
+fn active_zoom_restores_completed_thumbnail_after_gpu_eviction_without_new_request() {
+    let directory = PathBuf::from("/tmp");
+    let path = directory.join("ready.png");
+    let modified_secs = 17;
+    let gpu_key = IconGpuUploadKey::content(path.clone(), modified_secs);
+    let source = IconGpuSource::file(PathBuf::from("/thumbnail-cache/ready.png"), 128);
+    let mut resolver = FileIconResolver::new();
+    let mut thumbnails = ThumbnailSourceResolver::new();
+    thumbnails.insert_ready(
+        ThumbnailSourceKey::thumbnail(path, 128, modified_secs),
+        source.clone(),
+    );
+    let entry =
+        test_entry_with_mime_and_modified("ready.png", false, "image/png", Some(modified_secs));
+    let mut config = IconFrameConfig::new(PhysicalSize::new(256, 192), 1.0, 0);
+    config.role_updates_paused = true;
+    config.icon_size_update_pending = true;
+    let mut builder = IconFrameBuilder::new(
+        IconFrameResources::new(&mut resolver, &mut thumbnails, IconGpuResidentIndex::default()),
+        config,
+    );
+
+    assert!(builder.push_thumbnail(
+        &directory,
+        &entry,
+        ViewRect {
+            x: 8.0,
+            y: 8.0,
+            width: 96.0,
+            height: 96.0,
+        },
+        ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 256.0,
+            height: 192.0,
+        },
+        IconDrawLayer::Content,
+    ));
+
+    let frame = builder.finish();
+    assert!(thumbnails.pending.is_empty());
+    assert_eq!(frame.slots.len(), 1);
+    assert_eq!(frame.slots[0].identity, gpu_key);
+    assert_eq!(frame.slots[0].source, Some(source));
+    assert_eq!(frame.stats.thumbnail_quads, 1);
+}
+
+#[test]
 fn active_zoom_reuses_exact_size_resident_emblem() {
     let gpu_key = IconGpuUploadKey::named_asset("emblem-readonly".to_string(), 32);
     let resident = IconGpuResidentIndex {

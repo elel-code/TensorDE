@@ -93,6 +93,25 @@ impl ThumbnailSourceResolver {
         Some(entry.source.clone())
     }
 
+    /// Reuses only an already-completed preview without draining worker
+    /// results or starting a new request. Dolphin keeps the model's current
+    /// `iconPixmap` while its icon-size updater is paused and scales that
+    /// pixmap in the visible widget.
+    fn cached_or_closest_ready(
+        &mut self,
+        path: &Path,
+        modified_secs: u64,
+        size_px: u16,
+    ) -> Option<IconGpuSource> {
+        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
+        if let Some(entry) = self.ready.get_mut(&key) {
+            self.ready_frame = self.ready_frame.wrapping_add(1);
+            entry.last_used_frame = self.ready_frame;
+            return Some(entry.source.clone());
+        }
+        self.take_closest_ready(path, modified_secs, size_px)
+    }
+
     fn queue_deferred(
         &mut self,
         path: &Path,

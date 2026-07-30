@@ -363,8 +363,18 @@ impl<'a> IconFrameBuilder<'a> {
         }
         // Dolphin keeps the current iconPixmap while its 300 ms icon-size
         // timer is active. Do not start an exact-size thumbnail job mid-zoom:
-        // a newly visible item uses its stable MIME icon until settling.
+        // reuse a completed preview even if its GPU texture was evicted while
+        // the item moved out of view; only a genuinely new item uses its
+        // stable MIME icon until settling.
         if self.role_updates_paused {
+            if let Some(source) =
+                self.thumbnails
+                    .cached_or_closest_ready(&path, modified_secs, size_px)
+            {
+                self.push_gpu_source_draw(gpu_key, source, rect, screen, layer);
+                self.thumbnail_quads += 1;
+                return true;
+            }
             return false;
         }
         if let Some(resident) = self.gpu_resident.get(&gpu_key) {
