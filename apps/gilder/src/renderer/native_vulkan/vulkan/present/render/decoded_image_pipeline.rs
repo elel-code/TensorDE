@@ -8,17 +8,19 @@ use vulkanalia::vk::{
 
 #[path = "decoded_image_pipeline/frame_present.rs"]
 mod frame_present;
+#[path = "decoded_image_pipeline/pipeline_creation.rs"]
+mod pipeline_creation;
 
 pub(in crate::renderer::native_vulkan::vulkan) use frame_present::*;
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) use pipeline_creation::*;
 
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
-    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 pub(in crate::renderer::native_vulkan::vulkan) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
 pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::VulkanaliaDecodedImagePresentSamplerResources;
@@ -33,7 +35,6 @@ const FFMPEG_VULKAN_DECODE_REFERENCE: &str = "references/gilder/ffmpeg/libavcode
 
 pub(in crate::renderer::native_vulkan::vulkan) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 0;
 const DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES: u32 = 20;
-const DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES: u32 = 8;
 
 #[derive(Clone, Copy)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerDrawCommand {
@@ -67,7 +68,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub target_format: String,
     pub extent: (u32, u32),
     pub shader_modules_created: bool,
-    pub pipeline_layout_created: bool,
+    pub pipeline_layout_null: bool,
     pub pipeline_created: bool,
     pub render_pass_compatibility: &'static str,
     pub primitive_topology: &'static str,
@@ -75,7 +76,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub fragment_shader_model: &'static str,
     pub descriptor_heap_only: bool,
     pub descriptor_model: &'static str,
-    pub descriptor_heap_mapping_enabled: bool,
+    pub native_descriptor_push_enabled: bool,
     pub descriptor_heap_plane_sampler_enabled: bool,
     pub descriptor_heap_pipeline_flag_enabled: bool,
     pub uses_pipeline_rendering_create_info: bool,
@@ -86,16 +87,16 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePresentPipelineResources
 {
-    pub(in crate::renderer::native_vulkan::vulkan) pipeline_layout: vk::PipelineLayout,
     pub(in crate::renderer::native_vulkan::vulkan) pipeline: vk::Pipeline,
+    descriptor_push: Vec<u8>,
     scene_video_layer: VulkanaliaDecodedImageSceneVideoLayerPipelineResources,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
 }
 
 struct VulkanaliaDecodedImageSceneVideoLayerPipelineResources {
-    pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    descriptor_push: Vec<u8>,
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePresentFrameResources {
@@ -311,442 +312,6 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
     pub ffmpeg_reference: &'static str,
-}
-
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-) -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
-    if extent.width == 0 || extent.height == 0 {
-        return Err("decoded image present pipeline requires non-zero extent".to_owned());
-    }
-    if !descriptor_heap_plan.backend_ready {
-        return Err(format!(
-            "decoded image present pipeline requires a ready VK_EXT_descriptor_heap plan: {:?}",
-            descriptor_heap_plan.blocking_reason
-        ));
-    }
-
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder();
-    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
-        .map_err(|err| {
-            format!("vkCreatePipelineLayout(vulkanalia decoded present dynamic rendering): {err:?}")
-        })?;
-
-    let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
-        let vertex_module = native_vulkan_vulkanalia_create_shader_module(
-            device,
-            &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV,
-            "decoded present vertex",
-        )?;
-        let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
-            let fragment_module = native_vulkan_vulkanalia_create_shader_module(
-                device,
-                &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV,
-                "decoded present fragment",
-            )?;
-            let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
-                let shader_entry = b"main\0";
-                let descriptor_heap_mapping_enabled = true;
-                let descriptor_heap_plane_sampler_enabled = true;
-                let y_descriptor_heap_mapping =
-                    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
-                        descriptor_heap_plan,
-                        0,
-                        0,
-                    )?;
-                let uv_descriptor_heap_mapping =
-                    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
-                        descriptor_heap_plan,
-                        1,
-                        1,
-                    )?;
-                let descriptor_heap_mappings =
-                    [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
-                let mut descriptor_heap_mapping_info =
-                    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
-                        &descriptor_heap_mappings,
-                    )?;
-                let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
-                    .stage(vk::ShaderStageFlags::FRAGMENT)
-                    .module(fragment_module)
-                    .name(shader_entry);
-                let fragment_stage = if descriptor_heap_mapping_enabled {
-                    let mut fragment_stage = fragment_stage_builder.build();
-                    fragment_stage.next =
-                        &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
-                    fragment_stage
-                } else {
-                    fragment_stage_builder.build()
-                };
-                let stages = [
-                    vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::VERTEX)
-                        .module(vertex_module)
-                        .name(shader_entry)
-                        .build(),
-                    fragment_stage,
-                ];
-                let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
-                let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                    .build();
-                let viewport = vk::Viewport::builder()
-                    .x(0.0)
-                    .y(0.0)
-                    .width(extent.width as f32)
-                    .height(extent.height as f32)
-                    .min_depth(0.0)
-                    .max_depth(1.0)
-                    .build();
-                let scissor = vk::Rect2D::builder()
-                    .offset(vk::Offset2D { x: 0, y: 0 })
-                    .extent(extent)
-                    .build();
-                let viewports = [viewport];
-                let scissors = [scissor];
-                let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-                    .viewports(&viewports)
-                    .scissors(&scissors)
-                    .build();
-                let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-                    .polygon_mode(vk::PolygonMode::FILL)
-                    .cull_mode(vk::CullModeFlags::NONE)
-                    .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                    .line_width(1.0)
-                    .build();
-                let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-                    .rasterization_samples(vk::SampleCountFlags::_1)
-                    .build();
-                let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
-                    .color_write_mask(
-                        vk::ColorComponentFlags::R
-                            | vk::ColorComponentFlags::G
-                            | vk::ColorComponentFlags::B
-                            | vk::ColorComponentFlags::A,
-                    )
-                    .blend_enable(false)
-                    .build();
-                let color_attachments = [color_attachment];
-                let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-                    .attachments(&color_attachments)
-                    .build();
-                let color_attachment_formats = [target_format];
-                let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-                    .color_attachment_formats(&color_attachment_formats)
-                    .build();
-                let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
-                    .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-                    .build();
-                let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-                    .stages(&stages)
-                    .vertex_input_state(&vertex_input)
-                    .input_assembly_state(&input_assembly)
-                    .viewport_state(&viewport_state)
-                    .rasterization_state(&rasterization)
-                    .multisample_state(&multisample)
-                    .color_blend_state(&color_blend)
-                    // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT requires layout to be
-                    // VK_NULL_HANDLE (VUID-VkGraphicsPipelineCreateInfo-flags-11311); the
-                    // descriptor bindings come from the pushed mapping info, not a layout.
-                    .layout(vk::PipelineLayout::null())
-                    .render_pass(vk::RenderPass::null())
-                    .subpass(0)
-                    .push_next(&mut rendering_info);
-                if descriptor_heap_mapping_enabled {
-                    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
-                }
-                let pipeline_info = pipeline_info.build();
-                let (pipelines, _success_code) = unsafe {
-                    device.create_graphics_pipelines(
-                        vk::PipelineCache::null(),
-                        &[pipeline_info],
-                        None,
-                    )
-                }
-                .map_err(|err| {
-                    format!(
-                        "vkCreateGraphicsPipelines(vulkanalia decoded present dynamic rendering): {err:?}"
-                    )
-                })?;
-                let pipeline = pipelines[0];
-                let scene_video_layer =
-                    match native_vulkan_vulkanalia_create_decoded_image_scene_video_layer_pipeline_resources(
-                        device,
-                        target_format,
-                        extent,
-                        descriptor_heap_plan,
-                    ) {
-                        Ok(resources) => resources,
-                        Err(err) => {
-                            unsafe {
-                                device.destroy_pipeline(pipeline, None);
-                            }
-                            return Err(err);
-                        }
-                    };
-                Ok(VulkanaliaDecodedImagePresentPipelineResources {
-                    pipeline_layout,
-                    pipeline,
-                    scene_video_layer,
-                    snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
-                        binding: "vulkanalia",
-                        route: "decoded-image-dynamic-rendering-present-pipeline",
-                        target_format: format!("{target_format:?}"),
-                        extent: (extent.width, extent.height),
-                        shader_modules_created: true,
-                        pipeline_layout_created: true,
-                        pipeline_created: true,
-                        render_pass_compatibility: "dynamic-rendering-no-render-pass",
-                        primitive_topology: "fullscreen-triangle",
-                        vertex_shader_model: "gl_VertexIndex fullscreen triangle",
-                        fragment_shader_model: "two retained plane sampler2DArray descriptors with instance-index layer selection",
-                        descriptor_heap_only: true,
-                        descriptor_model: "VK_EXT_descriptor_heap",
-                        descriptor_heap_mapping_enabled,
-                        descriptor_heap_plane_sampler_enabled,
-                        descriptor_heap_pipeline_flag_enabled: true,
-                        uses_pipeline_rendering_create_info: true,
-                        uses_dynamic_rendering: true,
-                        uses_plane_sampler_descriptors: true,
-                        ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
-                    },
-                })
-            })();
-            unsafe {
-                device.destroy_shader_module(fragment_module, None);
-            }
-            result
-        })();
-        unsafe {
-            device.destroy_shader_module(vertex_module, None);
-        }
-        result
-    })();
-
-    if result.is_err() {
-        unsafe {
-            device.destroy_pipeline_layout(pipeline_layout, None);
-        }
-    }
-    result
-}
-
-fn native_vulkan_vulkanalia_create_decoded_image_scene_video_layer_pipeline_resources(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-) -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
-    let push_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
-        .offset(0)
-        .size(DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES)
-        .build();
-    let push_ranges = [push_range];
-    let pipeline_layout_info =
-        vk::PipelineLayoutCreateInfo::builder().push_constant_ranges(&push_ranges);
-    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
-        .map_err(|err| {
-            format!("vkCreatePipelineLayout(vulkanalia decoded scene video layer): {err:?}")
-        })?;
-
-    let result = (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
-        let vertex_module = native_vulkan_vulkanalia_create_shader_module(
-            device,
-            &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV,
-            "decoded scene video layer vertex",
-        )?;
-        let result =
-            (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
-                let fragment_module = native_vulkan_vulkanalia_create_shader_module(
-                    device,
-                    &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV,
-                    "decoded scene video layer fragment",
-                )?;
-                let result =
-                (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
-                    let shader_entry = b"main\0";
-                    let y_descriptor_heap_mapping =
-                        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
-                            descriptor_heap_plan,
-                            0,
-                            0,
-                        )?;
-                    let uv_descriptor_heap_mapping =
-                        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
-                            descriptor_heap_plan,
-                            1,
-                            1,
-                        )?;
-                    let descriptor_heap_mappings =
-                        [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
-                    let mut descriptor_heap_mapping_info =
-                        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
-                            &descriptor_heap_mappings,
-                        )?;
-                    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::FRAGMENT)
-                        .module(fragment_module)
-                        .name(shader_entry)
-                        .build();
-                    fragment_stage.next = &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
-                    let stages = [
-                        vk::PipelineShaderStageCreateInfo::builder()
-                            .stage(vk::ShaderStageFlags::VERTEX)
-                            .module(vertex_module)
-                            .name(shader_entry)
-                            .build(),
-                        fragment_stage,
-                    ];
-                    let binding = vk::VertexInputBindingDescription::builder()
-                        .binding(0)
-                        .stride(DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES)
-                        .input_rate(vk::VertexInputRate::VERTEX)
-                        .build();
-                    let attributes = [
-                        vk::VertexInputAttributeDescription::builder()
-                            .location(0)
-                            .binding(0)
-                            .format(vk::Format::R32G32_SFLOAT)
-                            .offset(0)
-                            .build(),
-                        vk::VertexInputAttributeDescription::builder()
-                            .location(1)
-                            .binding(0)
-                            .format(vk::Format::R32G32_SFLOAT)
-                            .offset(8)
-                            .build(),
-                        vk::VertexInputAttributeDescription::builder()
-                            .location(2)
-                            .binding(0)
-                            .format(vk::Format::R32_SFLOAT)
-                            .offset(16)
-                            .build(),
-                    ];
-                    let bindings = [binding];
-                    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_binding_descriptions(&bindings)
-                        .vertex_attribute_descriptions(&attributes)
-                        .build();
-                    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .build();
-                    let viewport = vk::Viewport::builder()
-                        .x(0.0)
-                        .y(0.0)
-                        .width(extent.width as f32)
-                        .height(extent.height as f32)
-                        .min_depth(0.0)
-                        .max_depth(1.0)
-                        .build();
-                    let scissor = vk::Rect2D::builder()
-                        .offset(vk::Offset2D { x: 0, y: 0 })
-                        .extent(extent)
-                        .build();
-                    let viewports = [viewport];
-                    let scissors = [scissor];
-                    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-                        .viewports(&viewports)
-                        .scissors(&scissors)
-                        .build();
-                    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .cull_mode(vk::CullModeFlags::NONE)
-                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                        .line_width(1.0)
-                        .build();
-                    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(vk::SampleCountFlags::_1)
-                        .build();
-                    let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
-                        .color_write_mask(
-                            vk::ColorComponentFlags::R
-                                | vk::ColorComponentFlags::G
-                                | vk::ColorComponentFlags::B
-                                | vk::ColorComponentFlags::A,
-                        )
-                        .blend_enable(true)
-                        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                        .color_blend_op(vk::BlendOp::ADD)
-                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                        .alpha_blend_op(vk::BlendOp::ADD)
-                        .build();
-                    let color_attachments = [color_attachment];
-                    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&color_attachments)
-                        .build();
-                    let color_attachment_formats = [target_format];
-                    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-                        .color_attachment_formats(&color_attachment_formats)
-                        .build();
-                    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
-                        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-                        .build();
-                    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-                        .stages(&stages)
-                        .vertex_input_state(&vertex_input)
-                        .input_assembly_state(&input_assembly)
-                        .viewport_state(&viewport_state)
-                        .rasterization_state(&rasterization)
-                        .multisample_state(&multisample)
-                        .color_blend_state(&color_blend)
-                        .layout(pipeline_layout)
-                        .render_pass(vk::RenderPass::null())
-                        .subpass(0)
-                        .push_next(&mut rendering_info);
-                    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
-                    let pipeline_info = pipeline_info.build();
-                    let (pipelines, _success_code) = unsafe {
-                        device.create_graphics_pipelines(
-                            vk::PipelineCache::null(),
-                            &[pipeline_info],
-                            None,
-                        )
-                    }
-                    .map_err(|err| {
-                        format!(
-                            "vkCreateGraphicsPipelines(vulkanalia decoded scene video layer): {err:?}"
-                        )
-                    })?;
-                    Ok(VulkanaliaDecodedImageSceneVideoLayerPipelineResources {
-                        pipeline_layout,
-                        pipeline: pipelines[0],
-                    })
-                })();
-                unsafe {
-                    device.destroy_shader_module(fragment_module, None);
-                }
-                result
-            })();
-        unsafe {
-            device.destroy_shader_module(vertex_module, None);
-        }
-        result
-    })();
-
-    if result.is_err() {
-        unsafe {
-            device.destroy_pipeline_layout(pipeline_layout, None);
-        }
-    }
-    result
-}
-
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
-    device: &Device,
-    resources: VulkanaliaDecodedImagePresentPipelineResources,
-) {
-    unsafe {
-        device.destroy_pipeline(resources.scene_video_layer.pipeline, None);
-        device.destroy_pipeline_layout(resources.scene_video_layer.pipeline_layout, None);
-        device.destroy_pipeline(resources.pipeline, None);
-        device.destroy_pipeline_layout(resources.pipeline_layout, None);
-    }
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resources(

@@ -8,6 +8,8 @@ mod native_video;
 mod scene_shader;
 #[path = "build/system_audio_monitor.rs"]
 mod system_audio_monitor;
+#[path = "build/video_present_shader.rs"]
+mod video_present_shader;
 
 use scene_shader::{
     SceneShaderFamily, SceneShaderSpec, effect_fragment_source, effect_vertex_source,
@@ -19,6 +21,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build/scene_shader");
     println!("cargo:rerun-if-changed=build/native_video.rs");
     println!("cargo:rerun-if-changed=build/system_audio_monitor.rs");
+    println!("cargo:rerun-if-changed=build/video_present_shader.rs");
+    println!("cargo:rerun-if-changed=shaders/video_present");
     println!("cargo:rerun-if-changed=src/renderer/native_vulkan/video/demux_ffmpeg_shim.c");
     println!(
         "cargo:rerun-if-changed=src/renderer/native_vulkan/audio/system_monitor/pipewire_monitor.c"
@@ -32,6 +36,7 @@ fn main() {
 
     if env::var_os("CARGO_FEATURE_NATIVE_VULKAN_RENDERER").is_some() {
         scene_shader::build_scene_shader_catalog();
+        video_present_shader::build_video_present_shaders();
         system_audio_monitor::build_system_audio_monitor();
     }
 
