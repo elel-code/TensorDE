@@ -251,6 +251,7 @@ fn next_allocator_id() -> Result<u64, DescriptorHeapError> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescriptorHeapError {
     InvalidAlignment(u64),
+    InvalidDescriptorLayout,
     ZeroSize,
     RangeOverflow,
     WrongHeapKind,
@@ -525,14 +526,30 @@ impl DescriptorHeap {
         &self,
         descriptor_type: HeapDescriptorType,
     ) -> std::result::Result<DescriptorAllocation, DescriptorHeapError> {
-        let (size, alignment, expected_heap) = self.descriptor_layout(descriptor_type);
+        let (_, alignment, expected_heap) = self.descriptor_layout(descriptor_type);
         if self.kind != expected_heap {
             return Err(DescriptorHeapError::WrongHeapKind);
         }
+        let (allocation_size, allocation_alignment) = match expected_heap {
+            DescriptorHeapKind::Resource => (
+                self.limits
+                    .unified_resource_descriptor_stride()
+                    .ok_or(DescriptorHeapError::InvalidDescriptorLayout)?,
+                self.limits
+                    .image_descriptor_alignment
+                    .max(self.limits.buffer_descriptor_alignment),
+            ),
+            DescriptorHeapKind::Sampler => (
+                self.limits
+                    .sampler_descriptor_stride()
+                    .ok_or(DescriptorHeapError::InvalidDescriptorLayout)?,
+                alignment,
+            ),
+        };
         self.allocator
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .allocate(size, alignment)
+            .allocate(allocation_size, allocation_alignment)
     }
 
     pub fn retire(
@@ -633,6 +650,19 @@ mod tests {
     use crate::FrameClock;
 
     use super::*;
+
+    #[test]
+    fn resource_heap_uses_slang_unified_image_buffer_stride() {
+        let limits = DescriptorHeapLimits {
+            image_descriptor_size: 32,
+            image_descriptor_alignment: 8,
+            buffer_descriptor_size: 16,
+            buffer_descriptor_alignment: 16,
+            ..DescriptorHeapLimits::default()
+        };
+
+        assert_eq!(limits.unified_resource_descriptor_stride(), Some(32));
+    }
 
     #[test]
     fn reserved_suffix_and_descriptor_alignment_are_never_violated() {

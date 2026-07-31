@@ -403,18 +403,49 @@ impl DescriptorHeapLimits {
         }
     }
 
+    /// Exact resource-array stride emitted by Slang's
+    /// `-spirv-unified-descriptor-heap-stride` ABI.
+    ///
+    /// `VK_EXT_descriptor_heap` requires descriptor sizes to be powers of two
+    /// and each descriptor alignment to be a power of two no larger than its
+    /// matching size. Under those requirements the larger descriptor size is
+    /// aligned for both image and buffer descriptors without host-side
+    /// rounding that would diverge from SPIR-V `ArrayStride`.
+    pub const fn unified_resource_descriptor_stride(self) -> Option<u64> {
+        if !descriptor_layout_is_valid(self.image_descriptor_size, self.image_descriptor_alignment)
+            || !descriptor_layout_is_valid(
+                self.buffer_descriptor_size,
+                self.buffer_descriptor_alignment,
+            )
+        {
+            return None;
+        }
+        Some(max_u64(
+            self.image_descriptor_size,
+            self.buffer_descriptor_size,
+        ))
+    }
+
+    /// Exact sampler-array stride emitted by Slang's descriptor-heap ABI.
+    pub const fn sampler_descriptor_stride(self) -> Option<u64> {
+        if descriptor_layout_is_valid(
+            self.sampler_descriptor_size,
+            self.sampler_descriptor_alignment,
+        ) {
+            Some(self.sampler_descriptor_size)
+        } else {
+            None
+        }
+    }
+
     /// Whether the advertised heap can hold real descriptors after the
     /// implementation-reserved ranges while obeying every power-of-two
     /// alignment constraint.
     pub const fn is_usable(self) -> bool {
         self.sampler_heap_alignment.is_power_of_two()
             && self.resource_heap_alignment.is_power_of_two()
-            && self.sampler_descriptor_alignment.is_power_of_two()
-            && self.image_descriptor_alignment.is_power_of_two()
-            && self.buffer_descriptor_alignment.is_power_of_two()
-            && self.sampler_descriptor_size > 0
-            && self.image_descriptor_size > 0
-            && self.buffer_descriptor_size > 0
+            && self.sampler_descriptor_stride().is_some()
+            && self.unified_resource_descriptor_stride().is_some()
             && self.max_push_data_size > 0
             && self.max_embedded_samplers > 0
             && range_has_payload(
@@ -497,6 +528,10 @@ impl DescriptorHeapLimits {
     }
 }
 
+const fn descriptor_layout_is_valid(size: u64, alignment: u64) -> bool {
+    size.is_power_of_two() && alignment.is_power_of_two() && alignment <= size
+}
+
 const fn max_u64(left: u64, right: u64) -> u64 {
     if left > right { left } else { right }
 }
@@ -558,6 +593,8 @@ mod tests {
             max_embedded_samplers: 1,
         };
         assert!(usable.is_usable());
+        assert_eq!(usable.unified_resource_descriptor_stride(), Some(32));
+        assert_eq!(usable.sampler_descriptor_stride(), Some(32));
         assert!(
             !DescriptorHeapLimits {
                 max_resource_heap_size: 128,
@@ -571,6 +608,24 @@ mod tests {
                 ..usable
             }
             .is_usable()
+        );
+        assert!(
+            !DescriptorHeapLimits {
+                image_descriptor_size: 24,
+                ..usable
+            }
+            .is_usable()
+        );
+        assert_eq!(
+            DescriptorHeapLimits {
+                image_descriptor_size: 32,
+                image_descriptor_alignment: 8,
+                buffer_descriptor_size: 16,
+                buffer_descriptor_alignment: 16,
+                ..usable
+            }
+            .unified_resource_descriptor_stride(),
+            Some(32)
         );
     }
 }

@@ -204,10 +204,7 @@ impl SlangCompiler {
             let output_position = arguments.len() - 2;
             arguments.splice(
                 output_position..output_position,
-                [
-                    OsString::from("-capability"),
-                    OsString::from("spvDescriptorHeapEXT"),
-                ],
+                native_descriptor_heap_arguments(),
             );
         }
         run(&self.slangc, arguments).map(|_| ())
@@ -266,6 +263,14 @@ fn validate_word_length(bytes: &[u8]) -> Result<()> {
             bytes.len()
         )))
     }
+}
+
+fn native_descriptor_heap_arguments() -> [OsString; 3] {
+    [
+        OsString::from("-capability"),
+        OsString::from("spvDescriptorHeapEXT"),
+        OsString::from("-spirv-unified-descriptor-heap-stride"),
+    ]
 }
 
 fn validate_descriptor_contract(bytes: &[u8], contract: ShaderContract) -> Result<()> {
@@ -384,6 +389,18 @@ mod tests {
         ]);
         validate_descriptor_contract(&bytes, ShaderContract::descriptor_heap(16)).unwrap();
         assert!(validate_descriptor_contract(&bytes, ShaderContract::descriptor_free(16)).is_err());
+    }
+
+    #[test]
+    fn descriptor_heap_contract_uses_one_resource_array_stride() {
+        assert_eq!(
+            native_descriptor_heap_arguments(),
+            [
+                OsString::from("-capability"),
+                OsString::from("spvDescriptorHeapEXT"),
+                OsString::from("-spirv-unified-descriptor-heap-stride"),
+            ]
+        );
     }
 
     #[test]

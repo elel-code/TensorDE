@@ -429,9 +429,16 @@ default frame path.
    length MUST be four-byte aligned, non-empty, overflow checked, and bounded
    by the adapter's `maxPushDataSize`.
 11. Descriptor-bearing Slang MUST be compiled with the
-    `spvDescriptorHeapEXT` capability. Its SPIR-V MUST declare
+    `spvDescriptorHeapEXT` capability and
+    `-spirv-unified-descriptor-heap-stride`. Its SPIR-V MUST declare
     `DescriptorHeapEXT` and `SPV_EXT_descriptor_heap` and MUST NOT contain
-    `Binding` or `DescriptorSet` decorations. Descriptor-free stages MUST NOT
+    `Binding` or `DescriptorSet` decorations. Every resource descriptor heap
+    allocation and pushed resource index MUST use exactly
+    `max(imageDescriptorSize, bufferDescriptorSize)` as emitted by Slang;
+    host-side alignment rounding MUST NOT change that SPIR-V `ArrayStride`.
+    The Vulkan-required power-of-two sizes and no-larger power-of-two
+    alignments make that stride valid for both descriptor kinds. Sampler heaps
+    retain exactly `samplerDescriptorSize`. Descriptor-free stages MUST NOT
     declare the heap extension.
 
 ## Linux dma-buf and explicit sync

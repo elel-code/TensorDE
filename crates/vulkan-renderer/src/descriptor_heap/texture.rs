@@ -297,8 +297,9 @@ impl SampledTextureHeapOffsets {
 /// Descriptor element indices for direct descriptor-heap shader access.
 ///
 /// `SPV_EXT_descriptor_heap` shaders (e.g. Slang `DescriptorHandle<T>`) index
-/// the heap builtins as runtime arrays strided by the driver's descriptor
-/// size, so these are element indices, not the byte offsets of
+/// resource heap builtins through TensorDE's unified image/buffer stride and
+/// sampler heap builtins through the sampler stride, so these are element
+/// indices, not the byte offsets of
 /// [`SampledTextureHeapOffsets`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SampledTextureHeapIndices {
@@ -320,24 +321,12 @@ impl SampledTextureHeapIndices {
 /// Converts a descriptor byte offset into the element index used by direct
 /// descriptor-heap shader access.
 ///
-/// Heap builtins are runtime arrays strided by the driver-reported descriptor
-/// size, so an offset is addressable only when it is size-strided. Descriptor
-/// sizes and alignments are powers of two in practice, which keeps every
-/// same-type allocation on a size boundary.
-fn shader_heap_element_index(offset: u64, size: u64, label: &str) -> Result<u32> {
-    if size == 0 {
-        return Err(Error::Validation(format!(
-            "{label} descriptor size is zero"
-        )));
-    }
-    if !offset.is_multiple_of(size) {
-        return Err(Error::Validation(format!(
-            "{label} descriptor offset {offset} is not a multiple of its descriptor size {size}; \
-             direct descriptor-heap indexing requires size-strided allocations"
-        )));
-    }
-    u32::try_from(offset / size)
-        .map_err(|_| Error::Validation(format!("{label} descriptor heap index exceeds u32")))
+/// The allocation size is the compiler ABI stride, while descriptor writes
+/// continue to use the exact driver-reported descriptor byte size.
+fn shader_heap_element_index(offset: u64, stride: u64, label: &str) -> Result<u32> {
+    super::descriptor_heap_element_index(offset, stride).map_err(|error| {
+        Error::Validation(format!("resolve {label} descriptor heap index: {error}"))
+    })
 }
 
 /// One sampled-image descriptor allocation in a resource heap.
@@ -431,8 +420,8 @@ impl SampledImageBinding {
     /// access.
     ///
     /// `SPV_EXT_descriptor_heap` shaders (e.g. Slang `DescriptorHandle<T>`)
-    /// index the heap builtins as runtime arrays whose stride is the driver's
-    /// descriptor size, so the pushed value is an element index rather than
+    /// index the resource heap builtins with the compiler's unified resource
+    /// stride, so the pushed value is an element index rather than
     /// the byte offset used by [`Self::push_index_heap_offset`].
     pub fn shader_heap_index(&self) -> Result<u32> {
         shader_heap_element_index(self.image.offset(), self.image.size(), "sampled-image")

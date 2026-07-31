@@ -33,7 +33,10 @@ validated for the Vulkan 1.4 target environment.
 The `descriptor-heap` contract requests Slang's `spvDescriptorHeapEXT`
 capability, requires `OpCapability DescriptorHeapEXT` and
 `SPV_EXT_descriptor_heap`, and rejects every `Binding` or `DescriptorSet`
-decoration. The `descriptor-free` contract rejects those decorations and the
-heap extension alike. Both contracts reject reflected descriptor-table slots;
-the native heap contract accepts only push data plus direct resource-heap
-access.
+decoration. It also enables `-spirv-unified-descriptor-heap-stride`, so every
+resource handle uses exactly `max(imageDescriptorSize, bufferDescriptorSize)`;
+runtimes must pack resource heaps with that same stride, while sampler heaps
+retain `samplerDescriptorSize`. The `descriptor-free` contract rejects those
+decorations and the heap extension alike. Both contracts reject reflected
+descriptor-table slots; the native heap contract accepts only push data plus
+direct resource-heap access.

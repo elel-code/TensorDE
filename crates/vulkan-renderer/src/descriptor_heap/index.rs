@@ -3,22 +3,24 @@ use crate::{Error, Result};
 /// Converts a descriptor byte offset into the element index consumed by
 /// `SPV_EXT_descriptor_heap` direct heap access.
 ///
-/// `DescriptorHandle<T>` indexes a runtime array whose stride is the
-/// driver-reported size of `T`'s descriptor. Byte offsets used by mapped
-/// set/binding shaders therefore must not be passed to a native heap shader.
-pub fn descriptor_heap_element_index(byte_offset: u64, descriptor_size: u64) -> Result<u32> {
-    if descriptor_size == 0 {
+/// `DescriptorHandle<T>` indexes a runtime array whose stride is fixed by the
+/// shader compiler contract. TensorDE compiles resource heaps with Slang's
+/// unified descriptor-heap stride, while sampler heaps retain the sampler
+/// descriptor stride. Byte offsets must therefore be divided by the matching
+/// heap ABI stride, never by a descriptor kind inferred at the call site.
+pub fn descriptor_heap_element_index(byte_offset: u64, element_stride: u64) -> Result<u32> {
+    if element_stride == 0 {
         return Err(Error::Validation(
-            "descriptor heap element size is zero".into(),
+            "descriptor heap element stride is zero".into(),
         ));
     }
-    if !byte_offset.is_multiple_of(descriptor_size) {
+    if !byte_offset.is_multiple_of(element_stride) {
         return Err(Error::Validation(format!(
-            "descriptor heap byte offset {byte_offset} is not a multiple of descriptor size \
-             {descriptor_size}"
+            "descriptor heap byte offset {byte_offset} is not a multiple of element stride \
+             {element_stride}"
         )));
     }
-    u32::try_from(byte_offset / descriptor_size)
+    u32::try_from(byte_offset / element_stride)
         .map_err(|_| Error::Validation("descriptor heap element index exceeds u32".into()))
 }
 

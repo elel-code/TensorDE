@@ -399,26 +399,19 @@ impl Backend {
         sampler: SamplerDescriptor,
     ) -> Result<OffscreenSampledBindings> {
         let limits = self.device_info().limits.descriptor_heap;
-        let resource_stride = aligned_stride(
-            limits.image_descriptor_size,
-            limits.image_descriptor_alignment,
-        )
-        .max(aligned_stride(
-            limits.buffer_descriptor_size,
-            limits.buffer_descriptor_alignment,
-        ));
-        let sampler_stride = aligned_stride(
-            limits.sampler_descriptor_size,
-            limits.sampler_descriptor_alignment,
-        );
+        let resource_stride = limits.unified_resource_descriptor_stride().ok_or_else(|| {
+            Error::Validation(
+                "offscreen resource descriptor limits do not satisfy the unified Slang ABI".into(),
+            )
+        })?;
+        let sampler_stride = limits.sampler_descriptor_stride().ok_or_else(|| {
+            Error::Validation(
+                "offscreen sampler descriptor limits do not satisfy the Slang heap ABI".into(),
+            )
+        })?;
         let resource_capacity = resource_stride
             .checked_mul(targets.len() as u64)
             .ok_or_else(|| Error::Validation("offscreen resource heap size overflows".into()))?;
-        if resource_capacity == 0 || sampler_stride == 0 {
-            return Err(Error::Validation(
-                "offscreen descriptor heap limits are incomplete".into(),
-            ));
-        }
         let resource_heap = self.create_descriptor_heap(&DescriptorHeapDescriptor {
             label: Some("offscreen-color-resource-heap".into()),
             kind: DescriptorHeapKind::Resource,
@@ -475,19 +468,10 @@ impl OffscreenSampledBindings {
     }
 }
 
-const fn aligned_stride(size: u64, alignment: u64) -> u64 {
-    if size == 0 || alignment == 0 || !alignment.is_power_of_two() {
-        return 0;
-    }
-    let mask = alignment - 1;
-    match size.checked_add(mask) {
-        Some(value) => value & !mask,
-        None => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::DescriptorHeapLimits;
+
     use super::*;
 
     fn requirements() -> PresentationRequirements {
@@ -606,8 +590,16 @@ mod tests {
 
     #[test]
     fn descriptor_capacity_uses_unified_resource_and_sampler_strides() {
-        assert_eq!(aligned_stride(24, 32), 32);
-        assert_eq!(aligned_stride(16, 16), 16);
-        assert_eq!(aligned_stride(1, 0), 0);
+        let limits = DescriptorHeapLimits {
+            image_descriptor_size: 32,
+            image_descriptor_alignment: 8,
+            buffer_descriptor_size: 16,
+            buffer_descriptor_alignment: 16,
+            sampler_descriptor_size: 16,
+            sampler_descriptor_alignment: 8,
+            ..DescriptorHeapLimits::default()
+        };
+        assert_eq!(limits.unified_resource_descriptor_stride(), Some(32));
+        assert_eq!(limits.sampler_descriptor_stride(), Some(16));
     }
 }
