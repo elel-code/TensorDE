@@ -77,9 +77,12 @@ pub use pipeline::{
     StencilState, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
 };
 pub use present::{
-    AcquiredSurfaceTexture, PresentMode, PresentStatus, Surface, SurfaceCapabilities,
-    SurfaceConfiguration, SurfaceConfigurationRequest, SurfacePresentCapabilities, Swapchain,
-    SwapchainDescriptor,
+    AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget,
+    OffscreenColorTargets, OffscreenColorTargetsDescriptor, OffscreenSampledBindings, PresentMode,
+    PresentStatus, PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements,
+    PresentationTarget, Surface, SurfaceAcquireStrategy, SurfaceCapabilities, SurfaceConfiguration,
+    SurfaceConfigurationRequest, SurfacePresentCapabilities, Swapchain, SwapchainDescriptor,
+    TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
 };
 pub use queue::{QueueFamilyInfo, QueuePlan};
 pub use render_graph::{

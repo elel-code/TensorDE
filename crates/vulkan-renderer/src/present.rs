@@ -11,8 +11,15 @@ use vulkanalia::vk::{
 use crate::backend::InstanceOwner;
 use crate::{Error, Features, Instance, Result};
 
+mod offscreen;
 mod swapchain;
 
+pub use offscreen::{
+    DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget, OffscreenColorTargets,
+    OffscreenColorTargetsDescriptor, OffscreenSampledBindings, PresentationPathDescriptor,
+    PresentationPathPlan, PresentationRequirements, PresentationTarget, SurfaceAcquireStrategy,
+    TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
+};
 pub use swapchain::{
     AcquiredSurfaceTexture, PresentStatus, SurfaceConfiguration, SurfaceConfigurationRequest,
     Swapchain, SwapchainDescriptor,

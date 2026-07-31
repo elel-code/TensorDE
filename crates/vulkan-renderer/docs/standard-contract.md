@@ -173,6 +173,45 @@ fallback, the preference list MUST contain `PresentMode::Fifo`.
 7. Reconfiguration MUST create the replacement with `oldSwapchain` and MUST
    retain the old swapchain until the replacement operation has returned.
 
+## Offscreen presentation
+
+Applications MUST acquire Vulkan capabilities through `vulkan-renderer`; they
+MUST NOT select an independent `vulkanalia` version or create a parallel
+instance/device ownership stack. `vulkan_renderer::vk` and the raw re-export
+remain explicit migration/interop surfaces, not a reason to duplicate resource,
+submission, retirement, or presentation implementations in a product.
+
+1. `PresentationPathPlan` MUST permit a direct surface target only when the
+   frame has exactly one physical pass, no post-write sampling, no history,
+   no external consumer, no async-compute access, matching target/surface
+   extent and format, and no required terminal transform. Forced direct mode
+   MUST fail with the complete blocker set instead of weakening the graph.
+2. Automatic mode MUST select an independently allocated offscreen target
+   whenever any direct-surface condition is unmet. Explicit offscreen mode MAY
+   be selected even when direct mode would be legal.
+3. Offscreen presentation MUST allocate one single-sampled color-attachment +
+   sampled image per in-flight frame slot through the shared image allocator.
+   These images and views use shared RAII/timeline ownership; a product-local
+   `vkAllocateMemory` path is not an alternative implementation.
+4. All immutable offscreen sampled-image descriptors MUST share one resource
+   heap, and every slot MUST reuse one sampler descriptor in one sampler heap.
+   The selected filter, address and alpha policy remain explicit product input.
+5. A late acquire is valid only when swapchain-independent offscreen work can
+   be submitted first. The terminal composite is a separate submission after
+   acquire. Same-queue order MAY carry the offscreen dependency; cross-queue
+   execution MUST use an explicit timeline dependency.
+6. `BeforeFrame` and `AfterOffscreenSubmit` are both supported policies.
+   Neither is declared universally faster: a product MUST choose from measured
+   acquire wait, submit overhead and GPU overlap, then verify a paired formal
+   A/B without changing graph semantics.
+7. A non-surface target extent is an explicit quality/render-scale policy. It
+   MUST NOT silently replace the surface physical extent or be reported as
+   native-resolution rendering.
+8. Future transient memory aliasing MUST require non-overlapping first/last-use
+   intervals plus equal format, sample count, usage compatibility and queue
+   ownership. It MAY reuse backing memory but MUST NOT fuse passes or erase
+   barriers, copies, swaps, descriptor identity, history or external liveness.
+
 ## Submission transaction
 
 1. `Device::create_command_encoder` MUST allocate and begin exactly one primary

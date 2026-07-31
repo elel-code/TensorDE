@@ -208,6 +208,18 @@ impl Image {
         self.inner.usage
     }
 
+    /// Bytes reserved from the allocator for this image.
+    ///
+    /// This is the bound Vulkan memory range, not host RSS/PSS and not a
+    /// format-derived estimate. Several images may still share one allocator
+    /// block.
+    pub fn allocation_size(&self) -> u64 {
+        self.inner
+            .range
+            .as_ref()
+            .map_or(0, |range| range.end - range.start)
+    }
+
     pub fn sample_count(&self) -> vk::SampleCountFlags {
         self.inner.samples
     }
