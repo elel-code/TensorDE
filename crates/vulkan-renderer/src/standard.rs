@@ -374,10 +374,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_heap_and_fifo_features_map_to_their_device_extensions() {
+    fn standard_resource_pipeline_and_present_features_map_to_device_extensions() {
         let mut extensions = Vec::new();
         append_feature_extensions(
-            Features::DESCRIPTOR_HEAP | Features::FIFO_LATEST_READY,
+            Features::DESCRIPTOR_HEAP | Features::PIPELINE_BINARIES | Features::FIFO_LATEST_READY,
             &mut extensions,
         );
         extensions.sort();
@@ -385,6 +385,7 @@ mod tests {
             extensions,
             vec![
                 "VK_EXT_descriptor_heap".to_owned(),
+                "VK_KHR_pipeline_binary".to_owned(),
                 "VK_KHR_present_mode_fifo_latest_ready".to_owned(),
                 "VK_KHR_swapchain".to_owned(),
             ]
@@ -412,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn device_descriptor_requires_descriptor_heap_and_fifo_latest_ready_by_default() {
+    fn device_descriptor_requires_heap_machine_code_and_fifo_by_default() {
         let descriptor = DeviceDescriptor::default();
         assert!(
             descriptor
@@ -428,6 +429,11 @@ mod tests {
             descriptor
                 .required_features
                 .contains(Features::FIFO_LATEST_READY)
+        );
+        assert!(
+            descriptor
+                .required_features
+                .contains(Features::PIPELINE_BINARIES)
         );
         assert!(
             descriptor

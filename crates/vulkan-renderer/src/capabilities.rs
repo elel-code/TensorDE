@@ -95,6 +95,7 @@ pub struct CoreFeatures {
     pub maintenance6: bool,
     pub dynamic_rendering_local_read: bool,
     pub descriptor_heap: bool,
+    pub pipeline_binaries: bool,
     pub present_mode_fifo_latest_ready: bool,
     pub external_memory_dma_buf: bool,
     pub external_semaphore_sync_fd: bool,
@@ -163,6 +164,7 @@ impl Features {
     pub const FIFO_LATEST_READY: Self = Self(1 << 8);
     pub const EXTERNAL_MEMORY_DMA_BUF: Self = Self(1 << 9);
     pub const EXTERNAL_SEMAPHORE_SYNC_FD: Self = Self(1 << 10);
+    pub const PIPELINE_BINARIES: Self = Self(1 << 11);
 
     pub const VULKAN14_RENDERER_BASELINE: Self = Self(
         Self::TIMELINE_SEMAPHORE.0
@@ -176,7 +178,10 @@ impl Features {
     /// shader-resource binding model and FIFO latest-ready is the preferred
     /// low-latency FIFO presentation path.
     pub const STANDARD_DEFAULTS: Self = Self(
-        Self::VULKAN14_RENDERER_BASELINE.0 | Self::DESCRIPTOR_HEAP.0 | Self::FIFO_LATEST_READY.0,
+        Self::VULKAN14_RENDERER_BASELINE.0
+            | Self::DESCRIPTOR_HEAP.0
+            | Self::FIFO_LATEST_READY.0
+            | Self::PIPELINE_BINARIES.0,
     );
 
     pub const fn empty() -> Self {
@@ -231,6 +236,9 @@ impl Features {
         if features.descriptor_heap {
             bits |= Self::DESCRIPTOR_HEAP.0;
         }
+        if features.pipeline_binaries {
+            bits |= Self::PIPELINE_BINARIES.0;
+        }
         if features.present_mode_fifo_latest_ready {
             bits |= Self::FIFO_LATEST_READY.0;
         }
@@ -242,6 +250,16 @@ impl Features {
         }
         Self(bits)
     }
+}
+
+/// Device behavior exposed by `VK_KHR_pipeline_binary`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PipelineBinaryProperties {
+    pub internal_cache: bool,
+    pub internal_cache_control: bool,
+    pub prefers_internal_cache: bool,
+    pub precompiled_internal_cache: bool,
+    pub compressed_data: bool,
 }
 
 impl std::fmt::Debug for Features {

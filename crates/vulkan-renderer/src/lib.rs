@@ -36,8 +36,8 @@ pub use backend::{
     Backend, BackendConfig, DeviceInfo, DevicePreference, DeviceQueues, Queue, SemaphoreWait,
 };
 pub use capabilities::{
-    BackendProfile, CoreFeatures, DescriptorHeapLimits, Features, Limits, ROADMAP_2026_API_VERSION,
-    ROADMAP_2026_PROFILE_NAME, ROADMAP_2026_PROFILE_REVISION,
+    BackendProfile, CoreFeatures, DescriptorHeapLimits, Features, Limits, PipelineBinaryProperties,
+    ROADMAP_2026_API_VERSION, ROADMAP_2026_PROFILE_NAME, ROADMAP_2026_PROFILE_REVISION,
     ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS, ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS,
     STANDARD_REQUIRED_INSTANCE_EXTENSIONS,
 };
@@ -71,10 +71,14 @@ pub use memory::{
 pub use pipeline::{
     BlendComponent, BlendState, ColorTargetState, ComputePipeline, ComputePipelineDescriptor,
     ConstantOffsetMapping, DepthBiasState, DepthState, DepthStencilState, FragmentState,
-    GraphicsPipeline, GraphicsPipelineDescriptor, IndirectIndexMapping, MultisampleState,
-    PipelineCache, PipelineCacheDescriptor, PrimitiveState, ProgrammableStage, PushIndexMapping,
-    ShaderBindingMap, ShaderBindingMapError, ShaderBindingMapping, ShaderBindingSource,
-    StencilState, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
+    GraphicsPipeline, GraphicsPipelineDescriptor, IndirectIndexMapping, MachineCodeComputePipeline,
+    MachineCodeGraphicsPipeline, MachineCodePipeline, MultisampleState, PipelineBinaryArchive,
+    PipelineBinaryArchiveCache, PipelineBinaryBlob, PipelineBinaryCacheIdentity,
+    PipelineBinaryCreation, PipelineCache, PipelineCacheDescriptor, PrimitiveState,
+    ProgrammableStage, PushIndexMapping, ShaderBindingMap, ShaderBindingMapError,
+    ShaderBindingMapping, ShaderBindingSource, StencilState, VertexAttribute, VertexBufferLayout,
+    VertexState, VertexStepMode, compute_pipeline_binary_key, create_compute_pipeline_machine_code,
+    create_graphics_pipeline_machine_code, graphics_pipeline_binary_key,
 };
 pub use present::{
     AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget,

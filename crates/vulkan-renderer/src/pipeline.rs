@@ -6,10 +6,19 @@ use vulkanalia::{prelude::v1_4::*, vk};
 use crate::backend::DeviceOwner;
 use crate::{Backend, Error, Result};
 
+mod binary;
+mod binary_cache;
 mod compute;
 mod graphics;
 mod mapping;
 
+pub use binary::{
+    MachineCodeComputePipeline, MachineCodeGraphicsPipeline, MachineCodePipeline,
+    PipelineBinaryArchive, PipelineBinaryBlob, PipelineBinaryCreation, compute_pipeline_binary_key,
+    create_compute_pipeline_machine_code, create_graphics_pipeline_machine_code,
+    graphics_pipeline_binary_key,
+};
+pub use binary_cache::{PipelineBinaryArchiveCache, PipelineBinaryCacheIdentity};
 pub use compute::{ComputePipeline, ComputePipelineDescriptor};
 
 pub use graphics::{

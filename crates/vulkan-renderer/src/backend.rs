@@ -11,7 +11,9 @@ use vulkanalia::{
     vk,
 };
 
-use crate::capabilities::{BackendProfile, CoreFeatures, Features, Limits};
+use crate::capabilities::{
+    BackendProfile, CoreFeatures, Features, Limits, PipelineBinaryProperties,
+};
 use crate::command::{CommandEncoder, CommandEncoderDescriptor};
 use crate::frame::FrameToken;
 use crate::memory::MemoryTypeInfo;
@@ -69,8 +71,12 @@ pub struct DeviceInfo {
     pub device_type: vk::PhysicalDeviceType,
     pub vendor_id: u32,
     pub device_id: u32,
+    pub driver_version: u32,
+    pub device_uuid: [u8; vk::UUID_SIZE],
+    pub driver_uuid: [u8; vk::UUID_SIZE],
     pub features: CoreFeatures,
     pub supported_features: Features,
+    pub pipeline_binary_properties: PipelineBinaryProperties,
     pub limits: Limits,
     pub memory_types: Vec<MemoryTypeInfo>,
     pub non_coherent_atom_size: u64,
@@ -641,6 +647,9 @@ fn create_device(
     let mut fifo_latest_ready = vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
         .present_mode_fifo_latest_ready(required_features.contains(Features::FIFO_LATEST_READY))
         .build();
+    let mut pipeline_binary = vk::PhysicalDevicePipelineBinaryFeaturesKHR::builder()
+        .pipeline_binaries(required_features.contains(Features::PIPELINE_BINARIES))
+        .build();
     let mut info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&extension_pointers)
@@ -659,6 +668,12 @@ fn create_device(
     {
         info = info.push_next(&mut fifo_latest_ready);
     }
+    if extension_names
+        .iter()
+        .any(|name| name.as_bytes() == b"VK_KHR_pipeline_binary")
+    {
+        info = info.push_next(&mut pipeline_binary);
+    }
     unsafe { instance.create_device(candidate.handle, &info, None) }
         .map_err(|source| Error::vulkan("vkCreateDevice", source))
 }
@@ -670,6 +685,9 @@ pub(crate) fn append_feature_extensions(features: Features, extensions: &mut Vec
     if features.contains(Features::FIFO_LATEST_READY) {
         extensions.push("VK_KHR_swapchain".into());
         extensions.push("VK_KHR_present_mode_fifo_latest_ready".into());
+    }
+    if features.contains(Features::PIPELINE_BINARIES) {
+        extensions.push("VK_KHR_pipeline_binary".into());
     }
     if features.contains(Features::EXTERNAL_MEMORY_DMA_BUF) {
         extensions.push("VK_KHR_external_memory_fd".into());

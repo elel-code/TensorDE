@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use vulkanalia::{Instance, Version, prelude::v1_4::*, vk};
 
 use super::{Candidate, DeviceInfo};
-use crate::capabilities::{CoreFeatures, DescriptorHeapLimits, Features, Limits};
+use crate::capabilities::{
+    CoreFeatures, DescriptorHeapLimits, Features, Limits, PipelineBinaryProperties,
+};
 use crate::memory::MemoryTypeInfo;
 use crate::queue::{QueueFamilyInfo, QueuePlan};
 use crate::roadmap_2026::query_roadmap_2026_device_requirements;
@@ -17,6 +19,7 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
         .enumerate()
         .map(|(ordinal, handle)| {
             let properties = unsafe { instance.get_physical_device_properties(handle) };
+            let (device_uuid, driver_uuid) = query_device_identity(instance, handle);
             let queue_families =
                 unsafe { instance.get_physical_device_queue_family_properties(handle) }
                     .into_iter()
@@ -40,7 +43,8 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
                     .into_iter()
                     .map(|extension| extension.extension_name.to_string_lossy().into_owned())
                     .collect();
-            let (features, descriptor_heap) = query_features(instance, handle, &extensions);
+            let (features, descriptor_heap, pipeline_binary_properties) =
+                query_features(instance, handle, &extensions);
             let extension_names = extensions.iter().cloned().collect::<Vec<_>>();
             let roadmap = query_roadmap_2026_device_requirements(
                 instance,
@@ -108,8 +112,12 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
                     device_type: properties.device_type,
                     vendor_id: properties.vendor_id,
                     device_id: properties.device_id,
+                    driver_version: properties.driver_version,
+                    device_uuid,
+                    driver_uuid,
                     features,
                     supported_features,
+                    pipeline_binary_properties,
                     limits,
                     memory_types,
                     non_coherent_atom_size: properties.limits.non_coherent_atom_size,
@@ -124,11 +132,21 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
         .collect()
 }
 
+fn query_device_identity(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> ([u8; vk::UUID_SIZE], [u8; vk::UUID_SIZE]) {
+    let mut identity = vk::PhysicalDeviceIDProperties::default();
+    let mut properties = vk::PhysicalDeviceProperties2::builder().push_next(&mut identity);
+    unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
+    (identity.device_uuid.0, identity.driver_uuid.0)
+}
+
 fn query_features(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     extensions: &BTreeSet<String>,
-) -> (CoreFeatures, DescriptorHeapLimits) {
+) -> (CoreFeatures, DescriptorHeapLimits, PipelineBinaryProperties) {
     let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::default();
     let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::default();
@@ -155,6 +173,14 @@ fn query_features(
         } else {
             false
         };
+    let pipeline_binaries = if extensions.contains("VK_KHR_pipeline_binary") {
+        let mut extension = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default();
+        let mut features = vk::PhysicalDeviceFeatures2::builder().push_next(&mut extension);
+        unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
+        extension.pipeline_binaries != 0
+    } else {
+        false
+    };
     let descriptor_heap_limits = if descriptor_heap_available {
         query_descriptor_heap_limits(instance, physical_device)
     } else {
@@ -180,12 +206,34 @@ fn query_features(
             maintenance6: vulkan14.maintenance6 != 0,
             dynamic_rendering_local_read: vulkan14.dynamic_rendering_local_read != 0,
             descriptor_heap,
+            pipeline_binaries,
             present_mode_fifo_latest_ready,
             external_memory_dma_buf,
             external_semaphore_sync_fd,
         },
         descriptor_heap_limits,
+        query_pipeline_binary_properties(instance, physical_device, pipeline_binaries),
     )
+}
+
+fn query_pipeline_binary_properties(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    available: bool,
+) -> PipelineBinaryProperties {
+    if !available {
+        return PipelineBinaryProperties::default();
+    }
+    let mut binary = vk::PhysicalDevicePipelineBinaryPropertiesKHR::default();
+    let mut properties = vk::PhysicalDeviceProperties2::builder().push_next(&mut binary);
+    unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
+    PipelineBinaryProperties {
+        internal_cache: binary.pipeline_binary_internal_cache != 0,
+        internal_cache_control: binary.pipeline_binary_internal_cache_control != 0,
+        prefers_internal_cache: binary.pipeline_binary_prefers_internal_cache != 0,
+        precompiled_internal_cache: binary.pipeline_binary_precompiled_internal_cache != 0,
+        compressed_data: binary.pipeline_binary_compressed_data != 0,
+    }
 }
 
 fn supports_sync_fd_semaphore(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {

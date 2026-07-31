@@ -31,6 +31,7 @@ The words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 | `MAINTENANCE6` | core 1.4 | `maintenance6` |
 | `DYNAMIC_RENDERING_LOCAL_READ` | core 1.4 | `dynamicRenderingLocalRead` |
 | `DESCRIPTOR_HEAP` | `VK_EXT_descriptor_heap` | `descriptorHeap` |
+| `PIPELINE_BINARIES` | `VK_KHR_pipeline_binary` | `pipelineBinaries` |
 | `FIFO_LATEST_READY` | `VK_KHR_present_mode_fifo_latest_ready` | `presentModeFifoLatestReady` |
 | `EXTERNAL_MEMORY_DMA_BUF` | `VK_KHR_external_memory_fd`, `VK_EXT_external_memory_dma_buf`, `VK_EXT_image_drm_format_modifier`, `VK_EXT_queue_family_foreign` | format/modifier-specific query |
 | `EXTERNAL_SEMAPHORE_SYNC_FD` | `VK_KHR_external_semaphore_fd` | `IMPORTABLE | EXPORTABLE` for `SYNC_FD` |
@@ -40,8 +41,8 @@ present in the adapter bitset and requested in `DeviceDescriptor` before the
 device contract exposes it.
 
 `Features::STANDARD_DEFAULTS` MUST include the Vulkan 1.4 renderer baseline,
-`DESCRIPTOR_HEAP`, and `FIFO_LATEST_READY`. The standard instance/adapter/device
-path uses this set as a hard minimum.
+`DESCRIPTOR_HEAP`, `PIPELINE_BINARIES`, and `FIFO_LATEST_READY`. The standard
+instance/adapter/device path uses this set as a hard minimum.
 
 `DESCRIPTOR_HEAP` transitively requires and enables `BUFFER_DEVICE_ADDRESS` and
 `MAINTENANCE5`. Dependency expansion is part of the returned device contract;
@@ -68,6 +69,31 @@ For descriptor heaps, device creation additionally requires:
 - push-data size and embedded-sampler count are nonzero;
 - aligned implementation-reserved ranges leave nonzero sampler/resource
   payload ranges.
+
+## Pipeline machine code
+
+1. Distributed shader assets MUST be validated SPIR-V. Device-native pipeline
+   binaries MUST NOT be distributed as portable assets.
+2. `VK_KHR_pipeline_binary` and `pipelineBinaries` MUST be enabled on the
+   logical device. Extension-name presence alone is not support.
+3. A cold-cache pipeline MUST first be created with
+   `CAPTURE_DATA_KHR`. Every returned binary key and data payload MUST be
+   materialized before the pipeline can become visible to frame recording.
+4. The provisional pipeline MUST be destroyed and recreated from the complete,
+   ordered binary set through `VkPipelineBinaryInfoKHR`. Supplying binary
+   handles is the no-compile contract; Vulkan forbids combining a non-empty
+   binary set with `FAIL_ON_PIPELINE_COMPILE_REQUIRED`. A non-success
+   status is a startup failure; it MUST NOT fall through to a visible submit
+   that compiles in the driver.
+5. Persistent archives MUST be bound to the physical-device UUID, driver UUID
+   and version, complete pipeline key, and renderer binary-format version.
+   Any mismatch invalidates the archive before Vulkan sees it.
+6. `PipelineCache` data does not prove machine-code readiness and MUST NOT be
+   used as a substitute for this contract.
+7. The shared machine-code pipeline retains its logical device, destroys its
+   final `VkPipeline` through RAII, and implements `SubmissionResource` for
+   timeline retirement. Product code MUST NOT own or manually destroy that
+   final handle. Raw create-info callbacks are migration interop only.
 
 ## Descriptor heap storage
 
