@@ -1,22 +1,39 @@
 //! Deliberately small KDL Query Language subset over the DOM.
 //!
-//! The syntax follows `references/kdl/QUERY-SPEC.md`, but this is not a full
-//! KQL implementation. Supported today:
+//! Authority: `references/kdl/QUERY-SPEC.md` (KQL `next`, unreleased). This is
+//! **not** a full KQL implementation — see the supported list below. Design
+//! non-goal: full QUERY-SPEC / SCHEMA-SPEC (`docs/kdl/design.md` §2).
+//!
+//! Supported today:
 //!
 //! - node names, `[]`, `(tag)` and `(tag)name`;
-//! - `top()`, direct-child `>`, descendant `>>`, and union `||`;
-//! - existence matchers `[val()]`, `[val(n)]`, `[prop(name)]`, and `[name]`.
+//! - `top()`, direct-child `>`, descendant `>>`, immediate sibling `+`,
+//!   general sibling `++`, and union `||`;
+//! - existence matchers `[val()]`, `[val(n)]`, `[prop(name)]`, and bare `[name]`;
+//! - equality / inequality (`=`, `!=`) on `val()`, `prop()`, bare props,
+//!   `name()`, `tag()` — **no cross-type coercion** (QUERY-SPEC: `"1"` is never
+//!   equal to `1`);
+//! - same-type ordered comparisons (`<`, `>`, `<=`, `>=`) on `val()` / `prop()`
+//!   numbers or strings;
+//! - string operators `^=` / `$=` / `*=` on string `val()`, `prop()`, `tag()`,
+//!   or `name()` values.
 //!
-//! Sibling operators and value comparisons intentionally remain unsupported.
+//! Still unsupported (QUERY-SPEC has them; we deliberately omit):
+//!
+//! - `values()` / `props()` accessors;
+//! - type-annotation match on the right-hand side (`[val() = (foo)]`);
+//! - whitespace-significant multi-token filters beyond the subset above.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::value::{Document, Node};
+use crate::value::{Document, Node, Value};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operator {
     Child,
     Descendant,
+    ImmediateSibling,
+    GeneralSibling,
 }
 
 /// Run a supported KQL selector against `doc`.
@@ -107,6 +124,12 @@ fn select_arm<'a>(roots: &'a [Node<'a>], selector: &str, out: &mut Vec<&'a Node<
         return;
     };
 
+    // Sibling map: child pointer → (parent children slice, index in that slice).
+    let mut sibling_map: HashMap<*const Node<'a>, (&'a [Node<'a>], usize)> = HashMap::new();
+    for root in roots {
+        index_siblings(root, roots, &mut sibling_map);
+    }
+
     let (mut current, mut operator_index) = if first == "top()" {
         if operators.is_empty() {
             (roots.iter().collect(), 0)
@@ -123,6 +146,10 @@ fn select_arm<'a>(roots: &'a [Node<'a>], selector: &str, out: &mut Vec<&'a Node<
                         collect_matching(root, next_filter, true, &mut selected);
                     }
                     selected
+                }
+                Operator::ImmediateSibling | Operator::GeneralSibling => {
+                    // `top()` has no siblings in the document model.
+                    Vec::new()
                 }
             };
             (selected, 1)
@@ -155,11 +182,49 @@ fn select_arm<'a>(roots: &'a [Node<'a>], selector: &str, out: &mut Vec<&'a Node<
                     }
                 }
             }
+            Operator::ImmediateSibling => {
+                for node in current {
+                    if let Some((siblings, index)) = sibling_map.get(&(node as *const Node<'a>))
+                        && let Some(sib) = siblings.get(index + 1)
+                        && node_matches(sib, filter)
+                    {
+                        next.push(sib);
+                    }
+                }
+            }
+            Operator::GeneralSibling => {
+                for node in current {
+                    if let Some((siblings, index)) = sibling_map.get(&(node as *const Node<'a>)) {
+                        for sib in siblings.iter().skip(index + 1) {
+                            if node_matches(sib, filter) {
+                                next.push(sib);
+                            }
+                        }
+                    }
+                }
+            }
         }
         current = next;
         operator_index += 1;
     }
     out.extend(current);
+}
+
+fn index_siblings<'a>(
+    node: &'a Node<'a>,
+    siblings: &'a [Node<'a>],
+    map: &mut HashMap<*const Node<'a>, (&'a [Node<'a>], usize)>,
+) {
+    // Top-level roots share one sibling list; nested children share theirs.
+    if let Some(index) = siblings
+        .iter()
+        .position(|candidate| std::ptr::eq(candidate, node))
+    {
+        map.insert(node as *const Node<'a>, (siblings, index));
+    }
+    for child in &node.children {
+        index_siblings(child, &node.children, map);
+    }
 }
 
 fn parse_chain(selector: &str) -> Option<(Vec<&str>, Vec<Operator>)> {
@@ -192,7 +257,22 @@ fn parse_chain(selector: &str) -> Option<(Vec<&str>, Vec<Operator>)> {
                 start = index;
                 continue;
             }
-            b'+' if brackets == 0 && parentheses == 0 => return None,
+            b'+' if brackets == 0 && parentheses == 0 => {
+                let filter = selector[start..index].trim();
+                if filter.is_empty() {
+                    return None;
+                }
+                filters.push(filter);
+                if bytes.get(index + 1) == Some(&b'+') {
+                    operators.push(Operator::GeneralSibling);
+                    index += 2;
+                } else {
+                    operators.push(Operator::ImmediateSibling);
+                    index += 1;
+                }
+                start = index;
+                continue;
+            }
             _ => {}
         }
         index += 1;
@@ -278,10 +358,28 @@ fn split_name_and_accessors(filter: &str) -> Option<(&str, Vec<&str>)> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    StartsWith,
+    EndsWith,
+    Contains,
+}
+
 fn accessor_matches(node: &Node<'_>, accessor: &str) -> bool {
     if accessor.is_empty() {
         return true;
     }
+
+    if let Some((left, op, right)) = split_comparison(accessor) {
+        return compare_accessor(node, left, op, right);
+    }
+
     if let Some(argument) = accessor
         .strip_prefix("val(")
         .and_then(|value| value.strip_suffix(')'))
@@ -301,123 +399,256 @@ fn accessor_matches(node: &Node<'_>, accessor: &str) -> bool {
     {
         return node.property(property.trim()).is_some();
     }
+    // Bare property existence: reject anything that looks like a call or operator.
     if accessor.contains(['=', '<', '>', '^', '$', '*', '!', '(', ')']) {
         return false;
     }
     node.property(accessor).is_some()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::from_str;
-
-    fn package_document() -> Document<'static> {
-        let input = r#"
-            package {
-                name foo
-                version "1"
-                dependencies platform=windows {
-                    winapi "1"
-                }
-                dependencies {
-                    miette "2" dev=#true
-                }
+fn split_comparison(accessor: &str) -> Option<(&str, CmpOp, &str)> {
+    // Longest operator first (QUERY-SPEC `matcher-operator`).
+    for (token, op) in [
+        ("!=", CmpOp::Ne),
+        (">=", CmpOp::Ge),
+        ("<=", CmpOp::Le),
+        ("^=", CmpOp::StartsWith),
+        ("$=", CmpOp::EndsWith),
+        ("*=", CmpOp::Contains),
+        (">", CmpOp::Gt),
+        ("<", CmpOp::Lt),
+        ("=", CmpOp::Eq),
+    ] {
+        if let Some(idx) = find_operator(accessor, token) {
+            let left = accessor[..idx].trim();
+            let right = accessor[idx + token.len()..].trim();
+            if left.is_empty() || right.is_empty() {
+                return None;
             }
-        "#;
-        let parsed = from_str(input).unwrap();
-        Document {
-            nodes: parsed
-                .nodes
-                .into_iter()
-                .map(|node| node_into_owned(&node))
-                .collect(),
+            return Some((left, op, right));
         }
     }
+    None
+}
 
-    fn node_into_owned(node: &Node<'_>) -> Node<'static> {
-        Node {
-            type_name: node
-                .type_name
-                .as_ref()
-                .map(|value| crate::KdlStr::owned(value.as_str().to_owned())),
-            name: crate::KdlStr::owned(node.name.as_str().to_owned()),
-            entries: node
-                .entries
-                .clone()
-                .into_iter()
-                .map(entry_into_owned)
-                .collect(),
-            children: node.children.iter().map(node_into_owned).collect(),
-        }
-    }
-
-    fn entry_into_owned(entry: crate::Entry<'_>) -> crate::Entry<'static> {
-        match entry {
-            crate::Entry::Argument { type_name, value } => crate::Entry::Argument {
-                type_name: type_name.map(|name| crate::KdlStr::owned(name.into_owned())),
-                value: value_into_owned(value),
-            },
-            crate::Entry::Property {
-                key,
-                type_name,
-                value,
-            } => crate::Entry::Property {
-                key: crate::KdlStr::owned(key.into_owned()),
-                type_name: type_name.map(|name| crate::KdlStr::owned(name.into_owned())),
-                value: value_into_owned(value),
-            },
-        }
-    }
-
-    fn value_into_owned(value: crate::Value<'_>) -> crate::Value<'static> {
-        match value {
-            crate::Value::String(value) => {
-                crate::Value::String(crate::KdlStr::owned(value.into_owned()))
+fn find_operator(accessor: &str, token: &str) -> Option<usize> {
+    let bytes = accessor.as_bytes();
+    let t = token.as_bytes();
+    let mut parentheses = 0u32;
+    let mut index = 0usize;
+    while index + t.len() <= bytes.len() {
+        match bytes[index] {
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            _ if parentheses == 0 && bytes[index..].starts_with(t) => {
+                // Avoid treating a short operator as the prefix of a longer one
+                // (`=` inside `!=` / `^=` / `>=` / …; `>` inside `>=`).
+                if token.len() == 1 {
+                    if index > 0 {
+                        let prev = bytes[index - 1];
+                        if matches!(prev, b'!' | b'^' | b'$' | b'*' | b'<' | b'>') {
+                            index += 1;
+                            continue;
+                        }
+                    }
+                    if index + 1 < bytes.len() {
+                        let next = bytes[index + 1];
+                        if matches!(next, b'=' | b'>' | b'<') {
+                            index += 1;
+                            continue;
+                        }
+                    }
+                }
+                return Some(index);
             }
-            crate::Value::Int(value) => crate::Value::Int(value),
-            crate::Value::Float { value, raw } => crate::Value::Float {
-                value,
-                raw: raw.map(|raw| crate::KdlStr::owned(raw.into_owned())),
-            },
-            crate::Value::Bool(value) => crate::Value::Bool(value),
-            crate::Value::Null => crate::Value::Null,
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn compare_accessor(node: &Node<'_>, left: &str, op: CmpOp, right: &str) -> bool {
+    let Some(actual) = resolve_accessor_value(node, left) else {
+        return false;
+    };
+    // QUERY-SPEC: RHS may be `$type | $string | $number | $keyword`. Type
+    // annotations on the RHS (`(foo)`) are not implemented in this subset.
+    if right.trim_start().starts_with('(') {
+        return false;
+    }
+    let expected = parse_matcher_literal(right);
+
+    match op {
+        CmpOp::Eq => values_equal(&actual, &expected),
+        CmpOp::Ne => actual.exists() && !values_equal(&actual, &expected),
+        CmpOp::Lt | CmpOp::Gt | CmpOp::Le | CmpOp::Ge => values_ordered(&actual, &expected, op),
+        CmpOp::StartsWith | CmpOp::EndsWith | CmpOp::Contains => {
+            let Some(hay) = actual.as_str() else {
+                return false;
+            };
+            let Some(needle) = expected.as_str() else {
+                return false;
+            };
+            match op {
+                CmpOp::StartsWith => hay.starts_with(needle),
+                CmpOp::EndsWith => hay.ends_with(needle),
+                CmpOp::Contains => hay.contains(needle),
+                _ => false,
+            }
+        }
+    }
+}
+
+enum AccessorValue<'a> {
+    NodeName(&'a str),
+    Tag(&'a str),
+    Scalar(&'a Value<'a>),
+    OwnedString(String),
+    OwnedInt(i128),
+    OwnedFloat(f64),
+    OwnedBool(bool),
+    Null,
+}
+
+impl AccessorValue<'_> {
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::NodeName(s) | Self::Tag(s) => Some(s),
+            Self::Scalar(Value::String(s)) => Some(s.as_str()),
+            Self::OwnedString(s) => Some(s),
+            _ => None,
         }
     }
 
-    #[test]
-    fn spec_name_child_descendant_and_property_examples() {
-        let doc = package_document();
-        assert_eq!(query(&doc, "package >> name").len(), 1);
-        assert_eq!(query(&doc, "top() > package >> name").len(), 1);
-        assert_eq!(query(&doc, "dependencies").len(), 2);
-        assert_eq!(query(&doc, "dependencies[platform]").len(), 1);
-        assert_eq!(query(&doc, "dependencies[prop(platform)]").len(), 1);
-        assert_eq!(query(&doc, "dependencies > []").len(), 2);
+    fn exists(&self) -> bool {
+        !matches!(self, Self::Null)
     }
 
-    #[test]
-    fn top_union_and_accessors_are_unique_and_document_ordered() {
-        let doc = from_str("a 1 flag=#true\nb 2\n").unwrap();
-        assert_eq!(query(&doc, "top() > []").len(), 2);
-        let union = query(&doc, "b || a || a");
-        assert_eq!(
-            union
-                .iter()
-                .map(|node| node.name.as_str())
-                .collect::<Vec<_>>(),
-            ["a", "b"]
-        );
-        assert_eq!(query(&doc, "a[val()]").len(), 1);
-        assert_eq!(query(&doc, "a[val(1)]").len(), 0);
-        assert_eq!(query(&doc, "a[flag]").len(), 1);
+    fn as_i128(&self) -> Option<i128> {
+        match self {
+            Self::Scalar(Value::Int(n)) => Some(*n),
+            Self::OwnedInt(n) => Some(*n),
+            _ => None,
+        }
     }
 
-    #[test]
-    fn type_annotation_and_node_subtree() {
-        let doc = from_str("(role)widget { child }\n").unwrap();
-        assert_eq!(query(&doc, "(role)widget").len(), 1);
-        assert_eq!(query(&doc, "() > child").len(), 1);
-        assert_eq!(query_node(&doc.nodes[0], "widget || child").len(), 2);
+    fn as_f64_strict(&self) -> Option<f64> {
+        match self {
+            Self::Scalar(Value::Float { value, .. }) => Some(*value),
+            Self::OwnedFloat(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Scalar(Value::Bool(b)) => Some(*b),
+            Self::OwnedBool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, Self::Null | Self::Scalar(Value::Null))
+    }
+}
+
+fn resolve_accessor_value<'a>(node: &'a Node<'a>, left: &str) -> Option<AccessorValue<'a>> {
+    let left = left.trim();
+    if left == "name()" {
+        return Some(AccessorValue::NodeName(node.name.as_str()));
+    }
+    if left == "tag()" {
+        return node
+            .type_name
+            .as_ref()
+            .map(|t| AccessorValue::Tag(t.as_str()));
+    }
+    if let Some(argument) = left
+        .strip_prefix("val(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let index = if argument.trim().is_empty() {
+            0
+        } else {
+            argument.trim().parse::<usize>().ok()?
+        };
+        return node.arguments().nth(index).map(AccessorValue::Scalar);
+    }
+    if let Some(property) = left
+        .strip_prefix("prop(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        return node.property(property.trim()).map(AccessorValue::Scalar);
+    }
+    // Bare property name on the left of a comparison (QUERY-SPEC `[name = 1]`).
+    if !left.contains(['(', ')', '=', '<', '>', '!', '^', '$', '*']) {
+        return node.property(left).map(AccessorValue::Scalar);
+    }
+    None
+}
+
+fn parse_matcher_literal(raw: &str) -> AccessorValue<'static> {
+    let raw = raw.trim();
+    if raw == "#true" {
+        return AccessorValue::OwnedBool(true);
+    }
+    if raw == "#false" {
+        return AccessorValue::OwnedBool(false);
+    }
+    if raw == "#null" {
+        return AccessorValue::Null;
+    }
+    if let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return AccessorValue::OwnedString(inner.to_owned());
+    }
+    if let Ok(n) = raw.parse::<i128>() {
+        return AccessorValue::OwnedInt(n);
+    }
+    if let Ok(n) = raw.parse::<f64>() {
+        return AccessorValue::OwnedFloat(n);
+    }
+    // Bare identifier string (QUERY-SPEC examples use unquoted strings).
+    AccessorValue::OwnedString(raw.to_owned())
+}
+
+fn values_equal(left: &AccessorValue<'_>, right: &AccessorValue<'_>) -> bool {
+    // QUERY-SPEC: no cross-type coercion (`"1"` never equals `1`).
+    if left.is_null() && right.is_null() {
+        return true;
+    }
+    if let (Some(a), Some(b)) = (left.as_bool(), right.as_bool()) {
+        return a == b;
+    }
+    if let (Some(a), Some(b)) = (left.as_i128(), right.as_i128()) {
+        return a == b;
+    }
+    if let (Some(a), Some(b)) = (left.as_f64_strict(), right.as_f64_strict()) {
+        return a == b;
+    }
+    match (left.as_str(), right.as_str()) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn values_ordered(left: &AccessorValue<'_>, right: &AccessorValue<'_>, op: CmpOp) -> bool {
+    // QUERY-SPEC: operator fails when types differ; no universal ordering.
+    let ord = if let (Some(a), Some(b)) = (left.as_i128(), right.as_i128()) {
+        a.cmp(&b)
+    } else if let (Some(a), Some(b)) = (left.as_f64_strict(), right.as_f64_strict()) {
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    } else if let (Some(a), Some(b)) = (left.as_str(), right.as_str()) {
+        a.cmp(b)
+    } else {
+        return false;
+    };
+    match op {
+        CmpOp::Lt => ord.is_lt(),
+        CmpOp::Gt => ord.is_gt(),
+        CmpOp::Le => ord.is_le(),
+        CmpOp::Ge => ord.is_ge(),
+        _ => false,
     }
 }

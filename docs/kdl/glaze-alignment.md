@@ -179,8 +179,17 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 14. ~~P-G9a pad; P-G9b flatten stream roots; P-G9c miette labels~~ done.
 15. ~~P-G10a Parser padded over-read; P-G10b mixed primary+sibling children~~ done.
 16. ~~P-G11 const/runtime typed reads on a padded parser~~ done.
-17. **Next (optional):** benchmark direct write before replacing DOM-backed
-    encode; extend KQL only against `QUERY-SPEC.md`, without claiming the full language.
+17. ~~Typed encode completeness (enums, `unwrap(property)`, properties maps,
+    broader `EncodeScalar`, `Flag`)~~ done — still **DOM-backed** via
+    `format_document` (suite Translation Rules). Not Glaze direct-buffer write.
+18. ~~KQL subset expansion against `QUERY-SPEC.md`~~ done for selectors
+    `+` / `++`, equality / inequality, same-type ordered compares, and string
+    `^=` / `$=` / `*=`. Still **not** full KQL (`values()` / `props()`, RHS
+    type annotations, …).
+19. **Next (optional):** benchmark / implement Glaze-shaped direct write
+    (`references/glaze/docs/writing.md` — `write_*` → `error_ctx` with
+    `count` = bytes written) before replacing DOM-backed encode; keep KQL
+    extensions strictly cited against `QUERY-SPEC.md`.
 
 ### Stage benchmark (P-G10)
 

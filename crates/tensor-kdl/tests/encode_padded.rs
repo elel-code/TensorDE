@@ -82,6 +82,86 @@ fn encode_scalar_newtype_delegates_to_inner_value() {
     );
 }
 
+#[test]
+fn encode_enum_variants_and_unwrap_property_round_trip() {
+    use tensor_kdl::{Flag, from_str_decode};
+
+    #[derive(Debug, Decode, Encode, PartialEq)]
+    enum Item {
+        #[kdl(name = "bind")]
+        Bind {
+            #[kdl(argument)]
+            key: String,
+            #[kdl(property)]
+            action: String,
+        },
+        Quit(Flag),
+    }
+
+    #[derive(Debug, Decode, Encode, PartialEq)]
+    struct Layout {
+        #[kdl(child, unwrap(property))]
+        gaps: f64,
+    }
+
+    #[derive(Debug, Decode, Encode, PartialEq)]
+    struct PropsNode {
+        #[kdl(properties)]
+        props: std::collections::HashMap<String, String>,
+    }
+
+    let items = [
+        Item::Bind {
+            key: "Mod+Q".into(),
+            action: "quit".into(),
+        },
+        Item::Quit(Flag),
+    ];
+    let bind_text = to_string_node(&items[0]).unwrap();
+    assert!(
+        bind_text.contains("bind")
+            && bind_text.contains("Mod+Q")
+            && bind_text.contains("action=quit"),
+        "unexpected bind encode: {bind_text:?}"
+    );
+    let quit_text = to_string_node(&items[1]).unwrap();
+    assert_eq!(quit_text.trim(), "quit");
+
+    let layout = Layout { gaps: 8.0 };
+    // Children-only root: document encode emits top-level `gaps gaps=…`
+    // (design §11 / suite Translation Rules via `format_document`).
+    let layout_doc = to_string(&layout).unwrap();
+    assert!(
+        layout_doc.contains("gaps") && layout_doc.contains("8"),
+        "unexpected layout encode: {layout_doc:?}"
+    );
+    let decoded_layout: Layout = from_str_decode(&layout_doc).unwrap();
+    assert_eq!(decoded_layout, layout);
+
+    let mut props = std::collections::HashMap::new();
+    props.insert("b".into(), "two".into());
+    props.insert("a".into(), "1".into());
+    let props_node = PropsNode { props };
+    let props_text = to_string_node(&props_node).unwrap();
+    // Canonical formatter: properties alphabetical (suite translation rules).
+    assert!(
+        props_text.contains("a=") && props_text.contains("b="),
+        "unexpected props encode: {props_text:?}"
+    );
+    let a_pos = props_text.find("a=").unwrap();
+    let b_pos = props_text.find("b=").unwrap();
+    assert!(
+        a_pos < b_pos,
+        "properties must be alphabetical: {props_text:?}"
+    );
+    let round: PropsNode = {
+        let doc = tensor_kdl::from_str(&props_text).unwrap();
+        PropsNode::decode_node(&doc.nodes[0]).unwrap()
+    };
+    assert_eq!(round.props.get("a").map(String::as_str), Some("1"));
+    assert_eq!(round.props.get("b").map(String::as_str), Some("two"));
+}
+
 #[derive(Default)]
 struct PaddedProbe {
     used_padding: bool,

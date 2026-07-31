@@ -35,11 +35,7 @@ impl EncodeScalar for str {
     }
 }
 
-impl EncodeScalar for &str {
-    fn encode_scalar(&self) -> CtxResult<Value<'static>> {
-        Ok(Value::String(KdlStr::owned((*self).to_owned())))
-    }
-}
+// `&T` covered by the blanket below (`str: EncodeScalar` ⇒ `&str: EncodeScalar`).
 
 impl EncodeScalar for bool {
     fn encode_scalar(&self) -> CtxResult<Value<'static>> {
@@ -47,21 +43,36 @@ impl EncodeScalar for bool {
     }
 }
 
-impl EncodeScalar for i64 {
+macro_rules! impl_int_encode_scalar {
+    ($($t:ty),* $(,)?) => {$(
+        impl EncodeScalar for $t {
+            fn encode_scalar(&self) -> CtxResult<Value<'static>> {
+                Ok(Value::Int(i128::from(*self)))
+            }
+        }
+    )*};
+}
+
+impl_int_encode_scalar!(i8, i16, i32, i64, i128, u8, u16, u32, u64);
+
+impl EncodeScalar for usize {
     fn encode_scalar(&self) -> CtxResult<Value<'static>> {
-        Ok(Value::Int(i128::from(*self)))
+        Ok(Value::Int(*self as i128))
     }
 }
 
-impl EncodeScalar for i32 {
+impl EncodeScalar for isize {
     fn encode_scalar(&self) -> CtxResult<Value<'static>> {
-        Ok(Value::Int(i128::from(*self)))
+        Ok(Value::Int(*self as i128))
     }
 }
 
-impl EncodeScalar for u32 {
+impl EncodeScalar for u128 {
     fn encode_scalar(&self) -> CtxResult<Value<'static>> {
-        Ok(Value::Int(i128::from(*self)))
+        i128::try_from(*self).map(Value::Int).map_err(|_| {
+            crate::ErrorCtx::new(crate::ErrorCode::TypeMismatch, 0)
+                .with_message("u128 value exceeds i128 range for KDL encode")
+        })
     }
 }
 
@@ -71,12 +82,30 @@ impl EncodeScalar for f64 {
     }
 }
 
+impl EncodeScalar for f32 {
+    fn encode_scalar(&self) -> CtxResult<Value<'static>> {
+        Ok(Value::float(f64::from(*self)))
+    }
+}
+
+impl<T: EncodeScalar + ?Sized> EncodeScalar for &T {
+    fn encode_scalar(&self) -> CtxResult<Value<'static>> {
+        (*self).encode_scalar()
+    }
+}
+
 impl<T: EncodeScalar> EncodeScalar for Option<T> {
     fn encode_scalar(&self) -> CtxResult<Value<'static>> {
         match self {
             Some(v) => v.encode_scalar(),
             None => Ok(Value::Null),
         }
+    }
+}
+
+impl Encode for crate::Flag {
+    fn encode_node(&self) -> CtxResult<Node<'static>> {
+        Ok(flag_node("flag"))
     }
 }
 

@@ -1,9 +1,10 @@
 # Tensor KDL crate design
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
-[glaze-alignment.md](glaze-alignment.md). Through **P-G10**: `Parser::from_padded`
-SWAR over-read; through **P-G11**: typed padded-parser reads. Phase-2 typed
-encode is available, together with an explicitly incomplete KQL subset.
+[glaze-alignment.md](glaze-alignment.md). Through **P-G11**: padded typed reads.
+Phase-2 typed encode covers unambiguous reverse shapes (including enums and
+`unwrap(property)` / properties maps); KQL is an explicitly incomplete subset of
+`references/kdl/QUERY-SPEC.md` (siblings + comparisons included; not full KQL).
 Stage benches: `cargo bench -p tensor-kdl` (+ `--bench advanced`).
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  
 Language: KDL **2.0.0** (finalized). Process macros are a first-class surface, not an afterthought.
@@ -485,12 +486,20 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
 
 ## 11. Write / encode (phase 2)
 
-- `Encode` / `EncodeScalar` plus matching derives are implemented for the
-  decode field shapes that have an unambiguous reverse mapping.
+- `Encode` / `EncodeScalar` plus matching derives cover the decode field shapes
+  with an unambiguous reverse mapping, including:
+  - struct / unit / newtype nodes;
+  - enum unit, newtype, and named-field variants (variant name → node name);
+  - `unwrap(argument)` and `unwrap(property)` children;
+  - `#[kdl(properties)]` maps (formatter sorts keys; see suite translation rules);
+  - `Flag` presence-only nodes.
 - Output goes through the stable canonical formatter: rightmost property wins,
-  then properties are sorted by key, matching the official suite translation.
-- `flatten`, property maps, and `unwrap(property)` fail at derive time until a
-  lossless reverse policy is specified.
+  then properties are sorted by key, matching
+  `references/kdl/tests/README.md` Translation Rules.
+- `flatten` still fails at derive time (no lossless reverse for
+  `DecodePartial` sinks). Direct monomorphized write (Glaze `write_json` into a
+  buffer without DOM) remains optional follow-on work — see
+  [glaze-alignment.md](glaze-alignment.md) next steps.
 
 ## 12. Testing strategy
 
