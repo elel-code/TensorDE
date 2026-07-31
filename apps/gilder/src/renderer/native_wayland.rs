@@ -167,6 +167,7 @@ impl NativeWaylandSurfaceHandles {
 pub enum NativeWaylandError {
     Wayland(String),
     MissingRawHandle(&'static str),
+    MissingPreferredFractionalScale,
     Timeout(String),
 }
 
@@ -175,6 +176,12 @@ impl fmt::Display for NativeWaylandError {
         match self {
             Self::Wayland(err) => write!(f, "wayland error: {err}"),
             Self::MissingRawHandle(handle) => write!(f, "missing Wayland {handle} handle"),
+            Self::MissingPreferredFractionalScale => {
+                write!(
+                    f,
+                    "missing Wayland preferred fractional scale for configured surface"
+                )
+            }
             Self::Timeout(message) => write!(f, "timeout: {message}"),
         }
     }

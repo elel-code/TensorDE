@@ -15,6 +15,9 @@ pub struct NativeWaylandSurfaceSnapshot {
     pub scale_den: u32,
     pub fractional_scale_rounding: NativeWaylandFractionalScaleRounding,
     pub configured: bool,
+    pub render_ready: bool,
+    pub fractional_scale_expected: bool,
+    pub fractional_scale_received: bool,
     pub surface_protocol_id: u32,
     pub layer: super::NativeWaylandLayer,
     pub requested_output_name: Option<String>,
@@ -139,9 +142,17 @@ impl NativeWaylandFrameCallbackState {
         if let Some(previous) = self.last_time_millis {
             let interval = time_millis.wrapping_sub(previous);
             self.last_interval_millis = Some(interval);
-            self.min_interval_millis = Some(self.min_interval_millis.map_or(interval, |v| v.min(interval)));
-            self.max_interval_millis = Some(self.max_interval_millis.map_or(interval, |v| v.max(interval)));
-            self.interval_total_millis = self.interval_total_millis.saturating_add(u64::from(interval));
+            self.min_interval_millis = Some(
+                self.min_interval_millis
+                    .map_or(interval, |v| v.min(interval)),
+            );
+            self.max_interval_millis = Some(
+                self.max_interval_millis
+                    .map_or(interval, |v| v.max(interval)),
+            );
+            self.interval_total_millis = self
+                .interval_total_millis
+                .saturating_add(u64::from(interval));
             self.interval_count = self.interval_count.saturating_add(1);
         }
         self.last_time_millis = Some(time_millis);
@@ -292,7 +303,9 @@ pub(super) fn output_snapshot(info: &OutputInfo) -> NativeWaylandOutputSnapshot 
         description: info.description.clone(),
         make: info.make.clone(),
         model: info.model.clone(),
-        logical_position: info.logical_position.map(|position| (position.x, position.y)),
+        logical_position: info
+            .logical_position
+            .map(|position| (position.x, position.y)),
         logical_size,
         scale_factor: info.scale_factor,
         current_mode: logical_size.map(|(width, height)| NativeWaylandOutputModeSnapshot {
@@ -311,7 +324,11 @@ pub(super) fn output_labels(outputs: &[NativeWaylandOutputSnapshot]) -> String {
         .iter()
         .map(|output| {
             let name = output.name.as_deref().unwrap_or("<unnamed>");
-            match output.description.as_deref().filter(|value| !value.is_empty()) {
+            match output
+                .description
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
                 Some(description) => format!("{name}#{} ({description})", output.id),
                 None => format!("{name}#{}", output.id),
             }
