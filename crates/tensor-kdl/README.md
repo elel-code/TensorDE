@@ -12,11 +12,15 @@ Design notes: [`docs/kdl/design.md`](../../docs/kdl/design.md).
 - Friendly `ErrorCtx` with byte offsets and `format_error`
 - Optional `#[derive(Decode)]` / `#[derive(DecodeScalar)]` via `tensor-kdl-macros`
 - Typed `#[derive(Encode)]` / `#[derive(EncodeScalar)]` with canonical KDL output
-  (structs, enums, properties maps, `unwrap(property)`)
+  (structs, enums, properties maps, `unwrap(property)`, `flatten` via
+  `EncodePartial`)
+- Glaze-shaped write: `write` / `write_into` / `write_into_slice`
+  (`ErrorCtx.consumed` = bytes written)
 - Glaze-style padded input for DOM and direct typed reads
 - Deliberately small KQL subset (`top()`, `>` / `>>`, `+` / `++`, `||`,
-  existence / equality / ordered / string matchers — see `QUERY-SPEC.md`)
-- Criterion benches under `benches/`
+  `values()` / `props()`, equality / type RHS / ordered / string matchers —
+  see `QUERY-SPEC.md`)
+- Criterion benches under `benches/`; derive UI via trybuild
 
 ## Quick start
 

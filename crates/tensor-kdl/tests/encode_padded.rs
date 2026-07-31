@@ -201,3 +201,112 @@ fn padded_read_uses_live_padded_parser_and_const_opts() {
     assert!(partial.used_padding);
     assert_eq!(partial.nodes, 1);
 }
+
+#[test]
+fn write_into_and_fixed_buffer_match_glaze_shape() {
+    use tensor_kdl::{ErrorCode, write, write_into, write_into_slice};
+
+    let root = Root {
+        version: "2".to_owned(),
+        widgets: vec![],
+    };
+    let allocated = write(&root).unwrap();
+    assert!(allocated.starts_with("version"));
+
+    let mut buf = String::from("stale");
+    let ec = write_into(&root, &mut buf);
+    assert!(ec.is_ok());
+    assert_eq!(ec.consumed, buf.len());
+    assert_eq!(buf, allocated);
+
+    let mut small = [0u8; 4];
+    let overflow = write_into_slice(&root, &mut small);
+    assert_eq!(overflow.code, ErrorCode::BufferOverflow);
+    assert_eq!(overflow.consumed, 4);
+
+    let mut big = vec![0u8; allocated.len()];
+    let ok = write_into_slice(&root, &mut big);
+    assert!(ok.is_ok());
+    assert_eq!(ok.consumed, allocated.len());
+    assert_eq!(std::str::from_utf8(&big[..ok.consumed]).unwrap(), allocated);
+}
+
+#[test]
+fn encode_flatten_via_encode_partial_round_trips() {
+    use tensor_kdl::{
+        Decode, DecodePartial, Encode, EncodePartial, Entry, KdlStr, Node, Value, flag_node,
+        from_str, prop_entry, to_string_node,
+    };
+
+    // Node-shaped host: flatten can emit both properties and children
+    // (document roots only reverse children — design §11).
+    #[derive(Debug, Default, PartialEq)]
+    struct Extra {
+        flags: Vec<String>,
+        props: std::collections::BTreeMap<String, String>,
+    }
+
+    impl<'a> DecodePartial<'a> for Extra {
+        fn insert_child(&mut self, node: &Node<'a>) -> tensor_kdl::CtxResult<bool> {
+            self.flags.push(node.name.as_str().to_owned());
+            Ok(true)
+        }
+
+        fn insert_property(&mut self, key: &str, value: &Value<'a>) -> tensor_kdl::CtxResult<bool> {
+            if let Some(s) = value.as_str() {
+                self.props.insert(key.to_owned(), s.to_owned());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+    }
+
+    impl EncodePartial for Extra {
+        fn encode_entries(&self) -> tensor_kdl::CtxResult<Vec<Entry<'static>>> {
+            Ok(self
+                .props
+                .iter()
+                .map(|(k, v)| prop_entry(k.clone(), Value::String(KdlStr::owned(v.clone()))))
+                .collect())
+        }
+
+        fn encode_children(&self) -> tensor_kdl::CtxResult<Vec<Node<'static>>> {
+            Ok(self
+                .flags
+                .iter()
+                .map(|name| flag_node(name.clone()))
+                .collect())
+        }
+    }
+
+    #[derive(Debug, Decode, Encode, PartialEq)]
+    struct Widget {
+        #[kdl(argument)]
+        id: i64,
+        #[kdl(flatten)]
+        extra: Extra,
+    }
+
+    let doc = from_str(
+        r#"
+        widget 7 note="hi" {
+            alpha
+            beta
+        }
+    "#,
+    )
+    .unwrap();
+    let widget = Widget::decode_node(&doc.nodes[0]).unwrap();
+    assert_eq!(widget.id, 7);
+    assert_eq!(widget.extra.flags, vec!["alpha", "beta"]);
+    assert_eq!(
+        widget.extra.props.get("note").map(String::as_str),
+        Some("hi")
+    );
+
+    let text = to_string_node(&widget).unwrap();
+    let round_doc = from_str(&text).unwrap();
+    let round = Widget::decode_node(&round_doc.nodes[0]).unwrap();
+    assert_eq!(round, widget);
+}

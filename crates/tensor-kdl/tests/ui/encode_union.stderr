@@ -1,0 +1,5 @@
+error: unions are not supported
+ --> tests/ui/encode_union.rs:4:7
+  |
+4 | union Bad {
+  |       ^^^

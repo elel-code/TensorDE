@@ -1,0 +1,5 @@
+error: unsupported kdl attribute
+ --> tests/ui/decode_unsupported_attr.rs:5:11
+  |
+5 |     #[kdl(not_a_real_attr)]
+  |           ^^^^^^^^^^^^^^^

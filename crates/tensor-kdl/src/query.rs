@@ -9,20 +9,19 @@
 //! - node names, `[]`, `(tag)` and `(tag)name`;
 //! - `top()`, direct-child `>`, descendant `>>`, immediate sibling `+`,
 //!   general sibling `++`, and union `||`;
-//! - existence matchers `[val()]`, `[val(n)]`, `[prop(name)]`, and bare `[name]`;
+//! - existence matchers `[val()]`, `[val(n)]`, `[prop(name)]`, bare `[name]`,
+//!   `[values()]` (any argument), `[props()]` (any property);
 //! - equality / inequality (`=`, `!=`) on `val()`, `prop()`, bare props,
 //!   `name()`, `tag()` — **no cross-type coercion** (QUERY-SPEC: `"1"` is never
 //!   equal to `1`);
+//! - type-annotation match on value/prop RHS: `[val() = (foo)]` /
+//!   `[prop(k) = (foo)]` (QUERY-SPEC: match the **value's** type annotation);
 //! - same-type ordered comparisons (`<`, `>`, `<=`, `>=`) on `val()` / `prop()`
 //!   numbers or strings;
 //! - string operators `^=` / `$=` / `*=` on string `val()`, `prop()`, `tag()`,
 //!   or `name()` values.
 //!
-//! Still unsupported (QUERY-SPEC has them; we deliberately omit):
-//!
-//! - `values()` / `props()` accessors;
-//! - type-annotation match on the right-hand side (`[val() = (foo)]`);
-//! - whitespace-significant multi-token filters beyond the subset above.
+//! Still not full KQL: complex multi-matcher edge cases and SCHEMA-SPEC.
 
 use std::collections::{HashMap, HashSet};
 
@@ -380,6 +379,14 @@ fn accessor_matches(node: &Node<'_>, accessor: &str) -> bool {
         return compare_accessor(node, left, op, right);
     }
 
+    // QUERY-SPEC: `values()` / `props()` — existence of any argument / property.
+    if accessor == "values()" {
+        return node.arguments().next().is_some();
+    }
+    if accessor == "props()" {
+        return node.properties().next().is_some();
+    }
+
     if let Some(argument) = accessor
         .strip_prefix("val(")
         .and_then(|value| value.strip_suffix(')'))
@@ -469,14 +476,26 @@ fn find_operator(accessor: &str, token: &str) -> Option<usize> {
 }
 
 fn compare_accessor(node: &Node<'_>, left: &str, op: CmpOp, right: &str) -> bool {
+    // QUERY-SPEC: `[val() = (foo)]` / `[prop(k) = (foo)]` matches the **value's**
+    // type annotation, not the node tag. Only `=` / `!=` apply.
+    // `()` means "any type annotation present on the value".
+    if let Some(expected_tag) = parse_type_rhs(right) {
+        let actual_tag = resolve_value_type_name(node, left);
+        return match (op, expected_tag, actual_tag) {
+            (CmpOp::Eq, None, Some(_)) => true,
+            (CmpOp::Eq, Some(exp), Some(act)) => act == exp,
+            (CmpOp::Ne, None, None) => true,
+            (CmpOp::Ne, None, Some(_)) => false,
+            (CmpOp::Ne, Some(exp), Some(act)) => act != exp,
+            (CmpOp::Ne, Some(_), None) => true,
+            (CmpOp::Eq, _, None) => false,
+            _ => false,
+        };
+    }
+
     let Some(actual) = resolve_accessor_value(node, left) else {
         return false;
     };
-    // QUERY-SPEC: RHS may be `$type | $string | $number | $keyword`. Type
-    // annotations on the RHS (`(foo)`) are not implemented in this subset.
-    if right.trim_start().starts_with('(') {
-        return false;
-    }
     let expected = parse_matcher_literal(right);
 
     match op {
@@ -498,6 +517,60 @@ fn compare_accessor(node: &Node<'_>, left: &str, op: CmpOp, right: &str) -> bool
             }
         }
     }
+}
+
+/// QUERY-SPEC RHS `$type`: `(foo)` or `()` (any type annotation on the value).
+fn parse_type_rhs(right: &str) -> Option<Option<&str>> {
+    let right = right.trim();
+    let rest = right.strip_prefix('(')?;
+    let end = rest.find(')')?;
+    if rest[end + 1..].trim().is_empty() {
+        let inner = rest[..end].trim();
+        Some(if inner.is_empty() { None } else { Some(inner) })
+    } else {
+        None
+    }
+}
+
+fn resolve_value_type_name<'a>(node: &'a Node<'a>, left: &str) -> Option<&'a str> {
+    let left = left.trim();
+    if let Some(argument) = left
+        .strip_prefix("val(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let index = if argument.trim().is_empty() {
+            0
+        } else {
+            argument.trim().parse::<usize>().ok()?
+        };
+        return node
+            .entries
+            .iter()
+            .filter_map(|e| e.as_argument())
+            .nth(index)
+            .and_then(|(type_name, _)| type_name.map(|t| t.as_str()));
+    }
+    if let Some(property) = left
+        .strip_prefix("prop(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let key = property.trim();
+        return node.entries.iter().rev().find_map(|e| match e {
+            crate::Entry::Property {
+                key: k, type_name, ..
+            } if k.as_str() == key => type_name.as_ref().map(|t| t.as_str()),
+            _ => None,
+        });
+    }
+    if !left.contains(['(', ')', '=', '<', '>', '!', '^', '$', '*']) {
+        return node.entries.iter().rev().find_map(|e| match e {
+            crate::Entry::Property {
+                key: k, type_name, ..
+            } if k.as_str() == left => type_name.as_ref().map(|t| t.as_str()),
+            _ => None,
+        });
+    }
+    None
 }
 
 enum AccessorValue<'a> {

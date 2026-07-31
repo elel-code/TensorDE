@@ -1,12 +1,20 @@
 //! Typed encode — reverse of [`crate::Decode`] (Glaze write symmetry).
 //!
 //! Builds a DOM [`Node`]/ [`Document`] then pretty-prints via
-//! [`crate::format_document`]. Not a monomorphized write path (Glaze has both
-//! DOM and direct write); sufficient for config emit and suite roundtrip helpers.
+//! [`crate::format_document`] / [`crate::format_document_into`].
+//!
+//! Glaze write API shape (`references/glaze/docs/writing.md`):
+//! - [`write_into`] — resizable buffer, `ErrorCtx.consumed` = bytes written
+//! - [`write_into_slice`] — fixed buffer + [`ErrorCode::BufferOverflow`]
+//! - [`write`] — allocate `String` (`expected<T, error_ctx>` role)
+//!
+//! Field-by-field monomorphized streaming (no intermediate `Node`) remains a
+//! later optimization; the public write entrypoints already match Glaze's
+//! buffer/`error_ctx` contract.
 
-use crate::error::CtxResult;
+use crate::error::{CtxResult, ErrorCode, ErrorCtx};
 use crate::value::{Document, Entry, KdlStr, Node, Value};
-use crate::write::format_document;
+use crate::write::{format_document, format_document_into, format_node_into};
 
 /// Encode `Self` as a single KDL node.
 pub trait Encode {
@@ -21,6 +29,23 @@ pub trait EncodeDocument {
 /// Encode a scalar as a KDL [`Value`].
 pub trait EncodeScalar {
     fn encode_scalar(&self) -> CtxResult<Value<'static>>;
+}
+
+/// Reverse of [`crate::DecodePartial`] for `#[kdl(flatten)]` on encode.
+///
+/// Policy (`docs/kdl/design.md` §11): emit extra properties then extra children
+/// after the host struct's known fields. Property key order is normalized by
+/// the canonical formatter (suite Translation Rules).
+pub trait EncodePartial {
+    /// Extra properties / arguments to merge into the host node.
+    fn encode_entries(&self) -> CtxResult<Vec<Entry<'static>>> {
+        Ok(Vec::new())
+    }
+
+    /// Extra child nodes to append after the host's known children.
+    fn encode_children(&self) -> CtxResult<Vec<Node<'static>>> {
+        Ok(Vec::new())
+    }
 }
 
 impl EncodeScalar for String {
@@ -172,4 +197,78 @@ pub fn to_string<T: EncodeDocument>(value: &T) -> CtxResult<String> {
 pub fn to_string_node<T: Encode>(value: &T) -> CtxResult<String> {
     let node = value.encode_node()?;
     Ok(format_document(&Document { nodes: vec![node] }))
+}
+
+/// Glaze `write_json(T)` — allocate and return KDL text.
+///
+/// On success `Ok(String)`; on failure `Err(ErrorCtx)` (encode path).
+pub fn write<T: EncodeDocument>(value: &T) -> std::result::Result<String, ErrorCtx> {
+    let mut buffer = String::new();
+    let ec = write_into(value, &mut buffer);
+    if ec.is_err() { Err(ec) } else { Ok(buffer) }
+}
+
+/// Glaze `write_json(T, buffer)` for resizable buffers.
+///
+/// Clears `buffer`, formats into it, returns [`ErrorCtx`] with
+/// `consumed == buffer.len()` on success (Glaze: `buffer.size() == ec.count`).
+pub fn write_into<T: EncodeDocument>(value: &T, buffer: &mut String) -> ErrorCtx {
+    buffer.clear();
+    match value.encode_document() {
+        Ok(doc) => {
+            format_document_into(&doc, buffer);
+            ErrorCtx::ok(buffer.len())
+        }
+        Err(error) => error,
+    }
+}
+
+/// Write a single node type into a resizable buffer (one-node document).
+pub fn write_node_into<T: Encode>(value: &T, buffer: &mut String) -> ErrorCtx {
+    buffer.clear();
+    match value.encode_node() {
+        Ok(node) => {
+            format_node_into(&node, buffer);
+            ErrorCtx::ok(buffer.len())
+        }
+        Err(error) => error,
+    }
+}
+
+/// Glaze fixed-buffer write (`std::span` / array role).
+///
+/// On success writes `consumed` bytes starting at `buffer[0]`. On overflow
+/// copies a prefix (lower bound on required size per Glaze docs) and returns
+/// [`ErrorCode::BufferOverflow`] with `consumed` = bytes stored.
+pub fn write_into_slice<T: EncodeDocument>(value: &T, buffer: &mut [u8]) -> ErrorCtx {
+    match value.encode_document() {
+        Ok(doc) => {
+            let text = format_document(&doc);
+            write_bytes_into_slice(text.as_bytes(), buffer)
+        }
+        Err(error) => error,
+    }
+}
+
+/// Fixed-buffer write for a single node document.
+pub fn write_node_into_slice<T: Encode>(value: &T, buffer: &mut [u8]) -> ErrorCtx {
+    match value.encode_node() {
+        Ok(node) => {
+            let mut text = String::new();
+            format_node_into(&node, &mut text);
+            write_bytes_into_slice(text.as_bytes(), buffer)
+        }
+        Err(error) => error,
+    }
+}
+
+fn write_bytes_into_slice(bytes: &[u8], buffer: &mut [u8]) -> ErrorCtx {
+    if bytes.len() > buffer.len() {
+        let n = buffer.len();
+        buffer.copy_from_slice(&bytes[..n]);
+        return ErrorCtx::new(ErrorCode::BufferOverflow, n)
+            .with_message("fixed write buffer too small");
+    }
+    buffer[..bytes.len()].copy_from_slice(bytes);
+    ErrorCtx::ok(bytes.len())
 }

@@ -1,11 +1,12 @@
 # Tensor KDL crate design
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
-[glaze-alignment.md](glaze-alignment.md). Through **P-G11**: padded typed reads.
-Phase-2 typed encode covers unambiguous reverse shapes (including enums and
-`unwrap(property)` / properties maps); KQL is an explicitly incomplete subset of
-`references/kdl/QUERY-SPEC.md` (siblings + comparisons included; not full KQL).
-Stage benches: `cargo bench -p tensor-kdl` (+ `--bench advanced`).
+[glaze-alignment.md](glaze-alignment.md). Through **P-G11**: padded typed reads;
+Glaze-shaped `write_*` buffers; typed encode reverse shapes including
+`EncodePartial` flatten. KQL is an explicitly incomplete subset of
+`references/kdl/QUERY-SPEC.md` (siblings, comparisons, `values`/`props`, value
+type RHS; not full KQL). Derive UI: trybuild. Stage benches:
+`cargo bench -p tensor-kdl` (+ `--bench advanced`).
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  
 Language: KDL **2.0.0** (finalized). Process macros are a first-class surface, not an afterthought.
 
@@ -492,14 +493,16 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
   - enum unit, newtype, and named-field variants (variant name → node name);
   - `unwrap(argument)` and `unwrap(property)` children;
   - `#[kdl(properties)]` maps (formatter sorts keys; see suite translation rules);
-  - `Flag` presence-only nodes.
+  - `Flag` presence-only nodes;
+  - `#[kdl(flatten)]` via [`EncodePartial`] (entries then children after known fields).
+- Glaze-shaped write entrypoints (`references/glaze/docs/writing.md`):
+  - `write` / `write_into` — resizable buffer; `ErrorCtx.consumed` = bytes written
+  - `write_into_slice` — fixed buffer; `ErrorCode::BufferOverflow` on overflow
+  - Implementation still formats via DOM + canonical printer today; field-level
+    monomorphized streaming remains optional.
 - Output goes through the stable canonical formatter: rightmost property wins,
   then properties are sorted by key, matching
   `references/kdl/tests/README.md` Translation Rules.
-- `flatten` still fails at derive time (no lossless reverse for
-  `DecodePartial` sinks). Direct monomorphized write (Glaze `write_json` into a
-  buffer without DOM) remains optional follow-on work — see
-  [glaze-alignment.md](glaze-alignment.md) next steps.
 
 ## 12. Testing strategy
 
@@ -507,7 +510,7 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
 |-------|------|
 | Unit | SWAR scanners, numbers, strings, slashdash, escline |
 | Conformance | Official KDL 2 suite under `references/kdl/tests` |
-| Derive | `trybuild` for macro errors; integration for happy paths |
+| Derive | `trybuild` UI tests under `crates/tensor-kdl/tests/ui/`; integration happy paths |
 | Error UX | Inst snapshots of `format_error` / miette reports |
 | Bench | Criterion: niri-sized config, synthetic 1–10 MB KDL; compare optional baseline vs knus if linked in benches only |
 

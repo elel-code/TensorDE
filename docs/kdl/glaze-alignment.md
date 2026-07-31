@@ -180,16 +180,17 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 15. ~~P-G10a Parser padded over-read; P-G10b mixed primary+sibling children~~ done.
 16. ~~P-G11 const/runtime typed reads on a padded parser~~ done.
 17. ~~Typed encode completeness (enums, `unwrap(property)`, properties maps,
-    broader `EncodeScalar`, `Flag`)~~ done — still **DOM-backed** via
-    `format_document` (suite Translation Rules). Not Glaze direct-buffer write.
+    broader `EncodeScalar`, `Flag`, `EncodePartial` flatten)~~ done.
 18. ~~KQL subset expansion against `QUERY-SPEC.md`~~ done for selectors
-    `+` / `++`, equality / inequality, same-type ordered compares, and string
-    `^=` / `$=` / `*=`. Still **not** full KQL (`values()` / `props()`, RHS
-    type annotations, …).
-19. **Next (optional):** benchmark / implement Glaze-shaped direct write
-    (`references/glaze/docs/writing.md` — `write_*` → `error_ctx` with
-    `count` = bytes written) before replacing DOM-backed encode; keep KQL
-    extensions strictly cited against `QUERY-SPEC.md`.
+    `+` / `++`, equality / inequality, same-type ordered compares, string
+    `^=` / `$=` / `*=`, `values()` / `props()`, and value type RHS
+    `[val() = (tag)]`. Still **not** full KQL / SCHEMA-SPEC.
+19. ~~Glaze-shaped write API~~ done — `write` / `write_into` / `write_into_slice`
+    with `ErrorCtx.consumed` = bytes written and `ErrorCode::BufferOverflow`
+    (`references/glaze/docs/writing.md`). Formatting path still uses DOM +
+    suite Translation Rules printer.
+20. **Next (optional):** monomorphized field-level write (no intermediate
+    `Node`/`Document`); further KQL only with QUERY-SPEC citations.
 
 ### Stage benchmark (P-G10)
 

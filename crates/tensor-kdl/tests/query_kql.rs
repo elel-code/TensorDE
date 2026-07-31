@@ -180,3 +180,31 @@ fn sibling_operators() {
     assert_eq!(query(&top, "first + second").len(), 1);
     assert_eq!(query(&top, "first ++ third").len(), 1);
 }
+
+#[test]
+fn values_props_existence_and_value_type_rhs() {
+    // QUERY-SPEC: values()/props() existence; [val() = (tag)] matches value type.
+    let doc = from_str(
+        r#"
+            plain
+            args 1 2
+            props only=1
+            both 1 only=2
+            typed (sri)"deadbeef"
+            prop_typed integrity=(sri)sha512-deadbeef
+        "#,
+    )
+    .unwrap();
+    // nodes with any argument: args, both, typed
+    assert_eq!(query(&doc, "[values()]").len(), 3);
+    // nodes with any property: props, both, prop_typed
+    assert_eq!(query(&doc, "[props()]").len(), 3);
+    assert_eq!(query(&doc, r#"typed[val() = (sri)]"#).len(), 1);
+    assert_eq!(
+        query(&doc, r#"prop_typed[prop(integrity) = (sri)]"#).len(),
+        1
+    );
+    assert_eq!(query(&doc, r#"prop_typed[integrity = (sri)]"#).len(), 1);
+    assert_eq!(query(&doc, r#"args[val() = (sri)]"#).len(), 0);
+    assert_eq!(query(&doc, r#"typed[val() = ()]"#).len(), 1);
+}

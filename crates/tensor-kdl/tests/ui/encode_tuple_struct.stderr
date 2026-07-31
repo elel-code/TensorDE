@@ -1,0 +1,5 @@
+error: Encode supports named-field, unit, or single-field newtype structs
+ --> tests/ui/encode_tuple_struct.rs:4:8
+  |
+4 | struct Bad(i64, i64);
+  |        ^^^

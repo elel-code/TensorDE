@@ -1,6 +1,10 @@
 //! Pretty-printer aligned with the official KDL test-suite translation rules.
 //!
 //! See `references/kdl/tests/README.md` (Translation Rules).
+//!
+//! Glaze write symmetry (`references/glaze/docs/writing.md`): formatting sinks
+//! into a caller buffer so [`crate::write_into`] can return
+//! [`crate::ErrorCtx`] with `consumed` = bytes written.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -11,13 +15,26 @@ use crate::value::{Document, Entry, Node, Value};
 /// Write a document using the official test-suite pretty-print conventions.
 pub fn format_document(doc: &Document<'_>) -> String {
     let mut out = String::new();
+    format_document_into(doc, &mut out);
+    out
+}
+
+/// Format `doc` into `out` (append). Does not clear `out`.
+pub fn format_document_into(doc: &Document<'_>, out: &mut String) {
     for node in &doc.nodes {
-        format_node(node, 0, &mut out);
+        format_node(node, 0, out);
     }
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out
+}
+
+/// Format a single node into `out` (append).
+pub fn format_node_into(node: &Node<'_>, out: &mut String) {
+    format_node(node, 0, out);
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
 }
 
 fn format_node(node: &Node<'_>, indent: usize, out: &mut String) {

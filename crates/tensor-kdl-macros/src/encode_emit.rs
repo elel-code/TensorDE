@@ -44,6 +44,7 @@ pub(crate) fn expand_encode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
                         field.role,
                         FieldRole::Child { .. }
                             | FieldRole::Children { .. }
+                            | FieldRole::Flatten
                             | FieldRole::Skip
                             | FieldRole::DefaultOnly
                     )
@@ -163,16 +164,8 @@ fn expand_encode_enum(
     })
 }
 
-fn reject_unsupported_encode_fields(fields: &[FieldInfo]) -> syn::Result<()> {
-    if let Some(field) = fields
-        .iter()
-        .find(|field| matches!(field.role, FieldRole::Flatten))
-    {
-        return Err(syn::Error::new_spanned(
-            &field.ident,
-            "Encode does not support flatten (no lossless reverse policy yet)",
-        ));
-    }
+fn reject_unsupported_encode_fields(_fields: &[FieldInfo]) -> syn::Result<()> {
+    // Flatten is supported via EncodePartial (design §11).
     Ok(())
 }
 
@@ -388,7 +381,21 @@ fn field_encode_stmts(
                 let _ = field;
             }
             FieldRole::Flatten => {
-                let _ = field;
+                // After known fields: merge EncodePartial entries then children.
+                entries.push(quote! {
+                    {
+                        let __partial_entries =
+                            ::tensor_kdl::EncodePartial::encode_entries(#field_ref)?;
+                        __entries.extend(__partial_entries);
+                    }
+                });
+                children.push(quote! {
+                    {
+                        let __partial_children =
+                            ::tensor_kdl::EncodePartial::encode_children(#field_ref)?;
+                        __children.extend(__partial_children);
+                    }
+                });
             }
         }
     }
@@ -535,6 +542,15 @@ pub(crate) fn emit_encode(
                             }
                         });
                     }
+                }
+                FieldRole::Flatten => {
+                    top.push(quote! {
+                        {
+                            let __partial_children =
+                                ::tensor_kdl::EncodePartial::encode_children(&self.#id)?;
+                            __nodes.extend(__partial_children);
+                        }
+                    });
                 }
                 _ => {}
             }

@@ -60,8 +60,9 @@ pub use decode::{
     read_nodes_into_visit,
 };
 pub use encode::{
-    Encode, EncodeDocument, EncodeScalar, arg_entry, arg_node, flag_node, prop_entry, to_string,
-    to_string_node,
+    Encode, EncodeDocument, EncodePartial, EncodeScalar, arg_entry, arg_node, flag_node,
+    prop_entry, to_string, to_string_node, write, write_into, write_into_slice, write_node_into,
+    write_node_into_slice,
 };
 pub use error::{CtxResult, Error, ErrorCode, ErrorCtx, Result, format_error, format_error_code};
 #[cfg(feature = "diagnostics")]
@@ -78,7 +79,7 @@ pub use parse::{
 };
 pub use query::{query, query_node};
 pub use value::{Document, Entry, KdlStr, Node, Value};
-pub use write::format_document;
+pub use write::{format_document, format_document_into, format_node_into};
 
 #[cfg(feature = "derive")]
 pub use tensor_kdl_macros::{

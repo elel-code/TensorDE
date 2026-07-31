@@ -40,6 +40,9 @@ pub enum ErrorCode {
     UnexpectedToken,
     /// Glaze `no_read_input` — empty buffer.
     NoReadInput,
+    /// Glaze `buffer_overflow` — fixed write buffer too small
+    /// (`references/glaze/docs/writing.md`, `error_code::buffer_overflow`).
+    BufferOverflow,
 }
 
 impl ErrorCode {
@@ -70,6 +73,7 @@ impl ErrorCode {
             Self::DisallowedCodePoint => "disallowed code point",
             Self::UnexpectedToken => "unexpected token",
             Self::NoReadInput => "no read input",
+            Self::BufferOverflow => "buffer overflow",
         }
     }
 
