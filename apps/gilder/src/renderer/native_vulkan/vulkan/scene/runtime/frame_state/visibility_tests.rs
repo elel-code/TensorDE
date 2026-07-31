@@ -1,52 +1,145 @@
-use super::{SceneGpuDrawCommand, update_draw_visibility};
+use super::{SceneGpuDrawCommand, sampled_target_producer_topology, update_draw_visibility};
 
 use crate::engine::scene::semantic_world::{
     ResolvedObjectState, ResolvedSemanticFrame, SemanticEntity,
 };
 use crate::engine::scene::{
-    SceneMaterialHandle, SceneObjectHandle, SceneRenderEffectVisibilityPolicy,
-    SceneRenderGraphActivationPolicy, SceneRenderPassKind, SceneRenderTargetKind,
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
-    SceneRenderingDevicePassNode, SceneStringId,
+    SceneMaterialHandle, SceneObjectHandle, SceneRenderBindingKind,
+    SceneRenderEffectVisibilityPolicy, SceneRenderGraphActivationPolicy, SceneRenderPassKind,
+    SceneRenderTargetKind, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
+    SceneRenderingDeviceImageAccess, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
+    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneStringId,
 };
 
 #[test]
-fn hidden_object_disables_draws_without_removing_pass_topology() {
-    let pass = |pass_id, target, target_name, mesh_draw_start| SceneRenderingDevicePassNode {
-        graph_index: 2,
-        graph_activation_policy: SceneRenderGraphActivationPolicy::Always,
-        pass_record_index: pass_id,
-        pass_id,
-        role: SceneRenderPassKind::EffectMaterial,
-        target,
-        target_name,
-        binding_start: 0,
-        binding_count: 0,
-        effect_binding_start: u32::MAX,
-        effect_binding_count: 0,
-        effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
-        mesh_draw_start,
-        mesh_draw_count: 1,
+fn external_consumer_keeps_hidden_offscreen_producer_chain_live() {
+    let pass = |graph_index, pass_id, role, target, target_name, mesh_draw_start| {
+        SceneRenderingDevicePassNode {
+            graph_index,
+            graph_activation_policy: SceneRenderGraphActivationPolicy::Always,
+            pass_record_index: pass_id,
+            pass_id,
+            role,
+            target,
+            target_name,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
+            mesh_draw_start,
+            mesh_draw_count: 1,
+        }
     };
     let mut draw = effect_draw();
     draw.object = SceneObjectHandle(0);
     draw.resolved_object_index = 0;
+    let external_target_name = SceneStringId(17);
     let graph = SceneRenderingDeviceGraphPlan {
         pass_nodes: vec![
             pass(
+                2,
                 0,
-                SceneRenderTargetKind::FirstClassEffectTarget,
-                SceneStringId(0),
+                SceneRenderPassKind::BaseMaterial,
+                SceneRenderTargetKind::ImageLocalMain,
+                SceneStringId::NONE,
                 0,
             ),
-            pass(1, SceneRenderTargetKind::SceneColor, SceneStringId::NONE, 1),
+            pass(
+                2,
+                1,
+                SceneRenderPassKind::EffectMaterial,
+                SceneRenderTargetKind::FirstClassEffectTarget,
+                external_target_name,
+                1,
+            ),
+            pass(
+                2,
+                2,
+                SceneRenderPassKind::SceneComposite,
+                SceneRenderTargetKind::SceneColor,
+                SceneStringId::NONE,
+                2,
+            ),
+            pass(
+                3,
+                0,
+                SceneRenderPassKind::SceneComposite,
+                SceneRenderTargetKind::SceneColor,
+                SceneStringId::NONE,
+                3,
+            ),
+            pass(
+                4,
+                0,
+                SceneRenderPassKind::BaseMaterial,
+                SceneRenderTargetKind::ImageLocalMain,
+                SceneStringId::NONE,
+                4,
+            ),
         ],
-        target_allocations: Vec::new(),
+        target_allocations: vec![
+            SceneRenderingDeviceTargetAllocation {
+                graph_index: 2,
+                target: SceneRenderTargetKind::ImageLocalMain,
+                target_name: SceneStringId::NONE,
+                first_write_pass_id: 0,
+                last_use_pass_id: 1,
+                physical_slot: 0,
+                width: 320,
+                height: 180,
+            },
+            SceneRenderingDeviceTargetAllocation {
+                graph_index: 2,
+                target: SceneRenderTargetKind::FirstClassEffectTarget,
+                target_name: external_target_name,
+                first_write_pass_id: 1,
+                last_use_pass_id: 2,
+                physical_slot: 1,
+                width: 320,
+                height: 180,
+            },
+            SceneRenderingDeviceTargetAllocation {
+                graph_index: 4,
+                target: SceneRenderTargetKind::ImageLocalMain,
+                target_name: SceneStringId::NONE,
+                first_write_pass_id: 0,
+                last_use_pass_id: 0,
+                physical_slot: 2,
+                width: 64,
+                height: 64,
+            },
+        ],
         effect_batches: Vec::new(),
         effect_batch_instances: Vec::new(),
-        sampled_bindings: Vec::new(),
+        sampled_bindings: vec![
+            sampled_binding(
+                1,
+                2,
+                1,
+                SceneRenderBindingKind::PreviousGraphTarget,
+                SceneRenderTargetKind::ImageLocalMain,
+                SceneStringId::NONE,
+            ),
+            sampled_binding(
+                2,
+                2,
+                2,
+                SceneRenderBindingKind::PreviousGraphTarget,
+                SceneRenderTargetKind::FirstClassEffectTarget,
+                external_target_name,
+            ),
+            sampled_binding(
+                3,
+                2,
+                3,
+                SceneRenderBindingKind::EffectTarget,
+                SceneRenderTargetKind::FirstClassEffectTarget,
+                external_target_name,
+            ),
+        ],
         material_sampled_bindings: Vec::new(),
-        mesh_draws: vec![draw, draw],
+        mesh_draws: vec![draw, draw, draw, effect_draw(), draw],
         puppet_bone_palettes: Vec::new(),
         puppet_bone_matrices: Vec::new(),
         particle_gpu_emitters: Vec::new(),
@@ -66,16 +159,62 @@ fn hidden_object_disables_draws_without_removing_pass_topology() {
         graph_aliased_target_count: 0,
         fifo_latest_ready_present_required: true,
     };
-    let mut commands = vec![draw_command(10), draw_command(11)];
+    let mut commands = vec![
+        draw_command(10),
+        draw_command(11),
+        draw_command(12),
+        draw_command(13),
+        draw_command(14),
+    ];
+    let sampled_target_producers = sampled_target_producer_topology(&graph);
 
-    update_draw_visibility(&graph, &hidden_object_frame(), &mut commands);
+    update_draw_visibility(
+        &graph,
+        &sampled_target_producers,
+        &hidden_object_frame(),
+        &mut commands,
+    );
 
-    assert!(commands.iter().all(|command| !command.enabled));
+    assert!(commands[0].enabled, "the recursive local source stays live");
+    assert!(
+        commands[1].enabled,
+        "the externally sampled producer stays live"
+    );
+    assert!(
+        !commands[2].enabled,
+        "the hidden object's terminal scene composite stays disabled"
+    );
+    assert!(commands[3].enabled, "the external consumer stays enabled");
+    assert!(
+        !commands[4].enabled,
+        "an unconsumed hidden offscreen pass stays disabled"
+    );
     assert_eq!(
         graph.pass_nodes.len(),
-        2,
+        5,
         "retained pass topology stays intact"
     );
+}
+
+fn sampled_binding(
+    pass_node_index: u32,
+    producer_graph_index: u32,
+    mesh_draw_start: u32,
+    kind: SceneRenderBindingKind,
+    target: SceneRenderTargetKind,
+    target_name: SceneStringId,
+) -> SceneRenderingDeviceSampledBinding {
+    SceneRenderingDeviceSampledBinding {
+        pass_node_index,
+        graph_index: producer_graph_index,
+        mesh_draw_start,
+        mesh_draw_count: 1,
+        kind,
+        slot: 0,
+        target,
+        target_name,
+        access: SceneRenderingDeviceImageAccess::SampledImage,
+    }
 }
 
 fn hidden_object_frame() -> ResolvedSemanticFrame {

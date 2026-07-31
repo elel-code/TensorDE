@@ -61,6 +61,7 @@ pub(super) struct SceneFrameTopology {
     draws: Vec<SceneFrameDrawTopology>,
     palettes: Vec<SceneFramePuppetPaletteTopology>,
     bones: Vec<SceneFramePuppetBoneTopology>,
+    sampled_target_producers: Vec<SceneFrameSampledTargetProducerTopology>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +97,19 @@ struct SceneFramePuppetBoneTopology {
     parent_index: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SceneFrameSampledTargetProducerTopology {
+    consumer_pass_node_index: u32,
+    producer_pass_node_index: u32,
+}
+
 impl SceneFrameTopology {
     pub(super) fn from_graph(graph: &SceneRenderingDeviceGraphPlan) -> Self {
         Self::from_owned_graph(graph.clone())
     }
 
     pub(super) fn from_owned_graph(graph: SceneRenderingDeviceGraphPlan) -> Self {
+        let sampled_target_producers = sampled_target_producer_topology(&graph);
         let draws = graph.mesh_draws.iter().map(draw_topology).collect();
         let palettes = graph
             .puppet_bone_palettes
@@ -127,6 +135,7 @@ impl SceneFrameTopology {
             draws,
             palettes,
             bones,
+            sampled_target_producers,
         }
     }
 
@@ -358,8 +367,14 @@ pub(super) fn write_scene_frame_buffers(
         })?;
     let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
     let graph_started = cpu_timing_enabled.then(Instant::now);
-    let graph = topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
-    update_draw_visibility(graph, semantic_frame, draw_commands);
+    topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
+    update_draw_visibility(
+        &topology.graph,
+        &topology.sampled_target_producers,
+        semantic_frame,
+        draw_commands,
+    );
+    let graph = &topology.graph;
     update_effect_draw_pipelines(graph, draw_commands)?;
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
@@ -488,6 +503,7 @@ pub(super) fn write_scene_frame_buffers(
 
 fn update_draw_visibility(
     graph: &SceneRenderingDeviceGraphPlan,
+    sampled_target_producers: &[SceneFrameSampledTargetProducerTopology],
     frame: &ResolvedSemanticFrame,
     draw_commands: &mut [SceneGpuDrawCommand],
 ) {
@@ -498,6 +514,135 @@ fn update_draw_visibility(
                 .is_some_and(|object| object.resolved_visible);
     }
     disable_inactive_effect_gated_graph_draws(graph, frame, draw_commands);
+    retain_live_sampled_target_producers(graph, sampled_target_producers, frame, draw_commands);
+}
+
+fn retain_live_sampled_target_producers(
+    graph: &SceneRenderingDeviceGraphPlan,
+    sampled_target_producers: &[SceneFrameSampledTargetProducerTopology],
+    frame: &ResolvedSemanticFrame,
+    draw_commands: &mut [SceneGpuDrawCommand],
+) {
+    for (pass_node_index, pass) in graph.pass_nodes.iter().enumerate() {
+        let pass_is_live = if pass.mesh_draw_count == 0 {
+            render_graph_is_active(graph, pass.graph_index, frame)
+        } else {
+            pass_has_enabled_draw(pass, draw_commands)
+        };
+        if !pass_is_live {
+            continue;
+        }
+        retain_pass_sampled_target_producers(
+            graph,
+            sampled_target_producers,
+            frame,
+            pass_node_index,
+            draw_commands,
+        );
+    }
+}
+
+fn retain_pass_sampled_target_producers(
+    graph: &SceneRenderingDeviceGraphPlan,
+    sampled_target_producers: &[SceneFrameSampledTargetProducerTopology],
+    frame: &ResolvedSemanticFrame,
+    consumer_pass_node_index: usize,
+    draw_commands: &mut [SceneGpuDrawCommand],
+) {
+    for dependency in sampled_target_producers.iter().filter(|dependency| {
+        dependency.consumer_pass_node_index as usize == consumer_pass_node_index
+    }) {
+        let producer_pass_node_index = dependency.producer_pass_node_index as usize;
+        let producer = &graph.pass_nodes[producer_pass_node_index];
+        if !render_graph_is_active(graph, producer.graph_index, frame) {
+            continue;
+        }
+        let draw_start = producer.mesh_draw_start as usize;
+        let draw_end = draw_start.saturating_add(producer.mesh_draw_count as usize);
+        if let Some(commands) = draw_commands.get_mut(draw_start..draw_end) {
+            commands
+                .iter_mut()
+                .for_each(|command| command.enabled = true);
+        }
+        retain_pass_sampled_target_producers(
+            graph,
+            sampled_target_producers,
+            frame,
+            producer_pass_node_index,
+            draw_commands,
+        );
+    }
+}
+
+fn sampled_target_producer_topology(
+    graph: &SceneRenderingDeviceGraphPlan,
+) -> Vec<SceneFrameSampledTargetProducerTopology> {
+    graph
+        .sampled_bindings
+        .iter()
+        .filter_map(|binding| {
+            let consumer_pass_node_index = binding.pass_node_index as usize;
+            let preceding_passes = graph.pass_nodes.get(..consumer_pass_node_index)?;
+            let (producer_graph_index, target, target_name) = binding.logical_target()?;
+            let target_is_graph_owned = graph.target_allocations.iter().any(|allocation| {
+                allocation.graph_index == producer_graph_index
+                    && allocation.target == target
+                    && allocation.target_name == target_name
+            });
+            if !target_is_graph_owned {
+                return None;
+            }
+            let producer_pass_node_index = preceding_passes.iter().rposition(|pass| {
+                pass.graph_index == producer_graph_index
+                    && pass.target == target
+                    && pass.target_name == target_name
+            })?;
+            Some(SceneFrameSampledTargetProducerTopology {
+                consumer_pass_node_index: binding.pass_node_index,
+                producer_pass_node_index: producer_pass_node_index as u32,
+            })
+        })
+        .collect()
+}
+
+fn pass_has_enabled_draw(
+    pass: &crate::engine::scene::SceneRenderingDevicePassNode,
+    draw_commands: &[SceneGpuDrawCommand],
+) -> bool {
+    let draw_start = pass.mesh_draw_start as usize;
+    let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
+    draw_commands
+        .get(draw_start..draw_end)
+        .is_some_and(|commands| commands.iter().any(|command| command.enabled))
+}
+
+fn render_graph_is_active(
+    graph: &SceneRenderingDeviceGraphPlan,
+    graph_index: u32,
+    frame: &ResolvedSemanticFrame,
+) -> bool {
+    let Some(policy) = graph
+        .pass_nodes
+        .iter()
+        .find(|pass| pass.graph_index == graph_index)
+        .map(|pass| pass.graph_activation_policy)
+    else {
+        return false;
+    };
+    if policy == crate::engine::scene::SceneRenderGraphActivationPolicy::Always {
+        return true;
+    }
+    graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.graph_index == graph_index)
+        .any(|pass| {
+            (0..pass.effect_binding_count).any(|local_index| {
+                frame
+                    .object_effect(pass.effect_binding_start.saturating_add(local_index))
+                    .is_some_and(|effect| effect.resolved_visible)
+            })
+        })
 }
 
 fn disable_inactive_effect_gated_graph_draws(
@@ -514,28 +659,17 @@ fn disable_inactive_effect_gated_graph_draws(
             .count();
         let graph_pass_end = graph_pass_start + graph_pass_count;
         let graph_passes = &graph.pass_nodes[graph_pass_start..graph_pass_end];
-        let effect_gated = graph_passes[0].graph_activation_policy
-            == crate::engine::scene::SceneRenderGraphActivationPolicy::AnyEffectVisible;
         debug_assert!(graph_passes.iter().all(|pass| {
             pass.graph_activation_policy == graph_passes[0].graph_activation_policy
         }));
-        if effect_gated {
-            let any_effect_visible = graph_passes.iter().any(|pass| {
-                (0..pass.effect_binding_count).any(|local_index| {
-                    frame
-                        .object_effect(pass.effect_binding_start.saturating_add(local_index))
-                        .is_some_and(|effect| effect.resolved_visible)
-                })
-            });
-            if !any_effect_visible {
-                for pass in graph_passes {
-                    let draw_start = pass.mesh_draw_start as usize;
-                    let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
-                    if let Some(commands) = draw_commands.get_mut(draw_start..draw_end) {
-                        commands
-                            .iter_mut()
-                            .for_each(|command| command.enabled = false);
-                    }
+        if !render_graph_is_active(graph, graph_index, frame) {
+            for pass in graph_passes {
+                let draw_start = pass.mesh_draw_start as usize;
+                let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
+                if let Some(commands) = draw_commands.get_mut(draw_start..draw_end) {
+                    commands
+                        .iter_mut()
+                        .for_each(|command| command.enabled = false);
                 }
             }
         }

@@ -310,11 +310,19 @@ pub(super) fn rasterize_text_layer(
     text: &str,
     font_bytes: Vec<u8>,
 ) -> Result<WeTextLayerRaster, String> {
+    let font = FontArc::try_from_vec(font_bytes)
+        .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
+    rasterize_text_layer_with_font(object, text, &font)
+}
+
+fn rasterize_text_layer_with_font(
+    object: &Value,
+    text: &str,
+    font: &impl Font,
+) -> Result<WeTextLayerRaster, String> {
     let size = parse_vec3(object.get("size")).ok_or("text layer is missing a valid size")?;
     let authored_width = checked_dimension(size.x, "width")?;
     let authored_height = checked_dimension(size.y, "height")?;
-    let font = FontArc::try_from_vec(font_bytes)
-        .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
     let authored_point_size = value_f32(object.get("pointsize"))
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(32.0);
@@ -323,14 +331,19 @@ pub(super) fn rasterize_text_layer(
     // converting that advance to pixels (`0x1401b1166..0x1401b119a`). It is not a point-size or
     // scene-resolution-relative value.
     let spacing = parse_vec3(object.get("spacing")).unwrap_or_default();
-    let scale = ab_glyph_scale_for_font(&font, pixels_per_em)?;
+    let scale = ab_glyph_scale_for_font(font, pixels_per_em)?;
+    let layout_padding = authored_text_layout_padding(object.get("padding"));
     let glyphs = layout_glyphs(
-        &font,
+        font,
         text,
         scale,
-        spacing.x,
-        spacing.y,
-        bound_string(object.get("horizontalalign")).as_deref(),
+        [spacing.x, spacing.y],
+        [
+            bound_string(object.get("horizontalalign")).as_deref(),
+            bound_string(object.get("verticalalign")).as_deref(),
+        ],
+        [authored_width as f32, authored_height as f32],
+        layout_padding,
     );
     let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
     let outline_radius = if outline_enabled {
@@ -340,27 +353,11 @@ pub(super) fn rasterize_text_layer(
     }
     .round()
     .clamp(0.0, 16.0);
-    let (padding_x, padding_y) = retained_text_padding(object.get("padding"));
-    let (width, height, origin) =
-        if let Some((min_x, min_y, max_x, max_y)) = glyph_ink_bounds(&font, &glyphs, scale) {
-            let min_x = (min_x - padding_x - outline_radius).floor();
-            let min_y = (min_y - padding_y - outline_radius).floor();
-            let max_x = (max_x + padding_x + outline_radius).ceil();
-            let max_y = (max_y + padding_y + outline_radius).ceil();
-            (
-                checked_dimension(max_x - min_x, "raster width")?,
-                checked_dimension(max_y - min_y, "raster height")?,
-                point(-min_x, -min_y),
-            )
-        } else {
-            (authored_width, authored_height, point(0.0, 0.0))
-        };
+    let width = authored_width;
+    let height = authored_height;
     let mut glyph_alpha = vec![0u8; width as usize * height as usize];
     for glyph in glyphs {
-        let positioned = glyph.id.with_scale_and_position(
-            scale,
-            point(origin.x + glyph.position.x, origin.y + glyph.position.y),
-        );
+        let positioned = glyph.id.with_scale_and_position(scale, glyph.position);
         let Some(outlined) = font.outline_glyph(positioned) else {
             continue;
         };
@@ -414,38 +411,17 @@ pub(super) fn rasterize_text_layer(
     })
 }
 
-fn glyph_ink_bounds(
-    font: &FontArc,
-    glyphs: &[ab_glyph::Glyph],
-    scale: PxScale,
-) -> Option<(f32, f32, f32, f32)> {
-    let mut minimum_x = f32::INFINITY;
-    let mut minimum_y = f32::INFINITY;
-    let mut maximum_x = f32::NEG_INFINITY;
-    let mut maximum_y = f32::NEG_INFINITY;
-    for glyph in glyphs {
-        let positioned = glyph.id.with_scale_and_position(scale, glyph.position);
-        let Some(outlined) = font.outline_glyph(positioned) else {
-            continue;
-        };
-        let bounds = outlined.px_bounds();
-        minimum_x = minimum_x.min(bounds.min.x);
-        minimum_y = minimum_y.min(bounds.min.y);
-        maximum_x = maximum_x.max(bounds.max.x);
-        maximum_y = maximum_y.max(bounds.max.y);
+fn authored_text_layout_padding(value: Option<&Value>) -> (f32, f32) {
+    if let Some(padding) = parse_vec3(value) {
+        return (padding.x.max(0.0), padding.y.max(0.0));
     }
-    if minimum_x.is_finite()
-        && minimum_y.is_finite()
-        && maximum_x.is_finite()
-        && maximum_y.is_finite()
-    {
-        Some((minimum_x, minimum_y, maximum_x, maximum_y))
-    } else {
-        None
-    }
+    let padding = value_f32(value).unwrap_or(32.0).max(0.0);
+    (padding, padding)
 }
 
 fn retained_text_padding(value: Option<&Value>) -> (f32, f32) {
+    // WE separately caps the extra local-target border to one pixel. This is not the authored
+    // layout padding used to position glyph baselines inside the text canvas.
     if let Some(padding) = parse_vec3(value) {
         return (padding.x.clamp(0.0, 1.0), padding.y.clamp(0.0, 1.0));
     }
@@ -454,17 +430,18 @@ fn retained_text_padding(value: Option<&Value>) -> (f32, f32) {
 }
 
 fn layout_glyphs(
-    font: &FontArc,
+    font: &impl Font,
     text: &str,
     scale: PxScale,
-    spacing_x: f32,
-    spacing_y: f32,
-    horizontal_alignment: Option<&str>,
+    spacing: [f32; 2],
+    alignment: [Option<&str>; 2],
+    canvas_extent: [f32; 2],
+    padding: (f32, f32),
 ) -> Vec<ab_glyph::Glyph> {
     let scaled = font.as_scaled(scale);
     let mut glyphs = Vec::with_capacity(text.chars().count());
     let mut lines = Vec::new();
-    let line_advance = scaled.height() + scaled.line_gap() + spacing_y;
+    let line_advance = scaled.height() + scaled.line_gap() + spacing[1];
     for (line_index, line) in text.split('\n').enumerate() {
         let line = line.strip_suffix('\r').unwrap_or(line);
         let glyph_start = glyphs.len();
@@ -481,7 +458,7 @@ fn layout_glyphs(
                     point(cursor_x, line_index as f32 * line_advance),
                 ),
             );
-            cursor_x += scaled.h_advance(id) + spacing_x;
+            cursor_x += scaled.h_advance(id) + spacing[0];
             previous = Some(id);
         }
         lines.push((glyph_start, glyphs.len(), cursor_x));
@@ -490,14 +467,29 @@ fn layout_glyphs(
         .iter()
         .map(|(_, _, width)| *width)
         .fold(0.0_f32, f32::max);
+    let padding_x = padding.0.min(canvas_extent[0] * 0.5);
+    let padding_y = padding.1.min(canvas_extent[1] * 0.5);
+    let block_x = match alignment[0] {
+        Some("left") => padding_x,
+        Some("right") => canvas_extent[0] - padding_x - maximum_line_width,
+        _ => (canvas_extent[0] - maximum_line_width) * 0.5,
+    };
+    let block_height = scaled.height() + lines.len().saturating_sub(1) as f32 * line_advance;
+    let block_y = match alignment[1] {
+        Some("top") => padding_y,
+        Some("bottom") => canvas_extent[1] - padding_y - block_height,
+        _ => (canvas_extent[1] - block_height) * 0.5,
+    };
+    let baseline_y = block_y + scaled.ascent();
     for (start, end, width) in lines {
-        let offset_x = match horizontal_alignment {
+        let line_offset_x = match alignment[0] {
             Some("left") => 0.0,
             Some("right") => maximum_line_width - width,
             _ => (maximum_line_width - width) * 0.5,
         };
         for glyph in &mut glyphs[start..end] {
-            glyph.position.x += offset_x;
+            glyph.position.x += block_x + line_offset_x;
+            glyph.position.y += baseline_y;
         }
     }
     glyphs
@@ -592,6 +584,88 @@ fn color_byte(value: f32) -> u8 {
 mod tests {
     use super::*;
     use crate::engine::scene::{SceneTextureSamplerAddressMode, SceneTextureSamplerFilter};
+    use ab_glyph::{GlyphId, Outline, OutlineCurve, Rect};
+
+    struct TestFont;
+
+    impl Font for TestFont {
+        fn units_per_em(&self) -> Option<f32> {
+            Some(1_000.0)
+        }
+
+        fn ascent_unscaled(&self) -> f32 {
+            800.0
+        }
+
+        fn descent_unscaled(&self) -> f32 {
+            -200.0
+        }
+
+        fn line_gap_unscaled(&self) -> f32 {
+            0.0
+        }
+
+        fn glyph_id(&self, character: char) -> GlyphId {
+            GlyphId(u16::from(!character.is_whitespace()))
+        }
+
+        fn h_advance_unscaled(&self, _id: GlyphId) -> f32 {
+            500.0
+        }
+
+        fn h_side_bearing_unscaled(&self, _id: GlyphId) -> f32 {
+            0.0
+        }
+
+        fn v_advance_unscaled(&self, _id: GlyphId) -> f32 {
+            1_000.0
+        }
+
+        fn v_side_bearing_unscaled(&self, _id: GlyphId) -> f32 {
+            0.0
+        }
+
+        fn kern_unscaled(&self, _first: GlyphId, _second: GlyphId) -> f32 {
+            0.0
+        }
+
+        fn outline(&self, id: GlyphId) -> Option<Outline> {
+            (id.0 != 0).then(|| {
+                let top_left = point(0.0, 800.0);
+                let top_right = point(400.0, 800.0);
+                let bottom_right = point(400.0, -200.0);
+                let bottom_left = point(0.0, -200.0);
+                Outline {
+                    bounds: Rect {
+                        min: top_left,
+                        max: bottom_right,
+                    },
+                    curves: vec![
+                        OutlineCurve::Line(top_left, top_right),
+                        OutlineCurve::Line(top_right, bottom_right),
+                        OutlineCurve::Line(bottom_right, bottom_left),
+                        OutlineCurve::Line(bottom_left, top_left),
+                    ],
+                }
+            })
+        }
+
+        fn glyph_count(&self) -> usize {
+            2
+        }
+
+        fn codepoint_ids(&self) -> ab_glyph::CodepointIdIter<'_> {
+            unimplemented!("layout does not enumerate the test font")
+        }
+
+        fn glyph_raster_image2(
+            &self,
+            _id: GlyphId,
+            _pixel_size: u16,
+        ) -> Option<ab_glyph::v2::GlyphImage<'_>> {
+            None
+        }
+    }
 
     #[test]
     fn text_value_reads_bound_default() {
@@ -645,6 +719,44 @@ mod tests {
         let scalar = serde_json::json!({"padding": 0.25});
         assert_eq!(retained_text_padding(scalar.get("padding")), (0.25, 0.25));
         assert_eq!(retained_text_padding(None), (1.0, 1.0));
+    }
+
+    #[test]
+    fn retained_text_preserves_the_authored_canvas_instead_of_ink_tightening() {
+        let object = serde_json::json!({
+            "size": "400 200 0",
+            "pointsize": 24,
+            "padding": "32 32",
+            "horizontalalign": "center",
+            "verticalalign": "center",
+        });
+
+        let raster = rasterize_text_layer_with_font(&object, "A", &TestFont).expect("text raster");
+
+        assert_eq!([raster.width, raster.height], [400, 200]);
+    }
+
+    #[test]
+    fn authored_padding_and_line_metrics_place_multiline_text_inside_the_canvas() {
+        let scale = ab_glyph_scale_for_font(&TestFont, text_point_size_pixels_per_em(24.0))
+            .expect("test scale");
+        let glyphs = layout_glyphs(
+            &TestFont,
+            "A\nAA",
+            scale,
+            [0.0, 0.0],
+            [Some("center"), Some("center")],
+            [400.0, 300.0],
+            authored_text_layout_padding(Some(&serde_json::json!("32 32"))),
+        );
+
+        assert_eq!(
+            retained_text_padding(Some(&serde_json::json!("32 32"))),
+            (1.0, 1.0)
+        );
+        assert_eq!(glyphs[0].position, point(175.0, 130.0));
+        assert_eq!(glyphs[1].position, point(150.0, 230.0));
+        assert_eq!(glyphs[2].position, point(200.0, 230.0));
     }
 
     #[test]

@@ -121,12 +121,13 @@
             draw_command(12, None),
         ];
         let mut frame = frame_with_effect_visibility(false);
+        let sampled_target_producers = sampled_target_producer_topology(&graph);
 
-        update_draw_visibility(&graph, &frame, &mut commands);
+        update_draw_visibility(&graph, &sampled_target_producers, &frame, &mut commands);
         assert!(commands.iter().all(|command| !command.enabled));
 
         frame.object_effects[0].resolved_visible = true;
-        update_draw_visibility(&graph, &frame, &mut commands);
+        update_draw_visibility(&graph, &sampled_target_producers, &frame, &mut commands);
         assert!(commands.iter().all(|command| command.enabled));
     }
 
