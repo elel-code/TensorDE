@@ -140,6 +140,19 @@ lease, compatible-adapter selection requires a graphics/present queue, and
 swapchain configuration validates the complete surface capability snapshot.
 Acquire, synchronization2 submit, timeline/binary signal, and present are
 exposed as one explicit chain with queue-wide host synchronization.
+Direct single-pass and offscreen multi-pass presentation are peer modes; the
+renderer imposes no architectural primary path. Target choice, acquire timing,
+and terminal policy are separate, explicit inputs. Products select direct,
+offscreen, or automatic fact-based resolution for their own workload.
+Acquire, command encoding, barriers, queue submission, timeline retirement and
+present remain independently composable shared primitives;
+`PresentationTransaction` is an optional retained orchestration layer.
+For multi-pass rendering, `PresentationTransaction` can submit retained
+offscreen work before a policy-driven late acquire, then records the terminal
+surface command buffer with exact `ATTACHMENT_OPTIMAL` and `PRESENT_SRC_KHR`
+transitions. The terminal shader writes the acquired swapchain image directly;
+no final copy or blit is inserted. Acquire semaphores are frame-slot owned,
+while render-finished semaphores are swapchain-image owned for safe WSI reuse.
 
 ## Submission and resource lifetime
 

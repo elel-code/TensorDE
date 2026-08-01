@@ -83,10 +83,13 @@ pub use pipeline::{
 pub use present::{
     AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget,
     OffscreenColorTargets, OffscreenColorTargetsDescriptor, OffscreenSampledBindings, PresentMode,
-    PresentStatus, PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements,
-    PresentationTarget, Surface, SurfaceAcquireStrategy, SurfaceCapabilities, SurfaceConfiguration,
-    SurfaceConfigurationRequest, SurfacePresentCapabilities, Swapchain, SwapchainDescriptor,
-    TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
+    PresentStatus, PresentTransactionOutcome, PresentationPathDescriptor, PresentationPathPlan,
+    PresentationRequirements, PresentationTarget, PresentationTransaction,
+    PresentationTransactionDescriptor, PresentationTransactionPhase,
+    PresentationTransactionSchedule, PresentationTransactionStep, Surface, SurfaceAcquireStrategy,
+    SurfaceCapabilities, SurfaceConfiguration, SurfaceConfigurationRequest,
+    SurfacePresentCapabilities, Swapchain, SwapchainDescriptor, TerminalAlphaMode,
+    TerminalCompositeDescriptor, TerminalSampling,
 };
 pub use queue::{QueueFamilyInfo, QueuePlan};
 pub use render_graph::{

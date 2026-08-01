@@ -1,9 +1,8 @@
-//! Shared offscreen-color and surface-composition policy.
+//! Shared direct-surface and offscreen-composition policy.
 //!
 //! Products describe the complete graph facts that affect presentation. The
-//! planner permits direct swapchain rendering only when those facts prove it
-//! equivalent; otherwise it retains an independently allocated color target
-//! and an explicit terminal composite.
+//! renderer has no architectural primary path: products explicitly select a
+//! direct surface, an offscreen target, or automatic fact-based resolution.
 
 use std::fmt;
 
@@ -17,10 +16,9 @@ use crate::{
 };
 
 /// Caller preference for the color target that precedes presentation.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrameTargetPreference {
     /// Use the swapchain only when every direct-alias condition is proven.
-    #[default]
     Automatic,
     /// Require direct swapchain rendering and fail if any condition is unmet.
     DirectSurface,
@@ -78,7 +76,7 @@ pub struct PresentationRequirements {
 
 /// Product-selected policy. It is separate from graph facts so formal A/B can
 /// switch acquire timing without changing authored graph semantics.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PresentationPathDescriptor {
     pub target: FrameTargetPreference,
     pub acquire: SurfaceAcquireStrategy,
@@ -114,6 +112,8 @@ impl fmt::Display for DirectSurfaceBlocker {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresentationPathPlan {
     pub target: PresentationTarget,
+    pub surface_extent: vk::Extent2D,
+    pub surface_format: vk::Format,
     pub target_extent: vk::Extent2D,
     pub target_format: vk::Format,
     pub frame_slots: u32,
@@ -159,6 +159,8 @@ impl PresentationPathPlan {
         }
         Ok(Self {
             target,
+            surface_extent: requirements.surface_extent,
+            surface_format: requirements.surface_format,
             target_extent: requirements.target_extent,
             target_format: requirements.target_format,
             frame_slots: requirements.frame_slots,
@@ -496,11 +498,17 @@ mod tests {
         }
     }
 
+    fn automatic_policy() -> PresentationPathDescriptor {
+        PresentationPathDescriptor {
+            target: FrameTargetPreference::Automatic,
+            acquire: SurfaceAcquireStrategy::BeforeFrame,
+            terminal: TerminalCompositeDescriptor::default(),
+        }
+    }
+
     #[test]
     fn automatic_direct_surface_requires_complete_alias_eligibility() {
-        let plan =
-            PresentationPathPlan::compile(PresentationPathDescriptor::default(), requirements())
-                .unwrap();
+        let plan = PresentationPathPlan::compile(automatic_policy(), requirements()).unwrap();
 
         assert_eq!(plan.target, PresentationTarget::DirectSurface);
         assert!(plan.terminal.is_none());
@@ -517,7 +525,7 @@ mod tests {
                 sampling: TerminalSampling::Linear,
                 alpha: TerminalAlphaMode::Opaque,
             },
-            ..PresentationPathDescriptor::default()
+            ..automatic_policy()
         };
 
         let plan = PresentationPathPlan::compile(descriptor, requirements).unwrap();
@@ -540,7 +548,7 @@ mod tests {
         requirements.has_history = true;
         let descriptor = PresentationPathDescriptor {
             target: FrameTargetPreference::DirectSurface,
-            ..PresentationPathDescriptor::default()
+            ..automatic_policy()
         };
 
         let error = PresentationPathPlan::compile(descriptor, requirements).unwrap_err();
@@ -552,14 +560,14 @@ mod tests {
     fn late_acquire_requires_offscreen_work() {
         let descriptor = PresentationPathDescriptor {
             acquire: SurfaceAcquireStrategy::AfterOffscreenSubmit,
-            ..PresentationPathDescriptor::default()
+            ..automatic_policy()
         };
         assert!(PresentationPathPlan::compile(descriptor, requirements()).is_err());
 
         let descriptor = PresentationPathDescriptor {
             target: FrameTargetPreference::Offscreen,
             acquire: SurfaceAcquireStrategy::AfterOffscreenSubmit,
-            ..PresentationPathDescriptor::default()
+            ..automatic_policy()
         };
         assert_eq!(
             PresentationPathPlan::compile(descriptor, requirements())
@@ -571,15 +579,13 @@ mod tests {
 
     #[test]
     fn offscreen_descriptor_only_accepts_offscreen_color_plans() {
-        let direct =
-            PresentationPathPlan::compile(PresentationPathDescriptor::default(), requirements())
-                .unwrap();
+        let direct = PresentationPathPlan::compile(automatic_policy(), requirements()).unwrap();
         assert!(OffscreenColorTargetsDescriptor::from_plan(None, &direct).is_err());
 
         let offscreen = PresentationPathPlan::compile(
             PresentationPathDescriptor {
                 target: FrameTargetPreference::Offscreen,
-                ..PresentationPathDescriptor::default()
+                ..automatic_policy()
             },
             requirements(),
         )

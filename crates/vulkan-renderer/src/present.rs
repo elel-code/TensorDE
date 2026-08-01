@@ -13,6 +13,7 @@ use crate::{Error, Features, Instance, Result};
 
 mod offscreen;
 mod swapchain;
+mod transaction;
 
 pub use offscreen::{
     DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget, OffscreenColorTargets,
@@ -23,6 +24,10 @@ pub use offscreen::{
 pub use swapchain::{
     AcquiredSurfaceTexture, PresentStatus, SurfaceConfiguration, SurfaceConfigurationRequest,
     Swapchain, SwapchainDescriptor,
+};
+pub use transaction::{
+    PresentTransactionOutcome, PresentationTransaction, PresentationTransactionDescriptor,
+    PresentationTransactionPhase, PresentationTransactionSchedule, PresentationTransactionStep,
 };
 
 /// Vulkan presentation surface retaining the host window/display lease and

@@ -85,6 +85,31 @@ raw-window-handle lease -> VkSurfaceKHR -> compatible graphics/present queue
 -> present(binary wait)
 ```
 
+Direct single-pass and offscreen multi-pass presentation are peer execution
+modes. Target selection, acquire timing and terminal policy are independent,
+explicit typed choices rather than a renderer-wide primary path. A selected
+direct path allocates no offscreen frame target and performs no terminal
+composite.
+
+This choice is layered over reusable primitives: callers may compose shared
+acquire, command, barrier, submission, retirement and present objects directly,
+or select the retained `PresentationTransaction` orchestrator when its complete
+frame contract matches the workload. The orchestrator is not a mandatory
+renderer topology.
+
+Multi-pass products keep authored/effect/history work in retained offscreen
+images, then use the acquired swapchain `VkImage` directly as the terminal
+dynamic-rendering color attachment:
+
+```text
+offscreen submit -> optional late acquire -> terminal shader writes swapchain
+-> PRESENT_SRC_KHR -> present
+```
+
+There is no copy, blit, staging or CPU path after the terminal shader. Acquire
+semaphores follow frame slots; render-finished semaphores follow swapchain image
+indices so their presentation waits are proven consumed before reuse.
+
 The compositor interop chain is equally explicit:
 
 ```text

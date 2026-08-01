@@ -199,7 +199,7 @@ fallback, the preference list MUST contain `PresentMode::Fifo`.
 7. Reconfiguration MUST create the replacement with `oldSwapchain` and MUST
    retain the old swapchain until the replacement operation has returned.
 
-## Offscreen presentation
+## Presentation target selection
 
 Applications MUST acquire Vulkan capabilities through `vulkan-renderer`; they
 MUST NOT select an independent `vulkanalia` version or create a parallel
@@ -207,36 +207,73 @@ instance/device ownership stack. `vulkan_renderer::vk` and the raw re-export
 remain explicit migration/interop surfaces, not a reason to duplicate resource,
 submission, retirement, or presentation implementations in a product.
 
-1. `PresentationPathPlan` MUST permit a direct surface target only when the
+The presentation API is layered. Surface/swapchain acquisition, command
+encoding, synchronization2 barriers, queue submission, timeline retirement and
+presentation remain independently usable shared primitives. Planning is a pure
+typed decision layer. `PresentationTransaction` is an optional retained
+orchestrator over those primitives, not the only supported rendering topology.
+
+1. Direct-surface and offscreen presentation are peer execution modes. The
+   shared renderer has no architectural primary path and MUST NOT silently
+   impose either mode on every product.
+2. `PresentationPathPlan` MUST permit a direct surface target only when the
    frame has exactly one physical pass, no post-write sampling, no history,
    no external consumer, no async-compute access, matching target/surface
    extent and format, and no required terminal transform. Forced direct mode
    MUST fail with the complete blocker set instead of weakening the graph.
-2. Automatic mode MUST select an independently allocated offscreen target
-   whenever any direct-surface condition is unmet. Explicit offscreen mode MAY
-   be selected even when direct mode would be legal.
-3. Offscreen presentation MUST allocate one single-sampled color-attachment +
+3. Target policy MUST be explicit: `DirectSurface`, `Offscreen`, or
+   `Automatic`. Automatic mode selects direct only when every direct-surface
+   condition is proven and otherwise selects an independently allocated
+   offscreen target. Explicit offscreen mode MAY be selected even when direct
+   mode would be legal.
+4. Offscreen presentation MUST allocate one single-sampled color-attachment +
    sampled image per in-flight frame slot through the shared image allocator.
    These images and views use shared RAII/timeline ownership; a product-local
    `vkAllocateMemory` path is not an alternative implementation.
-4. All immutable offscreen sampled-image descriptors MUST share one resource
+5. All immutable offscreen sampled-image descriptors MUST share one resource
    heap, and every slot MUST reuse one sampler descriptor in one sampler heap.
    The selected filter, address and alpha policy remain explicit product input.
-5. A late acquire is valid only when swapchain-independent offscreen work can
+6. A late acquire is valid only when swapchain-independent offscreen work can
    be submitted first. The terminal composite is a separate submission after
    acquire. Same-queue order MAY carry the offscreen dependency; cross-queue
    execution MUST use an explicit timeline dependency.
-6. `BeforeFrame` and `AfterOffscreenSubmit` are both supported policies.
+7. `BeforeFrame` and `AfterOffscreenSubmit` are both supported policies.
    Neither is declared universally faster: a product MUST choose from measured
    acquire wait, submit overhead and GPU overlap, then verify a paired formal
    A/B without changing graph semantics.
-7. A non-surface target extent is an explicit quality/render-scale policy. It
+8. A non-surface target extent is an explicit quality/render-scale policy. It
    MUST NOT silently replace the surface physical extent or be reported as
    native-resolution rendering.
-8. Future transient memory aliasing MUST require non-overlapping first/last-use
+9. Future transient memory aliasing MUST require non-overlapping first/last-use
    intervals plus equal format, sample count, usage compatibility and queue
    ownership. It MAY reuse backing memory but MUST NOT fuse passes or erase
    barriers, copies, swaps, descriptor identity, history or external liveness.
+10. Target selection, acquire timing, and terminal sampling/alpha policy are
+   independent typed inputs. Products MAY force direct or offscreen behavior,
+   but the shared renderer MUST reject an incompatible forced-direct request
+   rather than silently changing graph semantics.
+11. When selected, `PresentationTransaction` MUST execute the chosen schedule
+   rather than merely report it. Direct mode acquires, records/submits the sole
+   surface pass, then presents. Offscreen `BeforeFrame` puts the offscreen and
+   terminal command buffers in one submission after acquire;
+   `AfterOffscreenSubmit` submits swapchain-independent work first, acquires
+   second, then submits the terminal command buffer on the same graphics queue.
+12. The terminal command buffer MUST transition the acquired swapchain image
+    from `UNDEFINED` on its first use or `PRESENT_SRC_KHR` after presentation to
+    `ATTACHMENT_OPTIMAL`, allow the terminal dynamic-rendering phase to write it,
+    and transition it directly back to `PRESENT_SRC_KHR`. No copy, blit,
+    staging operation, CPU round trip, or additional image may follow the
+    terminal surface phase.
+13. Acquire binary semaphores MUST be indexed by in-flight frame slot and MUST
+    NOT be reused before that slot's surface submission timeline completes.
+    Render-finished semaphores MUST be indexed by swapchain image; reacquiring
+    the same image proves the prior presentation wait consumed its signal.
+    Timeline completion alone does not prove presentation-engine consumption.
+14. Any recording, submission, or presentation failure after acquire MUST
+    poison the transaction. Continuing with an acquired image or an ambiguous
+    binary-semaphore payload is forbidden; the transaction and swapchain MUST
+    be recreated. Cold transaction destruction MUST wait for outstanding WSI
+    semaphore consumption before destroying retained synchronization objects.
 
 ## Submission transaction
 

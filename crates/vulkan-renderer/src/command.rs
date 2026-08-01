@@ -128,6 +128,49 @@ impl CommandEncoder {
         }
     }
 
+    /// Records one color-image layout transition used by an enclosing shared
+    /// presentation transaction.
+    ///
+    /// # Safety
+    ///
+    /// `image` must be live on this device and currently have `old_layout`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn transition_color_image(
+        &mut self,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        source_stages: vk::PipelineStageFlags2,
+        source_access: vk::AccessFlags2,
+        destination_stages: vk::PipelineStageFlags2,
+        destination_access: vk::AccessFlags2,
+    ) {
+        let barrier = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(source_stages)
+            .src_access_mask(source_access)
+            .dst_stage_mask(destination_stages)
+            .dst_access_mask(destination_access)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        let barriers = [barrier.build()];
+        let dependency = vk::DependencyInfo::builder().image_memory_barriers(&barriers);
+        unsafe {
+            self.owner
+                .device
+                .cmd_pipeline_barrier2(self.raw(), &dependency);
+        }
+    }
+
     /// Binds a resource or sampler descriptor heap for subsequent commands.
     ///
     /// # Safety
