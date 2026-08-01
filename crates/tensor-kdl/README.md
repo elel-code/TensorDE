@@ -11,9 +11,10 @@ Design notes: [`docs/kdl/design.md`](../../docs/kdl/design.md).
 - SWAR-assisted whitespace and string scanning (Glaze-inspired)
 - Friendly `ErrorCtx` with byte offsets and `format_error`
 - Optional `#[derive(Decode)]` / `#[derive(DecodeScalar)]` via `tensor-kdl-macros`
-- Typed `#[derive(Encode)]` / `#[derive(EncodeScalar)]` with canonical KDL output
-  (structs, enums, properties maps, `unwrap(property)`, `flatten` via
-  `EncodePartial`)
+- Typed `#[derive(Encode)]` / `#[derive(EncodeScalar)]` with **direct**
+  monomorphized dump into `WriteSink` (Glaze `to::op` — no intermediate DOM
+  node on the hot path; structs, enums, properties maps, `unwrap(property)`,
+  `flatten` via `EncodePartial`)
 - Glaze-shaped write: `write` / `write_into` / `write_into_slice`
   (`ErrorCtx.consumed` = bytes written)
 - Glaze-style padded input for DOM and direct typed reads

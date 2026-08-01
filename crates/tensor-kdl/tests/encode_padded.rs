@@ -204,7 +204,10 @@ fn padded_read_uses_live_padded_parser_and_const_opts() {
 
 #[test]
 fn write_into_and_fixed_buffer_match_glaze_shape() {
-    use tensor_kdl::{ErrorCode, write, write_into, write_into_slice};
+    use tensor_kdl::{
+        Encode, EncodeDocument, ErrorCode, WriteSink, write, write_into, write_into_slice,
+        write_node_into,
+    };
 
     let root = Root {
         version: "2".to_owned(),
@@ -218,6 +221,30 @@ fn write_into_and_fixed_buffer_match_glaze_shape() {
     assert!(ec.is_ok());
     assert_eq!(ec.consumed, buf.len());
     assert_eq!(buf, allocated);
+
+    // Direct WriteSink path (Glaze to::op) matches public write_into.
+    let mut direct = String::new();
+    {
+        let mut sink = WriteSink::string(&mut direct);
+        root.write_document(&mut sink).unwrap();
+    }
+    assert_eq!(direct, allocated);
+
+    let widget = Widget {
+        id: 7,
+        enabled: true,
+        title: None,
+        items: vec![],
+    };
+    let mut node_buf = String::new();
+    let nec = write_node_into(&widget, &mut node_buf);
+    assert!(nec.is_ok());
+    let mut node_direct = String::new();
+    {
+        let mut sink = WriteSink::string(&mut node_direct);
+        widget.write_node(&mut sink, 0).unwrap();
+    }
+    assert_eq!(node_direct, node_buf);
 
     let mut small = [0u8; 4];
     let overflow = write_into_slice(&root, &mut small);

@@ -132,6 +132,15 @@ pub(crate) fn expand_encode_scalar(input: &DeriveInput) -> syn::Result<proc_macr
                 impl #impl_generics ::tensor_kdl::EncodeScalar for #name #ty_generics
                 #where_clause
                 {
+                    fn write_scalar(
+                        &self,
+                        out: &mut ::tensor_kdl::WriteSink<'_>,
+                    ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                        let __value = match self {
+                            #(#arms,)*
+                        };
+                        ::tensor_kdl::write_ident_or_string(out, __value)
+                    }
                     fn encode_scalar(
                         &self,
                     ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {
@@ -150,6 +159,12 @@ pub(crate) fn expand_encode_scalar(input: &DeriveInput) -> syn::Result<proc_macr
                 impl #impl_generics ::tensor_kdl::EncodeScalar for #name #ty_generics
                 #where_clause
                 {
+                    fn write_scalar(
+                        &self,
+                        out: &mut ::tensor_kdl::WriteSink<'_>,
+                    ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                        ::tensor_kdl::EncodeScalar::write_scalar(&self.0, out)
+                    }
                     fn encode_scalar(
                         &self,
                     ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {

@@ -1,9 +1,11 @@
-//! Emit [`Encode`] / [`EncodeDocument`] for structs and enums (mirror of decode roles).
+//! Emit [`Encode`] / [`EncodeDocument`] with **direct** [`write_node`] /
+//! [`write_document`] (Glaze `to::op` into buffer — no intermediate `Node`).
 
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, LitStr};
 
 use crate::attr::{FieldInfo, FieldRole, UnwrapKind, kebab, parse_field};
+use crate::encode_dom::field_dom_stmts;
 
 pub(crate) fn expand_encode(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
@@ -18,11 +20,17 @@ pub(crate) fn expand_encode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
                     .collect::<syn::Result<Vec<_>>>()?,
                 Fields::Unit => Vec::new(),
                 Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    let _ = &fields.unnamed[0].ty;
                     return Ok(quote! {
                         impl #impl_generics ::tensor_kdl::Encode for #name #ty_generics
                         #where_clause
                         {
+                            fn write_node(
+                                &self,
+                                out: &mut ::tensor_kdl::WriteSink<'_>,
+                                indent: usize,
+                            ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                                ::tensor_kdl::Encode::write_node(&self.0, out, indent)
+                            }
                             fn encode_node(
                                 &self,
                             ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Node<'static>> {
@@ -72,7 +80,8 @@ fn expand_encode_enum(
     where_clause: Option<&syn::WhereClause>,
     data: &syn::DataEnum,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let mut arms = Vec::new();
+    let mut write_arms = Vec::new();
+    let mut dom_arms = Vec::new();
     for variant in &data.variants {
         let vname = &variant.ident;
         let mut kdl_name = kebab(&vname.to_string());
@@ -89,14 +98,24 @@ fn expand_encode_enum(
         }
         match &variant.fields {
             Fields::Unit => {
-                arms.push(quote! {
+                write_arms.push(quote! {
+                    #name::#vname => ::tensor_kdl::write_flag_line(out, indent, #kdl_name)
+                });
+                dom_arms.push(quote! {
                     #name::#vname => ::std::result::Result::Ok(
                         ::tensor_kdl::flag_node(#kdl_name),
                     ),
                 });
             }
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                arms.push(quote! {
+                write_arms.push(quote! {
+                    #name::#vname(__inner) => {
+                        let mut __node = ::tensor_kdl::Encode::encode_node(__inner)?;
+                        __node.name = ::tensor_kdl::KdlStr::owned(#kdl_name.to_owned());
+                        ::tensor_kdl::Encode::write_node(&__node, out, indent)
+                    }
+                });
+                dom_arms.push(quote! {
                     #name::#vname(__inner) => {
                         let mut __node = ::tensor_kdl::Encode::encode_node(__inner)?;
                         __node.name = ::tensor_kdl::KdlStr::owned(#kdl_name.to_owned());
@@ -110,13 +129,19 @@ fn expand_encode_enum(
                     .iter()
                     .map(parse_field)
                     .collect::<syn::Result<_>>()?;
-                reject_unsupported_encode_fields(&finfos)?;
-                // Match on `&self`: edition 2024 match ergonomics bind fields by
-                // shared ref without explicit `ref` (explicit `ref` is an error).
-                let (entries, children, type_name_expr) =
-                    field_encode_stmts(&finfos, FieldAccess::Local)?;
                 let field_pats: Vec<_> = finfos.iter().map(|f| &f.ident).collect();
-                arms.push(quote! {
+                let body = field_write_body(
+                    &finfos,
+                    FieldAccess::Local,
+                    quote! { #kdl_name },
+                    quote! { ::std::option::Option::None },
+                )?;
+                write_arms.push(quote! {
+                    #name::#vname { #(#field_pats),* } => { #body }
+                });
+                let (entries, children, type_name_expr) =
+                    field_dom_stmts(&finfos, FieldAccess::Local)?;
+                dom_arms.push(quote! {
                     #name::#vname { #(#field_pats),* } => {
                         let mut __entries = ::std::vec::Vec::new();
                         let mut __children = ::std::vec::Vec::new();
@@ -139,19 +164,35 @@ fn expand_encode_enum(
             }
         }
     }
+
     Ok(quote! {
         impl #impl_generics ::tensor_kdl::Encode for #name #ty_generics
         #where_clause
         {
+            fn write_node(
+                &self,
+                out: &mut ::tensor_kdl::WriteSink<'_>,
+                indent: usize,
+            ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                match self {
+                    #(#write_arms,)*
+                }
+            }
             fn encode_node(&self) -> ::tensor_kdl::CtxResult<::tensor_kdl::Node<'static>> {
                 match self {
-                    #(#arms)*
+                    #(#dom_arms)*
                 }
             }
         }
         impl #impl_generics ::tensor_kdl::EncodeDocument for #name #ty_generics
         #where_clause
         {
+            fn write_document(
+                &self,
+                out: &mut ::tensor_kdl::WriteSink<'_>,
+            ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                ::tensor_kdl::Encode::write_node(self, out, 0)
+            }
             fn encode_document(
                 &self,
             ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Document<'static>> {
@@ -164,128 +205,111 @@ fn expand_encode_enum(
     })
 }
 
-fn reject_unsupported_encode_fields(_fields: &[FieldInfo]) -> syn::Result<()> {
-    // Flatten is supported via EncodePartial (design §11).
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
-enum FieldAccess {
-    /// Struct method body: `self.field`.
+pub(crate) enum FieldAccess {
     SelfDot,
-    /// Enum variant arm after `ref field` bind: bare `field`.
     Local,
 }
 
 impl FieldAccess {
-    /// Value expression (`self.field` or bare `field` after `ref` bind).
-    fn expr(self, id: &Ident) -> proc_macro2::TokenStream {
+    /// Parenthesized `&T` so method chains bind correctly
+    /// (`(&self.field).iter()` not `&self.field.iter()`).
+    pub(crate) fn by_ref(self, id: &Ident) -> proc_macro2::TokenStream {
         match self {
-            Self::SelfDot => quote! { self.#id },
-            Self::Local => quote! { #id },
-        }
-    }
-
-    /// `&T` receiver for `EncodeScalar` / `Encode` (Local `ref` binds are already `&T`).
-    fn by_ref(self, id: &Ident) -> proc_macro2::TokenStream {
-        match self {
-            Self::SelfDot => quote! { &self.#id },
-            Self::Local => quote! { #id },
+            Self::SelfDot => quote! { (&self.#id) },
+            Self::Local => quote! { (#id) },
         }
     }
 }
 
-/// Build entry/child push statements for struct or enum-variant fields.
-fn field_encode_stmts(
+/// Direct-write body for a node with given name / type exprs.
+fn field_write_body(
     fields: &[FieldInfo],
     access: FieldAccess,
-) -> syn::Result<(
-    Vec<proc_macro2::TokenStream>,
-    Vec<proc_macro2::TokenStream>,
-    proc_macro2::TokenStream,
-)> {
-    let mut entries = Vec::new();
+    name_expr: proc_macro2::TokenStream,
+    mut type_name_expr: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut args = Vec::new();
+    let mut props = Vec::new();
     let mut children = Vec::new();
-    let mut type_name_expr = quote! { ::std::option::Option::None };
+    let mut has_static_children = false;
+    let mut flatten_fields: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for f in fields {
         let id = &f.ident;
-        let field = access.expr(id);
         let field_ref = access.by_ref(id);
         match &f.role {
-            FieldRole::NodeName => {
-                // Node name is owned by the parent emitter for structs/enums.
-            }
+            FieldRole::NodeName => {}
             FieldRole::TypeName => {
                 if f.optional {
-                    // `as_ref` works for both `Option<T>` and `&Option<T>` (auto-deref).
                     type_name_expr = quote! {
                         #field_ref.as_ref().map(|s| {
-                            ::tensor_kdl::KdlStr::owned(::std::string::ToString::to_string(s))
+                            ::std::string::ToString::to_string(s)
                         })
                     };
                 } else {
                     type_name_expr = quote! {
-                        ::std::option::Option::Some(::tensor_kdl::KdlStr::owned(
-                            ::std::string::ToString::to_string(#field_ref),
-                        ))
+                        ::std::option::Option::Some(::std::string::ToString::to_string(#field_ref))
                     };
                 }
             }
             FieldRole::Argument => {
                 if f.optional {
-                    // Method call (not UFCS): `__v: &T` resolves `EncodeScalar for T`.
-                    entries.push(quote! {
+                    args.push(quote! {
                         if let ::std::option::Option::Some(__v) = #field_ref.as_ref() {
-                            __entries.push(::tensor_kdl::arg_entry(::tensor_kdl::EncodeScalar::encode_scalar(__v)?));
+                            ::tensor_kdl::write_argument_prefix(out)?;
+                            ::tensor_kdl::EncodeScalar::write_scalar(__v, out)?;
                         }
                     });
                 } else {
-                    entries.push(quote! {
-                        __entries.push(::tensor_kdl::arg_entry(::tensor_kdl::EncodeScalar::encode_scalar(#field_ref)?));
+                    args.push(quote! {
+                        ::tensor_kdl::write_argument_prefix(out)?;
+                        ::tensor_kdl::EncodeScalar::write_scalar(#field_ref, out)?;
                     });
                 }
             }
             FieldRole::Arguments => {
-                entries.push(quote! {
+                args.push(quote! {
                     for __v in #field_ref {
-                        __entries.push(::tensor_kdl::arg_entry(::tensor_kdl::EncodeScalar::encode_scalar(__v)?));
+                        ::tensor_kdl::write_argument_prefix(out)?;
+                        ::tensor_kdl::EncodeScalar::write_scalar(__v, out)?;
                     }
                 });
             }
             FieldRole::Property { name: pname } => {
                 let key = pname.clone().unwrap_or_else(|| kebab(&id.to_string()));
                 if f.optional {
-                    entries.push(quote! {
+                    props.push(quote! {
                         if let ::std::option::Option::Some(__v) = #field_ref.as_ref() {
-                            __entries.push(::tensor_kdl::prop_entry(
-                                #key,
-                                ::tensor_kdl::EncodeScalar::encode_scalar(__v)?,
-                            ));
+                            ::tensor_kdl::write_property_key(out, #key)?;
+                            ::tensor_kdl::EncodeScalar::write_scalar(__v, out)?;
                         }
                     });
                 } else {
-                    entries.push(quote! {
-                        __entries.push(::tensor_kdl::prop_entry(
-                            #key,
-                            ::tensor_kdl::EncodeScalar::encode_scalar(#field_ref)?,
-                        ));
+                    props.push(quote! {
+                        ::tensor_kdl::write_property_key(out, #key)?;
+                        ::tensor_kdl::EncodeScalar::write_scalar(#field_ref, out)?;
                     });
                 }
             }
             FieldRole::Properties => {
-                // Map yields `&V`; method call keeps `Self = V`. Formatter sorts
-                // keys (suite Translation Rules / `references/kdl/tests/README.md`).
-                entries.push(quote! {
-                    for (__key, __val) in #field_ref {
-                        __entries.push(::tensor_kdl::prop_entry(
-                            __key.clone(),
-                            ::tensor_kdl::EncodeScalar::encode_scalar(__val)?,
-                        ));
+                // Sort keys for suite Translation Rules.
+                props.push(quote! {
+                    {
+                        let mut __items: ::std::vec::Vec<(&str, _)> = #field_ref
+                            .iter()
+                            .map(|(__k, __v)| (__k.as_str(), __v))
+                            .collect();
+                        __items.sort_by(|a, b| a.0.cmp(b.0));
+                        for (__key, __val) in __items {
+                            ::tensor_kdl::write_property_key(out, __key)?;
+                            ::tensor_kdl::EncodeScalar::write_scalar(__val, out)?;
+                        }
                     }
                 });
             }
             FieldRole::Child { name: cname } => {
+                has_static_children = true;
                 let key = cname
                     .clone()
                     .or_else(|| f.rename.clone())
@@ -295,111 +319,159 @@ fn field_encode_stmts(
                         if f.optional {
                             children.push(quote! {
                                 if let ::std::option::Option::Some(__v) = #field_ref.as_ref() {
-                                    __children.push(::tensor_kdl::arg_node(
-                                        #key,
-                                        ::tensor_kdl::EncodeScalar::encode_scalar(__v)?,
-                                    ));
+                                    ::tensor_kdl::write_arg_node_line(out, indent + 1, #key, __v)?;
                                 }
                             });
                         } else {
                             children.push(quote! {
-                                __children.push(::tensor_kdl::arg_node(
-                                    #key,
-                                    ::tensor_kdl::EncodeScalar::encode_scalar(#field_ref)?,
-                                ));
+                                ::tensor_kdl::write_arg_node_line(
+                                    out, indent + 1, #key, #field_ref,
+                                )?;
                             });
                         }
                     }
                     UnwrapKind::Property => {
-                        // Reverse of decode unwrap(property): child named `key`
-                        // with property `key=<value>`.
                         if f.optional {
                             children.push(quote! {
                                 if let ::std::option::Option::Some(__v) = #field_ref.as_ref() {
-                                    __children.push(::tensor_kdl::Node {
-                                        type_name: ::std::option::Option::None,
-                                        name: ::tensor_kdl::KdlStr::owned(#key.to_owned()),
-                                        entries: ::std::vec![::tensor_kdl::prop_entry(
-                                            #key,
-                                            ::tensor_kdl::EncodeScalar::encode_scalar(__v)?,
-                                        )],
-                                        children: ::std::vec::Vec::new(),
-                                    });
+                                    ::tensor_kdl::write_prop_node_line(
+                                        out, indent + 1, #key, #key, __v,
+                                    )?;
                                 }
                             });
                         } else {
                             children.push(quote! {
-                                __children.push(::tensor_kdl::Node {
-                                    type_name: ::std::option::Option::None,
-                                    name: ::tensor_kdl::KdlStr::owned(#key.to_owned()),
-                                    entries: ::std::vec![::tensor_kdl::prop_entry(
-                                        #key,
-                                        ::tensor_kdl::EncodeScalar::encode_scalar(#field_ref)?,
-                                    )],
-                                    children: ::std::vec::Vec::new(),
-                                });
+                                ::tensor_kdl::write_prop_node_line(
+                                    out, indent + 1, #key, #key, #field_ref,
+                                )?;
                             });
                         }
                     }
                     UnwrapKind::None => {
+                        // Nested Encode::write_node; force child name via thin DOM
+                        // rename only when the nested type's own name differs.
                         if f.optional {
                             children.push(quote! {
                                 if let ::std::option::Option::Some(__v) = #field_ref.as_ref() {
                                     let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
                                     __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
-                                    __children.push(__node);
+                                    ::tensor_kdl::Encode::write_node(&__node, out, indent + 1)?;
                                 }
                             });
                         } else {
                             children.push(quote! {
-                                let mut __node = ::tensor_kdl::Encode::encode_node(#field_ref)?;
-                                __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
-                                __children.push(__node);
+                                {
+                                    let mut __node = ::tensor_kdl::Encode::encode_node(#field_ref)?;
+                                    __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
+                                    ::tensor_kdl::Encode::write_node(&__node, out, indent + 1)?;
+                                }
                             });
                         }
                     }
                 }
             }
             FieldRole::Children { name: cname } => {
+                has_static_children = true;
                 if let Some(filter) = cname {
                     children.push(quote! {
                         for __v in #field_ref {
-                            let mut __n = ::tensor_kdl::Encode::encode_node(__v)?;
-                            __n.name = ::tensor_kdl::KdlStr::owned(#filter.to_owned());
-                            __children.push(__n);
+                            let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
+                            __node.name = ::tensor_kdl::KdlStr::owned(#filter.to_owned());
+                            ::tensor_kdl::Encode::write_node(&__node, out, indent + 1)?;
                         }
                     });
                 } else {
                     children.push(quote! {
                         for __v in #field_ref {
-                            __children.push(::tensor_kdl::Encode::encode_node(__v)?);
+                            ::tensor_kdl::Encode::write_node(__v, out, indent + 1)?;
                         }
                     });
                 }
             }
-            FieldRole::Skip | FieldRole::DefaultOnly => {
-                let _ = field;
-            }
             FieldRole::Flatten => {
-                // After known fields: merge EncodePartial entries then children.
-                entries.push(quote! {
-                    {
-                        let __partial_entries =
-                            ::tensor_kdl::EncodePartial::encode_entries(#field_ref)?;
-                        __entries.extend(__partial_entries);
-                    }
-                });
-                children.push(quote! {
-                    {
-                        let __partial_children =
-                            ::tensor_kdl::EncodePartial::encode_children(#field_ref)?;
-                        __children.extend(__partial_children);
-                    }
-                });
+                flatten_fields.push(field_ref);
             }
+            FieldRole::Skip | FieldRole::DefaultOnly => {}
         }
     }
-    Ok((entries, children, type_name_expr))
+
+    let flatten_props: Vec<_> = flatten_fields
+        .iter()
+        .map(|field_ref| {
+            quote! {
+                ::tensor_kdl::EncodePartial::write_partial(#field_ref, out, indent)?;
+            }
+        })
+        .collect();
+    let flatten_children: Vec<_> = flatten_fields
+        .iter()
+        .map(|field_ref| {
+            quote! {
+                ::tensor_kdl::EncodePartial::write_partial_children(
+                    #field_ref, out, indent + 1,
+                )?;
+            }
+        })
+        .collect();
+
+    let children_block = if has_static_children || !flatten_fields.is_empty() {
+        // Open a children block when static child roles exist, or when flatten
+        // may contribute children (checked at runtime to avoid empty `{}`).
+        if has_static_children {
+            quote! {
+                ::tensor_kdl::write_children_open(out)?;
+                #(#children)*
+                #(#flatten_children)*
+                ::tensor_kdl::write_children_close(out, indent)?;
+            }
+        } else {
+            // Only flatten children: open block only if any partial emits children.
+            let checks: Vec<_> = flatten_fields
+                .iter()
+                .map(|fr| {
+                    quote! {
+                        if !::tensor_kdl::EncodePartial::encode_children(#fr)?.is_empty() {
+                            __any_flat = true;
+                        }
+                    }
+                })
+                .collect();
+            quote! {
+                {
+                    let mut __any_flat = false;
+                    #(#checks)*
+                    if __any_flat {
+                        ::tensor_kdl::write_children_open(out)?;
+                        #(#flatten_children)*
+                        ::tensor_kdl::write_children_close(out, indent)?;
+                    } else {
+                        ::tensor_kdl::write_node_end_leaf(out)?;
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {
+            ::tensor_kdl::write_node_end_leaf(out)?;
+        }
+    };
+
+    Ok(quote! {
+        {
+            let __ty: ::std::option::Option<::std::string::String> = #type_name_expr;
+            ::tensor_kdl::write_node_header(
+                out,
+                indent,
+                __ty.as_deref(),
+                #name_expr,
+            )?;
+            #(#args)*
+            #(#props)*
+            #(#flatten_props)*
+            #children_block
+            ::std::result::Result::Ok(())
+        }
+    })
 }
 
 pub(crate) fn emit_encode(
@@ -410,8 +482,6 @@ pub(crate) fn emit_encode(
     fields: &[FieldInfo],
     children_only: bool,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    reject_unsupported_encode_fields(fields)?;
-
     let default_name = kebab(&name.to_string());
     let mut node_name_expr = quote! { #default_name };
     let mut has_node_name = false;
@@ -419,26 +489,39 @@ pub(crate) fn emit_encode(
         if matches!(f.role, FieldRole::NodeName) {
             has_node_name = true;
             let id = &f.ident;
-            node_name_expr = quote! { &self.#id };
+            node_name_expr = quote! { self.#id.as_str() };
         }
     }
 
-    let (entries, children, type_name_expr) = field_encode_stmts(fields, FieldAccess::SelfDot)?;
+    let write_body = field_write_body(
+        fields,
+        FieldAccess::SelfDot,
+        node_name_expr.clone(),
+        quote! { ::std::option::Option::None },
+    )?;
+    let (dom_entries, dom_children, dom_ty) = field_dom_stmts(fields, FieldAccess::SelfDot)?;
 
     let encode_node = quote! {
         impl #impl_generics ::tensor_kdl::Encode for #name #ty_generics
         #where_clause
         {
+            fn write_node(
+                &self,
+                out: &mut ::tensor_kdl::WriteSink<'_>,
+                indent: usize,
+            ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                #write_body
+            }
             fn encode_node(&self) -> ::tensor_kdl::CtxResult<::tensor_kdl::Node<'static>> {
                 let mut __entries = ::std::vec::Vec::new();
                 let mut __children = ::std::vec::Vec::new();
-                #(#entries)*
-                #(#children)*
+                #(#dom_entries)*
+                #(#dom_children)*
                 let __name = ::tensor_kdl::KdlStr::owned(
                     ::std::string::ToString::to_string(#node_name_expr),
                 );
                 ::std::result::Result::Ok(::tensor_kdl::Node {
-                    type_name: #type_name_expr,
+                    type_name: #dom_ty,
                     name: __name,
                     entries: __entries,
                     children: __children,
@@ -448,8 +531,8 @@ pub(crate) fn emit_encode(
     };
 
     let encode_doc = if children_only {
-        // Document root: each child field becomes top-level node(s).
-        let mut top = Vec::new();
+        let mut top_write = Vec::new();
+        let mut top_dom = Vec::new();
         for f in fields {
             let id = &f.ident;
             match &f.role {
@@ -461,7 +544,12 @@ pub(crate) fn emit_encode(
                     match f.unwrap {
                         UnwrapKind::Argument => {
                             if f.optional {
-                                top.push(quote! {
+                                top_write.push(quote! {
+                                    if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
+                                        ::tensor_kdl::write_arg_node_line(out, 0, #key, __v)?;
+                                    }
+                                });
+                                top_dom.push(quote! {
                                     if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
                                         __nodes.push(::tensor_kdl::arg_node(
                                             #key,
@@ -470,7 +558,10 @@ pub(crate) fn emit_encode(
                                     }
                                 });
                             } else {
-                                top.push(quote! {
+                                top_write.push(quote! {
+                                    ::tensor_kdl::write_arg_node_line(out, 0, #key, &self.#id)?;
+                                });
+                                top_dom.push(quote! {
                                     __nodes.push(::tensor_kdl::arg_node(
                                         #key,
                                         ::tensor_kdl::EncodeScalar::encode_scalar(&self.#id)?,
@@ -480,7 +571,23 @@ pub(crate) fn emit_encode(
                         }
                         UnwrapKind::Property => {
                             if f.optional {
-                                top.push(quote! {
+                                top_write.push(quote! {
+                                    if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
+                                        ::tensor_kdl::write_prop_node_line(
+                                            out, 0, #key, #key, __v,
+                                        )?;
+                                    }
+                                });
+                            } else {
+                                top_write.push(quote! {
+                                    ::tensor_kdl::write_prop_node_line(
+                                        out, 0, #key, #key, &self.#id,
+                                    )?;
+                                });
+                            }
+                            // DOM mirror
+                            if f.optional {
+                                top_dom.push(quote! {
                                     if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
                                         __nodes.push(::tensor_kdl::Node {
                                             type_name: ::std::option::Option::None,
@@ -494,7 +601,7 @@ pub(crate) fn emit_encode(
                                     }
                                 });
                             } else {
-                                top.push(quote! {
+                                top_dom.push(quote! {
                                     __nodes.push(::tensor_kdl::Node {
                                         type_name: ::std::option::Option::None,
                                         name: ::tensor_kdl::KdlStr::owned(#key.to_owned()),
@@ -509,7 +616,14 @@ pub(crate) fn emit_encode(
                         }
                         UnwrapKind::None => {
                             if f.optional {
-                                top.push(quote! {
+                                top_write.push(quote! {
+                                    if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
+                                        let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
+                                        __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
+                                        ::tensor_kdl::Encode::write_node(&__node, out, 0)?;
+                                    }
+                                });
+                                top_dom.push(quote! {
                                     if let ::std::option::Option::Some(__v) = self.#id.as_ref() {
                                         let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
                                         __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
@@ -517,7 +631,15 @@ pub(crate) fn emit_encode(
                                     }
                                 });
                             } else {
-                                top.push(quote! {
+                                top_write.push(quote! {
+                                    {
+                                        let mut __node =
+                                            ::tensor_kdl::Encode::encode_node(&self.#id)?;
+                                        __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
+                                        ::tensor_kdl::Encode::write_node(&__node, out, 0)?;
+                                    }
+                                });
+                                top_dom.push(quote! {
                                     let mut __node = ::tensor_kdl::Encode::encode_node(&self.#id)?;
                                     __node.name = ::tensor_kdl::KdlStr::owned(#key.to_owned());
                                     __nodes.push(__node);
@@ -528,7 +650,14 @@ pub(crate) fn emit_encode(
                 }
                 FieldRole::Children { name: filter } => {
                     if let Some(filter) = filter {
-                        top.push(quote! {
+                        top_write.push(quote! {
+                            for __v in &self.#id {
+                                let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
+                                __node.name = ::tensor_kdl::KdlStr::owned(#filter.to_owned());
+                                ::tensor_kdl::Encode::write_node(&__node, out, 0)?;
+                            }
+                        });
+                        top_dom.push(quote! {
                             for __v in &self.#id {
                                 let mut __node = ::tensor_kdl::Encode::encode_node(__v)?;
                                 __node.name = ::tensor_kdl::KdlStr::owned(#filter.to_owned());
@@ -536,7 +665,12 @@ pub(crate) fn emit_encode(
                             }
                         });
                     } else {
-                        top.push(quote! {
+                        top_write.push(quote! {
+                            for __v in &self.#id {
+                                ::tensor_kdl::Encode::write_node(__v, out, 0)?;
+                            }
+                        });
+                        top_dom.push(quote! {
                             for __v in &self.#id {
                                 __nodes.push(::tensor_kdl::Encode::encode_node(__v)?);
                             }
@@ -544,12 +678,13 @@ pub(crate) fn emit_encode(
                     }
                 }
                 FieldRole::Flatten => {
-                    top.push(quote! {
-                        {
-                            let __partial_children =
-                                ::tensor_kdl::EncodePartial::encode_children(&self.#id)?;
-                            __nodes.extend(__partial_children);
-                        }
+                    top_write.push(quote! {
+                        ::tensor_kdl::EncodePartial::write_partial_children(
+                            &self.#id, out, 0,
+                        )?;
+                    });
+                    top_dom.push(quote! {
+                        __nodes.extend(::tensor_kdl::EncodePartial::encode_children(&self.#id)?);
                     });
                 }
                 _ => {}
@@ -559,20 +694,36 @@ pub(crate) fn emit_encode(
             impl #impl_generics ::tensor_kdl::EncodeDocument for #name #ty_generics
             #where_clause
             {
-                fn encode_document(&self) -> ::tensor_kdl::CtxResult<::tensor_kdl::Document<'static>> {
+                fn write_document(
+                    &self,
+                    out: &mut ::tensor_kdl::WriteSink<'_>,
+                ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                    #(#top_write)*
+                    ::std::result::Result::Ok(())
+                }
+                fn encode_document(
+                    &self,
+                ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Document<'static>> {
                     let mut __nodes = ::std::vec::Vec::new();
-                    #(#top)*
+                    #(#top_dom)*
                     ::std::result::Result::Ok(::tensor_kdl::Document { nodes: __nodes })
                 }
             }
         }
     } else if !has_node_name {
-        // Single-node document root (P-G8b shape).
         quote! {
             impl #impl_generics ::tensor_kdl::EncodeDocument for #name #ty_generics
             #where_clause
             {
-                fn encode_document(&self) -> ::tensor_kdl::CtxResult<::tensor_kdl::Document<'static>> {
+                fn write_document(
+                    &self,
+                    out: &mut ::tensor_kdl::WriteSink<'_>,
+                ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
+                    ::tensor_kdl::Encode::write_node(self, out, 0)
+                }
+                fn encode_document(
+                    &self,
+                ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Document<'static>> {
                     let __node = ::tensor_kdl::Encode::encode_node(self)?;
                     ::std::result::Result::Ok(::tensor_kdl::Document {
                         nodes: ::std::vec![__node],

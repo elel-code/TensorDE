@@ -8,6 +8,7 @@ use syn::{DeriveInput, parse_macro_input};
 mod attr;
 mod decode;
 mod emit;
+mod encode_dom;
 mod encode_emit;
 mod key_dispatch;
 mod key_hash;

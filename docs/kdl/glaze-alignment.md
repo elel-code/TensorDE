@@ -185,12 +185,14 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
     `+` / `++`, equality / inequality, same-type ordered compares, string
     `^=` / `$=` / `*=`, `values()` / `props()`, and value type RHS
     `[val() = (tag)]`. Still **not** full KQL / SCHEMA-SPEC.
-19. ~~Glaze-shaped write API~~ done — `write` / `write_into` / `write_into_slice`
-    with `ErrorCtx.consumed` = bytes written and `ErrorCode::BufferOverflow`
-    (`references/glaze/docs/writing.md`). Formatting path still uses DOM +
-    suite Translation Rules printer.
-20. **Next (optional):** monomorphized field-level write (no intermediate
-    `Node`/`Document`); further KQL only with QUERY-SPEC citations.
+19. ~~Glaze-shaped write API + monomorphized dump~~ done — `write` /
+    `write_into` / `write_into_slice` call `EncodeDocument::write_document` →
+    `WriteSink` (Glaze `to::op(value, ctx, b, ix)` + `util/dump.hpp`). Derive
+    emits field dumps with no intermediate `Node` on the success path.
+    `encode_node` remains for tooling / suite DOM helpers only.
+20. **Next (optional):** eliminate remaining child-rename DOM micro-allocs
+    (forced child name still builds a thin `Node`); further KQL only with
+    QUERY-SPEC citations.
 
 ### Stage benchmark (P-G10)
 

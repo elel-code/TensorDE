@@ -21,9 +21,9 @@ parse, process-macro typed decode/encode, and a documented KQL subset).
 - Official suite (needs `references/kdl`): included in tests; strict mode via `TENSOR_KDL_STRICT_SUITE=1`
 - Conformance snapshot: **243/243** parse, **95/95** reject, **243/243** roundtrip
 - Padded direct reads: `PaddedInput` + runtime/const options
-- Typed write: `Encode` / `EncodeScalar` / `EncodePartial` (structs, enums,
-  properties maps, `unwrap(property)`, flatten) plus Glaze-shaped
-  `write` / `write_into` / `write_into_slice`
+- Typed write: monomorphized `write_node` / `WriteSink` dump (Glaze `to::op`);
+  `Encode` / `EncodeScalar` / `EncodePartial` + `write` / `write_into` /
+  `write_into_slice`
 - Query subset (`QUERY-SPEC.md`): `top()`, `>` / `>>`, `+` / `++`, `||`,
   existence / `values()` / `props()`, `=` / `!=`, value type RHS `(tag)`,
   ordered compares, string `^=` / `$=` / `*=` (not full KQL)

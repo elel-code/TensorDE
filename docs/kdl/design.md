@@ -495,11 +495,13 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
   - `#[kdl(properties)]` maps (formatter sorts keys; see suite translation rules);
   - `Flag` presence-only nodes;
   - `#[kdl(flatten)]` via [`EncodePartial`] (entries then children after known fields).
-- Glaze-shaped write entrypoints (`references/glaze/docs/writing.md`):
+- Glaze-shaped write entrypoints (`references/glaze/core/write.hpp`,
+  `docs/writing.md`):
   - `write` / `write_into` — resizable buffer; `ErrorCtx.consumed` = bytes written
   - `write_into_slice` — fixed buffer; `ErrorCode::BufferOverflow` on overflow
-  - Implementation still formats via DOM + canonical printer today; field-level
-    monomorphized streaming remains optional.
+  - **Primary path:** monomorphized `Encode::write_node` /
+    `EncodeDocument::write_document` dump into `WriteSink` (no intermediate
+    `Node`/`Document`). DOM `encode_node` is tooling / fallback only.
 - Output goes through the stable canonical formatter: rightmost property wins,
   then properties are sorted by key, matching
   `references/kdl/tests/README.md` Translation Rules.
