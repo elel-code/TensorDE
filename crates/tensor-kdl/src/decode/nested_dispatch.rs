@@ -99,7 +99,6 @@ pub type NestedVisitTag = NestedProbe<()>;
 
 /// Compat aliases.
 pub use NestedFill as NestedViaVisit;
-pub use NestedFill as NestedViaDom;
 
 /// Top-level node → `T` (document element loop).
 ///

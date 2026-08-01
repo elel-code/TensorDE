@@ -20,7 +20,7 @@ mod nested_dispatch;
 mod visit_fill;
 
 pub use nested_dispatch::{
-    NestedFill, NestedProbe, NestedViaDom, NestedViaVisit, NestedVisitTag, TopLevelFill,
+    NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill,
 };
 pub use visit_fill::{
     DecodeFromVisit, VisitBuilder, VisitFill, decode_node_body_after_header, decode_node_str,
