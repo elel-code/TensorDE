@@ -15,6 +15,8 @@ use crate::parse::visitor::NodeVisitor;
 use crate::value::Node;
 use crate::value::{KdlStr, Value};
 
+use super::DecodeScalar;
+
 /// Schema sink filled during [`crate::Parser::visit_node`].
 ///
 /// Glaze writes directly into `T&`; we accumulate into a builder that
@@ -193,6 +195,159 @@ pub fn missing_argument_at(index: usize) -> ErrorCtx {
 
 pub fn missing_child_named(name: &str) -> ErrorCtx {
     ErrorCtx::new(ErrorCode::MissingChild, 0).with_message(format!("missing child `{name}`"))
+}
+
+/// Peel helpers for `unwrap(argument|property)` without a [`Node`] tree (P-G12).
+///
+/// Glaze: nested scalar `from::op` without building a sub-object DOM.
+struct PeelArgumentBuilder<T> {
+    value: Option<T>,
+    extra: bool,
+    _ty: core::marker::PhantomData<T>,
+}
+
+impl<'a, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelArgumentBuilder<T> {
+    fn on_argument(&mut self, _type_name: Option<KdlStr<'a>>, value: Value<'a>) -> CtxResult<bool> {
+        if self.value.is_some() {
+            self.extra = true;
+            return Ok(true);
+        }
+        self.value = Some(T::decode_scalar(&value)?);
+        Ok(true)
+    }
+
+    fn on_property(
+        &mut self,
+        _key: KdlStr<'a>,
+        _type_name: Option<KdlStr<'a>>,
+        _value: Value<'a>,
+    ) -> CtxResult<bool> {
+        Ok(false)
+    }
+}
+
+/// Peel first argument after header (live parser path).
+pub fn peel_argument_after_header<'a, T: DecodeScalar<'a>>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+) -> CtxResult<T> {
+    let mut b = PeelArgumentBuilder {
+        value: None,
+        extra: false,
+        _ty: core::marker::PhantomData,
+    };
+    let _ = (type_name, name);
+    // Header already consumed by caller; only body remains.
+    parser.finish_nested_child(opts, &mut b)?;
+    if b.extra {
+        return Err(ErrorCtx::new(ErrorCode::Syntax, 0).with_message("too many arguments"));
+    }
+    b.value
+        .ok_or_else(|| ErrorCtx::new(ErrorCode::MissingArgument, 0).with_expected("argument"))
+}
+
+/// Optional peel: missing argument → `None`.
+pub fn peel_opt_argument_after_header<'a, T: DecodeScalar<'a>>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+) -> CtxResult<Option<T>> {
+    let mut b = PeelArgumentBuilder {
+        value: None,
+        extra: false,
+        _ty: core::marker::PhantomData,
+    };
+    let _ = (type_name, name);
+    parser.finish_nested_child(opts, &mut b)?;
+    if b.extra {
+        return Err(ErrorCtx::new(ErrorCode::Syntax, 0).with_message("too many arguments"));
+    }
+    Ok(b.value)
+}
+
+struct PeelPropertyBuilder<T> {
+    key: String,
+    value: Option<T>,
+    _ty: core::marker::PhantomData<T>,
+}
+
+impl<'a, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelPropertyBuilder<T> {
+    fn on_argument(
+        &mut self,
+        _type_name: Option<KdlStr<'a>>,
+        _value: Value<'a>,
+    ) -> CtxResult<bool> {
+        Ok(true)
+    }
+
+    fn on_property(
+        &mut self,
+        key: KdlStr<'a>,
+        _type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        if key.as_str() == self.key {
+            self.value = Some(T::decode_scalar(&value)?);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// Peel named property from current node body (no [`Node`] tree).
+pub fn peel_property_after_header<'a, T: DecodeScalar<'a>>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+    prop_key: &str,
+) -> CtxResult<T> {
+    let _ = (type_name, name);
+    let mut b = PeelPropertyBuilder {
+        key: prop_key.to_owned(),
+        value: None,
+        _ty: core::marker::PhantomData,
+    };
+    parser.finish_nested_child(opts, &mut b)?;
+    b.value.ok_or_else(|| {
+        ErrorCtx::new(ErrorCode::MissingProperty, 0)
+            .with_message(format!("missing property `{prop_key}`"))
+    })
+}
+
+/// Optional property peel.
+pub fn peel_opt_property_after_header<'a, T: DecodeScalar<'a>>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+    prop_key: &str,
+) -> CtxResult<Option<T>> {
+    let _ = (type_name, name);
+    let mut b = PeelPropertyBuilder {
+        key: prop_key.to_owned(),
+        value: None,
+        _ty: core::marker::PhantomData,
+    };
+    parser.finish_nested_child(opts, &mut b)?;
+    Ok(b.value)
+}
+
+/// Skip the remainder of the current node body (unknown top-level name).
+pub fn skip_node_after_header<'a>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+) -> CtxResult<()> {
+    struct Skip;
+    impl<'a> NodeVisitor<'a> for Skip {}
+    let mut skip = Skip;
+    let _ = (type_name, name);
+    parser.finish_nested_child(opts, &mut skip)
 }
 
 /// Stream top-level nodes into `out` using visit-fill (no per-node DOM [`Node`]).

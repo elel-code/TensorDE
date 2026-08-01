@@ -399,6 +399,7 @@ pub(crate) fn expand_struct_decode(
             }
         }
         quote! {
+            #[cfg(feature = "dom")]
             impl #impl_generics ::tensor_kdl::DecodePartial<'__kdl>
                 for #name #ty_generics
             #where_clause
@@ -515,6 +516,7 @@ pub(crate) fn expand_struct_decode(
         };
 
         quote! {
+            #[cfg(feature = "dom")]
             impl #impl_generics ::tensor_kdl::DecodeChildren<'__kdl>
                 for #name #ty_generics
             #where_clause
@@ -536,6 +538,7 @@ pub(crate) fn expand_struct_decode(
                 for #name #ty_generics
             #where_clause
             {
+                #[cfg(feature = "dom")]
                 fn decode_document(
                     doc: &::tensor_kdl::Document<'__kdl>,
                 ) -> ::tensor_kdl::CtxResult<Self> {
@@ -553,6 +556,7 @@ pub(crate) fn expand_struct_decode(
                 for #name #ty_generics
             #where_clause
             {
+                #[cfg(feature = "dom")]
                 fn decode_document(
                     doc: &::tensor_kdl::Document<'__kdl>,
                 ) -> ::tensor_kdl::CtxResult<Self> {
@@ -576,6 +580,7 @@ pub(crate) fn expand_struct_decode(
     let visit_fill = emit_decode_from_visit(name, impl_generics, ty_generics, where_clause, fields);
 
     Ok(quote! {
+        #[cfg(feature = "dom")]
         impl #impl_generics ::tensor_kdl::Decode<'__kdl>
             for #name #ty_generics
         #where_clause

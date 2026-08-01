@@ -1,27 +1,38 @@
 //! Glaze-shaped write buffer (`references/glaze/core/write.hpp` + `util/dump.hpp`).
 //!
-//! Primary path: monomorphized code dumps bytes into a growable or fixed buffer
-//! with an overwrite index. No intermediate KDL DOM on the success path.
+//! - Growable: auto `ensure_capacity` with 2× growth (`buffer_traits`).
+//! - Fixed: bounds-checked; overflow → [`ErrorCode::BufferOverflow`].
+//! - `written()` / `ix` maps to Glaze `error_ctx.count` on success.
 
 use crate::error::{ErrorCode, ErrorCtx};
 use crate::parse::chars::{is_disallowed_literal, is_non_identifier_char};
 
+/// Glaze `write_padding_bytes` (`opts.hpp`) — reserve headroom for dump bursts.
+pub const WRITE_PADDING_BYTES: usize = 256;
+
 /// Output sink for typed write (Glaze `B& b, size_t& ix`).
-///
-/// - Growable [`String`]: auto-extends (Glaze resizable `buffer_traits`).
-/// - Fixed `&mut [u8]`: bounds-checked; overflow → [`ErrorCode::BufferOverflow`].
 pub struct WriteSink<'a> {
     kind: SinkKind<'a>,
 }
 
 enum SinkKind<'a> {
-    Grow { buf: &'a mut String },
-    Fixed { bytes: &'a mut [u8], ix: usize },
+    /// Resizable: bytes live in `buf.as_mut_vec()`-style via String as Latin-1/UTF-8.
+    /// We keep `String` and write UTF-8; `ix` is `buf.len()` after each dump.
+    Grow {
+        buf: &'a mut String,
+    },
+    Fixed {
+        bytes: &'a mut [u8],
+        ix: usize,
+    },
 }
 
 impl<'a> WriteSink<'a> {
-    /// Glaze resizable buffer (`std::string`).
+    /// Glaze resizable buffer (`std::string`). Prefills padding capacity.
     pub fn string(buf: &'a mut String) -> Self {
+        if buf.capacity() < 2 * WRITE_PADDING_BYTES {
+            buf.reserve(2 * WRITE_PADDING_BYTES);
+        }
         Self {
             kind: SinkKind::Grow { buf },
         }
@@ -34,7 +45,7 @@ impl<'a> WriteSink<'a> {
         }
     }
 
-    /// Bytes written so far (Glaze `ix` / `error_ctx.count` on success).
+    /// Bytes written so far (Glaze `ix` / `error_ctx.count`).
     pub fn written(&self) -> usize {
         match &self.kind {
             SinkKind::Grow { buf } => buf.len(),
@@ -42,14 +53,55 @@ impl<'a> WriteSink<'a> {
         }
     }
 
+    /// Grow-path reserve with padding headroom (Glaze `vector_like` dump resize).
+    ///
+    /// Cite: `util/dump.hpp` — padding only applies to **resizable** buffers;
+    /// fixed spans are exact-size checked in [`Self::push_byte`] / [`Self::push_str`].
+    pub fn ensure_capacity(&mut self, additional: usize) -> Result<(), ErrorCtx> {
+        match &mut self.kind {
+            SinkKind::Grow { buf } => {
+                // Growth includes write_padding_bytes headroom (dump_newline_indent style).
+                let needed = buf
+                    .len()
+                    .saturating_add(additional)
+                    .saturating_add(WRITE_PADDING_BYTES.min(16));
+                if needed > buf.capacity() {
+                    // 2× growth amortizes reallocations (Glaze buffer_traits).
+                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
+                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
+                }
+                Ok(())
+            }
+            SinkKind::Fixed { bytes, ix } => {
+                let needed = *ix + additional;
+                if needed > bytes.len() {
+                    Err(ErrorCtx::new(ErrorCode::BufferOverflow, *ix)
+                        .with_message("fixed write buffer too small"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Dump one byte (Glaze `dump(c, b, ix)`).
     pub fn push_byte(&mut self, c: u8) -> Result<(), ErrorCtx> {
         match &mut self.kind {
             SinkKind::Grow { buf } => {
+                // Resizable: ensure room + padding headroom, then write.
+                let needed = buf
+                    .len()
+                    .saturating_add(1)
+                    .saturating_add(WRITE_PADDING_BYTES.min(16));
+                if needed > buf.capacity() {
+                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
+                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
+                }
                 buf.push(c as char);
                 Ok(())
             }
             SinkKind::Fixed { bytes, ix } => {
+                // Bounded: exact bounds only — no padding (Glaze dump.hpp contract).
                 if *ix >= bytes.len() {
                     return Err(ErrorCtx::new(ErrorCode::BufferOverflow, *ix)
                         .with_message("fixed write buffer too small"));
@@ -63,16 +115,28 @@ impl<'a> WriteSink<'a> {
 
     /// Dump a UTF-8 string slice (Glaze `dump(sv, b, ix)`).
     pub fn push_str(&mut self, s: &str) -> Result<(), ErrorCtx> {
+        let raw = s.as_bytes();
         match &mut self.kind {
             SinkKind::Grow { buf } => {
+                let needed = buf
+                    .len()
+                    .saturating_add(raw.len())
+                    .saturating_add(WRITE_PADDING_BYTES.min(16));
+                if needed > buf.capacity() {
+                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
+                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
+                }
                 buf.push_str(s);
                 Ok(())
             }
             SinkKind::Fixed { bytes, ix } => {
-                let raw = s.as_bytes();
+                // Write as many bytes as fit, then report overflow with consumed = full length
+                // (Glaze-style count at failure for format_error indexing).
                 if *ix + raw.len() > bytes.len() {
                     let n = bytes.len().saturating_sub(*ix);
-                    bytes[*ix..].copy_from_slice(&raw[..n]);
+                    if n > 0 {
+                        bytes[*ix..*ix + n].copy_from_slice(&raw[..n]);
+                    }
                     *ix = bytes.len();
                     return Err(ErrorCtx::new(ErrorCode::BufferOverflow, *ix)
                         .with_message("fixed write buffer too small"));
@@ -89,8 +153,7 @@ impl<'a> WriteSink<'a> {
         self.push_str(c.encode_utf8(&mut tmp))
     }
 
-    /// Finalize growable buffer is a no-op (String already sized). Fixed buffers
-    /// keep capacity; caller uses [`Self::written`].
+    /// Finalize; return byte count (Glaze `finalize` + `count`).
     pub fn finish(self) -> usize {
         self.written()
     }
@@ -168,7 +231,6 @@ pub fn is_bare_ident(s: &str) -> bool {
         .any(|c| is_non_identifier_char(c) || is_disallowed_literal(c))
 }
 
-/// Write a bool / null / int / float / string scalar lexeme (no type annotation).
 pub fn write_bool(out: &mut WriteSink<'_>, v: bool) -> Result<(), ErrorCtx> {
     out.push_str(if v { "#true" } else { "#false" })
 }
@@ -185,7 +247,6 @@ pub fn write_f64(out: &mut WriteSink<'_>, f: f64) -> Result<(), ErrorCtx> {
     out.push_str(&format_float(f))
 }
 
-/// Suite Translation Rules float from original lexeme (`_` stripped, `E` form).
 #[cfg(feature = "dom")]
 pub fn write_f64_lexical(out: &mut WriteSink<'_>, lex: &str, value: f64) -> Result<(), ErrorCtx> {
     out.push_str(&format_float_lexical(lex, value))
@@ -264,7 +325,6 @@ fn format_float(f: f64) -> String {
     }
 }
 
-/// Open a node line: optional `(type)` + name (no trailing space).
 pub fn write_node_header(
     out: &mut WriteSink<'_>,
     indent: usize,
@@ -280,41 +340,34 @@ pub fn write_node_header(
     write_ident_or_string(out, name)
 }
 
-/// Space + optional `(type)` + scalar (argument).
 pub fn write_argument_prefix(out: &mut WriteSink<'_>) -> Result<(), ErrorCtx> {
     out.push_byte(b' ')
 }
 
-/// Space + `key=` (+ optional type handled by caller) for a property.
 pub fn write_property_key(out: &mut WriteSink<'_>, key: &str) -> Result<(), ErrorCtx> {
     out.push_byte(b' ')?;
     write_ident_or_string(out, key)?;
     out.push_byte(b'=')
 }
 
-/// Terminate a leaf node with newline.
 pub fn write_node_end_leaf(out: &mut WriteSink<'_>) -> Result<(), ErrorCtx> {
     out.push_byte(b'\n')
 }
 
-/// Begin children block ` {\n`.
 pub fn write_children_open(out: &mut WriteSink<'_>) -> Result<(), ErrorCtx> {
     out.push_str(" {\n")
 }
 
-/// Close children block at `indent` then `}\n`.
 pub fn write_children_close(out: &mut WriteSink<'_>, indent: usize) -> Result<(), ErrorCtx> {
     write_indent(out, indent)?;
     out.push_str("}\n")
 }
 
-/// Bare flag / empty child: `name\n` at indent.
 pub fn write_flag_line(out: &mut WriteSink<'_>, indent: usize, name: &str) -> Result<(), ErrorCtx> {
     write_node_header(out, indent, None, name)?;
     write_node_end_leaf(out)
 }
 
-/// Single-argument child: `name <scalar>\n`.
 pub fn write_arg_node_line<S: super::EncodeScalar>(
     out: &mut WriteSink<'_>,
     indent: usize,
@@ -327,7 +380,6 @@ pub fn write_arg_node_line<S: super::EncodeScalar>(
     write_node_end_leaf(out)
 }
 
-/// Single-property child (unwrap(property) reverse): `name key=<scalar>\n`.
 pub fn write_prop_node_line<S: super::EncodeScalar>(
     out: &mut WriteSink<'_>,
     indent: usize,

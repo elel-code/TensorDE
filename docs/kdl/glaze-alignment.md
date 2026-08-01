@@ -127,8 +127,9 @@ For KDL that means:
 | **P-G10a** Parser padded over-read | **Done** — `Parser::from_padded` / `logical_end`; SWAR skip/quote use content end + padding bytes |
 | **P-G10b** mixed primary + sibling nodes | **Done** — single-node roots with unfiltered `#[kdl(children)]` collect later top-level nodes via `read_stream` / `decode_document` |
 | **P-G11** padded typed read | **Done** — `DecodeDocument::read_stream_parser`; runtime/const padded APIs retain borrowed logical input while scanners consume the padded allocation |
+| **P-G12** document-root stream without `Node` | **Done** — named children-only `read_stream` uses `visit_document_at_nodes` + `NestedProbe` / peel helpers; `WriteSink` grow path reserves `WRITE_PADDING_BYTES` (Glaze `write_padding_bytes`); fixed buffers exact-size only (`util/dump.hpp`) |
 
-Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector).
+Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector). Flatten on document roots still requires feature `dom` + `DecodePartial` (unknown free nodes).
 
 ## 5. SWAR / performance (cite before changing)
 
@@ -193,7 +194,11 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 20. ~~No tree code without `dom`~~ done — `value/tree`, `DomNodeBuilder`,
     DOM `Decode`/`NestedFill` fallback, and `from_str`/`query` are
     `cfg(feature = "dom")` only. Default build is visit+WriteSink only.
-21. **Next (optional):** further KQL only with QUERY-SPEC citations.
+21. ~~P-G12 document-root stream without `Node`~~ done — peel
+    `unwrap(argument|property)`; `WriteSink` grow padding vs fixed exact
+    bounds (`dump.hpp`); flatten roots remain `dom`-gated.
+22. **Next (optional):** further KQL only with QUERY-SPEC citations;
+    visit nested `unwrap` without any temporary child `Node` under `dom`.
 
 ### Stage benchmark (P-G10)
 

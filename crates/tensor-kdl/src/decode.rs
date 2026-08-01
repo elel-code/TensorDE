@@ -23,7 +23,9 @@ pub use nested_dispatch::{NestedFill, NestedProbe, NestedViaVisit, NestedVisitTa
 pub use visit_fill::{
     DecodeFromVisit, VisitBuilder, VisitFill, decode_node_body_after_header, decode_node_str,
     decode_node_str_const, decode_node_visit, decode_node_visit_const, linear_prop_index,
-    missing_argument_at, missing_child_named, missing_field, read_nodes_into_visit,
+    missing_argument_at, missing_child_named, missing_field, peel_argument_after_header,
+    peel_opt_argument_after_header, peel_opt_property_after_header, peel_property_after_header,
+    read_nodes_into_visit, skip_node_after_header,
 };
 
 use crate::error::{CtxResult, ErrorCode, ErrorCtx};

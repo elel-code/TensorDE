@@ -418,7 +418,7 @@ fn emit_key_dispatch(
 }
 
 /// Peel `Option<T>` → `T` for nested visit-fill of optional child fields.
-fn option_inner_type(ty: &Type) -> Option<&Type> {
+pub(crate) fn option_inner_type(ty: &Type) -> Option<&Type> {
     let syn::Type::Path(tp) = ty else {
         return None;
     };
@@ -436,7 +436,7 @@ fn option_inner_type(ty: &Type) -> Option<&Type> {
 }
 
 /// Peel `Vec<T>` → `T` for nested visit-fill of children collectors.
-fn vec_inner_type(ty: &Type) -> Option<&Type> {
+pub(crate) fn vec_inner_type(ty: &Type) -> Option<&Type> {
     let syn::Type::Path(tp) = ty else {
         return None;
     };

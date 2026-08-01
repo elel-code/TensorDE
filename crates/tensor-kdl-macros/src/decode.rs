@@ -29,6 +29,7 @@ pub(crate) fn expand_decode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
                     // Newtype: delegate Decode to inner.
                     let inner = &fields.unnamed[0].ty;
                     return Ok(quote! {
+                        #[cfg(feature = "dom")]
                         impl #impl_generics ::tensor_kdl::Decode<'__kdl>
                             for #name #ty_generics
                         #where_clause
@@ -119,6 +120,7 @@ pub(crate) fn expand_decode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
                 }
             }
             Ok(quote! {
+                #[cfg(feature = "dom")]
                 impl #impl_generics ::tensor_kdl::Decode<'__kdl>
                     for #name #ty_generics
                 #where_clause

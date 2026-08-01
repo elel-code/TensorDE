@@ -64,15 +64,16 @@ pub use decode::{
     NestedVisitTag, TopLevelFill, VisitBuilder, VisitFill, decode_node_body_after_header,
     decode_node_str, decode_node_str_const, decode_node_visit, decode_node_visit_const,
     linear_prop_index, missing_argument_at, missing_child_named, missing_field,
-    read_nodes_into_visit,
+    peel_argument_after_header, peel_opt_argument_after_header, peel_opt_property_after_header,
+    peel_property_after_header, read_nodes_into_visit, skip_node_after_header,
 };
 pub use encode::{
-    Encode, EncodeDocument, EncodePartial, EncodeScalar, WriteSink, to_string, to_string_node,
-    write, write_arg_node_line, write_argument_prefix, write_bool, write_children_close,
-    write_children_open, write_f64, write_flag_line, write_i128, write_ident_or_string,
-    write_indent, write_into, write_into_slice, write_node_end_leaf, write_node_header,
-    write_node_into, write_node_into_slice, write_null, write_prop_node_line, write_property_key,
-    write_quoted,
+    Encode, EncodeDocument, EncodePartial, EncodeScalar, WRITE_PADDING_BYTES, WriteSink, to_string,
+    to_string_node, write, write_arg_node_line, write_argument_prefix, write_bool,
+    write_children_close, write_children_open, write_f64, write_flag_line, write_i128,
+    write_ident_or_string, write_indent, write_into, write_into_slice, write_node_end_leaf,
+    write_node_header, write_node_into, write_node_into_slice, write_null, write_prop_node_line,
+    write_property_key, write_quoted,
 };
 pub use error::{CtxResult, Error, ErrorCode, ErrorCtx, Result, format_error, format_error_code};
 #[cfg(feature = "diagnostics")]
