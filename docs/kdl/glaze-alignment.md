@@ -186,11 +186,12 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
     `^=` / `$=` / `*=`, `values()` / `props()`, and value type RHS
     `[val() = (tag)]`. Still **not** full KQL / SCHEMA-SPEC.
 19. ~~Glaze-shaped write API + monomorphized dump~~ done — `write` /
-    `write_into` / `write_into_slice` call `EncodeDocument::write_document` →
-    `WriteSink` (Glaze `to::op(value, ctx, b, ix)` + `util/dump.hpp`). Derive
-    emits **only** `write_node` / `write_node_body` / `write_node_named` — no
-    parallel `encode_node` / DOM build path (Glaze does not keep one). Suite
-    pretty-print reuses `write_dom_node` over parsed `Document` only.
+    `write_into` / `write_into_slice` → `EncodeDocument::write_document` →
+    `WriteSink` (Glaze `to::op` + `util/dump.hpp`). Derive emits only
+    `write_node` / `write_node_body` / `write_node_named`.
+    **Separation (Glaze):** typed encode never implements `Encode` for
+    `Node`/`Document`. Suite pretty-print is [`crate::write::format_document`]
+    over a *parsed* tree only (generic/tooling role, not `to::op`).
 20. **Next (optional):** further KQL only with QUERY-SPEC citations.
 
 ### Stage benchmark (P-G10)

@@ -138,7 +138,7 @@ fn encode_enum_variants_and_unwrap_property_round_trip() {
 
     let layout = Layout { gaps: 8.0 };
     // Children-only root: document encode emits top-level `gaps gaps=…`
-    // (design §11 / suite Translation Rules via `format_document`).
+    // Children-only document root via typed EncodeDocument::write_document.
     let layout_doc = to_string(&layout).unwrap();
     assert!(
         layout_doc.contains("gaps") && layout_doc.contains("8"),
