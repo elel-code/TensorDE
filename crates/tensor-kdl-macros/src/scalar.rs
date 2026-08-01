@@ -1,4 +1,4 @@
-//! DecodeScalar derive expansion.
+//! DecodeScalar / EncodeScalar derive expansion.
 
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, GenericParam, Lifetime, LifetimeParam, LitStr};
@@ -141,16 +141,6 @@ pub(crate) fn expand_encode_scalar(input: &DeriveInput) -> syn::Result<proc_macr
                         };
                         ::tensor_kdl::write_ident_or_string(out, __value)
                     }
-                    fn encode_scalar(
-                        &self,
-                    ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {
-                        let __value = match self {
-                            #(#arms,)*
-                        };
-                        ::std::result::Result::Ok(::tensor_kdl::Value::String(
-                            ::tensor_kdl::KdlStr::owned(__value.to_owned()),
-                        ))
-                    }
                 }
             })
         }
@@ -164,11 +154,6 @@ pub(crate) fn expand_encode_scalar(input: &DeriveInput) -> syn::Result<proc_macr
                         out: &mut ::tensor_kdl::WriteSink<'_>,
                     ) -> ::std::result::Result<(), ::tensor_kdl::ErrorCtx> {
                         ::tensor_kdl::EncodeScalar::write_scalar(&self.0, out)
-                    }
-                    fn encode_scalar(
-                        &self,
-                    ) -> ::tensor_kdl::CtxResult<::tensor_kdl::Value<'static>> {
-                        ::tensor_kdl::EncodeScalar::encode_scalar(&self.0)
                     }
                 }
             }),

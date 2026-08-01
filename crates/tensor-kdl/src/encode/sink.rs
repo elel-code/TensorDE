@@ -185,6 +185,45 @@ pub fn write_f64(out: &mut WriteSink<'_>, f: f64) -> Result<(), ErrorCtx> {
     out.push_str(&format_float(f))
 }
 
+/// Suite Translation Rules float from original lexeme (`_` stripped, `E` form).
+pub fn write_f64_lexical(
+    out: &mut WriteSink<'_>,
+    lex: &str,
+    value: f64,
+) -> Result<(), ErrorCtx> {
+    out.push_str(&format_float_lexical(lex, value))
+}
+
+fn format_float_lexical(lex: &str, value: f64) -> String {
+    let cleaned: String = lex.chars().filter(|c| *c != '_').collect();
+    if !value.is_finite()
+        && (cleaned.contains('e') || cleaned.contains('E') || cleaned.contains('.'))
+    {
+        let mut s = cleaned.replace('e', "E");
+        if let Some(idx) = s.find('E') {
+            let rest = &s[idx + 1..];
+            if !rest.is_empty() && !rest.starts_with('+') && !rest.starts_with('-') {
+                s = format!("{}E+{}", &s[..idx], rest);
+            }
+        }
+        return s;
+    }
+    if cleaned.contains('e') || cleaned.contains('E') {
+        let mut s = cleaned.replace('e', "E");
+        if let Some(idx) = s.find('E') {
+            let rest = &s[idx + 1..];
+            if !rest.is_empty() && !rest.starts_with('+') && !rest.starts_with('-') {
+                s = format!("{}E+{}", &s[..idx], rest);
+            }
+        }
+        return s;
+    }
+    if cleaned.contains('.') {
+        return cleaned;
+    }
+    format_float(value)
+}
+
 fn format_float(f: f64) -> String {
     if f.is_nan() {
         return "#nan".to_owned();

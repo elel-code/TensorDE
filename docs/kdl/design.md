@@ -2,11 +2,9 @@
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
 [glaze-alignment.md](glaze-alignment.md). Through **P-G11**: padded typed reads;
-Glaze-shaped `write_*` buffers; typed encode reverse shapes including
-`EncodePartial` flatten. KQL is an explicitly incomplete subset of
-`references/kdl/QUERY-SPEC.md` (siblings, comparisons, `values`/`props`, value
-type RHS; not full KQL). Derive UI: trybuild. Stage benches:
-`cargo bench -p tensor-kdl` (+ `--bench advanced`).
+typed write is monomorphized `WriteSink` dump only (no `encode_node` dual path).
+KQL is an explicitly incomplete subset of `references/kdl/QUERY-SPEC.md`.
+Derive UI: trybuild. Stage benches: `cargo bench -p tensor-kdl`.
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  
 Language: KDL **2.0.0** (finalized). Process macros are a first-class surface, not an afterthought.
 
@@ -495,13 +493,13 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
   - `#[kdl(properties)]` maps (formatter sorts keys; see suite translation rules);
   - `Flag` presence-only nodes;
   - `#[kdl(flatten)]` via [`EncodePartial`] (entries then children after known fields).
-- Glaze-shaped write entrypoints (`references/glaze/core/write.hpp`,
-  `docs/writing.md`):
+- Glaze-shaped write entrypoints only (`references/glaze/core/write.hpp`,
+  `docs/writing.md`) — no dual DOM-encode path:
   - `write` / `write_into` — resizable buffer; `ErrorCtx.consumed` = bytes written
   - `write_into_slice` — fixed buffer; `ErrorCode::BufferOverflow` on overflow
-  - **Primary path:** monomorphized `Encode::write_node` /
-    `EncodeDocument::write_document` dump into `WriteSink` (no intermediate
-    `Node`/`Document`). DOM `encode_node` is tooling / fallback only.
+  - Monomorphized `Encode::write_node` / `write_node_body` / `write_node_named`
+    dump into `WriteSink`. Suite pretty-print uses `write_dom_node` on a parsed
+    `Document` (tooling), not as a typed-encode fallback.
 - Output goes through the stable canonical formatter: rightmost property wins,
   then properties are sorted by key, matching
   `references/kdl/tests/README.md` Translation Rules.

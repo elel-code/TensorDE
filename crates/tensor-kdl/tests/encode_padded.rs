@@ -71,15 +71,24 @@ fn derive_encode_round_trips_node_and_document_shapes() {
 }
 
 #[test]
-fn encode_scalar_newtype_delegates_to_inner_value() {
+fn encode_scalar_newtype_writes_lexeme() {
+    use tensor_kdl::{EncodeScalar, WriteSink};
+
     #[derive(Debug, EncodeScalar)]
     struct Count(i64);
 
-    assert_eq!(Count(9).encode_scalar().unwrap().as_i128(), Some(9));
-    assert_eq!(
-        Mode::Spatial2d.encode_scalar().unwrap().as_str(),
-        Some("spatial2d")
-    );
+    let mut buf = String::new();
+    {
+        let mut sink = WriteSink::string(&mut buf);
+        Count(9).write_scalar(&mut sink).unwrap();
+    }
+    assert_eq!(buf, "9");
+    buf.clear();
+    {
+        let mut sink = WriteSink::string(&mut buf);
+        Mode::Spatial2d.write_scalar(&mut sink).unwrap();
+    }
+    assert_eq!(buf, "spatial2d");
 }
 
 #[test]
@@ -261,12 +270,11 @@ fn write_into_and_fixed_buffer_match_glaze_shape() {
 #[test]
 fn encode_flatten_via_encode_partial_round_trips() {
     use tensor_kdl::{
-        Decode, DecodePartial, Encode, EncodePartial, Entry, KdlStr, Node, Value, flag_node,
-        from_str, prop_entry, to_string_node,
+        Decode, DecodePartial, Encode, EncodePartial, Node, Value, WriteSink, from_str,
+        to_string_node, write_flag_line, write_ident_or_string, write_property_key,
     };
 
-    // Node-shaped host: flatten can emit both properties and children
-    // (document roots only reverse children — design §11).
+    // Node-shaped host: flatten streams props + children (design §11).
     #[derive(Debug, Default, PartialEq)]
     struct Extra {
         flags: Vec<String>,
@@ -290,20 +298,31 @@ fn encode_flatten_via_encode_partial_round_trips() {
     }
 
     impl EncodePartial for Extra {
-        fn encode_entries(&self) -> tensor_kdl::CtxResult<Vec<Entry<'static>>> {
-            Ok(self
-                .props
-                .iter()
-                .map(|(k, v)| prop_entry(k.clone(), Value::String(KdlStr::owned(v.clone()))))
-                .collect())
+        fn write_partial(
+            &self,
+            out: &mut WriteSink<'_>,
+            _indent: usize,
+        ) -> Result<(), tensor_kdl::ErrorCtx> {
+            for (k, v) in &self.props {
+                write_property_key(out, k)?;
+                write_ident_or_string(out, v)?;
+            }
+            Ok(())
         }
 
-        fn encode_children(&self) -> tensor_kdl::CtxResult<Vec<Node<'static>>> {
-            Ok(self
-                .flags
-                .iter()
-                .map(|name| flag_node(name.clone()))
-                .collect())
+        fn write_partial_children(
+            &self,
+            out: &mut WriteSink<'_>,
+            indent: usize,
+        ) -> Result<(), tensor_kdl::ErrorCtx> {
+            for name in &self.flags {
+                write_flag_line(out, indent, name)?;
+            }
+            Ok(())
+        }
+
+        fn has_partial_children(&self) -> bool {
+            !self.flags.is_empty()
         }
     }
 
