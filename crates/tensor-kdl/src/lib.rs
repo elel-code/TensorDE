@@ -6,14 +6,16 @@
 //! # Quick start
 //!
 //! ```
-//! use tensor_kdl::from_str;
+//! use tensor_kdl::{Decode, read};
 //!
-//! let doc = from_str(r#"
-//!     node 1 key="value" {
-//!         child
-//!     }
-//! "#).unwrap();
-//! assert_eq!(doc.nodes[0].name.as_str(), "node");
+//! #[derive(Debug, Decode, Default, PartialEq)]
+//! struct Row {
+//!     #[kdl(argument)]
+//!     id: i64,
+//! }
+//!
+//! let rows: Vec<Row> = read("row 1\nrow 2\n").unwrap();
+//! assert_eq!(rows.len(), 2);
 //! ```
 //!
 //! # Glaze-aligned read API
@@ -44,20 +46,21 @@ mod error;
 mod opts;
 mod pad;
 mod parse;
+#[cfg(feature = "dom")]
 mod query;
 mod value;
+#[cfg(feature = "dom")]
 mod write;
 
 pub use context::{Context, DEFAULT_MAX_DEPTH, DepthGuard};
 pub use decode::{
     Decode, DecodeChildren, DecodeDocument, DecodeFromVisit, DecodePartial, DecodeScalar, Flag,
-    NestedFill, NestedProbe, NestedViaDom, NestedViaVisit, NestedVisitTag, TopLevelFill,
-    VisitBuilder, VisitFill, argument_or_flag, child, child_in, children, children_in,
-    decode_node_body_after_header, decode_node_str, decode_node_str_const, decode_node_visit,
-    decode_node_visit_const, linear_prop_index, missing_argument_at, missing_child_named,
-    missing_field, one_argument, one_argument_in, one_property, opt_argument, opt_child,
-    opt_child_in, opt_one_argument_in, opt_one_property, opt_property, property,
-    read_nodes_into_visit,
+    NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill, VisitBuilder, VisitFill,
+    argument_or_flag, child, child_in, children, children_in, decode_node_body_after_header,
+    decode_node_str, decode_node_str_const, decode_node_visit, decode_node_visit_const,
+    linear_prop_index, missing_argument_at, missing_child_named, missing_field, one_argument,
+    one_argument_in, one_property, opt_argument, opt_child, opt_child_in, opt_one_argument_in,
+    opt_one_property, opt_property, property, read_nodes_into_visit,
 };
 pub use encode::{
     Encode, EncodeDocument, EncodePartial, EncodeScalar, WriteSink, to_string, to_string_node,
@@ -76,12 +79,18 @@ pub use opts::{
     flag_partial_read, flag_validate_trailing,
 };
 pub use pad::{PADDING_BYTES, PaddedInput, load_u64_for_scan, pad_string, unpad_string};
+pub use parse::{CountingVisitor, NodeVisitor, Parser};
+#[cfg(feature = "dom")]
 pub use parse::{
-    CountingVisitor, DomNodeBuilder, NodeVisitor, Parser, parse_document,
-    parse_document_with_context, visit_document, visit_document_with_context,
+    DomNodeBuilder, parse_document, parse_document_with_context, visit_document,
+    visit_document_with_context,
 };
+#[cfg(feature = "dom")]
 pub use query::{query, query_node};
-pub use value::{Document, Entry, KdlStr, Node, Value};
+#[cfg(feature = "dom")]
+pub use value::{Document, Entry, Node};
+pub use value::{KdlStr, Value};
+#[cfg(feature = "dom")]
 pub use write::{format_document, format_document_into, format_node_into};
 
 #[cfg(feature = "derive")]
@@ -93,20 +102,17 @@ pub use tensor_kdl_macros::{
 #[cfg(feature = "derive")]
 pub use tensor_kdl_macros::{Decode, DecodeScalar, Encode, EncodeScalar};
 
-/// Parse a KDL 2.0 document from `input` into a DOM.
+/// Parse a KDL 2.0 document into a [`Document`] tree.
 ///
-/// **KDL vs Glaze:** Glaze `read` rejects empty JSON buffers (`no_read_input`)
-/// because JSON-text requires a value. KDL documents may be empty (zero nodes);
-/// see official suite `empty.kdl`. Empty input therefore succeeds as an empty
-/// [`Document`] (`docs/kdl/glaze-alignment.md`: KDL wins on syntax).
+/// **Feature `dom` only** (Glaze `generic` role). Typed configs use [`read`] /
+/// [`read_into`] — no tree. Empty input is a valid empty document (KDL).
+#[cfg(feature = "dom")]
 pub fn from_str(input: &str) -> Result<Document<'_>> {
     parse_document(input).map_err(Error::from)
 }
 
-/// Parse from a [`PaddedInput`] (Glaze padded `std::string` pattern).
-///
-/// **P-G10a:** uses [`Parser::from_padded`] so SWAR may over-read into the
-/// 16 trailing zero bytes; logical EOF stays at content length.
+/// Parse from a [`PaddedInput`] into a [`Document`] (feature `dom`).
+#[cfg(feature = "dom")]
 pub fn from_padded(input: &PaddedInput) -> Result<Document<'_>> {
     Parser::from_padded(input)
         .parse_document()
@@ -169,16 +175,29 @@ pub fn read_into_padded_const<'a, T: DecodeDocument<'a>, const OPTS: u8>(
 }
 
 /// Parse with an explicit reusable [`Context`] (Glaze ctx reuse).
+#[cfg(feature = "dom")]
 pub fn from_str_with_context<'a>(input: &'a str, ctx: Context) -> Result<Document<'a>> {
     parse_document_with_context(input, ctx).map_err(Error::from)
 }
 
-/// Parse a document and decode it into `T` (allocating).
+/// Decode into `T` (Glaze primary path when `T` streams; otherwise may need `dom`).
 ///
-/// Prefer [`read_into`] to reuse `T` (Glaze in-place), or [`read`] when `T: Default`.
+/// Prefer [`read_into`] / [`read`] for in-place reuse. This helper requires
+/// [`Default`] so it can allocate `T` without a document tree.
+/// Decode into `T`.
+///
+/// - With feature `dom`: parse tree then [`DecodeDocument::decode_document`]
+///   (no `Default` required).
+/// - Without `dom`: [`read`] (requires `Default`) — Glaze primary path.
+#[cfg(feature = "dom")]
 pub fn from_str_decode<'a, T: DecodeDocument<'a>>(input: &'a str) -> Result<T> {
     let doc = from_str(input)?;
     T::decode_document(&doc).map_err(Error::from)
+}
+
+#[cfg(not(feature = "dom"))]
+pub fn from_str_decode<'a, T: DecodeDocument<'a> + Default>(input: &'a str) -> Result<T> {
+    read(input).map_err(Error::from)
 }
 
 /// Glaze `read_json(T&, buffer)` — parse and decode **into** an existing value.
@@ -235,6 +254,7 @@ pub fn read_into_const_with_context<'a, T: DecodeDocument<'a>, const OPTS: u8>(
 
 /// Default [`DecodeDocument::read_stream`]: buffer top-level nodes, then
 /// [`DecodeDocument::decode_document`]. Used by named children-only roots.
+#[cfg(feature = "dom")]
 pub(crate) fn read_document_buffered<'a, T: DecodeDocument<'a>>(
     value: &mut T,
     input: &'a str,
@@ -295,8 +315,11 @@ pub fn read_nodes_into<'a, T: Decode<'a>>(
 
     let owned = take_context_for_parser(ctx);
     let mut parser = Parser::with_context(input, owned);
-    let visit_result = parser.visit_document(opts, |node| {
-        out.push(T::decode_node(&node)?);
+    let visit_result = parser.visit_document_at_nodes(opts, |parser| {
+        use crate::decode::{NestedProbe, TopLevelFill};
+        #[allow(clippy::needless_borrow)]
+        let item = (&&NestedProbe::<T>::new()).fill_top(parser, opts)?;
+        out.push(item);
         Ok(())
     });
     let consumed = parser.offset();
@@ -331,15 +354,15 @@ pub fn read_with_context<'a, T: DecodeDocument<'a> + Default>(
     if ec.is_err() { Err(ec) } else { Ok(value) }
 }
 
-/// Parse DOM only, returning Glaze-shaped [`ErrorCtx`] on failure.
-///
-/// Empty input is a valid empty document (KDL), not `NoReadInput`.
+/// Parse a [`Document`] tree (feature `dom` only).
+#[cfg(feature = "dom")]
 pub fn read_document(input: &str) -> std::result::Result<Document<'_>, ErrorCtx> {
     let mut parser = Parser::new(input);
     parser.parse_document()
 }
 
-/// Parse DOM with [`Opts`] (e.g. [`Opts::partial`] keeps only the first node).
+/// Parse a [`Document`] with [`Opts`] (feature `dom`).
+#[cfg(feature = "dom")]
 pub fn read_document_with_opts(
     input: &str,
     opts: Opts,

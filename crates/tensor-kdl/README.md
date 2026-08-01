@@ -7,6 +7,10 @@ Design notes: [`docs/kdl/design.md`](../../docs/kdl/design.md).
 
 ## Features
 
+- **Default (Glaze primary):** typed `read` / `write` only — no `Document` tree
+- **`dom`:** optional parse tree (`from_str`, `format_document`, `query`) for suite/tooling
+
+
 - Hand-written single-pass reader (no chumsky/pest on the hot path)
 - SWAR-assisted whitespace and string scanning (Glaze-inspired)
 - Friendly `ErrorCtx` with byte offsets and `format_error`

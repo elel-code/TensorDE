@@ -8,16 +8,20 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [features]
+# Primary path (Glaze): typed read/write only — no Document/Node tree.
 default = ["std", "derive"]
 std = []
 derive = ["dep:tensor-kdl-macros"]
 diagnostics = ["dep:miette"]
+# Optional parse-tree APIs (Glaze `generic` role): Document/Node, from_str,
+# format_document, query, DomNodeBuilder. Not on the typed hot path.
+dom = []
 # 16-byte dual-SWAR quote/escape scan (Glaze SSE2-width hot path). Bench-gated:
 # `cargo bench -p tensor-kdl --features simd -- pg8`. Off by default — SWAR-8
 # remains the portable primary path (Glaze: most work is SWAR, not SIMD).
 simd = []
-# Pretty-printer is always available; feature kept for API stability / future streaming write.
-write = []
+# Legacy alias; pretty-print lives under `dom`.
+write = ["dom"]
 
 [dependencies]
 tensor-kdl-macros = { path = "../tensor-kdl-macros", optional = true }
@@ -37,3 +41,28 @@ harness = false
 
 [lints]
 workspace = true
+
+# Integration tests that exercise the optional parse tree (Glaze generic role).
+[[test]]
+name = "official_suite"
+required-features = ["dom"]
+
+[[test]]
+name = "query_kql"
+required-features = ["dom"]
+
+[[test]]
+name = "derive_advanced"
+required-features = ["dom", "derive"]
+
+[[test]]
+name = "parse_basic"
+required-features = ["dom", "derive"]
+
+[[test]]
+name = "encode_padded"
+required-features = ["dom", "derive"]
+
+[[test]]
+name = "diagnostics_miette"
+required-features = ["dom", "diagnostics"]

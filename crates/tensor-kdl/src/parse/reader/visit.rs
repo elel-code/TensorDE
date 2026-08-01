@@ -9,13 +9,16 @@
 
 use crate::error::{CtxResult, ErrorCode};
 use crate::opts::{OPTS_DEFAULT, OPTS_LENIENT, Opts, flag_error_on_unknown};
-use crate::parse::visitor::{CountingVisitor, DomNodeBuilder, NodeVisitor};
+#[cfg(feature = "dom")]
+use crate::parse::visitor::DomNodeBuilder;
+use crate::parse::visitor::{CountingVisitor, NodeVisitor};
 use crate::value::{Entry, KdlStr, Node};
 
 use super::Parser;
 
 impl<'a> Parser<'a> {
-    /// Parse one node into an owned DOM [`Node`] via [`DomNodeBuilder`].
+    /// Parse one node into an owned DOM [`Node`] (feature `dom` only).
+    #[cfg(feature = "dom")]
     pub(super) fn parse_node(&mut self) -> CtxResult<Node<'a>> {
         let mut builder = DomNodeBuilder::default();
         self.visit_node_const::<OPTS_DEFAULT, _>(&mut builder)?;
@@ -227,16 +230,30 @@ impl<'a> Parser<'a> {
                     }
                     continue;
                 }
-                // P-G3d: header then nested visit or DOM child (Glaze nested from::op).
+                // P-G3d: header then nested visit (Glaze nested from::op).
+                // DOM child materialization is feature `dom` only (Glaze: no tree
+                // on the typed path).
                 let (type_name, name) = self.parse_node_header()?;
                 if visitor.take_child_after_header(self, opts, type_name.clone(), name.clone())? {
                     continue;
                 }
-                let mut child_dom = DomNodeBuilder::default();
-                child_dom.on_header(type_name, name)?;
-                self.visit_node_body_bits(opts_bits, &mut child_dom)?;
-                let child = child_dom.finish()?;
-                let _ = visitor.on_child(child)?;
+                #[cfg(feature = "dom")]
+                {
+                    let mut child_dom = DomNodeBuilder::default();
+                    child_dom.on_header(type_name, name)?;
+                    self.visit_node_body_bits(opts_bits, &mut child_dom)?;
+                    let child = child_dom.finish()?;
+                    let _ = visitor.on_child(child)?;
+                }
+                #[cfg(not(feature = "dom"))]
+                {
+                    let _ = (type_name, name);
+                    return Err(self
+                        .err(ErrorCode::UnknownChild)
+                        .with_message(
+                            "child node requires DecodeFromVisit (enable feature `dom` for DOM fallback)",
+                        ));
+                }
             }
             self.skip_line_space()?;
             if self.peek_byte() != Some(b'}') {

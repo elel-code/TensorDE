@@ -73,7 +73,29 @@ pub trait DecodeDocument<'a>: Sized {
         ctx: &mut crate::Context,
         opts: crate::Opts,
     ) -> ErrorCtx {
-        crate::read_document_buffered(out, input, ctx, opts)
+        #[cfg(feature = "dom")]
+        {
+            crate::read_document_buffered(out, input, ctx, opts)
+        }
+        #[cfg(not(feature = "dom"))]
+        {
+            ctx.clear_error();
+            ctx.reset_depth();
+            ctx.apply_opts(opts);
+            let owned = crate::take_context_for_parser(ctx);
+            let mut parser = crate::Parser::with_context(input, owned);
+            let visit_result = Self::read_stream_parser(out, &mut parser, opts);
+            let consumed = parser.offset();
+            crate::restore_context_from_parser(ctx, parser);
+            match visit_result {
+                Ok(()) => ErrorCtx::ok(consumed),
+                Err(e) => {
+                    ctx.error = e.code;
+                    ctx.custom_error_message = e.message.clone();
+                    e
+                }
+            }
+        }
     }
 
     /// Fill from a live [`crate::Parser`] (Glaze cursor already positioned).
@@ -85,13 +107,25 @@ pub trait DecodeDocument<'a>: Sized {
         parser: &mut crate::Parser<'a>,
         opts: crate::Opts,
     ) -> CtxResult<()> {
-        let mut nodes = Vec::new();
-        parser.visit_document(opts, |node| {
-            nodes.push(node);
+        // Default buffers a Document (feature `dom`). Typed roots should
+        // override with visit-fill streaming (Glaze primary path).
+        #[cfg(feature = "dom")]
+        {
+            let mut nodes = Vec::new();
+            parser.visit_document(opts, |node| {
+                nodes.push(node);
+                Ok(())
+            })?;
+            *out = Self::decode_document(&Document { nodes })?;
             Ok(())
-        })?;
-        *out = Self::decode_document(&Document { nodes })?;
-        Ok(())
+        }
+        #[cfg(not(feature = "dom"))]
+        {
+            let _ = (out, parser, opts);
+            Err(ErrorCtx::new(ErrorCode::Syntax, 0).with_message(
+                "this document root requires feature `dom` or a streaming DecodeDocument override",
+            ))
+        }
     }
 }
 

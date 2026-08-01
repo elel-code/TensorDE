@@ -186,14 +186,12 @@ pub fn write_f64(out: &mut WriteSink<'_>, f: f64) -> Result<(), ErrorCtx> {
 }
 
 /// Suite Translation Rules float from original lexeme (`_` stripped, `E` form).
-pub fn write_f64_lexical(
-    out: &mut WriteSink<'_>,
-    lex: &str,
-    value: f64,
-) -> Result<(), ErrorCtx> {
+#[cfg(feature = "dom")]
+pub fn write_f64_lexical(out: &mut WriteSink<'_>, lex: &str, value: f64) -> Result<(), ErrorCtx> {
     out.push_str(&format_float_lexical(lex, value))
 }
 
+#[cfg(feature = "dom")]
 fn format_float_lexical(lex: &str, value: f64) -> String {
     let cleaned: String = lex.chars().filter(|c| *c != '_').collect();
     if !value.is_finite()

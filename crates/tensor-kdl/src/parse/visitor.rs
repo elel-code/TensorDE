@@ -2,30 +2,23 @@
 //!
 //! Cite:
 //! - `references/glaze/include/glaze/json/read.hpp` `decode_index` →
-//!   `from<JSON, V>::op(...)(get_member(value, ...), ctx, it, end)` writes **into
-//!   the target member** without building a JSON object DOM.
+//!   `from<JSON, V>::op` writes **into the target member** without a JSON DOM.
 //! - `references/glaze/include/glaze/json/skip.hpp` `skip_value` for unknown keys.
 //!
-//! KDL maps JSON object keys to **properties** and nested objects to **children**.
-//! Positional **arguments** have no JSON-object analogue; they are delivered in order.
-//!
-//! P-G3b: callers implement [`NodeVisitor`] to sink events; DOM build is one visitor.
-//! Full derive monomorphization (Glaze `decode_linear` tables) is the next increment.
+//! P-G3b: implement [`NodeVisitor`] to sink events. Typed decode uses
+//! `take_child_after_header` (nested visit). Building a [`Node`] tree is
+//! **feature `dom` only** (Glaze `generic` role).
 
 use crate::error::CtxResult;
-use crate::value::{KdlStr, Node, Value};
+use crate::value::Node;
+use crate::value::{KdlStr, Value};
 
 /// Callbacks while parsing a single KDL node (Glaze `from::op` per member).
-///
-/// Default methods no-op so visitors only override what they need.
 pub trait NodeVisitor<'a> {
-    /// After type annotation (if any) and node name are known.
     fn on_header(&mut self, _type_name: Option<KdlStr<'a>>, _name: KdlStr<'a>) -> CtxResult<()> {
         Ok(())
     }
 
-    /// Positional argument (ordered). Return `true` if the value was consumed
-    /// by the visitor (ownership taken); `false` if the parser should drop it.
     fn on_argument(
         &mut self,
         _type_name: Option<KdlStr<'a>>,
@@ -34,13 +27,6 @@ pub trait NodeVisitor<'a> {
         Ok(true)
     }
 
-    /// Named property. Unknown-key policy is applied by the parser using
-    /// [`crate::Opts::error_on_unknown_keys`] when the visitor returns `false`
-    /// **and** opts request errors — visitors that implement schemas should
-    /// return whether the key was recognized (Glaze: match key → `decode_index`,
-    /// else `skip_value` or `unknown_key` error).
-    ///
-    /// Return `Ok(true)` if handled, `Ok(false)` if unknown to this visitor.
     fn on_property(
         &mut self,
         _key: KdlStr<'a>,
@@ -50,20 +36,15 @@ pub trait NodeVisitor<'a> {
         Ok(true)
     }
 
-    /// Child node fully parsed as DOM (fallback when nested visit is not used).
+    /// Finished child as a [`Node`] tree (only used when building DOM).
     fn on_child(&mut self, _child: Node<'a>) -> CtxResult<bool> {
         Ok(true)
     }
 
-    /// P-G3d: take over the next child after its header was parsed.
+    /// Take over the next child after its header (typed nested visit).
     ///
-    /// The parser has already read `(type_name, name)`. If this returns
-    /// `Ok(true)`, the implementation **must** have consumed the rest of the
-    /// child node (typically by calling `parser.finish_nested_child` on a
-    /// nested visitor). Default `Ok(false)` → parser builds a DOM [`Node`] and
-    /// calls [`Self::on_child`].
-    ///
-    /// Glaze: nested `from::op` on a sub-object (`json/read.hpp`).
+    /// Default `Ok(false)`: with `dom`, parser builds a [`Node`] and calls
+    /// [`Self::on_child`]; without `dom`, parser errors (no tree fallback).
     fn take_child_after_header(
         &mut self,
         _parser: &mut crate::Parser<'a>,
@@ -74,18 +55,16 @@ pub trait NodeVisitor<'a> {
         Ok(false)
     }
 
-    /// Called when a real (non-slashdashed) children block begins, before children.
     fn on_children_begin(&mut self) -> CtxResult<()> {
         Ok(())
     }
 
-    /// Called after the children block closes.
     fn on_children_end(&mut self) -> CtxResult<()> {
         Ok(())
     }
 }
 
-/// Builds an owned [`Node`] from visitor events (DOM path).
+/// Builds an owned [`Node`] from visitor events (feature `dom` only).
 #[derive(Debug, Default)]
 pub struct DomNodeBuilder<'a> {
     type_name: Option<KdlStr<'a>>,
@@ -144,12 +123,18 @@ impl<'a> NodeVisitor<'a> for DomNodeBuilder<'a> {
 /// Counts events without retaining values (bench / structural validate).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CountingVisitor {
-    pub arguments: usize,
-    pub properties: usize,
-    pub children: usize,
+    pub headers: u32,
+    pub arguments: u32,
+    pub properties: u32,
+    pub children: u32,
 }
 
 impl<'a> NodeVisitor<'a> for CountingVisitor {
+    fn on_header(&mut self, _type_name: Option<KdlStr<'a>>, _name: KdlStr<'a>) -> CtxResult<()> {
+        self.headers += 1;
+        Ok(())
+    }
+
     fn on_argument(
         &mut self,
         _type_name: Option<KdlStr<'a>>,
@@ -171,6 +156,23 @@ impl<'a> NodeVisitor<'a> for CountingVisitor {
 
     fn on_child(&mut self, _child: Node<'a>) -> CtxResult<bool> {
         self.children += 1;
+        Ok(true)
+    }
+
+    fn take_child_after_header(
+        &mut self,
+        parser: &mut crate::Parser<'a>,
+        opts: crate::opts::Opts,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<bool> {
+        // Count nested structure without allocating a Node.
+        let mut nested = CountingVisitor::default();
+        nested.on_header(type_name, name)?;
+        parser.finish_nested_child(opts, &mut nested)?;
+        self.children += 1 + nested.children;
+        self.arguments += nested.arguments;
+        self.properties += nested.properties;
         Ok(true)
     }
 }

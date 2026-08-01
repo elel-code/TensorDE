@@ -493,11 +493,10 @@ Typed path must not depend on DOM. DOM builder is a `Reader` consumer or a paral
   - `#[kdl(properties)]` maps (formatter sorts keys; see suite translation rules);
   - `Flag` presence-only nodes;
   - `#[kdl(flatten)]` via [`EncodePartial`] (entries then children after known fields).
-- Glaze write model only (`references/glaze/core/write.hpp`, `docs/writing.md`):
-  - Typed: `write` / `write_into` / `write_into_slice` → `Encode::write_node` →
-    `WriteSink` (user `T`, monomorphized). No `Encode for Node`.
-  - Tooling: `format_document` walks a *parsed* `Document` for suite Translation
-    Rules (Glaze `generic` role). Separate module; not the typed encode path.
+- Glaze model: default features have **no** public parse tree.
+  - Typed: `read` / `write` only (monomorphized).
+  - Optional `--features dom`: `Document`/`Node`, `from_str`, `format_document`,
+    `query` (Glaze `generic` / suite tooling).
 - Output goes through the stable canonical formatter: rightmost property wins,
   then properties are sorted by key, matching
   `references/kdl/tests/README.md` Translation Rules.

@@ -9,7 +9,9 @@ mod visit;
 use crate::context::Context;
 use crate::error::{CtxResult, ErrorCode, ErrorCtx};
 use crate::parse::chars::{is_newline_char, is_unicode_space};
-use crate::value::{Document, Entry, KdlStr, Node, Value};
+#[cfg(feature = "dom")]
+use crate::value::{Document, Node};
+use crate::value::{Entry, KdlStr, Value};
 
 /// Single-pass KDL cursor.
 ///
@@ -159,6 +161,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a full document into an owned DOM.
+    #[cfg(feature = "dom")]
     pub fn parse_document(&mut self) -> CtxResult<Document<'a>> {
         let mut nodes = Vec::new();
         self.visit_document(crate::opts::Opts::new(), |node| {
@@ -177,6 +180,11 @@ impl<'a> Parser<'a> {
     ///
     /// `Opts::partial_read`: stop after the first successful `visit` (Glaze
     /// `partial_read` short-circuit after the structural object of interest).
+    /// Stream finished top-level [`Node`]s (feature `dom` only).
+    ///
+    /// Typed decode uses [`Self::visit_document_at_nodes`] without materializing
+    /// nodes (Glaze element `from::op` loop).
+    #[cfg(feature = "dom")]
     pub fn visit_document(
         &mut self,
         opts: crate::opts::Opts,
@@ -273,6 +281,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Collect top-level nodes with options (e.g. partial_read keeps only the first).
+    #[cfg(feature = "dom")]
     pub fn parse_document_with_opts(&mut self, opts: crate::opts::Opts) -> CtxResult<Document<'a>> {
         let mut nodes = Vec::new();
         self.visit_document(opts, |node| {
@@ -529,16 +538,20 @@ impl<'a> Parser<'a> {
 }
 
 /// Parse `input` into a document.
+#[cfg(feature = "dom")]
 pub fn parse_document<'a>(input: &'a str) -> CtxResult<Document<'a>> {
     Parser::new(input).parse_document()
 }
 
+#[cfg(feature = "dom")]
 pub fn parse_document_with_context<'a>(input: &'a str, ctx: Context) -> CtxResult<Document<'a>> {
     Parser::with_context(input, ctx).parse_document()
 }
 
 /// Stream top-level nodes without requiring the caller to retain a full `Vec`
 /// first (Glaze fill-as-you-parse). See [`Parser::visit_document`].
+/// Feature `dom`: stream top-level [`Node`]s.
+#[cfg(feature = "dom")]
 pub fn visit_document<'a>(
     input: &'a str,
     opts: crate::opts::Opts,
@@ -547,6 +560,7 @@ pub fn visit_document<'a>(
     Parser::new(input).visit_document(opts, visit)
 }
 
+#[cfg(feature = "dom")]
 pub fn visit_document_with_context<'a>(
     input: &'a str,
     ctx: Context,
