@@ -268,13 +268,16 @@ pub fn peel_opt_argument_after_header<'a, T: DecodeScalar<'a>>(
     Ok(b.value)
 }
 
-struct PeelPropertyBuilder<T> {
-    key: String,
+/// Property peel visitor — key is borrowed (derive emits `&'static str`).
+///
+/// Glaze nested scalar fill does not allocate key storage on the hot path.
+struct PeelPropertyBuilder<'k, T> {
+    key: &'k str,
     value: Option<T>,
     _ty: core::marker::PhantomData<T>,
 }
 
-impl<'a, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelPropertyBuilder<T> {
+impl<'a, 'k, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelPropertyBuilder<'k, T> {
     fn on_argument(
         &mut self,
         _type_name: Option<KdlStr<'a>>,
@@ -307,7 +310,7 @@ pub fn peel_property_after_header<'a, T: DecodeScalar<'a>>(
 ) -> CtxResult<T> {
     let _ = (type_name, name);
     let mut b = PeelPropertyBuilder {
-        key: prop_key.to_owned(),
+        key: prop_key,
         value: None,
         _ty: core::marker::PhantomData,
     };
@@ -328,7 +331,7 @@ pub fn peel_opt_property_after_header<'a, T: DecodeScalar<'a>>(
 ) -> CtxResult<Option<T>> {
     let _ = (type_name, name);
     let mut b = PeelPropertyBuilder {
-        key: prop_key.to_owned(),
+        key: prop_key,
         value: None,
         _ty: core::marker::PhantomData,
     };

@@ -268,6 +268,64 @@ fn write_into_and_fixed_buffer_match_glaze_shape() {
 }
 
 #[test]
+fn stack_numeric_and_escape_dumps_match_glaze_write_chars() {
+    // P-G14: write_i128 / write_f64 / unicode escape use stack buffers only
+    // (Glaze write_chars / itoa — no intermediate String on the hot path).
+    use tensor_kdl::{
+        Context, Encode, WriteSink, write_f64, write_i128, write_into_with_context, write_quoted,
+        write_u128,
+    };
+
+    let mut buf = String::new();
+    {
+        let mut sink = WriteSink::string(&mut buf);
+        write_i128(&mut sink, 0).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_i128(&mut sink, -42).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_i128(&mut sink, i128::MIN).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_u128(&mut sink, u128::MAX).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_f64(&mut sink, 0.0).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_f64(&mut sink, f64::INFINITY).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_f64(&mut sink, f64::NAN).unwrap();
+        sink.push_byte(b' ').unwrap();
+        write_quoted(&mut sink, "a\u{0001}b").unwrap();
+    }
+    assert!(buf.starts_with("0 -42 -170141183460469231731687303715884105728 "));
+    assert!(buf.contains("0.0 #inf #nan "));
+    assert!(buf.contains(r#""a\u{1}b""#));
+
+    #[derive(Encode)]
+    struct Row {
+        #[kdl(argument)]
+        n: i64,
+    }
+    #[derive(Encode)]
+    struct Doc {
+        #[kdl(children)]
+        rows: Vec<Row>,
+    }
+    let doc = Doc {
+        rows: vec![Row { n: 1 }, Row { n: -2 }],
+    };
+    let mut reuse = String::with_capacity(64);
+    let mut ctx = Context::new();
+    let ec = write_into_with_context(&doc, &mut reuse, &mut ctx);
+    assert!(!ec.is_err());
+    assert_eq!(reuse, "row 1\nrow -2\n");
+    // Second call reuses capacity (Glaze buffer reuse).
+    let cap = reuse.capacity();
+    let ec2 = write_into_with_context(&doc, &mut reuse, &mut ctx);
+    assert!(!ec2.is_err());
+    assert_eq!(reuse, "row 1\nrow -2\n");
+    assert!(reuse.capacity() >= cap);
+}
+
+#[test]
 fn encode_flatten_via_encode_partial_round_trips() {
     use tensor_kdl::{
         Decode, DecodePartial, Encode, EncodePartial, Node, Value, WriteSink, from_str,

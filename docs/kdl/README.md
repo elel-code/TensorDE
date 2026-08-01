@@ -22,7 +22,8 @@ parse, process-macro typed decode/encode, and a documented KQL subset).
 - Conformance snapshot: **243/243** parse, **95/95** reject, **243/243** roundtrip
 - Padded direct reads: `PaddedInput` + runtime/const options
 - Typed write: monomorphized `write_node` / `WriteSink` only (Glaze `to::op`;
-  no `encode_node` dual path) + `write` / `write_into` / `write_into_slice`
+  no `encode_node` dual path) + `write` / `write_into` /
+  `write_into_with_context` / `write_into_slice` (stack itoa / float dump)
 - Query subset (`QUERY-SPEC.md`): `top()`, `>` / `>>`, `+` / `++`, `||`,
   existence / `values()` / `props()` / `name()` / `tag()`, stacked accessors,
   `=` / `!=`, value type RHS `(tag)`, ordered compares, string `^=` / `$=` / `*=`,

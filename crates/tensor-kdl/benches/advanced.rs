@@ -311,6 +311,46 @@ fn bench_pg13_write_sink(c: &mut Criterion) {
         })
     });
 
+    // P-G14: stack itoa path under dense integer rows (Glaze write_chars).
+    #[derive(Debug, Encode)]
+    struct NumRow {
+        #[kdl(argument)]
+        a: i64,
+        #[kdl(argument)]
+        b: i64,
+        #[kdl(argument)]
+        c: i64,
+        #[kdl(argument)]
+        d: i64,
+    }
+
+    #[derive(Debug, Encode)]
+    struct NumDoc {
+        #[kdl(children)]
+        rows: Vec<NumRow>,
+    }
+
+    let nums = NumDoc {
+        rows: (0..200)
+            .map(|i| NumRow {
+                a: i,
+                b: -i,
+                c: i * 3,
+                d: i128::from(i) as i64,
+            })
+            .collect(),
+    };
+    let num_sample = write(&nums).expect("nums");
+    group.throughput(Throughput::Bytes(num_sample.len() as u64));
+    group.bench_function("write_into_dense_ints_200x4", |b| {
+        let mut buf = String::with_capacity(num_sample.len() + 64);
+        b.iter(|| {
+            let ec = write_into(black_box(&nums), &mut buf);
+            assert!(!ec.is_err());
+            black_box(ec.consumed)
+        })
+    });
+
     group.finish();
 }
 

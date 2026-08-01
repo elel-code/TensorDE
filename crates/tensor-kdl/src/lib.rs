@@ -71,9 +71,10 @@ pub use encode::{
     Encode, EncodeDocument, EncodePartial, EncodeScalar, WRITE_PADDING_BYTES, WriteSink, to_string,
     to_string_node, write, write_arg_node_line, write_argument_prefix, write_bool,
     write_children_close, write_children_open, write_f64, write_flag_line, write_i128,
-    write_ident_or_string, write_indent, write_into, write_into_slice, write_node_end_leaf,
-    write_node_header, write_node_into, write_node_into_slice, write_null, write_prop_node_line,
-    write_property_key, write_quoted,
+    write_ident_or_string, write_indent, write_into, write_into_slice, write_into_with_context,
+    write_node_end_leaf, write_node_header, write_node_into, write_node_into_slice,
+    write_node_into_with_context, write_null, write_prop_node_line, write_property_key,
+    write_quoted, write_u128,
 };
 pub use error::{CtxResult, Error, ErrorCode, ErrorCtx, Result, format_error, format_error_code};
 #[cfg(feature = "diagnostics")]

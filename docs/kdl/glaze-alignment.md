@@ -129,6 +129,7 @@ For KDL that means:
 | **P-G11** padded typed read | **Done** — `DecodeDocument::read_stream_parser`; runtime/const padded APIs retain borrowed logical input while scanners consume the padded allocation |
 | **P-G12** document-root stream without `Node` | **Done** — named children-only `read_stream` uses `visit_document_at_nodes` + `NestedProbe` / peel helpers; `WriteSink` grow path reserves `WRITE_PADDING_BYTES` (Glaze `write_padding_bytes`); fixed buffers exact-size only (`util/dump.hpp`) |
 | **P-G13** nested unwrap + write dumpn + KQL | **Done** — visit `unwrap(argument\|property)` via peel in `take_child_after_header`; `WriteSink::push_byte_n` / grow-on-full dump; KQL `[name()]`/`[tag()]`, stacked matchers, `#inf`/`#-inf`/`#nan` RHS |
+| **P-G14** write_chars / itoa + ctx write | **Done** — stack `write_i128`/`write_u128`/`write_f64`/`\u{…}` (Glaze `write_chars`/`itoa`); peel property key borrowed; `write_into_with_context` / `write_node_into_with_context` |
 
 Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector). Flatten on document roots still requires feature `dom` + `DecodePartial` (unknown free nodes).
 
@@ -201,8 +202,17 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 22. ~~P-G13 nested unwrap peels + write dumpn + KQL~~ done — visit
     `unwrap` on nested children; `push_byte_n` indent; KQL `name()`/`tag()`
     existence, stacked accessors, keyword float RHS.
-23. **Next (optional):** further KQL only with QUERY-SPEC citations;
-    SCHEMA-SPEC out of scope.
+23. ~~P-G14 stack write_chars + write ctx~~ done — no heap on int/float
+    dump; `write_into_with_context` mirrors Glaze `write(T, buffer, ctx)`.
+24. **Next (optional):** further KQL only with QUERY-SPEC citations;
+    SCHEMA-SPEC out of scope; optional minified / size opts like Glaze
+    `opts_size` if binary size becomes a product constraint.
+
+### Stage benchmark (P-G13 / P-G14 write)
+
+```bash
+cargo bench -p tensor-kdl --bench advanced --features "dom,derive" -- pg13
+```
 
 ### Stage benchmark (P-G10)
 

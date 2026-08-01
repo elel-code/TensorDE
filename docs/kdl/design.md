@@ -1,10 +1,10 @@
 # Tensor KDL crate design
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
-[glaze-alignment.md](glaze-alignment.md). Through **P-G13**: nested
-`unwrap` peels on the visit path; document-root `read_stream` without `Node`
-(P-G12); padded typed reads (P-G11); monomorphized `WriteSink` dump
-(`push_byte_n` / grow-on-full). KQL is an explicitly incomplete subset of
+[glaze-alignment.md](glaze-alignment.md). Through **P-G14**: stack
+`write_chars`/itoa dumps (no heap on int/float), `write_into_with_context`;
+P-G13 nested `unwrap` peels; P-G12 document-root stream without `Node`;
+padded typed reads (P-G11). KQL is an explicitly incomplete subset of
 `references/kdl/QUERY-SPEC.md` (includes `name()`/`tag()`, stacked matchers,
 keyword float RHS). Derive UI: trybuild. Stage benches: `cargo bench -p tensor-kdl`.
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  

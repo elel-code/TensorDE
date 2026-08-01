@@ -222,15 +222,42 @@ pub fn write_quoted(out: &mut WriteSink<'_>, s: &str) -> Result<(), ErrorCtx> {
             '\u{0008}' => out.push_str("\\b")?,
             '\u{000C}' => out.push_str("\\f")?,
             c if c.is_control() || is_disallowed_literal(c) => {
-                let mut tmp = String::new();
-                use std::fmt::Write as _;
-                let _ = write!(tmp, "\\u{{{:x}}}", u32::from(c));
-                out.push_str(&tmp)?;
+                // `\u{…}` — stack only (Glaze dump escapes without heap).
+                let mut tmp = [0u8; 16];
+                let n = write_unicode_escape(&mut tmp, u32::from(c));
+                out.push_str(core::str::from_utf8(&tmp[..n]).unwrap())?;
             }
             c => out.push_char(c)?,
         }
     }
     out.push_byte(b'"')
+}
+
+/// Write `\u{hhhh}` into `buf`; returns byte length (max 12 for U+10FFFF).
+#[inline(always)]
+fn write_unicode_escape(buf: &mut [u8; 16], cp: u32) -> usize {
+    buf[0] = b'\\';
+    buf[1] = b'u';
+    buf[2] = b'{';
+    // lowercase hex without alloc
+    let mut hex = [0u8; 8];
+    let mut v = cp;
+    let mut n = 0usize;
+    if v == 0 {
+        hex[0] = b'0';
+        n = 1;
+    } else {
+        while v > 0 {
+            let d = (v & 0xf) as u8;
+            hex[n] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+            n += 1;
+            v >>= 4;
+        }
+        hex[..n].reverse();
+    }
+    buf[3..3 + n].copy_from_slice(&hex[..n]);
+    buf[3 + n] = b'}';
+    4 + n
 }
 
 pub fn is_bare_ident(s: &str) -> bool {
@@ -273,16 +300,32 @@ pub fn write_null(out: &mut WriteSink<'_>) -> Result<(), ErrorCtx> {
     out.push_str("#null")
 }
 
+/// Dump integer without heap (Glaze `write_chars` / `itoa` role).
+///
+/// Cite: `util/itoa.hpp`, `core/write_chars.hpp` — stack buffer → dump.
+#[inline(always)]
 pub fn write_i128(out: &mut WriteSink<'_>, n: i128) -> Result<(), ErrorCtx> {
-    out.push_str(&n.to_string())
+    let mut buf = [0u8; 40];
+    out.push_str(format_i128_into(&mut buf, n))
 }
 
+/// Dump `u128` without heap (wider than `i128` cast path).
+#[inline(always)]
+pub fn write_u128(out: &mut WriteSink<'_>, n: u128) -> Result<(), ErrorCtx> {
+    let mut buf = [0u8; 40];
+    out.push_str(format_u128_into(&mut buf, n))
+}
+
+/// Dump float without heap intermediate (Glaze `write_chars` for floats).
+#[inline(always)]
 pub fn write_f64(out: &mut WriteSink<'_>, f: f64) -> Result<(), ErrorCtx> {
-    out.push_str(&format_float(f))
+    let mut buf = [0u8; 64];
+    out.push_str(format_float_into(&mut buf, f))
 }
 
 #[cfg(feature = "dom")]
 pub fn write_f64_lexical(out: &mut WriteSink<'_>, lex: &str, value: f64) -> Result<(), ErrorCtx> {
+    // Lexical path still may allocate when cleaning underscores; suite tooling only.
     out.push_str(&format_float_lexical(lex, value))
 }
 
@@ -314,49 +357,118 @@ fn format_float_lexical(lex: &str, value: f64) -> String {
     if cleaned.contains('.') {
         return cleaned;
     }
-    format_float(value)
+    let mut buf = [0u8; 64];
+    format_float_into(&mut buf, value).to_owned()
 }
 
-fn format_float(f: f64) -> String {
+/// Format `i128` into `buf`; returns the written substring (Glaze `to_chars`).
+#[inline(always)]
+fn format_i128_into(buf: &mut [u8; 40], n: i128) -> &str {
+    // i128::MIN cannot negate; emit fixed digits.
+    if n == i128::MIN {
+        const MIN: &[u8] = b"-170141183460469231731687303715884105728";
+        buf[..MIN.len()].copy_from_slice(MIN);
+        return core::str::from_utf8(&buf[..MIN.len()]).unwrap();
+    }
+    if n >= 0 {
+        format_u128_into(buf, n as u128)
+    } else {
+        let body = format_u128_into(buf, (-n) as u128);
+        let start = 40 - body.len() - 1;
+        buf[start] = b'-';
+        // body already occupies buf[40-len..]; shift not needed if we wrote at end.
+        // format_u128_into writes at the end of buf; prefix '-' just before it.
+        core::str::from_utf8(&buf[start..]).unwrap()
+    }
+}
+
+#[inline(always)]
+fn format_u128_into(buf: &mut [u8; 40], mut n: u128) -> &str {
+    if n == 0 {
+        buf[39] = b'0';
+        return core::str::from_utf8(&buf[39..]).unwrap();
+    }
+    let mut i = 40;
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    core::str::from_utf8(&buf[i..]).unwrap()
+}
+
+/// Stack formatter for suite-canonical floats (no heap on the hot path).
+fn format_float_into(buf: &mut [u8; 64], f: f64) -> &str {
     if f.is_nan() {
-        return "#nan".to_owned();
+        buf[..4].copy_from_slice(b"#nan");
+        return core::str::from_utf8(&buf[..4]).unwrap();
     }
     if f.is_infinite() {
-        return if f.is_sign_negative() {
-            "#-inf".to_owned()
-        } else {
-            "#inf".to_owned()
-        };
+        if f.is_sign_negative() {
+            buf[..5].copy_from_slice(b"#-inf");
+            return core::str::from_utf8(&buf[..5]).unwrap();
+        }
+        buf[..4].copy_from_slice(b"#inf");
+        return core::str::from_utf8(&buf[..4]).unwrap();
     }
     if f == 0.0 {
-        return if f.is_sign_negative() {
-            "-0.0".to_owned()
-        } else {
-            "0.0".to_owned()
-        };
+        if f.is_sign_negative() {
+            buf[..4].copy_from_slice(b"-0.0");
+            return core::str::from_utf8(&buf[..4]).unwrap();
+        }
+        buf[..3].copy_from_slice(b"0.0");
+        return core::str::from_utf8(&buf[..3]).unwrap();
     }
+
+    // Small stack writer for Display-style pieces without String.
+    struct StackBuf<'a> {
+        buf: &'a mut [u8],
+        len: usize,
+    }
+    impl core::fmt::Write for StackBuf<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let raw = s.as_bytes();
+            if self.len + raw.len() > self.buf.len() {
+                return Err(core::fmt::Error);
+            }
+            self.buf[self.len..self.len + raw.len()].copy_from_slice(raw);
+            self.len += raw.len();
+            Ok(())
+        }
+    }
+
     let abs = f.abs();
+    let mut w = StackBuf {
+        buf: &mut buf[..],
+        len: 0,
+    };
+    use core::fmt::Write as _;
     if abs >= 1e10 || (abs > 0.0 && abs < 1e-4) {
         let exp = f.abs().log10().floor() as i32;
         let mant = f / 10f64.powi(exp);
         let mant = (mant * 1e12).round() / 1e12;
-        let mant_s = if mant.fract().abs() < 1e-12 {
-            format!("{}", mant as i64)
+        if mant.fract().abs() < 1e-12 {
+            let _ = write!(w, "{}", mant as i64);
         } else {
-            format!("{mant}")
-        };
-        let sign = if exp >= 0 { "+" } else { "" };
-        format!("{mant_s}E{sign}{exp}")
+            let _ = write!(w, "{mant}");
+        }
+        if exp >= 0 {
+            let _ = write!(w, "E+{exp}");
+        } else {
+            let _ = write!(w, "E{exp}");
+        }
     } else if f.fract() == 0.0 {
-        format!("{f:.1}")
+        let _ = write!(w, "{f:.1}");
     } else {
-        let s = format!("{f}");
+        let _ = write!(w, "{f}");
+        // Ensure a decimal point for KDL suite style when Display omitted it.
+        let s = core::str::from_utf8(&w.buf[..w.len]).unwrap_or("");
         if !s.contains('.') {
-            format!("{s}.0")
-        } else {
-            s
+            let _ = w.write_str(".0");
         }
     }
+    let len = w.len;
+    core::str::from_utf8(&buf[..len]).unwrap_or("0.0")
 }
 
 pub fn write_node_header(
