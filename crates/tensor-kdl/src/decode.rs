@@ -19,9 +19,7 @@
 mod nested_dispatch;
 mod visit_fill;
 
-pub use nested_dispatch::{
-    NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill,
-};
+pub use nested_dispatch::{NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill};
 pub use visit_fill::{
     DecodeFromVisit, VisitBuilder, VisitFill, decode_node_body_after_header, decode_node_str,
     decode_node_str_const, decode_node_visit, decode_node_visit_const, linear_prop_index,
@@ -29,23 +27,25 @@ pub use visit_fill::{
 };
 
 use crate::error::{CtxResult, ErrorCode, ErrorCtx};
-use crate::value::{Document, Entry, Node, Value};
+#[cfg(feature = "dom")]
+use crate::value::{Document, Entry, Node};
+use crate::value::{KdlStr, Value};
 
 /// Decode a scalar KDL value into `Self`.
 pub trait DecodeScalar<'a>: Sized {
     fn decode_scalar(value: &Value<'a>) -> CtxResult<Self>;
 }
 
-/// Decode a single KDL node into `Self`.
+/// Decode a single KDL node from a parse tree (feature `dom` only).
+///
+/// Typed hot path uses [`DecodeFromVisit`] / [`DecodeDocument::read_stream`] instead.
+#[cfg(feature = "dom")]
 pub trait Decode<'a>: Sized {
     fn decode_node(node: &Node<'a>) -> CtxResult<Self>;
 }
 
-/// Decode from a slice of nodes (document root or children block) **without**
-/// allocating a synthetic parent `Node`.
-///
-/// Glaze alignment: fill `T` from already-parsed structure without extra clones
-/// (`docs/kdl/glaze-alignment.md` §4 P-G2).
+/// Decode from a slice of nodes (feature `dom` only).
+#[cfg(feature = "dom")]
 pub trait DecodeChildren<'a>: Sized {
     fn decode_children(nodes: &[Node<'a>]) -> CtxResult<Self>;
 }
@@ -60,6 +60,8 @@ pub trait DecodeChildren<'a>: Sized {
 /// [`crate::Parser`] (including [`crate::Parser::from_padded`]) so SWAR may
 /// over-read padding.
 pub trait DecodeDocument<'a>: Sized {
+    /// Fill from a parse tree (feature `dom` only).
+    #[cfg(feature = "dom")]
     fn decode_document(doc: &Document<'a>) -> CtxResult<Self>;
 
     /// Parse `input` and fill `out` in place (Glaze `read(T&, buffer, ctx)`).
@@ -129,6 +131,7 @@ pub trait DecodeDocument<'a>: Sized {
     }
 }
 
+#[cfg(feature = "dom")]
 impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
     fn decode_document(doc: &Document<'a>) -> CtxResult<Self> {
         doc.nodes.iter().map(T::decode_node).collect()
@@ -179,6 +182,7 @@ impl<'a, T: Decode<'a>> DecodeDocument<'a> for Vec<T> {
     }
 }
 
+#[cfg(feature = "dom")]
 impl<'a, T: Decode<'a>> DecodeChildren<'a> for Vec<T> {
     fn decode_children(nodes: &[Node<'a>]) -> CtxResult<Self> {
         nodes.iter().map(T::decode_node).collect()
@@ -186,6 +190,51 @@ impl<'a, T: Decode<'a>> DecodeChildren<'a> for Vec<T> {
 }
 
 /// Helper: require exactly one argument and decode it.
+
+#[cfg(not(feature = "dom"))]
+impl<'a, T: DecodeFromVisit<'a>> DecodeDocument<'a> for Vec<T> {
+    fn read_stream(
+        out: &mut Self,
+        input: &'a str,
+        ctx: &mut crate::Context,
+        opts: crate::Opts,
+    ) -> ErrorCtx {
+        ctx.clear_error();
+        ctx.reset_depth();
+        ctx.apply_opts(opts);
+        out.clear();
+        let owned = crate::take_context_for_parser(ctx);
+        let mut parser = crate::Parser::with_context(input, owned);
+        let visit_result = Self::read_stream_parser(out, &mut parser, opts);
+        let consumed = parser.offset();
+        crate::restore_context_from_parser(ctx, parser);
+        match visit_result {
+            Ok(()) => ErrorCtx::ok(consumed),
+            Err(e) => {
+                ctx.error = e.code;
+                ctx.custom_error_message = e.message.clone();
+                e
+            }
+        }
+    }
+
+    fn read_stream_parser(
+        out: &mut Self,
+        parser: &mut crate::Parser<'a>,
+        opts: crate::Opts,
+    ) -> CtxResult<()> {
+        use nested_dispatch::{NestedProbe, TopLevelFill};
+        out.clear();
+        parser.visit_document_at_nodes(opts, |parser| {
+            #[allow(clippy::needless_borrow)]
+            let item = (&&NestedProbe::<T>::new()).fill_top(parser, opts)?;
+            out.push(item);
+            Ok(())
+        })
+    }
+}
+
+#[cfg(feature = "dom")]
 pub fn one_argument<'a, T: DecodeScalar<'a>>(node: &Node<'a>) -> CtxResult<T> {
     let mut args = node.arguments();
     let first = args
@@ -198,6 +247,7 @@ pub fn one_argument<'a, T: DecodeScalar<'a>>(node: &Node<'a>) -> CtxResult<T> {
 }
 
 /// Helper: optional single argument.
+#[cfg(feature = "dom")]
 pub fn opt_argument<'a, T: DecodeScalar<'a>>(node: &Node<'a>) -> CtxResult<Option<T>> {
     let mut args = node.arguments();
     match args.next() {
@@ -212,6 +262,7 @@ pub fn opt_argument<'a, T: DecodeScalar<'a>>(node: &Node<'a>) -> CtxResult<Optio
 }
 
 /// Helper: required property by name.
+#[cfg(feature = "dom")]
 pub fn property<'a, T: DecodeScalar<'a>>(node: &Node<'a>, name: &str) -> CtxResult<T> {
     let value = node.property(name).ok_or_else(|| {
         ErrorCtx::new(ErrorCode::MissingProperty, 0)
@@ -221,6 +272,7 @@ pub fn property<'a, T: DecodeScalar<'a>>(node: &Node<'a>, name: &str) -> CtxResu
 }
 
 /// Helper: optional property by name (`null` → `None`).
+#[cfg(feature = "dom")]
 pub fn opt_property<'a, T: DecodeScalar<'a>>(node: &Node<'a>, name: &str) -> CtxResult<Option<T>> {
     match node.property(name) {
         None => Ok(None),
@@ -230,21 +282,25 @@ pub fn opt_property<'a, T: DecodeScalar<'a>>(node: &Node<'a>, name: &str) -> Ctx
 }
 
 /// Helper: required child by name.
+#[cfg(feature = "dom")]
 pub fn child<'a, T: Decode<'a>>(node: &Node<'a>, name: &str) -> CtxResult<T> {
     child_in(node.children.as_slice(), name)
 }
 
 /// Helper: optional child by name.
+#[cfg(feature = "dom")]
 pub fn opt_child<'a, T: Decode<'a>>(node: &Node<'a>, name: &str) -> CtxResult<Option<T>> {
     opt_child_in(node.children.as_slice(), name)
 }
 
 /// Helper: children, optionally filtered by name.
+#[cfg(feature = "dom")]
 pub fn children<'a, T: Decode<'a>>(node: &Node<'a>, name: Option<&str>) -> CtxResult<Vec<T>> {
     children_in(node.children.as_slice(), name)
 }
 
 /// Required child in a node slice (document root / children block) — no parent `Node`.
+#[cfg(feature = "dom")]
 pub fn child_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: &str) -> CtxResult<T> {
     let child = nodes
         .iter()
@@ -257,6 +313,7 @@ pub fn child_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: &str) -> CtxResult<
 }
 
 /// Optional child in a node slice.
+#[cfg(feature = "dom")]
 pub fn opt_child_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: &str) -> CtxResult<Option<T>> {
     match nodes.iter().find(|n| n.name.as_str() == name) {
         None => Ok(None),
@@ -265,6 +322,7 @@ pub fn opt_child_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: &str) -> CtxRes
 }
 
 /// Children from a node slice, optionally filtered by name.
+#[cfg(feature = "dom")]
 pub fn children_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: Option<&str>) -> CtxResult<Vec<T>> {
     match name {
         Some(n) => nodes
@@ -277,6 +335,7 @@ pub fn children_in<'a, T: Decode<'a>>(nodes: &[Node<'a>], name: Option<&str>) ->
 }
 
 /// First argument of a child found by name in a slice (unwrap(argument) for roots).
+#[cfg(feature = "dom")]
 pub fn one_argument_in<'a, T: DecodeScalar<'a>>(nodes: &[Node<'a>], name: &str) -> CtxResult<T> {
     let child = nodes
         .iter()
@@ -289,6 +348,7 @@ pub fn one_argument_in<'a, T: DecodeScalar<'a>>(nodes: &[Node<'a>], name: &str) 
 }
 
 /// Optional first-argument peel from a named child in a slice.
+#[cfg(feature = "dom")]
 pub fn opt_one_argument_in<'a, T: DecodeScalar<'a>>(
     nodes: &[Node<'a>],
     name: &str,
@@ -300,6 +360,7 @@ pub fn opt_one_argument_in<'a, T: DecodeScalar<'a>>(
 }
 
 /// Partial structure that can absorb unknown children/properties (`flatten`).
+#[cfg(feature = "dom")]
 pub trait DecodePartial<'a>: Default {
     /// Try to store `node` as a child. Returns `Ok(true)` if consumed.
     fn insert_child(&mut self, node: &Node<'a>) -> CtxResult<bool>;
@@ -309,11 +370,13 @@ pub trait DecodePartial<'a>: Default {
 }
 
 /// Unwrap a single-property child node: `width 0.5` / `width prop=...` style peels.
+#[cfg(feature = "dom")]
 pub fn one_property<'a, T: DecodeScalar<'a>>(node: &Node<'a>, name: &str) -> CtxResult<T> {
     property(node, name)
 }
 
 /// Optional single property peel.
+#[cfg(feature = "dom")]
 pub fn opt_one_property<'a, T: DecodeScalar<'a>>(
     node: &Node<'a>,
     name: &str,
@@ -322,6 +385,7 @@ pub fn opt_one_property<'a, T: DecodeScalar<'a>>(
 }
 
 /// Decode the first argument, or if none, treat a bare flag-like node as defaultable.
+#[cfg(feature = "dom")]
 pub fn argument_or_flag<'a, T: DecodeScalar<'a> + Default>(node: &Node<'a>) -> CtxResult<T> {
     match opt_argument::<T>(node)? {
         Some(v) => Ok(v),
@@ -415,6 +479,8 @@ impl<'a> DecodeScalar<'a> for () {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Flag;
 
+#[cfg(feature = "dom")]
+#[cfg(feature = "dom")]
 impl<'a> Decode<'a> for Flag {
     fn decode_node(node: &Node<'a>) -> CtxResult<Self> {
         if node
@@ -422,6 +488,53 @@ impl<'a> Decode<'a> for Flag {
             .iter()
             .any(|e| matches!(e, Entry::Argument { .. }))
         {
+            return Err(ErrorCtx::new(ErrorCode::Syntax, 0)
+                .with_message("flag node must not have arguments"));
+        }
+        Ok(Flag)
+    }
+}
+
+impl<'a> DecodeFromVisit<'a> for Flag {
+    type Builder = FlagVisitBuilder;
+
+    fn start_visit() -> Self::Builder {
+        FlagVisitBuilder::default()
+    }
+}
+
+#[derive(Default)]
+pub struct FlagVisitBuilder {
+    saw_arg: bool,
+}
+
+impl<'a> VisitBuilder<'a> for FlagVisitBuilder {
+    type Output = Flag;
+
+    fn on_header(&mut self, _type_name: Option<KdlStr<'a>>, _name: KdlStr<'a>) -> CtxResult<()> {
+        Ok(())
+    }
+
+    fn on_argument(
+        &mut self,
+        _type_name: Option<KdlStr<'a>>,
+        _value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.saw_arg = true;
+        Err(ErrorCtx::new(ErrorCode::Syntax, 0).with_message("flag node must not have arguments"))
+    }
+
+    fn on_property(
+        &mut self,
+        _key: KdlStr<'a>,
+        _type_name: Option<KdlStr<'a>>,
+        _value: Value<'a>,
+    ) -> CtxResult<bool> {
+        Ok(false)
+    }
+
+    fn finish(self) -> CtxResult<Flag> {
+        if self.saw_arg {
             return Err(ErrorCtx::new(ErrorCode::Syntax, 0)
                 .with_message("flag node must not have arguments"));
         }

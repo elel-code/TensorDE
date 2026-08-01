@@ -1,15 +1,10 @@
 //! Node-level visitor — Glaze field-fill shape for one structural unit.
 //!
-//! Cite:
-//! - `references/glaze/include/glaze/json/read.hpp` `decode_index` →
-//!   `from<JSON, V>::op` writes **into the target member** without a JSON DOM.
-//! - `references/glaze/include/glaze/json/skip.hpp` `skip_value` for unknown keys.
-//!
-//! P-G3b: implement [`NodeVisitor`] to sink events. Typed decode uses
-//! `take_child_after_header` (nested visit). Building a [`Node`] tree is
-//! **feature `dom` only** (Glaze `generic` role).
+//! Typed decode uses [`NodeVisitor::take_child_after_header`] (nested visit).
+//! Building a [`Node`] tree is **feature `dom` only**.
 
 use crate::error::CtxResult;
+#[cfg(feature = "dom")]
 use crate::value::Node;
 use crate::value::{KdlStr, Value};
 
@@ -36,15 +31,16 @@ pub trait NodeVisitor<'a> {
         Ok(true)
     }
 
-    /// Finished child as a [`Node`] tree (only used when building DOM).
+    /// Finished child as a [`Node`] (feature `dom` only).
+    #[cfg(feature = "dom")]
     fn on_child(&mut self, _child: Node<'a>) -> CtxResult<bool> {
         Ok(true)
     }
 
     /// Take over the next child after its header (typed nested visit).
     ///
-    /// Default `Ok(false)`: with `dom`, parser builds a [`Node`] and calls
-    /// [`Self::on_child`]; without `dom`, parser errors (no tree fallback).
+    /// Default `Ok(false)`: with `dom`, parser builds a [`Node`]; without `dom`,
+    /// parser errors (no tree fallback on the Glaze primary path).
     fn take_child_after_header(
         &mut self,
         _parser: &mut crate::Parser<'a>,
@@ -64,7 +60,8 @@ pub trait NodeVisitor<'a> {
     }
 }
 
-/// Builds an owned [`Node`] from visitor events (feature `dom` only).
+/// Builds an owned [`Node`] from visitor events (**feature `dom` only**).
+#[cfg(feature = "dom")]
 #[derive(Debug, Default)]
 pub struct DomNodeBuilder<'a> {
     type_name: Option<KdlStr<'a>>,
@@ -73,6 +70,7 @@ pub struct DomNodeBuilder<'a> {
     children: Vec<Node<'a>>,
 }
 
+#[cfg(feature = "dom")]
 impl<'a> DomNodeBuilder<'a> {
     pub fn finish(self) -> CtxResult<Node<'a>> {
         let name = self.name.ok_or_else(|| {
@@ -87,6 +85,7 @@ impl<'a> DomNodeBuilder<'a> {
     }
 }
 
+#[cfg(feature = "dom")]
 impl<'a> NodeVisitor<'a> for DomNodeBuilder<'a> {
     fn on_header(&mut self, type_name: Option<KdlStr<'a>>, name: KdlStr<'a>) -> CtxResult<()> {
         self.type_name = type_name;
@@ -154,6 +153,7 @@ impl<'a> NodeVisitor<'a> for CountingVisitor {
         Ok(true)
     }
 
+    #[cfg(feature = "dom")]
     fn on_child(&mut self, _child: Node<'a>) -> CtxResult<bool> {
         self.children += 1;
         Ok(true)
@@ -166,7 +166,6 @@ impl<'a> NodeVisitor<'a> for CountingVisitor {
         type_name: Option<KdlStr<'a>>,
         name: KdlStr<'a>,
     ) -> CtxResult<bool> {
-        // Count nested structure without allocating a Node.
         let mut nested = CountingVisitor::default();
         nested.on_header(type_name, name)?;
         parser.finish_nested_child(opts, &mut nested)?;

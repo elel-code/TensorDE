@@ -53,14 +53,18 @@ mod value;
 mod write;
 
 pub use context::{Context, DEFAULT_MAX_DEPTH, DepthGuard};
+#[cfg(feature = "dom")]
 pub use decode::{
-    Decode, DecodeChildren, DecodeDocument, DecodeFromVisit, DecodePartial, DecodeScalar, Flag,
-    NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill, VisitBuilder, VisitFill,
-    argument_or_flag, child, child_in, children, children_in, decode_node_body_after_header,
+    Decode, DecodeChildren, DecodePartial, argument_or_flag, child, child_in, children,
+    children_in, one_argument, one_argument_in, one_property, opt_argument, opt_child,
+    opt_child_in, opt_one_argument_in, opt_one_property, opt_property, property,
+};
+pub use decode::{
+    DecodeDocument, DecodeFromVisit, DecodeScalar, Flag, NestedFill, NestedProbe, NestedViaVisit,
+    NestedVisitTag, TopLevelFill, VisitBuilder, VisitFill, decode_node_body_after_header,
     decode_node_str, decode_node_str_const, decode_node_visit, decode_node_visit_const,
-    linear_prop_index, missing_argument_at, missing_child_named, missing_field, one_argument,
-    one_argument_in, one_property, opt_argument, opt_child, opt_child_in, opt_one_argument_in,
-    opt_one_property, opt_property, property, read_nodes_into_visit,
+    linear_prop_index, missing_argument_at, missing_child_named, missing_field,
+    read_nodes_into_visit,
 };
 pub use encode::{
     Encode, EncodeDocument, EncodePartial, EncodeScalar, WriteSink, to_string, to_string_node,
@@ -88,8 +92,8 @@ pub use parse::{
 #[cfg(feature = "dom")]
 pub use query::{query, query_node};
 #[cfg(feature = "dom")]
-pub use value::{Document, Entry, Node};
-pub use value::{KdlStr, Value};
+pub use value::{Document, Node};
+pub use value::{Entry, KdlStr, Value};
 #[cfg(feature = "dom")]
 pub use write::{format_document, format_document_into, format_node_into};
 
@@ -302,7 +306,7 @@ pub(crate) fn read_document_buffered<'a, T: DecodeDocument<'a>>(
 ///
 /// Prefer [`read_nodes_into_visit`] when `T: DecodeFromVisit` to avoid per-node
 /// DOM [`Node`] allocation (P-G3d; Glaze element `from::op`).
-pub fn read_nodes_into<'a, T: Decode<'a>>(
+pub fn read_nodes_into<'a, T: DecodeFromVisit<'a>>(
     out: &mut Vec<T>,
     input: &'a str,
     ctx: &mut Context,

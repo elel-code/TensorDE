@@ -3,56 +3,14 @@
 //! Not used by typed [`crate::read`] / [`crate::write`]. Enable with
 //! `--features dom` for suite roundtrip, query, and tooling.
 
-use super::{KdlStr, Value};
-
-/// Entry on a node: positional argument or named property.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Entry<'a> {
-    Argument {
-        type_name: Option<KdlStr<'a>>,
-        value: Value<'a>,
-    },
-    Property {
-        key: KdlStr<'a>,
-        type_name: Option<KdlStr<'a>>,
-        value: Value<'a>,
-    },
-}
-
-impl<'a> Entry<'a> {
-    pub fn is_argument(&self) -> bool {
-        matches!(self, Self::Argument { .. })
-    }
-
-    pub fn is_property(&self) -> bool {
-        matches!(self, Self::Property { .. })
-    }
-
-    pub fn as_argument(&self) -> Option<(Option<&KdlStr<'a>>, &Value<'a>)> {
-        match self {
-            Self::Argument { type_name, value } => Some((type_name.as_ref(), value)),
-            _ => None,
-        }
-    }
-
-    pub fn as_property(&self) -> Option<(&KdlStr<'a>, Option<&KdlStr<'a>>, &Value<'a>)> {
-        match self {
-            Self::Property {
-                key,
-                type_name,
-                value,
-            } => Some((key, type_name.as_ref(), value)),
-            _ => None,
-        }
-    }
-}
+use super::{Entry, KdlStr, Value};
 
 /// A KDL node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node<'a> {
     pub type_name: Option<KdlStr<'a>>,
     pub name: KdlStr<'a>,
-    pub entries: Vec<Entry<'a>>,
+    pub entries: Vec<crate::value::Entry<'a>>,
     pub children: Vec<Node<'a>>,
 }
 

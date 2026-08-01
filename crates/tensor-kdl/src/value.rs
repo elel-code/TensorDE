@@ -1,4 +1,7 @@
-//! KDL values and zero-copy string views.
+//! KDL scalar values and zero-copy strings.
+//!
+//! Parse-tree types ([`Document`], [`Node`]) live under feature `dom`
+//! (Glaze `generic` role). Typed paths never need them.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -53,18 +56,12 @@ impl PartialEq<&str> for KdlStr<'_> {
     }
 }
 
-/// Scalar value with optional type annotation.
+/// Scalar value (arguments / properties).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
     String(KdlStr<'a>),
-    /// Integer with full KDL range preserved as i128 when possible.
     Int(i128),
-    /// Floating value. `raw` preserves the lexical form when `f64` cannot
-    /// round-trip extreme exponents (e.g. `1.23E+1000`).
-    Float {
-        value: f64,
-        raw: Option<KdlStr<'a>>,
-    },
+    Float { value: f64, raw: Option<KdlStr<'a>> },
     Bool(bool),
     Null,
 }
@@ -111,10 +108,50 @@ impl<'a> Value<'a> {
     }
 }
 
-mod tree;
+/// Entry on a node: positional argument or named property.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Entry<'a> {
+    Argument {
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    },
+    Property {
+        key: KdlStr<'a>,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    },
+}
 
+impl<'a> Entry<'a> {
+    pub fn is_argument(&self) -> bool {
+        matches!(self, Self::Argument { .. })
+    }
+
+    pub fn is_property(&self) -> bool {
+        matches!(self, Self::Property { .. })
+    }
+
+    pub fn as_argument(&self) -> Option<(Option<&KdlStr<'a>>, &Value<'a>)> {
+        match self {
+            Self::Argument { type_name, value } => Some((type_name.as_ref(), value)),
+            _ => None,
+        }
+    }
+
+    pub fn as_property(&self) -> Option<(&KdlStr<'a>, Option<&KdlStr<'a>>, &Value<'a>)> {
+        match self {
+            Self::Property {
+                key,
+                type_name,
+                value,
+            } => Some((key, type_name.as_ref(), value)),
+            _ => None,
+        }
+    }
+}
+
+/// Parse-tree types — **feature `dom` only** (not compiled otherwise).
 #[cfg(feature = "dom")]
-pub use tree::{Document, Entry, Node};
-
-#[cfg(not(feature = "dom"))]
-pub(crate) use tree::{Document, Entry, Node};
+mod tree;
+#[cfg(feature = "dom")]
+pub use tree::{Document, Node};

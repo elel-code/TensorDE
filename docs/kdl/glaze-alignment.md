@@ -190,8 +190,10 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
     `Document`/`Node`, `from_str`, `format_document`, `query` (Glaze `generic`
     role). Without `dom`, nested decode requires `DecodeFromVisit` (no tree
     fallback in the public API).
-20. **Next (optional):** eliminate remaining *internal* NestedViaDom tree
-    scrap when `dom` is off; further KQL only with QUERY-SPEC citations.
+20. ~~No tree code without `dom`~~ done — `value/tree`, `DomNodeBuilder`,
+    DOM `Decode`/`NestedFill` fallback, and `from_str`/`query` are
+    `cfg(feature = "dom")` only. Default build is visit+WriteSink only.
+21. **Next (optional):** further KQL only with QUERY-SPEC citations.
 
 ### Stage benchmark (P-G10)
 

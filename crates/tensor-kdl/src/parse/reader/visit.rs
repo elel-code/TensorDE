@@ -12,7 +12,9 @@ use crate::opts::{OPTS_DEFAULT, OPTS_LENIENT, Opts, flag_error_on_unknown};
 #[cfg(feature = "dom")]
 use crate::parse::visitor::DomNodeBuilder;
 use crate::parse::visitor::{CountingVisitor, NodeVisitor};
-use crate::value::{Entry, KdlStr, Node};
+#[cfg(feature = "dom")]
+use crate::value::Node;
+use crate::value::{Entry, KdlStr};
 
 use super::Parser;
 
@@ -284,6 +286,8 @@ impl<'a> Parser<'a> {
         self.visit_node_body_bits(OPTS, child_visitor)
     }
 
+    #[cfg(feature = "dom")]
+    #[allow(dead_code)] // DOM helper retained for suite/tooling paths.
     pub(super) fn parse_children_block(&mut self) -> CtxResult<Vec<Node<'a>>> {
         let mut children = Vec::new();
         struct Collect<'a, 'b> {
@@ -304,8 +308,14 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn skip_children_block(&mut self) -> CtxResult<()> {
-        let _ = self.parse_children_block()?;
-        Ok(())
+        // Structural skip without allocating a Node tree.
+        struct Skip;
+        impl<'a> NodeVisitor<'a> for Skip {}
+        if self.peek_byte() != Some(b'{') {
+            return Err(self.err(ErrorCode::ExpectedBrace).with_expected("`{`"));
+        }
+        let mut v = Skip;
+        self.visit_children_block_bits(OPTS_DEFAULT, &mut v)
     }
 
     pub(super) fn skip_node(&mut self) -> CtxResult<()> {

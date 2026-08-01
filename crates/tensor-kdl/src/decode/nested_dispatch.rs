@@ -1,29 +1,23 @@
-//! Nested child fill — prefer visit-fill, fall back to DOM (autoref specialization).
+//! Nested / top-level fill — Glaze nested `from::op` (visit-fill).
 //!
-//! Glaze monomorphizes nested `from::op` when the member type is known
-//! (`json/read.hpp`). In Rust we cannot require every child field to implement
-//! [`super::DecodeFromVisit`] (e.g. `unwrap(property)` peels a scalar; some
-//! types only implement [`crate::Decode`]).
-//!
-//! **Autoref specialization** (dtolnay): put `T` in the receiver type so method
-//! resolution autoderefs from `&&Probe<T>` → `&Probe<T>` when the specialized
-//! bound fails. A bare tag with `T` only as a trait parameter does **not** fall
-//! through (rustc commits to the exact `&&Tag` candidate and errors).
-//!
-//! ```ignore
-//! use tensor_kdl::{NestedFill, NestedProbe};
-//! (&&NestedProbe::<Child>::new()).fill_nested(parser, opts, type_name, name)
-//! ```
+//! Without feature `dom`, only [`DecodeFromVisit`] children are supported
+//! (no intermediate [`Node`]). With `dom`, Decode-only types fall back to a
+//! temporary tree (Glaze does not do this on the primary path; keep it opt-in).
 
 use core::marker::PhantomData;
 
 use crate::error::CtxResult;
 use crate::opts::Opts;
-use crate::parse::visitor::{DomNodeBuilder, NodeVisitor};
-use crate::value::{KdlStr, Node};
+use crate::value::KdlStr;
 
-use super::Decode;
 use super::visit_fill::{DecodeFromVisit, decode_node_body_after_header};
+
+#[cfg(feature = "dom")]
+use super::Decode;
+#[cfg(feature = "dom")]
+use crate::parse::visitor::{DomNodeBuilder, NodeVisitor};
+#[cfg(feature = "dom")]
+use crate::value::Node;
 
 /// Probe carrying the child type for autoref specialization.
 pub struct NestedProbe<T> {
@@ -44,8 +38,6 @@ impl<T> Default for NestedProbe<T> {
 }
 
 /// Nested child body → `T` after the parent saw `(type_name, name)`.
-///
-/// Call `(&&NestedProbe::<T>::new()).fill_nested(...)`.
 pub trait NestedFill<'a> {
     type Output;
 
@@ -58,7 +50,7 @@ pub trait NestedFill<'a> {
     ) -> CtxResult<Self::Output>;
 }
 
-/// Specialized: visit-fill path (P-G3d / Glaze nested `from::op`).
+/// Visit-fill path (Glaze nested `from::op`) — always available.
 impl<'a, T: DecodeFromVisit<'a>> NestedFill<'a> for &&NestedProbe<T> {
     type Output = T;
 
@@ -74,7 +66,8 @@ impl<'a, T: DecodeFromVisit<'a>> NestedFill<'a> for &&NestedProbe<T> {
     }
 }
 
-/// Fallback: any [`Decode`] — finish body as DOM then `decode_node`.
+/// DOM fallback for Decode-only children (feature `dom` only).
+#[cfg(feature = "dom")]
 impl<'a, T: Decode<'a>> NestedFill<'a> for &NestedProbe<T> {
     type Output = T;
 
@@ -94,26 +87,16 @@ impl<'a, T: Decode<'a>> NestedFill<'a> for &NestedProbe<T> {
     }
 }
 
-/// Compat: old tag name used as type alias documentation only.
 pub type NestedVisitTag = NestedProbe<()>;
-
-/// Compat aliases.
 pub use NestedFill as NestedViaVisit;
 
 /// Top-level node → `T` (document element loop).
-///
-/// Same autoref pattern as [`NestedFill`], but starts at a full node (header
-/// not yet consumed). Call `(&&NestedProbe::<T>::new()).fill_top(...)`.
-///
-/// Cite: Glaze array element `from::op` without retaining a generic value
-/// (`json/read.hpp` + `core/read.hpp`).
 pub trait TopLevelFill<'a> {
     type Output;
 
     fn fill_top(self, parser: &mut crate::Parser<'a>, opts: Opts) -> CtxResult<Self::Output>;
 }
 
-/// Specialized: visit-fill (no intermediate [`Node`]).
 impl<'a, T: DecodeFromVisit<'a>> TopLevelFill<'a> for &&NestedProbe<T> {
     type Output = T;
 
@@ -123,7 +106,7 @@ impl<'a, T: DecodeFromVisit<'a>> TopLevelFill<'a> for &&NestedProbe<T> {
     }
 }
 
-/// Fallback: DOM node then [`Decode::decode_node`].
+#[cfg(feature = "dom")]
 impl<'a, T: Decode<'a>> TopLevelFill<'a> for &NestedProbe<T> {
     type Output = T;
 

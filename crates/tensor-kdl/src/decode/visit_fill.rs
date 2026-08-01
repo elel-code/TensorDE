@@ -11,7 +11,9 @@
 use crate::error::{CtxResult, ErrorCode, ErrorCtx};
 use crate::opts::Opts;
 use crate::parse::visitor::NodeVisitor;
-use crate::value::{KdlStr, Node, Value};
+#[cfg(feature = "dom")]
+use crate::value::Node;
+use crate::value::{KdlStr, Value};
 
 /// Schema sink filled during [`crate::Parser::visit_node`].
 ///
@@ -41,8 +43,12 @@ pub trait VisitBuilder<'a>: Sized {
         value: Value<'a>,
     ) -> CtxResult<bool>;
 
-    /// DOM child fallback (when nested visit is not used).
-    fn on_child(&mut self, child: Node<'a>) -> CtxResult<bool>;
+    /// DOM child fallback (feature `dom` only).
+    #[cfg(feature = "dom")]
+    fn on_child(&mut self, child: Node<'a>) -> CtxResult<bool> {
+        let _ = child;
+        Ok(false)
+    }
 
     /// P-G3d: optional nested visit-fill for a child named `name`.
     ///
@@ -99,6 +105,7 @@ impl<'a, B: VisitBuilder<'a>> NodeVisitor<'a> for VisitFill<'a, B> {
         self.builder.on_property(key, type_name, value)
     }
 
+    #[cfg(feature = "dom")]
     fn on_child(&mut self, child: Node<'a>) -> CtxResult<bool> {
         self.builder.on_child(child)
     }
