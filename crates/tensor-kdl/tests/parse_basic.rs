@@ -189,6 +189,48 @@ fn nested_visit_fill_child_without_dom() {
 }
 
 #[test]
+fn nested_unwrap_peels_without_node_on_visit_path() {
+    // P-G13: unwrap(argument|property) on nested children uses peel helpers
+    // via take_child_after_header — no temporary Node on the visit path.
+    use tensor_kdl::{Decode, DecodeFromVisit, Opts, decode_node_str};
+
+    #[derive(Debug, Decode, PartialEq)]
+    struct Layout {
+        #[kdl(child, unwrap(argument))]
+        title: String,
+        #[kdl(child, unwrap(property))]
+        gaps: f64,
+        #[kdl(child, unwrap(argument))]
+        optional_note: Option<i64>,
+    }
+
+    let _ = <Layout as DecodeFromVisit>::start_visit();
+    let layout: Layout = decode_node_str(
+        r#"layout {
+            title "hello"
+            gaps gaps=8.0
+        }"#,
+        Opts::new(),
+    )
+    .unwrap();
+    assert_eq!(layout.title, "hello");
+    assert!((layout.gaps - 8.0).abs() < f64::EPSILON);
+    assert_eq!(layout.optional_note, None);
+
+    let with_note: Layout = decode_node_str(
+        r#"layout {
+            title "x"
+            gaps gaps=1.5
+            optional-note 42
+        }"#,
+        Opts::new(),
+    )
+    .unwrap();
+    assert_eq!(with_note.optional_note, Some(42));
+    assert!((with_note.gaps - 1.5).abs() < f64::EPSILON);
+}
+
+#[test]
 fn read_nodes_into_visit_streams_without_dom_nodes() {
     use tensor_kdl::{Context, Decode, DecodeFromVisit, Opts, read_nodes_into_visit};
 

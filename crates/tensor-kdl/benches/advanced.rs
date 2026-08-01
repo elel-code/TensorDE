@@ -250,11 +250,76 @@ fn bench_pg10_padded_and_mixed(c: &mut Criterion) {
     group.finish();
 }
 
+/// P-G13: monomorphized WriteSink dump (Glaze `to::op` / `util/dump.hpp`).
+///
+/// Compares allocate-each-time `write` vs in-place `write_into` buffer reuse
+/// (`docs/optimizing-performance.md` guidance).
+fn bench_pg13_write_sink(c: &mut Criterion) {
+    use tensor_kdl::{Encode, write, write_into, write_into_slice};
+
+    #[derive(Debug, Encode)]
+    struct Row {
+        #[kdl(argument)]
+        n: i64,
+        #[kdl(property)]
+        name: String,
+    }
+
+    #[derive(Debug, Encode)]
+    struct Doc {
+        #[kdl(children)]
+        rows: Vec<Row>,
+    }
+
+    let doc = Doc {
+        rows: (0..100)
+            .map(|i| Row {
+                n: i,
+                name: format!("n{i}"),
+            })
+            .collect(),
+    };
+    let sample = write(&doc).expect("write sample");
+
+    let mut group = c.benchmark_group("pg13_write_sink");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.throughput(Throughput::Bytes(sample.len() as u64));
+
+    group.bench_function("write_alloc_100_rows", |b| {
+        b.iter(|| {
+            let s = write(black_box(&doc)).expect("write");
+            black_box(s.len())
+        })
+    });
+
+    group.bench_function("write_into_reuse_100_rows", |b| {
+        let mut buf = String::with_capacity(sample.len() + 64);
+        b.iter(|| {
+            let ec = write_into(black_box(&doc), &mut buf);
+            assert!(!ec.is_err());
+            black_box(ec.consumed)
+        })
+    });
+
+    group.bench_function("write_into_slice_100_rows", |b| {
+        let mut fixed = vec![0u8; sample.len()];
+        b.iter(|| {
+            let ec = write_into_slice(black_box(&doc), &mut fixed);
+            assert!(!ec.is_err());
+            black_box(ec.consumed)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pg6_unique_index_props,
     bench_pg7_modular_hash_props,
     bench_pg8_single_node_and_quote_scan,
-    bench_pg10_padded_and_mixed
+    bench_pg10_padded_and_mixed,
+    bench_pg13_write_sink
 );
 criterion_main!(benches);

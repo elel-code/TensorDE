@@ -208,3 +208,35 @@ fn values_props_existence_and_value_type_rhs() {
     assert_eq!(query(&doc, r#"args[val() = (sri)]"#).len(), 0);
     assert_eq!(query(&doc, r#"typed[val() = ()]"#).len(), 1);
 }
+
+#[test]
+fn name_tag_existence_stacked_matchers_and_keyword_floats() {
+    // QUERY-SPEC: unary name()/tag(); stacked accessor-matcher*; $keyword floats.
+    let doc = from_str(
+        r#"
+            plain
+            (role)tagged
+            score 1.5
+            high #inf
+            low #-inf
+            bad #nan
+            both 1 flag=#true
+        "#,
+    )
+    .unwrap();
+    // Every node has a name.
+    assert_eq!(query(&doc, "[name()]").len(), 7);
+    // Only type-annotated nodes.
+    assert_eq!(query(&doc, "[tag()]").len(), 1);
+    assert_eq!(query(&doc, r#"[tag() = role]"#).len(), 1);
+    // Stacked accessors (grammar accessor-matcher*).
+    assert_eq!(query(&doc, "both[val()][flag]").len(), 1);
+    assert_eq!(query(&doc, "both[val()][missing]").len(), 0);
+    assert_eq!(query(&doc, "plain[val()][name()]").len(), 0);
+    // Keyword float RHS.
+    assert_eq!(query(&doc, "high[val() = #inf]").len(), 1);
+    assert_eq!(query(&doc, "low[val() = #-inf]").len(), 1);
+    // NaN never equals NaN (IEEE / QUERY-SPEC same-type float compare).
+    assert_eq!(query(&doc, "bad[val() = #nan]").len(), 0);
+    assert_eq!(query(&doc, "score[val() = #inf]").len(), 0);
+}

@@ -57,19 +57,11 @@ impl<'a> WriteSink<'a> {
     ///
     /// Cite: `util/dump.hpp` — padding only applies to **resizable** buffers;
     /// fixed spans are exact-size checked in [`Self::push_byte`] / [`Self::push_str`].
+    #[inline(always)]
     pub fn ensure_capacity(&mut self, additional: usize) -> Result<(), ErrorCtx> {
         match &mut self.kind {
             SinkKind::Grow { buf } => {
-                // Growth includes write_padding_bytes headroom (dump_newline_indent style).
-                let needed = buf
-                    .len()
-                    .saturating_add(additional)
-                    .saturating_add(WRITE_PADDING_BYTES.min(16));
-                if needed > buf.capacity() {
-                    // 2× growth amortizes reallocations (Glaze buffer_traits).
-                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
-                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
-                }
+                grow_reserve(buf, additional);
                 Ok(())
             }
             SinkKind::Fixed { bytes, ix } => {
@@ -85,18 +77,20 @@ impl<'a> WriteSink<'a> {
     }
 
     /// Dump one byte (Glaze `dump(c, b, ix)`).
+    ///
+    /// Hot path: after an upfront [`Self::ensure_capacity`] / padding reserve,
+    /// grow dumps avoid re-checking capacity on every structural token when the
+    /// String still has room (Glaze `assign_maybe_cast` after size check).
+    #[inline(always)]
     pub fn push_byte(&mut self, c: u8) -> Result<(), ErrorCtx> {
         match &mut self.kind {
             SinkKind::Grow { buf } => {
-                // Resizable: ensure room + padding headroom, then write.
-                let needed = buf
-                    .len()
-                    .saturating_add(1)
-                    .saturating_add(WRITE_PADDING_BYTES.min(16));
-                if needed > buf.capacity() {
-                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
-                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
+                if buf.len() == buf.capacity() {
+                    // Glaze dump: resize when ix == size (2× or 128 min).
+                    grow_reserve(buf, 1);
                 }
+                // UTF-8 single-byte ASCII structural chars (space, `{`, `}`, …).
+                debug_assert!(c.is_ascii());
                 buf.push(c as char);
                 Ok(())
             }
@@ -114,17 +108,14 @@ impl<'a> WriteSink<'a> {
     }
 
     /// Dump a UTF-8 string slice (Glaze `dump(sv, b, ix)`).
+    #[inline(always)]
     pub fn push_str(&mut self, s: &str) -> Result<(), ErrorCtx> {
         let raw = s.as_bytes();
         match &mut self.kind {
             SinkKind::Grow { buf } => {
-                let needed = buf
-                    .len()
-                    .saturating_add(raw.len())
-                    .saturating_add(WRITE_PADDING_BYTES.min(16));
-                if needed > buf.capacity() {
-                    let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
-                    buf.reserve(new_cap.saturating_sub(buf.capacity()));
+                let n = raw.len();
+                if buf.len().saturating_add(n) > buf.capacity() {
+                    grow_reserve(buf, n);
                 }
                 buf.push_str(s);
                 Ok(())
@@ -148,6 +139,38 @@ impl<'a> WriteSink<'a> {
         }
     }
 
+    /// Dump `n` copies of an ASCII byte (Glaze `dumpn` for indent / padding runs).
+    #[inline(always)]
+    pub fn push_byte_n(&mut self, c: u8, n: usize) -> Result<(), ErrorCtx> {
+        if n == 0 {
+            return Ok(());
+        }
+        debug_assert!(c.is_ascii());
+        match &mut self.kind {
+            SinkKind::Grow { buf } => {
+                if buf.len().saturating_add(n) > buf.capacity() {
+                    grow_reserve(buf, n);
+                }
+                // SAFETY-free: ASCII byte as char is a single UTF-8 unit.
+                buf.extend(std::iter::repeat_n(c as char, n));
+                Ok(())
+            }
+            SinkKind::Fixed { bytes, ix } => {
+                if *ix + n > bytes.len() {
+                    let fit = bytes.len().saturating_sub(*ix);
+                    bytes[*ix..].fill(c);
+                    *ix = bytes.len();
+                    let _ = fit;
+                    return Err(ErrorCtx::new(ErrorCode::BufferOverflow, *ix)
+                        .with_message("fixed write buffer too small"));
+                }
+                bytes[*ix..*ix + n].fill(c);
+                *ix += n;
+                Ok(())
+            }
+        }
+    }
+
     pub fn push_char(&mut self, c: char) -> Result<(), ErrorCtx> {
         let mut tmp = [0u8; 4];
         self.push_str(c.encode_utf8(&mut tmp))
@@ -159,12 +182,23 @@ impl<'a> WriteSink<'a> {
     }
 }
 
-/// Write suite-canonical indent (4 spaces per level).
-pub fn write_indent(out: &mut WriteSink<'_>, level: usize) -> Result<(), ErrorCtx> {
-    for _ in 0..level {
-        out.push_str("    ")?;
+/// Glaze `vector_like` resize: 2× needed, at least `2 * write_padding_bytes`.
+#[inline(always)]
+fn grow_reserve(buf: &mut String, additional: usize) {
+    let needed = buf
+        .len()
+        .saturating_add(additional)
+        .saturating_add(WRITE_PADDING_BYTES.min(16));
+    if needed > buf.capacity() {
+        let new_cap = (needed * 2).max(2 * WRITE_PADDING_BYTES);
+        buf.reserve(new_cap.saturating_sub(buf.capacity()));
     }
-    Ok(())
+}
+
+/// Write suite-canonical indent (4 spaces per level) — single dumpn (Glaze indent).
+#[inline(always)]
+pub fn write_indent(out: &mut WriteSink<'_>, level: usize) -> Result<(), ErrorCtx> {
+    out.push_byte_n(b' ', level.saturating_mul(4))
 }
 
 /// Write a KDL identifier or quoted string (suite Translation Rules).

@@ -128,6 +128,7 @@ For KDL that means:
 | **P-G10b** mixed primary + sibling nodes | **Done** — single-node roots with unfiltered `#[kdl(children)]` collect later top-level nodes via `read_stream` / `decode_document` |
 | **P-G11** padded typed read | **Done** — `DecodeDocument::read_stream_parser`; runtime/const padded APIs retain borrowed logical input while scanners consume the padded allocation |
 | **P-G12** document-root stream without `Node` | **Done** — named children-only `read_stream` uses `visit_document_at_nodes` + `NestedProbe` / peel helpers; `WriteSink` grow path reserves `WRITE_PADDING_BYTES` (Glaze `write_padding_bytes`); fixed buffers exact-size only (`util/dump.hpp`) |
+| **P-G13** nested unwrap + write dumpn + KQL | **Done** — visit `unwrap(argument\|property)` via peel in `take_child_after_header`; `WriteSink::push_byte_n` / grow-on-full dump; KQL `[name()]`/`[tag()]`, stacked matchers, `#inf`/`#-inf`/`#nan` RHS |
 
 Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector). Flatten on document roots still requires feature `dom` + `DecodePartial` (unknown free nodes).
 
@@ -197,8 +198,11 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
 21. ~~P-G12 document-root stream without `Node`~~ done — peel
     `unwrap(argument|property)`; `WriteSink` grow padding vs fixed exact
     bounds (`dump.hpp`); flatten roots remain `dom`-gated.
-22. **Next (optional):** further KQL only with QUERY-SPEC citations;
-    visit nested `unwrap` without any temporary child `Node` under `dom`.
+22. ~~P-G13 nested unwrap peels + write dumpn + KQL~~ done — visit
+    `unwrap` on nested children; `push_byte_n` indent; KQL `name()`/`tag()`
+    existence, stacked accessors, keyword float RHS.
+23. **Next (optional):** further KQL only with QUERY-SPEC citations;
+    SCHEMA-SPEC out of scope.
 
 ### Stage benchmark (P-G10)
 

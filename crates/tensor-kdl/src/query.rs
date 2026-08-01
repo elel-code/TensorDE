@@ -4,13 +4,15 @@
 //! **not** a full KQL implementation — see the supported list below. Design
 //! non-goal: full QUERY-SPEC / SCHEMA-SPEC (`docs/kdl/design.md` §2).
 //!
-//! Supported today:
+//! Supported today (cite `references/kdl/QUERY-SPEC.md`):
 //!
 //! - node names, `[]`, `(tag)` and `(tag)name`;
 //! - `top()`, direct-child `>`, descendant `>>`, immediate sibling `+`,
 //!   general sibling `++`, and union `||`;
 //! - existence matchers `[val()]`, `[val(n)]`, `[prop(name)]`, bare `[name]`,
-//!   `[values()]` (any argument), `[props()]` (any property);
+//!   `[values()]` (any argument), `[props()]` (any property),
+//!   `[name()]` (always true), `[tag()]` (node has a type annotation);
+//! - stacked accessors: `a[val()][prop(x)]` (grammar `accessor-matcher*`);
 //! - equality / inequality (`=`, `!=`) on `val()`, `prop()`, bare props,
 //!   `name()`, `tag()` — **no cross-type coercion** (QUERY-SPEC: `"1"` is never
 //!   equal to `1`);
@@ -19,9 +21,10 @@
 //! - same-type ordered comparisons (`<`, `>`, `<=`, `>=`) on `val()` / `prop()`
 //!   numbers or strings;
 //! - string operators `^=` / `$=` / `*=` on string `val()`, `prop()`, `tag()`,
-//!   or `name()` values.
+//!   or `name()` values;
+//! - keyword RHS literals `#true` / `#false` / `#null` / `#inf` / `#-inf` / `#nan`.
 //!
-//! Still not full KQL: complex multi-matcher edge cases and SCHEMA-SPEC.
+//! Still not full KQL / SCHEMA-SPEC.
 
 use std::collections::{HashMap, HashSet};
 
@@ -386,6 +389,14 @@ fn accessor_matches(node: &Node<'_>, accessor: &str) -> bool {
     if accessor == "props()" {
         return node.properties().next().is_some();
     }
+    // QUERY-SPEC accessors `name()` / `tag()` as unary matchers.
+    // Every node has a name; `tag()` requires a type annotation on the node.
+    if accessor == "name()" {
+        return true;
+    }
+    if accessor == "tag()" {
+        return node.type_name.is_some();
+    }
 
     if let Some(argument) = accessor
         .strip_prefix("val(")
@@ -673,6 +684,16 @@ fn parse_matcher_literal(raw: &str) -> AccessorValue<'static> {
     if raw == "#null" {
         return AccessorValue::Null;
     }
+    // KDL 2.0 keyword floats (QUERY-SPEC comparison RHS is `$keyword` | …).
+    if raw == "#inf" {
+        return AccessorValue::OwnedFloat(f64::INFINITY);
+    }
+    if raw == "#-inf" {
+        return AccessorValue::OwnedFloat(f64::NEG_INFINITY);
+    }
+    if raw == "#nan" {
+        return AccessorValue::OwnedFloat(f64::NAN);
+    }
     if let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return AccessorValue::OwnedString(inner.to_owned());
     }
@@ -698,6 +719,7 @@ fn values_equal(left: &AccessorValue<'_>, right: &AccessorValue<'_>) -> bool {
         return a == b;
     }
     if let (Some(a), Some(b)) = (left.as_f64_strict(), right.as_f64_strict()) {
+        // IEEE: NaN is never equal to anything, including itself.
         return a == b;
     }
     match (left.as_str(), right.as_str()) {

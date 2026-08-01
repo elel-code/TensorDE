@@ -24,8 +24,9 @@ parse, process-macro typed decode/encode, and a documented KQL subset).
 - Typed write: monomorphized `write_node` / `WriteSink` only (Glaze `to::op`;
   no `encode_node` dual path) + `write` / `write_into` / `write_into_slice`
 - Query subset (`QUERY-SPEC.md`): `top()`, `>` / `>>`, `+` / `++`, `||`,
-  existence / `values()` / `props()`, `=` / `!=`, value type RHS `(tag)`,
-  ordered compares, string `^=` / `$=` / `*=` (not full KQL)
+  existence / `values()` / `props()` / `name()` / `tag()`, stacked accessors,
+  `=` / `!=`, value type RHS `(tag)`, ordered compares, string `^=` / `$=` / `*=`,
+  keyword float RHS `#inf` / `#-inf` / `#nan` (not full KQL)
 - Macro UI: `cargo test -p tensor-kdl --test trybuild_ui`
 - Benches: `cargo bench -p tensor-kdl`
 - Suite report tool: `cargo run -p tensor-kdl --example suite_report`

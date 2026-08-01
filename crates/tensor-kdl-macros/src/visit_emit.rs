@@ -10,13 +10,15 @@ use syn::{Ident, ImplGenerics, Type, TypeGenerics, WhereClause};
 use crate::attr::{FieldInfo, FieldRole, UnwrapKind, kebab};
 use crate::key_dispatch::emit_key_strategy_match;
 
-/// Structs eligible for visit-fill (no flatten / properties map / unwrap(property)).
+/// Structs eligible for visit-fill (no flatten / properties map).
+///
+/// Nested `unwrap(argument|property)` peels via live parser helpers (P-G12/P-G13),
+/// not a temporary [`tensor_kdl::Node`].
 pub(crate) fn visit_fill_supported(fields: &[FieldInfo]) -> bool {
     !fields.is_empty()
-        && fields.iter().all(|f| {
-            !matches!(f.role, FieldRole::Flatten | FieldRole::Properties)
-                && !matches!(f.unwrap, UnwrapKind::Property)
-        })
+        && fields
+            .iter()
+            .all(|f| !matches!(f.role, FieldRole::Flatten | FieldRole::Properties))
 }
 
 pub(crate) fn emit_decode_from_visit(
@@ -115,36 +117,86 @@ pub(crate) fn emit_decode_from_visit(
                     .clone()
                     .or_else(|| f.rename.clone())
                     .unwrap_or_else(|| kebab(&id.to_string()));
-                let decode_child = match f.unwrap {
-                    UnwrapKind::Argument => quote! {
-                        ::tensor_kdl::one_argument(&child)?
-                    },
-                    _ => quote! {
-                        ::tensor_kdl::Decode::decode_node(&child)?
-                    },
-                };
-                // P-G3d: nested fill for full child nodes (Glaze nested from::op).
-                // unwrap(*) peels scalars from a DOM node — keep on_child only.
-                // Autoref specialization at this monomorphized site: DecodeFromVisit
-                // when available, else Decode via temporary Node (NestedViaDom).
+                // Scalar type after Option peel (for unwrap peels and NestedProbe).
                 let nested_ty = if f.optional {
                     option_inner_type(ty).unwrap_or(ty)
                 } else {
                     ty
                 };
-                if matches!(f.unwrap, UnwrapKind::None) {
-                    take_child_arms.push(quote! {
-                        #key => {
-                            use ::tensor_kdl::{NestedFill as _, NestedProbe};
-                            let __nested: #nested_ty =
+                // P-G13: unwrap peels + full nested fill via take_child (no Node).
+                // Generated `on_child` is cfg(feature = "dom") only — DOM fallback
+                // if take_child is not used (manual visitors / older paths).
+                let take_fill = match f.unwrap {
+                    UnwrapKind::Argument => {
+                        if f.optional {
+                            quote! {
+                                ::tensor_kdl::peel_opt_argument_after_header::<_>(
+                                    parser, opts, type_name, name,
+                                )?
+                            }
+                        } else {
+                            quote! {
+                                ::tensor_kdl::peel_argument_after_header::<_>(
+                                    parser, opts, type_name, name,
+                                )?
+                            }
+                        }
+                    }
+                    UnwrapKind::Property => {
+                        let pk = key.clone();
+                        if f.optional {
+                            quote! {
+                                ::tensor_kdl::peel_opt_property_after_header::<_>(
+                                    parser, opts, type_name, name, #pk,
+                                )?
+                            }
+                        } else {
+                            quote! {
+                                ::tensor_kdl::peel_property_after_header::<_>(
+                                    parser, opts, type_name, name, #pk,
+                                )?
+                            }
+                        }
+                    }
+                    UnwrapKind::None => {
+                        quote! {
+                            {
+                                use ::tensor_kdl::{NestedFill as _, NestedProbe};
                                 (&&NestedProbe::<#nested_ty>::new()).fill_nested(
                                     parser, opts, type_name, name,
-                                )?;
-                            self.#id = ::std::option::Option::Some(__nested);
-                            return ::std::result::Result::Ok(true);
+                                )?
+                            }
                         }
-                    });
-                }
+                    }
+                };
+                let take_assign = match f.unwrap {
+                    UnwrapKind::Argument | UnwrapKind::Property if f.optional => {
+                        // peel_opt already yields Option<Inner>.
+                        quote! { self.#id = #take_fill; }
+                    }
+                    _ => {
+                        quote! { self.#id = ::std::option::Option::Some(#take_fill); }
+                    }
+                };
+                take_child_arms.push(quote! {
+                    #key => {
+                        #take_assign
+                        return ::std::result::Result::Ok(true);
+                    }
+                });
+                // DOM on_child fallback bodies (compiled only under feature dom).
+                let decode_child = match f.unwrap {
+                    UnwrapKind::Argument => quote! {
+                        ::tensor_kdl::one_argument(&child)?
+                    },
+                    UnwrapKind::Property => {
+                        let pk = key.clone();
+                        quote! { ::tensor_kdl::one_property(&child, #pk)? }
+                    }
+                    UnwrapKind::None => quote! {
+                        ::tensor_kdl::Decode::decode_node(&child)?
+                    },
+                };
                 if f.optional {
                     decls.push(quote! { #id: #ty });
                     inits.push(quote! { #id: ::std::option::Option::None });
@@ -373,6 +425,9 @@ pub(crate) fn emit_decode_from_visit(
                 #on_property_body
             }
 
+            // DOM fallback only — primary nested path is take_child_after_header
+            // (P-G13 peels + NestedProbe; no Node on the Glaze primary path).
+            #[cfg(feature = "dom")]
             fn on_child(
                 &mut self,
                 child: ::tensor_kdl::Node<'__kdl>,
@@ -380,8 +435,8 @@ pub(crate) fn emit_decode_from_visit(
                 #on_child_body
             }
 
-            // P-G3d: nested from::op — fill child without intermediate Node when
-            // the child type implements DecodeFromVisit (Glaze json/read.hpp).
+            // P-G3d/P-G13: nested from::op — peel unwrap or NestedProbe fill,
+            // never requiring an intermediate Node on the visit path.
             fn take_child_after_header(
                 &mut self,
                 parser: &mut ::tensor_kdl::Parser<'__kdl>,
