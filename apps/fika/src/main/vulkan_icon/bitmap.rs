@@ -34,7 +34,7 @@ pub(super) fn decode_bitmap(slot: &IconGpuSlot) -> Option<DecodedBitmap> {
     }
 }
 
-pub(super) fn fit_bitmap_blit(source: vk::Extent3D, target: vk::Extent3D) -> ImageBlit {
+pub(super) fn fit_bitmap_blit(source: Extent3D, target: Extent3D) -> ImageBlit {
     let scale = (target.width as f64 / source.width as f64)
         .min(target.height as f64 / source.height as f64);
     let width = (source.width as f64 * scale)
@@ -73,12 +73,7 @@ pub(super) fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, St
         graph.set_initial_state(
             resource,
             ResourceKind::Image,
-            ResourceState::image(
-                vk::PipelineStageFlags2::NONE,
-                vk::AccessFlags2::NONE,
-                vk::ImageLayout::UNDEFINED,
-                queue_family,
-            ),
+            ResourceState::image(RenderGraphImageState::Undefined, queue_family),
         );
     }
     graph.add_pass(RenderPass {
@@ -89,12 +84,7 @@ pub(super) fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, St
             resource: SCALE_SOURCE,
             kind: ResourceKind::Image,
             access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COPY,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::CopyDestination, queue_family),
         }],
     });
     graph.add_pass(RenderPass {
@@ -105,12 +95,7 @@ pub(super) fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, St
             resource: SCALE_TARGET,
             kind: ResourceKind::Image,
             access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::CLEAR,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::ClearDestination, queue_family),
         }],
     });
     graph.add_pass(RenderPass {
@@ -122,23 +107,13 @@ pub(super) fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, St
                 resource: SCALE_SOURCE,
                 kind: ResourceKind::Image,
                 access: AccessKind::Read,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::BLIT,
-                    vk::AccessFlags2::TRANSFER_READ,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                    queue_family,
-                ),
+                state: ResourceState::image(RenderGraphImageState::BlitSource, queue_family),
             },
             ResourceUse {
                 resource: SCALE_TARGET,
                 kind: ResourceKind::Image,
                 access: AccessKind::Write,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::BLIT,
-                    vk::AccessFlags2::TRANSFER_WRITE,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    queue_family,
-                ),
+                state: ResourceState::image(RenderGraphImageState::BlitDestination, queue_family),
             },
         ],
     });
@@ -150,12 +125,7 @@ pub(super) fn compile_scale_graph(queue_family: u32) -> Result<CompiledGraph, St
             resource: SCALE_TARGET,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph

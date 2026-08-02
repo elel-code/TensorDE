@@ -19,22 +19,18 @@ pub(super) fn create_rgba_image(
     label: &str,
     width: u32,
     height: u32,
-    usage: vk::ImageUsageFlags,
+    usage: TextureUsages,
 ) -> Result<Image, String> {
     allocator
         .create_image(&ImageDescriptor {
             label: Some(label.into()),
-            image_type: vk::ImageType::_2D,
-            format: vk::Format::R8G8B8A8_UNORM,
-            extent: vk::Extent3D {
-                width: width.max(1),
-                height: height.max(1),
-                depth: 1,
-            },
+            dimension: ImageDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            extent: Extent3D::new(width.max(1), height.max(1), 1),
             mip_levels: 1,
             array_layers: 1,
-            samples: vk::SampleCountFlags::_1,
-            tiling: vk::ImageTiling::OPTIMAL,
+            samples: SampleCount::One,
+            tiling: ImageTiling::Optimal,
             usage,
             memory: MemoryLocation::Device,
         })
@@ -91,12 +87,7 @@ pub(super) fn compile_upload_graph(queue_family: u32) -> Result<CompiledGraph, S
     graph.set_initial_state(
         ICON_IMAGE,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: ICON_UPLOAD,
@@ -106,12 +97,7 @@ pub(super) fn compile_upload_graph(queue_family: u32) -> Result<CompiledGraph, S
             resource: ICON_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COPY,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::CopyDestination, queue_family),
         }],
     });
     graph.add_pass(RenderPass {
@@ -122,12 +108,7 @@ pub(super) fn compile_upload_graph(queue_family: u32) -> Result<CompiledGraph, S
             resource: ICON_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph

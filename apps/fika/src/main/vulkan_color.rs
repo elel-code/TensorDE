@@ -1,9 +1,9 @@
 use vulkan_renderer::{
-    BlendState, Buffer, ColorTargetState, Device, DynamicBuffer, DynamicBufferDescriptor,
-    FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor, MemoryAllocator, MultisampleState,
-    PipelineCache, PrimitiveState, ProgrammableStage, RenderingEncoder, ShaderBindingMap,
-    ShaderModuleDescriptor, UploadBatch, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode, vk,
+    BlendState, Buffer, BufferUsages, ColorTargetState, Device, DynamicBuffer,
+    DynamicBufferDescriptor, FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor,
+    MemoryAllocator, MultisampleState, PipelineCache, PrimitiveState, ProgrammableStage,
+    RenderingEncoder, ShaderBindingMap, ShaderModuleDescriptor, TextureFormat, UploadBatch,
+    VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
 };
 
 use crate::ui::render::quad::QuadVertex;
@@ -12,7 +12,7 @@ use super::vulkan_color_spirv;
 
 pub(crate) struct VulkanColorRenderer {
     pipeline: GraphicsPipeline,
-    format: vk::Format,
+    format: TextureFormat,
 }
 
 pub(crate) struct VulkanColorStream {
@@ -24,7 +24,7 @@ impl VulkanColorRenderer {
     pub(crate) fn new(
         device: &Device,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<Self, String> {
         Ok(Self {
             pipeline: create_pipeline(device, pipeline_cache, format)?,
@@ -42,7 +42,7 @@ impl VulkanColorRenderer {
             DynamicBufferDescriptor {
                 label: Some(label.into()),
                 initial_capacity: std::mem::size_of::<QuadVertex>() as u64 * 6,
-                usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+                usage: BufferUsages::VERTEX,
             },
         )
         .map_err(|error| format!("create Vulkan color vertex buffer: {error}"))?;
@@ -56,7 +56,7 @@ impl VulkanColorRenderer {
         &mut self,
         device: &Device,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<(), String> {
         if self.format != format {
             self.pipeline = create_pipeline(device, pipeline_cache, format)?;
@@ -104,7 +104,7 @@ impl VulkanColorStream {
 fn create_pipeline(
     device: &Device,
     pipeline_cache: &PipelineCache,
-    format: vk::Format,
+    format: TextureFormat,
 ) -> Result<GraphicsPipeline, String> {
     let vertex_shader = device
         .create_shader_module(ShaderModuleDescriptor {
@@ -121,17 +121,18 @@ fn create_pipeline(
     let bindings = ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 0,
             shader_location: 0,
         },
         VertexAttribute {
-            format: vk::Format::R32G32B32A32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x4,
             offset: 8,
             shader_location: 1,
         },
     ];
     let buffers = [VertexBufferLayout {
+        slot: 0,
         array_stride: std::mem::size_of::<QuadVertex>() as u64,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
@@ -139,10 +140,7 @@ fn create_pipeline(
     let targets = [Some(ColorTargetState {
         format,
         blend: Some(BlendState::ALPHA_BLENDING),
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     device
         .create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -166,6 +164,8 @@ fn create_pipeline(
                 },
                 targets: &targets,
             },
+            advanced_blend: None,
+            local_read_mapping: None,
             cache: Some(pipeline_cache),
         })
         .map_err(|error| format!("create Vulkan color pipeline: {error}"))

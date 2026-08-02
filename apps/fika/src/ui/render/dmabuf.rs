@@ -15,6 +15,7 @@ pub(crate) struct DmabufImportPlane {
 pub(crate) fn vulkan_format_for_fourcc(
     code: u32,
 ) -> Option<(
+    vulkan_renderer::TextureFormat,
     vulkan_renderer::vk::Format,
     vulkan_renderer::vk::ComponentMapping,
 )> {
@@ -25,12 +26,19 @@ pub(crate) fn vulkan_format_for_fourcc(
     } else {
         vk::ComponentSwizzle::A
     };
-    let format = match code {
-        fourcc::ARGB8888 | fourcc::XRGB8888 | fourcc::BGRA8888 => vk::Format::B8G8R8A8_UNORM,
-        fourcc::ABGR8888 | fourcc::XBGR8888 | fourcc::RGBA8888 => vk::Format::R8G8B8A8_UNORM,
+    let (typed_format, format) = match code {
+        fourcc::ARGB8888 | fourcc::XRGB8888 | fourcc::BGRA8888 => (
+            vulkan_renderer::TextureFormat::Bgra8Unorm,
+            vk::Format::B8G8R8A8_UNORM,
+        ),
+        fourcc::ABGR8888 | fourcc::XBGR8888 | fourcc::RGBA8888 => (
+            vulkan_renderer::TextureFormat::Rgba8Unorm,
+            vk::Format::R8G8B8A8_UNORM,
+        ),
         _ => return None,
     };
     Some((
+        typed_format,
         format,
         vk::ComponentMapping {
             r: vk::ComponentSwizzle::R,
@@ -83,7 +91,7 @@ pub(crate) fn vulkan_exportable_formats(
 ) -> Result<Vec<wayland_client_runtime::DmabufFormat>, String> {
     let mut formats = Vec::new();
     for &fourcc in VULKAN_FOURCC_PREFERENCE {
-        let Some((format, _)) = vulkan_format_for_fourcc(fourcc) else {
+        let Some((_, format, _)) = vulkan_format_for_fourcc(fourcc) else {
             continue;
         };
         let capabilities = device

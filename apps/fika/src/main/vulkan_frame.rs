@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use vulkan_renderer::{
-    AccessKind, BarrierBatch, Buffer, PassId, RenderGraph, RenderPass, ResourceBinding, ResourceId,
-    ResourceKind, ResourceState, ResourceUse, vk,
+    AccessKind, BarrierBatch, Buffer, PassId, RenderGraph, RenderGraphImageState, RenderPass,
+    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
 };
 
 const RENDER_PASS: PassId = PassId(2);
@@ -22,7 +22,7 @@ pub(crate) struct FrameVertexBuffer<'a> {
 }
 
 pub(crate) fn compile_frame_barriers(
-    image: vk::Image,
+    surface_binding: ResourceBinding,
     image_initialized: bool,
     vertex_buffers: &[FrameVertexBuffer<'_>],
     queue_family: u32,
@@ -32,12 +32,10 @@ pub(crate) fn compile_frame_barriers(
         SURFACE_IMAGE,
         ResourceKind::Image,
         ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
             if image_initialized {
-                vk::ImageLayout::PRESENT_SRC_KHR
+                RenderGraphImageState::Present
             } else {
-                vk::ImageLayout::UNDEFINED
+                RenderGraphImageState::Undefined
             },
             queue_family,
         ),
@@ -108,19 +106,7 @@ pub(crate) fn compile_frame_barriers(
     let graph = graph
         .compile()
         .map_err(|error| format!("compile Vulkan frame graph: {error}"))?;
-    let mut bindings = BTreeMap::from([(
-        SURFACE_IMAGE,
-        ResourceBinding::Image {
-            image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-        },
-    )]);
+    let mut bindings = BTreeMap::from([(SURFACE_IMAGE, surface_binding)]);
     for (index, vertex_buffer) in vertex_buffers.iter().enumerate() {
         let resource = ResourceId(
             FIRST_VERTEX_BUFFER
@@ -129,11 +115,7 @@ pub(crate) fn compile_frame_barriers(
         );
         bindings.insert(
             resource,
-            ResourceBinding::Buffer {
-                buffer: vertex_buffer.buffer.raw(),
-                offset: 0,
-                size: vertex_buffer.buffer.size(),
-            },
+            ResourceBinding::whole_buffer(vertex_buffer.buffer),
         );
     }
     Ok(FrameBarriers {

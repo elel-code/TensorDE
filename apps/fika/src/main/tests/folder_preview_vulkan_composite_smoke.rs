@@ -5,7 +5,7 @@ fn folder_preview_slot_composites_on_native_vulkan() {
     use vulkan_renderer::{
         CommandEncoderDescriptor, DeviceDescriptor, Instance, InstanceDescriptor,
         MemoryAllocatorConfig, PipelineCacheDescriptor, RequestAdapterOptions,
-        UploadBeltDescriptor, vk,
+        TextureFormat, UploadBeltDescriptor,
     };
 
     let _gpu = GPU_TEST_LOCK
@@ -54,7 +54,7 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         &device,
         &allocator,
         &pipeline_cache,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
     )
     .unwrap();
     // Validate the remaining Slang pipelines against the real driver too.
@@ -62,13 +62,13 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         &device,
         &allocator,
         &pipeline_cache,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
     )
     .unwrap();
     crate::vulkan_rect::VulkanRectRenderer::new(
         &device,
         &pipeline_cache,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
     )
     .unwrap();
     let mut belt = device

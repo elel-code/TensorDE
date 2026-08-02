@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 
 use vulkan_renderer::{
-    AccessKind, BlendState, Buffer, ColorAttachment, ColorTargetState, CompiledGraph,
+    AccessKind, BlendState, Buffer, BufferUsages, ColorAttachment, ColorTargetState, CompiledGraph,
     DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DmaBufImageDescriptor,
-    DmaBufPlaneLayout, DynamicBuffer, DynamicBufferDescriptor, FragmentState, FrameToken,
-    GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageBlit, ImageBlitFilter,
-    ImageDataLayout, ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor,
-    ImportedDmaBufImage, LoadOp, MemoryAllocator, MemoryLocation, MultisampleState, PassId,
-    PipelineCache, PrimitiveState, ProgrammableStage, RenderGraph, RenderPass, RenderingDescriptor,
-    RenderingEncoder, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
-    SampledImageBinding, SamplerBinding, SamplerDescriptor, ShaderBindingMap,
-    ShaderModuleDescriptor, StoreOp, TexelBlockLayout, UploadBatch, VertexAttribute,
-    VertexBufferLayout, VertexState, VertexStepMode, vk,
+    DmaBufPlaneLayout, DynamicBuffer, DynamicBufferDescriptor, Extent3D, ForeignImageState,
+    FragmentState, FrameToken, GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageBlit,
+    ImageBlitFilter, ImageDataLayout, ImageDescriptor, ImageDimension, ImageTiling, ImageUpload,
+    ImageView, ImageViewDescriptor, ImportedDmaBufImage, LoadOp, MemoryAllocator, MemoryLocation,
+    MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage, Rect2D,
+    RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor, RenderingEncoder,
+    ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
+    SampleCount, SampledImageBinding, SamplerBinding, SamplerDescriptor, ShaderBindingMap,
+    ShaderModuleDescriptor, StoreOp, TexelBlockLayout, TextureFormat, TextureLayout, TextureUsages,
+    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, Viewport, vk,
 };
 
 use crate::{
@@ -101,7 +102,7 @@ impl VulkanIconRenderer {
         device: &Device,
         allocator: &MemoryAllocator,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<Self, String> {
         let limits = device.device_info().limits.descriptor_heap;
         let resource_heap = device
@@ -135,7 +136,7 @@ impl VulkanIconRenderer {
             DynamicBufferDescriptor {
                 label: Some("fika-vulkan-icon-vertices".into()),
                 initial_capacity: INITIAL_VERTEX_CAPACITY,
-                usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+                usage: BufferUsages::VERTEX,
             },
         )
         .map_err(|error| format!("create Vulkan icon vertex buffer: {error}"))?;
@@ -172,9 +173,9 @@ impl VulkanIconRenderer {
         &mut self,
         device: &Device,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<(), String> {
-        if self.pipeline.color_formats() != [format] {
+        if self.pipeline.color_formats() != [Some(format)] {
             self.pipeline = create_pipeline(device, pipeline_cache, format)?;
         }
         Ok(())
@@ -468,7 +469,7 @@ impl VulkanIconRenderer {
             "fika-vulkan-folder-preview",
             side,
             side,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            TextureUsages::COLOR_ATTACHMENT | TextureUsages::SAMPLED,
         )?;
         let view = image
             .create_view(&ImageViewDescriptor {
@@ -525,7 +526,7 @@ impl VulkanIconRenderer {
             "fika-vulkan-preview-child",
             width,
             height,
-            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            TextureUsages::COPY_DESTINATION | TextureUsages::SAMPLED,
         )?;
         let view = image
             .create_view(&ImageViewDescriptor {
@@ -558,7 +559,7 @@ impl VulkanIconRenderer {
             "fika-vulkan-resident-icon",
             width,
             height,
-            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            TextureUsages::COPY_DESTINATION | TextureUsages::SAMPLED,
         )?;
         let view = image
             .create_view(&ImageViewDescriptor {
@@ -621,23 +622,11 @@ impl VulkanIconRenderer {
             "fika-vulkan-icon-scale-source",
             bitmap.width,
             bitmap.height,
-            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
+            TextureUsages::COPY_DESTINATION | TextureUsages::COPY_SOURCE,
         )?;
         let bindings = BTreeMap::from([
-            (
-                SCALE_SOURCE,
-                ResourceBinding::Image {
-                    image: source.raw(),
-                    subresource_range: source.full_subresource_range(vk::ImageAspectFlags::COLOR),
-                },
-            ),
-            (
-                SCALE_TARGET,
-                ResourceBinding::Image {
-                    image: target.raw(),
-                    subresource_range: target.full_subresource_range(vk::ImageAspectFlags::COLOR),
-                },
-            ),
+            (SCALE_SOURCE, ResourceBinding::whole_color_image(&source)),
+            (SCALE_TARGET, ResourceBinding::whole_color_image(target)),
         ]);
         let barrier = |pass, label: &str| {
             self.scale_graph
@@ -686,13 +675,7 @@ impl VulkanIconRenderer {
         &self,
         image: &Image,
     ) -> Result<(vulkan_renderer::BarrierBatch, vulkan_renderer::BarrierBatch), String> {
-        let bindings = BTreeMap::from([(
-            ICON_IMAGE,
-            ResourceBinding::Image {
-                image: image.raw(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
-            },
-        )]);
+        let bindings = BTreeMap::from([(ICON_IMAGE, ResourceBinding::whole_color_image(image))]);
         Ok((
             self.upload_graph
                 .barrier_batch_before(ICON_UPLOAD, &bindings)

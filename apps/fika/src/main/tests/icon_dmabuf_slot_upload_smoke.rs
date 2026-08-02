@@ -4,7 +4,7 @@ fn icon_slot_imports_udmabuf_into_native_vulkan_resident_cache() {
     use vulkan_renderer::{
         CommandEncoderDescriptor, DeviceDescriptor, Features, Instance, InstanceDescriptor,
         MemoryAllocatorConfig, PipelineCacheDescriptor, RequestAdapterOptions,
-        UploadBeltDescriptor, vk,
+        TextureFormat, UploadBeltDescriptor,
     };
     use wayland_client_runtime::fourcc;
 
@@ -70,7 +70,7 @@ fn icon_slot_imports_udmabuf_into_native_vulkan_resident_cache() {
         &device,
         &allocator,
         &pipeline_cache,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
     )
     .unwrap();
     let mut belt = device

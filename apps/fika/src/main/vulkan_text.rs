@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, HashSet};
 
 use vulkan_renderer::{
-    AccessKind, BarrierBatch, BlendState, Buffer, ColorTargetState, CompiledGraph, DescriptorHeap,
-    DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer, DynamicBufferDescriptor,
-    FragmentState, FrameToken, GraphicsPipeline, GraphicsPipelineDescriptor, Image,
-    ImageDataLayout, ImageDescriptor, ImageUpload, ImageView, ImageViewDescriptor, MemoryAllocator,
-    MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
-    RenderGraph, RenderPass, RenderingEncoder, ResourceBinding, ResourceId, ResourceKind,
-    ResourceState, ResourceUse, SampledTextureBinding, SamplerDescriptor, ShaderModuleDescriptor,
-    TexelBlockLayout, UploadBatch, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode, vk,
+    AccessKind, BarrierBatch, BlendState, Buffer, BufferUsages, ColorTargetState, CompiledGraph,
+    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer,
+    DynamicBufferDescriptor, Extent3D, FragmentState, FrameToken, GraphicsPipeline,
+    GraphicsPipelineDescriptor, Image, ImageDataLayout, ImageDescriptor, ImageDimension,
+    ImageTiling, ImageUpload, ImageView, ImageViewDescriptor, MemoryAllocator, MemoryLocation,
+    MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage, RenderGraph,
+    RenderGraphImageState, RenderPass, RenderingEncoder, ResourceBinding, ResourceId, ResourceKind,
+    ResourceState, ResourceUse, SampleCount, SampledTextureBinding, SamplerDescriptor,
+    ShaderModuleDescriptor, TexelBlockLayout, TextureFormat, TextureUsages, UploadBatch,
+    VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, vk,
 };
 
 use crate::ui::render::texture::TextVertex;
@@ -55,7 +56,7 @@ impl VulkanTextRenderer {
         device: &Device,
         allocator: &MemoryAllocator,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<Self, String> {
         let limits = device.device_info().limits.descriptor_heap;
         let resource_heap = device
@@ -85,7 +86,7 @@ impl VulkanTextRenderer {
             DynamicBufferDescriptor {
                 label: Some("fika-vulkan-text-vertices".into()),
                 initial_capacity: INITIAL_VERTEX_CAPACITY,
-                usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+                usage: BufferUsages::VERTEX,
             },
         )
         .map_err(|error| format!("create Vulkan text vertex buffer: {error}"))?;
@@ -105,9 +106,9 @@ impl VulkanTextRenderer {
         &mut self,
         device: &Device,
         pipeline_cache: &PipelineCache,
-        format: vk::Format,
+        format: TextureFormat,
     ) -> Result<(), String> {
-        if self.pipeline.color_formats() != [format] {
+        if self.pipeline.color_formats() != [Some(format)] {
             self.pipeline = create_pipeline(device, pipeline_cache, format)?;
         }
         Ok(())
@@ -163,11 +164,7 @@ impl VulkanTextRenderer {
                 compile_atlas_barriers(&atlas.image, atlas.initialized, queue_family)?;
             unsafe { uploads.encoder_mut().pipeline_barrier(&before_upload) };
             for upload in pending_uploads {
-                let extent = vk::Extent3D {
-                    width: upload.width,
-                    height: upload.height,
-                    depth: 1,
-                };
+                let extent = Extent3D::new(upload.width, upload.height, 1);
                 let image_upload = ImageUpload {
                     data_layout: ImageDataLayout::tightly_packed(extent, TexelBlockLayout::R8)
                         .map_err(|error| format!("layout Vulkan text upload: {error}"))?,
@@ -299,18 +296,14 @@ fn create_atlas(
     let image = allocator
         .create_image(&ImageDescriptor {
             label: Some("fika-vulkan-r8-text-atlas".into()),
-            image_type: vk::ImageType::_2D,
-            format: vk::Format::R8_UNORM,
-            extent: vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            },
+            dimension: ImageDimension::D2,
+            format: TextureFormat::R8Unorm,
+            extent: Extent3D::new(width, height, 1),
             mip_levels: 1,
             array_layers: 1,
-            samples: vk::SampleCountFlags::_1,
-            tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            samples: SampleCount::One,
+            tiling: ImageTiling::Optimal,
+            usage: TextureUsages::COPY_DESTINATION | TextureUsages::SAMPLED,
             memory: MemoryLocation::Device,
         })
         .map_err(|error| format!("create Vulkan R8 text atlas: {error}"))?;
@@ -318,7 +311,7 @@ fn create_atlas(
         .create_view(&ImageViewDescriptor {
             label: Some("fika-vulkan-r8-text-atlas-view".into()),
             view_type: vk::ImageViewType::_2D,
-            format: vk::Format::R8_UNORM,
+            format: TextureFormat::R8Unorm,
             components: vk::ComponentMapping::default(),
             subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
         })
@@ -354,7 +347,7 @@ fn descriptor_ring_capacity(size: u64, alignment: u64) -> Result<u64, String> {
 fn create_pipeline(
     device: &Device,
     cache: &PipelineCache,
-    format: vk::Format,
+    format: TextureFormat,
 ) -> Result<GraphicsPipeline, String> {
     let vertex_shader = device
         .create_shader_module(ShaderModuleDescriptor {
@@ -374,22 +367,23 @@ fn create_pipeline(
     let fragment_bindings = vulkan_renderer::ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 0,
             shader_location: 0,
         },
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 8,
             shader_location: 1,
         },
         VertexAttribute {
-            format: vk::Format::R32G32B32A32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x4,
             offset: 16,
             shader_location: 2,
         },
     ];
     let buffers = [VertexBufferLayout {
+        slot: 0,
         array_stride: std::mem::size_of::<TextVertex>() as u64,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
@@ -397,10 +391,7 @@ fn create_pipeline(
     let targets = [Some(ColorTargetState {
         format,
         blend: Some(BlendState::ALPHA_BLENDING),
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     device
         .create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -424,6 +415,8 @@ fn create_pipeline(
                 },
                 targets: &targets,
             },
+            advanced_blend: None,
+            local_read_mapping: None,
             cache: Some(cache),
         })
         .map_err(|error| format!("create Vulkan text pipeline: {error}"))
@@ -435,13 +428,7 @@ fn compile_atlas_barriers(
     queue_family: u32,
 ) -> Result<(BarrierBatch, BarrierBatch), String> {
     let graph = compile_atlas_graph(initialized, queue_family)?;
-    let bindings = BTreeMap::from([(
-        TEXT_IMAGE,
-        ResourceBinding::Image {
-            image: image.raw(),
-            subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
-        },
-    )]);
+    let bindings = BTreeMap::from([(TEXT_IMAGE, ResourceBinding::whole_color_image(image))]);
     Ok((
         graph
             .barrier_batch_before(TEXT_UPLOAD, &bindings)
@@ -459,19 +446,9 @@ fn compile_atlas_graph(initialized: bool, queue_family: u32) -> Result<CompiledG
         ResourceKind::Image,
         ResourceState::image(
             if initialized {
-                vk::PipelineStageFlags2::FRAGMENT_SHADER
+                RenderGraphImageState::FragmentSampledRead
             } else {
-                vk::PipelineStageFlags2::NONE
-            },
-            if initialized {
-                vk::AccessFlags2::SHADER_SAMPLED_READ
-            } else {
-                vk::AccessFlags2::NONE
-            },
-            if initialized {
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-            } else {
-                vk::ImageLayout::UNDEFINED
+                RenderGraphImageState::Undefined
             },
             queue_family,
         ),
@@ -484,12 +461,7 @@ fn compile_atlas_graph(initialized: bool, queue_family: u32) -> Result<CompiledG
             resource: TEXT_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COPY,
-                vk::AccessFlags2::TRANSFER_WRITE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::CopyDestination, queue_family),
         }],
     });
     graph.add_pass(RenderPass {
@@ -500,12 +472,7 @@ fn compile_atlas_graph(initialized: bool, queue_family: u32) -> Result<CompiledG
             resource: TEXT_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph
@@ -533,25 +500,24 @@ mod tests {
     fn fresh_and_reused_atlases_have_two_explicit_layout_transitions() {
         let fresh = compile_atlas_graph(false, 2).unwrap();
         assert_eq!(fresh.barriers.len(), 2);
-        assert_eq!(fresh.barriers[0].source.layout, vk::ImageLayout::UNDEFINED);
         assert_eq!(
-            fresh.barriers[0].destination.layout,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL
+            fresh.barriers[0].source.image_state(),
+            Some(RenderGraphImageState::Undefined)
         );
         assert_eq!(
-            fresh.barriers[1].destination.layout,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            fresh.barriers[0].destination.image_state(),
+            Some(RenderGraphImageState::CopyDestination)
+        );
+        assert_eq!(
+            fresh.barriers[1].destination.image_state(),
+            Some(RenderGraphImageState::FragmentSampledRead)
         );
 
         let reused = compile_atlas_graph(true, 2).unwrap();
         assert_eq!(reused.barriers.len(), 2);
         assert_eq!(
-            reused.barriers[0].source.layout,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-        );
-        assert_eq!(
-            reused.barriers[0].source.access,
-            vk::AccessFlags2::SHADER_SAMPLED_READ
+            reused.barriers[0].source.image_state(),
+            Some(RenderGraphImageState::FragmentSampledRead)
         );
     }
 }

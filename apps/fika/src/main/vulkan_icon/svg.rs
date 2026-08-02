@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use vulkan_renderer::{
-    AccessKind, BlendState, BufferDescriptor, ColorAttachment, ColorTargetState, CompiledGraph,
-    DescriptorHeap, Device, FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor,
-    ImageViewDescriptor, IndexFormat, LoadOp, MemoryAllocator, MemoryLocation, MultisampleState,
-    PassId, PipelineCache, PrimitiveState, ProgrammableStage, RenderGraph, RenderPass,
-    RenderingDescriptor, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
-    SampledImageBinding, ShaderBindingMap, ShaderModuleDescriptor, StoreOp, UploadBatch,
-    VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, vk,
+    AccessKind, BlendState, BufferDescriptor, BufferState, BufferUsages, ColorAttachment,
+    ColorTargetState, CompiledGraph, DescriptorHeap, Device, FragmentState, GraphicsPipeline,
+    GraphicsPipelineDescriptor, ImageViewDescriptor, IndexFormat, LoadOp, MemoryAllocator,
+    MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
+    Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor, ResolveMode,
+    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse, SampledImageBinding,
+    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureFormat, TextureLayout, TextureUsages,
+    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, Viewport, vk,
 };
 
 use crate::{
@@ -107,20 +108,20 @@ impl SvgIconRasterizer {
             allocator,
             "fika-vulkan-svg-vertices",
             vertex_bytes,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
+            BufferUsages::VERTEX,
         )?;
         let indices = create_geometry_buffer(
             allocator,
             "fika-vulkan-svg-indices",
             index_bytes,
-            vk::BufferUsageFlags::INDEX_BUFFER,
+            BufferUsages::INDEX,
         )?;
         let image = create_rgba_image(
             allocator,
             "fika-vulkan-svg-icon",
             width,
             height,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            TextureUsages::COLOR_ATTACHMENT | TextureUsages::SAMPLED,
         )?;
         let view = image
             .create_view(&ImageViewDescriptor {
@@ -168,14 +169,14 @@ fn create_geometry_buffer(
     allocator: &MemoryAllocator,
     label: &str,
     bytes: &[u8],
-    usage: vk::BufferUsageFlags,
+    usage: BufferUsages,
 ) -> Result<vulkan_renderer::Buffer, String> {
     let size = u64::try_from(bytes.len()).map_err(|_| format!("{label} size exceeds u64"))?;
     allocator
         .create_buffer(&BufferDescriptor {
             label: Some(label.into()),
             size,
-            usage: usage | vk::BufferUsageFlags::TRANSFER_DST,
+            usage: usage | BufferUsages::COPY_DESTINATION,
             memory: MemoryLocation::Device,
         })
         .map_err(|error| format!("create {label}: {error}"))
@@ -187,29 +188,9 @@ fn resource_bindings(
     indices: &vulkan_renderer::Buffer,
 ) -> BTreeMap<ResourceId, ResourceBinding> {
     BTreeMap::from([
-        (
-            SVG_IMAGE,
-            ResourceBinding::Image {
-                image: image.raw(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
-            },
-        ),
-        (
-            SVG_VERTICES,
-            ResourceBinding::Buffer {
-                buffer: vertices.raw(),
-                offset: 0,
-                size: vertices.size(),
-            },
-        ),
-        (
-            SVG_INDICES,
-            ResourceBinding::Buffer {
-                buffer: indices.raw(),
-                offset: 0,
-                size: indices.size(),
-            },
-        ),
+        (SVG_IMAGE, ResourceBinding::whole_color_image(image)),
+        (SVG_VERTICES, ResourceBinding::whole_buffer(vertices)),
+        (SVG_INDICES, ResourceBinding::whole_buffer(indices)),
     ])
 }
 
@@ -226,29 +207,27 @@ fn record_svg_draw(
 ) -> Result<(), String> {
     let color_attachments = [Some(ColorAttachment {
         view: view.as_attachment(),
-        layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+        layout: TextureLayout::ColorAttachment,
         resolve_target: None,
-        resolve_layout: vk::ImageLayout::UNDEFINED,
-        resolve_mode: vk::ResolveModeFlags::NONE,
+        resolve_layout: TextureLayout::Undefined,
+        resolve_mode: ResolveMode::None,
         load_op: LoadOp::Clear([0.0; 4]),
         store_op: StoreOp::Store,
     })];
     let descriptor = RenderingDescriptor {
         label: Some("fika-vulkan-svg-icon-render"),
-        render_area: vk::Rect2D {
-            offset: vk::Offset2D::default(),
-            extent: vk::Extent2D { width, height },
-        },
+        render_area: Rect2D::new(0, 0, width, height),
         layer_count: 1,
         view_mask: 0,
         color_attachments: &color_attachments,
         depth_attachment: None,
         stencil_attachment: None,
+        multisampled_render_to_single_sampled: None,
     };
     let mut rendering = unsafe { uploads.encoder_mut().begin_rendering(&descriptor) }
         .map_err(|error| format!("begin Vulkan SVG icon rendering: {error}"))?;
     rendering
-        .set_viewport(vk::Viewport {
+        .set_viewport(Viewport {
             x: 0.0,
             y: 0.0,
             width: width as f32,
@@ -300,28 +279,26 @@ fn create_pipeline(device: &Device, cache: &PipelineCache) -> Result<GraphicsPip
     let bindings = ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 0,
             shader_location: 0,
         },
         VertexAttribute {
-            format: vk::Format::R32G32B32A32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x4,
             offset: 8,
             shader_location: 1,
         },
     ];
     let buffers = [VertexBufferLayout {
+        slot: 0,
         array_stride: std::mem::size_of::<SvgVertex>() as u64,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
     }];
     let targets = [Some(ColorTargetState {
-        format: vk::Format::R8G8B8A8_UNORM,
+        format: TextureFormat::Rgba8Unorm,
         blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     device
         .create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -345,6 +322,8 @@ fn create_pipeline(device: &Device, cache: &PipelineCache) -> Result<GraphicsPip
                 },
                 targets: &targets,
             },
+            advanced_blend: None,
+            local_read_mapping: None,
             cache: Some(cache),
         })
         .map_err(|error| format!("create Vulkan SVG icon pipeline: {error}"))
@@ -355,12 +334,7 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
     graph.set_initial_state(
         SVG_IMAGE,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: SVG_UPLOAD,
@@ -402,11 +376,7 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
                 resource: SVG_INDICES,
                 kind: ResourceKind::Buffer,
                 access: AccessKind::Read,
-                state: ResourceState::buffer(
-                    vk::PipelineStageFlags2::INDEX_INPUT,
-                    vk::AccessFlags2::INDEX_READ,
-                    queue_family,
-                ),
+                state: ResourceState::buffer(BufferState::IndexRead, queue_family),
             },
         ],
     });
@@ -418,12 +388,7 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
             resource: SVG_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph
@@ -454,7 +419,8 @@ mod tests {
         );
         assert!(graph.barriers.iter().any(|barrier| {
             barrier.after == SVG_SAMPLE
-                && barrier.destination.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                && barrier.destination.image_state()
+                    == Some(RenderGraphImageState::FragmentSampledRead)
         }));
     }
 }

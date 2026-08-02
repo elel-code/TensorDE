@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn create_pipeline(
     device: &Device,
     cache: &PipelineCache,
-    format: vk::Format,
+    format: TextureFormat,
 ) -> Result<GraphicsPipeline, String> {
     let vertex_shader = device
         .create_shader_module(ShaderModuleDescriptor {
@@ -23,27 +23,28 @@ pub(super) fn create_pipeline(
     let fragment_bindings = ShaderBindingMap::default();
     let attributes = [
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 0,
             shader_location: 0,
         },
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 8,
             shader_location: 1,
         },
         VertexAttribute {
-            format: vk::Format::R32G32B32A32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x4,
             offset: 16,
             shader_location: 2,
         },
         VertexAttribute {
-            format: vk::Format::R32G32_SFLOAT,
+            format: vulkan_renderer::VertexFormat::Float32x2,
             offset: 32,
             shader_location: 3,
         },
     ];
     let buffers = [VertexBufferLayout {
+        slot: 0,
         array_stride: std::mem::size_of::<IconVertex>() as u64,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
@@ -51,10 +52,7 @@ pub(super) fn create_pipeline(
     let targets = [Some(ColorTargetState {
         format,
         blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     device
         .create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -78,6 +76,8 @@ pub(super) fn create_pipeline(
                 },
                 targets: &targets,
             },
+            advanced_blend: None,
+            local_read_mapping: None,
             cache: Some(cache),
         })
         .map_err(|error| format!("create Vulkan icon pipeline: {error}"))
@@ -103,10 +103,13 @@ mod tests {
     fn fresh_icon_upload_transitions_to_shader_read() {
         let graph = compile_upload_graph(3).unwrap();
         assert_eq!(graph.barriers.len(), 2);
-        assert_eq!(graph.barriers[0].source.layout, vk::ImageLayout::UNDEFINED);
         assert_eq!(
-            graph.barriers[1].destination.layout,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            graph.barriers[0].source.image_state(),
+            Some(RenderGraphImageState::Undefined)
+        );
+        assert_eq!(
+            graph.barriers[1].destination.image_state(),
+            Some(RenderGraphImageState::FragmentSampledRead)
         );
     }
 
@@ -117,29 +120,19 @@ mod tests {
         assert!(graph.barriers.iter().any(|barrier| {
             barrier.after == SCALE_BLIT
                 && barrier.resource == SCALE_TARGET
-                && barrier.source.access == vk::AccessFlags2::TRANSFER_WRITE
-                && barrier.destination.access == vk::AccessFlags2::TRANSFER_WRITE
+                && barrier.source.image_state() == Some(RenderGraphImageState::ClearDestination)
+                && barrier.destination.image_state() == Some(RenderGraphImageState::BlitDestination)
         }));
         assert!(graph.barriers.iter().any(|barrier| {
             barrier.after == SCALE_SAMPLE
-                && barrier.destination.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                && barrier.destination.image_state()
+                    == Some(RenderGraphImageState::FragmentSampledRead)
         }));
     }
 
     #[test]
     fn bitmap_blit_preserves_aspect_ratio_and_centers_letterbox() {
-        let blit = fit_bitmap_blit(
-            vk::Extent3D {
-                width: 400,
-                height: 200,
-                depth: 1,
-            },
-            vk::Extent3D {
-                width: 128,
-                height: 128,
-                depth: 1,
-            },
-        );
+        let blit = fit_bitmap_blit(Extent3D::new(400, 200, 1), Extent3D::new(128, 128, 1));
         assert_eq!(
             blit.destination_offsets[0],
             vk::Offset3D { x: 0, y: 32, z: 0 }

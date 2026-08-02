@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use vulkan_renderer::{
     AccessKind, Adapter, BackendProfile, BinarySemaphore, BinarySemaphoreDescriptor,
-    ColorAttachment, CommandEncoderDescriptor, Device, DeviceDescriptor, DmaBufExportDescriptor,
-    ExportedDmaBufImage, Features, FrameToken, Instance, InstanceDescriptor, LoadOp,
-    MemoryAllocator, MemoryAllocatorConfig, PassId, PipelineCache, PipelineCacheDescriptor,
-    PowerPreference, PresentMode, PresentStatus, Queue, RenderGraph, RenderPass,
-    RenderingDescriptor, RequestAdapterOptions, ResourceId, ResourceKind, ResourceState,
-    ResourceUse, StoreOp, Surface, SurfaceConfiguration, SurfaceConfigurationRequest, Swapchain,
-    SwapchainDescriptor, UploadBelt, UploadBeltDescriptor, vk,
+    ColorAttachment, ColorSpace, CommandEncoderDescriptor, CompositeAlphaMode, Device,
+    DeviceDescriptor, DmaBufExportDescriptor, ExportedDmaBufImage, Features, ForeignImageState,
+    FrameToken, Instance, InstanceDescriptor, LoadOp, MemoryAllocator, MemoryAllocatorConfig,
+    PassId, PipelineCache, PipelineCacheDescriptor, PowerPreference, PresentMode, PresentStatus,
+    Queue, Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor,
+    RequestAdapterOptions, ResolveMode, ResourceId, ResourceKind, ResourceState, ResourceUse,
+    StoreOp, Surface, SurfaceConfiguration, SurfaceConfigurationRequest, SurfaceFormat,
+    SurfaceTransform, Swapchain, SwapchainDescriptor, TextureFormat, TextureLayout, TextureUsages,
+    UploadBelt, UploadBeltDescriptor, Viewport, vk,
 };
 
 use crate::IconFrame;
@@ -82,6 +84,7 @@ impl VulkanState {
                 power_preference: PowerPreference::Discrete,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
+                selector: None,
             })
             .map_err(|error| format!("request Vulkan adapter: {error}"))?;
         let mut required_features = DeviceDescriptor::default().required_features;
@@ -238,8 +241,10 @@ impl VulkanState {
         icons: &mut IconFrame,
         text: &mut TextFrame,
     ) -> Result<ExportedDmaBufImage, String> {
-        let (format, components) = crate::ui::render::dmabuf::vulkan_format_for_fourcc(plan.fourcc)
-            .ok_or_else(|| format!("unsupported exported dma-buf fourcc 0x{:08x}", plan.fourcc))?;
+        let (typed_format, format, components) =
+            crate::ui::render::dmabuf::vulkan_format_for_fourcc(plan.fourcc).ok_or_else(|| {
+                format!("unsupported exported dma-buf fourcc 0x{:08x}", plan.fourcc)
+            })?;
         let exported = self
             .device
             .create_exportable_dma_buf_image(&DmaBufExportDescriptor {
@@ -251,7 +256,7 @@ impl VulkanState {
                 components,
             })
             .map_err(|error| format!("create Vulkan drag-preview dma-buf: {error}"))?;
-        self.set_render_format(format)?;
+        self.set_render_format(typed_format)?;
         let queue_family = self.device.device_info().queues.graphics;
         let mut uploads = self
             .upload_belt
@@ -314,8 +319,12 @@ impl VulkanState {
                 uploaded: icon_vertex_uploaded,
             });
         }
-        let barriers =
-            compile_frame_barriers(exported.raw(), false, &vertex_buffers, queue_family)?;
+        let barriers = compile_frame_barriers(
+            exported.resource_binding(),
+            false,
+            &vertex_buffers,
+            queue_family,
+        )?;
         let release_graph = compile_export_release_graph(queue_family)?;
         let bindings = BTreeMap::from([(EXPORTED_IMAGE, exported.resource_binding())]);
         let release = release_graph
@@ -326,31 +335,29 @@ impl VulkanState {
         encoder.retain_resource(&exported);
         let color_attachments = [Some(ColorAttachment {
             view: exported.as_attachment(),
-            layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+            layout: TextureLayout::ColorAttachment,
             resolve_target: None,
-            resolve_layout: vk::ImageLayout::UNDEFINED,
-            resolve_mode: vk::ResolveModeFlags::NONE,
+            resolve_layout: TextureLayout::Undefined,
+            resolve_mode: ResolveMode::None,
             load_op: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
             store_op: StoreOp::Store,
         })];
         let descriptor = RenderingDescriptor {
             label: Some("fika-vulkan-dnd-preview-rendering"),
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent,
-            },
+            render_area: Rect2D::new(0, 0, extent.width, extent.height),
             layer_count: 1,
             view_mask: 0,
             color_attachments: &color_attachments,
             depth_attachment: None,
             stencil_attachment: None,
+            multisampled_render_to_single_sampled: None,
         };
         unsafe {
             let mut rendering = encoder
                 .begin_rendering(&descriptor)
                 .map_err(|error| format!("begin Vulkan drag-preview rendering: {error}"))?;
             rendering
-                .set_viewport(vk::Viewport {
+                .set_viewport(Viewport {
                     x: 0.0,
                     y: 0.0,
                     width: extent.width as f32,
@@ -360,10 +367,7 @@ impl VulkanState {
                 })
                 .map_err(|error| format!("set Vulkan drag-preview viewport: {error}"))?;
             rendering
-                .set_scissor(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent,
-                })
+                .set_scissor(Rect2D::new(0, 0, extent.width, extent.height))
                 .map_err(|error| format!("set Vulkan drag-preview scissor: {error}"))?;
             self.rect_renderer
                 .draw(&mut rendering, &self.base_rect_stream)?;
@@ -388,7 +392,7 @@ impl VulkanState {
         Ok(exported)
     }
 
-    fn set_render_format(&mut self, format: vk::Format) -> Result<(), String> {
+    fn set_render_format(&mut self, format: TextureFormat) -> Result<(), String> {
         self.color_renderer
             .set_format(&self.device, &self.pipeline_cache, format)?;
         self.rect_renderer
@@ -531,7 +535,7 @@ impl VulkanState {
             });
         }
         let barriers = compile_frame_barriers(
-            acquired.image(),
+            acquired.resource_binding(),
             self.initialized_images[image_index],
             &vertex_buffers,
             queue_family,
@@ -540,31 +544,29 @@ impl VulkanState {
         unsafe { encoder.pipeline_barrier(&barriers.before_render) };
         let color_attachments = [Some(ColorAttachment {
             view: acquired.as_attachment(),
-            layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+            layout: TextureLayout::ColorAttachment,
             resolve_target: None,
-            resolve_layout: vk::ImageLayout::UNDEFINED,
-            resolve_mode: vk::ResolveModeFlags::NONE,
+            resolve_layout: TextureLayout::Undefined,
+            resolve_mode: ResolveMode::None,
             load_op: LoadOp::Clear(clear),
             store_op: StoreOp::Store,
         })];
         let rendering = RenderingDescriptor {
             label: Some("fika-vulkan-rendering"),
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: acquired.extent(),
-            },
+            render_area: Rect2D::new(0, 0, acquired.extent().width, acquired.extent().height),
             layer_count: 1,
             view_mask: 0,
             color_attachments: &color_attachments,
             depth_attachment: None,
             stencil_attachment: None,
+            multisampled_render_to_single_sampled: None,
         };
         unsafe {
             let mut rendering = encoder
                 .begin_rendering(&rendering)
                 .map_err(|error| format!("begin Vulkan rendering: {error}"))?;
             rendering
-                .set_viewport(vk::Viewport {
+                .set_viewport(Viewport {
                     x: 0.0,
                     y: 0.0,
                     width: acquired.extent().width as f32,
@@ -574,10 +576,12 @@ impl VulkanState {
                 })
                 .map_err(|error| format!("set Vulkan viewport: {error}"))?;
             rendering
-                .set_scissor(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: acquired.extent(),
-                })
+                .set_scissor(Rect2D::new(
+                    0,
+                    0,
+                    acquired.extent().width,
+                    acquired.extent().height,
+                ))
                 .map_err(|error| format!("set Vulkan scissor: {error}"))?;
             self.rect_renderer
                 .draw(&mut rendering, &self.base_rect_stream)?;
@@ -682,12 +686,7 @@ fn compile_export_release_graph(
     graph.set_initial_state(
         EXPORTED_IMAGE,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: EXPORT_DRAW,
@@ -708,7 +707,7 @@ fn compile_export_release_graph(
             resource: EXPORTED_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::foreign_image(vk::ImageLayout::GENERAL),
+            state: ResourceState::foreign_image(ForeignImageState::General),
         }],
     });
     graph
@@ -728,18 +727,9 @@ fn choose_surface_configuration(
     let desired_image_count =
         preferred_image_count(capabilities.min_image_count, capabilities.max_image_count);
     let formats = [
-        vk::SurfaceFormatKHR {
-            format: vk::Format::B8G8R8A8_UNORM,
-            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        },
-        vk::SurfaceFormatKHR {
-            format: vk::Format::B8G8R8A8_SRGB,
-            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        },
-        vk::SurfaceFormatKHR {
-            format: vk::Format::R8G8B8A8_UNORM,
-            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        },
+        SurfaceFormat::new(TextureFormat::Bgra8Unorm, ColorSpace::SrgbNonlinear),
+        SurfaceFormat::new(TextureFormat::Bgra8Srgb, ColorSpace::SrgbNonlinear),
+        SurfaceFormat::new(TextureFormat::Rgba8Unorm, ColorSpace::SrgbNonlinear),
     ];
     SurfaceConfiguration::choose(
         &capabilities,
@@ -747,16 +737,16 @@ fn choose_surface_configuration(
         SurfaceConfigurationRequest {
             width: size.width.max(1),
             height: size.height.max(1),
-            usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            usage: TextureUsages::COLOR_ATTACHMENT,
             formats: &formats,
             present_modes: &[PresentMode::FifoLatestReady, PresentMode::Fifo],
             composite_alpha: &[
-                vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
-                vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
-                vk::CompositeAlphaFlagsKHR::OPAQUE,
-                vk::CompositeAlphaFlagsKHR::INHERIT,
+                CompositeAlphaMode::PreMultiplied,
+                CompositeAlphaMode::PostMultiplied,
+                CompositeAlphaMode::Opaque,
+                CompositeAlphaMode::Inherit,
             ],
-            pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
+            pre_transforms: &[SurfaceTransform::Identity],
             desired_image_count,
         },
     )

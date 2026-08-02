@@ -69,13 +69,8 @@ impl FolderPreviewCompositor {
         draws: &[PreviewCompositeParams],
         child_views: &[ImageView],
     ) -> Result<(), String> {
-        let bindings = BTreeMap::from([(
-            PREVIEW_IMAGE,
-            ResourceBinding::Image {
-                image: target.raw(),
-                subresource_range: target.full_subresource_range(vk::ImageAspectFlags::COLOR),
-            },
-        )]);
+        let bindings =
+            BTreeMap::from([(PREVIEW_IMAGE, ResourceBinding::whole_color_image(target))]);
         let before_render = self
             .graph
             .barrier_batch_before(PREVIEW_RENDER, &bindings)
@@ -87,32 +82,27 @@ impl FolderPreviewCompositor {
         unsafe { uploads.encoder_mut().pipeline_barrier(&before_render) };
         let color_attachments = [Some(ColorAttachment {
             view: target_view.as_attachment(),
-            layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+            layout: TextureLayout::ColorAttachment,
             resolve_target: None,
-            resolve_layout: vk::ImageLayout::UNDEFINED,
-            resolve_mode: vk::ResolveModeFlags::NONE,
+            resolve_layout: TextureLayout::Undefined,
+            resolve_mode: ResolveMode::None,
             load_op: LoadOp::Clear([0.0; 4]),
             store_op: StoreOp::Store,
         })];
         let descriptor = RenderingDescriptor {
             label: Some("fika-vulkan-folder-preview-render"),
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D::default(),
-                extent: vk::Extent2D {
-                    width: side,
-                    height: side,
-                },
-            },
+            render_area: Rect2D::new(0, 0, side, side),
             layer_count: 1,
             view_mask: 0,
             color_attachments: &color_attachments,
             depth_attachment: None,
             stencil_attachment: None,
+            multisampled_render_to_single_sampled: None,
         };
         let mut rendering = unsafe { uploads.encoder_mut().begin_rendering(&descriptor) }
             .map_err(|error| format!("begin Vulkan folder-preview rendering: {error}"))?;
         rendering
-            .set_viewport(vk::Viewport {
+            .set_viewport(Viewport {
                 x: 0.0,
                 y: 0.0,
                 width: side as f32,
@@ -171,12 +161,9 @@ fn create_pipeline(device: &Device, cache: &PipelineCache) -> Result<GraphicsPip
     // direct descriptor-heap indices in push data, so no binding map exists.
     let fragment_bindings = ShaderBindingMap::default();
     let targets = [Some(ColorTargetState {
-        format: vk::Format::R8G8B8A8_UNORM,
+        format: TextureFormat::Rgba8Unorm,
         blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     device
         .create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -200,6 +187,8 @@ fn create_pipeline(device: &Device, cache: &PipelineCache) -> Result<GraphicsPip
                 },
                 targets: &targets,
             },
+            advanced_blend: None,
+            local_read_mapping: None,
             cache: Some(cache),
         })
         .map_err(|error| format!("create Vulkan preview composite pipeline: {error}"))
@@ -210,12 +199,7 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
     graph.set_initial_state(
         PREVIEW_IMAGE,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: PREVIEW_RENDER,
@@ -236,12 +220,7 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
             resource: PREVIEW_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph
@@ -268,7 +247,8 @@ mod tests {
         assert_eq!(graph.ordered_passes, [PREVIEW_RENDER, PREVIEW_SAMPLE]);
         assert!(graph.barriers.iter().any(|barrier| {
             barrier.after == PREVIEW_SAMPLE
-                && barrier.destination.layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                && barrier.destination.image_state()
+                    == Some(RenderGraphImageState::FragmentSampledRead)
         }));
     }
 }

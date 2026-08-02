@@ -10,7 +10,7 @@ impl VulkanIconRenderer {
         let Some(source) = slot.dmabuf.take() else {
             return Ok(None);
         };
-        let Some((format, components)) =
+        let Some((_, format, components)) =
             crate::ui::render::dmabuf::vulkan_format_for_fourcc(source.fourcc)
         else {
             return Ok(None);
@@ -65,7 +65,7 @@ pub(super) fn compile_import_graph(queue_family: u32) -> Result<CompiledGraph, S
     graph.set_initial_state(
         ICON_IMAGE,
         ResourceKind::Image,
-        ResourceState::foreign_image(vk::ImageLayout::GENERAL),
+        ResourceState::foreign_image(ForeignImageState::General),
     );
     graph.add_pass(RenderPass {
         id: ICON_IMPORT_SAMPLE,
@@ -75,12 +75,7 @@ pub(super) fn compile_import_graph(queue_family: u32) -> Result<CompiledGraph, S
             resource: ICON_IMAGE,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph
@@ -99,16 +94,12 @@ mod tests {
         let barrier = graph.barriers[0];
         assert_eq!(
             barrier.source,
-            ResourceState::foreign_image(vk::ImageLayout::GENERAL)
+            ResourceState::foreign_image(ForeignImageState::General)
         );
-        assert_eq!(barrier.destination.queue_family, 7);
+        assert_eq!(barrier.destination.queue_family(), 7);
         assert_eq!(
-            barrier.destination.layout,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-        );
-        assert_eq!(
-            barrier.destination.access,
-            vk::AccessFlags2::SHADER_SAMPLED_READ
+            barrier.destination.image_state(),
+            Some(RenderGraphImageState::FragmentSampledRead)
         );
     }
 }
